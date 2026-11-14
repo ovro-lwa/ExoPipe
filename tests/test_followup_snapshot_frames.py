@@ -10,7 +10,12 @@ including subband-nights excluded for the snapshot tiers. Asserts, on synthetic 
         cell and on a survey cell alike;
   (iv)  a GPU-frame cell's subband without GPU frames has no directory: no fallback to the survey tree;
   (v)   a survey cell's admitted subband reads the survey tree;
-  (vi)  the light curve and the morphology of a refused subband-night return the refusal, read nothing.
+  (vi)  the light curve and the morphology of a refused subband-night return the refusal, read nothing;
+  (vii) the warp screen is applied only to a frame on its own grid (the snapshot chat's review of PR 70): a survey-size frame
+        (another shape and pixel scale), a frame of the screen's shape on another pixel scale or reference pixel, or a screen
+        without a grid leave the frame as read; a frame on the screen's grid is warped;
+  (viii) the light curve and the spectrum record what was done: on the GPU-frame cell (frames on the screen's grid)
+        dewarped True and every frame counted; on the survey cell (4096-like frames) dewarped False, none counted.
 
 Scratch: a fresh directory under $EXOPIPE3_TEST_SCRATCH, else the system temp directory, removed at exit. Data-free (CI).
 Run standalone:  python tests/test_followup_snapshot_frames.py
@@ -20,6 +25,9 @@ import os
 import shutil
 import sys
 import tempfile
+import types
+
+import numpy as np
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
@@ -73,6 +81,81 @@ def setup():
     return p1, gpu
 
 
+def _hdr(cdelt, crpix):
+    """A SIN grid of ``cdelt`` deg per pixel and reference pixel ``crpix``."""
+    from astropy.io import fits
+    h = fits.Header()
+    for k, v in (('CTYPE1', 'RA---SIN'), ('CTYPE2', 'DEC--SIN'), ('CDELT1', -cdelt), ('CDELT2', cdelt), ('CRPIX1', crpix),
+                 ('CRPIX2', crpix), ('CRVAL1', 187.5), ('CRVAL2', 37.2)):
+        h[k] = v
+    return h
+
+
+def _img(path, n, cdelt, crpix):
+    """A 2-D frame of n x n pixels on that grid."""
+    from astropy.io import fits
+    fits.writeto(path, np.ones((n, n), np.float32), _hdr(cdelt, crpix), overwrite=True)
+
+
+def _screen(path, n, cdelt, crpix, wcs=True):
+    """A warp screen of n x n pixels (zero shifts), its SCREEN_X / SCREEN_Y on that grid (no WCS: ``wcs`` False)."""
+    from astropy.io import fits
+    h = _hdr(cdelt, crpix) if wcs else fits.Header()
+    fits.HDUList([fits.PrimaryHDU()] + [fits.ImageHDU(np.zeros((n, n)), h, name=nm) for nm in ('SCREEN_X', 'SCREEN_Y')]
+                 ).writeto(path, overwrite=True)
+    return path
+
+
+def warp_checks(T, S):
+    """(vii) and (viii)."""
+    from exopipe.phase3.followup import imaging as I
+    from exopipe.phase3.followup import photometry as PHOT
+    from exopipe.phase3.followup import resolve as R
+    GN, GD, GP = 40, 0.049, 20.0                        # the screen's grid (a 2358 x 2358, 0.049 deg, CRPIX 1180 stand-in)
+    scr_path = _screen(os.path.join(T, 'screen.fits'), GN, GD, GP)
+    R_ws, cf, fi, tf = R.warp_screen, S._copy_funpack, PHOT.forced_imfit, S.tempfile
+    R.warp_screen = lambda lst, date, scope: scr_path
+    scr = S._load_warp('27MHz', '01h', '2024-12-18')
+    cases = {'survey-size frame (64 px at 0.03125 deg)': (64, 0.03125, 32.0), 'the screen\'s grid': (GN, GD, GP),
+             'the screen\'s shape, another pixel scale': (GN, 0.05, GP), 'the screen\'s shape and scale, another CRPIX': (GN, GD, 21.0)}
+    got = {}
+    for label, (n, cd, cp) in cases.items():
+        fp = os.path.join(T, 'f.fits')
+        _img(fp, n, cd, cp)
+        data, hdr, wcs = I.load_image(fp)
+        got[label] = S._warp(data, wcs, scr)[1]
+    check('(vii) the screen is applied only on its own grid (shape, CDELT, CRPIX)',
+          got == {k: k == 'the screen\'s grid' for k in cases}, got)
+    R.warp_screen = lambda lst, date, scope: _screen(os.path.join(T, 'screen_nowcs.fits'), GN, GD, GP, wcs=False)
+    sng = S._load_warp('27MHz', '01h', '2024-12-18')
+    _img(os.path.join(T, 'f.fits'), GN, GD, GP)
+    data, hdr, wcs = I.load_image(os.path.join(T, 'f.fits'))
+    check('(vii) a screen without a grid is not applied', sng[2] is None and S._warp(data, wcs, sng)[1] is False, sng[2])
+    R.warp_screen = lambda lst, date, scope: scr_path
+
+    def fake_funpack(src, dst, retries=3):              # the frame as its tree holds it: GPU on the screen's grid
+        fp = dst[:-3] if dst.endswith('.fz') else dst + '.fits'
+        n, cd, cp = (GN, GD, GP) if '/gpu/' in src else (64, 0.03125, 32.0)
+        _img(fp, n, cd, cp)
+        return fp
+    S._copy_funpack = fake_funpack
+    PHOT.forced_imfit = lambda *a, **k: {'peak': 1.0, 'snr': 5.0, 'sign': 1, 'err': 0.2}
+    S.tempfile = types.SimpleNamespace(mkdtemp=lambda prefix='', dir=None: tempfile.mkdtemp(prefix=prefix, dir=T))  # not /fast
+    try:
+        res = {}
+        for (lst, date), iso in ((GPU_CELL, ('2024-12-18T03:04:00', '2024-12-18T03:06:00')),
+                                 (SURVEY_CELL, ('2025-01-05T04:09:30', '2025-01-05T04:11:00'))):
+            lc = S.snapshot_lightcurve(lst, date, '27MHz', 10.0, 40.0, *iso, verbose=False)
+            sp = S.snapshot_spectrum(lst, date, 10.0, 40.0, TS[date], scopes=['27MHz'], verbose=False)
+            res[lst] = (lc.get('dewarped'), lc.get('n_frames_dewarped'), lc.get('n_frames_read'), sp[0].get('dewarped'))
+        check('(viii) GPU-frame cell: the light curve and the spectrum row are dewarped, every frame counted',
+              res[GPU_CELL[0]] == (True, 1, 1, True), res)
+        check('(viii) survey cell: not dewarped (the frames are off the screen\'s grid), none counted',
+              res[SURVEY_CELL[0]] == (False, 0, 1, False), res)
+    finally:
+        R.warp_screen, S._copy_funpack, PHOT.forced_imfit, S.tempfile = R_ws, cf, fi, tf
+
+
 def main():
     p1, gpu = setup()
     from exopipe.phase3.followup import snapshots as S
@@ -102,6 +185,7 @@ def main():
           lc.get('refused') and lc.get('available') is False and not lc.get('frames'), lc)
     mo = S.snapshot_morphology(slst, sdate, '18MHz', 10.0, 40.0, TS[sdate], verbose=False)
     check('(vi) the morphology of a refused subband-night returns the refusal', bool(mo.get('refused')), mo)
+    warp_checks(os.path.dirname(p1), S)
     print(f'\n{N[0] - len(FAILS)} of {N[0]} checks passed' + (f'; FAILED: {FAILS}' if FAILS else ''))
     return 1 if FAILS else 0
 

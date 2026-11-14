@@ -16,6 +16,13 @@ FRAMES AND EXCLUSIONS (snapshot chat 2026-11-14, JUDGED-20261114-FOLLOWUP-SNAPSH
 paths.SNAPSHOT_GPU_FRAME_CELLS, the survey's Phase-1 tree otherwise), and a subband-night the snapshot tiers exclude
 (core/exclusions.PerNight: 'snapshot-gpu' on a GPU-frame cell, 'snapshot' elsewhere) is refused (``snap_refusal``), never read
 from another tree. Production's snapshots.py read the survey tree only and no exclusion.
+
+WARP RECORD (the snapshot chat's review of PR 70, 2026-11-14): the warp screen is applied to a frame only when the frame lies on
+the screen's own grid - the same shape, pixel scale (CDELT) and reference pixel (CRPIX) as the screen's SCREEN_X WCS (``_warp``).
+The survey's frames (4096 x 4096 at 0.03125 deg) never do, the GPU pipeline's (2358 x 2358 at 0.049 deg) do. ``dewarped`` is
+what was done to each frame: a saved burst frame carries it (name and header) only when warped; a spectrum row and a light
+curve are dewarped only when every frame read was warped (the light curve also counts them). Production stamped 'dewarped'
+whenever a screen existed, warped or not.
 """
 import glob
 import os
@@ -27,6 +34,7 @@ import tempfile
 import numpy as np
 from astropy.io import fits
 from astropy.time import Time
+from astropy.wcs import WCS
 
 from . import config as C
 from . import imaging as I
@@ -132,18 +140,39 @@ def _snap_time(path):
                 f'{m.group(1)[9:11]}:{m.group(1)[11:13]}:{m.group(1)[13:15]}')
 
 
+def _grid(w):
+    """(CDELT1, CDELT2, CRPIX1, CRPIX2) of a celestial WCS."""
+    return tuple(float(v) for v in (*w.wcs.get_cdelt()[:2], *w.wcs.crpix[:2]))
+
+
 def _load_warp(scope, lst, date):
+    """(SCREEN_X, SCREEN_Y, grid) of the subband-night's Phase-2 warp screen: grid = the screen's own pixel grid (_grid of
+    SCREEN_X's WCS), None when that header has no celestial WCS; (None, None, None) without a screen."""
     p = R.warp_screen(lst, date, scope)
     if p is None:
-        return None, None
+        return None, None, None
     with fits.open(p) as h:
-        return h['SCREEN_X'].data.astype(float), h['SCREEN_Y'].data.astype(float)
+        hx = h['SCREEN_X'].header
+        grid = _grid(WCS(hx).celestial) if hx.get('CTYPE1') and hx.get('CTYPE2') else None
+        return h['SCREEN_X'].data.astype(float), h['SCREEN_Y'].data.astype(float), grid
+
+
+def _warp(data, wcs, scr):
+    """(data, applied): the warp screen ``scr`` (_load_warp) applied to a frame only when the frame lies on the screen's own
+    grid - the same shape, CDELT and CRPIX; otherwise the frame as read and False (module docstring, WARP RECORD)."""
+    sx, sy, grid = scr
+    if sx is None or grid is None or data.shape != sx.shape:
+        return data, False
+    if not np.allclose(_grid(wcs), grid, rtol=1e-6, atol=1e-9):
+        return data, False
+    out = apply_warp(data, sx, sy)
+    return (data, False) if out is None else (out, True)
 
 
 def save_burst_allsky(cand, lst, date, scope, ra, dec, frame_times, outdir,
                       stokes=('V', 'I'), verbose=True):
-    """Write conformant DEWARPED all-sky snapshot FITS for specific 10-sec
-    frames (e.g. the burst spikes) so they can be inspected full-frame.
+    """Write conformant all-sky snapshot FITS for specific 10-sec frames (e.g. the burst spikes) so they can be inspected
+    full-frame; a frame on the warp screen's grid is dewarped, and only then named and stamped so (WARP RECORD).
 
     frame_times : iterable of 'YYYYMMDD_HHMMSS' tokens.
     Returns list of written paths.
@@ -152,7 +181,7 @@ def save_burst_allsky(cand, lst, date, scope, ra, dec, frame_times, outdir,
     from exopipe.phase3.core.products import build_name
     if _phase1_snap_dir(lst, date, scope) is None:      # excluded (snap_refusal) or no frames
         return []
-    sx, sy = _load_warp(scope, lst, date)
+    scr = _load_warp(scope, lst, date)
     tmp = tempfile.mkdtemp(prefix='candinv_snapsave_', dir='/fast/gh/main')
     written = []
     try:
@@ -166,11 +195,11 @@ def save_burst_allsky(cand, lst, date, scope, ra, dec, frame_times, outdir,
                 if fp is None:
                     continue
                 data, hdr, wcs = I.load_image(fp)
-                if sx is not None and data.shape == sx.shape:
-                    data = apply_warp(data, sx, sy)
+                data, warped = _warp(data, wcs, scr)
+                proc = ['dewarped'] if warped else []
                 t = _snap_time(src)
                 name = build_name(scope=scope, stokes=stok, cadence='snap',
-                                  taper='Taper', robust=0.0, proc=['dewarped'],
+                                  taper='Taper', robust=0.0, proc=proc,
                                   lst=lst, epoch=t, target=cand.cand_id)
                 out = os.path.join(outdir, name)
                 nh = wcs.to_header()
@@ -180,9 +209,9 @@ def save_burst_allsky(cand, lst, date, scope, ra, dec, frame_times, outdir,
                 fits.writeto(out, data.astype(np.float32), nh, overwrite=True)
                 beam = ((hdr['BMAJ'], hdr['BMIN'], hdr.get('BPA', 0.0))
                         if 'BMAJ' in hdr else None)
-                IO._stamp(out, cand, scope, stok, ['dewarped'], t.isot,
+                IO._stamp(out, cand, scope, stok, proc, t.isot,
                           (t + 10.0 / 86400.0).isot, 10.0, beam, None,
-                          dewarped=True)
+                          dewarped=warped)
                 written.append(out)
                 if verbose:
                     print('  saved', os.path.basename(out))
@@ -211,9 +240,9 @@ def snapshot_spectrum(lst, date, ra, dec, timestamp, scopes=None,
                 continue
             if _phase1_snap_dir(lst, date, sb) is None:
                 continue
-            sx, sy = _load_warp(sb, lst, date)
-            row = {'scope': sb, 'freq_mhz': (C.scope_center_hz(sb) or 0) / 1e6,
-                   'dewarped': sx is not None}
+            scr = _load_warp(sb, lst, date)
+            row = {'scope': sb, 'freq_mhz': (C.scope_center_hz(sb) or 0) / 1e6}
+            warped = []
             # snapshots are not perfectly dewarped per-frame -> search the wide
             # snapshot box (6'x74/nu); supply a nominal beam so imfit RUNS (finds
             # the source in the box and returns flux +/- err), not a fixed-pixel
@@ -221,10 +250,11 @@ def snapshot_spectrum(lst, date, ra, dec, timestamp, scopes=None,
             fmhz = row['freq_mhz'] or 74.0
             radius = float(np.clip(6.0 * 74.0 / fmhz, 2.0, 30.0))
             for stok in stokes:
-                dw, hdr = _funpack_dewarp(lst, date, sb, sx, sy, timestamp,
-                                          stok, tmp)
+                dw, hdr, w = _funpack_dewarp(lst, date, sb, scr, timestamp,
+                                             stok, tmp)
                 if dw is None:
                     continue
+                warped.append(w)
                 try:
                     cd = abs(float(hdr.get('CDELT2', hdr.get('CD2_2', 0.04)) or 0.04))
                     nb = (3.5 * cd, 3.5 * cd, 0.0)
@@ -238,6 +268,7 @@ def snapshot_spectrum(lst, date, ra, dec, timestamp, scopes=None,
                         row[f'{stok}_sign'] = m['sign']
                 except Exception:
                     pass
+            row['dewarped'] = bool(warped) and all(warped)          # every frame read was warped (WARP RECORD)
             if row.get('I_peak'):
                 row['vi_ratio'] = abs(row.get('V_peak', 0)) / abs(row['I_peak'])
             rows.append(row)
@@ -282,26 +313,25 @@ def _copy_funpack(src, dst, retries=3):
     return None
 
 
-def _funpack_dewarp(lst, date, scope, sx, sy, timestamp, stokes, tmp):
-    """Copy->funpack->dewarp one snapshot frame; return (2D FITS path, hdr) or
-    (None, None). Archive untouched (works on a scratch copy)."""
+def _funpack_dewarp(lst, date, scope, scr, timestamp, stokes, tmp):
+    """Copy->funpack->dewarp (_warp: only on the screen's grid) one snapshot frame; return (2D FITS path, hdr, warped) or
+    (None, None, False). Archive untouched (works on a scratch copy)."""
     src = _frame_path(lst, date, scope, stokes, timestamp)
     if not src:
-        return None, None
+        return None, None, False
     dst = os.path.join(tmp, f'{scope}_{stokes}.fits.fz')
     fp = _copy_funpack(src, dst)
     if fp is None:
-        return None, None
+        return None, None, False
     data, hdr, wcs = I.load_image(fp)
-    if sx is not None and data.shape == sx.shape:
-        data = apply_warp(data, sx, sy)
+    data, warped = _warp(data, wcs, scr)
     nh = wcs.to_header()
     for k in ('BUNIT',):
         if k in hdr:
             nh[k] = hdr[k]
     dw = fp + '.dw.fits'
     fits.writeto(dw, data.astype(np.float32), nh, overwrite=True)
-    return dw, hdr
+    return dw, hdr, warped
 
 
 def snapshot_morphology(lst, date, scope, ra, dec, timestamp, verbose=True):
@@ -323,11 +353,13 @@ def snapshot_morphology(lst, date, scope, ra, dec, timestamp, verbose=True):
     if _phase1_snap_dir(lst, date, scope, clean=False) is None:
         out['note'] = 'no snapshot dir'
         return out
-    sx, sy = _load_warp(scope, lst, date)
+    scr = _load_warp(scope, lst, date)
     tmp = tempfile.mkdtemp(prefix='candinv_snapmorph_', dir='/fast/gh/main')
     try:
-        vdw, vhdr = _funpack_dewarp(lst, date, scope, sx, sy, timestamp, 'V', tmp)
-        idw, ihdr = _funpack_dewarp(lst, date, scope, sx, sy, timestamp, 'I', tmp)
+        vdw, vhdr, vw = _funpack_dewarp(lst, date, scope, scr, timestamp, 'V', tmp)
+        idw, ihdr, iw = _funpack_dewarp(lst, date, scope, scr, timestamp, 'I', tmp)
+        read = [w for d, w in ((vdw, vw), (idw, iw)) if d]
+        out['dewarped'] = bool(read) and all(read)              # every frame read was warped (WARP RECORD)
         # nominal beam from pixel scale (~3.5 px FWHM) to let imfit run
         ref = ihdr or vhdr
         if ref is None:
@@ -397,9 +429,10 @@ def snapshot_lightcurve(lst, date, scope, ra, dec, start_iso, end_iso,
         return out
     # Snapshots are NOT dewarped per-frame; apply the per-band warp screen when
     # its grid matches, else proceed un-dewarped (the wide 6'x74/nu search radius
-    # absorbs the residual offset). Always run (Gregg 2026-06-28).
-    sx, sy = _load_warp(scope, lst, date)
-    out['dewarped'] = sx is not None
+    # absorbs the residual offset). Always run (Gregg 2026-06-28). 'dewarped':
+    # every frame read was warped; n_frames_dewarped counts them (WARP RECORD).
+    scr = _load_warp(scope, lst, date)
+    out['dewarped'] = False
     t0, t1 = Time(start_iso) - pad_s / 86400.0, Time(end_iso) + pad_s / 86400.0
     snaps = []
     for f in _snap_glob(snapdir, stokes):
@@ -426,11 +459,13 @@ def snapshot_lightcurve(lst, date, scope, ra, dec, start_iso, end_iso,
                 local.append((t, fp))
         out['n_frames_read'] = len(local)
         series = []
+        n_loaded = n_warped = 0
         for t, fp in local:
             try:
                 data, hdr, wcs = I.load_image(fp)
-                if sx is not None and data.shape == sx.shape:
-                    data = apply_warp(data, sx, sy)
+                n_loaded += 1
+                data, warped = _warp(data, wcs, scr)
+                n_warped += warped
                 # write the DEWARPED frame (2D + WCS + beam) so imfit measures
                 # it on a cutout — same primitive as everywhere else.
                 nh = wcs.to_header()
@@ -449,6 +484,8 @@ def snapshot_lightcurve(lst, date, scope, ra, dec, start_iso, end_iso,
                                'sign': m['sign']})
             except Exception:
                 continue
+        out['n_frames_dewarped'] = n_warped
+        out['dewarped'] = bool(n_loaded) and n_warped == n_loaded
         series.sort(key=lambda r: r['mjd'])
         out['frames'] = series
         snrs = [s['snr'] for s in series if np.isfinite(s['snr'])]
