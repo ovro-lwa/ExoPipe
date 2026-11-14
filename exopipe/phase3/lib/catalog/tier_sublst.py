@@ -20,7 +20,9 @@ Stages (--stages a,b / --from S / --until S; default all, in this order):
   merge       collect layout by symlinks from search_<arm> (sublst_catalogs.sh:94-105) + p3s3_merge.py (S-G7)
   tier-rules  tier rule 3 (deep-search refusals), tier rule 4 (failed flux scale), 10-minute elevation floor (S-G8..10)
   tie-pulsars sublst_pertie.py measure + frames on the rows near ATNF pulsars (S-G11)
-  conform     p3s2_conform.py with the sub-LST tables, always (S-G6, S-G13, exopipe_ops 7042670) + TABLE-NOTES content test
+  conform     p3s2_conform.py with the sub-LST tables, always (S-G6, S-G13, exopipe_ops 7042670) + TABLE-NOTES content test;
+              it reads the RECORDED copy of the window-tie tables, pertie/conform_inputs/ (+ SHA256SUMS), and its logged
+              checksum line must name that copy (S-G13.conform-inputs; sublst_catalogs.sh:183-196, exopipe_ops 074f96c)
   fitpos      sublst_fit_positions.py, template K per Stokes = fitting.K_TEMPLATE[('sublst', S)] (S-G14, exopipe_ops 70003ad),
               then the 10-minute elevation floor again at the FITTED positions (S-G10; exopipe_ops 24d2b39)
   select      select_v3.py (no verdict file, as production: question Q7) + p3s2_ephem_filter.py + split (S-G15)
@@ -28,6 +30,11 @@ Stages (--stages a,b / --from S / --until S; default all, in this order):
   veto        leak_veto_sublst.py per (band, Stokes) of master_catalog.csv (S-G16; output unserved, B-24)
   build       source catalogues without the leak veto + localizations + rejected-source record (S-G18..S-G20)
   buildv      source catalogues with the leak veto + localizations (S-G17)
+  tablefilter record only: complete-parent verdicts (tenmin_complete_parent.py on the recorded copy) + table_filter.csv
+              (make_table_filter_tenmin.py) + the TABLE-FILTER content test (S-G24; sublst_catalogs.sh:320-351, exopipe_ops
+              6c58469 + 5d98279); no-input when the no-veto build is not selected
+  record      record only: the per-detection record detection_record_10min.csv.gz (tenmin_detection_record.py, its own content
+              tests; the builds write their parts with P3_DETREC_BUILDER_OUT) (S-G25; sublst_catalogs.sh:353-358)
   test        PERTIE-TEST (flow interpreter) + ASTROM-FRAME-TEST (S-G21); copy of the small products to
               compare_<LST>/new_<arm>/catalog and the byte check of pertie_detections.csv (S-G22)
   compare     sublst_compare_19h.py at the levels selected, noveto, veto (non-gating, B-24)
@@ -45,12 +52,14 @@ Inputs:  search outputs paths.SUBLST_ROOT/search_<arm>/<LST>_*_[IV]/, the arm's 
 Outputs (product classes): master_catalog.csv (merged_record -> tier_rule_removals -> conformant_catalog -> fitted_catalog),
          master_catalog_{deepsearch_refused,fluxscale_refused,elevation_floor,elevation_floor_fitted}.csv
          (tier_rule_removals), frame_times.csv
-         (frame_table), selected_*.csv (selection), pertie/pertie_detections.csv (window_tie), leakveto/*.csv
+         (frame_table), selected_*.csv (selection), pertie/pertie_detections.csv (window_tie), pertie/conform_inputs/
+         (csv_table: the tie tables conformance read + SHA256SUMS), table_filter.csv + table_inputs.csv + complete_parent/
+         (csv_table), detection_record_10min.csv.gz + _columns.csv + _summary.json, leakveto/*.csv
          (leak_veto_table), source_catalogs_{noveto,veto}_<K>/ (source_catalog), localizations_{noveto,veto}/localizations.csv
          (localization_table), rejected.csv + rejected_index.npz + detection_ts.csv (rejected_record), the compare copy
          (compare_copy), compare summaries and tie_members.csv (csv_table), the preflight report (catalog_preflight).
          Same names and layout as production (DESIGN 11.1: no renames in the window).
-Failure modes (exit 2, gate named in the record): S-G1..S-G22 of spec section 5.2; any in-place module exiting non-zero
+Failure modes (exit 2, gate named in the record): S-G1..S-G22 and S-G24, S-G25 (2026-11-13) of spec section 5.2; any in-place module exiting non-zero
          (its last machine line recorded); a [lit] key whose module literal differs from config; a module switch set in this
          process environment that would leak into the children; a missing shared config key (named). Exit 1 = error.
 Per-hour vs intermittent: per LST once its search is complete (DESIGN 12.1: the sub-LST per-hour chain runs `catalog` after
@@ -79,7 +88,9 @@ Per-hour vs intermittent: per LST once its search is complete (DESIGN 12.1: the 
          tables with the rows of touched identities replaced, each catalog content-tested, the localizations of the
          touched names computed on the view and the others carried) and the pass's index hour_views.json (every
          hour's root, state and certificates under the pass's grouping tables). NOT built for a night: the
-         rejected-source record. The tests and the comparison are LST-wide and not offered for a night (NIGHT_STAGES).
+         rejected-source record. The table filter, the detection record, the tests and the comparison are LST-wide and
+         not offered for a night (NIGHT_STAGES; a night's pages carry the all-nights table_filter.csv,
+         pages_sublst.NIGHT_ALL_NIGHTS_FILES).
 """
 import ast
 import contextlib
@@ -98,15 +109,15 @@ import types
 
 TIER = 'sublst'
 STAGES = ('preflight', 'merge', 'tier-rules', 'tie-pulsars', 'conform', 'fitpos', 'select', 'tie', 'veto', 'build',
-          'buildv', 'test', 'compare', 'reftie')
+          'buildv', 'tablefilter', 'record', 'test', 'compare', 'reftie')
 # stages whose in-place modules are the heavy part of the chain: they run under the node's heavy-stage lock and memory gate
-HEAVY = ('merge', 'tier-rules', 'tie-pulsars', 'conform', 'fitpos', 'select', 'tie', 'veto', 'build', 'buildv', 'view', 'test',
-         'compare')
-OPTIONAL = ('build', 'buildv', 'compare', 'reftie')   # may end no-input by configuration (not selected / switched off)
+HEAVY = ('merge', 'tier-rules', 'tie-pulsars', 'conform', 'fitpos', 'select', 'tie', 'veto', 'build', 'buildv', 'tablefilter',
+         'record', 'view', 'test', 'compare')
+OPTIONAL = ('build', 'buildv', 'tablefilter', 'compare', 'reftie')   # may end no-input by configuration (not selected / switched off)
 # PER-HOUR night pass (--sublst-night): the stages run for one night's rows when none is named (NIGHT_DEFAULT) and the chain
 # of stages offered (NIGHT_STAGES: the builds are delta builds and run after the grouping's incremental run with this night;
-# `view`, a night pass's own stage, writes the catalog view of every LST hour and the pass's index; the tests and the
-# comparison are LST-wide)
+# `view`, a night pass's own stage, writes the catalog view of every LST hour and the pass's index; the table filter, the
+# detection record, the tests and the comparison are LST-wide)
 NIGHT_DEFAULT = ('preflight', 'merge', 'tier-rules', 'tie-pulsars', 'conform', 'fitpos', 'select', 'tie', 'veto')
 NIGHT_STAGES = NIGHT_DEFAULT + ('build', 'buildv', 'view')
 IN_PLACE = ('master_catalog.csv',)                    # rewritten in place by merge, tier-rules, conform, fitpos
@@ -1441,6 +1452,7 @@ def frozen_records_refusal(catalog_dir, unit, paths):
 
 
 def st_conform(ctx, s, plan):
+    from exopipe.phase3.lib.catalog import conform_inputs as CI
     U, c = ctx.U, ctx.c
     script = ctx.opsc('p3s2_conform.py')
     from exopipe.phase3.lib.search import size_rule as SZ
@@ -1458,10 +1470,13 @@ def st_conform(ctx, s, plan):
         plan.append(f'conform: the table\'s noise and the detections near pulsars are recorded where they are computed '
                     f'({conform_noise_record(U)}, {conform_pulsar_evidence(U)}; the module in place through '
                     f'{os.path.basename(conform_noise_runner())}, five patched lines, mode record)')
-    plan.append(f'conform: {" ".join(f"{k}={v}" for k, v in env_x.items())} {ctx.py["default"]} {script} {U}   >> '
+    ci = os.path.join(ctx.pt, CI.DIR)
+    plan.append(f'conform: record {ci} (pertie_detections.csv, pertie_frames.csv, {CI.SUMS}); P3_TENMIN_PERTIE={ci}/'
+                f'pertie_detections.csv {" ".join(f"{k}={v}" for k, v in env_x.items())} {ctx.py["default"]} {script} {U}   >> '
                 f'catalogs.log; then TABLE-NOTES on master_catalog_removed.csv (S-G13); on the size / axis rule\'s attempts '
                 f'+ P3_CONFORM_AXIS=0 under catalog_conform.CONFORM_AXIS_UNDER_RULE=\'replace\' (now '
-                f'{SZ.conform_axis_mode()!r}: its axis step\'s removals recorded as the second gate under \'second_gate\')')
+                f'{SZ.conform_axis_mode()!r}: its axis step\'s removals recorded as the second gate under \'second_gate\'); '
+                f'its logged window-tie read line must name the copy with its sha256 (S-G13.conform-inputs)')
     if ctx.dry:
         return
     szr = ctx.size_rule()                                   # the conformance's axis step on the size / axis rule's attempts:
@@ -1474,11 +1489,21 @@ def st_conform(ctx, s, plan):
     if not tp:
         refuse(f'S-G12: no installed sub-LST bright-parent tables with elevation bands and the {c.TABLES_REQUIRED_METRIC} '
                f'metric in {ctx.tables}')
+    # the stage header: CI.reads takes the read lines of this stage's current run only (production's per-stage 'CATALOGS'
+    # line, sublst_catalogs.sh:55)
+    ctx.log.say(f'CATALOGS {ctx.arm} conform {ctx.lst}')
+    try:                                                    # THE TIE TABLES CONFORMANCE READS, RECORDED (sublst_catalogs.sh:
+        ci, sums = CI.record(ctx.pt)                        # 183-190): tie 2 of 2 rewrites pertie/ after this stage
+    except OSError as e:
+        ctx.log.say(f'REFUSING: could not record the window-tie tables conformance reads ({os.path.join(ctx.pt, CI.DIR)})')
+        refuse(f'S-G13: could not record the window-tie tables conformance reads in {os.path.join(ctx.pt, CI.DIR)} ({e})')
+    ctx.log.say(f'conformance inputs recorded: {sums.replace(chr(10), " ")[:200]}')
     ctx.log.say(f'sub-LST tables present in {ctx.tables} (P3_TABLE_PREFIX={shared("catalog_conform", "TABLE_PREFIX", "sublst")}'
                 f', elevation bands on) - applied by the conformance stage (never derived here)')
     ctx.log.say('conformance check with the sub-LST tables')
     s.code(script, ctx.opsc('gate_inputs.py'))
-    s.inp(f'{U}/master_catalog.csv', ctx.tables, ctx.roots_csv)
+    s.inp(f'{U}/master_catalog.csv', ctx.tables, ctx.roots_csv, os.path.join(ci, 'pertie_detections.csv'))
+    env_x['P3_TENMIN_PERTIE'] = os.path.join(ci, 'pertie_detections.csv')   # every mode reads the recorded copy
     if frozen:                                              # PER-HOUR night pass: the statistic of the LST-wide pass
         if not os.path.isfile(frozen):
             refuse(f'S-G13: no table-noise record {frozen}: the LST-wide conformance of {ctx.frozen_from} writes it (`exopipe3 '
@@ -1510,6 +1535,11 @@ def st_conform(ctx, s, plan):
     else:
         res = call(ctx, s, script, [U], env=ctx.env(**env_x), log=ctx.log.path, cwd=U)
     need_ok(res, 'S-G13 conformance (p3s2_conform.py)', r'REFUS', say=lambda: ctx.log.say('CONFORM REFUSED - stopping'))
+    ok, line = CI.check(ctx.pt, ctx.log.path)               # its logged read line names the copy, with the copy's sha256
+    s.u.check('S-G13.conform-inputs', ok, detail=line, cls='csv_table', path=os.path.join(ci, CI.SUMS))
+    if not ok:
+        ctx.log.say(f'REFUSING: {line[:300]}')
+        refuse(f'S-G13: {line}')
     if frozen:
         done = last_line(res.tail, r'^CONFORM-NOISE done')
         if not done or 'read frozen from' not in done or 'pulsar evidence:' not in done:
@@ -1546,6 +1576,7 @@ def st_conform(ctx, s, plan):
     s.out(f'{U}/master_catalog.csv', 'conformant_catalog')
     s.out(f'{U}/master_catalog_removed.csv', 'csv_table')
     s.out(f'{U}/master_catalog_asrun.csv', 'csv_table')
+    s.out(ci, 'conform_inputs')
     if os.path.exists(f'{U}/frame_times.csv'):
         s.out(f'{U}/frame_times.csv', 'frame_table')
     s.u.set_admitted(_admitted(U))
@@ -2046,6 +2077,12 @@ def _build(ctx, s, plan, tag):
         ctx.log.say(f'{k} ({tag}): {n} selected rows -> source catalogs')
         d = f'source_catalogs_{tag}_{k}'
         os.makedirs(f'{U}/{d}', exist_ok=True)
+        # P3_DETREC_BUILDER_OUT (sublst_catalogs.sh:367-370, record only): the builder's per-detection outcome for the record
+        # stage; no catalogue output changes
+        part = f'{U}/detection_record_parts/builder_{tag}_{k}.csv'
+        os.makedirs(os.path.dirname(part), exist_ok=True)
+        if os.path.lexists(part):
+            os.remove(part)
         s.inp(f'{U}/selected_{k}.csv')
         if ctx.grouping_mode.design_b:
             # WAVE2 GROUPING (item F.3): the builder in place with the cumulative's grouping (lib/catalog/wraps/builder_grouping.py)
@@ -2063,14 +2100,15 @@ def _build(ctx, s, plan, tag):
                        f'{bad[:3]}) - group again with this LST (--group-lst-dir {ctx.lst}={U})')
             res = call(ctx, s, GS.builder_runner(), [script, f'selected_{k}.csv', d, 'v_deep_images.csv'],
                        # frozen='record': the all-nights build writes builder_frozen.json, which a night's delta build stands on
-                       env=ctx.env(P3_LEAKVETO_DIR=lv, **GS.builder_env(table, '10min', ctx.grouping_mode, sha1=sha,
-                                                                         frozen='record')),
+                       env=ctx.env(P3_LEAKVETO_DIR=lv, P3_DETREC_BUILDER_OUT=part,
+                                   **GS.builder_env(table, '10min', ctx.grouping_mode, sha1=sha, frozen='record')),
                        log=f'{U}/catalogs_{tag}_{k}.log', cwd=U)
             s.u.meta.setdefault('grouping_builder', {})[f'{tag}_{k}'] = GS.builder_line(res.tail)
             if res.ok and not GS.builder_line(res.tail).startswith('GROUPING-BUILDER done'):
                 refuse(f'S-G18 build {k} ({tag}): the grouping runner gave no done line')
         else:
-            res = call(ctx, s, script, [f'selected_{k}.csv', d, 'v_deep_images.csv'], env=ctx.env(P3_LEAKVETO_DIR=lv),
+            res = call(ctx, s, script, [f'selected_{k}.csv', d, 'v_deep_images.csv'],
+                       env=ctx.env(P3_LEAKVETO_DIR=lv, P3_DETREC_BUILDER_OUT=part),
                        log=f'{U}/catalogs_{tag}_{k}.log', cwd=U)
         need_ok(res, f'S-G18 build_source_catalogs_v3.py {k} ({tag})', r'REFUS|Error',
                 say=lambda: ctx.log.say(f'{k} ({tag}): build_source_catalogs_v3 FAILED (see catalogs_{tag}_{k}.log)'))
@@ -2117,6 +2155,98 @@ def st_buildv(ctx, s, plan):
         raise _record().NoInput('build veto not selected (--sublst-builds)')
 
 
+def st_tablefilter(ctx, s, plan):
+    """sublst_catalogs.sh:320-351 (record only): the complete-parent verdicts on the RECORDED tie copy, table_filter.csv, and
+    its TABLE-FILTER content test (S-G24)."""
+    from exopipe.phase3.lib.catalog import conform_inputs as CI
+    U = ctx.U
+    cp, mk = ctx.opsc('tenmin_complete_parent.py'), ctx.opsc('make_table_filter_tenmin.py')
+    ci = os.path.join(ctx.pt, CI.DIR)
+    cpd = os.path.join(U, 'complete_parent', ctx.lst)
+    if 'noveto' not in ctx.builds:
+        plan.append('tablefilter: no-input (the no-veto build is not selected, --sublst-builds)')
+        if not ctx.dry:
+            raise _record().NoInput('tablefilter needs the no-veto build (not selected, --sublst-builds)')
+        return
+    plan.append(f'tablefilter: verify {ci}/{CI.SUMS}; P3_TENMIN_PERTIE={ci}/pertie_detections.csv {ctx.py["default"]} -u {cp} '
+                f'{ctx.lst} {U} {cpd}; {ctx.py["default"]} {mk} {U} {U}/complete_parent {U} \'source_catalogs_noveto_*\'; '
+                f'TABLE-FILTER test (S-G24)')
+    if ctx.dry:
+        return
+    ctx.log.say(f'CATALOGS {ctx.arm} tablefilter {ctx.lst}')     # this stage's read lines supersede its earlier ones
+    if not (glob.glob(f'{U}/source_catalogs_noveto_*/*_sources_survivors.csv')
+            and os.path.exists(f'{U}/master_catalog_asrun.csv') and os.path.getsize(f'{U}/master_catalog_asrun.csv') > 0):
+        ctx.log.say('REFUSING tablefilter: no conformance input or no no-veto build (run prep and build first)')
+        refuse('S-G24: tablefilter needs master_catalog_asrun.csv and the no-veto build\'s survivors')
+    why = CI.verify(ci, complete=False)
+    if why:
+        ctx.log.say(f'REFUSING tablefilter: no verified window-tie copy in {ci} (run conform first)')
+        refuse(f'S-G24: {why} (the tie tables the conformance read; run the chain from conform)')
+    s.code(cp, mk, ctx.opsc('p3s2_conform.py'))
+    s.inp(os.path.join(ci, 'pertie_detections.csv'), f'{U}/master_catalog.csv', f'{U}/master_catalog_asrun.csv')
+    env = ctx.env(P3_TENMIN_PERTIE=os.path.join(ci, 'pertie_detections.csv'))   # its refusals (S-G5, S-G7) before any change
+    if os.path.lexists(os.path.join(U, 'complete_parent')):
+        shutil.rmtree(os.path.join(U, 'complete_parent'))
+    res = call(ctx, s, cp, [ctx.lst, U, cpd], env=env, log=ctx.log.path, cwd=U)
+    need_ok(res, 'S-G24 tenmin_complete_parent.py', r'REFUS',
+            say=lambda: ctx.log.say('REFUSING: complete-parent verdicts failed (see catalogs.log)'))
+    res = call(ctx, s, mk, [U, os.path.join(U, 'complete_parent'), U, 'source_catalogs_noveto_*'], env=ctx.env(),
+               log=ctx.log.path, cwd=U)
+    need_ok(res, 'S-G24 make_table_filter_tenmin.py', r'REFUS',
+            say=lambda: ctx.log.say('REFUSING: table_filter.csv failed (see catalogs.log)'))
+    from exopipe.phase3.lib.catalog import tests_sublst as TS
+    ok, rm, line = TS.table_filter_rows(f'{U}/table_filter.csv')
+    line = f'TABLE-FILTER {"PASS" if ok else "FAIL"}: {line}'
+    ctx.log.raw(line)
+    ctx.log.say(line[:400])
+    if not ok:
+        refuse(f'S-G24: {line}')
+    s.out(f'{U}/table_filter.csv', 'table_filter')
+    for n in ('table_inputs.csv',):
+        if os.path.exists(f'{U}/{n}'):
+            s.out(f'{U}/{n}', 'csv_table')
+    for n in ('cells.csv', 'complete_parent_rows.csv'):
+        s.out(os.path.join(cpd, n), 'csv_table')
+
+
+def st_record(ctx, s, plan):
+    """sublst_catalogs.sh:353-358 (record only): the per-detection record and its own content tests (S-G25)."""
+    U = ctx.U
+    script = ctx.opsc('tenmin_detection_record.py')
+    plan.append(f'record: {ctx.py["default"]} {script} {U}   >> catalogs.log (DETECTION-RECORD-10MIN; its content tests refuse)')
+    if ctx.dry:
+        return
+    s.code(script)
+    s.inp(f'{U}/master_catalog.csv', f'{U}/catalogs.log')
+    res = call(ctx, s, script, [U], env=ctx.env(), log=ctx.log.path, cwd=U)
+    line = last_line(res.tail, r'^DETECTION-RECORD-10MIN')
+    ctx.log.say(line[:400])
+    s.u.check('S-G25.DETECTION-RECORD-10MIN', res.ok, value=res.rc, detail=line, cls='detection_record',
+              path=f'{U}/detection_record_10min_summary.json')
+    if not res.ok:
+        ctx.log.say('REFUSING: the per-detection record failed its content tests (detection_record_10min_summary.json)')
+        refuse(f'S-G25: {line or "tenmin_detection_record.py exit %d" % res.rc}')
+    s.out(f'{U}/detection_record_10min_summary.json', 'detection_record')
+    s.out(f'{U}/detection_record_10min_columns.csv', 'csv_table')
+
+
+def record_copy(U, cmp_catalog):
+    """sublst_catalog_chain.sh:50-57 (2026-10-18): the per-detection record and the complete-parent verdicts behind
+    table_filter.csv to the comparison dir, and table_filter.csv there byte for byte (it went with the *.csv); a failure
+    raises OSError (production: REFUSING, 'the per-detection record / table_filter.csv were not copied')."""
+    cpd = os.path.join(cmp_catalog, 'complete_parent')
+    os.makedirs(cpd, exist_ok=True)
+    for n in ('detection_record_10min.csv.gz', 'detection_record_10min_summary.json'):
+        shutil.copy2(os.path.join(U, n), cmp_catalog)
+    src = glob.glob(os.path.join(U, 'complete_parent', '*', 'provenance.json'))
+    if len(src) != 1:
+        raise OSError(f'{len(src)} complete_parent/<LST>/provenance.json in {U} (one expected)')
+    for n in ('cells.csv', 'complete_parent_rows.csv', 'provenance.json'):
+        shutil.copy2(os.path.join(os.path.dirname(src[0]), n), cpd)
+    if not files_equal(os.path.join(U, 'table_filter.csv'), os.path.join(cmp_catalog, 'table_filter.csv')):
+        raise OSError(f'{cmp_catalog}/table_filter.csv differs from {U}/table_filter.csv')
+
+
 def compare_copy(U, cmp_catalog):
     """sublst_catalog_chain.sh:44-52: the small products to the comparison dir (cp -p; errors ignored as production), then
     the window-tie tables whole (rm -rf + cp -rp; the caller compares pertie_detections.csv byte for byte)."""
@@ -2128,6 +2258,8 @@ def compare_copy(U, cmp_catalog):
             done.append(p)
         except OSError:
             pass
+    record_copy(U, cmp_catalog)
+    done.append(f'{U}/detection_record_10min.csv.gz')
     for p in sorted(glob.glob(f'{U}/source_catalogs_*')) + [f'{U}/leakveto'] + sorted(glob.glob(f'{U}/localizations_*')):
         if os.path.isdir(p):
             try:
@@ -2182,8 +2314,10 @@ def st_test(ctx, s, plan):
     try:
         compare_copy(U, ctx.cmp_catalog)
     except (OSError, shutil.Error) as e:
-        ctx.chainlog.say(f'REFUSING: the window-tie tables ({ctx.pt}) were not copied to the comparison dir')
-        refuse(f'S-G22: the window-tie tables were not copied to {ctx.cmp_catalog} ({e})')
+        ctx.chainlog.say(f'REFUSING: the window-tie tables ({ctx.pt}), the per-detection record or table_filter.csv were not '
+                         f'copied to the comparison dir')
+        refuse(f'S-G22: the window-tie tables, the per-detection record or table_filter.csv were not copied to '
+               f'{ctx.cmp_catalog} ({e})')
     b = os.path.join(ctx.cmp_catalog, 'pertie', 'pertie_detections.csv')
     if not files_equal(pd, b):
         ctx.chainlog.say(f'REFUSING: the window-tie tables ({ctx.pt}) were not copied to the comparison dir')
@@ -2261,8 +2395,8 @@ def st_reftie(ctx, s, plan):
 
 FUNCS = {'preflight': st_preflight, 'merge': st_merge, 'tier-rules': st_tier_rules, 'tie-pulsars': st_tie_pulsars,
          'conform': st_conform, 'fitpos': st_fitpos, 'select': st_select, 'tie': st_tie, 'veto': st_veto,
-         'build': st_build, 'buildv': st_buildv, 'view': st_view, 'test': st_test, 'compare': st_compare,
-         'reftie': st_reftie}
+         'build': st_build, 'buildv': st_buildv, 'tablefilter': st_tablefilter, 'record': st_record, 'view': st_view,
+         'test': st_test, 'compare': st_compare, 'reftie': st_reftie}
 
 
 # =====================================================================================================================

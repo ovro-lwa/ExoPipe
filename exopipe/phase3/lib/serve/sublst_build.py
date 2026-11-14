@@ -4,7 +4,8 @@ build -> views -> test -> carry -> swap -> start -> hub -> verify. carry, swap a
 lines written on the old servers between the copy and the swap are appended at the swap, sublst_cumulative.sh:106-120).
 
 build  (unit sublst_<run>_build)  the build lock (G12; sublst_cumulative.sh:23 flock, servers never inherit it); the
-       generation-mix gate G8 (every LST run has candidates/, pertie_detections.csv and a pos_kind column - else exit 2;
+       generation-mix gate G8 (every LST run has candidates/, pertie_detections.csv, a verified conform_inputs/ whose
+       CONFORM_LOG.txt read lines name it (sublst_cumulative.sh:60, 76-96) and a pos_kind column - else exit 2;
        today the caller skipped the cumulative and exited 0, sublst_catalog_publish.sh:96-100, batch row B-73);
        the DEEP-OMISSION decision table of the LSTs (lib/catalog/deep_omission.tenmin_table; Gregg 2026-10-24,
        sublst_cumulative.sh:37-46, 98-100) written OUTSIDE B, <runs root>/deep_omission/deep_omission_<UTC>.csv (class
@@ -86,6 +87,13 @@ def generation_mix(lsts):
             continue
         if not os.path.exists(os.path.join(R, 'pertie_detections.csv')):
             bad.append((l, 'no pertie_detections.csv (catalogued before the window tie)'))
+            continue
+        # the tie tables the conformance read, recorded and checked (refactor-chat ruling 2026-10-18; sublst_cumulative.sh:60,
+        # 76-96): R/conform_inputs verifies and every read line of its CONFORM_LOG.txt names the copy with its sha256
+        from exopipe.phase3.lib.catalog import conform_inputs as CI
+        ok, why = CI.check(R, os.path.join(R, CI.DIR, CI.LOG_COPY))
+        if not ok:
+            bad.append((l, f'{why} - re-catalogue {l}'))
             continue
         try:
             with open(os.path.join(R, 'master_catalog.csv'), newline='') as f:
