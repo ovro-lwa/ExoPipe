@@ -34,6 +34,9 @@ class paths(_Section):
     # comments): the snapshot tiers read their exclusions with scope 'snapshot-gpu' there (core/exclusions.PerNight; production
     # coadd_full_pipeline.gpu_frame_cells, exopipe 36351ca, and clv15 phase3_snapshot_search.gpu_cells read the same file).
     SNAPSHOT_GPU_FRAME_CELLS = '/lustre/gh/main/exopipe_ops/snapshot_gpu_frame_cells.txt'
+    # The frame root of those cells (production clv15 phase3_snapshot_search.GPU_FRAME_ROOT and frame_root, 2026-11-10): the
+    # same <LST>/<date>/Run_*/<subband>/ layout as PHASE1_ROOT. Protected like the cell list it goes with.
+    SNAPSHOT_GPU_FRAME_ROOT = '/lustre/pipeline/snapshots_gpu_pipeline'
     PHASE2_ROOT = '/lustre/pipeline/exopipe/phase2'
     PHASE3_ARCHIVE_ROOT = '/lustre/pipeline/exopipe/phase3'
     DATA_DECISIONS = '/lustre/gh/main/clv15/data_decisions.csv'    # Gregg's exclusions (read only; core/exclusions)
@@ -72,7 +75,8 @@ class paths(_Section):
 # parameter, the ruling ledger, the production-root guard, the list of pinned inputs (and, through it, each pinned
 # input) and the Phase-1 run-pin file. 'section.*' protects a whole section. Change them in this file, by a commit.
 PROTECTED = ('paths.DATA_DECISIONS', 'paths.FIX_LEDGER', 'paths.PRODUCTION_WRITES', 'paths.PRODUCTION_ROOTS',
-             'paths.PINNED_INPUTS', 'paths.PHASE1_RUN_PINS', 'paths.SNAPSHOT_GPU_FRAME_CELLS', 'exclusions.*')
+             'paths.PINNED_INPUTS', 'paths.PHASE1_RUN_PINS', 'paths.SNAPSHOT_GPU_FRAME_CELLS',
+             'paths.SNAPSHOT_GPU_FRAME_ROOT', 'exclusions.*')
 
 
 class exclusions(_Section):

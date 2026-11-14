@@ -20,6 +20,7 @@ Run:  python tests/test_core_inputs.py [--no-real]
 """
 import ast
 import datetime
+import glob
 import json
 import os
 import random
@@ -413,6 +414,20 @@ def test_real():
     check('real Phase-2 18h 2025-05-05 Green (Science_20260610_063632): its log names the June run for all five subbands',
           [(sb, c['run'], c['pipeline_version']) for _n, sb, c in g] ==
           [(sb, 'Run_20260603_010316', '70d5f1c') for sb in ('41MHz', '46MHz', '50MHz', '55MHz', '59MHz')], g)
+    # a GPU-frame cell (paths.SNAPSHOT_GPU_FRAME_CELLS; production frame_root, clv15 5c83ddc): its frames come from the GPU
+    # pipeline's tree - the same (key, path) lists as production's discover_frames with its own per-cell default root
+    from exopipe.phase3.core import exclusions as EX
+    gl, gd = sorted(EX.gpu_frame_cells())[0]
+    groot = CFG.paths.SNAPSHOT_GPU_FRAME_ROOT
+    gsb = sorted(d for rd in glob.glob(os.path.join(groot, gl, gd, 'Run_*')) for d in os.listdir(rd) if d.endswith('MHz'))[0]
+    mine = I.phase1_frames(gl, gd, gsb)
+    prod = production_discovery(None, [(gl, gd, gsb)], CFG.paths.PHASE1_RUN_PINS)[f'{gl}_{gd}']
+    check(f'real GPU-frame cell {gl} {gd} {gsb}: frame_root is paths.SNAPSHOT_GPU_FRAME_ROOT; {len(mine["I"])} I and '
+          f'{len(mine["V"])} V frames from it, the (key, path) lists equal production discover_frames (its default root)',
+          I.frame_root(gl, gd) == groot and I.frame_root('18h', '2025-05-05') == CFG.paths.PHASE1_ROOT
+          and mine['I'] and mine['V'] and all(p.startswith(groot + '/') for st in ('I', 'V') for _, p in mine[st])
+          and not isinstance(prod, str) and all(prod[st] == [list(x) for x in mine[st]] for st in ('I', 'V')),
+          prod if isinstance(prod, str) else (len(prod['I']), len(mine['I'])))
 
 
 def test_run_pins_env_override():

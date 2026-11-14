@@ -402,6 +402,19 @@ def test_plan():
         assert os.path.join(R['mcat'], 'master_R075_18h_36MHz.gaul.csv') in ins and C.PB_LIBRARY in ins
         assert os.path.join(R['flow'], CELL) in ins and '/x/code.py' in ins
         assert not C.SEARCH_FRAMES and not any('noise_' in k for k in ins), sorted(ins)       # default: production's call
+        # the frame root of a GPU-frame cell (production frame_root, clv15 5c83ddc): under paths.PHASE1_ROOT a listed cell
+        # reads paths.SNAPSHOT_GPU_FRAME_ROOT and another cell PHASE1_ROOT; any other root (this synthetic archive, a
+        # run-wide override) wins for every cell
+        from exopipe.phase3.core import exclusions as EX
+        saved_gpu = EX.gpu_frame_cells
+        try:
+            EX.gpu_frame_cells = lambda path=None: {(pl['lst'], pl['date'])}
+            assert P.frame_root(pl, CFG.paths.PHASE1_ROOT) == CFG.paths.SNAPSHOT_GPU_FRAME_ROOT
+            assert P.frame_root(pl, R['phase1']) == R['phase1']
+            EX.gpu_frame_cells = lambda path=None: set()
+            assert P.frame_root(pl, CFG.paths.PHASE1_ROOT) == CFG.paths.PHASE1_ROOT
+        finally:
+            EX.gpu_frame_cells = saved_gpu
         assert P.pair_plan(pl, C, ('I', 'V'), ['36MHz']) == {('36MHz', 'I'): ('extract', False),
                                                              ('36MHz', 'V'): ('extract', False)}
         CFG.set('curves.SEARCH_FRAMES', 'True')
@@ -473,6 +486,19 @@ def test_lock_and_classify():
     clv = env.legacy_root('clv15')
     ok, probs, files = lock.check(clv, CFG.curves, CFG.paths)
     assert ok and len(files) == 4, probs
+    # the paths production reads from the environment at import (RUN_PINS, PHASE1_ROOT, GPU_CELLS_FILE): another path named
+    # in this environment refuses
+    for var in ('P3_SNAP_RUN_PINS', 'P3_SNAP_PHASE1_ROOT', 'P3_SNAP_GPU_CELLS'):
+        saved_v = os.environ.get(var)
+        os.environ[var] = '/tmp/elsewhere'
+        try:
+            ok, probs, _ = lock.check(clv, CFG.curves, CFG.paths)
+        finally:
+            if saved_v is None:
+                del os.environ[var]
+            else:
+                os.environ[var] = saved_v
+        assert not ok and len(probs) == 1 and probs[0].startswith(var + '=/tmp/elsewhere'), (var, probs)
     root = _fresh('lock')
     for f in files:
         shutil.copy(f, root)
@@ -493,6 +519,19 @@ def test_lock_and_classify():
     open(ss, 'w').write(sst.replace('\nINTEGRATION_S = 10.03102041', '\nINTEGRATION_S = 10.0'))
     ok, probs, _ = lock.check(root, CFG.curves, CFG.paths)
     assert not ok and any('INTEGRATION_S = 10.0 ' in p for p in probs), probs
+    open(ss, 'w').write(sst)
+    # the frame roots of frame_root (clv15 5c83ddc): the GPU root is a locked literal, PHASE1_ROOT is read from
+    # P3_SNAP_PHASE1_ROOT with paths.PHASE1_ROOT its default
+    gpu = '\nGPU_FRAME_ROOT = "/lustre/pipeline/snapshots_gpu_pipeline"\n'
+    p1 = '\nPHASE1_ROOT = os.environ.get("P3_SNAP_PHASE1_ROOT", "/lustre/pipeline/exopipe/phase1")\n'
+    assert gpu in sst and p1 in sst
+    open(ss, 'w').write(sst.replace(gpu, '\nGPU_FRAME_ROOT = "/x"\n')
+                        .replace(p1, '\nPHASE1_ROOT = "/lustre/pipeline/exopipe/phase1"\n'))
+    ok, probs, _ = lock.check(root, CFG.curves, CFG.paths)
+    want_p1 = "PHASE1_ROOT = '/lustre/pipeline/exopipe/phase1' != os.environ.get('P3_SNAP_PHASE1_ROOT'"
+    ssp = [p for p in probs if p.startswith('phase3_snapshot_search.py ')]       # the copy's other modules stay modified
+    assert not ok and len(ssp) == 2 and any("GPU_FRAME_ROOT = '/x'" in p for p in ssp) \
+        and any(want_p1 in p for p in ssp), probs
     open(ss, 'w').write(sst)
     # --search-frames (clv15 55469ba) joins the lock only with the opt-in curves.SEARCH_FRAMES: a module without the option,
     # the frame-list literal or the G18 refusal then refuses before extraction; production's plain call (the default)
