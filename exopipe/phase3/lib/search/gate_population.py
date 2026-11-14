@@ -344,6 +344,11 @@ def refusal_tag(gate, r):
     return r[5] if gate.startswith('extraction') and len(r) >= 7 else r[-1]
 
 
+def retagged(gate, r, tag):
+    """The refusal row ``r`` with ``tag`` as its attempt tag and every other field unchanged (the tag's position: refusal_tag)."""
+    return r[:5] + [tag] + r[6:] if gate.startswith('extraction') and len(r) >= 7 else r[:-1] + [tag]
+
+
 def newest_search_tag(refdir, cell):
     """The newest attempt tag over every refusal file of ``cell`` in ``refdir`` (the rows a drop patch appended, tagged
     '<UTC>stdrop', aside), or None: the tag whose rows are the attempt's current refusals (p3s3_merge.py _cur_refusals)."""
@@ -372,6 +377,4 @@ def carried_refusals(refdir, cell, gate, keep, tag, base_tag=None):
                            f'to carry its rows')
     with open(p, newline='') as fh:
         rows = [r for r in csv.reader(fh) if r and r[0] + '_' + r[1] == cell]
-    x = gate.startswith('extraction')
-    return [(r[:5] + [tag] + r[6:]) if x and len(r) >= 7 else r[:-1] + [tag]
-            for r in rows if refusal_tag(gate, r) == newest and keep(r[2])]
+    return [retagged(gate, r, tag) for r in rows if refusal_tag(gate, r) == newest and keep(r[2])]

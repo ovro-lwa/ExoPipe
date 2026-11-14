@@ -227,11 +227,12 @@ def test_append_carry():
           'patch\'s row stays', cur == want and len(said) == 3, (cur, said))
     shutil.rmtree(os.path.join(T, 'carry'))
     os.makedirs(rd)
+    bt0 = GP.newest_search_tag(rd, cell)                            # read as the engine reads it: before the append's first row
     w('beam', [[lst, scope, n5, '1.80', '1.5', app]])
-    ns.update(_base_tag=GP.newest_search_tag(rd, cell) and None, dates=[n1, n4])
+    ns.update(_base_tag=bt0, dates=[n1, n4])
     exec(_carry_block(src), ns)
-    check('(d) a base without a refusal row carries nothing', sorted(os.listdir(rd)) == [f'{cell}_beam_excluded.csv'],
-          os.listdir(rd))
+    check('(d) a base without a refusal row has no base tag and carries nothing',
+          bt0 is None and sorted(os.listdir(rd)) == [f'{cell}_beam_excluded.csv'], (bt0, os.listdir(rd)))
     # the engine's order (run_deep_cell): the base tag is read before the first refusal row is written; the carry comes before the
     # first return after the gates; every refusal file written after the carry is one it carries; the 10-minute search-tier carry
     # is given the same base tag
