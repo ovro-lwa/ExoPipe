@@ -1,9 +1,11 @@
 """The Phase 3 highlights block of the hour's email: HTML only, from rows the readers of sources.py return.
 
 Order (Gregg 2026-11-12): the state of the hour's Phase 3 chain and every limit or missing input first; then every
-DETECTION of a target of the named samples ("Just detections!!"); then the most significant transient candidates that pass
-every default filter of the served pages ("Ideally I want real transients not junk"). Every significance is given formal
-AND local-empirical; a column that a tier's table does not hold is shown as a dash, never filled in.
+DETECTION of a target of the named samples ("Just detections!!"); then the most significant transient candidates of the
+deep and 10-minute tiers that pass the filters of config notify ("Ideally I want real transients not junk"; the filters:
+Gregg 2026-11-14). Every significance is given formal AND local-empirical; a column that a tier's table does not hold is
+shown as a dash, never filled in. Phase 2's QA sections and the Phase 3 QA percentiles (qa.py) stand above this block in
+the email.
 """
 import html as _html
 import json
@@ -94,10 +96,32 @@ def chain_summary(record_path):
             f'Log: <code>{esc(rec.get("log"))}</code>. The tables below hold what the finished steps wrote.'), False
 
 
-def build(item, chain_text, limits, targets, target_note, transients, n_pass, per_tier, top_n):
+def gal_lat(r, bold_below):
+    """Galactic latitude in degrees, in bold when its absolute value is below the limit (Gregg 2026-11-14)."""
+    text = num(r.get('gal_lat_deg'), '+.1f')
+    try:
+        low = abs(float(r.get('gal_lat_deg'))) < bold_below
+    except (TypeError, ValueError):
+        low = False
+    return f'<strong>{text}</strong>' if low else text
+
+
+def filter_sentence(name, c):
+    """One page's counts: the hour's detections of listed candidates that pass each filter, and all of them."""
+    b = c['bright']
+    return (f'<li>{esc(name)}: {c["served"]} detections of {c["candidates"]} listed candidates in this hour. Passing S/N: '
+            f'{c["snr"]}; elevation: {c["elev"]}; count in the epoch image (at most {num(c["n_max"], "g")}): {c["nve"]}; '
+            f'size: {c["size"]}; axis ratio: {c["axis"]}; the page\'s default filters: {c["defaults"]}; the bright-source '
+            f'filter: {c["bright_pass"]} (mean sky loss {100 * b["mean_sky_loss"]:.1f}% over {b["bands"]} searched bands; it '
+            f'removes {b["candidates_removed"]} of the page\'s {b["listed"]} listed candidates); detections of candidates '
+            f'matched to a known pulsar: {c["pulsar"]}. Passing all: {c["pass"]} detections of {c["listed"]} candidates.</li>')
+
+
+def build(item, chain_text, limits, targets, target_note, transients, n_pass, per_tier, top_n, cfg=None):
     """The block. limits: sentences on missing inputs (shown first). targets: rows (dicts) from sources.py. transients:
     [(Stokes, rows, number passing in that Stokes)], Stokes V first. n_pass: candidates of the hour that pass every
-    default page filter (all tiers, both Stokes); per_tier: {page: (served candidates of the hour, passing)}."""
+    filter (both tiers, both Stokes); per_tier: {page: counts (sources.collect)}; cfg: config notify (the filter values
+    named in the text)."""
     lst, date = item.split('_', 1)
     out = [f'<h4>Phase 3 highlights: LST {esc(lst)}, {esc(date)}</h4>', f'<p>{chain_text}</p>']
     if limits:
@@ -121,19 +145,30 @@ def build(item, chain_text, limits, targets, target_note, transients, n_pass, pe
             ('Note', lambda r: esc(r.get('note'))),
         ], targets))
     out.append(f'<p>{target_note}</p>')
-    out.append(f'<h4>Most significant transient candidates of the hour ({n_pass} pass every default filter of their served '
-               f'page)</h4>')
-    tiers = '; '.join(f'{esc(t)}: {p} of {r} served candidates of this hour pass' for t, (r, p) in per_tier.items())
-    if tiers:
-        out.append(f'<p>{tiers}. One row per candidate, tier and Stokes: its most significant detection of the hour. '
-                   f'S/N, local-empirical is the search\'s own local statistic; S/N, formal is given where the tier\'s table '
-                   f'records one.</p>')
+    out.append(f'<h4>Most significant transient candidates of the hour, deep and 10-minute tiers ({n_pass} pass every '
+               f'filter)</h4>')
+    if cfg is not None:
+        out.append(f'<p>Listed: a detection of this hour with |S/N| above {cfg.SNR_MIN:g}, elevation above '
+                   f'{cfg.ELEVATION_MIN_DEG:g} deg at the middle of the LST hour, a count of detections of its Stokes in its '
+                   f'epoch image at or below the {cfg.N_EPOCH_MAX_PERCENTILE}th percentile of its page\'s slider, a fitted '
+                   f'size below {cfg.SIZE_MAX_BEAMS:g} beams and a fitted axis ratio below {cfg.AXIS_RATIO_MAX:g}; passing '
+                   f'its page\'s default filters; not removed by its page\'s bright-source filter at an allowed mean sky '
+                   f'loss of {100 * cfg.BRIGHT_SKY_LOSS:g}%; and not of a candidate its page matches to a known pulsar. A '
+                   f'missing value fails its filter. One row per candidate, tier and Stokes: its most significant passing '
+                   f'detection of the hour. S/N, local-empirical is the search\'s own local statistic; S/N, formal is given '
+                   f'where the tier\'s table records one. Galactic latitude is in bold below {cfg.GAL_LAT_BOLD_DEG:g} deg '
+                   f'from the plane.</p>')
+    if per_tier:
+        out.append('<ul>' + ''.join(filter_sentence(n, c) for n, c in per_tier.items()) + '</ul>')
+    bold = cfg.GAL_LAT_BOLD_DEG if cfg is not None else 10.0
     cols = [
         ('#', lambda r: esc(r.get('rank'))),
         ('Tier', lambda r: esc(r.get('tier'))),
         ('Band', lambda r: esc(r.get('band'))),
         ('Time (UTC)', lambda r: esc(r.get('time_utc'))),
         ('RA Dec (J2000)', lambda r: sexagesimal(r.get('ra_deg'), r.get('dec_deg'))),
+        ('Galactic latitude (deg)', lambda r: gal_lat(r, bold)),
+        ('Elevation (deg)', lambda r: num(r.get('elevation_deg'), '.0f')),
         ('S/N, formal', lambda r: num(r.get('snr_formal'), '.1f')),
         ('S/N, local-empirical', lambda r: num(r.get('snr_local'), '.1f')),
         ('Class', lambda r: esc(r.get('cls'))),
