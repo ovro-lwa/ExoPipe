@@ -384,7 +384,7 @@ def refine_unit(u, args, run, lst, sb, night, base, plan_files=()):
     SS.drift_guard(u.note)
     # ---- every gate, before anything is moved or written: the arm-A unit's on the same stack and installed Masters,
     #      N-11 and N-12, then the GPU, its lock, the scratch root, the aligner's interpreter, G-C5 and the log ----------
-    member = None if NM._exclusion_gate(lst, sb, night)[1] else NM.master_member(base, lst, sb, night)
+    member = NM.member_unless_excluded(base, lst, sb, night)
     if member:                                            # N-5 first: no-input, the batch chain's (Gregg 2026-11-13)
         u.meta['master_member'] = [list(x) for x in member]
         raise NoInput(NM.member_why(lst, night, sb, member))
@@ -573,11 +573,17 @@ def refine_unit(u, args, run, lst, sb, night, base, plan_files=()):
 # the stage (called by steps_sublst.run and steps_sublst.plan)
 # =====================================================================================================================
 
-def night_units(run, args, lst, night, subbands):
+def night_units(run, args, lst, night, subbands, base):
     """([subband] of the night's job plan in this selection, plan files, how). The plan is the stack stage's (admit
-    record admit_<LST>_<night> of this run root): a subband the admission left out owes no residual and gets no unit."""
+    record admit_<LST>_<night> of this run root): a subband the admission left out owes no residual and gets no unit. A
+    night IN the window Masters of every selected subband has no plan (the stack stage skipped it): NoInput, not N-2
+    (Gregg 2026-11-13)."""
     from exopipe.phase3.lib.masters import sublst_nonmember as NM
     from exopipe.phase3.lib.masters import tier_sublst as TS
+    every = NM.all_member(base, lst, night, list(subbands))
+    if every:
+        raise NoInput('every selected subband: ' + '; '.join(NM.member_why(lst, night, sb, m)
+                                                              for sb, m in sorted(every.items())[:3]))
     jobs, files, how = NM.night_plan(run, TS.Opts.from_args(args), lst, night)
     cell = f'{lst}_{night}'
     owed = [sb for c_, sb, _st, _cr in (jobs or []) if c_ == cell]
@@ -631,7 +637,11 @@ def resume_valid(run, base, lst, night, sb, plan_files, name):
 def run_stage(args, run, its, base):
     for lst, night, sbs in by_night(its):
         try:
-            units, files, how = night_units(run, args, lst, night, sbs)
+            units, files, how = night_units(run, args, lst, night, sbs, base)
+        except NoInput as e:
+            with run.unit(f'{STAGE}_{lst}_{night}', tier='sublst', lst=lst, stage=STAGE):
+                raise NoInput(str(e))
+            continue
         except Refusal as e:
             with run.unit(f'{STAGE}_{lst}_{night}', tier='sublst', lst=lst, stage=STAGE) as u:
                 u.refuse(str(e) if str(e).startswith('N-') else f'N-2: {e}')
@@ -657,10 +667,14 @@ def run_stage(args, run, its, base):
 
 def plan_stage(args, run, its, base):
     """Dry run: what each unit would do; returns 2 when a gate would refuse."""
+    from exopipe.phase3.lib.masters import sublst_nonmember as NM
     rc = 0
     for lst, night, sbs in by_night(its):
         try:
-            units, _files, how = night_units(run, args, lst, night, sbs)
+            units, _files, how = night_units(run, args, lst, night, sbs, base)
+        except NoInput as e:
+            print(f'[plan] {STAGE} {lst}_{night}: NO-INPUT - {e}')
+            continue
         except Refusal as e:
             print(f'[plan] {STAGE} {lst}_{night}: WOULD REFUSE - {e if str(e).startswith("N-") else "N-2: " + str(e)}')
             rc = 2
@@ -673,12 +687,11 @@ def plan_stage(args, run, its, base):
                 print(f'[plan]   {name}: valid by its record, WOULD BE SKIPPED (--resume)')
                 continue
             g = '?'
-            from exopipe.phase3.lib.masters import sublst_nonmember as NM
-            member = None if NM._exclusion_gate(lst, sb, night)[1] else NM.master_member(base, lst, sb, night)
-            if member:
-                print(f'[plan]   {name}: NO-INPUT - {NM.member_why(lst, night, sb, member)}')
-                continue
             try:
+                member = NM.member_unless_excluded(base, lst, sb, night)        # G-M01 may refuse
+                if member:
+                    print(f'[plan]   {name}: NO-INPUT - {NM.member_why(lst, night, sb, member)}')
+                    continue
                 why, a = assess(run, base, lst, night, sb)
                 if not why:
                     why, g = early_gates(args, run, lst, sb, night)[:2]

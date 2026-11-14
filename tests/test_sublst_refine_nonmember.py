@@ -517,6 +517,21 @@ def _refuse(text):
     return f
 
 
+def test_a_night_in_every_subband_master_ends_no_input():
+    # a night IN the window Masters of every selected subband: the stack stage wrote no plan for it, so the stage ends
+    # no-input for the night, never refused (review of pull request 25, finding 1)
+    with stage() as s:
+        t = s.t
+        for sb in t.sbs:
+            for S in t.stokes:
+                for k in range(6):
+                    t.write_master(sb, S, k, rows=list(zip(F.MEMBERS, F.WEIGHTS)) + [(NEW, 0.4)])
+        r = s.run()
+        assert [(u.name, u.status) for u in r.units] == [(f'{R.STAGE}_{LST}_{NEW}', 'no-input')], \
+            [(u.name, u.status, u.reason) for u in r.units]
+        assert 'IS in the installed window Master' in r.units[0].reason and not s.calls and len(s.on_disk()) == 0
+
+
 def test_earlier_residuals_need_fresh_and_supersede():
     with stage() as s:
         r = s.run(sbs=['18MHz'])
@@ -732,7 +747,7 @@ def test_the_model_counts_listed_nights_without_a_frozen_row():
 
 TESTS = [test_x2_arithmetic, test_residual_header, test_windows_to_align, test_aligner_errors_and_log_merge,
          test_by_night, test_unit_writes_the_residuals, test_the_displacement_is_applied_to_both_stokes,
-         test_refusals_before_anything_is_written, test_earlier_residuals_need_fresh_and_supersede,
+         test_refusals_before_anything_is_written, test_a_night_in_every_subband_master_ends_no_input, test_earlier_residuals_need_fresh_and_supersede,
          test_a_failure_leaves_no_residual, test_a_window_without_a_flow, test_resume_skips_a_unit_valid_by_its_record,
          test_dry_run_plans_and_writes_nothing,
          test_stage_wiring, test_the_model_counts_listed_nights_without_a_frozen_row]

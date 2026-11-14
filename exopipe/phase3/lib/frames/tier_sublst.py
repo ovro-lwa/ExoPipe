@@ -563,10 +563,16 @@ def stage_stack(ctx, lst, nights):
     for n in nights:
         # a subband where the night IS in the installed window Masters is not restacked: its stacks are the Masters'
         # constituents and its 10-minute products the batch chain's (Gregg 2026-11-13) - one no-input unit each
-        member = {sb: m for sb in sel for m in [NM.master_member(ctx.root, lst, sb, n)] if m}
+        # (an excluded subband night is not a member here: the stack's own exclusion refusal judges it; a unit name of its
+        # own, never stack_<LST>_<night>_<sb>, whose record would shadow the batch stack's done record)
+        try:
+            member = {sb: m for sb in sel for m in [NM.member_unless_excluded(ctx.root, lst, sb, n)] if m}
+        except Refusal as e:
+            unit_refused(ctx.run, f'stack-member_{lst}_{n}', str(e), ctx.dry, ctx, tier=TIER, lst=lst)
+            continue
         for sb, m in sorted(member.items()):
-            unit_no_input(ctx.run, MT.stack_unit_name(lst, n, sb), NM.member_why(lst, n, sb, m), ctx.dry, ctx, tier=TIER,
-                          lst=lst, subband=sb, master_member=[list(x) for x in m])
+            unit_no_input(ctx.run, NM.member_stack_unit_name(lst, n, sb), NM.member_why(lst, n, sb, m), ctx.dry, ctx,
+                          tier=TIER, lst=lst, subband=sb, master_member=[list(x) for x in m])
         if member and len(member) == len(sel):
             continue
         sbs = [s for s in sel if s not in member] if member else (sel or None)      # (sel or None): as before
@@ -903,7 +909,13 @@ def stage_wideband(ctx, lst, nights, per_hour):
              f'{",".join(alln) if len(alln) <= 6 else "all %d" % len(alln)}; inputs {ctx.lst_dir(lst, base)} + '
              f'{ctx.x2_dir(lst, base)}; outputs {ctx.lst_dir(lst)} + {ctx.x2_dir(lst)}')
         one_night = alln[0] if per_hour and len(alln) == 1 else None
-        for sb in members:
+        # as the run decides it (one() below): a group where the night IS in the window Masters ends no-input before its
+        # gates, so the arm-A and S-G8 gates are judged only for the subbands of the groups that would run
+        ex = exclusions()
+        member_of = {G: (NM.band_member(ctx.root, lst, G, one_night) if one_night and ex.admitted(lst, G, [one_night])
+                         else None) for G in groups}
+        live = {sb for G in groups if not member_of[G] for sb in group_members(G)}
+        for sb in [s for s in members if s in live]:
             ok, why, _, _ = wideband_arm_a(ctx, lst, sb, one_night, base if ctx.loo_evidence() == 'log' else None)
             ctx.gate(f'arm A complete {sb}', ok, why)
             ok, why, _ = refine_complete(ctx, lst, sb, base)
@@ -911,7 +923,7 @@ def stage_wideband(ctx, lst, nights, per_hour):
         ok, py = check_interpreter(interpreter_key('frames_sublst', 'wideband'))
         ctx.gate('interpreter', ok, py)
         for G in groups:
-            bm = NM.band_member(ctx.root, lst, G, one_night) if one_night else None
+            bm = member_of[G]
             if bm:
                 plan(f'    UNIT {lst}_wideband_{G}_{one_night}: NO-INPUT - {NM.band_member_why(lst, one_night, G, bm)}')
                 continue
@@ -932,7 +944,12 @@ def stage_wideband(ctx, lst, nights, per_hour):
     def one(G):
         name = f'{lst}_wideband_{G}' + (f'_{one_night}' if one_night else '')
         mem = group_members(G)
-        bm = NM.band_member(ctx.root, lst, G, one_night) if one_night and ex.admitted(lst, G, [one_night]) else None
+        from exopipe.phase3.core.record import Refusal
+        try:
+            bm = NM.band_member(ctx.root, lst, G, one_night) if one_night and ex.admitted(lst, G, [one_night]) else None
+        except Refusal as e:    # an unreadable weights record or G-M01: the unit's record says so (parallel only prints)
+            unit_refused(ctx.run, name, str(e), False, None, tier=TIER, stage='wideband', lst=lst, group=G, nights=alln)
+            return
         if bm:                  # the night's group windows are the batch chain's (Gregg 2026-11-13)
             unit_no_input(ctx.run, name, NM.band_member_why(lst, one_night, G, bm), False, None, tier=TIER,
                           stage='wideband', lst=lst, group=G, nights=alln,

@@ -487,6 +487,7 @@ def test_a_night_in_the_window_masters_ends_no_input():
         t.write_weights(dict(MEMBERS, **{NEW: 0.7}))
         wp = os.path.join(t.root, f'{LST}_masters', SB, 'I', f'sublst_master_{LST}_{SB}_I_w1_weights.csv')
         os.makedirs(os.path.dirname(wp))
+        open(wp[:-len('_weights.csv')] + '.fits', 'w').close()        # membership counts an installed Master only
 
         def window_weights(w):
             with open(wp, 'w') as f:

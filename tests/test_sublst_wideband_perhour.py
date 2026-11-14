@@ -270,6 +270,7 @@ def window_weights(t, sb, w, S='I', k=3):
     os.makedirs(os.path.dirname(p), exist_ok=True)
     with open(p, 'w') as f:
         f.write(f'night,weight\n2024-01-02,0.8\n{NIGHT},{w}\n')
+    open(p[:-len('_weights.csv')] + '.fits', 'w').close()             # membership counts an installed Master only
 
 
 def test_a_group_with_a_member_subband_ends_no_input():
@@ -305,7 +306,9 @@ def test_the_stack_of_a_member_subband_ends_no_input():
         a, b = t.members[1], t.members[2]
         window_weights(t, a, 0.9, S='V', k=0)
         units, _out = t.run(stages='stack', scopes=f'{a},{b}')
-        u = only(units, MT.stack_unit_name(LST, NIGHT, a))
+        from exopipe.phase3.lib.masters import sublst_nonmember as NM
+        u = only(units, NM.member_stack_unit_name(LST, NIGHT, a))   # its own name: never the night's stack unit
+        assert u.name != MT.stack_unit_name(LST, NIGHT, a), u.name
         assert u.status == 'no-input' and 'w0 Stokes V weight 0.9' in u.reason, (u.status, u.reason)
         assert u.meta['master_member'] == [['V', 0, 0.9]] and got == [[b]], (u.meta, got)
         window_weights(t, b, 0.2)                     # every selected subband a member: no stack call at all

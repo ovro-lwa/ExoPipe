@@ -785,20 +785,35 @@ def preflight(args, run, cell, lst, band, stokes, date):
             plan['refuse'] = f'G2: the size / axis rule cannot be applied: {why_}'
             return plan
     if date:                              # per-hour (incremental) mode
-        # a night IN the window Masters of the band (a group: of any member subband) was searched by the cell's full run
-        # and is the batch chain's: no-input, the per-hour chain goes on (Gregg 2026-11-13)
-        from exopipe.phase3.lib.masters import sublst_nonmember as NM
-        bm = NM.band_member(c.paths.SUBLST_ROOT, lst, band, date)
-        if not gate('epoch.not_in_window_masters', not bm,
-                    NM.band_member_why(lst, date, band, bm) if bm else 'the night is in no window Master of the band'):
-            plan['noinput'] = NM.band_member_why(lst, date, band, bm)
-            return plan
         inc = [k for k in keys if k[:10] == date]
         plan['included_dates'] = inc
+        prev_led = os.path.join(pub, 'transients', f'Run_{label}', 'v_deep_images.csv')
+        # a night IN the window Masters of the band (a group: of any member subband) is the batch chain's: its search is
+        # the cell's full run (Gregg 2026-11-13). No-input only when the published image ledger shows that run searched
+        # every window of the night; otherwise the full search owes it, and this refuses.
+        from exopipe.phase3.lib.masters import sublst_nonmember as NM
+        bm = NM.band_member(c.paths.SUBLST_ROOT, lst, band, date)
+        if bm:
+            why = NM.band_member_why(lst, date, band, bm)
+            searched = set()
+            if os.path.exists(prev_led):
+                with open(prev_led, newline='') as f:
+                    searched = {r['date'] for r in csv.DictReader(f)
+                                if r.get('stokes') == stokes and str(r.get('date', ''))[:10] == date}
+            left = sorted(set(inc) - searched)
+            if not gate('epoch.member_searched_by_full_run', bool(searched) and not left,
+                        f'{len(searched)} windows of {date} in {prev_led}' + (f'; not in it: {left}' if left else '')):
+                plan['refuse'] = (f'{why}; but the published image ledger {prev_led} does not hold '
+                                  + (f'its windows {left}' if searched else 'any window of the night')
+                                  + ': the cell\'s full search (batch chain) has not covered the night - run it')
+                return plan
+            gate('epoch.not_in_window_masters', False, why)
+            plan['noinput'] = f'{why}; its {len(searched)} windows are in the published image ledger {prev_led}'
+            return plan
+        gate('epoch.not_in_window_masters', True, 'the night is in no window Master of the band')
         if not gate('epoch.windows', bool(inc), f'{len(inc)} windows of {date}'):
             plan['noinput'] = f'no window of {date} in {tree}/subtracted (per-hour item {lst}_{date})'
             return plan
-        prev_led = os.path.join(pub, 'transients', f'Run_{label}', 'v_deep_images.csv')
         if not gate('epoch.published_attempt', os.path.exists(prev_led), prev_led):
             plan['refuse'] = (f'per-hour mode appends to the published attempt of {cell} {stokes}; none at {pub} - run the '
                               f'full search of the cell first')
