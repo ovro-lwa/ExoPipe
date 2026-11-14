@@ -9,8 +9,10 @@ the synthetic identities and their detections and computes the chain's fields WI
 phase3_snapshot_chain route_repeats / reflection_band_source_gate / catalog_route / singleton_floor_for and
 phase3_snapshot_tierserve.member, in place, under production's interpreter) - so production's re-judging and the port's both
 self-check against what the chain would have written. It writes, into the batch run:
-  detection_record.csv.gz   one row per served detection (TS.NEED + assoc0_cluster, gate_3d; every row in the pool, fitted,
-                            unresolved-constrained, outside the reflection band; run_status complete)
+  detection_record.csv.gz   one row per served detection (TS.NEED + assoc0_cluster, gate_3d, cand_id, elev_bin; every row in the
+                            pool, fitted, unresolved-constrained, outside the reflection band; run_status complete; elev_bin
+                            the detection's own or 2 - production's 1-minute elevation floor, b114ff3, re-measures elev_bin -1
+                            rows)
   chain_summary.json        {'cells': [...]} (the chain's floors are its defaults; no footprint / pool-size checks)
   served_tiers.csv          per (identity, tier with members): chain_outcome served, qualifies by the chain's per-tier rule
 and returns {(identity, tier): qualifies} - the batch's per-tier catalogues hold exactly the qualifying ones (G4b).
@@ -48,7 +50,8 @@ for i, (J, dets) in enumerate(spec['sources']):
                  stat_arcmin='1.0', sys_arcmin='1.0', sys_source='per-case', in_refl_band='0', refl_below_floor='0',
                  fit_verdict='unresolved-constrained', store_fit_verdict='', in_assoc_pool='1', first_removed_by='',
                  src_index=str(i), src_best_det_uid='', src_n_members=str(len(dets)), src_mi_tiers='', catalog_promoted='', routes='',
-                 src_outcome='served', identity_jname=J, served='1', run_status='complete', assoc0_cluster='', gate_3d='')
+                 src_outcome='served', identity_jname=J, served='1', run_status='complete', assoc0_cluster='', gate_3d='',
+                 cand_id=d.get('cand_id', ''), elev_bin=d.get('elev_bin', '2'))
         rr.append(r)
     rows += rr
     by_src.append((J, rr))
@@ -97,7 +100,7 @@ for J, rr in by_src:
     for r in rr:
         r.update(src_best_det_uid=f['best']['det_uid'], src_mi_tiers=(f['ns'] or f.get('ns0') or {}).get('mi_tiers') or '',
                  catalog_promoted=';'.join((f['ns'] or {}).get('catalog', [])), routes=';'.join(f['routes']))
-cols = list(TS.NEED) + ['assoc0_cluster', 'gate_3d']
+cols = list(TS.NEED) + ['assoc0_cluster', 'gate_3d'] + [c for c in ('cand_id', 'elev_bin') if c not in TS.NEED]
 with gzip.open(os.path.join(spec['run'], 'detection_record.csv.gz'), 'wt', newline='') as fh:
     w = csv.DictWriter(fh, fieldnames=cols)
     w.writeheader()
@@ -117,8 +120,8 @@ json.dump(out, open(spec['result'], 'w'))
 
 def write_chain(run, sources, cells, tag=None, py36=PY36, clv15=CLV15):
     """The chain record, summary and served_tiers.csv of a synthetic batch run (module docstring). sources: [(identity, [detection
-    dicts with lst, date, subband, band, stokes, tier, ts, snr, ra, dec, ra_peak, dec_peak])], in the record's order; cells: the
-    cells the batch searched. Returns {(identity, tier): qualifies}."""
+    dicts with lst, date, subband, band, stokes, tier, ts, snr, ra, dec, ra_peak, dec_peak, cand_id; elev_bin optional])], in the
+    record's order; cells: the cells the batch searched. Returns {(identity, tier): qualifies}."""
     os.makedirs(run, exist_ok=True)
     spec_p, res_p, child_p = (os.path.join(run, '.chain_fixture.%s' % x) for x in ('spec.json', 'result.json', 'child.py'))
     with open(child_p, 'w') as f:
