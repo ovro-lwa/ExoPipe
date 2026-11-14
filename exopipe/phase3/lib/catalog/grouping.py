@@ -67,7 +67,11 @@ KNOWN LIMITS (review 2026-11-02)
     of 48-71 window-sources, with no downward trend to pass 30 - re-assignment and merge undo each other (Stokes V closes at pass
     3; PREAMBLE-20261114-SPEEDUP-TENMIN-GROUPING-PASS-CAP-30-RUNS). PASSES = 3 (the research value) makes it a
     deterministic point of that cycle; an all-nights batch and an incremental run over the same detections therefore differ
-    in those components (recorded by the regroup's events, not refused).
+    in those components (recorded by the regroup's events, not refused). In the incremental mode a component holding a new
+    unit can, over the passes, absorb earlier components whose merge the batch left pending in that cycle (a new unit that
+    barely moves the mean can unlock it). Bound on real data: 17h 2025-05-08 appended to the 24 published 10-minute runs joined
+    3 earlier multiples groups, all through a new detection, no earlier identity, nothing in Stokes V
+    (RESULT-20261114-SPEEDUP-PR42-REVIEW-FINDINGS-VERIFIED-FIXED-3140CDB).
   - cand_ids are not stable across re-searches (production re-numbers them: exopipe_ops p3s3_merge.py:77-81; 10-25 vs 10-31:
     1,562 of 67,317 shared cand_ids name a detection more than 1 deg away). The state keeps each detection's fingerprint (window
     key, band, catalog ra, dec, S/N at full precision) and match errors; a detection is matched exactly or within tolerance
