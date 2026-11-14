@@ -298,7 +298,7 @@ def test_wideband_real():
     # under fallbacks.SEARCH_SANITY_FALLBACK 'fallback' the member's own search searches an unmeasured epoch, counted: the
     # mirror admits it and counts the same site (review of pull request 27, finding 3)
     from exopipe.phase3.core import fallback as FB
-    lst, scope = '10h', 'Blue'                     # 20 unmeasured member night-Stokes above
+    lst, scope = '10h', 'Blue'                     # (before PR 62's F1 fix it named 20 member night-Stokes, all refused anyway)
     pol, counted = FB.policy, []
     site = FB.site
     FB.policy = lambda k: 'fallback'
@@ -313,9 +313,35 @@ def test_wideband_real():
     finally:
         FB.policy, FB.site = pol, site
     check(f"real {lst} {scope} under SEARCH_SANITY_FALLBACK 'fallback': no member night is refused for being unmeasured on "
-          f"either path; the site is counted once per path and member with unmeasured nights ({len(counted)} counts)",
-          counted and len(counted) % 2 == 0 and all(not b_['unmeasured'] and not p_['unmeasured'] for b_, p_ in recs_f.values())
+          f"either path; the site is counted alike on both paths ({len(counted)} counts; a count's n: test_search_wbmember)",
+          len(counted) % 2 == 0 and all(not b_['unmeasured'] and not p_['unmeasured'] for b_, p_ in recs_f.values())
           and all(k == W.UNMEASURED_KEY for k, _n in counted), counted)
+    # the engine's own naming (deep_search._unmeasured_searched) on the same gate results: only epochs the member searches in that
+    # Stokes (not refused by a gate, with that Stokes' product) - the mirror names exactly those, and under 'fallback' counts the
+    # site with the engine's n per Stokes (review of PR 62, F1: before, a night refused anyway was named and counted)
+    from exopipe.phase3.lib.search import deep_search as DS
+    eng, mir, n_eng = {}, {}, 0
+    for m, (b, _p) in recs_f.items():
+        cd = os.path.join(root, f'{lst}_{m}')
+        rec = W.member_record(cd, m, lst, P, rd, admitted=ADS.nights(cd, m, 'deep'))
+        adm = ADS.nights(cd, m, 'deep')[0]
+        raw = W.unmeasured_nights(list(csv.DictReader(open(os.path.join(cd, 'coadd_final', 'weights.csv')))),
+                                  list(csv.DictReader(open(os.path.join(cd, 'residuals_provisional.csv')))), adm,
+                                  sorted(rec['present']), P)
+        skip = {st: set(rec['i_only' if st == 'I' else 'v_only']) | set(rec['tier'].get(st, {})) for st in ('I', 'V')}
+        resid = {st: {d for d in rec['present'] if os.path.exists(os.path.join(cd, 'subtracted', f'{d}_{st}_sub_{m}.fits'))}
+                 for st in ('I', 'V')}
+        unm_qa3 = {d for d, by in raw.items() if any('qa3' in r for rs in by.values() for r in rs)}
+        unm_tier = {(d, st) for d, by in raw.items() for st, rs in by.items() if any('stage-1' in r for r in rs)}
+        e = DS._unmeasured_searched(sorted(set(rec['present']) - set(rec['both'])), skip, resid, unm_qa3, unm_tier)
+        eng[m] = {st: ds for st, ds in e.items() if ds}
+        mir[m] = {st: sorted(d for d, by in rec['unmeasured'].items() if st in by) for st in ('I', 'V')}
+        mir[m] = {st: ds for st, ds in mir[m].items() if ds}
+        n_eng += sum(len(ds) for ds in eng[m].values())
+    n_mir = sum(n for _k, n in counted) // 2                       # both paths count
+    check(f"real {lst} {scope}: the mirror names exactly the epochs the member engine names as searched unmeasured, per member "
+          f"and Stokes; under 'fallback' its site counts n = the engine's ({n_mir} = {n_eng} epoch-Stokes)",
+          eng == mir and n_mir == n_eng, (n_mir, n_eng, {m: (eng[m], mir[m]) for m in eng if eng[m] != mir[m]}))
     # census over every subband cell: present member nights an append would refuse for a value the member's tables miss
     from exopipe.phase3.core import cells as CC
     subs = sorted({m for g in ('Red', 'Green', 'Blue') for m in SUBBAND_BANDS[g]})
