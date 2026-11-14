@@ -39,7 +39,9 @@ build,pbmaps,vclean,fluxscale,verify - stage-in runs alone, BEFORE the flow step
              cell production built), from the cell's own records, in the cell tree given (--deep-installed-root, default
              paths.COADD_SB_ROOT; a production root refuses until cutover - run it on a copy of the cell) ->
              <cell>/coadd_final/build_stats.json [build_stats], beside the records. Refuses when a night of the build
-             population is excluded now, the cell fails membership.verify, its records are not one generation or use
+             population is excluded now, the cell fails membership as the deep search verifies it (search/admitted.
+             verify_master; a Red / Full night held only for its excluded 18 MHz kept under search_detect.MASTER_HELD_18MHZ
+             'keep'), its records are not one generation or use
              another stage-2 metric, or the cell has a record and no --fresh (--fresh moves the old record aside to
              coadd_final/build_stats.superseded_<UTC>.json).
   admit-prep on demand (D-ADMIT, after build-stats): the nights an installed cell admits (in no record of its build,

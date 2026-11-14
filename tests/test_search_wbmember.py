@@ -15,6 +15,7 @@ not refused for its excluded 18 MHz, which the image does not hold; 11h Green 20
 Run: python tests/test_search_wbmember.py
 """
 import csv
+import glob
 import os
 import shutil
 import subprocess
@@ -151,6 +152,25 @@ def main():
         check('D-ADMIT: an accepted admitted night is present, its verdicts apply; a refused one refuses',
               '2025-02-01' in rec2['present'] and rec2['both'].get('2025-02-01') == ['epoch gate']
               and rec2['both'].get('2025-02-03') == ['admitted night refused by the search'], rec2['both'])
+        # ---- unmeasured: only the epochs the member searches (review of PR 62, F1; deep_search._unmeasured_searched)
+        write(os.path.join(cell, 'coadd_final', 'weights.csv'), ['date', 'weight', 'qa3_rms_mjy'],
+              [[d, '1', '' if d in ('2025-01-02', '2025-01-05', '2025-01-08') else '100'] for d in nights] + [['2025-01-20', '1', '400']])
+        rd3 = readers(ng=['2025-01-02'], ssv=['2025-01-05'])
+        rec3 = W.member_record(cell, '59MHz', '11h', P, rd3)
+        um3 = {d: sorted(by) for d, by in rec3['unmeasured'].items()}
+        check('unmeasured: a night without qa3 is named in each Stokes the member searches it in - not a night a gate refused '
+              '(2025-01-02, night-image), not V where the night has no V product (2025-01-05, B-03 same-state)',
+              um3 == {'2025-01-05': ['I'], '2025-01-08': ['I', 'V']}, um3)
+        from exopipe.phase3.core import fallback as FB
+        pol, site, counted = FB.policy, FB.site, []
+        FB.policy = lambda k: 'fallback'
+        FB.site = lambda k, detail, n=1: counted.append((k, n))
+        try:
+            rec4 = W.member_record(cell, '59MHz', '11h', P, rd3)
+        finally:
+            FB.policy, FB.site = pol, site
+        check("unmeasured under 'fallback': admitted, the site counted per Stokes with the engine's n (I 2, V 1)",
+              rec4['unmeasured'] == {} and counted == [(W.UNMEASURED_KEY, 2), (W.UNMEASURED_KEY, 1)], counted)
         # ---- refusals: the image's set and its own reasons
         good = dict(present={'n1', 'n2'}, both={}, i_only={}, v_only={}, tier={'I': {}, 'V': {}})
         bad18 = dict(present={'n1'}, both={'n1': ['epoch gate']}, i_only={}, v_only={}, tier={'I': {}, 'V': {}})
@@ -207,7 +227,9 @@ def main():
                         for m in W.members(scope, SUBBAND_BANDS)}
                 sci = {r['date']: r.get('sci_dir', '') for r in csv.DictReader(open(os.path.join(PROD_COADD, '%s_%s' % (lst, scope),
                                                                                              'coadd_final', 'weights.csv')))}
-                imgs = {n: W.image_findings(lst, scope, sci.get(n, ''), n, scope in ('Red', 'Full') and (lst, '18', n) in excl)
+                # a night a later rebuild dropped from the cell (04h Red 2024-12-20 since the 2026-11-08 rebuild): its Phase 2 Science dir
+                p2 = lambda n: (sorted(glob.glob('/lustre/pipeline/exopipe/phase2/%s/%s/Science_*' % (lst, n))) or [''])[-1]
+                imgs = {n: W.image_findings(lst, scope, sci.get(n) or p2(n), n, scope in ('Red', 'Full') and (lst, '18', n) in excl)
                         for n in nights}
                 return W.refusals(lst, scope, nights, recs, imgs)
 

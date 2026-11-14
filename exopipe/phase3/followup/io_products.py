@@ -156,7 +156,7 @@ def write_snapshot_spectrum_csv(outdir, cand, rows):
     import csv
     out = os.path.join(outdir, f'{cand.cand_id}_snapshot_spectrum.csv')
     cols = ['scope', 'freq_mhz', 'dewarped', 'V_peak', 'V_err', 'V_snr',
-            'V_sign', 'I_peak', 'I_err', 'I_snr', 'I_sign', 'vi_ratio']
+            'V_sign', 'I_peak', 'I_err', 'I_snr', 'I_sign', 'vi_ratio', 'refused']
     with open(out, 'w', newline='') as f:
         w = csv.DictWriter(f, fieldnames=cols, extrasaction='ignore')
         w.writeheader()

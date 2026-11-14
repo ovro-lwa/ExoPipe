@@ -161,7 +161,24 @@ def test_items():
             raise AssertionError(bad)
         except record.Refusal:
             pass
-    print('items: LST-band cells, unit names, night cells, --epochs, --lsts, filters, refusals')
+    # a --cells pattern matches the Phase-1 archive's cells and, for the cells of paths.SNAPSHOT_GPU_FRAME_CELLS, the GPU
+    # pipeline's tree (their frame root): a listed cell found only there is matched, an unlisted one there is not
+    p1, gr = os.path.join(TMP, 'universe', 'phase1'), os.path.join(TMP, 'universe', 'gpu')
+    for root, cell in ((p1, '21h/2025-08-26'), (gr, '21h/2025-08-26'), (gr, '21h/2024-12-19'), (gr, '21h/2024-12-20')):
+        os.makedirs(os.path.join(root, cell), exist_ok=True)
+    gl = os.path.join(TMP, 'universe', 'gpu_cells.txt')
+    with open(gl, 'w') as f:
+        f.write('# test\n21h 2024-12-19\n')
+    setattr_tmp(CFG.paths, 'PHASE1_ROOT', p1)
+    setattr_tmp(CFG.paths, 'SNAPSHOT_GPU_FRAME_ROOT', gr)
+    setattr_tmp(CFG.paths, 'SNAPSHOT_GPU_FRAME_CELLS', gl)
+    try:
+        assert TN._universe() == ['21h_2024-12-19', '21h_2025-08-26'], TN._universe()
+        it = TN.expand_cells(ns(cells='21h_2024-12-*'))
+        assert it == [('21h_2024-12-19', '21h_2024-12-19', None)], it
+    finally:
+        restore()
+    print('items: LST-band cells, unit names, night cells, --epochs, --lsts, filters, refusals, the cell universe')
 
 
 # =====================================================================================================================
@@ -220,6 +237,36 @@ def test_sublst_preflight():
     assert p['refuse'] and 'published attempt' in p['refuse']
     p = TS.preflight(ns(), run, '09h_18MHz', '09h', '18MHz', 'I', '2025-01-05')
     assert p['noinput'] and 'no window' in p['noinput']
+    # per-hour: a night IN the window Masters of the band -> no-input before the per-hour gates (Gregg 2026-11-13)
+    wp = os.path.join(root, '09h_masters', '18MHz', 'V', 'sublst_master_09h_18MHz_V_w1_weights.csv')
+    os.makedirs(os.path.dirname(wp))
+    with open(wp, 'w') as f:
+        f.write('night,weight\n2025-01-01,0.0\n2025-01-02,0.5\n')
+    p = TS.preflight(ns(), run, '09h_18MHz', '09h', '18MHz', 'I', '2025-01-02')
+    assert ('epoch.not_in_window_masters', True) in [g[:2] for g in p['gates']], p['gates']   # weights without the FITS: no member
+    open(wp[:-len('_weights.csv')] + '.fits', 'w').close()
+    # a member night that no published image ledger holds: the full search has not covered it -> refused
+    p = TS.preflight(ns(), run, '09h_18MHz', '09h', '18MHz', 'I', '2025-01-02')
+    assert p['refuse'] and 'IS in the installed window Master' in p['refuse'] and 'any window of the night' in p['refuse'], \
+        p['refuse']
+    assert ('epoch.member_searched_by_full_run', False) in [g[:2] for g in p['gates']], p['gates']
+    led, inc = re.search(r'ledger (\S+v_deep_images\.csv)', p['refuse']).group(1), p['included_dates']
+    assert inc, p
+    os.makedirs(os.path.dirname(led), exist_ok=True)
+    with open(led, 'w') as f:                                                   # all but the last window searched
+        f.write('date,stokes\n' + ''.join(f'{k},I\n' for k in inc[:-1]) + f'{inc[-1]},V\n')
+    p = TS.preflight(ns(), run, '09h_18MHz', '09h', '18MHz', 'I', '2025-01-02')
+    assert p['refuse'] and f"its windows ['{inc[-1]}']" in p['refuse'], p['refuse']
+    with open(led, 'a') as f:                                                   # every window searched -> no-input
+        f.write(f'{inc[-1]},I\n')
+    p = TS.preflight(ns(), run, '09h_18MHz', '09h', '18MHz', 'I', '2025-01-02')
+    assert not p['refuse'] and p['noinput'] and 'IS in the installed window Master' in p['noinput'] \
+        and 'w1 Stokes V weight 0.5' in p['noinput'] and f'its {len(inc)} windows' in p['noinput'], (p['refuse'], p['noinput'])
+    assert ('epoch.not_in_window_masters', False) in [g[:2] for g in p['gates']], p['gates']
+    os.remove(led)
+    p = TS.preflight(ns(), run, '09h_18MHz', '09h', '18MHz', 'I', '2025-01-01')       # listed at weight 0: not a member
+    assert p['refuse'] and 'published attempt' in p['refuse'], p['refuse']
+    shutil.rmtree(os.path.join(root, '09h_masters'))
     # a superseded master: refused (E2)
     _fits(os.path.join(root, 'coadd_09h', '09h_18MHz', 'coadd_final', 'I_deep_Taper_R0_18MHz.fits'), np.ones((8, 8)),
           COADDOP='ivw-mean-v2', **_wcs_cards(8))
