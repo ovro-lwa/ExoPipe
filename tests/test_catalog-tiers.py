@@ -175,6 +175,19 @@ def test_ported_sublst():
     except OSError:
         r = True
     ok('compare copy refuses a catalogue without the per-detection record / complete-parent verdicts', r)
+    S.compare_copy(U, f'{T}/cmp1/catalog', record=False)
+    ok('compare copy of a one-build run (record=False) copies the rest without the per-detection record',
+       S.files_equal(f'{U}/pertie/pertie_detections.csv', f'{T}/cmp1/catalog/pertie/pertie_detections.csv')
+       and not os.path.exists(f'{T}/cmp1/catalog/detection_record_10min_summary.json'))
+    import types
+    for builds in (('veto',), ('noveto',)):        # the record reads both builders' parts: one build ends it no-input
+        cx = types.SimpleNamespace(U=U, builds=builds, dry=False, py={'default': 'python3'}, opsc=lambda n: n)
+        try:
+            S.st_record(cx, None, [])
+            r = False
+        except S._record().NoInput:
+            r = True
+        ok(f'record with --sublst-builds {builds[0]} only ends no-input (an OPTIONAL stage)', r and 'record' in S.OPTIONAL)
     for p, txt in (('detection_record_10min_summary.json', '{"status": "PASS"}\n'), ('table_filter.csv', 'cand_id\nV1\n'),
                    ('complete_parent/14h/cells.csv', 'cell\n1\n'), ('complete_parent/14h/complete_parent_rows.csv', 'row\n1\n'),
                    ('complete_parent/14h/provenance.json', '{}\n'), ('pertie/conform_inputs/SHA256SUMS', 'x  y\n')):

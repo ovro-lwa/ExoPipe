@@ -113,7 +113,7 @@ STAGES = ('preflight', 'merge', 'tier-rules', 'tie-pulsars', 'conform', 'fitpos'
 # stages whose in-place modules are the heavy part of the chain: they run under the node's heavy-stage lock and memory gate
 HEAVY = ('merge', 'tier-rules', 'tie-pulsars', 'conform', 'fitpos', 'select', 'tie', 'veto', 'build', 'buildv', 'tablefilter',
          'record', 'view', 'test', 'compare')
-OPTIONAL = ('build', 'buildv', 'tablefilter', 'compare', 'reftie')   # may end no-input by configuration (not selected / switched off)
+OPTIONAL = ('build', 'buildv', 'tablefilter', 'record', 'compare', 'reftie')   # may end no-input by configuration (not selected / switched off)
 # PER-HOUR night pass (--sublst-night): the stages run for one night's rows when none is named (NIGHT_DEFAULT) and the chain
 # of stages offered (NIGHT_STAGES: the builds are delta builds and run after the grouping's incremental run with this night;
 # `view`, a night pass's own stage, writes the catalog view of every LST hour and the pass's index; the table filter, the
@@ -2213,6 +2213,11 @@ def st_record(ctx, s, plan):
     """sublst_catalogs.sh:353-358 (record only): the per-detection record and its own content tests (S-G25)."""
     U = ctx.U
     script = ctx.opsc('tenmin_detection_record.py')
+    if not {'veto', 'noveto'} <= set(ctx.builds):       # the record reads both builders' parts (tenmin_detection_record.py:150)
+        plan.append('record: no-input (it needs both builds; --sublst-builds selects only ' + ', '.join(ctx.builds) + ')')
+        if not ctx.dry:
+            raise _record().NoInput('record needs both builds (--sublst-builds selects only ' + ', '.join(ctx.builds) + ')')
+        return
     plan.append(f'record: {ctx.py["default"]} {script} {U}   >> catalogs.log (DETECTION-RECORD-10MIN; its content tests refuse)')
     if ctx.dry:
         return
@@ -2247,9 +2252,10 @@ def record_copy(U, cmp_catalog):
         raise OSError(f'{cmp_catalog}/table_filter.csv differs from {U}/table_filter.csv')
 
 
-def compare_copy(U, cmp_catalog):
+def compare_copy(U, cmp_catalog, record=True):
     """sublst_catalog_chain.sh:44-52: the small products to the comparison dir (cp -p; errors ignored as production), then
-    the window-tie tables whole (rm -rf + cp -rp; the caller compares pertie_detections.csv byte for byte)."""
+    the window-tie tables whole (rm -rf + cp -rp; the caller compares pertie_detections.csv byte for byte). ``record``
+    False (a run with one build, --sublst-builds: no per-detection record was made): record_copy is left out."""
     os.makedirs(cmp_catalog, exist_ok=True)
     done = []
     for p in sorted(glob.glob(f'{U}/*.csv')) + sorted(glob.glob(f'{U}/catalogs*.log')) + [f'{U}/rejected_index.npz']:
@@ -2258,8 +2264,9 @@ def compare_copy(U, cmp_catalog):
             done.append(p)
         except OSError:
             pass
-    record_copy(U, cmp_catalog)
-    done.append(f'{U}/detection_record_10min.csv.gz')
+    if record:
+        record_copy(U, cmp_catalog)
+        done.append(f'{U}/detection_record_10min.csv.gz')
     for p in sorted(glob.glob(f'{U}/source_catalogs_*')) + [f'{U}/leakveto'] + sorted(glob.glob(f'{U}/localizations_*')):
         if os.path.isdir(p):
             try:
@@ -2291,7 +2298,9 @@ def st_test(ctx, s, plan):
     pd = os.path.join(ctx.pt, 'pertie_detections.csv')
     plan.append(f'PERTIE-TEST: P3_TENMIN_PERTIE={pd} P3S2_ROOTS_CSV={ctx.roots_csv} {ctx.py["flow"]} {pert} ' + ' '.join(t_args))
     plan.append(f'ASTROM-FRAME-TEST: {ctx.py["default"]} {af} ' + ' '.join(a_args))
-    plan.append(f'copy the small products to {ctx.cmp_catalog}; pertie_detections.csv byte-identical there (S-G22)')
+    both = {'veto', 'noveto'} <= set(ctx.builds)       # one build: no per-detection record to copy (st_record)
+    plan.append(f'copy the small products to {ctx.cmp_catalog}; pertie_detections.csv byte-identical there (S-G22)'
+                + ('' if both else '; no per-detection record (one build, --sublst-builds)'))
     if ctx.dry:
         return
     s.code(pert, af)
@@ -2312,7 +2321,7 @@ def st_test(ctx, s, plan):
         refuse(f'S-G21: {line or "ASTROM-FRAME-TEST exit %d" % res.rc}')
     ctx.chainlog.say(line)
     try:
-        compare_copy(U, ctx.cmp_catalog)
+        compare_copy(U, ctx.cmp_catalog, record=both)
     except (OSError, shutil.Error) as e:
         ctx.chainlog.say(f'REFUSING: the window-tie tables ({ctx.pt}), the per-detection record or table_filter.csv were not '
                          f'copied to the comparison dir')
