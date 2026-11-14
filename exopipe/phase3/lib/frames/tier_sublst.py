@@ -33,9 +33,14 @@ Stages (always run in the order of frames_sublst.ORDER; defaults per operating m
             LST-wide evidence above (night_arm_a_complete, wideband_arm_a). The record is read against the night's job
             plan where this root holds it: a subband with a stack job in the plan needs the record (a missing one
             refuses, the LST-wide record does not stand in), done for every Stokes the plan owes; and a done record
-            older than the night's newest window stack of the subband refuses. Per hour, a group where the night IS in the
-            window Masters of any member subband (sublst_nonmember.band_member) ends no-input before these gates: its
-            windows stack that subband's batch residuals, so they are the batch chain's (Gregg 2026-11-13).
+            older than the night's newest window stack of the subband refuses. Per hour, a member of
+            frames_sublst.WIDEBAND_OPTIONAL (18 MHz) whose unit of the night was refused as a whole for want of a window
+            Master (N-6, N-7) is left out of its groups instead of refusing them, when no residual of that night at the
+            subband is on disk and the refusal is newer than the night's stacks and the subband's window Masters there
+            (Gregg 2026-10-17: Red is built from the other 4 subbands; optional_member_left_out). Per hour, a group where
+            the night IS in the window Masters of any member subband (sublst_nonmember.band_member) ends no-input before
+            these gates: its windows stack that subband's batch residuals, so they are the batch chain's (Gregg
+            2026-11-13).
             Outputs <root>/<LST>/<LST>_<night>/<G>/<S>/sublst_<LST>_<night>_<G>_<S>_w<k>{,_pb,_nframes,_resid_loo}.fits and
             <root>/<LST>_x2/.../..._resid_loo.fits [sublst_wideband]; logs <root>/<LST>/logs/wideband_<LST>_<G>_<night>.log.
             Per hour: the epoch's night; intermittent: every night (or --nights), and a group with no window over the LST
@@ -829,6 +834,56 @@ def wideband_arm_a(ctx, lst, sb, night=None, base=None):
                                                  'crosscheck decision 6)',)
 
 
+_NO_MASTER_REFUSALS = ('N-6:', 'N-7:')    # sublst_nonmember's refusals of a whole unit for want of a window Master
+
+
+def optional_member_left_out(ctx, lst, sb, night):
+    """Per hour, ONE night: whether member `sb` is left out of its wideband groups instead of refusing them. The rule
+    holds only for a subband of frames_sublst.WIDEBAND_OPTIONAL (18 MHz; Gregg 2026-10-17: "Red can be built without
+    18 MHz, i.e. using just the 4 other subbands. This is the only allowed case where wideband data can be built without
+    a full 5-subband set.", and Full may form without it). It also needs the night's own arm-A unit
+    nonmember_<LST>_<night>_<sb> refused as a whole for want of a window Master: N-6 (none for a Stokes), or N-7 (none
+    for any window of the night). The record is read where night_arm_a_complete reads it.
+    Returns None when the rule does not apply (the arm-A and S-G8 gates decide), else (left out, why):
+      - left out (True) when no arm-A or x2 residual of the night at the subband is on disk and the refusal is newer than
+        the night's newest window stack of the subband and its newest installed window Master. The engine then builds
+        the group from the other members, as it does for a window 18 MHz lacks (S-G9);
+      - not left out (False) when a residual of the night is on disk (an earlier run's, which the engine would stack) or
+        the refusal is older than a stack or a Master (it may no longer hold)."""
+    from exopipe.phase3.core import record
+    from exopipe.phase3.lib.masters import sublst_nonmember as NM
+    if sb not in ctx.S.WIDEBAND_OPTIONAL:
+        return None
+    own = night_arm_a_complete(ctx, lst, sb, night)
+    if own is None or own[0]:
+        return None
+    name = NM.unit_name(lst, night, sb)
+    p = record.record_path(ctx.root, 'frames', name)
+    rec = record.load_record(ctx.root, 'frames', name)
+    reason = str((rec or {}).get('reason') or '')
+    if not rec or rec.get('status') != 'refused' or not reason.startswith(_NO_MASTER_REFUSALS):
+        return None
+    cell = f'{lst}_{night}'
+    bases = [ctx.root] + ([ctx.prod] if ctx.mirror else [])
+    resid = sorted(q for b in bases for d in (ctx.lst_dir(lst, b), ctx.x2_dir(lst, b)) for St in ('I', 'V')
+                   for q in glob.glob(os.path.join(d, cell, sb, St, f'sublst_{cell}_{sb}_{St}_w[0-9]_resid_loo.fits')))
+    gate = reason.split(':', 1)[0]
+    if resid:
+        return False, (f'{sb} is not left out: its unit of the night was refused ({gate}) but {len(resid)} residual(s) '
+                       f'of the night are on disk, e.g. {resid[0]} (an earlier run\'s, which the engine would stack): move '
+                       f'them aside')
+    newer = [q for St in ('I', 'V') for q in
+             glob.glob(os.path.join(ctx.lst_dir(lst), cell, sb, St, f'sublst_{cell}_{sb}_{St}_w[0-9].fits'))
+             + glob.glob(os.path.join(ctx.root, f'{lst}_masters', sb, St, f'sublst_master_{lst}_{sb}_{St}_w[0-9].fits'))
+             if mtime(q) > mtime(p)]
+    if newer:
+        return False, (f'{sb} is not left out: its unit of the night was refused ({gate}) before {sorted(newer)[0]} was '
+                       f'written, so the refusal may no longer hold: run the unit again')
+    return True, (f'{sb} left out: its unit of the night {name} was refused as a whole ({reason[:160]}) and no residual of '
+                  f'the night at {sb} is on disk; the group is built from its other members (Gregg 2026-10-17: Red '
+                  f'without 18 MHz)')
+
+
 def refine_complete(ctx, lst, sb, base=None):
     """S-G8 (nocat:236-247): (ok, why, log). THIS run's refine = its log newer than the subband's newest window stack (the
     production driver compared with its RUN-START, before the stacks); complete = final line refused=0, or
@@ -976,8 +1031,13 @@ def stage_wideband(ctx, lst, nights, per_hour):
                          else None) for G in groups}
         live = {sb for G in groups if not member_of[G] for sb in group_members(G)}
         for sb in [s for s in members if s in live]:
+            lo = optional_member_left_out(ctx, lst, sb, one_night) if one_night else None
+            if lo and lo[0]:
+                plan(f'    gate arm A complete {sb}: not required - {lo[1]}')
+                plan(f'    gate S-G8 x2 complete {sb}: not required - {sb} is left out')
+                continue
             ok, why, _, _ = wideband_arm_a(ctx, lst, sb, one_night, base if ctx.loo_evidence() == 'log' else None)
-            ctx.gate(f'arm A complete {sb}', ok, why)
+            ctx.gate(f'arm A complete {sb}', ok, why + (f'; {lo[1]}' if lo else ''))
             ok, why, _ = refine_complete(ctx, lst, sb, base)
             ctx.gate(f'S-G8 x2 complete {sb}', ok, why)
         ok, py = check_interpreter(interpreter_key('frames_sublst', 'wideband'))
@@ -1016,6 +1076,7 @@ def stage_wideband(ctx, lst, nights, per_hour):
                           master_member={sb: [list(x) for x in m] for sb, m in bm.items()})
             return
         ev = {sb: (wideband_arm_a(ctx, lst, sb, one_night), refine_complete(ctx, lst, sb)) for sb in mem}
+        left = {sb: optional_member_left_out(ctx, lst, sb, one_night) for sb in mem} if one_night else {}
         inputs = [p for sb in mem for p in (ev[sb][0][2], ev[sb][1][2]) if os.path.exists(p)] + [script]
         admitted = ex.admitted(lst, G, alln)
         if try_resume(ctx.run, ctx.args, name, inputs, admitted):
@@ -1025,9 +1086,14 @@ def stage_wideband(ctx, lst, nights, per_hour):
                 u.add_input(p)
             u.set_admitted(admitted)
             for sb in mem:
+                lo = left.get(sb)
+                if lo and lo[0]:        # 18 MHz without a residual of the night: the engine builds the group without it
+                    u.note(lo[1])
+                    u.meta.setdefault('left_out', {})[sb] = lo[1]
+                    continue
                 (aok, awhy, _, ahow), (rok, rwhy, _) = ev[sb]
                 if not aok:
-                    u.refuse(f'arm A of {lst} {sb} not complete ({awhy}): {ahow}')
+                    u.refuse(f'arm A of {lst} {sb} not complete ({awhy}' + (f'; {lo[1]}' if lo else '') + f'): {ahow}')
                 if not rok:
                     u.refuse(f'S-G8 x2 refine of {lst} {sb} not complete: {rwhy}')
             run_n = []
