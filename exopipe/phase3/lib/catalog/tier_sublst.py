@@ -1846,7 +1846,8 @@ def _build_delta(ctx, s, plan, tag):
                         f'night(s) ({states[k]["why"]})')
             res = call(ctx, s, GS.builder_runner(), [script, f'selected_{k}.csv', d, 'v_deep_images.csv'],
                        env=cL.env(P3_LEAKVETO_DIR=lv, P3_TENMIN_PERTIE=pt,
-                                  **GS.builder_env(table, '10min', ctx.grouping_mode, sha1=sha, frozen='delta', frozen_record=rec)),
+                                  **GS.builder_env(table, '10min', ctx.grouping_mode, sha1=sha, frozen='delta', frozen_record=rec,
+                                                   removed_dirs=[FL] + list(nights))),
                        log=f'{root}/catalogs_{tag}_{k}.log', cwd=B)
             name = f'{tag}_{k}' if own else f'{L}_{tag}_{k}'
             s.u.meta.setdefault('grouping_builder', {})[name] = GS.builder_line(res.tail)

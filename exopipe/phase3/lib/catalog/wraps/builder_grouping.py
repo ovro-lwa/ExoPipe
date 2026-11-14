@@ -149,6 +149,37 @@ CENSUS = {'assoc_groups(': {2}, 'SSTACK_GATE': {4, 7}, '_multi_integration(': {2
 FROZEN_MODES = ('', 'record', 'delta', 'passthrough')
 FROZEN_RECORD = 'builder_frozen.json'       # written by the all-nights build (record), read by a delta build
 DELTA_RECORD = 'builder_delta.json'         # written by a delta build
+# the tables that name the detections removed before the builder, with their reason (column removal_reason): the selection
+# (select_v3.py: <output stem>_removed.csv) and the ephemeris filter (p3s2_ephem_filter.py), in each run directory
+REMOVED_TABLES = ('selected_all_removed.csv', 'selected_all_ephem_removed.csv')
+REMOVED_DIRS_ENV = 'EXOPIPE3_REMOVED_DIRS'  # os.pathsep-separated run directories of the build's input (default: its own)
+
+
+def removed_before_builder(dirs, sel, table):
+    """{cand_id: reason} of the grouping table's detections (``table``: cand_id -> row) the build did not read (not in
+    ``sel``) that a removal table of ``dirs`` (REMOVED_TABLES) names: removed before the builder by the selection or the
+    ephemeris filter. A record lists them so the cumulative's gate (lib/catalog/delta_build.standing) accepts exactly these
+    absences and refuses any other (DECISION-20261114-PR51-F4-RECORD-REMOVALS-BEFORE-BUILDER). It records removals that
+    happened; it removes nothing."""
+    out = {}
+    for d in dirs:
+        for name in REMOVED_TABLES:
+            p = os.path.join(d, name)
+            if not os.path.exists(p):
+                continue
+            with open(p, newline='') as f:
+                for r in csv.DictReader(f):
+                    c = r.get('cand_id') or ''
+                    if c and c in table and c not in sel and c not in out:
+                        out[c] = f'{name}: {r.get("removal_reason") or "no reason given"}'
+    return out
+
+
+def removed_dirs(gated):
+    """The run directories whose removal tables a build's record reads: REMOVED_DIRS_ENV when set (a delta build's input is
+    assembled from the all-nights run and its nights' runs), else the directory of the build's input ``gated``."""
+    v = os.environ.get(REMOVED_DIRS_ENV) or ''
+    return [d for d in v.split(os.pathsep) if d] or [os.path.dirname(os.path.abspath(gated))]
 
 
 def group_digest_of(rows):
@@ -746,7 +777,9 @@ class Frozen:
                    rho={f'{smp}|{band}': float(v) for (smp, band), v in ns['RHO'].items()},
                    sources=srcs,
                    rows={c: [g.T[c]['identity_id'], g.group_digest(g.T[c]['multiples_id'])] for c in kept},
-                   vetoed=sorted(set(sel) - set(kept)))
+                   vetoed=sorted(set(sel) - set(kept)),
+                   # the table's detections removed before the builder (selection / ephemeris), with the reason
+                   removed=removed_before_builder(removed_dirs(gated), set(sel), g.T))
         p = os.path.join(out_dir, FROZEN_RECORD)
         _write_json(p, rec)
         return p, len(kept), len(srcs)
@@ -798,6 +831,8 @@ class Frozen:
                             # the selected detections the leak veto removed (as builder_frozen.json): with `rows`, every
                             # detection this build read - the cumulative's gate compares that set with the present table's
                             vetoed=sorted(sel - {r['cand_id'] for r in ns['rows']}),
+                            # the table's detections removed before the builder (selection / ephemeris), with the reason
+                            removed=removed_before_builder(removed_dirs(ns['gated_csv']), sel, g.T),
                             grouping_table=dict(path=os.path.abspath(g.table_path), sha1=g.table_sha1),
                             touch_all=self.touch_all, input_detections=len(ns['rows']), new_detections=len(self.new),
                             rows={r['cand_id']: [g.T[r['cand_id']]['identity_id'],

@@ -117,11 +117,14 @@ def grouping_mix(lsts, present=present_grouping):
     grouping state's table, never a majority of the directories). A regroup renames identities (display names follow mean
     positions; 121 I / 15 V renamed between the 10-25 and 11-03 inputs, the 11-04 review), and the cumulative merges the LST
     runs by name: a mix would show one identity under two names or join two under one.
-      - a catalog directory whose grouping_table.json (the builder runner's provenance, lib/catalog/wraps/builder_grouping.py,
-        or a view's, lib/catalog/delta_build.view_catalog) names the present table's sha1 passes;
-      - a directory that names ANOTHER table passes only when THIS gate finds, from the directory's own record, that it
-        stands under the present table (lib/catalog/delta_build.standing: the record bound to the directory by its sha256,
-        every detection grouped as recorded, the populations of the hour and key equal). No stored certificate is trusted;
+      - EVERY catalog directory, whatever table its grouping_table.json (the builder runner's provenance,
+        lib/catalog/wraps/builder_grouping.py, or a view's, lib/catalog/delta_build.view_catalog) names, passes only when
+        THIS gate finds, from the directory's own record, that it stands under the present table
+        (lib/catalog/delta_build.standing: the record bound to the directory by its sha256, every detection grouped as
+        recorded, the populations of the hour and key equal but for the detections the record lists as removed before the
+        builder). A directory naming the present sha1 is checked too: the table identity is not taken from the directory's
+        own provenance (DECISION-20261114-PR51-F3-POPULATION-CHECK-ON-EVERY-DIRECTORY; the carried-root rule,
+        DECISION-20261114-PR47-CARRIED-ROOT-READERS-TAKE-TABLE-FROM-INDEX). No stored certificate is trusted;
       - anything else refuses: no provenance, a table that cannot be read, a directory that does not stand, and a MISSING
         directory: an LST of ``lsts`` whose run holds no catalog directory of a Stokes and key class (sb | wb) of which the
         present table has detections of that hour (judged for each Stokes whose present table was read).
@@ -158,9 +161,8 @@ def grouping_mix(lsts, present=present_grouping):
             if now[S] is None:
                 continue
             table, g = now[S]
-            if sha == g[2]:
-                continue
-            try:
+            try:                # EVERY directory, also one naming the present sha1 (its own provenance is not the pass's
+                #                 index: DECISION-20261114-PR51-F3-POPULATION-CHECK-ON-EVERY-DIRECTORY)
                 st = DB.standing(d, g, table, l, f'{S}_{kind}')
             except (DB.DeltaRefusal, ValueError, KeyError, TypeError) as e:     # a malformed record: a refusal, not a crash
                 st = dict(ok=False, why=f'its record could not be certified ({type(e).__name__}: {str(e)[:200]})')
@@ -172,9 +174,10 @@ def grouping_mix(lsts, present=present_grouping):
                 fix = ('make this hour\'s catalog view again in a night pass (catalog --tier sublst; its delta builds), or '
                        'build this LST again from stage build' if st.get('record') == DB.VIEW_ROWS else
                        'build this LST again from stage build')
-                bad.append((l, f'{os.path.basename(d)} names the grouping table {sha[:12]}, the present table is {g[2][:12]} '
-                               f'({table}), and the directory does not stand under it: {st["why"]} - {fix} (the cumulative '
-                               f'joins LST runs by identity name)'))
+                named = ('names the present grouping table' if sha == g[2] else
+                         f'names the grouping table {sha[:12]}, the present table is')
+                bad.append((l, f'{os.path.basename(d)} {named} {g[2][:12]} ({table}), and the directory does not stand under '
+                               f'it: {st["why"]} - {fix} (the cumulative joins LST runs by identity name)'))
     for S, v in now.items():            # a key of an hour the present table holds detections of must have its directory
         if not v:
             continue

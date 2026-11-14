@@ -430,6 +430,19 @@ def test_view():
           v0['rows'] == {c: v for c, v in digests(gold).items() if c != 'c5'} and v0['vetoed'] == ['c5'] and v0['kind'] == 'certificate' and v1['rows'] == dl['rows']
           and v1['vetoed'] == ['c5'] and v1['kind'] == 'delta' and v1['grouping_table']['sha1'] == gnew[2]
           and v1['source_record']['sha1'] == DB._sha1(f'{D}/builder_delta.json'), (v0, v1))
+    # review 51 F4: the view record carries its source record's detections removed before the builder (none: an empty map)
+    D2 = f'{R}/N2/source_catalogs_noveto_V_sb'
+    shutil.rmtree(D2, ignore_errors=True)
+    shutil.copytree(D, D2)
+    put(f'{D2}/builder_delta.json', [json.dumps(dict(dl, removed={'x9': 'selected_all_ephem_removed.csv: moon 0.1 deg'}))])
+    DB.view_catalog(f'{R}/V2', A, D2, gnew, tnew)
+    v2 = json.load(open(f'{R}/V2/builder_view.json'))
+    check('review 51 F4: the view record carries the source record\'s removed-before-builder map ({} when it has none)',
+          v0['removed'] == {} == v1['removed'] and v2['removed'] == {'x9': 'selected_all_ephem_removed.csv: moon 0.1 deg'},
+          (v0.get('removed'), v1.get('removed'), v2.get('removed')))
+    put(f'{D2}/builder_delta.json', [json.dumps(dict(dl, removed=['x9']))])
+    why = refusal(DB.view_catalog, f'{R}/V3', A, D2, gnew, tnew)
+    check('review 51 F4: ... and refuses one that is not a mapping', 'not a mapping' in why and 'REFUSING' in why, why)
     cv1 = json.load(open(f'{V1}/catalog_view.json'))
     check('view record: catalog_view.json and the provenance name its sha256; the all-nights binding is not carried',
           cv1['view_record']['sha256'] == sha256(f'{V1}/builder_view.json') == prov['view']['record_sha256']

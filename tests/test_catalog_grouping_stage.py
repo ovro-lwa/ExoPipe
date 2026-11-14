@@ -831,7 +831,9 @@ def test_grouping_mix():
     """review 2026-11-04 F3 and the per-hour form of it: serve --tier sublst under design B refuses a cumulative whose LST
     builds do not all stand on the PRESENT grouping table - a directory that names it passes; one that names another table
     passes only when the gate itself certifies it from the directory's own record (lib/catalog/delta_build.standing);
-    an LST built without the design-B grouping is named - lib/serve/sublst_build.grouping_mix"""
+    an LST built without the design-B grouping is named - lib/serve/sublst_build.grouping_mix. PR 51 F3: a directory that
+    names the present table is certified too (its population checked); F4: a detection the record lists as removed before
+    the builder is an accepted absence, an unlisted one refuses"""
     import hashlib
     from exopipe.phase3.lib.serve import sublst_build as SB
     from exopipe.phase3.lib.catalog import delta_build as DB
@@ -851,8 +853,9 @@ def test_grouping_mix():
     t_old, g_old = table('old', old)
     t_now, g_now = table('now', old + [('c2', '07h', 'G5')])            # a new night's detection at 07h
 
-    def lst(L, g=None, built=None, bind=True, vetoed=()):
-        """an all-nights catalog directory of LST L built under grouping g, from the detections of ``built`` (its record)"""
+    def lst(L, g=None, built=None, bind=True, vetoed=(), removed=None):
+        """an all-nights catalog directory of LST L built under grouping g, from the detections of ``built`` (its record);
+        ``removed``: the record's detections removed before the builder ({cand_id: reason}; None = no such field)"""
         d = f'{R}/Run_SLST{L[:2]}B/source_catalogs_I_sb'
         shutil.rmtree(d, ignore_errors=True)
         os.makedirs(d)
@@ -860,9 +863,12 @@ def test_grouping_mix():
             return d
         if built is not None:
             Tb, mg = g[0], g[1]
-            json.dump(dict(version=2, grouping_table=dict(path='x', sha1=g[2]), vetoed=sorted(vetoed),
-                           rows={c: [Tb[c]['identity_id'], BG.group_digest_of(mg[Tb[c]['multiples_id']])] for c in built
-                                 if c not in vetoed}), open(f'{d}/builder_frozen.json', 'w'))
+            rec = dict(version=2, grouping_table=dict(path='x', sha1=g[2]), vetoed=sorted(vetoed),
+                       rows={c: [Tb[c]['identity_id'], BG.group_digest_of(mg[Tb[c]['multiples_id']])] for c in built
+                             if c not in vetoed})
+            if removed is not None:
+                rec['removed'] = removed
+            json.dump(rec, open(f'{d}/builder_frozen.json', 'w'))
         prov = dict(table='/x/grouping_I/detections.csv', table_sha1=g[2])
         if built is not None and bind:
             prov['frozen_record_sha256'] = hashlib.sha256(open(f'{d}/builder_frozen.json', 'rb').read()).hexdigest()
@@ -876,28 +882,54 @@ def test_grouping_mix():
         calls.append(S)
         return t_now, g_now
     try:
-        lst('05h', g_now)
-        lst('06h', g_now)
+        lst('05h', g_now, built=['a1', 'a2'])
+        lst('06h', g_now, built=['b1'])
         bad, tables, how = SB.grouping_mix(['05h', '06h'], present)
-        check('F3 gate: two LST builds on the present grouping table pass (nothing to certify; the table read once)',
-              not bad and tables == {'I': {g_now[2]: ['05h', '06h']}} and how['certified'] == [] and calls == ['I']
+        check('F3 gate: two LST builds on the present grouping table pass, each certified here too (the table read once)',
+              not bad and tables == {'I': {g_now[2]: ['05h', '06h']}} and [c['lst'] for c in how['certified']] == ['05h', '06h']
+              and calls == ['I']
               and how['present']['I']['sha1'] == g_now[2] and how['present']['I']['sha256'] == g_now[3], (bad, tables, how))
+        lst('05h', g_now, built=['a1'])
+        bad, tables, how = SB.grouping_mix(['05h', '06h'], present)
+        check('review 51 F3: a directory that names the present table but whose record lacks a detection of the hour refuses '
+              '(no skip on its own provenance)',
+              len(bad) == 1 and bad[0][0] == '05h' and 'names the present grouping table' in bad[0][1]
+              and '1 are not in the record (a2)' in bad[0][1] and [c['lst'] for c in how['certified']] == ['06h'], bad)
+        lst('05h', g_now, built=['a1'], bind=False)
+        bad, tables, how = SB.grouping_mix(['05h', '06h'], present)
+        check('review 51 F3: ... and one naming the present table whose record is not bound by sha256 refuses',
+              len(bad) == 1 and bad[0][0] == '05h' and 'names no sha256' in bad[0][1], bad)
+        lst('05h', g_now, built=['a1'], removed={'a2': 'selected_all_ephem_removed.csv: moon 0.120 deg < 0.25 deg'})
+        bad, tables, how = SB.grouping_mix(['05h', '06h'], present)
+        c5 = [c for c in how['certified'] if c['lst'] == '05h']
+        check('review 51 F4: a detection of the hour the record lists as removed before the builder is an accepted absence',
+              not bad and len(c5) == 1 and c5[0]['detections'] == 1, (bad, how))
+        lst('05h', g_now, built=['a1'], removed={'zz': 'selected_all_removed.csv: below the S/N floor'})
+        bad, tables, how = SB.grouping_mix(['05h', '06h'], present)
+        check('review 51 F4: an absence the record does not list refuses (a listed removal of another detection excuses '
+              'nothing)', len(bad) == 1 and bad[0][0] == '05h' and '(a2)' in bad[0][1], bad)
+        lst('05h', g_now, built=['a1'], removed=['a2'])
+        bad, tables, how = SB.grouping_mix(['05h', '06h'], present)
+        check('review 51 F4: a removed list that is not a mapping refuses',
+              len(bad) == 1 and bad[0][0] == '05h' and 'not a mapping' in bad[0][1], bad)
+        lst('05h', g_now, built=['a1', 'a2'])
         lst('06h', g_old, built=['b1'])
         bad, tables, how = SB.grouping_mix(['05h', '06h'], present)
-        c = (how['certified'] or [{}])[0]
+        c = ([c for c in how['certified'] if c['lst'] == '06h'] or [{}])[0]
         check('gate: an LST built under an earlier table whose hour the present table leaves as it was is certified here',
-              not bad and len(how['certified']) == 1 and c['lst'] == '06h' and c['key'] == 'I_sb' and c['detections'] == 1
+              not bad and len(how['certified']) == 2 and c['lst'] == '06h' and c['key'] == 'I_sb' and c['detections'] == 1
               and c['record'] == 'builder_frozen.json' and c['table_to']['sha1'] == g_now[2] and len(c['record_sha256']) == 64
               and tables == {'I': {g_now[2]: ['05h'], g_old[2]: ['06h']}}, (bad, how))
         lst('07h', g_old, built=['c1'])
         bad, tables, how = SB.grouping_mix(['05h', '06h', '07h'], present)
         check('gate: an LST whose hour gained a detection in the present table refuses, with both directions counted',
               len(bad) == 1 and bad[0][0] == '07h' and 'does not stand' in bad[0][1] and '1 are not in the record (c2)' in bad[0][1]
-              and "of the record's 1, 0 are not among them" in bad[0][1] and len(how['certified']) == 1, bad)
+              and "of the record's 1, 0 are not among them" in bad[0][1] and len(how['certified']) == 2, bad)
         lst('06h', g_old, built=['b1'], bind=False)
         bad, tables, how = SB.grouping_mix(['05h', '06h'], present)
         check('gate: a record its directory\'s provenance does not name by sha256 certifies nothing',
-              len(bad) == 1 and bad[0][0] == '06h' and 'names no sha256' in bad[0][1] and not how['certified'], bad)
+              len(bad) == 1 and bad[0][0] == '06h' and 'names no sha256' in bad[0][1]
+              and [c['lst'] for c in how['certified']] == ['05h'], bad)
         lst('06h', g_old)
         bad, tables, how = SB.grouping_mix(['05h', '06h'], present)
         check('gate: an LST built under another table without a record refuses (the cumulative joins LST runs by identity name)',
@@ -908,7 +940,7 @@ def test_grouping_mix():
         bad, tables, how = SB.grouping_mix(['05h', '06h'], present)
         check('gate: LSTs that agree with each other on an EARLIER table do not pass by agreeing (the present table decides)',
               len(bad) == 2 and tables == {'I': {g_old[2]: ['05h', '06h']}}, bad)
-        lst('05h', g_now)
+        lst('05h', g_now, built=['a1', 'a2'])
         lst('08h')
         bad, tables, how = SB.grouping_mix(['05h', '08h'], present)
         check('F3 gate: an LST built without the design-B grouping (no provenance) is named',
@@ -933,8 +965,9 @@ def test_grouping_mix():
                   open(f'{R}/Run_SLST06B/source_catalogs_I_sb/grouping_table.json', 'w'))
         bad, tables, how = SB.grouping_mix(['05h', '06h'], present)
         check('review 51: a bound record of the wrong form refuses (no traceback)',
-              len(bad) == 1 and bad[0][0] == '06h' and 'does not stand' in bad[0][1] and not how['certified'], bad)
-        lst('06h', g_now)
+              len(bad) == 1 and bad[0][0] == '06h' and 'does not stand' in bad[0][1]
+              and [c['lst'] for c in how['certified']] == ['05h'], bad)
+        lst('06h', g_now, built=['b1'])
         shutil.rmtree(f'{R}/Run_SLST07B', ignore_errors=True)
         bad, tables, how = SB.grouping_mix(['05h', '06h', '07h'], present)
         check('review 51: an LST whose run lacks the directory of a key the present table holds detections of refuses',
@@ -944,6 +977,38 @@ def test_grouping_mix():
         check('review 51: the key classes follow the configured split (a band of neither class is in no key)',
               DB.key_class('sb')('46MHz') and not DB.key_class('sb')('Red') and DB.key_class('wb')('Red')
               and DB.key_class('wb')('Full') and not DB.key_class('wb')('46MHz') and not DB.key_class('wb')('Odd'))
+        # review 51 F4: what a builder record lists as removed before the builder - the table's detections the build did not
+        # read that the selection's or the ephemeris filter's removal table of a run directory names, with the reason
+        Ua, Un = f'{R}/U_all', f'{R}/U_night'
+        for d, name, rows in ((Ua, 'selected_all_removed.csv', [('a2', 'below the S/N floor'), ('zz', 'not in the table')]),
+                              (Un, 'selected_all_ephem_removed.csv', [('c2', 'moon 0.120 deg < 0.25 deg'), ('a1', 'read')])):
+            os.makedirs(d, exist_ok=True)
+            with open(f'{d}/{name}', 'w', newline='') as f:
+                f.write('cand_id,snr,removal_reason\n' + ''.join(f'{c},5.0,{r}\n' for c, r in rows))
+        rm = BG.removed_before_builder([Ua, Un], {'a1', 'b1', 'c1'}, g_now[0])
+        check('review 51 F4: removed_before_builder lists the table\'s unread detections a removal table names, with the reason '
+              '(a detection the build read, or one not in the table, is not listed)',
+              rm == {'a2': 'selected_all_removed.csv: below the S/N floor',
+                     'c2': 'selected_all_ephem_removed.csv: moon 0.120 deg < 0.25 deg'}, rm)
+        check('review 51 F4: ... and nothing when no run directory holds a removal table',
+              BG.removed_before_builder([f'{R}/Run_SLST05B'], {'a1'}, g_now[0]) == {})
+        env0 = GS.builder_env(t_now, '10min', sha1=g_now[2])
+        env1 = GS.builder_env(t_now, '10min', sha1=g_now[2], frozen='delta', frozen_record='/x/builder_frozen.json',
+                              removed_dirs=[Ua, Un])
+        old_env = os.environ.get(BG.REMOVED_DIRS_ENV)
+        try:
+            os.environ[BG.REMOVED_DIRS_ENV] = env1[BG.REMOVED_DIRS_ENV]
+            dirs1 = BG.removed_dirs('selected_I_sb.csv')
+            os.environ[BG.REMOVED_DIRS_ENV] = env0[BG.REMOVED_DIRS_ENV]
+            dirs0 = BG.removed_dirs(f'{Ua}/selected_I_sb.csv')
+        finally:
+            if old_env is None:
+                os.environ.pop(BG.REMOVED_DIRS_ENV, None)
+            else:
+                os.environ[BG.REMOVED_DIRS_ENV] = old_env
+        check('review 51 F4: builder_env always sets the removal directories (empty = the input\'s own directory; a delta '
+              'build names the all-nights run and its nights)',
+              env0[BG.REMOVED_DIRS_ENV] == '' and dirs0 == [Ua] and dirs1 == [Ua, Un], (env0, dirs0, dirs1))
     finally:
         SB.lst_run = orig
 
