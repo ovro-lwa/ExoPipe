@@ -321,6 +321,13 @@ def test_phase1_code_recorded():
     for p in (img_g, img_41):
         write_frame(p, '2030-01-01T00:00:00.3')
     frames = I.phase1_frames('18h', '2030-01-01', '41MHz', phase1_root=p1, run_pins=os.path.join(T, 'no_pins.csv'))
+    gr = os.path.join(T, 'gpu')                  # the GPU pipeline's tree (paths.SNAPSHOT_GPU_FRAME_ROOT): same layout
+    shutil.rmtree(gr, ignore_errors=True)
+    grd = build_run(gr, '18h', '2030-01-05', 'Run_GSItest_v1', '41MHz', range(2), T0)
+    with open(os.path.join(grd, 'provenance.json'), 'w') as f:
+        json.dump({'pipeline': 'gpu-subband-imaging', 'pipeline_version': 'cccc333', 'subband': '41MHz',
+                   'run_label': 'Run_GSItest_v1'}, f)
+    gpu_frame = os.path.join(grd, 'snapshots_clean', sorted(os.listdir(os.path.join(grd, 'snapshots_clean')))[0])
     older = os.path.join(p1, '18h', '2030-01-01', 'Run_20300101_000000', '41MHz', 'snapshots_clean')
     older_frame = os.path.join(older, sorted(os.listdir(older))[0])
     nopro = os.path.join(p1, '18h', '2030-01-03', 'Run_20300101_000000', '41MHz', 'snapshots_clean')
@@ -330,8 +337,8 @@ def test_phase1_code_recorded():
     shutil.copyfile(older_frame, staged)
     out = os.path.join(T, 'recout')
     shutil.rmtree(out, ignore_errors=True)
-    saved = (CFG.paths.PHASE1_ROOT, CFG.paths.PHASE2_ROOT)
-    CFG.paths.PHASE1_ROOT, CFG.paths.PHASE2_ROOT = p1, p2
+    saved = (CFG.paths.PHASE1_ROOT, CFG.paths.PHASE2_ROOT, CFG.paths.SNAPSHOT_GPU_FRAME_ROOT)
+    CFG.paths.PHASE1_ROOT, CFG.paths.PHASE2_ROOT, CFG.paths.SNAPSHOT_GPU_FRAME_ROOT = p1, p2, gr
     try:
         check('phase1_code_of: a Phase-1 frame -> its run and subband', [(n, sb, c['run'], c['pipeline_version'])
               for n, sb, c in I.phase1_code_of(older_frame)] == [('18h_2030-01-01', '41MHz', 'Run_20300101_000000', 'aaaa111')])
@@ -346,12 +353,18 @@ def test_phase1_code_recorded():
         check('a Phase-1 run without provenance.json: pipeline_version None and the reason (never guessed)',
               nc and nc[0][2]['pipeline_version'] is None and 'no provenance.json' in nc[0][2]['missing'], nc)
         check('a staged copy (outside PHASE1_ROOT / PHASE2_ROOT) has no Phase-1 code', I.phase1_code_of(staged) == [])
+        gc = I.phase1_code_of(gpu_frame)
+        check('phase1_code_of: a frame of the GPU pipeline\'s tree -> its run there, the pipeline it names and its commit; an '
+              'Orca run\'s code names no pipeline', I.phase1_source(gpu_frame)[0] == 'gpu'
+              and [(n, sb, c['run'], c['pipeline_version'], c.get('pipeline')) for n, sb, c in gc] ==
+              [('18h_2030-01-05', '41MHz', 'Run_GSItest_v1', 'cccc333', 'gpu-subband-imaging')]
+              and 'pipeline' not in I.phase1_code_of(older_frame)[0][2], gc)
         run = record.Run('test', ['test_core_inputs'], out, CFG)
         run.commit = 'abc1234'                     # a clean-tree commit, so resume_check judges the inputs (test_core_v2)
         with run.unit('u1') as u:
             for _ts, p in frames['I']:
                 u.add_input(p)
-            for p in (older_frame, img_g, img_41, nopro_frame, staged):
+            for p in (older_frame, img_g, img_41, nopro_frame, staged, gpu_frame):
                 u.add_input(p)
             dst = os.path.join(out, 'x.csv')
             os.makedirs(out, exist_ok=True)
@@ -367,7 +380,9 @@ def test_phase1_code_recorded():
               {'Run_20300101_000000': 'aaaa111', 'Run_20300201_000000': 'bbbb222'}
               and {r: v.get('pipeline_version') for r, v in n1.get('46MHz', {}).items()} == {'Run_20300201_000000': 'bbbb222'}
               and set(n1.get('50MHz', {})) == {'unknown'}
-              and pc.get('18h_2030-01-03', {}).get('41MHz', {}).get('Run_20300101_000000', {}).get('missing'), pc)
+              and pc.get('18h_2030-01-03', {}).get('41MHz', {}).get('Run_20300101_000000', {}).get('missing')
+              and pc.get('18h_2030-01-05', {}).get('41MHz', {}).get('Run_GSItest_v1', {}).get('pipeline') ==
+              'gpu-subband-imaging', pc)
         ins = rec['inputs']
         check('each input entry names its Phase-1 run and version; the staged copy none',
               ins[os.path.abspath(older_frame)].get('phase1_code') == {'41MHz': {'run': 'Run_20300101_000000',
@@ -385,7 +400,7 @@ def test_phase1_code_recorded():
         check('a unit with no Phase-1 / Phase-2 input writes no phase1_code', 'phase1_code' not in
               record.load_record(out, 'test', 'u2'))
     finally:
-        CFG.paths.PHASE1_ROOT, CFG.paths.PHASE2_ROOT = saved
+        CFG.paths.PHASE1_ROOT, CFG.paths.PHASE2_ROOT, CFG.paths.SNAPSHOT_GPU_FRAME_ROOT = saved
 
 
 def test_real():
@@ -428,6 +443,11 @@ def test_real():
           and mine['I'] and mine['V'] and all(p.startswith(groot + '/') for st in ('I', 'V') for _, p in mine[st])
           and not isinstance(prod, str) and all(prod[st] == [list(x) for x in mine[st]] for st in ('I', 'V')),
           prod if isinstance(prod, str) else (len(prod['I']), len(mine['I'])))
+    gc = I.phase1_code_of(mine['I'][0][1])
+    check(f'real GPU-frame cell {gl} {gd} {gsb}: phase1_code_of a frame names its GPU run, the GPU pipeline and its commit',
+          len(gc) == 1 and gc[0][:2] == (f'{gl}_{gd}', gsb) and gc[0][2]['run'].startswith('Run_')
+          and f"/{gc[0][2]['run']}/{gsb}/" in mine['I'][0][1]
+          and gc[0][2].get('pipeline') == 'gpu-subband-imaging' and gc[0][2]['pipeline_version'], gc)
 
 
 def test_run_pins_env_override():

@@ -161,7 +161,24 @@ def test_items():
             raise AssertionError(bad)
         except record.Refusal:
             pass
-    print('items: LST-band cells, unit names, night cells, --epochs, --lsts, filters, refusals')
+    # a --cells pattern matches the Phase-1 archive's cells and, for the cells of paths.SNAPSHOT_GPU_FRAME_CELLS, the GPU
+    # pipeline's tree (their frame root): a listed cell found only there is matched, an unlisted one there is not
+    p1, gr = os.path.join(TMP, 'universe', 'phase1'), os.path.join(TMP, 'universe', 'gpu')
+    for root, cell in ((p1, '21h/2025-08-26'), (gr, '21h/2025-08-26'), (gr, '21h/2024-12-19'), (gr, '21h/2024-12-20')):
+        os.makedirs(os.path.join(root, cell), exist_ok=True)
+    gl = os.path.join(TMP, 'universe', 'gpu_cells.txt')
+    with open(gl, 'w') as f:
+        f.write('# test\n21h 2024-12-19\n')
+    setattr_tmp(CFG.paths, 'PHASE1_ROOT', p1)
+    setattr_tmp(CFG.paths, 'SNAPSHOT_GPU_FRAME_ROOT', gr)
+    setattr_tmp(CFG.paths, 'SNAPSHOT_GPU_FRAME_CELLS', gl)
+    try:
+        assert TN._universe() == ['21h_2024-12-19', '21h_2025-08-26'], TN._universe()
+        it = TN.expand_cells(ns(cells='21h_2024-12-*'))
+        assert it == [('21h_2024-12-19', '21h_2024-12-19', None)], it
+    finally:
+        restore()
+    print('items: LST-band cells, unit names, night cells, --epochs, --lsts, filters, refusals, the cell universe')
 
 
 # =====================================================================================================================
