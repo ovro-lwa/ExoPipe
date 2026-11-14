@@ -149,6 +149,18 @@ CENSUS = {'assoc_groups(': {2}, 'SSTACK_GATE': {4, 7}, '_multi_integration(': {2
 FROZEN_MODES = ('', 'record', 'delta', 'passthrough')
 FROZEN_RECORD = 'builder_frozen.json'       # written by the all-nights build (record), read by a delta build
 DELTA_RECORD = 'builder_delta.json'         # written by a delta build
+
+
+def group_digest_of(rows):
+    """A digest of everything a source row takes from its multiples-level group: the group's detections (``rows``: the
+    grouping table's rows of one multiples_id) with their identity, identity name, window, multiplicity and group name. Equal
+    digests = the same group for every row built from it. One definition: the builder's delta mode, the frozen and delta
+    records, and the certificate of an untouched build (lib/catalog/delta_build.certificate) all use this function."""
+    lines = sorted('|'.join((g['cand_id'], g['identity_id'], g['identity_name'], g['lst'], g['date'], g['multiple'],
+                             g['multiplicity'], g['multiples_name'])) for g in rows)
+    return hashlib.sha1('\n'.join(lines).encode()).hexdigest()[:16]
+
+
 FROZEN_VERSION = 2                          # 2: the record names what the footprint and the densities were computed from
 FROZEN_PATCHES = [
     # other bands' detections a source is matched against (allband_positions, 728-745: column other_bands, the MB rung)
@@ -335,9 +347,7 @@ class Hook:
         identity, window and multiplicity. Equal digests = the same group for every row built from it."""
         d = self._digest.get(multiples_id)
         if d is None:
-            lines = sorted('|'.join((g['cand_id'], g['identity_id'], g['identity_name'], g['lst'], g['date'], g['multiple'],
-                                     g['multiplicity'], g['multiples_name'])) for g in self.mgroup[multiples_id])
-            d = self._digest[multiples_id] = hashlib.sha1('\n'.join(lines).encode()).hexdigest()[:16]
+            d = self._digest[multiples_id] = group_digest_of(self.mgroup[multiples_id])
         return d
 
     def multiple(self, mem):
@@ -785,6 +795,8 @@ class Frozen:
         _write_json(p, dict(version=FROZEN_VERSION, frozen_record=self.rec_path, frozen_record_sha1=self.rec_sha1,
                             grouping_table=dict(path=os.path.abspath(g.table_path), sha1=g.table_sha1),
                             touch_all=self.touch_all, input_detections=len(ns['rows']), new_detections=len(self.new),
+                            rows={r['cand_id']: [g.T[r['cand_id']]['identity_id'],
+                                                 g.group_digest(g.T[r['cand_id']]['multiples_id'])] for r in ns['rows']},
                             touched=touched, checks=dict(sys_as=len(rec['sys_as']),
                                                          footprint='the record\'s; LSTs, Masters, beams, cross-match list '
                                                                    'and selection module equal to the all-nights build\'s',
