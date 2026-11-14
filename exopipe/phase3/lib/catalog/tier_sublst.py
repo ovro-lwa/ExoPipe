@@ -468,11 +468,14 @@ def output_fingerprints(paths):
     return {os.path.abspath(p): rec.fingerprint(p) for p in paths if os.path.isfile(p)}
 
 
-def check_from(out_root, unit_prefix, stages, first, recdir, in_place=(), ok_status=('done', 'no-input')):
+def check_from(out_root, unit_prefix, stages, first, recdir, in_place=(), ok_status=('done', 'no-input'), roots=None):
     """`--from stages[first]`: the record of the stage before must be done (or a recorded no-input of an optional stage) and
     its file outputs unchanged; each file rewritten IN PLACE is checked against the latest earlier stage that wrote it and,
     when it changed since, restored from that stage's copy (<recdir>/stage_<name>/) if the copy matches the record.
-    Returns notes; refuses otherwise (DESIGN 11.5: a stage reads only what the previous stage's record lists)."""
+    Returns notes; refuses otherwise (DESIGN 11.5: a stage reads only what the previous stage's record lists).
+    roots: the directories the run's stages write their outputs in (default: out_root alone); a recorded output outside
+    every one of them refuses. tier_snapshot on a production root passes its rechain_<NAME> and tie cache under
+    catalog_snapshot.BATCH_DIR as well (review of PR 35, F1)."""
     rec = _record()
     prev = f'{unit_prefix}.{stages[first - 1]}'
     r = stage_record(out_root, prev)
@@ -481,13 +484,14 @@ def check_from(out_root, unit_prefix, stages, first, recdir, in_place=(), ok_sta
     if r.get('status') not in ok_status:
         refuse(f'--from {stages[first]}: the previous stage {prev} is {r.get("status")} ({r.get("reason")})')
     notes = []
-    root = os.path.abspath(out_root) + os.sep
+    roots = tuple(os.path.abspath(d) + os.sep for d in (roots or (out_root,)))
 
     def _inside(p, unit):
         # a record names its outputs by absolute path: a copied run directory keeps its source's paths, and a check or a
         # restore through them would read or rewrite the source (speed-up session finding 2026-11-13)
-        if not os.path.abspath(p).startswith(root):
-            refuse(f'--from {stages[first]}: the record of {unit} names {p}, outside {out_root} (a copied run directory '
+        if not os.path.abspath(p).startswith(roots):
+            where = ', '.join(r.rstrip(os.sep) for r in roots)
+            refuse(f'--from {stages[first]}: the record of {unit} names {p}, outside {where} (a copied run directory '
                    f'keeps the paths of the one it was copied from); run the chain in this directory from its first stage')
         return p
 

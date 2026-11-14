@@ -605,6 +605,62 @@ def test_from_copied_run():
        any('restored' in n for n in notes) and open(f'{A}/master_catalog.csv').read() == 'cand_id\nV1\nV2\nV3\n', notes)
 
 
+def test_from_snapshot_production_roots():
+    """Review of PR 35, F1: on a production root tier_snapshot writes rechain_<NAME> (store, prefit) and the tie cache (tie)
+    under catalog_snapshot.BATCH_DIR, outside the run; `--from prefit / tie / chain` must accept those recorded outputs (the
+    Ctx's from_roots) and still refuse one outside every root."""
+    import types
+    from exopipe.phase3.core import record
+    from exopipe.phase3.config import CFG
+    from exopipe.phase3.lib.catalog import tier_sublst as S, tier_snapshot as P
+    prod, batch, name = f'{T}/prodroot', f'{T}/pbatch', 'Run_SNAPZ'
+    os.makedirs(prod, exist_ok=True)
+    cf = f'{T}/pcells.txt'
+    open(cf, 'w').write('14h_2025-03-09\n')
+    saved = CFG.paths.PRODUCTION_ROOTS, CFG.catalog_snapshot.BATCH_DIR
+    CFG.paths.PRODUCTION_ROOTS, CFG.catalog_snapshot.BATCH_DIR = tuple(saved[0]) + (prod,), batch
+    try:
+        ctx = P.Ctx(types.SimpleNamespace(run_label=name, cells=f'@{cf}', snap_analysis=None),
+                    types.SimpleNamespace(out_root=f'{prod}/{name}', dry_run=True))
+    finally:
+        CFG.paths.PRODUCTION_ROOTS, CFG.catalog_snapshot.BATCH_DIR = saved
+    roots = ctx.from_roots()
+    ok('production root: the Ctx is production and its rechain_<NAME> and tie cache lie under BATCH_DIR, outside the run',
+       ctx.prod and ctx.L == f'{batch}/rechain_{name}' and ctx.tiecache == f'{batch}/tiecache'
+       and roots == (f'{prod}/{name}', ctx.L, ctx.tiecache), (ctx.prod, roots))
+    outs = {'preflight': [f'{ctx.RUN}/preflight.json'], 'store': [ctx.S, f'{ctx.L}/repair.csv'],
+            'prefit': [f'{ctx.L}/prefit1.csv'], 'tie': [f'{ctx.tiecache}/tie_14h_2025-03-09.csv']}
+    for st, paths in outs.items():
+        for q in paths:
+            os.makedirs(os.path.dirname(q), exist_ok=True)
+            open(q, 'w').write(f'{st}\n')
+        record.atomic_write_json(record.record_path(ctx.RUN, 'catalog', f'{name}.{st}'),
+                                 {'status': 'done', 'unit': f'{name}.{st}',
+                                  'meta': {'output_fingerprints': {q: record.fingerprint(q) for q in paths}}})
+
+    def frm(stage, **kw):
+        try:
+            S.check_from(ctx.RUN, name, P.STAGES, P.STAGES.index(stage), ctx.recdir, **kw)
+            return ''
+        except record.Refusal as e:
+            return str(e)
+    got = {st: frm(st, roots=roots) for st in ('prefit', 'tie', 'chain')}
+    ok('--from prefit / tie / chain on a production root pass with the Ctx\'s roots (store, prefit and tie outputs under '
+       'BATCH_DIR)', not any(got.values()), got)
+    old = {st: frm(st) for st in ('prefit', 'tie', 'chain')}
+    ok('without the roots each of them refuses "outside" (the finding: the run directory alone)',
+       all('outside' in v for v in old.values()), old)
+    stray = f'{T}/elsewhere/prefit1.csv'
+    os.makedirs(os.path.dirname(stray), exist_ok=True)
+    open(stray, 'w').write('x\n')
+    record.atomic_write_json(record.record_path(ctx.RUN, 'catalog', f'{name}.prefit'),
+                             {'status': 'done', 'unit': f'{name}.prefit',
+                              'meta': {'output_fingerprints': {stray: record.fingerprint(stray)}}})
+    r = frm('tie', roots=roots)
+    ok('a recorded output outside every root still refuses, naming it and the roots', f'names {stray}' in r
+       and 'outside' in r and ctx.tiecache in r, r[:300])
+
+
 def write_snapshot_run(run, cells):
     os.makedirs(f'{run}/candidates/Red/rank0001_Red_J0000+0000', exist_ok=True)
     json.dump({'cells': cells, 'prefit': {'n_without_fit': 0, 'n_at_per_frame_fit_step': 3}, 'n_served_with_unfitted_frames': 0,
@@ -1219,6 +1275,7 @@ def main():
         test_ported_snapshot()
         test_restore_marker()
         test_from_copied_run()
+        test_from_snapshot_production_roots()
         test_content_tests()
         stub = build_stubs()
         site = make_site(stub)
