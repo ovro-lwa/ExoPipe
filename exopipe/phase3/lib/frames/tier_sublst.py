@@ -854,6 +854,8 @@ def optional_member_left_out(ctx, lst, sb, night):
     from exopipe.phase3.lib.masters import sublst_nonmember as NM
     if sb not in ctx.S.WIDEBAND_OPTIONAL:
         return None
+    if ctx.night_owed(lst, night)[0] == 'unreadable':       # the plan gate refuses; a refused record never overrides it
+        return None
     own = night_arm_a_complete(ctx, lst, sb, night)
     if own is None or own[0]:
         return None
@@ -874,7 +876,7 @@ def optional_member_left_out(ctx, lst, sb, night):
                        f'them aside')
     newer = [q for St in ('I', 'V') for q in
              glob.glob(os.path.join(ctx.lst_dir(lst), cell, sb, St, f'sublst_{cell}_{sb}_{St}_w[0-9].fits'))
-             + glob.glob(os.path.join(ctx.root, f'{lst}_masters', sb, St, f'sublst_master_{lst}_{sb}_{St}_w[0-9].fits'))
+             + glob.glob(NM.master_products(ctx.root, lst, sb, St, '[0-9]')[0])
              if mtime(q) > mtime(p)]
     if newer:
         return False, (f'{sb} is not left out: its unit of the night was refused ({gate}) before {sorted(newer)[0]} was '
@@ -1075,9 +1077,13 @@ def stage_wideband(ctx, lst, nights, per_hour):
                           stage='wideband', lst=lst, group=G, nights=alln,
                           master_member={sb: [list(x) for x in m] for sb, m in bm.items()})
             return
-        ev = {sb: (wideband_arm_a(ctx, lst, sb, one_night), refine_complete(ctx, lst, sb)) for sb in mem}
         left = {sb: optional_member_left_out(ctx, lst, sb, one_night) for sb in mem} if one_night else {}
-        inputs = [p for sb in mem for p in (ev[sb][0][2], ev[sb][1][2]) if os.path.exists(p)] + [script]
+        gone = {sb for sb, lo in left.items() if lo and lo[0]}     # left out: its arm-A and S-G8 evidence is not read
+        ev = {sb: (wideband_arm_a(ctx, lst, sb, one_night), refine_complete(ctx, lst, sb)) for sb in mem if sb not in gone}
+        from exopipe.phase3.core import record as _rec           # a left-out member's input is its refused night record
+        inputs = [p for sb in mem for p in ((ev[sb][0][2], ev[sb][1][2]) if sb in ev else
+                                            (_rec.record_path(ctx.root, 'frames', NM.unit_name(lst, one_night, sb)),))
+                  if os.path.exists(p)] + [script]
         admitted = ex.admitted(lst, G, alln)
         if try_resume(ctx.run, ctx.args, name, inputs, admitted):
             return

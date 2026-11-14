@@ -470,6 +470,33 @@ def test_eighteen_mhz_refusal_older_than_a_stack_or_a_master_refuses():
         assert u.status == 'refused' and STUB_LINE in u.reason and len(t.calls) == 1, u.reason
 
 
+def test_eighteen_mhz_review60_plan_gate_kept_and_left_out_evidence_not_read():
+    """Review of PR 60: a job plan that cannot be read is never overridden by a refused 18 MHz record; a left-out
+    member's arm-A and S-G8 evidence is not read, and its refused record of the night is the unit's input for it."""
+    with Root() as t:
+        name, sb = f'{LST}_wideband_{G}_{NIGHT}', '18MHz'
+        for m in t.members:
+            t.night_record(m)
+        p = t.night_record(sb, 'refused', reason=N6)
+
+        def broken(run, opts, lst, night, planned_now=False):
+            raise ValueError('bad plan line')
+
+        with Patch((NM, 'night_plan', broken)):
+            assert FT.optional_member_left_out(t.ctx(), LST, sb, NIGHT) is None
+            u = only(t.run()[0], name)
+            assert u.status == 'refused' and 'could not be read' in u.reason and not t.calls, (u.status, u.reason)
+        seen = []
+        arm, ref = FT.wideband_arm_a, FT.refine_complete
+        with Patch((FT, 'wideband_arm_a', lambda c, l, s, *a, **k: (seen.append(s), arm(c, l, s, *a, **k))[1]),
+                   (FT, 'refine_complete', lambda c, l, s, *a, **k: (seen.append(s), ref(c, l, s, *a, **k))[1])):
+            u = only(t.run()[0], name)
+        assert u.status == 'refused' and STUB_LINE in u.reason and len(t.calls) == 1, u.reason
+        assert sb not in seen and set(seen) == set(t.members) - {sb}, seen
+        ins = [(i['path'] if isinstance(i, dict) else i) for i in u.inputs]
+        assert p in ins and os.path.join(t.root, f'{LST}_x2', 'logs', f'{LST}_{sb}.log') not in ins, ins
+
+
 # =====================================================================================================================
 # a night IN the window Masters (Gregg 2026-11-13): the per-hour 10-minute steps end no-input
 # =====================================================================================================================
