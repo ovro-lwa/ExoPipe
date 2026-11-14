@@ -224,7 +224,8 @@ def member_record(cell_dir, member, lst, p, readers, admitted=({}, {}), perhour=
         if um:
             from exopipe.phase3.core import fallback
             if fallback.policy(UNMEASURED_KEY) == 'fallback':   # as the member's own search: an unmeasured epoch is searched,
-                fallback.site(UNMEASURED_KEY, f'wideband member {member}: night(s) {sorted(um)} unmeasured - admitted, as '   # counted
+                fallback.site('fallbacks.SEARCH_SANITY_FALLBACK',   # counted; = UNMEASURED_KEY, a literal as every site's key
+                              f'wideband member {member}: night(s) {sorted(um)} unmeasured - admitted, as '
                               f'the member\'s own search admits them under this policy', n=len(um))
                 um = {}
         out['unmeasured'] = um
