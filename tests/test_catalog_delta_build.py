@@ -600,6 +600,12 @@ def test_hour():
     check('view root: a night directory with selected_all.csv on an all-nights directory without one refuses',
           'holds no selected_all.csv but the night directory' in why, why)
     os.remove(f'{Nd}/selected_all.csv')
+    keep_det = raw(f'{Nd}/master_catalog.csv')
+    os.remove(f'{Nd}/master_catalog.csv')
+    why = refusal(DB.view_root, r2, '05h', F, [Nd], states, gr, ('noveto',), two)
+    check('view root: a night directory without the detection (or image) table the all-nights directory holds refuses',
+          'holds no master_catalog.csv (the all-nights directory' in why, why)
+    open(f'{Nd}/master_catalog.csv', 'wb').write(keep_det)
     shutil.rmtree(f'{R}/views_sa')
     dg = DB.state_digest(states)
     check('view root: it is not complete before its localizations', rec['complete'] is False and not DB.root_stands(root, dg)

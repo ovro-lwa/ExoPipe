@@ -709,6 +709,22 @@ def _selected_all(root, frozen_from, nights, asm, keys):
     return dict(base=m['base'], appended=len(m['appended']), outside_keys=len(extra))
 
 
+def _whole(frozen_from, nights, name, what):
+    """[every night's ``name``] when the all-nights directory holds one, None when no directory does; REFUSES when only some
+    hold it (the rule of _selected_all: a view merges a table whole or not at all)."""
+    have = [d for d in nights if os.path.exists(os.path.join(d, name))]
+    if not os.path.exists(os.path.join(frozen_from, name)):
+        if have:
+            raise DeltaRefusal(f'{frozen_from} holds no {name} but the night directory {have[0]} does: the all-nights '
+                               f'directory is not a whole catalog directory ({what}) - REFUSING')
+        return None
+    lack = [d for d in nights if d not in have]
+    if lack:
+        raise DeltaRefusal(f'{lack[0]} holds no {name} (the all-nights directory {frozen_from} holds one): the night\'s '
+                           f'{what} is not whole - REFUSING')
+    return [os.path.join(d, name) for d in nights]
+
+
 def view_root(root, lst, frozen_from, night_dirs, states, groupings, tags, keys):
     """Write the VIEW ROOT ``root`` of one LST hour (removed first when it exists) from its all-nights catalog directory, the
     catalog directories of the nights appended since, and the standing ``states`` ({(tag, key): key_state}; any other kind
@@ -721,13 +737,12 @@ def view_root(root, lst, frozen_from, night_dirs, states, groupings, tags, keys)
     frozen_from = os.path.abspath(frozen_from)
     nights = [os.path.abspath(d) for d in night_dirs]
     asm = assemble(root, frozen_from, nights, keys, 'veto' if 'veto' in tags else 'noveto')
-    img = merge_keyed(os.path.join(frozen_from, IMAGES), [os.path.join(d, IMAGES) for d in nights if os.path.exists(os.path.join(d, IMAGES))],
+    img = merge_keyed(os.path.join(frozen_from, IMAGES), _whole(frozen_from, nights, IMAGES, 'image table'),
                       os.path.join(root, IMAGES), IMAGE_KEY, 'image table')
     det = None
-    if os.path.exists(os.path.join(frozen_from, DETECTIONS)):
-        m = merge(os.path.join(frozen_from, DETECTIONS),
-                  [os.path.join(d, DETECTIONS) for d in nights if os.path.exists(os.path.join(d, DETECTIONS))],
-                  os.path.join(root, DETECTIONS), 'detection table')
+    dets = _whole(frozen_from, nights, DETECTIONS, 'detection table')
+    if dets is not None:
+        m = merge(os.path.join(frozen_from, DETECTIONS), dets, os.path.join(root, DETECTIONS), 'detection table')
         det = dict(base=m['base'], appended=len(m['appended']))
     sel_all = _selected_all(root, frozen_from, nights, asm, keys)
     cats = {}
