@@ -17,10 +17,14 @@ Dewarped mode (DECISIONS_PENDING item 7, the design's acceptance of admission in
 solves new ones against the dewarped master (GPU host; Gregg's OK per the design), and the test measures, besides
 admission_reproduces, how well the flow takes up the screen. The admitted products carry the master's MDW* cards and
 ADMWARP 'flow'; admissions.csv names the screen (screen_md5 = the record's). The failure paths are not rerun there.
-Baseline mode: `--new-flows <cell>` (a cell without the dewarp) solves new flows too, so admission_reproduces gives what any
+Baseline mode: `--new-flows <cell>` (a cell without the dewarp) solves new flows too, so the ratios give what any
 re-solved flow costs against the members' stored ones (2026-11-13: 01h_46MHz, median |ratio - 1| 3.8-4.2e-3, peaks 0.020 px
 from the members', as far from the master's peaks as the members are; 21h_46MHz dewarped: 1.1-1.2e-2, 0.045 px, 9-13 per
 cent farther from the master's peaks than the members). Its header comparison needs a cell the current build wrote.
+Acceptance by flow (Gregg 2026-11-14 "Do what you recommend!", R-GREGG-20261114-DO-WHAT-YOU-RECOMMEND-PR33-AND-HELD-PRS): with
+the stored flows admission_reproduces (median |ratio - 1| <= REPRODUCE_TOL); with new flows, which never reproduce the stored
+ones to that tolerance, admission_aligns: each admitted epoch's bright-source peaks lie no farther from the installed
+master's peaks than POSITION_TOL (1.25) x the same night's member epoch's (median offset, px), the ratios printed.
 Run: python tests/test_masters_admit6.py [--dewarped <cell> | --new-flows <cell>]
 """
 import calendar
@@ -57,6 +61,7 @@ if NEWFLOWS:
     CELL = sys.argv[sys.argv.index('--dewarped' if DEWARPED else '--new-flows') + 1]
     LST, SC = CELL.split('_', 1)
 REPRODUCE_TOL = 1e-3
+POSITION_TOL = 1.25     # new flows: admitted peak offset from the master's <= 1.25 x the member's (Gregg 2026-11-14)
 
 
 def check(name, ok, detail=''):
@@ -242,9 +247,15 @@ def test_admit_end_to_end():
                       for d, v in res.items()))
     print('  peak offset from the installed master\'s peaks (median / 90th percentile, px): '
           + '; '.join(f'{d}: admitted {a[0]:.3f} / {a[1]:.3f}, member {b[0]:.3f} / {b[1]:.3f}' for d, (a, b) in offm.items()))
-    check(f'admission_reproduces: each admitted epoch equals the member\'s at bright peaks, median |ratio - 1| within '
-          f'{REPRODUCE_TOL:g} (the ruled tolerance, DADMIT_DESIGN.md)',
-          all(v[1] <= REPRODUCE_TOL and v[2] >= 20 for v in res.values()), res)
+    if NEWFLOWS:                                       # a new flow never reproduces the stored one to REPRODUCE_TOL
+        check(f'admission_aligns: each admitted epoch\'s bright-source peaks lie no farther from the installed master\'s than '
+              f'{POSITION_TOL:g} x the same night\'s member epoch\'s (median px; DADMIT_DESIGN.md, Gregg 2026-11-14)',
+              all(res[d][2] >= 20 and np.isfinite(a[0]) and np.isfinite(b[0]) and a[0] <= POSITION_TOL * b[0]
+                  for d, (a, b) in offm.items()), {d: (a[0], b[0], res[d][2]) for d, (a, b) in offm.items()})
+    else:
+        check(f'admission_reproduces: each admitted epoch equals the member\'s at bright peaks, median |ratio - 1| within '
+              f'{REPRODUCE_TOL:g} (the ruled tolerance, DADMIT_DESIGN.md)',
+              all(v[1] <= REPRODUCE_TOL and v[2] >= 20 for v in res.values()), res)
     if DEWARPED:                                       # item 7: the screen's provenance on every product and row
         scr = A.mdwarp_screen(CELL, os.path.join(inst, 'coadd_final', f'I_deep_Taper_R075_{SC}.fits'),
                               CFG.masters_verify.DEWARP_SCREEN_RECORD)
