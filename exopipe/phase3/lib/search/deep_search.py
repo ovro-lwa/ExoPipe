@@ -1957,6 +1957,14 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
     # ~1.4x and the dropout class starts >= 1.8x, so 1.5 sits in the gap
     # (950/20,376 epochs = 4.7% affected; exopipe_ops/beam_audit.py).
     # A REFUSAL, logged per epoch. P3_BEAM_GATE_OFF=1 for archaeology.
+    if os.environ.get('P3_BEAM_GATE_OFF') == '1' and cadence == 'deep' and included_dates:   # PER-HOUR: an append with the gate
+        from exopipe.phase3.lib.search import gate_population as _GP       # off joins only a base searched with it off - one
+        _bfz = _GP.read(run_root, lst, scope, 'beam')                     # rule per attempt (gate_population docstring, READ)
+        if _bfz is None or _bfz['outcome'] != 'off':
+            raise RuntimeError(f'{lst} {scope}: BEAM GATE of an append - P3_BEAM_GATE_OFF=1, but the base attempt '
+                               + ('holds no frozen beam-gate population' if _bfz is None else
+                                  f'was searched with the beam gate {_bfz["outcome"]}')
+                               + ': an append with the gate off would mix the rules in one attempt; REFUSING')
     if os.environ.get('P3_BEAM_GATE_OFF') != '1':
         _p2 = '/lustre/pipeline/exopipe/phase2'
         _irob_f = 'Robust-0.75'
