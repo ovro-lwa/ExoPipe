@@ -457,6 +457,11 @@ class Ctx:
             refuse('--snap-analysis switches are analysis only: refused for a production --out (B-83)')
         return out
 
+    def from_roots(self):
+        """Where the stages write the outputs their records name: the run, rechain_<NAME> (store, prefit) and the tie cache
+        (tie). On a production root the last two lie under catalog_snapshot.BATCH_DIR, outside the run (`--from`)."""
+        return (self.RUN, self.L, self.tiecache)
+
     def opsc(self, n):
         return os.path.join(self.ops, n)
 
@@ -1349,7 +1354,7 @@ def run(args, run):
     T.env_leaks(LEAKY_ENV)
     restored = []
     if first and not item:
-        restored = T.check_from(ctx.RUN, ctx.name, STAGES, first, ctx.recdir)
+        restored = T.check_from(ctx.RUN, ctx.name, STAGES, first, ctx.recdir, roots=ctx.from_roots())
     finished = False
     try:
         for name in sel:
