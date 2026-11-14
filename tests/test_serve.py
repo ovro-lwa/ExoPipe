@@ -1732,6 +1732,16 @@ def test_snapshot_steps():
         with gzip.open(f'{DST}/frame_counts_V_10s.csv.gz', 'wt', newline='') as f:
             f.write(f'cell,band,ts,n\r\n{cell},{band},{ts},{n}\r\n{cell},{band},20250102_030010,1\r\n')
 
+    fleet = f'{D}/fleet_out'                     # the search's own noise tables (paths.SNAPSHOT_FLEET_OUT), frames_admitted
+    noise = f'{fleet}/{cell}/noise_{band}_V_median.csv'
+
+    def w_noise(admitted=('1', '1'), rows=2):
+        wcsv(noise, ['idx', 'ts', 'date_obs', 'admitted', 'global_rms_jyb', 'flood_refused', 'refuse_reason'],
+             [dict(idx=i, ts=t_, admitted=a_, global_rms_jyb='1.0', flood_refused='1' if a_ == '0' else '0',
+                   refuse_reason='flood' if a_ == '0' else '')
+              for i, (t_, a_) in enumerate(list(zip((ts, '20250102_030010'), admitted))[:rows])])
+    w_noise()
+
     def w_bsf(path, stokes, cadence):
         Z = dict(det_cand=np.array(['a']), det_ra=np.array([1.]), det_dec=np.array([3.]), det_stokes=np.array([stokes]),
                  det_cell=np.array([0], np.int16), det_sin_el=np.array([.5], np.float32), dfront_n=np.array([0], np.uint8),
@@ -1801,8 +1811,8 @@ def test_snapshot_steps():
             + [('build_detections_index', ['--run', DST], f'{DST}/page_index_build.log', cw, {})])
     steps = tuple(st for st, _ in SC.STEP_STAGES)
     unit_of = {st: f'snapshot_Run_SNAPSTEP_{st.replace("-", "_")}' for st in steps}
-    orig = (scripts.run, S.SNAPSHOT_SERVE_HOLD)
-    scripts.run, S.SNAPSHOT_SERVE_HOLD = fake_run, f'{D}/NO_HOLD'
+    orig = (scripts.run, S.SNAPSHOT_SERVE_HOLD, CFG.paths.SNAPSHOT_FLEET_OUT)
+    scripts.run, S.SNAPSHOT_SERVE_HOLD, CFG.paths.SNAPSHOT_FLEET_OUT = fake_run, f'{D}/NO_HOLD', fleet
     try:
         res = {}
         for case in ('ok', 'scintillation_index', 'page_context_snapshot', 'help', 'bright_source_filter', 'build_detections_index'):
@@ -1852,10 +1862,33 @@ def test_snapshot_steps():
         ok('snapshot steps: a start without them in the invocation requires the records of the gate on the copy and of all four '
            '(G28)')
     finally:
-        scripts.run, S.SNAPSHOT_SERVE_HOLD = orig
+        scripts.run, S.SNAPSHOT_SERVE_HOLD, CFG.paths.SNAPSHOT_FLEET_OUT = orig
     # negative controls on the content tests (the files of the 'ok' case rewritten one fault at a time)
     neg = []
     w_sci()
+    CFG.paths.SNAPSHOT_FLEET_OUT = fleet
+    try:
+        w_pctx()
+        r_ = stests.frames_admitted(DST)
+        assert r_[0] and r_[2].startswith('3 member rows in 2 frames (1 noise tables under '), r_
+        for name_, fault in (('a served frame refused (flood)', lambda: w_noise(admitted=('0', '1'))),
+                             ('no row of a served frame', lambda: w_noise(rows=1)),
+                             ('no noise table', lambda: os.remove(noise))):
+            fault()
+            r_ = stests.frames_admitted(DST)
+            neg.append((name_, r_))
+            assert r_[1] == (1 if name_ == 'no row of a served frame' else 3 if name_ == 'no noise table' else 2), (name_, r_)
+            w_noise()
+        w_pctx(n=0)                                       # a frame with n 0 needs no admitted row
+        w_noise(admitted=('0', '1'))
+        r_ = stests.frames_admitted(DST)
+        assert r_[0] and r_[2].startswith('1 member rows in 1 frames'), r_
+        w_noise()
+        w_pctx(view=f'{D}/other')
+        neg.append(('frame counts of another view (frames_admitted)', stests.frames_admitted(DST)))
+        w_pctx()
+    finally:
+        CFG.paths.SNAPSHOT_FLEET_OUT = orig[2]
     mf = f'{DST}/page_index/manifest.json'
     for name_, fault, test in (
             ('frame count', lambda: w_pctx(n=3), lambda: stests.frame_counts_match_members(DST)),

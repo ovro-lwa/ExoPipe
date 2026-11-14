@@ -11,8 +11,8 @@ is read-only (verify may run it on production files). Registered with @content_t
   tenmin_page_context  sidecar_per_panel, no_orphan_sidecars  (the served 10-minute run; page_context_tenmin.py's sidecars)
   bright_source_filter  arrays_consistent, parents_current   (bright_source_filter_precompute.py's npz)
   scintillation_index  table_matches_definition, run_own_hours  (scintillation_index.csv + .json)
-  snapshot_page_context  frame_counts_match_members, sidecar_per_panel  (a snapshot review copy; page_context_snapshot.py's
-                     frame counts and sidecars)
+  snapshot_page_context  frame_counts_match_members, frames_admitted, sidecar_per_panel  (a snapshot review copy;
+                     page_context_snapshot.py's frame counts and sidecars; every served frame admitted by its search)
   detections_index   manifest_current, folders_cover_catalogs, records_current  (<run>/page_index/manifest.json;
                      build_detections_index.py)
   stopped_page       not_listening                           (record of `serve --stop`)
@@ -1055,6 +1055,64 @@ def frame_counts_match_members(path, **ctx):
     return not bad, len(bad), ('; '.join(bad[:4]) if bad else
                                f'{len(held)} Stokes/tiers {sorted(held)}, {nrows} frames with a served detection, each equal to the '
                                f'member rows counted here, over {len(cells)} hour-cells')
+
+
+@content_test('snapshot_page_context')
+def frames_admitted(path, **ctx):
+    """Every frame holding a served detection is a frame the search admitted: for each row with n > 0 of the run's
+    frame_counts_<S>_<tier>.csv.gz (the member rows per frame, frame_counts_match_members), the search's own noise table
+    <paths.SNAPSHOT_FLEET_OUT>/<cell>/noise_<band>_<S>_median[_1min].csv holds the frame's row (ts; block_ts in a table without
+    ts, as page_context_snapshot.py reads it) with admitted 1. The search drops every candidate of a frame it refuses
+    (phase3_snapshot_search.detect: hard cap, noise outlier, flood; the 1-minute tier the same) and the chain takes its
+    candidates as written, so a member row in a refused frame, in a frame the table does not hold, or under a missing table
+    means the view was built from another search than the one whose noise tables are on disk (2026-11-14: 1,452 member rows of
+    Run_SNAPCOMB_20261107 in 613 frames, 1,445 of them in its 2025-04-05 cells after their 2026-11-13 frame-time rerun)."""
+    from concurrent.futures import ThreadPoolExecutor
+    from exopipe.phase3.config import CFG
+    try:
+        meta = json.load(open(os.path.join(path, 'frame_counts.json')))
+    except (OSError, ValueError) as e:
+        return False, None, f'frame_counts.json: {type(e).__name__}: {e}'
+    if os.path.realpath(meta.get('view') or '') != os.path.realpath(path):
+        return False, None, f"frame_counts.json names the view {meta.get('view')!r}, not this run (a forced run's pointer)"
+    frames = defaultdict(list)
+    for st in sorted(meta.get('held') or ()):
+        S, T = st.split('_', 1)
+        try:
+            with gzip.open(os.path.join(path, f'frame_counts_{st}.csv.gz'), 'rt', newline='') as f:
+                for r in csv.DictReader(f):
+                    if int(r['n']) > 0:
+                        frames[(r['cell'], r['band'], S, T)].append((r['ts'], int(r['n'])))
+        except (OSError, ValueError, KeyError) as e:
+            return False, None, f'frame_counts_{st}.csv.gz: {type(e).__name__}: {e}'
+    if not frames:
+        return False, 0, f'no frame with a served detection in the frame counts of {sorted(meta.get("held") or ())}'
+    root = CFG.paths.SNAPSHOT_FLEET_OUT
+
+    def noise(k):
+        cell, band, S, T = k
+        p = os.path.join(root, cell, f'noise_{band}_{S}_median{"_1min" if T == "1min" else ""}.csv')
+        try:
+            with open(p, newline='') as f:
+                return k, p, {(r.get('ts') or r.get('block_ts') or ''): r.get('admitted') for r in csv.DictReader(f)}
+        except OSError:
+            return k, p, None
+    bad, why_rows, n_frames, n_rows = [], Counter(), 0, 0
+    with ThreadPoolExecutor(6) as ex:                     # small reads on Lustre: at most 6 at once
+        for k, p, tab in ex.map(noise, sorted(frames)):
+            for ts, n in frames[k]:
+                n_frames += 1
+                n_rows += n
+                why = ('no noise table' if tab is None else 'no row of the frame' if ts not in tab else
+                       None if tab[ts] == '1' else f'admitted {tab[ts]!r}')
+                if why:
+                    why_rows[why] += n
+                    bad.append(f'{"/".join(k)} {ts}: {n} member row(s), {why} ({p})')
+    if bad:
+        return False, sum(why_rows.values()), (f'{sum(why_rows.values())} member rows in {len(bad)} frames the search did not '
+                                               f'admit ({dict(why_rows)}), e.g. ' + '; '.join(bad[:3]))
+    return True, 0, (f'{n_rows} member rows in {n_frames} frames ({len(frames)} noise tables under {root}): every frame '
+                     f'admitted by its search')
 
 
 @content_test('snapshot_page_context', 'sidecar_per_panel')    # its own module name: tenmin_page_context has a sidecar_per_panel
