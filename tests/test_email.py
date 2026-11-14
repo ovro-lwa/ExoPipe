@@ -11,7 +11,8 @@ the current one in what is included, just with the transient and forced photomet
            the block; Galactic latitude in bold near the plane
   sources  the listed rows on a stub of the page code: the five value filters, the page's defaults, its bright-source
            staircase and its pulsar match; the same value filters on the forced-photometry events
-  qa       the Phase 3 QA percentile table and the ionosphere percentiles
+  qa       the Phase 3 QA percentile table (lib/qa/percentiles.py: computed, written as a product, its content test, a
+           stale table not used) and the ionosphere percentiles
   served   the page rule on the real served deep Stokes V page, read only (skipped where the registry is absent)
 
 Nothing is sent: every report is written to a scratch file. Run standalone:  python tests/test_email.py [test_name ...]
@@ -311,6 +312,14 @@ def _stub_pages(d):
     _w(os.path.join(r2, 'master_catalog.csv'), 'cand_id,lst,date,band,stokes,n_v_epoch,global_snr\n'
        'I1_04h_2024-12-19T03_Red_0001,04h,2024-12-19T03,Red,I,,\nI1_04h_2024-12-19T03_Red_0002,04h,2024-12-19T03,Red,I,,\n'
        'I1_04h_2024-12-19T04_Red_0001,04h,2024-12-19T04,Red,I,,\nI1_07h_2024-12-19T01_Red_0001,07h,2024-12-19T01,Red,I,,\n')
+    img = 'lst,scope,stokes,date,n_ident5,n_after_morph,n_after_mstruct,n_after_jupiter,n_final,n_raw_floor,elev_min_deg\n'
+    _w(os.path.join(r1, 'v_deep_images.csv'), img + '04h,41MHz,V,2024-12-19,90,80,12,12,12,90,25.0\n'
+       '04h,41MHz,V,2024-12-20,90,80,20,20,20,95,25.0\n05h,41MHz,V,2024-12-19,90,80,4,4,4,60,25.0\n'
+       '04h,46MHz,V,2024-12-19,90,80,0,0,0,70,25.0\n04h,46MHz,V,2024-12-20,90,80,,0,0,70,25.0\n'
+       '04h,41MHz,I,2024-12-19,300,7,,7,7,900,25.0\n')
+    _w(os.path.join(r2, 'v_deep_images.csv'), img + '04h,Red,I,2024-12-19T03,50,2,,2,2,400,25.0\n'
+       '04h,Red,I,2024-12-19T04,50,1,,1,1,300,25.0\n04h,Red,I,2024-12-19T05,50,0,,0,0,200,25.0\n'
+       '07h,Red,I,2024-12-19T01,50,1,,1,1,300,25.0\n04h,Red,V,2024-12-19T03,9,9,3,3,3,9,25.0\n')
     _w(os.path.join(r1, 'scintillation_index.csv'), 'lst,date,band,scint_index,n_sources,n_frames,pct_in_band,state\n'
        '04h,2024-12-19,41MHz,0.1234,50,300,61.5,other\n04h,2024-12-20,41MHz,0.9,50,300,99,other\n')
     fr = os.path.join(rev, 'Run_SNAPFORCED_Vdeep_gen5')
@@ -461,14 +470,34 @@ def test_qa_percentile_table_and_ionosphere_percentiles():
         with _Config(reg, rev, pages, phase2_root=root) as CFG:
             html, limits = qa.phase3_percentiles('04h_2024-12-19', CFG)
             assert html.startswith('<h4>Phase 3 QA percentiles</h4>') and len(limits) == 1 and 'pGone' in limits[0], limits
-            # deep V, 41 MHz: counts 12 (this hour), 20, 4 -> mid-rank 50; 46 MHz alone in its population -> 50
+            # deep V, 41 MHz: counts after the master-structure gate 12 (this hour), 20, 4 -> mid-rank 50; 46 MHz: a
+            # searched image without a candidate is in the table (count 0), one without a recorded count is not
             for text in ('<td>41MHz</td><td>12 (50)</td><td>&ndash;</td><td>0.123 (62)</td>',
-                         '<td>46MHz</td><td>50 (50)</td><td>&ndash;</td><td>&ndash;</td>',
-                         # 10-minute I, Red: windows of 2 and 1 detections this hour, 1 in another hour: the largest, 2 -> 83
-                         '<td>Red</td><td>&ndash;</td><td>2 (83); 2 windows</td><td>&ndash;</td>',
-                         'deep, Stokes V: 4 images; 10-minute, Stokes I: 3 images'):
+                         '<td>46MHz</td><td>0 (50)</td><td>&ndash;</td><td>&ndash;</td>',
+                         # 10-minute I, Red: searched windows of 2, 1 and 0 candidates this hour, 1 in another hour:
+                         # the largest, 2 -> (3 + 0.5) / 4 = 88
+                         '<td>Red</td><td>&ndash;</td><td>2 (88); 3 windows</td><td>&ndash;</td>',
+                         'deep, Stokes V: 4 images; 10-minute, Stokes I: 4 images'):
                 assert text in html, (text, html)
             assert html.index('<td>41MHz</td>') < html.index('<td>46MHz</td>') < html.index('<td>Red</td>')
+            # the table as a product: written beside the per-image table, its content test passes, a reader takes the
+            # file while it is current and computes again when the per-image table has moved
+            from exopipe.phase3.core import validate
+            from exopipe.phase3.lib.qa import percentiles
+            r1 = os.path.join(d, 'run_deep')
+            path, n = percentiles.write(r1, 'deep')
+            assert n == 5 and os.path.basename(path) == 'qa_percentiles.csv', (path, n)
+            first = open(path).read().split('\n')[1]
+            assert first == f'04h,2024-12-19,41MHz,V,deep,12,after_mstruct,50.0,90,50.0,3,{percentiles.version(r1)}', first
+            assert 'I,deep,7,after_morph,50.0,900,50.0,1,' in open(path).read()
+            res = [f(path) for _n, f in validate.tests_for('qa_percentiles')]
+            assert res and all(r[0] for r in res), res
+            assert percentiles.read(r1, 'deep')[1] == 'table' and percentiles.read(r1, 'deep')[0] == percentiles.table(r1, 'deep')
+            with open(os.path.join(r1, 'v_deep_images.csv'), 'a') as f:
+                f.write('06h,41MHz,V,2024-12-19,90,80,30,30,30,99,25.0\n')
+            assert percentiles.read(r1, 'deep')[1] == 'computed' and len(percentiles.read(r1, 'deep')[0]) == 6
+            res = [f(path) for _n, f in validate.tests_for('qa_percentiles')]
+            assert not res[0][0] and 'stale table' in res[0][2], res
             out = os.path.join(d, 'out')
             words, lim = qa.ionosphere_rank(rd, '04h_2024-12-19', CFG, out)
             assert words == {'disturbance': "RMS 1.25', percentile 83 of the 3 processed hours with this measurement (0 = the "

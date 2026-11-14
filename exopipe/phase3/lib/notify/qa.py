@@ -2,14 +2,11 @@
 section. The ionospheric QA is poorly calibrated. Even the best night i have ever seen is listed as 'Moderate
 (Structured)'").
 
-Phase 3 QA percentiles. The plan of record's Phase 3 quality metric is the number of transient candidates detected in each
-epoch image, as a percentile against the other epoch images of the same band and cadence tier. Here it is read from the
-per-detection table of each listed page's run (<run>/master_catalog.csv), per Stokes:
-  Stokes V   the search's recorded count of the image (column n_v_epoch);
-  Stokes I   the table's Stokes I rows of the image (the Stokes I search records no count).
-An epoch image is one band, LST hour and night (deep) or one 10-minute window of them (10-minute). An image without a row
-in the table has no count on record and is in no population. The percentile is the mid-rank: of the band's and tier's
-images, the share with a smaller count plus half the share with the same count.
+Phase 3 QA percentiles. The plan of record's Phase 3 quality metric: the number of transient candidates detected in each
+searched image, as a percentile against the other searched images of the same band, cadence tier and Stokes. The rows
+come from lib/qa/percentiles.py (the run's qa_percentiles.csv when it is current, else computed from the run's per-image
+table v_deep_images.csv; this step never writes into a run): Stokes V the count after the master-structure gate,
+Stokes I the count after the Stokes I search's morphology gate, images without a candidate included.
 The scintillation index of the hour and band and its percentile in the band are read from the run's
 scintillation_index.csv where the run has one.
 
@@ -23,6 +20,7 @@ import os
 
 from exopipe.phase3.lib.notify import sources
 from exopipe.phase3.lib.notify.block import esc, num, table
+from exopipe.phase3.lib.qa import percentiles
 
 _COUNTS = {}
 WIDEBAND = ('Red', 'Green', 'Blue', 'Full')
@@ -37,22 +35,11 @@ def midrank(value, population):
     return 100.0 * (below + 0.5 * same) / len(population)
 
 
-def image_counts(run):
-    """{Stokes: {band: {(LST, night or window): count}}} of a run's per-detection table; one pass per run and process."""
-    if run not in _COUNTS:
-        out = {'V': {}, 'I': {}}
-        for r in sources._rows(os.path.join(run, 'master_catalog.csv')):
-            st, key = r.get('stokes'), (r.get('lst'), r.get('date'))
-            if st == 'V':
-                n = sources._f(r.get('n_v_epoch'))
-                if n is not None:
-                    b = out['V'].setdefault(r.get('band'), {})
-                    b[key] = max(n, b.get(key, 0))
-            elif st == 'I':
-                b = out['I'].setdefault(r.get('band'), {})
-                b[key] = b.get(key, 0) + 1
-        _COUNTS[run] = out
-    return _COUNTS[run]
+def image_rows(run, tier):
+    """The QA percentile rows of a run (lib/qa/percentiles.read); one read per run and process."""
+    if (run, tier) not in _COUNTS:
+        _COUNTS[(run, tier)] = percentiles.read(run, tier)[0]
+    return _COUNTS[(run, tier)]
 
 
 def _band_order(b):
@@ -72,27 +59,26 @@ def phase3_percentiles(item, CFG):
     for (tier, stokes), pid in CFG.notify.PAGES.items():
         run = (reg.get(pid) or {}).get('run')
         name = f'{tier}, Stokes {stokes}'
-        if not run or not os.path.exists(os.path.join(run, 'master_catalog.csv')):
-            limits.append(f'Phase 3 QA percentiles, {name}: no per-detection table for page {pid} - not shown')
+        if not run or not os.path.exists(os.path.join(run, percentiles.IMAGES)):
+            limits.append(f'Phase 3 QA percentiles, {name}: no per-image table of the search for page {pid} - not shown')
             continue
         try:
-            by_band = image_counts(run)[stokes]
+            rows = [r for r in image_rows(run, tier) if r['stokes'] == stokes]
         except (OSError, ValueError) as e:
-            limits.append(f'Phase 3 QA percentiles, {name}: the per-detection table of page {pid} cannot be read '
+            limits.append(f'Phase 3 QA percentiles, {name}: the per-image table of page {pid} cannot be read '
                           f'({type(e).__name__}) - not shown')
             continue
         cols.append(name)
-        n_pop = 0
-        for band, imgs in by_band.items():
-            pop = list(imgs.values())
-            n_pop += len(pop)
-            own = [n for (l, d), n in imgs.items() if l == lst and str(d)[:10] == date]
-            if own:
-                bands.add(band)
-                worst = max(own)
-                cells[(name, band)] = (f'{worst:g} ({num(midrank(worst, pop), ".0f")})'
-                                       + (f'; {len(own)} windows' if tier != 'deep' else ''))
-        cells[(name, None)] = n_pop
+        own = {}
+        for r in rows:
+            if r['lst'] == lst and str(r['date'])[:10] == date:
+                own.setdefault(r['band'], []).append(r)
+        for band, rr in own.items():
+            bands.add(band)
+            worst = max(rr, key=lambda r: r['count'])
+            cells[(name, band)] = (f'{worst["count"]} ({num(worst["percentile"], ".0f")})'
+                                   + (f'; {len(rr)} windows' if tier != 'deep' else ''))
+        cells[(name, None)] = len(rows)
         sp = os.path.join(run, 'scintillation_index.csv')
         if tier not in scint and os.path.exists(sp):
             try:
@@ -113,12 +99,13 @@ def phase3_percentiles(item, CFG):
     sizes = '; '.join(f'{name}: {cells[(name, None)]:,} images' for name in cols)
     html = ('<h4>Phase 3 QA percentiles</h4>'
             + table(columns, sorted(bands, key=_band_order))
-            + '<p><small>Count: transient candidates detected in the epoch image of this hour (Stokes V: the count the '
-              'search recorded for the image; Stokes I: the Stokes I detections of the image in the run\'s per-detection '
-              'table). For the 10-minute tier the largest count among the hour\'s windows that have a detection, and the '
-              'number of those windows. Percentile: against the epoch images of the same band and tier in the served run '
-              '(the share with a smaller count plus half the share with the same count; 0 = the fewest candidates). A dash: '
-              f'no detection of that band, tier and Stokes in this hour, so no count is on record. Populations: {esc(sizes)}. '
+            + '<p><small>Count: transient candidates detected in the searched image of this hour, as the search recorded '
+              'it (Stokes V: after the master-structure gate; Stokes I: after the Stokes I search\'s morphology gate, which '
+              'is the nearest count that search records). For the 10-minute tier the largest count among the hour\'s '
+              'searched windows, and the number of those windows. Percentile: against the searched images of the same '
+              'band, tier and Stokes in the served run, images without a candidate included (the share with a smaller '
+              'count plus half the share with the same count; 0 = the fewest candidates). A dash: no searched image of '
+              f'that band, tier and Stokes in this hour. Populations: {esc(sizes)}. '
               'Scintillation index: as the served run records it for the hour and band, with its percentile among the '
               'band\'s hours.</small></p>')
     return html, limits
