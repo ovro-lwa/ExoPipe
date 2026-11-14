@@ -26,6 +26,7 @@ Argv per page family reproduces the launchers exactly (orders included); a revie
                       --default-fp-reason --sibling (what each other forced page serves AFTER this serve: its registry
                       entry's run or the run this serve registers for it, snapshot_forced_gen5_serve_20261026.sh:47-56) --title
   jupiter             jupiter_server.py ROOT PORT (cwd ops); python -m http.server PORT --bind 127.0.0.1 --directory DIR
+                      (8801: py310_orca, cwd the site's parent - its standing command since 2026-11-14)
 plus, in a parity plan only, --lists-dir <out>/review_lists on classify pages (spec 7.2).
 """
 import glob
@@ -101,7 +102,9 @@ class Page:
         return self.at('log', root)
 
     def cwd(self):
-        return self.root if self.program == 'http' else self.plan.ops
+        # http: the site's parent (8801's standing command, 2026-11-14: --directory names the site, so a site swap by rename
+        # leaves the process no stale working directory)
+        return os.path.dirname(os.path.normpath(self.root)) if self.program == 'http' else self.plan.ops
 
     def record_path(self, port=None):
         return os.path.join(self.plan.out, '_records', 'serve', 'pages', f'{self.tier}_{port or self.port}.json')
@@ -169,7 +172,7 @@ class Plan:
     def argv(self, page, utc, root=None):
         """The server command line of ``page`` (a review page served from ``root``, default the page's run directory)."""
         S = _CFG().serve
-        py = self.python
+        py = scripts.interpreter(page.c['python']) if page.c.get('python') else self.python
         if page.program == 'jupiter':
             return [py, 'jupiter_server.py', page.root, str(page.port)]
         if page.program == 'http':

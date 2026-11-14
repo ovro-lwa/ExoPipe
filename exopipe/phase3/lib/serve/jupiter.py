@@ -1,7 +1,8 @@
 """serve --tier jupiter: the Jupiter program's pages 8800 (jupiter_server.py ROOT PORT, cwd ops) and 8801 (the v2 site,
-python -m http.server PORT --bind 127.0.0.1 --directory DIR). serve owns these ports and the hub (refactor-chat decision
+python -m http.server PORT --bind 127.0.0.1 --directory DIR; py310_orca, cwd the site's parent: its standing command since
+2026-11-14, ledger OPS-20261114-JOVIAN-8801-STANDING-COMMAND). serve owns these ports and the hub (refactor-chat decision
 2026-10-13); the `jupiter` step builds what they show. Neither page has a production launcher: the argv is the live
-servers' (2026-10-13, recorded in serve.PAGES / JUPITER_ROOTS). Stages start -> hub -> verify.
+servers' (2026-10-13 and 2026-11-14, recorded in serve.PAGES / JUPITER_ROOTS). Stages start -> hub -> verify.
 
 start  (one unit per page)  G13 the port holds nothing or a server of the page's program (serve.SERVER_IDENTITY); exact-pid
        stop; start; HTTP 200 (G16); record class served_page (tests live, same_process; sources_listed n/a).
