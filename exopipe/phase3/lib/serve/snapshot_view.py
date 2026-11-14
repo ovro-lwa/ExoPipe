@@ -899,13 +899,14 @@ def build(job):
                                            ('removed_10s_v_served', C2.n['removed_10s_served']),
                                            ('not_evaluated_10s_v', C2.n['not_evaluated_10s']), ('removed_from_view', n_c2),
                                            ('mixed_identity_frames_kept', n_mixed_c2)])),
+        ('rejudge', collections.OrderedDict([(k_, rjs.get(k_)) for k_ in (
+            'served_sources_reproduced', 'touched', 'still_qualify', 'rejudged_out', 'every_member_removed', 'per_tier_rows_dropped',
+            'removed_detections_in_records', 'g3d_removals_sharing_a_group_with_card2')])),
+        # after 'rejudge', as production since fba778e (the view's summary order; test_parity compares it)
         ('elev1min', collections.OrderedDict([('ruling', DO.ELEV1MIN_RULING), ('rows_1min', EL.n['rows_1min']),
                                               ('rows_1min_elev_bin_minus1', EL.n['rows_1min_elev_bin_minus1']),
                                               ('below_floor_records', EL.n['removed_1min']),
-                                              ('below_floor_served', EL.n['removed_1min_served']), ('removed_from_view', n_el)])),
-        ('rejudge', collections.OrderedDict([(k_, rjs.get(k_)) for k_ in (
-            'served_sources_reproduced', 'touched', 'still_qualify', 'rejudged_out', 'every_member_removed', 'per_tier_rows_dropped',
-            'removed_detections_in_records', 'g3d_removals_sharing_a_group_with_card2')]))])
+                                              ('below_floor_served', EL.n['removed_1min_served']), ('removed_from_view', n_el)]))])
     with open(os.path.join(PART, 'combined_view_summary.json'), 'w') as fh:
         json.dump(summ, fh, indent=1, default=str)
     os.rename(PART, OUT)

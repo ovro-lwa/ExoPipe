@@ -35,10 +35,12 @@ OPS_REPO = '/lustre/gh/main/exopipe_ops'
 # Moved from 0e05399 to exopipe_ops b114ff3 (2026-11-12 21:41, the newest commit touching a pinned file; refactor chat 2026-11-14,
 # ledger STATUS-20261114-V2-PRODUCTION-PIN-DRIFT-PORTS-OWED) with the ports of 40d6f42 (the 10-minute re-judging's size gate:
 # size_beams - size_err_beams), d1616d6 (the 2024-12-28 ghost-track gate; pull request 44), 5c49199 (the combined view's flux-scale
-# and exclusion gate) and b114ff3 (the 1-minute elevation floor at the block's own time, the view and the re-judging).
-PIN_COMMIT = 'b114ff364144525051e73b6e38bb8c1ac2581192'
+# and exclusion gate) and b114ff3 (the 1-minute elevation floor at the block's own time, the view and the re-judging); then to
+# fba778e (the view's summary 'rejudge' back under NEW_ON - FINDING-20261114-SNAPCOMB-B114FF3-REJUDGE-SUMMARY-UNDER-EL-ON; the
+# port writes it whenever Card 2 is on, so no port change).
+PIN_COMMIT = 'fba778e77ab517c01fd45149c10c5e77d6e860cf'
 PIN_BLOBS = {
-    'snapshot_combined_view.py': '665f5dbcc337c394bcdd7069f6eeb3ef9156a036',        # b114ff3 (5c49199, dbc40a6)
+    'snapshot_combined_view.py': '9f14e919c6ae0dfd9fdc3d60fcb615d70c2a02d6',        # fba778e (b114ff3, 5c49199, dbc40a6)
     'snapshot_deep_omission.py': 'b55e6d76d64ed2d289834edce963119a2e48fdb1',        # dbc40a6
     'snapshot_rejudge.py': 'f6f3c620c8618c2f8f0f4a9571bb0dcbe788e5e9',              # b114ff3 (dbc40a6 new)
     'sublst_deep_omission.py': 'a031a978422129f40fc83285169ccde89ec3f2f9',          # dde1760
