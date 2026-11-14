@@ -1123,6 +1123,10 @@ def _epoch_unit(ctx, epoch):
 # phase: associate
 # =====================================================================================================================
 
+def _raise_refusal(msg):
+    raise Refusal(msg)
+
+
 def assemble(ctx, epochs, excl, u=None):
     """Write the run's merge output from the epoch blocks, in canonical order (the replay's only input besides the static
     reference data): master_catalog.csv (= selected_all.csv, as p3s3_merge.py:150-153), master_catalog_refused.csv,
@@ -1195,6 +1199,8 @@ def assemble(ctx, epochs, excl, u=None):
         _write_csv(f'{U}/v_deep_ledger.csv', hdrs['ledger.csv'], ledger)
     if 'images.csv' in hdrs:
         _write_csv(f'{U}/v_deep_images.csv', hdrs['images.csv'], images)
+        from exopipe.phase3.lib.qa import percentiles      # the QA percentile table beside it (deep_chain's merge stage)
+        percentiles.write_for_chain(U, percentiles.DEEP, _raise_refusal)
     if 'fitcache' in hdrs:
         _write_csv(f'{U}/fit_positions_cache.csv', hdrs['fitcache'], fitc)
     # frames: exactly the admitted epochs' files (per-file links; never a link to a whole attempt dir)
@@ -1557,6 +1563,9 @@ def _associate_unit(ctx):
         for p in [f'{U}/selected_all.csv'] + [f'{U}/selected_{K}.csv' for K in c.CATALOG_KEYS]:
             if os.path.exists(p):
                 _add_output(u, p, 'selection')
+        if os.path.exists(f'{U}/qa_percentiles.csv'):
+            from exopipe.phase3.lib.qa import percentiles
+            _add_output(u, f'{U}/qa_percentiles.csv', 'qa_percentiles', tier=percentiles.DEEP)
 
 
 # =====================================================================================================================

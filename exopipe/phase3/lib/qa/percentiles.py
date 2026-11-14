@@ -12,6 +12,9 @@ window tag, n_after_morph, n_after_mstruct, n_raw_floor).
              Stokes I: n_after_morph, the candidates left after the Stokes I search's morphology gate. The Stokes I search
              records no master-structure count (its n_after_mstruct is blank), so this is the nearest recorded count;
              count_kind says which one a row carries.
+             A blank count with n_after_morph 0 is 0: nothing reached the later gate (the Stokes V search records no
+             master-structure count for an image with no candidate left after the morphology gate; Run_SLSTB: 319 of its
+             31,078 V images). Any other blank count is not recorded: the image is left out and is in no population.
   count_raw  n_raw_floor, the raw count at or above the search floor, kept alongside for reference (the document: a poor
              quality predictor).
   percentile the mid-rank among the population, 0 to 100: the share of the population's images with a smaller count plus
@@ -34,6 +37,8 @@ TABLE = 'qa_percentiles.csv'
 COLUMNS = ('lst', 'date', 'band', 'stokes', 'tier', 'count', 'count_kind', 'percentile', 'count_raw', 'percentile_raw',
            'population', 'population_version')
 COUNT_OF = {'V': ('n_after_mstruct', 'after_mstruct'), 'I': ('n_after_morph', 'after_morph')}
+# the tier a catalog chain's table carries: the names the hour's email reads the tables by (config notify.PAGES)
+DEEP, TENMIN = 'deep', '10-minute'
 
 
 def midrank(value, ordered):
@@ -60,9 +65,9 @@ def _int(x):
 
 def table(run, tier):
     """The table's rows (dicts with COLUMNS; count, count_raw and population integers, percentiles floats rounded to two
-    decimals, a missing count_raw and its percentile ''), in the per-image table's order. A row whose count is not
-    recorded is left out and is in no population. Raises OSError when the run has no per-image table and ValueError
-    when the table lacks a column."""
+    decimals, a missing count_raw and its percentile ''), in the per-image table's order. A blank count with
+    n_after_morph 0 is 0; a row whose count is otherwise not recorded is left out and is in no population. Raises
+    OSError when the run has no per-image table and ValueError when the table lacks a column."""
     ver = version(run)
     with open(os.path.join(run, IMAGES), newline='') as f:
         rd = csv.DictReader(f)
@@ -73,6 +78,8 @@ def table(run, tier):
         for r in rd:
             col, kind = COUNT_OF.get(r['stokes'], (None, None))
             n = _int(r.get(col)) if col else None
+            if n is None and col and _int(r.get('n_after_morph')) == 0:
+                n = 0                   # nothing left after the morphology gate: nothing reached the later one
             if n is None:
                 continue
             rows.append(dict(lst=r['lst'], date=r['date'], band=r['scope'], stokes=r['stokes'], tier=tier, count=n,
@@ -107,6 +114,20 @@ def write(run, tier, path=None):
         w.writerows(rows)
     os.replace(tmp, path)
     return path, len(rows)
+
+
+def write_for_chain(run, tier, refuse):
+    """A catalog chain's call, right after its merge wrote <run>/v_deep_images.csv: write the table beside it and return
+    its path. A per-image table the table cannot be made from, or one with no image whose count is recorded, is
+    ``refuse``d with the reason (the chain's refusal: nothing is half-written; a later merge writes both again)."""
+    try:
+        path, n = write(run, tier)
+    except (OSError, ValueError) as e:
+        refuse(f'QA percentile table of {run}: {e}')
+    if not n:
+        os.remove(path)
+        refuse(f'QA percentile table of {run}: {IMAGES} has no searched image with a recorded count')
+    return path
 
 
 def read(run, tier):

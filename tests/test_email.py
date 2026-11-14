@@ -558,6 +558,27 @@ def test_qa_percentile_table_and_ionosphere_percentiles():
         shutil.rmtree(d, ignore_errors=True)
 
 
+def test_qa_percentile_blank_count_after_an_empty_morphology_gate_is_zero():
+    # the Stokes V search records no master-structure count for an image with nothing left after the morphology gate
+    # (Run_SLSTB: 319 of 31,078 V images): its count is 0 and it is in the population; any other blank count is left out
+    from exopipe.phase3.lib.qa import percentiles
+    d = tempfile.mkdtemp(prefix='test_email_')
+    try:
+        _w(os.path.join(d, 'v_deep_images.csv'),
+           'lst,scope,stokes,date,n_after_morph,n_after_mstruct,n_raw_floor\n'
+           '15h,41MHz,V,2025-05-01T00,0,,0\n'           # nothing after the morphology gate: count 0
+           '15h,41MHz,V,2025-05-01T01,6,2,9\n'
+           '15h,41MHz,V,2025-05-01T02,6,,9\n'           # a count that is not recorded: left out
+           '15h,41MHz,V,2025-05-01T03,,,9\n'            # no count at all: left out
+           '15h,41MHz,I,2025-05-01T00,,,40\n')          # Stokes I counts after the morphology gate: blank = left out
+        rows = percentiles.table(d, percentiles.TENMIN)
+        got = [(r['date'], r['stokes'], r['count'], r['count_kind'], r['percentile'], r['population']) for r in rows]
+        assert got == [('2025-05-01T00', 'V', 0, 'after_mstruct', 25.0, 2),
+                       ('2025-05-01T01', 'V', 2, 'after_mstruct', 75.0, 2)], got
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def test_page_rule_on_the_served_deep_page_readonly():
     """The rule of the real served deep Stokes V page, built from its own code (read only): the staircase holds the
     allowed mean sky loss, and the process is left as it was. Skipped where the registry or the page is absent."""

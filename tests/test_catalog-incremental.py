@@ -236,7 +236,15 @@ class _FakeCtx:
         self.source = _FakeSrc(src)
 
 
-def write_block(state_dir, epoch, rows, frames_root):
+IMG_HDR = ['lst', 'scope', 'stokes', 'date', 'n_after_morph', 'n_after_mstruct', 'n_final', 'n_raw_floor']   # the search's
+# per-image counts as production's tables carry them (Stokes I: no master-structure count) - the QA percentile table's input
+
+
+def img_row(lst, scope, st, date, n):
+    return [lst, scope, st, date, str(n), str(n) if st == 'V' else '', str(n), str(2 * n + 1)]
+
+
+def write_block(state_dir, epoch, rows, frames_root, img_hdr=None):
     b = os.path.join(state_dir, 'epochs', epoch)
     os.makedirs(b, exist_ok=True)
     lst, date = I.parse_epoch(epoch)
@@ -244,8 +252,12 @@ def write_block(state_dir, epoch, rows, frames_root):
     I._write_csv(os.path.join(b, 'refused.csv'), HDR + ['refusal_reason'], [])
     I._write_csv(os.path.join(b, 'ledger.csv'), ['lst', 'scope', 'stokes', 'date', 'ra', 'dec', 'final'],
                  [[r[1], r[3], r[4], r[2], r[5], r[6], '1'] for r in rows])
-    I._write_csv(os.path.join(b, 'images.csv'), ['lst', 'scope', 'stokes', 'date', 'n_final'],
-                 sorted({(r[1], r[3], r[4], r[2], '1') for r in rows}))
+    imgs = sorted({(r[1], r[3], r[4], r[2]) for r in rows})
+    if img_hdr:                                           # an older per-image table (no count columns)
+        I._write_csv(os.path.join(b, 'images.csv'), img_hdr, [list(k) + ['1'] for k in imgs])
+    else:
+        I._write_csv(os.path.join(b, 'images.csv'), IMG_HDR,
+                     [img_row(*k, sum(1 for r in rows if (r[1], r[3], r[4], r[2]) == k)) for k in imgs])
     frames = []
     for r in rows:
         st, cell, fn = r[4], f'{lst}_{r[3]}', f'{date}_{r[4]}_redo_resid_{r[3]}.fits'
@@ -286,7 +298,8 @@ def test_assembly_order_independent():
         ex = _FakeExcl({('05h', 'Green', '2025-01-12')})
         summ = I.assemble(ctx, I.epochs_in_state(ctx.state_dir), ex)
         digests.append((summ['merge_output_sha1'], I._sha1_file(os.path.join(out, 'v_deep_ledger.csv')),
-                        I._sha1_file(os.path.join(out, 'v_deep_images.csv'))))
+                        I._sha1_file(os.path.join(out, 'v_deep_images.csv')),
+                        I._sha1_file(os.path.join(out, 'qa_percentiles.csv'))))
         hdr, mc = I._read_csv(os.path.join(out, 'master_catalog.csv'))
         assert not any(r[1] == '05h' and r[3] == 'Green' and r[2] == '2025-01-12' for r in mc)
         assert summ['rows_excluded_now'] > 0
@@ -307,6 +320,24 @@ def test_assembly_order_independent():
         refused = True
     ok('assembly.duplicate_cand_id_refuses', refused)
     shutil.rmtree(os.path.join(ctx.state_dir, 'epochs', '07h_2025-02-01'))
+    # the run's QA percentile table beside the per-image table: tier 'deep', one row per image, its content test passes
+    from exopipe.phase3.lib.qa import tests as qa_tests
+    qa = I._read_csv(os.path.join(out, 'qa_percentiles.csv'))[1]
+    n_img = len(I._read_csv(os.path.join(out, 'v_deep_images.csv'))[1])
+    res = qa_tests.qa_percentiles_current(os.path.join(out, 'qa_percentiles.csv'), tier='deep')
+    ok('assembly.qa_percentiles', len(qa) == n_img and res[0], f'{len(qa)} rows for {n_img} images; content test {res}')
+    # a per-image table without the search's count columns refuses the assembly, naming the table
+    bad = os.path.join(TMP, 'asm_oldimg')
+    bctx = _FakeCtx(bad, os.path.join(TMP, 'srcrun'))
+    for e in sorted(by):
+        write_block(bctx.state_dir, e, list(by[e]), frames_root, img_hdr=['lst', 'scope', 'stokes', 'date', 'n_final'])
+    try:
+        I.assemble(bctx, I.epochs_in_state(bctx.state_dir), _FakeExcl(()))
+        why = 'assembled'
+    except I.Refusal as e:
+        why = str(e)
+    ok('assembly.qa_percentiles_refuse_table_without_counts', why.startswith('QA percentile table of ') and 'lacks' in why,
+       why[:200])
     return out
 
 
@@ -539,8 +570,7 @@ def make_synth_run(root, epoch, n_det=6, seed=3):
     I._write_csv(os.path.join(root, 'master_catalog_refused.csv'),
                  ['cand_id', 'lst', 'date', 'band', 'stokes', 'cadence', 'ra', 'dec', 'snr', 'refusal_reason'], [])
     I._write_csv(os.path.join(root, 'v_deep_ledger.csv'), ['lst', 'scope', 'stokes', 'date', 'ra', 'dec', 'final'], ledger)
-    I._write_csv(os.path.join(root, 'v_deep_images.csv'), ['lst', 'scope', 'stokes', 'date', 'n_final'],
-                 [[lst, b, 'V', date, str(n_det)] for b in ('Red', 'Green')])
+    I._write_csv(os.path.join(root, 'v_deep_images.csv'), IMG_HDR, [img_row(lst, b, 'V', date, n_det) for b in ('Red', 'Green')])
     return rows
 
 
