@@ -22,7 +22,9 @@ B14, STD7, TEN, SNAP = 'build_i14_pages_std7.py', 'std7_panel.py', 'build_tenmin
 ANCHORS = (
     ('pages', 'PNG_DPI', None, 'ops', B14, 're', r'fig\.savefig\(_png, dpi=(\d+)\)', None),
     ('pages', 'PNG_DPI', None, 'ops', TEN, 're', r"\.png', dpi=(\d+)\)", None),
-    ('pages', 'PNG_DPI', None, 'clv15', SNAP, 're', r'fig\.savefig\(job\["dst"\], dpi=(\d+)\)', None),
+    # the snapshot module writes each panel to a temporary name and renames it (clv15 phase3_snapshot_pages.py, 2026-11-14 00:30 UTC:
+    # a combined view hard-links its batches' panels, so a panel is never written through)
+    ('pages', 'PNG_DPI', None, 'clv15', SNAP, 're', r'fig\.savefig\(tmp, dpi=(\d+), format="png"\)', None),
     ('pages', 'PANEL_CUT_DEG', None, 'ops', STD7, 'const', 'CUT_DEG', None),
     ('pages', 'PANEL_CUT_DEG', None, 'clv15', SNAP, 'const', 'CUT_DEG', None),
     ('pages', 'PANEL_OBS_LAT_DEG', None, 'ops', STD7, 'const', 'LAT', None),
