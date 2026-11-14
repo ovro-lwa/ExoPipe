@@ -272,6 +272,64 @@ def installed_reference(cell, cell_dir, read_data=True):
     return out
 
 
+SCREEN_CARDS = ('MDWARP', 'MDWMETH', 'MDWINTP', 'MDWREF', 'MDWNANC', 'MDWCV', 'MDWMED0', 'MDWMED1', 'MDWP50', 'MDWP95',
+                'MDWDATE', 'MDWSTAT')    # the master dewarp's cards on every product it resampled (lib/dewarp/master_dewarp._apply)
+
+
+def mdwarp_screen(cell, master_path, record):
+    """A master-dewarped cell's screen (DECISIONS_PENDING item 7), or None when the installed master carries no MDWARP.
+
+    The night's flow aligns it to the dewarped master directly, so no screen touches the night's own products. Its stage-2
+    number, though, is measured against the build's provisional masters (coadd_provisional/), which the dewarp did not
+    resample (it resampled coadd_final/ and subtracted/): they are resampled with the cell's screen first, as the dewarp
+    resampled the members' products. Returns dict(path, md5, sx, sy, cards): the screen of the archived screen record
+    ``record`` (masters_verify.DEWARP_SCREEN_RECORD) and the master's MDW* cards. Refuses when the record has no applied row of
+    the cell, the screen file is missing or its md5 is not the row's, its anchor count is not the row's and the master's
+    (MDWNANC), or the master's MDWDATE is not the row's measured_at (another measurement's screen)."""
+    import hashlib
+    import numpy as np
+    from astropy.io import fits
+    h = fits.getheader(master_path)
+    if not h.get('MDWARP'):
+        return None
+    lst, sc = cell.split('_', 1)
+    rows = [r for r in (_rows(record) if os.path.exists(record) else []) if r.get('lst') == lst and r.get('scope') == sc]
+    if not rows or rows[-1].get('applied') != '1':
+        raise Refusal(f'{cell}: the installed master carries MDWARP, the screen record {record} has no applied row of the cell')
+    r = rows[-1]
+    p = os.path.join(os.path.dirname(record), r.get('screen_file') or '')
+    if not r.get('screen_file') or not os.path.isfile(p):
+        raise Refusal(f'{cell}: the screen record names screen {r.get("screen_file")!r}, not in {os.path.dirname(record)}')
+    with open(p, 'rb') as f:
+        md5 = hashlib.md5(f.read()).hexdigest()
+    if md5 != r.get('screen_md5'):
+        raise Refusal(f'{p}: md5 {md5}, the screen record says {r.get("screen_md5")} - not the screen the master was dewarped with')
+    with fits.open(p, memmap=False) as hs:
+        sx = hs['SCREEN_X'].data.astype(np.float64)
+        sy = hs['SCREEN_Y'].data.astype(np.float64)
+        nanc = hs['SCREEN_X'].header.get('NANCHOR')
+    if not str(nanc) == str(r.get('n_anchors')) == str(h.get('MDWNANC')):
+        raise Refusal(f'{cell}: screen {p} has {nanc} anchors, the record {r.get("n_anchors")}, the master MDWNANC '
+                      f'{h.get("MDWNANC")} - not one measurement')
+    if h.get('MDWDATE') != r.get('measured_at'):
+        raise Refusal(f'{cell}: the master was dewarped by the measurement of {h.get("MDWDATE")}, the screen record\'s row is '
+                      f'of {r.get("measured_at")} - not the master\'s screen')
+    return dict(path=p, md5=md5, sx=sx, sy=sy, cards={k: (h[k], h.comments[k]) for k in SCREEN_CARDS if k in h})
+
+
+def screen_inputs(cell, master_path, record):
+    """The files a master-dewarped cell's admission reads for its screen: the screen record ``record`` and the screen file
+    its last row of the cell names, those that exist (mdwarp_screen verifies them); [] when the master carries no MDWARP.
+    Part of the admit stage's --resume identity (admit_stages.admit_inputs), so declared with its other inputs."""
+    from astropy.io import fits
+    if not os.path.exists(master_path) or not fits.getheader(master_path).get('MDWARP'):
+        return []
+    lst, sc = cell.split('_', 1)
+    rows = [r for r in (_rows(record) if os.path.exists(record) else []) if r.get('lst') == lst and r.get('scope') == sc]
+    f = rows[-1].get('screen_file') if rows else ''
+    return [p for p in (record, os.path.join(os.path.dirname(record), f) if f else '') if p and os.path.isfile(p)]
+
+
 def header_differences(a, b):
     """The keys whose value differs between headers ``a`` and ``b``: every card of either but HISTORY, COMMENT, blank
     cards (the reference copy carries its own HISTORY line) and the structure cards the FITS writer sets (SIMPLE, BITPIX,
