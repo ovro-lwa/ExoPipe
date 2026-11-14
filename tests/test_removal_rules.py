@@ -2,7 +2,8 @@
 
 Each comparison gives production's script and the port their own sandbox copy of a run directory - the merged rows, the
 gate ledger, the run's three frame caches (copies), the archived search frames and v110 verdicts (read through symlinks;
-the V noise epoch's frame a stand-in with a raised THERMNOI) - with the environment of Run_P3S5's 2026-10-14 pass, and
+the V noise epoch's frame a stand-in with a raised THERMNOI) - with the environment of Run_P3S5's 2026-10-14 pass (the parent
+catalogs: the newest snapshot of the current masters, parents_snapshot), and
 compares every file both write, byte for byte, and their printed conform lines:
   (1) eight Run_P3S5 cells, their as-run rows and ledger rows, changed so that every rule removes or flags at least one row
       (a duplicate, an excluded night, a frame whose times cannot be read, I and V noise epochs, a row-line, an unbacked
@@ -43,7 +44,28 @@ from exopipe.phase3.lib.search import removal_rules as R            # noqa: E402
 T = '/tmp/exopipe3_tests_removal_rules'
 RUN = os.path.realpath('/data07/gh/phase3/transients/Run_P3S5')
 PROD = '/lustre/gh/main/exopipe_ops/p3s2_conform.py'
-PAR = '/fast/gh/main/phase3/p3s5_parents_union_20261014T0203'     # the 2026-10-14 pass's parent snapshot (pass_fork_20261014T0203)
+PARS = '/fast/gh/main/phase3/p3s5_parents_union_*T*'               # the pass's parent snapshots (p3s5_parents_union_<UTC>)
+
+
+def parents_snapshot():
+    """The newest parent snapshot whose build found a current parent catalogue for every cell (the last line of its last
+    union log: '...; 0 without: []'). A fixed pin goes stale when a master is rebuilt: the 2026-10-14 pass's snapshot held
+    22h Full's catalogue of the master before the 2026-11-08 Release 1 rebuild, and production and the port both refuse it
+    ('parent catalogue md5 de40ae4d != current master fb1ba0e0')."""
+    for d in sorted(glob.glob(PARS), reverse=True):
+        logs = sorted(glob.glob(d + '.union_*.log'))
+        last = open(logs[-1]).read().strip().splitlines()[-1:] if logs and os.path.isdir(d) else []
+        if last and last[0].endswith('; 0 without: []'):
+            return d
+    raise RuntimeError(f'no parent snapshot {PARS} with a current catalogue for every cell')
+
+
+PAR = parents_snapshot()
+# (1) and (2) compare the port with production's script as it is (no axis switch), so the port takes production's value of the
+# axis step on attempts searched under the size / axis rule, as the parity file sets it. Run_P3S5's ledger carries the rule since
+# the 2026-11-08 Release 1 rebuild (header size_rule 'envelope'): under the ruled 'replace' the port turns the axis step off
+# where production keeps it (one printed line more, the axis rows kept). (3) compares 'replace' with the patched script.
+PROD_AXIS = 'second_gate'
 PY = '/opt/devel/pipeline/envs/py38_orca_nkosogor/bin/python3'
 CELLS = (('09h', 'Red'), ('20h', '18MHz'), ('22h', 'Red'), ('22h', 'Full'), ('21h', 'Red'), ('08h', '55MHz'), ('15h', 'Full'),
          ('16h', 'Red'))
@@ -400,12 +422,16 @@ def pass_env(size):
 
 
 def run_both(tag, cols, rows, lcols, lrows, mut, size):
+    if size:     # production's size step knows one rule: its own. Under the size / axis rule the port keeps the rows above
+        from exopipe.phase3.lib.search import size_rule as SZ          # 2.5 beams, flagged (ruled), where production removes
+        lcols = [c for c in lcols if c not in SZ.GLED_COLS_SIZE]        # them, so both run on the ledger without the rule's
+        lrows = [{c: r[c] for c in lcols} for r in lrows]               # columns (production's rule; the axis step on in both)
     Ua = sandbox(f'{tag}_production', cols, rows, lcols, lrows, mut)
     Ub = sandbox(f'{tag}_port', cols, rows, lcols, lrows, mut)
     e = pass_env(size)
     pa = subprocess.run(['nice', PY, PROD, Ua], env=e, cwd=Ua, capture_output=True, text=True, timeout=7200)
-    pb = subprocess.run(['nice', PY, '-c', _PORT, REPO, Ub, '1' if size else '0'], env=e, cwd=Ub, capture_output=True,
-                        text=True, timeout=7200)
+    pb = subprocess.run(['nice', PY, '-c', _PORT, REPO, Ub, '1' if size else '0', PROD_AXIS], env=e, cwd=Ub,
+                        capture_output=True, text=True, timeout=7200)
     la = [x for x in pa.stdout.splitlines() if x.startswith('conform:')]
     lb = [x for x in pb.stdout.splitlines() if x.startswith('conform:')]
     same = {n: filecmp.cmp(os.path.join(Ua, n), os.path.join(Ub, n), shallow=False)
@@ -443,7 +469,7 @@ def test_subset():
     cols, rows, lcols, lrows = subset()
     nomut = dict(times_add={}, times_drop=set(), omit=set())
     Ub = sandbox('baseline', cols, [dict(r) for r in rows], lcols, lrows, nomut)
-    pb = subprocess.run(['nice', PY, '-c', _PORT, REPO, Ub, '0'], env=pass_env(False), cwd=Ub, capture_output=True,
+    pb = subprocess.run(['nice', PY, '-c', _PORT, REPO, Ub, '0', PROD_AXIS], env=pass_env(False), cwd=Ub, capture_output=True,
                         text=True, timeout=7200)
     check('the unchanged subset conforms (port)', pb.returncode == 0, pb.stderr[-600:])
     kept_ids = {r['cand_id'] for r in _rows(os.path.join(Ub, 'master_catalog.csv'))[1]}
