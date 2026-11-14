@@ -777,6 +777,13 @@ class catalog_grouping(_Section):
                                                           # replaced by /lustre/gh/main, its rewrites undone): any other builder REFUSES
                                                           # until lib/catalog/wraps/builder_grouping.py is re-ported (review 2026-11-04 F7:
                                                           # a new multiplicity-dependent decision elsewhere would run unpatched)
+    FROZEN_BUILDER_SHA1 = ('44d2763087cdde27c5286d33dfcb0f25d18427af',)   # live exopipe_ops 0d7861e: the builders whose
+                                                          # population-wide quantities were listed line by line for the per-hour delta
+                                                          # build of the 10-minute catalog (the runner's FROZEN_PATCHES; Gregg 2026-11-13
+                                                          # "Approved." on its form, R-GREGG-20261113-SPEEDUP-CHECKIN-TEN-ANSWERS answer 3).
+                                                          # A run with frozen statistics (EXOPIPE3_FROZEN_MODE record / delta /
+                                                          # passthrough) of any other builder REFUSES: a quantity added to the builder
+                                                          # since would be computed over a delta's partial population unnoticed
     SUBLST_DIR = '{transients_root}/grouping_sublst'      # the 10-minute tier's grouping (products + the persistent state): written by
                                                           # `catalog --tier sublst --stages group`, read by every LST's build stage and the
                                                           # cumulative build ({transients_root} = paths.TRANSIENTS_ROOT; --out of the stage
@@ -868,7 +875,8 @@ class catalog_grouping(_Section):
                                                                                      # chat, 2026-10-16 delegation)
     RULED['REPEAT_RUNGS'] = 'R-REFACTOR-20261104-REPEAT-RUNGS-MULTIPLES-LEVEL'       # the refactor chat, 2026-10-16 delegation
     PROTECTED_KEYS = ('STATE_SUBDIR',                     # where the stable IDs live: moving it would restart every ID
-                      'BUILDER_SHA1')                     # a pin: changes only by a commit, with the patches re-checked
+                      'BUILDER_SHA1',                     # a pin: changes only by a commit, with the patches re-checked
+                      'FROZEN_BUILDER_SHA1')              # a pin: changes only with the builder's population-wide quantities re-read
 
 
 # =====================================================================================================================
