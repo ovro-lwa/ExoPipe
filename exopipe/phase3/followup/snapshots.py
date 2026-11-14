@@ -10,6 +10,12 @@ SAFETY: the Phase-1 snapshots are fpack-compressed `.fits.fs` in the archive,
 and the pipeline's _funpack renames+deletes the original. So we COPY each
 snapshot to a scratch workdir and funpack the COPY — the archive is untouched.
 funpack lives in the `development` conda env.
+
+FRAMES AND EXCLUSIONS (snapshot chat 2026-11-14, JUDGED-20261114-FOLLOWUP-SNAPSHOT-CUTOUTS-SURVEY-ROOT-ONLY): the frames of a
+(LST, night) come from the search's own frame root (core/inputs.frame_root: the GPU pipeline's tree for a cell of
+paths.SNAPSHOT_GPU_FRAME_CELLS, the survey's Phase-1 tree otherwise), and a subband-night the snapshot tiers exclude
+(core/exclusions.PerNight: 'snapshot-gpu' on a GPU-frame cell, 'snapshot' elsewhere) is refused (``snap_refusal``), never read
+from another tree. Production's snapshots.py read the survey tree only and no exclusion.
 """
 import glob
 import os
@@ -34,15 +40,30 @@ FPACK_ENV = 'development'
 _TS = re.compile(r'Snapshot-(\d{8}_\d{6})-')
 
 
+def snap_refusal(lst, date, scope):
+    """Why T5 may not read the 10-s frames of (lst, date, scope), or None: the subband-night is excluded for the snapshot
+    tiers (data_decisions.csv read per night as the search reads it, core/exclusions.PerNight). Exclusion is total: such a
+    subband-night is refused, not read from another frame tree."""
+    from exopipe.phase3.core import exclusions as EX
+    if EX.PerNight().is_excluded(lst, scope, date):
+        return (f'refused: {lst} {date} {scope} is excluded for the snapshot tiers (data_decisions.csv, scope '
+                f'{"snapshot-gpu" if (lst, date) in EX.gpu_frame_cells() else "snapshot"})')
+    return None
+
+
 def _phase1_snap_dir(lst, date, scope, clean=False):
-    """snapshots/ (dirty V) or snapshots_clean/ (CLEANed Stokes I). Prefer a run
+    """snapshots/ (dirty V) or snapshots_clean/ (CLEANed Stokes I) under the night's frame root (core/inputs.frame_root),
+    None when the subband-night is excluded (snap_refusal) or has no such directory. Prefer a run
     whose subdir actually CONTAINS frames — a date can have multiple Run_* dirs
     where an earlier one created an EMPTY snapshots/ and a later one holds the
     frames (caused several candidates to be wrongly marked 'no snapshot data')."""
+    from exopipe.phase3.core import inputs as IN
+    if snap_refusal(lst, date, scope):
+        return None
     sub = 'snapshots_clean' if clean else 'snapshots'
     first = None
     for run in sorted(glob.glob(os.path.join(
-            '/lustre/pipeline/exopipe/phase1', lst, date, 'Run_*'))):
+            IN.frame_root(lst, date), lst, date, 'Run_*'))):
         d = os.path.join(run, scope, sub)
         if os.path.isdir(d):
             if first is None:
@@ -129,7 +150,7 @@ def save_burst_allsky(cand, lst, date, scope, ra, dec, frame_times, outdir,
     """
     from . import io_products as IO
     from exopipe.phase3.core.products import build_name
-    if _phase1_snap_dir(lst, date, scope) is None:
+    if _phase1_snap_dir(lst, date, scope) is None:      # excluded (snap_refusal) or no frames
         return []
     sx, sy = _load_warp(scope, lst, date)
     tmp = tempfile.mkdtemp(prefix='candinv_snapsave_', dir='/fast/gh/main')
@@ -184,6 +205,10 @@ def snapshot_spectrum(lst, date, ra, dec, timestamp, scopes=None,
     rows = []
     try:
         for sb in scopes:
+            why = snap_refusal(lst, date, sb)
+            if why:                                    # listed, so the spectrum shows the subband was refused
+                rows.append({'scope': sb, 'freq_mhz': (C.scope_center_hz(sb) or 0) / 1e6, 'refused': why})
+                continue
             if _phase1_snap_dir(lst, date, sb) is None:
                 continue
             sx, sy = _load_warp(sb, lst, date)
@@ -291,6 +316,10 @@ def snapshot_morphology(lst, date, scope, ra, dec, timestamp, verbose=True):
     than the empirical PSF => RESOLVED => propagation/lensing artifact.
     """
     out = {'scope': scope, 'timestamp': timestamp}
+    why = snap_refusal(lst, date, scope)
+    if why:
+        out['note'] = out['refused'] = why
+        return out
     if _phase1_snap_dir(lst, date, scope, clean=False) is None:
         out['note'] = 'no snapshot dir'
         return out
@@ -358,6 +387,10 @@ def snapshot_lightcurve(lst, date, scope, ra, dec, start_iso, end_iso,
     fmhz = (C.scope_center_hz(scope) or 74e6) / 1e6
     search_radius = float(np.clip(6.0 * 74.0 / fmhz, 2.0, 30.0))
     out['search_radius_arcmin'] = search_radius
+    why = snap_refusal(lst, date, scope)
+    if why:
+        out['note'] = out['refused'] = why
+        return out
     snapdir = _phase1_snap_dir(lst, date, scope, clean=(stokes == 'I'))
     if snapdir is None:
         out['note'] = 'no Phase-1 snapshot dir'
