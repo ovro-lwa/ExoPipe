@@ -2,6 +2,7 @@
 """Tests of exopipe/phase3/lib/catalog/delta_build.py: the file work of a night's delta build of the 10-minute catalog (the
 delta build directory and the stage's content test). Synthetic tables only; the builder itself is tested in
 tests/test_catalog_frozen_builder.py. Run: python3 tests/test_catalog_delta_build.py"""
+import glob
 import hashlib
 import json
 import os
@@ -312,8 +313,11 @@ def view_world(root):
                                           'J0003,46MHz,c3', 'J0004,46MHz,c4'], term='\r\n')
     put(f'{A}/46MHz_sigma_stack_singleton_removed.csv', ['cand_id,lst', 'c5,05h'], term='\r\n')
     put(f'{A}/E_params.json', ['{"frozen": 1}'])
+    # c5 is vetoed in the all-nights build too: a delta never vetoes a detection the all-nights build kept
+    # (Frozen._prepare refuses that state), so the fixture is one the builder can write
     put(f'{A}/builder_frozen.json', [json.dumps(dict(version=2, grouping_table=dict(path=f'{root}/old/detections.csv', sha1=gold[2]),
-                                                     rows=digests(gold), vetoed=[]))])
+                                                     rows={c: v for c, v in digests(gold).items() if c != 'c5'},
+                                                     vetoed=['c5']))])
     put(f'{A}/grouping_table.json', [json.dumps(dict(table=f'{root}/old/detections.csv', table_sha1=gold[2], tier='10min',
                                                      frozen_record_sha256=hashlib.sha256(raw(f'{A}/builder_frozen.json')).hexdigest()))])
     put(f'{D}/46MHz_sources_survivors.csv', [SV, src('J0002', 'G2', 'c2', '9.50', ''), src('J0033', 'G3', 'n2', '10.00', ''),
@@ -348,14 +352,14 @@ def test_view():
     # the certificate
     c_own = DB.certificate(frz, gold, told, lst='05h', key='V_sb')
     check('certificate: a build under its own table is untouched', c_own['ok'] is True and c_own['differing'] == 0
-          and c_own['detections'] == 6 and c_own['table_to']['sha1'] == gold[2] and len(c_own['table_to']['sha256']) == 64
+          and c_own['detections'] == 5 and c_own['table_to']['sha1'] == gold[2] and len(c_own['table_to']['sha256']) == 64
           and c_own['lst'] == '05h' and c_own['key'] == 'V_sb' and c_own['record_sha1'] == DB._sha1(frz), c_own)
     c_new = DB.certificate(frz, gnew, tnew)
     check('certificate: a regroup of the hour\'s detections is not ok (the renamed identity and its group\'s other identity)',
           c_new['ok'] is False and c_new['differing'] == 2 and {e[0] for e in c_new['examples']} == {'c2', 'c3'}, c_new)
     gone = grouping(f'{R}/gone/detections.csv', [('c1', 'G1', 'J0001', 'M1')])
     c = DB.certificate(frz, gone, f'{R}/gone/detections.csv')
-    check('certificate: a detection missing from the table is not ok', c['ok'] is False and c['differing'] == 5, c)
+    check('certificate: a detection missing from the table is not ok', c['ok'] is False and c['differing'] == 4, c)
     moved = grouping(f'{R}/moved/detections.csv', [('c1', 'G9', 'J0001', 'M1')] + [r for r in
                      [('c2', 'G2', 'J0002', 'M2'), ('c3', 'G3', 'J0003', 'M2'), ('c4', 'G4', 'J0004', 'M4'),
                       ('c5', 'G5', 'J0005', 'M5'), ('c7', 'G7', 'J0007', 'M7')]])
@@ -423,7 +427,7 @@ def test_view():
         return hashlib.sha256(raw(p)).hexdigest()
     v0, v1 = json.load(open(f'{V0}/builder_view.json')), json.load(open(f'{V1}/builder_view.json'))
     check('view record: a certificate view holds the all-nights record\'s rows and vetoed, a delta view the delta record\'s',
-          v0['rows'] == digests(gold) and v0['vetoed'] == [] and v0['kind'] == 'certificate' and v1['rows'] == dl['rows']
+          v0['rows'] == {c: v for c, v in digests(gold).items() if c != 'c5'} and v0['vetoed'] == ['c5'] and v0['kind'] == 'certificate' and v1['rows'] == dl['rows']
           and v1['vetoed'] == ['c5'] and v1['kind'] == 'delta' and v1['grouping_table']['sha1'] == gnew[2]
           and v1['source_record']['sha1'] == DB._sha1(f'{D}/builder_delta.json'), (v0, v1))
     cv1 = json.load(open(f'{V1}/catalog_view.json'))
@@ -592,6 +596,15 @@ def test_hour():
     check('state: a delta that read exactly this input, stands on this all-nights build and is certified = delta',
           st['kind'] == 'delta' and st['dir'] == D and st['certificate']['ok'] is True
           and st['record_sha1'] == DB._sha1(f'{D}/builder_delta.json'), st)
+    keep = raw(f'{D}/builder_delta.json')                 # review 51 F1: a delta written before it recorded `vetoed`
+    old_dl = json.loads(keep.decode())
+    old_dl.pop('vetoed', None)
+    put(f'{D}/builder_delta.json', [json.dumps(old_dl)])
+    st = DB.key_state('05h', 'V_sb', 'noveto', F, inp['V_sb'], [D], gnew, tnew)
+    check('state: a delta without its vetoed detections (view_catalog refuses it) does not stand = a build is owed',
+          st['kind'] == 'build', st)
+    with open(f'{D}/builder_delta.json', 'wb') as f:
+        f.write(keep)
     check('state: a delta of another input, key or tag does not stand',
           DB.key_state('05h', 'V_sb', 'noveto', F, inp0['V_sb'], [D], gnew, tnew)['kind'] == 'build'
           and DB.key_state('05h', 'V_sb', 'veto', F, inp['V_sb'], [D], gnew, tnew)['kind'] == 'no-record'
@@ -711,6 +724,16 @@ def test_hour():
     check('view root: complete after its localizations, and standing for exactly its states',
           DB.root_stands(root, dg) and not DB.root_stands(root, '0' * 40) and not DB.root_stands(f'{R}/nowhere', dg)
           and json.load(open(f'{root}/hour_view.json'))['localizations']['noveto']['localizations.csv']['new'] == 3)
+    cvs = sorted(glob.glob(f'{root}/source_catalogs_*_*/catalog_view.json'))   # review 51 F2: a root without view records
+    keep = raw(cvs[0])
+    cv = json.loads(keep.decode())
+    cv.pop('view_record', None)
+    put(cvs[0], [json.dumps(cv)])
+    check('view root: a root whose catalog directory names no view record (written before it) is not carried',
+          cvs and not DB.root_stands(root, dg), cvs)
+    with open(cvs[0], 'wb') as f:
+        f.write(keep)
+    check('view root: ... and stands again with it', DB.root_stands(root, dg))
     # carrying an earlier root: it must stand, be made from the same image / detection / selection tables, and pass view_test
     idg, gv = DB.view_inputs_digest(F, [Nd]), {'V': gnew}
     ok0, why0 = DB.root_carries(root, dg, idg, states, gv)

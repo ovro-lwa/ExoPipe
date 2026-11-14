@@ -919,6 +919,31 @@ def test_grouping_mix():
         bad, tables, how = SB.grouping_mix(['05h', '06h'], refused)
         check('gate: a present table that cannot be read refuses once per Stokes',
               len(bad) == 1 and bad[0][0] == '*' and 'cannot be read' in bad[0][1] and how['present'] == {}, bad)
+        # review of PR 51: F6 a malformed table or record is a refusal, not a crash; F5 a missing directory of an hour and
+        # key the present table holds detections of refuses; F10 the population follows the configured split
+        def broken(S):
+            raise ValueError('not valid UTF-8')
+        bad, tables, how = SB.grouping_mix(['05h', '06h'], broken)
+        check('review 51: a present table that raises ValueError refuses (no traceback)',
+              len(bad) == 1 and bad[0][0] == '*' and 'not valid UTF-8' in bad[0][1], bad)
+        lst('06h', g_old, built=['b1'])
+        p = f'{R}/Run_SLST06B/source_catalogs_I_sb/builder_frozen.json'
+        json.dump(dict(version=2, grouping_table=dict(path='x', sha1=g_old[2]), vetoed=[], rows=[['b1']]), open(p, 'w'))
+        json.dump(dict(table='/x', table_sha1=g_old[2], frozen_record_sha256=hashlib.sha256(open(p, 'rb').read()).hexdigest()),
+                  open(f'{R}/Run_SLST06B/source_catalogs_I_sb/grouping_table.json', 'w'))
+        bad, tables, how = SB.grouping_mix(['05h', '06h'], present)
+        check('review 51: a bound record of the wrong form refuses (no traceback)',
+              len(bad) == 1 and bad[0][0] == '06h' and 'does not stand' in bad[0][1] and not how['certified'], bad)
+        lst('06h', g_now)
+        shutil.rmtree(f'{R}/Run_SLST07B', ignore_errors=True)
+        bad, tables, how = SB.grouping_mix(['05h', '06h', '07h'], present)
+        check('review 51: an LST whose run lacks the directory of a key the present table holds detections of refuses',
+              len(bad) == 1 and bad[0][0] == '07h' and 'source_catalogs_I_sb is missing' in bad[0][1], bad)
+        bad, tables, how = SB.grouping_mix(['05h', '06h', '09h'], present)
+        check('review 51: ... an hour the present table holds no detection of needs no directory', not bad, bad)
+        check('review 51: the key classes follow the configured split (a band of neither class is in no key)',
+              DB.key_class('sb')('46MHz') and not DB.key_class('sb')('Red') and DB.key_class('wb')('Red')
+              and DB.key_class('wb')('Full') and not DB.key_class('wb')('46MHz') and not DB.key_class('wb')('Odd'))
     finally:
         SB.lst_run = orig
 

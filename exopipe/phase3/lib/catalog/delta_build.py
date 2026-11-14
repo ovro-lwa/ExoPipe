@@ -360,6 +360,17 @@ def _certificate(data, record, grouping, table_path, lst='', key=''):
     return out
 
 
+def key_class(kind):
+    """band -> True when a detection of that band belongs to the key class ``kind`` (sb | wb), by the configured split the
+    builder's input is made with (catalog_select.SPLIT['sublst'], lib/catalog/tier_sublst.split): sb = the subband token in
+    the band, wb = one of the wideband groups; a band of neither class is in no key."""
+    from exopipe.phase3.config import CFG
+    split = CFG.catalog_select.SPLIT['sublst']
+    if kind == 'sb':
+        return lambda b: split['sb'] in b
+    return lambda b: b in tuple(split['wb'])
+
+
 def standing(cat_dir, grouping, table_path, lst, key):
     """Whether the catalog directory ``cat_dir`` of LST ``lst`` (the table's `lst` value, e.g. 17h) and key ``key``
     (<Stokes>_<sb|wb>), built under ANOTHER grouping table, stands under the present one (``grouping``: read_grouping's result
@@ -372,7 +383,7 @@ def standing(cat_dir, grouping, table_path, lst, key):
       2. certificate(record, present table) is ok: every detection of the record is in the present table under the recorded
          identity, in a multiples-level group of the recorded content;
       3. the populations are EQUAL: the detections the build read (the record's `rows` and `vetoed`) are exactly the present
-         table's detections of this LST, Stokes and band class (a band named in MHz is a subband, any other a wideband). A
+         table's detections of this LST, Stokes and band class (key_class: the configured split of the builder's input). A
          table that gained a detection of the hour (a new night) or lost one is not the one this directory was built from.
     Returns a dict: ok, the record's name, sha1 and sha256, both tables' digests, the counts of both directions, up to 3
     detections of each, and `why` when not ok. A caller treats anything but ok True as a refusal."""
@@ -408,7 +419,12 @@ def standing(cat_dir, grouping, table_path, lst, key):
         out['why'] = f'{name} holds no per-detection grouping (rows) or no list of the vetoed detections'
         return out
     known = set(rows) | set(vetoed)
-    here = {c for c, r in T.items() if r['lst'] == lst and r['stokes'] == stokes and ('MHz' in r['band']) == (kind == 'sb')}
+    in_key = key_class(kind)
+    try:
+        here = {c for c, r in T.items() if r['lst'] == lst and r['stokes'] == stokes and in_key(r['band'])}
+    except KeyError as e:
+        out['why'] = f'the present grouping table {table_path} has no column {e} (lst, stokes and band are read)'
+        return out
     only_table, only_record = sorted(here - known), sorted(known - here)
     out.update(record_detections=len(known), table_detections=len(here), only_in_table=len(only_table),
                only_in_record=len(only_record), only_in_table_examples=only_table[:3], only_in_record_examples=only_record[:3])
@@ -490,9 +506,9 @@ def view_catalog(out, all_cat, delta_cat, grouping, table_path, cert=None):
         p = os.path.join(delta_cat, DELTA_RECORD)
         if not os.path.exists(p):
             raise DeltaRefusal(f'{delta_cat} holds no {DELTA_RECORD}: not a delta build - REFUSING')
-        dl_sha = _sha1(p)
-        with open(p) as f:
-            dl = json.load(f)
+        with open(p, 'rb') as f:
+            data = f.read()                 # ONE read: the record the view takes its rows from is the one it names
+        dl_sha, dl = hashlib.sha1(data).hexdigest(), json.loads(data.decode())
         if dl['grouping_table']['sha1'] != sha1 and not (cert and cert.get('ok') is True and cert['table_to']['sha1'] == sha1
                                                          and cert['record_sha1'] == dl_sha):
             raise DeltaRefusal(f'{delta_cat} was built with the grouping table {dl["grouping_table"]["sha1"][:12]}, the view is '
@@ -761,8 +777,12 @@ def key_state(lst, key, tag, frozen_from, inp, candidates, grouping, table_path)
         i = _json(ir)
         if (i.get('digest'), i.get('lst'), i.get('key'), i.get('tag')) != (inp['digest'], lst, key, tag):
             continue
-        if _json(rec).get('frozen_record_sha1') != fsha:
+        r = _json(rec)
+        if r.get('frozen_record_sha1') != fsha:
             continue
+        if not isinstance(r.get('rows'), dict) or not isinstance(r.get('vetoed'), list):
+            continue        # written before a delta recorded its vetoed detections: view_catalog refuses it, so build it again
+
         c = certificate(rec, grouping, table_path, lst, key)
         if c['ok']:
             return dict(st, kind='delta', dir=os.path.abspath(d), record=rec, record_sha1=c['record_sha1'], certificate=c)
@@ -977,7 +997,15 @@ def root_stands(root, digest):
     if not os.path.exists(p):
         return False
     rec = _json(p)
-    return rec.get('complete') is True and rec.get('state_digest') == digest
+    if not (rec.get('complete') is True and rec.get('state_digest') == digest):
+        return False
+    # a root written before a view carried its own record (builder_view.json, named by its sha256 in catalog_view.json) is
+    # not carried: the cumulative's gate (standing) could never certify it once the grouping table moves on
+    for v in glob.glob(os.path.join(root, CAT.format(tag='*', key='*'), VIEW_RECORD)):
+        if not ((_json(v).get('view_record') or {}).get('sha256')
+                and os.path.exists(os.path.join(os.path.dirname(v), VIEW_ROWS))):
+            return False
+    return True
 
 
 def read_indexes(night_dirs):

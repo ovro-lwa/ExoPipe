@@ -112,7 +112,7 @@ def present_grouping(stokes):
 
 
 def grouping_mix(lsts, present=present_grouping):
-    """Design B (catalog_grouping.GROUPING 'design-b'; WAVE2 GROUPING; review 2026-11-04, F3): every LST run's catalogues
+    """Design B (catalog_grouping.GROUPING 'design-b'; WAVE2 GROUPING; review 2026-11-04, F3): every LST run's catalogs
     must stand on ONE grouping table per Stokes, the PRESENT one (``present``: Stokes -> (path, read_grouping result); the
     grouping state's table, never a majority of the directories). A regroup renames identities (display names follow mean
     positions; 121 I / 15 V renamed between the 10-25 and 11-03 inputs, the 11-04 review), and the cumulative merges the LST
@@ -122,7 +122,9 @@ def grouping_mix(lsts, present=present_grouping):
       - a directory that names ANOTHER table passes only when THIS gate finds, from the directory's own record, that it
         stands under the present table (lib/catalog/delta_build.standing: the record bound to the directory by its sha256,
         every detection grouped as recorded, the populations of the hour and key equal). No stored certificate is trusted;
-      - anything else refuses: no provenance, a table that cannot be read, a directory that does not stand.
+      - anything else refuses: no provenance, a table that cannot be read, a directory that does not stand, and a MISSING
+        directory: an LST of ``lsts`` whose run holds no catalog directory of a Stokes and key class (sb | wb) of which the
+        present table has detections of that hour (judged for each Stokes whose present table was read).
     Returns ([(lst, reason)], {Stokes: {table sha1: [lsts]}}, {'present': {Stokes: path, sha1, sha256}, 'certified': [one
     dict per directory passed by the certificate: LST, key, record name/sha1/sha256, both tables' digests, detections]})."""
     from exopipe.phase3.lib.catalog.wraps import builder_grouping as BG
@@ -150,7 +152,7 @@ def grouping_mix(lsts, present=present_grouping):
             if S not in now:
                 try:
                     now[S] = present(S)
-                except (GS.StageRefusal, DB.DeltaRefusal, OSError) as e:
+                except (GS.StageRefusal, DB.DeltaRefusal, OSError, ValueError, KeyError, csv.Error) as e:
                     now[S] = None
                     bad.append(('*', f'Stokes {S}: the present grouping table cannot be read ({str(e)[:300]})'))
             if now[S] is None:
@@ -158,15 +160,33 @@ def grouping_mix(lsts, present=present_grouping):
             table, g = now[S]
             if sha == g[2]:
                 continue
-            st = DB.standing(d, g, table, l, f'{S}_{kind}')
+            try:
+                st = DB.standing(d, g, table, l, f'{S}_{kind}')
+            except (DB.DeltaRefusal, ValueError, KeyError, TypeError) as e:     # a malformed record: a refusal, not a crash
+                st = dict(ok=False, why=f'its record could not be certified ({type(e).__name__}: {str(e)[:200]})')
             if st['ok'] is True:
                 certified.append(dict(lst=l, key=st['key'], record=st['record'], record_sha1=st['record_sha1'],
                                       record_sha256=st['record_sha256'], table_from=st['table_from'], table_to=st['table_to'],
                                       detections=st['record_detections']))
             else:
+                fix = ('make this hour\'s catalog view again in a night pass (catalog --tier sublst; its delta builds), or '
+                       'build this LST again from stage build' if st.get('record') == DB.VIEW_ROWS else
+                       'build this LST again from stage build')
                 bad.append((l, f'{os.path.basename(d)} names the grouping table {sha[:12]}, the present table is {g[2][:12]} '
-                               f'({table}), and the directory does not stand under it: {st["why"]} - build this LST again '
-                               f'from stage build (the cumulative joins LST runs by identity name)'))
+                               f'({table}), and the directory does not stand under it: {st["why"]} - {fix} (the cumulative '
+                               f'joins LST runs by identity name)'))
+    for S, v in now.items():            # a key of an hour the present table holds detections of must have its directory
+        if not v:
+            continue
+        cls = {k: DB.key_class(k) for k in ('sb', 'wb')}
+        held = {(r.get('lst'), k) for r in v[1][0].values() if r.get('stokes') == S
+                for k in ('sb', 'wb') if cls[k](r.get('band') or '')}
+        for l in lsts:
+            for k in ('sb', 'wb'):
+                d = os.path.join(lst_run(l), f'source_catalogs_{S}_{k}')
+                if (l, k) in held and not os.path.isdir(d):
+                    bad.append((l, f'{os.path.basename(d)} is missing: the present grouping table {v[1][2][:12]} holds '
+                                   f'detections of {l} Stokes {S} {k} - build this LST again'))
     return (bad, {S: {sha: sorted(ls) for sha, ls in v.items()} for S, v in by.items()},
             dict(present={S: dict(path=os.path.abspath(v[0]), sha1=v[1][2], sha256=v[1][3]) for S, v in now.items() if v},
                  certified=certified))
@@ -255,6 +275,7 @@ def build_stage(run, plan):
             u.meta['grouping_tables'] = tables
             u.meta['grouping_present'] = how['present']
             u.meta['grouping_certified'] = how['certified']
+            u.meta['grouping_refusals'] = [dict(lst=l, why=why) for l, why in bad]   # in full: the reason below is cut
             if how['certified']:
                 u.note(f'G8 design-B grouping: {len(how["certified"])} catalog directory(ies) built under an earlier grouping '
                        f'table stand under the present one (certified here from their own records)')
