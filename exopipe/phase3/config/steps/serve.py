@@ -89,6 +89,7 @@ class serve(_Section):
     #            --stop only), 'jupiter' (the Jupiter program's pages)
     #   program  'classify' (ops/classify_transients.py), 'jupiter' (ops/jupiter_server.py ROOT PORT), 'http'
     #            (python -m http.server PORT --bind 127.0.0.1 --directory DIR)
+    #   python   (jupiter / http pages) the site PYTHON key of the page's interpreter; absent = 'default'
     #   start    'stages' (serve builds and starts it) or 'restart-only' (serve restarts / stops it with its exact argv)
     #   queue, catalog, labels, loc_dir, log: paths relative to the run directory; hub: (Stokes row, hub tier) of the
     #   registry entry (None: no entry, the ports recorded in the registry's 'tunnel_extra' - which the hub page no longer
@@ -178,12 +179,15 @@ class serve(_Section):
                                             kind='1min', queue='queue_I.txt', catalog='source_catalogs_I', labels='judgements',
                                             loc_offsets=True, hub=('I', '1-min-forced'), twin=None, log='classify_8776.log'),
         # the Jupiter program's pages (live on 2026-10-13: 8800 = `jupiter_server.py /lustre/gh/main/phase3/jupiter/products
-        # 8800` in cwd ops; 8801 = `python -m http.server 8801 --bind 127.0.0.1 --directory <v2 site>` in cwd the site;
-        # jupiter_server.py:303; neither has a launcher in ops). Registry: tunnel_extra (no button)
+        # 8800` in cwd ops; 8801 = `python -m http.server 8801 --bind 127.0.0.1 --directory <v2 site>`; jupiter_server.py:303;
+        # neither has a launcher in ops). Registry: tunnel_extra (no button). 8801's STANDING COMMAND (Jovian chat 2026-11-14,
+        # ledger OPS-20261114-JOVIAN-8801-STANDING-COMMAND): py310_orca (site key 'flow'; static files only, the interpreter does
+        # not change content), --directory resolved per request (a site swap by rename needs no restart), started in the site's
+        # parent directory (Plan.cwd).
         ('jupiter', 'p1'): dict(port=8800, family='jupiter', program='jupiter', start='stages', root='p1', hub=None, twin=None,
                                 log='jupiter_server_8800.log'),
         ('jupiter', 'v2-site'): dict(port=8801, family='jupiter', program='http', start='stages', root='v2-site', hub=None,
-                                     twin=None, log='http_8801.log'),
+                                     twin=None, log='http_8801.log', python='flow'),
     }
     JUPITER_ROOTS = {'p1': '/lustre/gh/main/phase3/jupiter/products',     # argv of the live 8800 server (2026-10-13)
                      'v2-site': '/lustre/gh/main/phase3/jupiter/v2/site'}  # --directory of the live 8801 server
