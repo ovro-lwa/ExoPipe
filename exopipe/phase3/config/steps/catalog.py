@@ -771,13 +771,15 @@ class catalog_grouping(_Section):
                     '2a12c39a57ff3df502021e4ddcfdac26c801ef02',   # 03h / 05h 2026-10-13 (3)
                     '6e61376611f124ca4183d416d2ce4de378a3771c',   # 05h / 06h / 14h 2026-10-12..13 (3)
                     'ab052310e2eafb0d5c13af7bd94beafd289a3064',   # 09h..19h 2026-10-12 (14)
-                    '44d2763087cdde27c5286d33dfcb0f25d18427af')   # live exopipe_ops 0d7861e (RA across 0h; 18h / 21h 11-02 trees)
+                    '44d2763087cdde27c5286d33dfcb0f25d18427af',   # exopipe_ops 0d7861e (RA across 0h; 18h / 21h 11-02 trees)
+                    '430f83b317080ab5f4b74d8c0785826433a895ab')   # live exopipe_ops 9e25883 (2026-11-14: sample densities' loop)
                                                           # the builders (build_source_catalogs_v3.py) the grouping runner's patches were
                                                           # written and checked for, as PATH-NORMALIZED sha1s (a frozen tree's own root
                                                           # replaced by /lustre/gh/main, its rewrites undone): any other builder REFUSES
                                                           # until lib/catalog/wraps/builder_grouping.py is re-ported (review 2026-11-04 F7:
                                                           # a new multiplicity-dependent decision elsewhere would run unpatched)
-    FROZEN_BUILDER_SHA1 = ('44d2763087cdde27c5286d33dfcb0f25d18427af',)   # live exopipe_ops 0d7861e: the builders whose
+    FROZEN_BUILDER_SHA1 = ('44d2763087cdde27c5286d33dfcb0f25d18427af',    # exopipe_ops 0d7861e, and the live 9e25883 (the
+                           '430f83b317080ab5f4b74d8c0785826433a895ab')    # same quantities; diff read 2026-11-14): the builders whose
                                                           # population-wide quantities were listed line by line for the per-hour delta
                                                           # build of the 10-minute catalog (the runner's FROZEN_PATCHES; Gregg 2026-11-13
                                                           # "Approved." on its form, R-GREGG-20261113-SPEEDUP-CHECKIN-TEN-ANSWERS answer 3).

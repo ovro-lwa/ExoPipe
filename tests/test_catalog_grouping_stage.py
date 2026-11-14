@@ -410,9 +410,9 @@ def test_runner():
     from exopipe.phase3.config import CFG
     live = _bg().normalized_sha1(LIVE_BUILDER, open(LIVE_BUILDER).read())
     frozen = {_bg().normalized_sha1(f, open(f).read()) for f in glob.glob(FROZEN_BUILDERS) if '.refused' not in f}
-    check('F7: the config pin holds the live builder and every frozen 10-minute tree\'s builder (path-normalized; 6 versions)',
+    check('F7: the config pin holds the live builder and every frozen 10-minute tree\'s builder (path-normalized; 7 versions)',
           live in CFG.catalog_grouping.BUILDER_SHA1 and frozen <= set(CFG.catalog_grouping.BUILDER_SHA1)
-          and len(set(CFG.catalog_grouping.BUILDER_SHA1)) == 6, (live, sorted(frozen - set(CFG.catalog_grouping.BUILDER_SHA1))))
+          and len(set(CFG.catalog_grouping.BUILDER_SHA1)) == 7, (live, sorted(frozen - set(CFG.catalog_grouping.BUILDER_SHA1))))
     rc, txt = _run_runner(d, 'out_pin', 'design-b', table=f'{d}/grouping_I/detections.csv', builder=b,
                           accepted=list(CFG.catalog_grouping.BUILDER_SHA1))
     check('F7: a builder not in the pin REFUSES before anything runs (re-port), even with every patch text in place',

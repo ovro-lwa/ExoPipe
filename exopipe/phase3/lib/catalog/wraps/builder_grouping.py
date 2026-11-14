@@ -143,7 +143,9 @@ CENSUS = {'assoc_groups(': {2}, 'SSTACK_GATE': {4, 7}, '_multi_integration(': {2
           "lab.append('REP')": {1}, "lab.append('XREP')": {1}, 'SIZE_GATE_7_8': {6}, '>= THR or s[': {1}, '\nCOLS = ': {1},
           'source_id=jname(': {1}, 'members.append((jname(': {1}, 'identity_id': {4, 7}}
 
-# ---- FROZEN STATISTICS (see the module text). Line numbers are those of the builder with sha1 44d2763087cd... ----------------
+# ---- FROZEN STATISTICS (see the module text). Line numbers are those of the builder with sha1 44d2763087cd...; the builder
+# since 2026-11-14 (exopipe_ops 9e25883, sha1 430f83b31708...) has four more lines before its line 322 (`RHO = {}`): add 4 to
+# every number from 318 on. Its one change is how the loop of F11 reads the cross-match positions; no quantity was added. -----
 FROZEN_MODES = ('', 'record', 'delta', 'passthrough')
 FROZEN_RECORD = 'builder_frozen.json'       # written by the all-nights build (record), read by a delta build
 DELTA_RECORD = 'builder_delta.json'         # written by a delta build
@@ -199,10 +201,12 @@ FROZEN_PATCHES = [
      "AREA = {}\nfor band in BANDS:\n    frac = np.mean([in_footprint(band, r_, d_)\n",
      "AREA = {}\nfor band in __FROZEN__.measure_area(BANDS, AREA):   # EXOPIPE3 FROZEN F10\n"
      "    frac = np.mean([in_footprint(band, r_, d_)\n"),
+    # the loop's head only: the line that follows it was rewritten on 2026-11-14 (exopipe_ops 9e25883: the cross-match positions
+    # taken once as arrays, the same values) and the patch must stand on both versions
     ('F11-sample-density',
-     "RHO = {}\nfor band in BANDS:\n    inb = np.array([in_footprint(band, c.ra.deg, c.dec.deg) for c in xc])\n",
+     "RHO = {}\nfor band in BANDS:\n    inb = np.array([in_footprint(band, ",
      "RHO = {}\nfor band in __FROZEN__.measure_rho(BANDS, RHO):   # EXOPIPE3 FROZEN F11\n"
-     "    inb = np.array([in_footprint(band, c.ra.deg, c.dec.deg) for c in xc])\n"),
+     "    inb = np.array([in_footprint(band, "),
 ]
 
 
