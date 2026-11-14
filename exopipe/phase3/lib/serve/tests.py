@@ -914,7 +914,8 @@ def _sci_meta(path):
 @content_test('scintillation_index')
 def table_matches_definition(path, tier=None, **ctx):
     """scintillation_index.csv has the tool's columns and the scintillation_index.json beside it parses: its tier is the one asked
-    for; default_hidden is true on the snapshot tier only (Gregg 2026-11-12 "All tiers, off on deep/10-min"); hour_bands = the
+    for; default_hidden is false on every tier (Gregg 2026-11-14 "I want the slider to start ar 100%, so nothing is hidden at the
+    start", R-GREGG-20261114-SCINTILLATION-SLIDER-STARTS-AT-100, exopipe_ops 73ae49b; before, true on the snapshot tier); hour_bands = the
     table's rows and its per-band counts = the table's states; each row's state follows its percentile (above worst_pct: the
     first state; measured otherwise: the second; no index: the third, with no percentile)."""
     try:
@@ -929,7 +930,7 @@ def table_matches_definition(path, tier=None, **ctx):
         bad.append(f'columns {head}')
     if tier and meta.get('tier') != tier:
         bad.append(f"tier {meta.get('tier')!r}, not {tier!r}")
-    if meta.get('default_hidden') is not (meta.get('tier') == 'snapshot'):
+    if meta.get('default_hidden') is not False:
         bad.append(f"default_hidden {meta.get('default_hidden')} on tier {meta.get('tier')}")
     if meta.get('hour_bands') != len(rows):
         bad.append(f"hour_bands {meta.get('hour_bands')} != {len(rows)} rows")

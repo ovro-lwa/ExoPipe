@@ -16,8 +16,8 @@ Asserts:
                data; production's residual cards with production's values; the stack's own header kept; BINMSTR removed;
                the unit done and its content test passing; the difference from production's float64-mean form bounded
                by half a float32 step of the Master (the documented cause of non-bit-parity with production)
-  membership   a night with weight above 0 in an installed window Master is REFUSED and the refusal names
-               `masters --tier sublst --stages loo`; a night listed with weight 0 is served
+  membership   a night with weight above 0 in an installed window Master ends NO-INPUT (Gregg 2026-11-13), its record
+               naming the member windows; a night listed with weight 0 is served
   masters      no installed Master of a Stokes: unit refused, the batch stage named; one window's Master missing: item
                refusal, the other windows written; no window with a Master: unit refused, nothing moved aside; an
                unusable Master (COADDOP, NCOADD, CONSTDIG, HISTORY, no weights record, an excluded constituent): refused,
@@ -361,16 +361,61 @@ def test_arithmetic_function():
 # membership
 # =====================================================================================================================
 
-def test_member_night_is_refused():
+def test_member_night_ends_no_input():
+    # Gregg 2026-11-13: a night IN the window Masters ends the per-hour 10-minute steps no-input (the chain goes on); its
+    # 10-minute products stay the batch chain's
     with Tree(sbs=('18MHz',)) as t:
         # the night is a constituent (weight above 0) of ONE installed window Master, in one Stokes
         t.write_master('18MHz', 'V', 2, rows=list(zip(MEMBERS, WEIGHTS)) + [(NEW, 0.7)])
         run, _ = t.run()
-        refused(run, '18MHz', 'N-5', 'IS a member', BATCH, 'w2 Stokes V')
+        u = unit(run, '18MHz')
+        assert u.status == 'no-input', (u.status, u.reason)
+        for n in ('IS in the installed window Master', 'w2 Stokes V weight 0.7', "'sublst-lst'"):
+            assert n in u.reason, (n, u.reason)
+        assert u.meta['master_member'] == [['V', 2, 0.7]], u.meta
+        assert NM.master_member(t.root, LST, '18MHz', NEW) == [('V', 2, 0.7)]
+        assert NM.band_member(t.root, LST, '18MHz', NEW) == {'18MHz': [('V', 2, 0.7)]}
         assert t.residuals() == [], 'a residual of a member night was written'
-        # a dry run says the same and writes nothing
+        # a dry run refuses nothing and writes nothing
         _run, bad = t.run(dry=True)
-        assert bad == 1 and t.residuals() == []
+        assert bad == 0 and t.residuals() == []
+
+
+def test_member_night_without_a_plan_ends_no_input():
+    # the stack stage skips a night IN the window Masters of every selected subband and writes no job plan: the stage
+    # ends no-input per subband, never N-2 (review of pull request 25, finding 1)
+    with Tree(sbs=('18MHz',), records=False) as t:
+        t.write_master('18MHz', 'V', 2, rows=list(zip(MEMBERS, WEIGHTS)) + [(NEW, 0.7)])
+        run, _ = t.run()
+        u = unit(run, '18MHz')
+        assert u.status == 'no-input' and 'w2 Stokes V weight 0.7' in u.reason, (u.status, u.reason)
+        assert [x.status for x in run.units] == ['no-input'], [(x.name, x.status, x.reason) for x in run.units]
+        _run, bad = t.run(dry=True)
+        assert bad == 0 and t.residuals() == []
+
+
+def test_weights_record_without_its_master_or_unreadable():
+    # a weights record whose Master FITS is not installed does not make a member (finding 5); an unreadable one refuses
+    # N-5 naming the file, never read as 'not a member' (finding 6)
+    with Tree(sbs=('18MHz',), stokes=('I',)) as t:
+        mp, wp = t.master_paths('18MHz', 'I', 0)
+        with open(wp, 'a') as f:
+            f.write(f'{NEW},0.7\n')
+        assert NM.master_member(t.root, LST, '18MHz', NEW) == [('I', 0, 0.7)]
+        os.rename(mp, mp + '.away')
+        assert NM.master_member(t.root, LST, '18MHz', NEW) == []
+        os.rename(mp + '.away', mp)
+        with open(wp, 'w') as f:
+            f.write('not,a\nweights record\n')
+        try:
+            NM.master_member(t.root, LST, '18MHz', NEW)
+            raise AssertionError('an unreadable weights record was read as a membership')
+        except NM.Refusal as e:
+            assert 'N-5' in str(e) and wp in str(e), e
+        run, _ = t.run(stokes=('I',))
+        u = unit(run)
+        assert u.status == 'refused' and 'N-5' in u.reason and 'cannot be read' in u.reason, (u.status, u.reason)
+        assert t.residuals() == []
 
 
 def test_night_listed_with_weight_zero_is_served():
@@ -1030,7 +1075,8 @@ def test_content_tests_are_registered_under_their_names():
     assert n_tests >= 10, n_tests
 
 
-TESTS = [test_residual_is_window_minus_installed_master, test_arithmetic_function, test_member_night_is_refused,
+TESTS = [test_residual_is_window_minus_installed_master, test_arithmetic_function, test_member_night_ends_no_input,
+         test_member_night_without_a_plan_ends_no_input, test_weights_record_without_its_master_or_unreadable,
          test_night_listed_with_weight_zero_is_served, test_missing_installed_master, test_unusable_installed_master,
          test_stack_missing_or_incomplete, test_stack_log_evidence, test_excluded_night_is_refused,
          test_flux_scale_and_time_block, test_earlier_residuals_and_supersede, test_failed_content_test_leaves_no_residual,

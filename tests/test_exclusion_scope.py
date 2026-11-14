@@ -19,8 +19,8 @@ tiers read per night ('snapshot-gpu' on a GPU-frame cell, 'snapshot' on every ot
          same per-night verdicts as the v2 co-add port.
 
 Inputs: a COPY of the real /lustre/gh/main/clv15/data_decisions.csv (read only) and of the GPU-frame cell list when they exist,
-else small synthetic lists (CI); the tagged row (23h, 82 MHz, 2025-10-29) is appended to the copy only. Scratch: a fresh
-directory under $EXOPIPE3_TEST_SCRATCH, else the system temp directory, removed at exit.
+else small synthetic lists (CI); the tagged row (23h, 82 MHz, 2099-01-01: a night no real row can name) is appended to the copy
+only. Scratch: a fresh directory under $EXOPIPE3_TEST_SCRATCH, else the system temp directory, removed at exit.
 
 Run standalone:  python tests/test_exclusion_scope.py
 Under pytest:    pytest tests/test_exclusion_scope.py
@@ -50,7 +50,7 @@ except Exception as e:                                    # pragma: no cover
 REAL_CSV = '/lustre/gh/main/clv15/data_decisions.csv'
 REAL_GPU = '/lustre/gh/main/exopipe_ops/snapshot_gpu_frame_cells.txt'
 PRODUCTION = '/lustre/gh/main/exopipe'
-KEY = ('23h', '82', '2025-10-29')
+KEY = ('23h', '82', '2099-01-01')   # was 2025-10-29 until the real list excluded that night (snapshot tiers, 2026-11-13)
 TAG = '[SNAPSHOT-TIERS-ONLY'
 GPU_TAG = '[SNAPSHOT-GPU-READMITTED'
 SCOPES = (None, 'snapshot', 'snapshot-gpu')
@@ -97,7 +97,7 @@ def _fixture():
         f.write(raw if raw.endswith(b'\n') else raw + eol.encode())
     with open(tg, 'a', newline='') as f:
         csv.writer(f, lineterminator=eol).writerow(
-            ['23h', '82MHz', '2025-10-29', 'exclude', TAG + '] test row (tests/test_exclusion_scope.py), never in the real list',
+            ['23h', '82MHz', '2099-01-01', 'exclude', TAG + '] test row (tests/test_exclusion_scope.py), never in the real list',
              '', '', ''])
     _FX.update(dir=d, untagged=un, tagged=tg, gpu=gp, real=real)
     return _FX

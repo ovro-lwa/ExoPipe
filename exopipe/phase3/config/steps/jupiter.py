@@ -169,8 +169,9 @@ class jupiter_v2(_Section):
     SITE_ROOTS = ('V2',)                                         # the live site's roots, site.json order: V2 only - Gregg 2026-10-25 'yes, remove the
     #   alternates and show only V2' (JOVIAN_TASK_BRIEF_20261025.md section 1; the alternates moved to v2/quarantine_superseded_20261025)
     SITE_VERSION = 3                                             # the live renders' mode: jsite_render.py --site-v3 (V2 code 564e114; site.json site_version)
-    SITE_GENERATION = 'v2/gen_20261025'                          # under jupiter.ROOT: the generation whose <gen>/derived/<label> roots the live renders show
-    #   (rebuild/run_cell_v2.sh 2026-10-25/26, 24 nights); a new generation changes it by a commit
+    SITE_GENERATION = 'v2/gen_20261113'                          # under jupiter.ROOT: the generation whose <gen>/derived/<label> roots the live renders show
+    #   (the Jovian session's final run, metric 4.9, 38 nights, live since 2026-11-13 ~22:39 UTC: OPS-20261113-JOVIAN-V49-FINAL-RUN-RESULT;
+    #   before it v2/gen_20261025, 24 nights); a new generation changes it by a commit
     SCRATCH_ROOT = '/fast/gh/main/scratch'                       # production node-local V2 scratch on lwacalim08 (jupv2_masters.py:87, jblue_build.py:46, jsite_render.py:73, jint_content_summary.py:41, jsite_crop_archive.py:104, build_maps.py:39); --work replaces it
     SCRATCH = {'masters': 'jupv2_masters', 'anchor': 'jupv2_anchor', 'site': 'jupv2_site', 'integrate': 'jupv2_integrate',
                'provenance': 'jupv2_provenance', 'occurrence': 'jupv2_occurrence', 'refcheck': 'jupref_20241229'}   # sub-directories of the scratch root
