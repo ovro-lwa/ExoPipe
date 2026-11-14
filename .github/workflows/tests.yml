@@ -54,6 +54,8 @@ jobs:
         run: python tests/test_email.py
       - name: per-hour 10-minute search seed (size-rule record, table record, header gate)
         run: python tests/test_search_sublst_perhour_seed.py
+      - name: 10-minute frozen gate populations and the admission of a night outside the window Masters
+        run: python tests/test_search_gate_population_tenmin.py
       - name: per-hour 10-minute catalog, the conformance table's noise recorded or frozen
         run: python tests/test_catalog_conform_noise.py
       - name: per-hour 10-minute catalog, the night view of the published search jobs and the night pass's wiring

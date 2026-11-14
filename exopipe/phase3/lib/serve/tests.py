@@ -8,6 +8,7 @@ is read-only (verify may run it on production files). Registered with @content_t
   served_page        live, same_process, sources_listed      (record <out>/_records/serve/pages/<tier>_<port>.json; a page
                      registered on the two-port server or one with a server of its own)
   page_registration  entries_registered, one_change          (record of the ONE registration of a serve)
+  tenmin_page_context  sidecar_per_panel, no_orphan_sidecars  (the served 10-minute run; page_context_tenmin.py's sidecars)
   stopped_page       not_listening                           (record of `serve --stop`)
   sublst_cumulative  merge_invariants, figures, served_tests_c_d
   review_copy        byte_copy, no_excluded_rows
@@ -759,6 +760,88 @@ def one_change(path, **ctx):
     ok = a[0] != b[0] and int(b[2] // 10 ** 9) > int(a[2] // 10 ** 9)
     return ok, None, (f'registry state {a} -> {b}' + ('' if ok else ': NOT a change the server sees by inode and whole-second '
                                                                     'modification time'))
+
+
+# =====================================================================================================================
+# tenmin_page_context (page_context_tenmin.py, sublst_cumulative.sh:295-300)
+# =====================================================================================================================
+PCTX_TOOL = 'page_context_tenmin.py'    # the sidecars' 'builder' (page_context_tenmin.py TOOL)
+PCTX_VIEWS = ('source_catalogs_V', 'source_catalogs_I', 'source_catalogs_V_multi', 'source_catalogs_I_multi')   # its VIEWS
+PCTX_PNG_RE = re.compile(r'^rank\d+_(\d{2}h)_(\d{4}-\d{2}-\d{2})(?:_bin(\d+))?_([A-Za-z0-9]+?)(_blind)?\.png$')  # its PNG_RE
+PCTX_HEADS = ('10-minute windows searched el>', 'global noise V:', 'global noise I:',
+              'chain survivors in this window frame, Stokes V (n_v_epoch):',
+              'chain survivors in this window frame, Stokes I (n_i_epoch):', 'beam epoch/master:')   # its six ctx_lines
+
+
+def _pctx_dir(path, rdir):
+    """(panels, bad, other, nobin) of one review dir (sidecar_per_panel)."""
+    bad, n, other, nobin = [], 0, 0, 0
+    for fn in sorted(os.listdir(rdir)):
+        m = PCTX_PNG_RE.match(fn)
+        if not m:
+            continue
+        if m.group(3) is None:
+            nobin += 1
+            continue
+        n += 1
+        sc = os.path.join(rdir, fn[:-4] + '.page.json')
+        try:
+            obj = json.load(open(sc))
+        except (OSError, ValueError) as e:
+            bad.append(f'{os.path.relpath(sc, path)}: {type(e).__name__}')
+            continue
+        if obj.get('builder') != PCTX_TOOL:
+            other += 1
+            continue
+        lines = obj.get('ctx_lines') or []
+        frame = [m.group(1), m.group(4), '%sT%02d' % (m.group(2), int(m.group(3)))]
+        if len(lines) != len(PCTX_HEADS) or not all(str(l_).startswith(h) for l_, h in zip(lines, PCTX_HEADS)):
+            bad.append(f'{os.path.relpath(sc, path)}: ctx_lines {lines[:2]}...')
+        elif obj.get('frame') != frame:
+            bad.append(f'{os.path.relpath(sc, path)}: frame {obj.get("frame")} != {frame}')
+    return n, bad, other, nobin
+
+
+@content_test('tenmin_page_context')
+def sidecar_per_panel(path, **ctx):
+    """Every panel of the run's four review views (each survivor's review_dir, a rank*.png with a window bin) has its
+    <png>.page.json: ctx_lines = the six run-context lines in order (windows searched, global noise V / I, chain survivors V / I,
+    beam epoch/master) and frame = [LST, band, <night>T<bin>] of the panel's own name. A sidecar another builder wrote (deep
+    pages) is left as it is, as the tool leaves it; a panel without a window bin has no 10-minute frame (counted). Review
+    dirs are read 8 at a time."""
+    from concurrent.futures import ThreadPoolExecutor
+    dirs = set()
+    for view in PCTX_VIEWS:
+        for sf in sorted(glob.glob(os.path.join(path, view, '*_sources_survivors.csv'))):
+            for row in _rows(sf):
+                if row.get('review_dir') and os.path.isdir(os.path.join(path, row['review_dir'])):
+                    dirs.add(os.path.join(path, row['review_dir']))
+    with ThreadPoolExecutor(8) as ex:
+        res = list(ex.map(lambda d: _pctx_dir(path, d), sorted(dirs)))
+    n, other, nobin = (sum(r[i] for r in res) for i in (0, 2, 3))
+    bad = [b for r in res for b in r[1]]
+    if not n:
+        return False, 0, f'no 10-minute panel in the review dirs of {", ".join(PCTX_VIEWS)}'
+    return not bad, len(bad), ('; '.join(bad[:4]) if bad else
+                               f'{n} panels with their run-context sidecar ({other} written by another builder, kept; '
+                               f'{nobin} panels without a window bin)')
+
+
+@content_test('tenmin_page_context')
+def no_orphan_sidecars(path, **ctx):
+    """No sidecar written by page_context_tenmin.py stands without its panel (the tool removes them)."""
+    orph, n = [], 0
+    for sc in glob.glob(os.path.join(path, 'candidates', '*', '*', '*.page.json')):
+        if os.path.exists(sc[:-10] + '.png'):
+            continue
+        try:
+            if json.load(open(sc)).get('builder') == PCTX_TOOL:
+                orph.append(os.path.relpath(sc, path))
+        except (OSError, ValueError):
+            pass
+        n += 1
+    return not orph, len(orph), ('; '.join(orph[:4]) if orph else f'no orphan sidecar ({n} sidecars without a panel, '
+                                                                    f'none of them written by {PCTX_TOOL})')
 
 
 @content_test('stopped_page')

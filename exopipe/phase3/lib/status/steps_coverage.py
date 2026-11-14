@@ -23,8 +23,10 @@ from the state dir (no record exists for them).
 Snapshot: one row per night cell of the v9 worklist and the shipped cells. SEARCHED by its RECORDS: the shipped cell dir
 has at least one admission_<sb>.csv and, for every one of them, runinfo_<sb>_<S>_median.json or
 nightrefused_<sb>_<S>_median.json for S = I and V (the subband completeness rule of snapshot_fleet_node_v9.sh, the
-curves G1 rule) - never by snapshot_fleet_claims/<cell>/done, reported beside it (claim_done). Measured 2026-10-14:
-records and markers agree on 536 of 536 sub-LST jobs and 422 of 422 snapshot cells.
+curves G1 rule) - never by the fleet's <cell>/done marker, reported beside it (claim_done: the marker of the fleet that ships the
+cell's current products, snapshot_batch_audit.shipped since exopipe_ops e5fc9f1 - a GPU-frame cell only the Dec 18-27 GPU
+fleet's, any other cell snapshot_fleet_claims or the v11 own-CLEANed fleet's). Measured 2026-10-14: records and markers agree
+on 536 of 536 sub-LST jobs and 422 of 422 snapshot cells.
 """
 import collections
 import json
@@ -344,7 +346,9 @@ def sublst_coverage(lsts_spec, workers=None):
 
 def snapshot_inputs():
     C = K.cfg()
-    return [C.paths.SNAPSHOT_FLEET_OUT, K.expand(C.status_snapshot.FLEET_CLAIMS)]
+    # the GPU-frame cell list is required (production's audit opens it); the GPU and own-CLEANed fleets' claim roots are not:
+    # an absent root holds no marker, as production reads it (os.path.exists)
+    return [C.paths.SNAPSHOT_FLEET_OUT, K.expand(C.status_snapshot.FLEET_CLAIMS), C.paths.SNAPSHOT_GPU_FRAME_CELLS]
 
 
 def _cells_of(path):
@@ -371,12 +375,25 @@ def snapshot_search_records(cell_dir):
     return bool(adm) and not miss, len(adm), miss
 
 
+def fleet_claim_done(cell, gpu_cells):
+    """snapshot_batch_audit.shipped (exopipe_ops e5fc9f1): the done marker of the fleet that ships the cell's current
+    products - a GPU-frame cell ('<LST>_<date>' in ``gpu_cells``) only the Dec 18-27 GPU fleet's (its earlier dirty-frame
+    products were moved aside, so an old main-fleet marker no longer describes it), any other cell the main fleet's or the
+    v11 own-CLEANed fleet's."""
+    S = K.cfg().status_snapshot
+    if cell in gpu_cells:
+        return os.path.exists(os.path.join(K.expand(S.GPU_FLEET_CLAIMS), cell, 'done'))
+    return any(os.path.exists(os.path.join(K.expand(d), cell, 'done')) for d in (S.FLEET_CLAIMS, S.OWN_CLEAN_FLEET_CLAIMS))
+
+
 def snapshot_coverage(cells_spec, workers=None):
     C = K.cfg()
     wl = K.expand(C.status_coverage.SNAPSHOT_WORKLIST)
     claims = K.expand(C.status_snapshot.FLEET_CLAIMS)
     ship = C.paths.SNAPSHOT_FLEET_OUT
     work = set(_cells_of(wl))
+    from exopipe.phase3.core import exclusions as EX
+    gpu = {f'{l}_{d}' for l, d in EX.gpu_frame_cells()}
     shipped_dirs = {c for c in K.listdir(ship) if re.match(r'^\d\dh_\d{4}-\d\d-\d\d$', c)}
     universe = sorted(work | shipped_dirs | {c for c in K.listdir(claims) if re.match(r'^\d\dh_\d{4}-\d\d-\d\d$', c)})
     if cells_spec:
@@ -394,7 +411,7 @@ def snapshot_coverage(cells_spec, workers=None):
     for c in universe:
         l, d = c.split('_', 1)
         done, n_adm, miss = recs[c]
-        claim = os.path.exists(os.path.join(claims, c, 'done'))
+        claim = fleet_claim_done(c, gpu)
         r = dict(cell=c, lst=l, date=d, in_worklist=int(c in work), shipped=int(done), n_admitted_subbands=n_adm,
                  unaccounted=' '.join(miss[:30]), claim_done=int(claim),
                  marker_disagrees=('' if done == claim else ('records complete without the fleet claim done' if done
