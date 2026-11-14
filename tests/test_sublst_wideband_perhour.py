@@ -356,12 +356,20 @@ def test_the_dry_run_reads_the_same_evidence():
 
 
 # =====================================================================================================================
-# 18 MHz without a window Master (Gregg 2026-10-17: "Red can be built without 18 MHz, i.e. using just the 4 other
-# subbands"): its refused unit of the night leaves it out of the group instead of refusing the group
+# 18 MHz whose unit of the night was refused as a whole (Gregg 2026-10-17: "Red can be built without 18 MHz, i.e. using
+# just the 4 other subbands"): the refused unit leaves it out of the group instead of refusing the group, whatever the
+# gate (widened 2026-11-14 from N-6/N-7: the all-nights path builds the group without it at S-G9 whatever the reason)
 # =====================================================================================================================
 
 N6 = 'N-6: no installed window Master of 09h 18MHz Stokes I under /x: the batch stage writes them'
 N7 = "N-7: 09h_2024-02-01 18MHz: no window of the night has an installed window Master (6 window stack(s)): ..."
+N1 = ('N-1: 09h 18MHz 2024-02-01 is excluded in data_decisions.csv (core.exclusions): exclusion is absolute - no residual '
+      'of an excluded night')
+N4 = 'N-4: no admission record /x/admit.json; N-4: no window stack of Stokes V under /x'
+N9 = 'N-9: 09h_2024-02-01 18MHz: the stack and the installed window Master carry different flux scales (...)'
+N12 = 'N-12: 2 of 6 residual(s) failed the content test, e.g. /x/r.fits: every residual this unit wrote was removed'
+GM01 = 'G-M01: the two exclusion readers disagree on (09h, 18MHz, 2024-02-01)'
+WHOLE_UNIT = (N1, N4, N6, N7, N9, N12, GM01)
 
 
 def resid(t, sb, x2=False, S='V', k=1):
@@ -373,13 +381,13 @@ def resid(t, sb, x2=False, S='V', k=1):
     return p
 
 
-def test_eighteen_mhz_refused_for_want_of_a_master_is_left_out():
+def test_eighteen_mhz_refused_as_a_whole_is_left_out():
     with Root() as t:
         name, sb = f'{LST}_wideband_{G}_{NIGHT}', '18MHz'
         assert t.members[0] == sb and tuple(CFG.frames_sublst.WIDEBAND_OPTIONAL) == (sb,)
         for m in t.members:
             t.night_record(m)
-        for reason in (N6, N7):
+        for reason in WHOLE_UNIT:
             p = t.night_record(sb, 'refused', reason=reason)
             lo = FT.optional_member_left_out(t.ctx(), LST, sb, NIGHT)
             assert lo[0] and f'nonmember_{LST}_{NIGHT}_{sb}' in lo[1] and reason[:40] in lo[1], lo
@@ -399,26 +407,27 @@ def test_eighteen_mhz_refused_for_want_of_a_master_is_left_out():
         assert u.status == 'refused' and f'arm A of {LST} {sb} not complete (masters loo record' in u.reason, u.reason
 
 
-def test_eighteen_mhz_is_not_left_out_on_any_other_refusal():
+def test_eighteen_mhz_is_not_left_out_on_another_status():
     with Root() as t:
         name, sb = f'{LST}_wideband_{G}_{NIGHT}', '18MHz'
         for m in t.members:
             t.night_record(m)
-        # another refusal of the unit (the stack incomplete, a Master that cannot be subtracted), or another status
-        for status, reason in (('refused', 'N-4: the stack is incomplete'), ('refused', 'N-8 test'), ('error', N6),
-                               ('running', '')):
+        # a unit that was not refused as a whole: it failed, is running, or ended no-input outside the Masters
+        for status, reason in (('error', N6), ('error', N1), ('running', ''), ('no-input', 'nothing to subtract')):
             t.night_record(sb, status, reason=reason)
             assert FT.optional_member_left_out(t.ctx(), LST, sb, NIGHT) is None, (status, reason)
             u = only(t.run()[0], name)
             assert u.status == 'refused' and u.reason.startswith(f'arm A of {LST} {sb} not complete') and not t.calls, \
                 (status, u.reason)
-        # another subband refused for want of a Master refuses the group: 18 MHz is the one exception
+        # another subband refused as a whole refuses the group, whatever the gate: 18 MHz is the one exception
         t.night_record(sb)
         other = t.members[1]
-        t.night_record(other, 'refused', reason=N6.replace(sb, other))
-        assert FT.optional_member_left_out(t.ctx(), LST, other, NIGHT) is None
-        u = only(t.run()[0], name)
-        assert u.status == 'refused' and u.reason.startswith(f'arm A of {LST} {other} not complete') and not t.calls, u.reason
+        for reason in WHOLE_UNIT:
+            t.night_record(other, 'refused', reason=reason.replace(sb, other))
+            assert FT.optional_member_left_out(t.ctx(), LST, other, NIGHT) is None
+            u = only(t.run()[0], name)
+            assert u.status == 'refused' and u.reason.startswith(f'arm A of {LST} {other} not complete') and \
+                not t.calls, (reason, u.reason)
 
 
 def test_eighteen_mhz_with_a_residual_of_the_night_on_disk_refuses():
@@ -427,11 +436,12 @@ def test_eighteen_mhz_with_a_residual_of_the_night_on_disk_refuses():
         name, sb = f'{LST}_wideband_{G}_{NIGHT}', '18MHz'
         for m in t.members:
             t.night_record(m)
-        t.night_record(sb, 'refused', reason=N7)
-        for x2 in (False, True):
+        for x2, reason in ((False, N7), (True, N7), (False, N1), (True, N9)):
+            t.night_record(sb, 'refused', reason=reason)
             r = resid(t, sb, x2=x2)
             lo = FT.optional_member_left_out(t.ctx(), LST, sb, NIGHT)
-            assert lo[0] is False and r in lo[1] and 'move them aside' in lo[1], lo
+            assert lo[0] is False and r in lo[1] and 'move them aside' in lo[1] and \
+                f'refused ({reason.split(":")[0]})' in lo[1], lo
             u = only(t.run()[0], name)
             assert u.status == 'refused' and u.reason.startswith(f'arm A of {LST} {sb} not complete') and r in u.reason \
                 and u.reason.rstrip().endswith('first') and not t.calls, u.reason
@@ -443,31 +453,51 @@ def test_eighteen_mhz_with_a_residual_of_the_night_on_disk_refuses():
 
 
 def test_eighteen_mhz_refusal_older_than_a_stack_or_a_master_refuses():
-    """The refusal holds for the stacks and Masters it read: a newer window stack of the night, or a window Master
-    installed after it, refuses until the unit runs again."""
+    """The refusal holds for the stacks, Masters and exclusion list it read: a newer window stack of the night, a window
+    Master installed after it, or a later edit of the exclusion list refuses until the unit runs again."""
     with Root() as t:
         name, sb = f'{LST}_wideband_{G}_{NIGHT}', '18MHz'
         for m in t.members:
             t.night_record(m)
         p = t.night_record(sb, 'refused', reason=N6)
         os.utime(p, (2000, 2000))
+        os.utime(t.decisions, (1000, 1000))
         s = t.stack(sb, 'I', 0)
         md = os.path.join(t.root, f'{LST}_masters', sb, 'V')
         os.makedirs(md)
         mp = os.path.join(md, f'sublst_master_{LST}_{sb}_V_w4.fits')
         open(mp, 'w').close()
-        for newer, older in ((s, mp), (mp, s)):
+        for newer, older in ((s, mp), (mp, s), (t.decisions, s)):
             os.utime(newer, (3000, 3000))
             os.utime(older, (1000, 1000))
+            os.utime(mp if newer is t.decisions else t.decisions, (1000, 1000))
             lo = FT.optional_member_left_out(t.ctx(), LST, sb, NIGHT)
             assert lo[0] is False and newer in lo[1] and 'run the unit again' in lo[1], lo
             u = only(t.run()[0], name)
             assert u.status == 'refused' and newer in u.reason and not t.calls, u.reason
-        os.utime(mp, (1000, 1000))
+        os.utime(t.decisions, (1000, 1000))
         os.utime(t.stack(sb, 'V', 2, night='2024-01-02'), (3000, 3000))     # another night's stack does not count
         assert FT.optional_member_left_out(t.ctx(), LST, sb, NIGHT)[0]
         u = only(t.run()[0], name)
         assert u.status == 'refused' and STUB_LINE in u.reason and len(t.calls) == 1, u.reason
+
+
+def test_eighteen_mhz_excluded_at_the_night_builds_the_group_from_the_rest():
+    """An exclusion row of the night at 18 MHz: the nonmember stage refuses the night's 18 MHz unit (N-1), and the group is
+    built from its other members, as the all-nights path builds it (engine gate S-G9)."""
+    with Root() as t:
+        name, sb = f'{LST}_wideband_{G}_{NIGHT}', '18MHz'
+        with open(t.decisions, 'a', newline='') as f:
+            csv.writer(f).writerow([LST, '18', NIGHT, 'exclude', 'test: 18 MHz of the night'])
+        os.utime(t.decisions, (1000, 1000))
+        for m in t.members:
+            t.night_record(m)
+        p = t.night_record(sb, 'refused', reason=N1)
+        assert FT.exclusions().is_excluded(LST, sb, NIGHT) and FT.exclusions().admitted(LST, G, [NIGHT]) == [NIGHT]
+        u = only(t.run()[0], name)
+        assert u.status == 'refused' and STUB_LINE in u.reason and len(t.calls) == 1, (u.status, u.reason)
+        assert list(u.meta['left_out']) == [sb] and 'N-1: ' in u.meta['left_out'][sb], u.meta
+        assert p in [(i['path'] if isinstance(i, dict) else i) for i in u.inputs]
 
 
 def test_eighteen_mhz_review60_plan_gate_kept_and_left_out_evidence_not_read():
