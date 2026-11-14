@@ -110,6 +110,9 @@ def add_arguments(p):
     g.add_argument('--deep-keep-work', action='store_true',
                    help='keep the staged attempts and flow work dirs (search_run.HYGIENE otherwise removes them once both '
                         'Stokes of a cell are published in this run)')
+    g.add_argument('--gate-backfill-write', action='store_true',
+                   help='with --stages gate-backfill: write each accepted row into its attempt (default: report only). An '
+                        'attempt under a production tree refuses while paths.PRODUCTION_WRITES is False')
 
 
 def default_out(args):
@@ -1174,6 +1177,10 @@ def outputs_of(item, ctx, f, fit_csv=None):
         p = os.path.join(rd, name)
         if os.path.exists(p):
             out.append((p, cls, {}))
+    from exopipe.phase3.lib.search import gate_population as GP
+    p = os.path.join(rd, GP.FILE)                         # the beam gate's frozen population (per hour: an append's judge)
+    if os.path.exists(p):
+        out.append((p, 'gate_population', dict(cell=cell)))
     p = os.path.join(rd, 'search_table_record.csv')       # every verdict of the search's table (production exopipe 55b0263)
     if os.path.exists(p):
         out.append((p, 'search_table_record', dict(tier=TIER)))
@@ -1476,7 +1483,14 @@ def run(args, run):
     if getattr(args, 'inject', None):
         raise Refusal('search --tier deep --inject: no production injection-through-search path exists for the deep tier '
                       '(spec Q9; the deep K calibrations inject offline) - refused (gate G4)')
-    stages = resolve_stages(args, c.search.STAGES)
+    from exopipe.phase3.lib.search import gate_population as GP
+    listed = [s.strip() for s in (args.stages or '').split(',') if s.strip()]
+    backfill = GP.BACKFILL_STAGE in listed
+    if backfill and listed != [GP.BACKFILL_STAGE]:
+        raise Refusal(f'--stages {GP.BACKFILL_STAGE} runs alone; also listed: {[s for s in listed if s != GP.BACKFILL_STAGE]}')
+    if getattr(args, 'gate_backfill_write', False) and not backfill:
+        raise Refusal(f'--gate-backfill-write is a switch of --stages {GP.BACKFILL_STAGE} only; this run lists {listed or "all stages"}')
+    stages = [GP.BACKFILL_STAGE] if backfill else resolve_stages(args, c.search.STAGES)
     out = os.path.abspath(run.out_root)
     if not c.paths.PRODUCTION_WRITES:
         hit = production_tree(out)
@@ -1487,6 +1501,11 @@ def run(args, run):
     dev = comparison_deviations()
     if dev and production_tree(out):
         raise Refusal(f'COMPARISON key(s) off their production value {dev} refused into the production root {out}')
+    if backfill:                               # on request, alone: the beam-gate population of published attempts
+        if dev and getattr(args, 'gate_backfill_write', False):
+            raise Refusal(f'--gate-backfill-write with COMPARISON key(s) off their production value {dev}: the row would '
+                          f'freeze another rule into a published attempt - REFUSED')
+        return gate_backfill(args, run, out)
     if c.paths.PRODUCTION_WRITES:
         work = c.search_run.PRODUCTION_WORK_ROOT
         attempts, flow_root, tmp = c.search_run.PRODUCTION_ATTEMPT_ROOT, work, os.path.join(work, '_tmp')
@@ -1562,6 +1581,83 @@ def run(args, run):
             return 2
         return 3 if st and all(s == 'no-input' for s in st) else 0
     return None
+
+
+def gate_backfill(args, run, out):
+    """`search --tier deep --stages gate-backfill` (on request, alone): for each selected cell and Stokes, the beam-gate population
+    of its published attempt (resolve_published: this --out's register, else production's), reconstructed and checked by
+    lib/search/gate_population.backfill_attempt - an attempt published before the search recorded it, so an append can be judged
+    by it (R-GREGG-20261112-PER-HOUR-STEPS-SIX-RULINGS (2)). Report only unless --gate-backfill-write: then each accepted row is
+    appended to <attempt>/transients/Run_<label>/gate_population.csv - an attempt that already holds the cell's row is left as it
+    is ('present': the same content; refused: another), and one under a production tree refuses while paths.PRODUCTION_WRITES is
+    False (gate G3). Report only: the row is written under --out (gate_backfill/<attempt>/gate_population.csv, content-tested), the
+    attempt untouched. One unit per (cell, Stokes): done (accepted; meta = the row and the reconstruction's counts), refused (the
+    reconstruction's reason), no-input (no published attempt). --dry-run: the reconstruction only, nothing written."""
+    from exopipe.phase3.core import exclusions
+    from exopipe.phase3.core.record import NoInput, Refusal
+    from exopipe.phase3.lib.search import admitted as ADS, gate_population as GP, wideband_admission as WBA
+    c = _cfg()
+    write = bool(getattr(args, 'gate_backfill_write', False)) and not run.dry_run
+    items = plan_items(args, ['preflight'])
+    if not items:
+        raise NoInput('no deep unit selected')
+    roots = roots_table()
+    factor, mn = float(c.search_detect.BEAM_GATE_RATIO), int(c.search_detect.BEAM_GATE_MIN_NIGHTS)   # the engine's (engine_env)
+    ov = [o[0] for o in getattr(c, 'overrides', []) if o[0].split('[')[0] in ('search_detect.BEAM_GATE_RATIO',
+                                                                              'search_detect.BEAM_GATE_MIN_NIGHTS')]
+    if write and ov:                           # a published attempt's row freezes the ruled factor and minimum only
+        raise Refusal(f'--gate-backfill-write with {ov} overridden in this run: the row would freeze another beam-gate rule '
+                      f'into the published attempt (its factor is tested only on refused nights) - REFUSED')
+    excl = exclusions.load()
+    counts = {}
+    for it in items:
+        with run.unit(f'gate-backfill_{it.cell}_{it.stokes}', tier=TIER, cell=it.cell, stokes=it.stokes,
+                      stage=GP.BACKFILL_STAGE) as u:
+            att = resolve_published(it.cell, it.stokes, out)
+            if not att:
+                raise NoInput(f'{it.cell} {it.stokes}: no published attempt')
+            cd = os.path.join(roots.get(it.cell, c.paths.COADD_SB_ROOT), it.cell)
+            adm = set(ADS.nights(cd, it.scope, 'deep')[0])
+            r, rep = GP.backfill_attempt(att, it.cell, it.stokes, cd, factor, mn,
+                                         lambda d, _cd=cd, _it=it: WBA.beam_area(_cd, _it.scope, _it.lst, d), adm,
+                                         lambda d, _it=it: excl.is_excluded(_it.lst, _it.scope, d))
+            u.meta['gate_backfill'] = dict(rep, row=r)
+            u.add_input(att)
+            if r is None:
+                counts['refused'] = counts.get('refused', 0) + 1
+                u.refuse(f'{it.cell} {it.stokes}: {att}: {rep["refused"]}')
+            key = r[7] + (' (holds a night excluded now)' if rep.get('excluded_now_in_population') else '')
+            counts[key] = counts.get(key, 0) + 1
+            rd = sorted(glob.glob(os.path.join(att, 'transients', 'Run_*')))[0]
+            have = GP.read(rd, it.lst, it.scope, 'beam')
+            if have is not None:
+                same = (have['n'], have['median'], have['factor'], have['min_nights'], have['outcome'], have['nights']) == (
+                    r[3], float(r[4]) if r[4] else None, float(r[5]), r[6], r[7], r[8].split(';') if r[8] else [])
+                if not same:
+                    u.refuse(f'{it.cell} {it.stokes}: {rd}/{GP.FILE} holds another beam-gate row ({have["outcome"]}, n '
+                             f'{have["n"]}) than the reconstruction ({r[7]}, n {r[3]})')
+                u.note(f'{rd}/{GP.FILE}: the row is present (the same content)')
+                u.add_output(os.path.join(rd, GP.FILE), 'gate_population', cell=it.cell)
+                continue
+            if run.dry_run:                    # nothing written
+                u.note(f'dry run: {r[7]} n {r[3]} median {r[4] or "-"} (nothing written)')
+                continue
+            if not write:                      # the report: the row under --out (content-tested), the attempt untouched
+                rp = os.path.join(out, 'gate_backfill', os.path.basename(att.rstrip('/')))
+                if os.path.exists(os.path.join(rp, GP.FILE)):
+                    os.remove(os.path.join(rp, GP.FILE))
+                os.makedirs(rp, exist_ok=True)
+                GP.append(rp, [r])
+                u.add_output(os.path.join(rp, GP.FILE), 'gate_population', cell=it.cell)
+                u.note(f'report only: {r[7]} n {r[3]} median {r[4] or "-"} (--gate-backfill-write appends it to {rd})')
+                continue
+            if not c.paths.PRODUCTION_WRITES and production_tree(rd):
+                u.refuse(f'{rd} is under the production tree {production_tree(rd)} and paths.PRODUCTION_WRITES is False (gate G3)')
+            GP.append(rd, [r])
+            u.add_output(os.path.join(rd, GP.FILE), 'gate_population', cell=it.cell)
+    print('gate-backfill: ' + '; '.join(f'{k} {v}' for k, v in sorted(counts.items())) + ('' if write else ' (report only)'),
+          flush=True)
+    return 2 if any(u.status in ('refused', 'error') for u in run.units) else 0
 
 
 @contextlib.contextmanager

@@ -14,16 +14,31 @@ Stages (core.legacy.run, site PYTHON['default'], code from a VERIFIED FROZEN TRE
   place  rsync -a --delete P/ <target>/ (a LOCAL target only: the review-host copy is production and is refused in the window)
 The review_dir merge of the served cumulative union happens at serve time (serve's sub-LST prepare) through lib/pages/merge.run
 with pages.REVIEW_DIR_MERGE['sublst'].
+
+THE PAGES OF A NIGHT (design 2.3a of plan/PER_HOUR_GAP_DESIGNS_20261111.md, stage 3; lib/pages/night.py): the same stages
+and the same production scripts, with two differences.
+  --sublst-night-dir <the catalog directory of a per-hour night pass>: prep reads the hour's catalog VIEW of that pass (the
+      index hour_views.json names its root) through a staged directory of links, by the one-line patch of
+      lib/pages/wraps/prep_catalog.py (pinned script versions: pages_sublst.PREP_SHA1). An hour the pass left unchanged has
+      no page run to make (its earlier run stands); an hour the pass did not view REFUSES.
+  --sublst-base-runs <the directory of the earlier page runs>: build renders only the blocks the earlier run of the hour
+      cannot vouch for (a changed or new selection row, window-tie row or reference-tie row; a frame whose searched,
+      predicted or window-Master files changed; anything, when the code, the all-nights catalog build, E_params.json, the
+      search root or the linked directories differ) and carries the others as hard links under their present rank; prep
+      carries the earlier run's leave-one-out window Masters whose inputs are unchanged.
+Every page run of this tier ends its build with the content test of its blocks (night.test) and the record page_blocks.json a
+later run reads to carry blocks; a run that carried blocks REFUSES when the test fails.
 """
 import glob
 import hashlib
+import json
 import os
 import re
 import shutil
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 
-from exopipe.phase3.lib.pages import common, mirror
+from exopipe.phase3.lib.pages import common, mirror, night
 
 TIER = 'sublst'
 
@@ -33,6 +48,17 @@ def add_arguments(p):
     g.add_argument('--sublst-place-target', metavar='DIR',
                    help='place stage destination (default pages_sublst.PLACE_TARGET, the review host - refused in the window); '
                         'a parity run passes a local directory')
+    g.add_argument('--sublst-night-dir', metavar='DIR',
+                   help='THE PAGES OF A NIGHT: the catalog directory of a per-hour night pass (it holds hour_views.json, '
+                        'written by the stage view of `catalog --tier sublst`); each LST hour is prepared from its catalog view '
+                        'of that pass. Without --lsts: every hour the pass wrote a view root for')
+    g.add_argument('--sublst-catalog-dir', metavar='DIR',
+                   help='parity/scratch, one LST hour: prep reads THIS catalog directory in place of the production hour\'s '
+                        '(through the same pinned one-line patch as the pages of a night)')
+    g.add_argument('--sublst-base-runs', metavar='DIR',
+                   help='the directory of the EARLIER page runs (Run_SLST<hh>B): a block whose inputs are unchanged since the '
+                        'earlier run of its hour is carried from it (a hard link) and not rendered; where the earlier run '
+                        'cannot vouch, every block is rendered (lib/pages/night.py)')
 
 
 class Ctx:
@@ -89,6 +115,26 @@ def context(args, run):
     for lst, _d in common.epochs_of(args):
         if lst not in lsts:
             lsts.append(lst)
+    c.night_dir, c.views, c.not_viewed = None, {}, []
+    if getattr(args, 'sublst_night_dir', None):
+        c.night_dir = os.path.abspath(args.sublst_night_dir)
+        ixp = os.path.join(c.night_dir, S.NIGHT_INDEX)
+        if not os.path.isfile(ixp):
+            raise common.Refusal(f'P18 pages of a night: {c.night_dir} holds no {S.NIGHT_INDEX} (the stage view of `catalog '
+                                 f'--tier sublst` writes it)')
+        with open(ixp) as f:
+            ix = json.load(f)
+        c.views, c.not_viewed = ix.get('hours') or {}, list(ix.get('not_viewed') or [])
+        if not lsts:
+            lsts = sorted(L for L, e in c.views.items() if e.get('kind') == 'view' and e.get('written_here'))
+            if not lsts:
+                raise common.NoInput(f'{c.night_dir}: the night pass wrote no view root (no hour changed): no page run to make')
+    c.base_runs = os.path.abspath(args.sublst_base_runs) if getattr(args, 'sublst_base_runs', None) else None
+    c.catalog_dir = os.path.abspath(args.sublst_catalog_dir) if getattr(args, 'sublst_catalog_dir', None) else None
+    if c.catalog_dir and (c.night_dir or len(lsts) != 1 or not os.path.isdir(c.catalog_dir)):
+        raise common.Refusal(f'P18: --sublst-catalog-dir names the catalog directory of ONE LST hour ({len(lsts)} given), is not '
+                             f'used with --sublst-night-dir, and must exist ({c.catalog_dir})')
+    c.ident = None
     if not lsts:
         raise common.Refusal('sub-LST: give --lsts (e.g. 14h) or --epochs (per-hour items <LST>_<date>)')
     c.lsts = lsts
@@ -105,6 +151,56 @@ def context(args, run):
 
 def P_of(c, lst):
     return os.path.join(c.out, common.CFG().pages.RUN_DIR['sublst'].format(hh=lst[:2]))
+
+
+def night_view(c, lst):
+    """None outside the pages of a night; else the hour's entry of the night pass's index (kind view: root, all_nights).
+    REFUSES for an hour the pass did not view; an hour the pass left as its all-nights directory has no page run to make."""
+    if not c.night_dir:
+        return None
+    e = c.views.get(lst)
+    if e is None:
+        raise common.Refusal(f'P18 pages of a night: the night pass {c.night_dir} did not view {lst}'
+                             + (' (it lists the hour as not viewed)' if lst in c.not_viewed else ''))
+    if e.get('kind') != 'view':
+        raise common.NoInput(f'{lst}: the night pass {c.night_dir} changed nothing in this hour (it is viewed as its all-nights '
+                             f'catalog directory {e.get("all_nights")}): the hour\'s earlier page run stands')
+    return e
+
+
+def frozen_of(c, lst, P, K):
+    """The all-nights catalog build set K's catalogs stand on. A night run takes it from the pass's index entry of the hour
+    (DECISION-20261114-PR47-CARRIED-ROOT-READERS-TAKE-TABLE-FROM-INDEX: a carried view root's own catalog_view.json is never
+    read for it): the record_sha1 of the served build's key (source_catalogs_<served tag>_<K>, which prep copies as
+    source_catalogs_<K>); '' when the entry names none. Otherwise night.frozen_id of the run's copy."""
+    e = c.views.get(lst) if c.night_dir else None
+    if e is None:
+        return night.frozen_id(os.path.join(P, f'source_catalogs_{K}'))
+    tag = common.CFG().pages_sublst.SERVED_CATALOG_TAG          # sublst_pages_prep.py:104 copies source_catalogs_<tag>_<K>
+    return ((e.get('keys') or {}).get(f'{tag}_{K}') or {}).get('record_sha1') or ''
+
+
+def base_run(c, lst):
+    """The earlier page run of the hour (--sublst-base-runs), or None. REFUSES when it is this pass's own page run (prep
+    removes the run directory before anything is read from it)."""
+    if not c.base_runs:
+        return None
+    P = P_of(c, lst)
+    b = os.path.join(c.base_runs, os.path.basename(P))
+    if os.path.realpath(b) == os.path.realpath(P):
+        raise common.Refusal(f'P18: --sublst-base-runs names this pass\'s own page run {P}: the earlier run is another directory')
+    return b
+
+
+def ident(c):
+    """What every block of this run is rendered with besides its own rows (night.run_vouches): the code (the frozen tree's
+    files, the tree's root normalized), the cross-match sample files and the search root. Computed once per run."""
+    if c.ident is None:
+        C, S = common.CFG().pages, common.CFG().pages_sublst
+        c.ident = dict(code=night.code_digest(c.tree),
+                       samples=night.samples_id(c.roots.get('clv15') or C.XMATCH_SAMPLE_DIR, C.XMATCH_SAMPLES[TIER]),
+                       search_root=S.SEARCH_ROOT.format(root=c.root, arm=S.ARM))
+    return c.ident
 
 
 def code_env(c):
@@ -135,6 +231,22 @@ def stage_prep(c, run, done, lst):
     with run.unit(name, tier=TIER, stage='prep', lst=lst) as u:
         gate_code(c, u)
         loc = S.LOC_REQUIRED.format(root=c.root, lst=lst, arm=S.ARM)
+        view, base = night_view(c, lst), base_run(c, lst)
+        if c.catalog_dir:
+            loc, cat = os.path.join(c.catalog_dir, os.path.relpath(loc, cat)), c.catalog_dir
+            u.note(f'catalog directory {cat} in place of the production hour\'s (--sublst-catalog-dir)')
+        if view:
+            # THE PAGES OF A NIGHT: the hour's catalog view of the night pass, staged as the directory the script reads
+            staging = os.path.join(c.out, S.NIGHT_STAGING.format(lst=lst))
+            try:
+                st = night.stage_catalog(staging, view['root'], S.NIGHT_ALL_NIGHTS_FILES, S.NIGHT_CONFORM_FILES)
+            except night.NightRefusal as e:
+                raise common.Refusal(f'P18 pages of a night, {lst}: {e}')
+            loc, cat = os.path.join(staging, os.path.relpath(loc, cat)), staging
+            u.meta['night'] = dict(night_dir=c.night_dir, view_root=view['root'], staging=staging, **st)
+            u.note(f'pages of a night: catalog view {view["root"]} staged in {staging} ({len(st["view"])} entries of the view, '
+                   f'{len(st["carried"])} carried from the all-nights catalog directory {st["all_nights"]}'
+                   + (f'; not in the all-nights directory: {st["absent"]}' if st['absent'] else '') + ')')
         if not (os.path.isfile(loc) and os.path.getsize(loc) > 0):
             raise common.Refusal(f'P11: no localizations for {lst} ({loc}; sublst_publish_lst.sh:26)')
         miss = [f for f in S.REQUIRED_FILES if not os.path.exists(os.path.join(cat, f))]
@@ -157,9 +269,27 @@ def stage_prep(c, run, done, lst):
         if S.FRESH_RUN_DIR and os.path.lexists(P):
             shutil.rmtree(P)                                   # sublst_publish_lst.sh:27
         os.makedirs(os.path.join(P, 'logs'), exist_ok=True)
+        if base:
+            # the earlier run's leave-one-out window Masters (the script writes only those the run does not hold)
+            lm = night.link_masters(base, P, ident(c), c.root)
+            u.meta['loo_masters_carried'] = dict(base=base, **lm)
+            u.note(f'leave-one-out window Masters of the earlier page run {base}: '
+                   + (f'none carried ({lm["why"]})' if lm['why'] else
+                      f'{lm["carried"]} carried, {lm["not_carried"]} not (their window stack or residual changed)'))
         script = common.legacy_script(c.roots, 'ops', 'sublst_pages_prep.py')
         env = dict(code_env(c), SUBLST_LST=lst)
-        res = common.lrun(u, script, [S.ARM, P], env=env, cwd=P, log=os.path.join(P, 'logs', 'prep.log'))
+        if view or c.catalog_dir:
+            # the tie table of the catalog read: the view's own (staged with it), or beside a catalog directory as production
+            # lays it out (<...>/new_<arm>/catalog and <...>/new_<arm>/tie/tie_members.csv)
+            tie = (os.path.join(cat, S.NIGHT_TIE) if view else
+                   os.path.join(os.path.dirname(os.path.abspath(cat)), 'tie', 'tie_members.csv'))
+            env.update(EXOPIPE3_PAGES_CATALOG=cat, EXOPIPE3_PAGES_TIE=tie, EXOPIPE3_PAGES_PREP_SHA1=','.join(S.PREP_SHA1))
+            u.meta['tie_table'] = dict(path=tie, present=os.path.isfile(tie))
+            wrap = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'wraps', 'prep_catalog.py')
+            res = common.lrun(u, wrap, [script, S.ARM, P], env=env, cwd=P, log=os.path.join(P, 'logs', 'prep.log'))
+            u.meta.setdefault('legacy_code', {})[os.path.abspath(script)] = common.sha1_file(script)
+        else:
+            res = common.lrun(u, script, [S.ARM, P], env=env, cwd=P, log=os.path.join(P, 'logs', 'prep.log'))
         if not res.ok:
             raise common.Refusal(f'pages prep failed: {res.reason}')
         link = os.path.join(P, 'parent_catalogs')
@@ -211,19 +341,68 @@ def stage_build(c, run, done, lst):
         script = common.legacy_script(c.roots, 'ops', 'build_tenmin_pages.py')
         env = dict(code_env(c), SUBLST_SEARCH_ROOT=S.SEARCH_ROOT.format(root=c.root, arm=S.ARM),
                    SUBLST_LOO_MASTER_DIR=os.path.join(P, 'loo_masters'))
-        jobs = []
+        # THE BLOCKS AN EARLIER PAGE RUN HOLDS (lib/pages/night.py): per set, the rows to render and the images to carry.
+        # Without an earlier run, or where it cannot vouch, the set is rendered whole from its selection, as before.
+        base = base_run(c, lst) if S.WIPE_CANDIDATES else None
+        if c.base_runs and not S.WIPE_CANDIDATES:
+            u.note('pages_sublst.WIPE_CANDIDATES is False: no block is carried from the earlier page run (every block is rendered '
+                   'over what the run directory holds)')
+        idn = ident(c)
+        if base and os.path.isfile(os.path.join(base, night.RECORD)):
+            u.add_input(os.path.join(base, night.RECORD))
+        # the files of every frame, read BEFORE the shards (a file that changes while they run is seen by the next run)
+        frames = night.run_frames(P, sets, idn['search_root'], c.root)
+        plans, moves, jobs = {}, {}, []
         for K in sets:
+            try:
+                pl = plans[K] = night.plan(K, P, base, idn, frames)
+                sel, moves[K] = night.reduced(pl, P)
+            except night.NightRefusal as e:
+                raise common.Refusal(f'P18 blocks of {lst} {K}: {e}')
+            if sel is None:
+                continue                                       # every block of the set is carried
             n = c.shards or C.SUBLST_PAGE_SHARDS[K]
+            if sel != pl['selection']:                         # a reduced selection: no more processes than it has frames
+                n = max(1, min(n, len({(pl['rows'][i]['lst'], pl['rows'][i]['date'], pl['rows'][i]['band'])
+                                       for _rank, i, _rel in (pl['blocks'][pos] for pos in pl['render'])})))
             for s in range(n):
-                jobs.append((K, s, n))
-        with ThreadPoolExecutor(max_workers=len(jobs)) as ex:
-            futs = [(K, s, ex.submit(common.lrun, u, script,
-                                     [os.path.join(P, 'source_catalogs', f'tenmin_selection_{K}.csv'), P, s, n], 'default',
-                                     env, P, os.path.join(P, 'logs', f'pages_{K}_{s}.log'))) for K, s, n in jobs]
-            res = [(K, s, f.result()) for K, s, f in futs]
+                jobs.append((K, s, n, sel))
+        res = []
+        if jobs:
+            with ThreadPoolExecutor(max_workers=len(jobs)) as ex:
+                futs = [(K, s, ex.submit(common.lrun, u, script, [sel, P, s, n], 'default',
+                                         env, P, os.path.join(P, 'logs', f'pages_{K}_{s}.log'))) for K, s, n, sel in jobs]
+                res = [(K, s, f.result()) for K, s, f in futs]
         bad = [(K, s, r.reason) for K, s, r in res if not r.ok]
         u.meta.update(sets=sets, shards=len(jobs), failed_shards=bad)
         shard_failures(u, bad)
+        blocks, carried_any = {}, False
+        try:
+            for K in sets:
+                pl = plans[K]
+                moved, none = night.rename(P, moves[K])
+                got = night.link_blocks(base, P, pl) if pl['link'] else dict(linked=0, copied=0)
+                carried_any = carried_any or bool(pl['link'])
+                blocks[K] = dict(rows=len(pl['blocks']), rendered=len(pl['render']), carried=got['linked'] + got['copied'],
+                                 carried_as_copies=got['copied'], rendered_whole=pl['whole'], rendered_why=pl['why'],
+                                 renamed=moved, frozen=frozen_of(c, lst, P, K))
+        except night.NightRefusal as e:
+            raise common.Refusal(f'P18 blocks of {lst}: {e}')
+        ok, detail, counts = night.test(P, sets, frames)
+        for K in sets:
+            blocks[K].update(images=counts[K]['images'], without_image=counts[K]['without_image'])
+        u.check('blocks.content', ok, value=sum(b['images'] for b in blocks.values()), detail=detail)
+        u.meta['page_blocks'] = dict(base=base, sets=blocks, test=detail)
+        u.note(f'blocks of {lst}: ' + '; '.join(
+            f'{K} {b["rendered"]} rendered + {b["carried"]} carried of {b["rows"]}'
+            + (f' (whole set: {b["rendered_whole"]})' if b['rendered_whole'] and base else '') for K, b in blocks.items()))
+        if not ok and carried_any:
+            raise common.Refusal(f'P18 blocks of {lst}: the page run carries blocks of {base} and fails its content test: {detail}')
+        if not ok:
+            u.note(f'the blocks do not pass the content test of lib/pages/night.py ({detail}): the record says not complete, and '
+                   f'no later page run carries blocks of this one')
+        night.write_record(P, dict(version=night.VERSION, complete=bool(ok), lst=lst, base=base, sets=blocks, test=detail,
+                                   frames=frames, **idn))
         png_re = common.server_png_re(c.roots)
         pngs = sorted(p for p in glob.glob(os.path.join(P, 'candidates', '*', '*', '*.png')) if png_re.match(os.path.basename(p)))
         for p in pngs:
@@ -302,7 +481,8 @@ def stage_place(c, run, done, lst):
         if os.path.basename(tgt) != run_name:
             tgt = os.path.join(tgt, run_name)
         os.makedirs(tgt, exist_ok=True)
-        cmd = ['rsync', '-a'] + (['--delete'] if S.PLACE_DELETE else []) + [P + '/', tgt + '/']
+        cmd = (['rsync', '-a'] + (['--delete'] if S.PLACE_DELETE else [])   # the reduced selections of a night run are the
+               + ['--exclude', night.REDUCED_DIR + '/', P + '/', tgt + '/'])   # renderer's input, not a served selection
         r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
         u.meta['rsync'] = dict(cmd=cmd, rc=r.returncode, tail=r.stdout[-500:])
         if r.returncode != 0:
@@ -320,6 +500,10 @@ def run(args, run_):
     for lst in c.lsts:
         P = P_of(c, lst)
         os.makedirs(c.out, exist_ok=True)
+        if c.night_dir and (c.views.get(lst) or {}).get('kind', 'view') != 'view':
+            with run_.unit(f'{lst}:prep', tier=TIER, stage='prep', lst=lst):
+                night_view(c, lst)                             # NO-INPUT: the pass changed nothing in the hour
+            continue                                           # its earlier page run stands; no stage of the hour runs
         with common.Lease(run_.out_root, P, C.LEASE_WAIT_S):
             for st in c.stages:
                 if st == 'prep':
@@ -353,12 +537,44 @@ def dry_run(c, run_):
         P = P_of(c, lst)
         cat = S.CATALOG_DIR.format(root=c.root, lst=lst, arm=S.ARM)
         loc = S.LOC_REQUIRED.format(root=c.root, lst=lst, arm=S.ARM)
-        print(f'  {lst}: page run {P}; catalogue {cat}')
+        e = c.views.get(lst) if c.night_dir else None
+        if c.night_dir and (e is None or e.get('kind') != 'view'):
+            msg = (f'the night pass {c.night_dir} did not view the hour' if e is None else
+                   'the night pass changed nothing in this hour: its earlier page run stands (NO-INPUT)')
+            print(f'  {lst}: {msg}')
+            if e is None and 'prep' in c.stages:
+                refuse.append(f'{lst}: P18 {msg}')
+            continue
+        if e:
+            # prep stages the view root's entries and, from the all-nights directory, the records a night does not write
+            vroot, an = e['root'], e.get('all_nights') or ''
+            loc = os.path.join(vroot, os.path.relpath(loc, cat))
+            print(f'  {lst}: page run {P}; PAGES OF A NIGHT: catalog view {vroot} (all-nights catalog directory {an}), staged '
+                  f'in {os.path.join(c.out, S.NIGHT_STAGING.format(lst=lst))}')
+        else:
+            if c.catalog_dir:
+                loc, cat = os.path.join(c.catalog_dir, os.path.relpath(loc, cat)), c.catalog_dir
+            print(f'  {lst}: page run {P}; catalogue {cat}')
+        if c.base_runs:
+            b = base_run(c, lst)
+            why = night.run_vouches(b, ident(c))
+            print(f'    earlier page run {b}: ' + (f'every block is rendered ({why})' if why else
+                                                    'its record is complete and of this code: unchanged blocks are carried'))
         okloc = os.path.isfile(loc) and os.path.getsize(loc) > 0
         print(f'    gate P11 localizations: {"present" if okloc else "MISSING " + loc}')
         if not okloc and 'prep' in c.stages:
             refuse.append(f'{lst}: P11 {loc}')
-        miss = [f for f in S.REQUIRED_FILES if not os.path.exists(os.path.join(cat, f))]
+        if e:                                     # as night.stage_catalog stages them: the view root's entries; from the
+            carried = set(S.NIGHT_ALL_NIGHTS_FILES)   # all-nights directory only the records a night does not write and pertie/
+            miss = [f for f in S.REQUIRED_FILES if not os.path.exists(os.path.join(vroot, f))
+                    and not (an and (f in carried or f.startswith('pertie' + os.sep) or f.startswith('pertie/'))
+                             and os.path.exists(os.path.join(an, f)))]
+            if not an:
+                miss.append('all_nights (the index entry names no all-nights catalog directory)')
+            miss += [f'{f} (the view root\'s own conformance read)' for f in S.NIGHT_CONFORM_FILES
+                     if not os.path.isfile(os.path.join(vroot, f))]
+        else:
+            miss = [f for f in S.REQUIRED_FILES if not os.path.exists(os.path.join(cat, f))]
         print(f'    gate P12/P13 required files: {"present" if not miss else "MISSING " + str(miss)}')
         if miss and 'prep' in c.stages:
             refuse.append(f'{lst}: P12/P13 {miss}')

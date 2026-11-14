@@ -73,12 +73,28 @@ Per-hour vs intermittent: per LST once its search is complete (DESIGN 12.1: the 
          (conform_pulsar_evidence.csv; both through the frozen mode of wraps/conform_noise.py), and refuses without
          either. The two records are read only when the LST-wide directory's own record of its conformance stage (same
          LST, same arm) is done and lists both files as they are now (frozen_records_refusal). Every other stage is the
-         LST chain's, on the night's rows. No earlier night's row is judged again. The builds, the tests and the
-         comparison are not offered for a night (NIGHT_STAGES): the grouping's incremental mode and the builder's
-         frozen statistics are the next step.
+         LST chain's, on the night's rows. No earlier night's row is judged again. A night pass ends at the leak veto
+         unless stages are named. Its builds (`--stages build,buildv`, after the grouping's incremental run with
+         `--group-night-dir <LST>=<the night's directory>`) are DELTA builds (_build_delta; Gregg 2026-11-13, answer 3 of
+         R-GREGG-20261113-SPEEDUP-CHECKIN-TEN-ANSWERS): the builder on the identities the appended nights touch, its
+         population statistics frozen from the all-nights build's record (wraps/builder_grouping.py FROZEN STATISTICS;
+         an all-nights build under design B writes that record), the catalogs written to the night's own directory with
+         a content test each. The same stages build the delta of every OTHER LST hour the night's grouping run
+         touched (<night directory>/other_hours/<LST>), and of a key of this hour that got no row of the night but whose
+         identities were regrouped: which build is owed is decided from content (lib/catalog/delta_build.key_state: the
+         all-nights build or an earlier delta stands only under a certificate that the present grouping table leaves it
+         untouched). The stage `view` (per-hour page append, design 2.3a) then writes, for every hour with a delta, a
+         VIEW ROOT in the layout of an all-nights catalog directory (<night directory>/views/<LST>: the all-nights
+         tables with the rows of touched identities replaced, each catalog content-tested, the localizations of the
+         touched names computed on the view and the others carried) and the pass's index hour_views.json (every
+         hour's root, state and certificates under the pass's grouping tables). NOT built for a night: the
+         rejected-source record. The table filter, the detection record, the tests and the comparison are LST-wide and
+         not offered for a night (NIGHT_STAGES; a night's pages carry the all-nights table_filter.csv,
+         pages_sublst.NIGHT_ALL_NIGHTS_FILES).
 """
 import ast
 import contextlib
+import copy
 import csv
 import glob
 import hashlib
@@ -89,17 +105,21 @@ import shutil
 import subprocess
 import sys
 import time
+import types
 
 TIER = 'sublst'
 STAGES = ('preflight', 'merge', 'tier-rules', 'tie-pulsars', 'conform', 'fitpos', 'select', 'tie', 'veto', 'build',
           'buildv', 'tablefilter', 'record', 'test', 'compare', 'reftie')
 # stages whose in-place modules are the heavy part of the chain: they run under the node's heavy-stage lock and memory gate
 HEAVY = ('merge', 'tier-rules', 'tie-pulsars', 'conform', 'fitpos', 'select', 'tie', 'veto', 'build', 'buildv', 'tablefilter',
-         'record', 'test', 'compare')
+         'record', 'view', 'test', 'compare')
 OPTIONAL = ('build', 'buildv', 'tablefilter', 'compare', 'reftie')   # may end no-input by configuration (not selected / switched off)
-# PER-HOUR night pass (--sublst-night): the stages offered for one night's rows (the builds need the grouping's incremental
-# mode and frozen builder statistics; the tests and the comparison are LST-wide)
-NIGHT_STAGES = ('preflight', 'merge', 'tier-rules', 'tie-pulsars', 'conform', 'fitpos', 'select', 'tie', 'veto')
+# PER-HOUR night pass (--sublst-night): the stages run for one night's rows when none is named (NIGHT_DEFAULT) and the chain
+# of stages offered (NIGHT_STAGES: the builds are delta builds and run after the grouping's incremental run with this night;
+# `view`, a night pass's own stage, writes the catalog view of every LST hour and the pass's index; the table filter, the
+# detection record, the tests and the comparison are LST-wide)
+NIGHT_DEFAULT = ('preflight', 'merge', 'tier-rules', 'tie-pulsars', 'conform', 'fitpos', 'select', 'tie', 'veto')
+NIGHT_STAGES = NIGHT_DEFAULT + ('build', 'buildv', 'view')
 IN_PLACE = ('master_catalog.csv',)                    # rewritten in place by merge, tier-rules, conform, fitpos
 SPLIT_KEYS = ('V_sb', 'I_sb', 'V_wb', 'I_wb')         # sublst_catalogs.sh:235, :255 (order of the --rows and of the builds)
 # environment variables the in-place sub-LST modules read that core/legacy.run does not clear (it clears P3_* only): a value
@@ -685,6 +705,16 @@ class Ctx:
             self.src = os.path.join(self.U, '_side', 'night_view')
         elif self.frozen_from:
             raise SystemExit('error: --sublst-frozen-from is for a night pass (--sublst-night)')
+        self.view_hours = None
+        if arg(args, 'sublst_view_hours'):
+            if not self.night:
+                raise SystemExit('error: --sublst-view-hours is for a night pass (--sublst-night)')
+            from exopipe.phase3.core import cells
+            try:
+                self.view_hours = sorted({cells.parse_lst(x.strip()) for x in str(arg(args, 'sublst_view_hours')).split(',')
+                                          if x.strip()})
+            except ValueError as e:
+                raise SystemExit(f'error: --sublst-view-hours: {e}')
         self.cmp_catalog = os.path.join(self.cmp_new, 'catalog')
         self.pt = os.path.join(self.U, 'pertie')
         self.recdir = os.path.join(self.U, '_records', 'catalog', self.unit)
@@ -1672,7 +1702,347 @@ def st_veto(ctx, s, plan):
         s.out(f'{U}/leakveto/leakveto_{ctx.lst}_{band}_{st}.csv', 'leak_veto_table', run_dir=U)
 
 
+DELTA_STARTED = '.delta_build_started'   # a night's delta directory of a key, from its creation until its content test passed
+
+
+def _own_delta(d, k, tag):
+    """REFUSES unless the directory ``d`` is empty or this stage's own: a finished delta (builder_delta.json) or one a failed
+    pass left (DELTA_STARTED) - anything else is not replaced or removed."""
+    from exopipe.phase3.lib.catalog import delta_build as DB
+    if os.listdir(d) and not (os.path.exists(f'{d}/{DB.DELTA_RECORD}') or os.path.exists(f'{d}/{DELTA_STARTED}')):
+        refuse(f'S-G18 delta build {k} ({tag}): {d} holds files but neither {DB.DELTA_RECORD} nor {DELTA_STARTED}: not a delta '
+               f'build of this pass, not replaced')
+
+
+def hour_ctx(ctx, lst):
+    """The context of ANOTHER LST hour, for a delta build or a localization of it inside this hour's night pass: the hour's own
+    paths, label, flux scale and size rule (its environment is what an LST-wide build of that hour hands the builder). Its
+    --out is <night directory>/other_hours/<LST>."""
+    if lst == ctx.lst:
+        return ctx
+    a = copy.copy(ctx.args)
+    a.lsts, a.sublst_night, a.sublst_frozen_from, a.sublst_view_hours = lst, None, None, None
+    c = Ctx(a, types.SimpleNamespace(out_root=os.path.join(ctx.U, 'other_hours', lst), dry_run=ctx.run.dry_run))
+    c.grouping_dir, c.grouping_mode = ctx.grouping_dir, ctx.grouping_mode
+    return c
+
+
+def _delta_inputs(ctx):
+    """What a night's builds and views stand on, from the latest done grouping run of each Stokes: (tables {Stokes: (path,
+    sha1)}, hours {LST: (all-nights directory, [night directories])}, [every night directory], hours in scope, hours not in
+    scope (--sublst-view-hours)). REFUSES (S-G18) unless both Stokes were assembled from the same directories, this hour from
+    --sublst-frozen-from, with this night's directory."""
+    from exopipe.phase3.lib.catalog import grouping_stage as GS
+    U, F = ctx.U, ctx.frozen_from
+    same = lambda a, b: os.path.realpath(a) == os.path.realpath(b)   # noqa: E731
+    tables, first = {}, None
+    for st in sorted({k[0] for k in SPLIT_KEYS}):
+        try:
+            runs, nd, tables[st] = GS.recorded_inputs(ctx.grouping_dir, st, with_table=True)   # one record: table and nights
+        except GS.StageRefusal as e:
+            refuse(f'S-G18 delta build: {e} (`exopipe3 catalog --tier sublst --stages group --group-mode incremental '
+                   f'--group-night-dir {ctx.lst}={U}`, or --sublst-grouping DIR)')
+        if not (runs.get(ctx.lst) and same(runs[ctx.lst], F)):
+            refuse(f'S-G18 delta build: the Stokes {st} grouping {ctx.grouping_dir} was assembled from {runs.get(ctx.lst)!r} for '
+                   f'{ctx.lst}, not from --sublst-frozen-from {F}: the frozen record and the grouping must stand on the same '
+                   f'all-nights build')
+        mine = sorted(os.path.realpath(D) for L, D in nd if L == ctx.lst)
+        if os.path.realpath(U) not in mine:
+            refuse(f'S-G18 delta build: the latest Stokes {st} grouping run does not hold this night ({U}; its nights of '
+                   f'{ctx.lst}: {mine or "none"}) - group again with --group-mode incremental --group-night-dir {ctx.lst}={U}')
+        got = ({L: os.path.realpath(D) for L, D in runs.items() if D}, sorted((L, os.path.realpath(D)) for L, D in nd))
+        if first is not None and got != first:
+            refuse(f'S-G18 delta build: the Stokes I and V groupings were assembled from different directories (all-nights '
+                   f'{sorted(set(first[0].items()) ^ set(got[0].items()))[:4]}; nights {sorted(set(first[1]) ^ set(got[1]))[:4]}) - '
+                   f'group again')
+        first = got
+    runs, nd = first
+    hours = {L: (D, sorted(d for l_, d in nd if l_ == L)) for L, D in runs.items()}
+    scope, out = sorted(hours), []
+    if ctx.view_hours:
+        bad = [L for L in ctx.view_hours if L not in hours]
+        if bad or ctx.lst not in ctx.view_hours:
+            refuse(f'S-G18 --sublst-view-hours {ctx.view_hours}: {bad} are no hours of the grouping, or the night\'s own hour '
+                   f'{ctx.lst} is not named')
+        scope, out = list(ctx.view_hours), sorted(set(hours) - set(ctx.view_hours))
+    return tables, hours, [d for _l, d in nd], scope, out
+
+
+def _groupings(tables):
+    """{Stokes: read_grouping result} of the recorded tables; refuses a table that changed since its record."""
+    from exopipe.phase3.lib.catalog import delta_build as DB
+    out = {}
+    for st, (table, sha) in tables.items():
+        out[st] = DB.read_grouping(table)
+        if out[st][2] != sha:
+            refuse(f'S-G18: the grouping table {table} changed after its run\'s record (sha1 {out[st][2][:12]}, recorded '
+                   f'{sha[:12]}) - group again')
+    return out
+
+
+def _build_delta(ctx, s, plan, tag):
+    """PER-HOUR night pass: the DELTA builds of one tag ('noveto' / 'veto') that the night's grouping run leaves owed, for the
+    pass's own LST hour and for every other hour of the grouping (--sublst-view-hours restricts them). Per hour and key the
+    state is decided from content (lib/catalog/delta_build.key_state); a key in the state `build` is built: the builder runs
+    through the grouping runner in its mode `delta` on a build directory (<U>/_side/delta_<tag>[_<LST>],
+    delta_build.assemble) that holds the hour's all-nights rows plus the selected rows, window-tie rows and (veto) leak-veto
+    tables of every night the grouping was run with for that hour, and writes the identities those nights and the regrouping
+    touch only: <U>/source_catalogs_<tag>_<K> for this hour, <U>/other_hours/<LST>/source_catalogs_<tag>_<K> for another. A
+    delta is CUMULATIVE since the hour's all-nights build; the newest supersedes the earlier ones. This hour's keys are
+    always built anew when a night holds a row of theirs (no earlier pass's delta is taken for them). Refuses unless: the
+    grouping is design B; the latest done grouping run of each Stokes was assembled from --sublst-frozen-from for this LST
+    and names this night's directory, both Stokes from the same directories; the hour's all-nights build wrote its frozen
+    record for the key; the grouping holds every input row as selected (S-G18). Each catalog directory then passes
+    delta_build.content_test or the stage refuses, and gets the record of what it read (delta_inputs.json). The
+    localizations are the stage `view`'s (they are computed on the hour's whole view)."""
+    from exopipe.phase3.lib.catalog import delta_build as DB
+    from exopipe.phase3.lib.catalog import grouping_stage as GS
+    U, F = ctx.U, ctx.frozen_from
+    script = ctx.opsc('build_source_catalogs_v3.py')
+    py = ctx.py['default']
+    plan.append(f'delta builds ({tag}) owed after the grouping run with night {ctx.night}: for this hour and every other hour of '
+                f'the grouping {ctx.grouping_dir}' + (f' among {ctx.view_hours}' if ctx.view_hours else '') + ', per key K in '
+                f'{", ".join(SPLIT_KEYS)}: built when a night holds a selected row of K, or when no build of the present input '
+                f'is certified untouched by the grouping table (lib/catalog/delta_build.key_state)')
+    plan.append(f'a build: directory <U>/_side/delta_{tag}[_<LST>] = the hour\'s all-nights rows plus the selected rows, '
+                f'window-tie rows' + (' and leak-veto tables' if tag == 'veto' else '') + f' of its nights; '
+                f'P3_LEAKVETO_DIR=<its leak-veto tables> P3_TENMIN_PERTIE=<its window-tie table> EXOPIPE3_FROZEN_MODE=delta '
+                f'(record <all-nights directory>/source_catalogs_{tag}_K/{DB.FROZEN_RECORD}) {py} {GS.builder_runner()} {script} '
+                f'selected_K.csv <{U} or {U}/other_hours/<LST>>/source_catalogs_{tag}_K v_deep_images.csv >> '
+                f'catalogs_{tag}_K.log; then the content test of each catalog and its {DB.INPUTS_RECORD}')
+    plan.append('not built for a night: the rejected-source record; the localizations are the stage view\'s')
+    if not ctx.grouping_mode.design_b:
+        refuse('S-G18 delta build: a night\'s build needs the design-B grouping (catalog_grouping.MODE): the builder\'s frozen '
+               'statistics exist only under it')
+    if ctx.dry:
+        return
+    if tag == 'veto' and not os.path.isdir(f'{U}/leakveto'):
+        ctx.log.say('REFUSING buildv: the night has no leak-veto tables')
+        refuse(f'S-G17: build (veto) needs the night\'s leak-veto tables {U}/leakveto (run the veto stage)')
+    tables, hours, night_dirs, scope, _out = _delta_inputs(ctx)
+    groupings = _groupings(tables)
+    earlier = [x for x in DB.read_indexes(night_dirs) if os.path.realpath(x[0]) != os.path.realpath(U)]
+    s.code(script)
+    for st, (table, sha) in tables.items():
+        s.inp(table)
+        s.u.meta.setdefault('grouping_tables', {})[st] = dict(path=table, sha1=sha)
+    meta = s.u.meta.setdefault('delta', {})[tag] = dict(frozen_from=F, nights=hours[ctx.lst][1], hours={})
+    built = []
+    for L in [ctx.lst] + [x for x in scope if x != ctx.lst]:
+        FL, nights = hours[L]
+        own = L == ctx.lst
+        try:
+            inp = DB.inputs(FL, nights, SPLIT_KEYS, tag)
+            states = {k: DB.key_state(L, k, tag, FL, inp[k], [] if own else DB.index_candidates(earlier, L, tag, k),
+                                      groupings[k[0]], tables[k[0]][0]) for k in SPLIT_KEYS if k in inp}
+        except DB.DeltaRefusal as e:
+            refuse(f'S-G18 delta build ({tag}) of {L}: {e}')
+        norec = [f'{k}: {st["why"]}' for k, st in states.items() if st['kind'] == 'no-record']
+        if norec:
+            refuse(f'S-G18 delta build ({tag}) of {L}: {"; ".join(norec)}'
+                   + ('' if own else f' (or leave the hour out with --sublst-view-hours; it is then not viewed)'))
+        need = [k for k in SPLIT_KEYS if states.get(k, {}).get('kind') == 'build']
+        meta['hours'][L] = dict(frozen_from=FL, nights=nights, states={k: st['kind'] for k, st in states.items()}, keys={})
+        if not need:
+            if own or any(st['kind'] == 'delta' for st in states.values()):
+                ctx.log.say(f'{L} ({tag}): no delta build owed (' + ', '.join(f'{k} {st["kind"]}' for k, st in states.items()) + ')')
+            continue
+        cL = hour_ctx(ctx, L)
+        root = cL.U
+        B = os.path.join(U, '_side', f'delta_{tag}' + ('' if own else f'_{L}'))
+        try:
+            asm = DB.assemble(B, FL, nights, SPLIT_KEYS, tag)
+        except DB.DeltaRefusal as e:
+            refuse(f'S-G18 delta build ({tag}) of {L}: {e}')
+        meta['hours'][L]['build_dir'] = B
+        pt = os.path.join(B, DB.PERTIE)
+        lv = '' if tag == 'noveto' else os.path.join(B, DB.LEAKVETO)
+        s.inp(f'{FL}/v_deep_images.csv')
+        for k in need:
+            d = f'{root}/source_catalogs_{tag}_{k}'
+            rec = states[k]['record']
+            m = asm['selected'][k]
+            if os.path.isdir(d):
+                _own_delta(d, f'{L} {k}', tag)
+                shutil.rmtree(d)                   # this pass's earlier delta of the key: a delta is built whole
+            os.makedirs(d)
+            open(f'{d}/{DELTA_STARTED}', 'w').close()   # this stage's own directory from here on, finished or not
+            table, sha = tables[k[0]]
+            s.inp(f'{FL}/selected_{k}.csv', rec, *[f'{n}/selected_{k}.csv' for n in nights if os.path.exists(f'{n}/selected_{k}.csv')])
+            bad = GS.covers(table, f'{B}/selected_{k}.csv')
+            if bad:
+                refuse(f'S-G18 delta build {L} {k} ({tag}): the grouping {table} does not hold the build\'s input as selected '
+                       f'({len(bad)}+ rows, e.g. {bad[:3]}) - group again with every appended night of {L}')
+            ctx.log.say(f'{L} {k} ({tag}): delta build on {m["base"]} all-nights rows + {len(m["appended"])} rows of {len(nights)} '
+                        f'night(s) ({states[k]["why"]})')
+            res = call(ctx, s, GS.builder_runner(), [script, f'selected_{k}.csv', d, 'v_deep_images.csv'],
+                       env=cL.env(P3_LEAKVETO_DIR=lv, P3_TENMIN_PERTIE=pt,
+                                  **GS.builder_env(table, '10min', ctx.grouping_mode, sha1=sha, frozen='delta', frozen_record=rec)),
+                       log=f'{root}/catalogs_{tag}_{k}.log', cwd=B)
+            name = f'{tag}_{k}' if own else f'{L}_{tag}_{k}'
+            s.u.meta.setdefault('grouping_builder', {})[name] = GS.builder_line(res.tail)
+            if res.ok and not GS.builder_line(res.tail).startswith('GROUPING-BUILDER done'):
+                refuse(f'S-G18 delta build {L} {k} ({tag}): the grouping runner gave no done line')
+            need_ok(res, f'S-G18 build_source_catalogs_v3.py {L} {k} ({tag}, delta)', r'REFUS|Error',
+                    say=lambda: ctx.log.say(f'{L} {k} ({tag}): delta build FAILED (see {root}/catalogs_{tag}_{k}.log)'))
+            mine_c = set(m['appended'])                # every appended row of the hour (each night's, every hour's), and this
+            if own and os.path.exists(f'{U}/selected_{k}.csv'):   # night's own rows
+                with open(f'{U}/selected_{k}.csv', newline='') as f:
+                    mine_c |= {r['cand_id'] for r in csv.DictReader(f)}
+            ok, detail, counts = DB.content_test(d, sorted(mine_c), vetoed=asm['vetoed'])
+            s.u.check(f'delta.content.{name}', ok, value=counts.get('sources'), detail=detail, path=d)
+            meta['hours'][L]['keys'][k] = counts
+            if own:
+                meta.setdefault('keys', {})[k] = counts
+            ctx.log.say(f'{L} {k} ({tag}): delta content test {"PASS" if ok else "FAIL"}: {detail}')
+            if not ok:
+                refuse(f'S-G18 delta build {L} {k} ({tag}): content test failed: {detail}')
+            os.remove(f'{d}/{DELTA_STARTED}')
+            DB.write_inputs(d, L, k, tag, FL, nights, asm['digest'][k])
+            built.append(d)
+    if not built:
+        raise _record().NoInput(f'night {ctx.night} ({tag}): no delta build owed in any hour or key')
+    ctx.log.say(f'delta source catalogs ({tag}) complete: {len(built)} key(s) in '
+                f'{len({os.path.dirname(d) for d in built})} hour(s)')
+    for d in built:
+        s.out(d, 'source_catalog', run_dir=U)
+
+
+def st_view(ctx, s, plan):
+    """PER-HOUR night pass: the catalog VIEW of every LST hour under the pass's grouping tables, and the pass's index
+    (design 2.3a of PER_HOUR_GAP_DESIGNS_20261111.md, stages 1 and 2). For every hour in scope and every build tag the
+    state of each key is decided from content; a key whose delta build is owed REFUSES (run the builds of this pass). An hour
+    with a delta gets a view root <U>/views/<LST> (delta_build.view_root: every catalog content-tested) unless an earlier
+    pass's root of exactly the same states stands; its localizations are the all-nights rows of the names no touched
+    identity carries plus the touched names computed on the view (build_localizations.py on a side directory of those
+    names). An hour without a delta is viewed as its all-nights directory. The index <U>/hour_views.json lists, per hour, the
+    root, the state digest and each key's certificate under the pass's grouping tables: what the pages of a night and the
+    cumulative product read."""
+    from exopipe.phase3.lib.catalog import delta_build as DB
+    U = ctx.U
+    loc = ctx.opsc('build_localizations.py')
+    plan.append(f'view: for every LST hour of the grouping {ctx.grouping_dir}' + (f' among {ctx.view_hours}' if ctx.view_hours else '')
+                + f' and the builds {", ".join(ctx.builds)}: the state of each key (all-nights / delta, each under a certificate '
+                  f'of the present grouping table; a build owed REFUSES); an hour with a delta: view root {U}/views/<LST> '
+                  f'(catalogs with the rows of touched identities replaced, content-tested; selected rows, window-tie table, '
+                  f'detection table, image table of all nights), unless an earlier pass\'s root of the same states stands')
+    plan.append(f'localizations of a new view root, per build: P3_LOC_CATS=<catalog glob> P3_LOC_OUT=<root>/_loc/<build>/out '
+                f'P3_TENMIN_PERTIE=<root>/pertie/pertie_detections.csv {ctx.py["default"]} {loc} <root>/_loc/<build> (the names of '
+                f'touched identities only), merged with the all-nights rows of every other name')
+    plan.append(f'index: {U}/{DB.INDEX}')
+    if not ctx.grouping_mode.design_b:
+        refuse('S-G21 view: a night\'s view needs the design-B grouping (catalog_grouping.MODE)')
+    if ctx.dry:
+        return
+    tables, hours, night_dirs, scope, out_of_scope = _delta_inputs(ctx)
+    groupings = _groupings(tables)
+    earlier = [x for x in DB.read_indexes(night_dirs) if os.path.realpath(x[0]) != os.path.realpath(U)]
+    s.code(loc, ctx.opsc('source_localization.py'))
+    for st, (table, _sha) in tables.items():
+        s.inp(table)
+    index = dict(version=1, lst=ctx.lst, night=ctx.night, written=utc(), tags=list(ctx.builds), hours={},
+                 tables={st: dict(path=os.path.abspath(tables[st][0]), sha1=g[2], sha256=g[3]) for st, g in groupings.items()},
+                 not_viewed=out_of_scope)
+    n_root = n_carried = n_all = 0
+    for L in scope:
+        FL, nights = hours[L]
+        own = L == ctx.lst
+        states = {}
+        for tag in ctx.builds:
+            try:
+                inp = DB.inputs(FL, nights, SPLIT_KEYS, tag)
+            except DB.DeltaRefusal as e:
+                refuse(f'S-G21 view ({tag}) of {L}: {e}')
+            for k in SPLIT_KEYS:
+                if k not in inp:
+                    continue
+                here = os.path.join(U if own else os.path.join(U, 'other_hours', L), f'source_catalogs_{tag}_{k}')
+                st = DB.key_state(L, k, tag, FL, inp[k], [here] + DB.index_candidates(earlier, L, tag, k), groupings[k[0]],
+                                  tables[k[0]][0])
+                if st['kind'] in ('build', 'no-record'):
+                    refuse(f'S-G21 view of {L} {k} ({tag}): {st["why"]} - run this night pass\'s builds first (--stages '
+                           f'build,buildv,view)')
+                if st['kind'] != 'empty':
+                    states[(tag, k)] = st
+        digest = DB.state_digest(states)
+        entry = dict(all_nights=FL, nights=nights, state_digest=digest,
+                     keys={f'{t}_{k}': dict(kind=st['kind'], dir=st.get('dir'), record=st['record'], record_sha1=st['record_sha1'],
+                                            digest=st['digest'], appended=st['appended'], certificate=st['certificate'])
+                           for (t, k), st in states.items()})
+        if not any(st['kind'] == 'delta' for st in states.values()):
+            entry.update(kind='all-nights', root=FL, written_here=False)       # certified: the all-nights directory is the view
+            n_all += 1
+        else:
+            idg, root = DB.view_inputs_digest(FL, nights), None
+            for r in DB.index_roots(earlier, L):               # carried only when it stands and its catalogs pass view_test again
+                ok, why = DB.root_carries(r, digest, idg, states, groupings)
+                if ok:
+                    root = r
+                    break
+                if DB.root_stands(r, digest):
+                    ctx.log.say(f'view of {L}: the earlier root {r} is not carried: {why}')
+            if root:
+                entry.update(kind='view', root=root, written_here=False)
+                n_carried += 1
+            else:
+                root = os.path.join(U, 'views', L)
+                cL = hour_ctx(ctx, L)
+                try:
+                    rec = DB.view_root(root, L, FL, nights, states, {st: (groupings[st], tables[st][0]) for st in tables},
+                                       ctx.builds, SPLIT_KEYS)
+                except DB.DeltaRefusal as e:
+                    refuse(f'S-G21 view of {L}: {e}')
+                locs = {}
+                for tag in ctx.builds:
+                    cats = shared('catalog_localize', 'CATS', 'sublst').format(build=tag)
+                    try:
+                        side, names, n = DB.loc_side(root, tag, cats)
+                    except DB.DeltaRefusal as e:
+                        refuse(f'S-G21 view of {L} ({tag}): {e}')
+                    if n:
+                        res = call(ctx, s, loc, [side],
+                                   env=cL.env(P3_LEAKVETO_DIR='' if tag == 'noveto' else os.path.join(root, DB.LEAKVETO),
+                                              P3_TENMIN_PERTIE=os.path.join(root, DB.PERTIE), P3_LOC_CATS=cats,
+                                              P3_LOC_OUT=os.path.join(side, 'out')),
+                                   log=f'{root}/catalogs_{tag}_loc.log', cwd=side)
+                        need_ok(res, f'S-G19 build_localizations.py ({tag}, view of {L})', r'REFUS|Error',
+                                say=lambda: ctx.log.say(f'localizations ({tag}) of the view of {L} FAILED (see '
+                                                        f'{root}/catalogs_{tag}_loc.log)'))
+                        if not os.path.exists(os.path.join(side, 'out', DB.LOC_TABLES[0])):
+                            refuse(f'S-G19: {n} survivors row(s) of touched names in the view of {L} ({tag}) but no localizations')
+                    try:
+                        locs[tag] = dict(names=len(names), survivors_rows=n,
+                                         tables=DB.loc_merge(root, tag, names, os.path.join(FL, DB.LOC_DIR.format(tag=tag)),
+                                                             os.path.join(side, 'out'), cats))
+                    except DB.DeltaRefusal as e:
+                        refuse(f'S-G21 view of {L} ({tag}): {e}')
+                    lp = os.path.join(root, DB.LOC_DIR.format(tag=tag), DB.LOC_TABLES[0])
+                    if glob.glob(f'{root}/{cats}/*_sources_survivors.csv') and not (os.path.exists(lp) and os.path.getsize(lp) > 0):
+                        refuse(f'S-G19: the view of {L} holds survivors but no localizations ({tag})')
+                DB.finish_root(root, locs)
+                for key, c in rec['catalogs'].items():
+                    s.u.check(f'view.content.{L}_{key}', True, value=c.get('rows'), detail=c['detail'], path=root)
+                ctx.log.say(f'view of {L}: ' + '; '.join(f'{key} {c["kind"]}: {c["detail"]}' for key, c in sorted(rec['catalogs'].items()))
+                            + '; localizations ' + ', '.join(f'{t}: {v["names"]} names computed again' for t, v in locs.items()))
+                entry.update(kind='view', root=root, written_here=True)
+                s.out(root, 'catalog_view', run_dir=U, lst=L)
+                n_root += 1
+        index['hours'][L] = entry
+    DB._dump(os.path.join(U, DB.INDEX), index)
+    s.u.check('view.hours', True, value=len(index['hours']),
+              detail=f'{n_root} view root(s) written, {n_carried} carried from an earlier pass, {n_all} hour(s) viewed as their '
+                     f'all-nights directory; {len(out_of_scope)} hour(s) not viewed ({", ".join(out_of_scope) or "none"})',
+              path=os.path.join(U, DB.INDEX))
+    s.u.meta['view'] = dict(index=os.path.join(U, DB.INDEX), roots_written=n_root, roots_carried=n_carried, all_nights=n_all,
+                            not_viewed=out_of_scope)
+    ctx.log.say(f'view: {len(index["hours"])} hour(s): {n_root} view root(s) written, {n_carried} carried, {n_all} all-nights; '
+                f'not viewed: {", ".join(out_of_scope) or "none"} -> {U}/{DB.INDEX}')
+    s.out(os.path.join(U, DB.INDEX), 'hour_views_index', run_dir=U)
+
+
 def _build(ctx, s, plan, tag):
+    if ctx.night:                                  # PER-HOUR night pass: the night's delta build
+        return _build_delta(ctx, s, plan, tag)
     U = ctx.U
     script, loc, rej = (ctx.opsc('build_source_catalogs_v3.py'), ctx.opsc('build_localizations.py'),
                         ctx.opsc('emit_rejected_record.py'))
@@ -1729,8 +2099,9 @@ def _build(ctx, s, plan, tag):
                 refuse(f'S-G18 design B: the grouping {table} does not hold selected_{k}.csv as selected ({len(bad)}+ rows, e.g. '
                        f'{bad[:3]}) - group again with this LST (--group-lst-dir {ctx.lst}={U})')
             res = call(ctx, s, GS.builder_runner(), [script, f'selected_{k}.csv', d, 'v_deep_images.csv'],
+                       # frozen='record': the all-nights build writes builder_frozen.json, which a night's delta build stands on
                        env=ctx.env(P3_LEAKVETO_DIR=lv, P3_DETREC_BUILDER_OUT=part,
-                                   **GS.builder_env(table, '10min', ctx.grouping_mode, sha1=sha)),
+                                   **GS.builder_env(table, '10min', ctx.grouping_mode, sha1=sha, frozen='record')),
                        log=f'{U}/catalogs_{tag}_{k}.log', cwd=U)
             s.u.meta.setdefault('grouping_builder', {})[f'{tag}_{k}'] = GS.builder_line(res.tail)
             if res.ok and not GS.builder_line(res.tail).startswith('GROUPING-BUILDER done'):
@@ -2024,8 +2395,8 @@ def st_reftie(ctx, s, plan):
 
 FUNCS = {'preflight': st_preflight, 'merge': st_merge, 'tier-rules': st_tier_rules, 'tie-pulsars': st_tie_pulsars,
          'conform': st_conform, 'fitpos': st_fitpos, 'select': st_select, 'tie': st_tie, 'veto': st_veto,
-         'build': st_build, 'buildv': st_buildv, 'tablefilter': st_tablefilter, 'record': st_record, 'test': st_test,
-         'compare': st_compare, 'reftie': st_reftie}
+         'build': st_build, 'buildv': st_buildv, 'tablefilter': st_tablefilter, 'record': st_record, 'view': st_view,
+         'test': st_test, 'compare': st_compare, 'reftie': st_reftie}
 
 
 # =====================================================================================================================
@@ -2049,6 +2420,10 @@ def add_arguments(p):
                         '(the other nights\' detections near ATNF pulsars) judge the night; the conformance refuses '
                         'without either, and unless that directory\'s own conformance record is done and lists both '
                         'files as they are now')
+    g.add_argument('--sublst-view-hours', default=None, metavar='LIST',
+                   help='with --sublst-night: the LST hours whose delta builds and views the pass makes, comma list holding '
+                        'the night\'s own hour (default: every hour of the grouping; an hour left out is listed in the '
+                        'index as not viewed and is never certified)')
     g.add_argument('--sublst-grouping', default=None, metavar='DIR',
                    help='item F.3, design B: the 10-minute grouping the builds read (grouping_<S>/detections.csv of `catalog '
                         '--tier sublst --stages group`; default catalog_grouping.SUBLST_DIR)')
@@ -2057,15 +2432,21 @@ def add_arguments(p):
 def run(args, run):
     """Run the selected stages of one LST, in order; the first stage that does not end done stops the chain (D10)."""
     ctx = Ctx(args, run)
-    sel = select_stages(args, STAGES)
+    chain = NIGHT_STAGES if ctx.night else STAGES          # a night pass has its own chain (its last stage, view, is its own)
     if ctx.night:
-        if not (arg(args, 'stages') or arg(args, 'until_stage', 'stage_until', 'until')):
-            sel = [x for x in sel if x in NIGHT_STAGES]     # a night pass ends at the leak veto by default
-        notn = [x for x in sel if x not in NIGHT_STAGES]
-        if notn or not sel:
-            raise SystemExit(f'error: --sublst-night offers the stages {", ".join(NIGHT_STAGES)}; not {", ".join(notn) or "none"} '
-                             f'(the builds of a night need the grouping\'s incremental mode; the tests are LST-wide)')
-    first = STAGES.index(sel[0])
+        named = [x.strip() for x in str(arg(args, 'stages') or '').split(',') if x.strip()]
+        named += [v for v in (arg(args, 'from_stage', 'stage_from', 'from_'), arg(args, 'until_stage', 'stage_until', 'until')) if v]
+        notn = [x for x in named if x in STAGES and x not in NIGHT_STAGES]
+        if notn:
+            raise SystemExit(f'error: --sublst-night offers the stages {", ".join(NIGHT_STAGES)}; not {", ".join(notn)} '
+                             f'(a night\'s builds are delta builds, named with --stages after the grouping\'s incremental run; '
+                             f'the tests and the comparison are LST-wide)')
+    sel = select_stages(args, chain)
+    if ctx.night and not (arg(args, 'stages') or arg(args, 'until_stage', 'stage_until', 'until')):
+        sel = [x for x in sel if x in NIGHT_DEFAULT]        # a night pass ends at the leak veto by default
+        if not sel:
+            raise SystemExit(f'error: --sublst-night: no stage selected (stages {", ".join(NIGHT_STAGES)})')
+    first = chain.index(sel[0])
     where = 'production' if ctx.prod else 'non-production; side files under ' + os.path.join(ctx.U, '_side')
     print(f'catalog --tier sublst {ctx.unit}: U={ctx.U} ({where}); label {ctx.label}; tree {ctx.tree}; code {ctx.ops}, '
           f'{ctx.clv}; stages {",".join(sel)}'
@@ -2078,13 +2459,13 @@ def run(args, run):
             for ln in plan:
                 print(f'  {ln}')
         if first > 0:
-            prev = f'{ctx.unit}.{STAGES[first - 1]}'
+            prev = f'{ctx.unit}.{chain[first - 1]}'
             r = stage_record(ctx.U, prev)
             print(f'  --from {sel[0]}: needs the record {prev} done (now: {"missing" if r is None else r.get("status")}) '
                   f'and its outputs unchanged')
         return 0
     env_leaks(LEAKY_ENV)
-    restored = check_from(ctx.U, ctx.unit, STAGES, first, ctx.recdir, IN_PLACE) if first > 0 else []
+    restored = check_from(ctx.U, ctx.unit, chain, first, ctx.recdir, IN_PLACE) if first > 0 else []
     lock = None
     if any(st in HEAVY for st in sel):
         lock = heavy_lock(ctx.lock)
@@ -2100,12 +2481,12 @@ def run(args, run):
         for name in sel:
             with run.unit(f'{ctx.unit}.{name}', tier=TIER, lst=ctx.lst, arm=ctx.arm, stage=name) as u:
                 st = Stage(ctx, name, u)
-                i_ = STAGES.index(name)
-                if name != sel[0] and STAGES[i_ - 1] not in sel:
+                i_ = chain.index(name)
+                if name != sel[0] and chain[i_ - 1] not in sel:
                     # review 2026-10-13: a gap in --stages (e.g. conform,select without fitpos) is checked like a --from:
                     # the skipped stage's record must be done and current, else this stage would read outputs no record
                     # vouches for (DESIGN 11.5)
-                    restored = check_from(ctx.U, ctx.unit, STAGES, i_, ctx.recdir, IN_PLACE)
+                    restored = check_from(ctx.U, ctx.unit, chain, i_, ctx.recdir, IN_PLACE)
                 for n_ in restored:
                     u.note(n_)
                 restored = []
