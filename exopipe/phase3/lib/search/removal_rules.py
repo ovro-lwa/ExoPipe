@@ -1138,11 +1138,11 @@ def conform(U, catalog_dir=None, size_step=None, out=print):
         r['conform_note'] = note or ''
         cols_, why = size_axis(r, BMAJ.get(fk), BR.get(fk), size_step=size_step, rule=rule)
         r.update(cols_)
+        if r['size_flag']:              # counted before the axis step, as production counts it (p3s2_conform.py:633): a
+            n['flag'] += 1              # flagged row the axis step then removes is in the printed count
         if why:
             n['size' if why.startswith('gaussfit') else 'axis'] += 1; removed.append({**r, 'removal_reason': why})
             continue
-        if r['size_flag']:
-            n['flag'] += 1
         if r['axis_flag']:              # 'axis > 2.0 x beam (kept: ...)': above the axis step, kept with the step off (the rule)
             n['akept' if r['axis_flag'].startswith('axis > ') else 'aflag'] += 1
         kept.append(r)

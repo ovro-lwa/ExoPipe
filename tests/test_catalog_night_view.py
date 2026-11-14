@@ -344,7 +344,21 @@ def test_wiring():
     check('wiring: the view takes this pass\'s own delta first, then the ones earlier passes listed; an earlier root is carried '
           'only when it stands for exactly the present states',
           "[here] + DB.index_candidates(earlier, L, tag, k)" in vw
-          and 'ok, why = DB.root_carries(r, digest, idg, states, groupings)' in vw and 'idg, root = DB.view_inputs_digest(FL, nights), None' in vw)
+          and 'ok, why = DB.root_carries(r, digest, idg, states, groupings)' in vw
+          and 'idg, root = DB.view_inputs_digest(FL, nights, tie), None' in vw)
+    check('wiring: a view root gets the catalog arm (its conformance read\'s log header) and the reference-tie table of the '
+          'hour\'s all-nights build, whose inputs digest names it (DECISION-20261114-PR50-VIEW-CARRIES-ITS-REFERENCE-TIE-TABLE)',
+          'tie = _all_nights_tie(ctx, L, FL)' in vw and 'ctx.builds, SPLIT_KEYS, ctx.arm, tie)' in vw
+          and vw.index('tie = _all_nights_tie(') < vw.index('DB.view_inputs_digest(') < vw.index('DB.view_root('))
+    import types
+    from exopipe.phase3.config import CFG
+    cx = types.SimpleNamespace(sl=CFG.paths.SUBLST_ROOT, arm='B', c=CFG.catalog_sublst)
+    prod_fl = os.path.join(cx.sl, 'compare_19h', 'new_B', 'catalog')
+    check('wiring: the all-nights tie table is where that build\'s reftie stage writes it: production\'s compare_<LST>/new_<arm>/'
+          'tie (the table sublst_pages_prep.py copies) for a production directory, <FL>/_side/compare_<LST>/new_<arm>/tie otherwise',
+          TS._all_nights_tie(cx, '19h', prod_fl) == os.path.join(cx.sl, 'compare_19h', 'new_B', 'tie', 'tie_members.csv')
+          and TS._all_nights_tie(cx, '05h', f'{T}/FL') == f'{T}/FL/_side/compare_05h/new_B/tie/tie_members.csv',
+          (TS._all_nights_tie(cx, '19h', prod_fl), TS._all_nights_tie(cx, '05h', f'{T}/FL')))
     check('wiring: the localizations of a view are computed on a side directory of the touched names with the view\'s own '
           'window-tie table and the hour\'s environment, merged, and the root is marked complete only after them',
           'DB.loc_side(root, tag, cats)' in vw and 'P3_TENMIN_PERTIE=os.path.join(root, DB.PERTIE)' in vw and 'env=cL.env(' in vw

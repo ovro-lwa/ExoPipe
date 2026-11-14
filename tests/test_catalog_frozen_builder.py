@@ -164,7 +164,7 @@ def setup(d):
 
 def run(d, b, sha, sel, out, table, images, frozen='', record=None, touch='', mode='design-b', frozen_accepted=None, extra=None):
     env = {k: v for k, v in os.environ.items()
-           if not k.startswith(('P3_', 'EXOPIPE3_FROZEN', 'EXOPIPE3_GROUPING', 'STUB_'))}
+           if not k.startswith(('P3_', 'EXOPIPE3_FROZEN', 'EXOPIPE3_GROUPING', 'EXOPIPE3_REMOVED', 'STUB_'))}
     env.update(EXOPIPE3_GROUPING_MODE=mode, EXOPIPE3_GROUPING_TIER='10min', EXOPIPE3_GROUPING_RUNGS='multiples-level',
                EXOPIPE3_GROUPING_BUILDER_SHA1=sha, EXOPIPE3_GROUPING_TABLE=table, EXOPIPE3_FROZEN_MODE=frozen,
                EXOPIPE3_FROZEN_RECORD=record or '', EXOPIPE3_FROZEN_TOUCH=touch,
@@ -290,6 +290,16 @@ def test_modes():
           and os.path.exists(f'{d}/out_r/E_params.json') and dl.get('touch_all') is True and dl.get('new_detections') == 0
           and len(dl.get('touched', [])) == 8 and {t['kind'] for t in dl['touched']} == {'regrouped'}
           and 'FROZEN-BUILDER delta' in txt_s, (txt_s[-400:], dl))
+    # the bindings the cumulative's gate certifies a directory from (lib/catalog/delta_build.standing)
+    from exopipe.phase3.lib.catalog import delta_build as DB
+    rc_q, txt_q = run(d, b, sha, sel, 'out_rp', tab, img, frozen='record', extra={'EXOPIPE3_GROUPING_PROVENANCE': '1'})
+    prov = json.load(open(f'{d}/out_rp/grouping_table.json')) if os.path.exists(f'{d}/out_rp/grouping_table.json') else {}
+    st = DB.standing(f'{d}/out_rp', DB.read_grouping(tab), tab, '05h', 'I_sb') if rc_q == 0 else {}
+    check('record: the provenance names the sha256 of builder_frozen.json; the delta record names its vetoed detections; '
+          'the directory stands under its own table (record bound, populations equal)',
+          rc_q == 0 and prov.get('frozen_record_sha256') == hashlib.sha256(open(f'{d}/out_rp/builder_frozen.json', 'rb').read()).hexdigest()
+          and dl.get('vetoed') == [] and st.get('ok') is True and st['record_detections'] == st['table_detections'] == 10,
+          (rc_q, txt_q[-300:], prov, st))
 
 
 def _night_worlds(d):
@@ -297,6 +307,36 @@ def _night_worlds(d):
     for tag, spec in (('n1', BASE + NIGHT1), ('n2', BASE + NIGHT2), ('n12', BASE + NIGHT1 + NIGHT2), ('n21', BASE + NIGHT2 + NIGHT1)):
         out[tag] = write_world(d, tag, spec)
     return out
+
+
+def test_removed_before_builder():
+    """review of PR 51, F4: a detection of the grouping table the all-nights build never read (removed before the builder by
+    the selection or the ephemeris filter) is listed in builder_frozen.json with its reason when the run directory's removal
+    table names it; the cumulative's gate (delta_build.standing) then accepts that absence, and refuses an unlisted one"""
+    from exopipe.phase3.lib.catalog import delta_build as DB
+    d = f'{T}/removed'
+    b, sha = setup(d)
+    sel, tab, img = write_world(d, 'base', BASE)
+    _cols, rows = rcsv(f'{d}/{sel}')
+    wcsv(f'{d}/{sel}', _cols, [r for r in rows if r['cand_id'] != 'I_05h_H1'])        # the table still holds H1
+    ext = {'EXOPIPE3_GROUPING_PROVENANCE': '1'}
+    rc0, txt0 = run(d, b, sha, sel, 'out_x', tab, img, frozen='record', extra=ext)
+    st0 = DB.standing(f'{d}/out_x', DB.read_grouping(tab), tab, '05h', 'I_sb') if rc0 == 0 else {}
+    rec0 = json.load(open(f'{d}/out_x/builder_frozen.json')) if rc0 == 0 else {}
+    check('removed before the builder: with no removal table the record lists nothing and the unread table detection '
+          'refuses at the gate', rc0 == 0 and rec0.get('removed') == {} and st0.get('ok') is False
+          and st0.get('only_in_table_examples') == ['I_05h_H1'], (rc0, txt0[-300:], st0))
+    wcsv(f'{d}/selected_all_ephem_removed.csv', ['cand_id', 'stokes', 'removal_reason'],
+         [dict(cand_id='I_05h_H1', stokes='I', removal_reason='moon 0.120 deg < 0.25 deg'),
+          dict(cand_id='I_05h_B1', stokes='I', removal_reason='a row the build read is never listed')])
+    rc1, txt1 = run(d, b, sha, sel, 'out_y', tab, img, frozen='record', extra=ext)
+    st1 = DB.standing(f'{d}/out_y', DB.read_grouping(tab), tab, '05h', 'I_sb') if rc1 == 0 else {}
+    rec1 = json.load(open(f'{d}/out_y/builder_frozen.json')) if rc1 == 0 else {}
+    check('removed before the builder: the run directory\'s removal table names it, the record lists it with the reason, and '
+          'the gate accepts exactly that absence',
+          rc1 == 0 and rec1.get('removed') == {'I_05h_H1': 'selected_all_ephem_removed.csv: moon 0.120 deg < 0.25 deg'}
+          and st1.get('ok') is True and st1.get('removed_before_builder') == 1 and st1.get('record_detections') == 9
+          and st1.get('table_detections') == 10, (rc1, txt1[-300:], rec1.get('removed'), st1))
 
 
 def test_night():
@@ -474,7 +514,7 @@ def test_night_dirs():
         check(f'night directories: {what} REFUSES', 'REFUSING' in got or 'night directory' in got, got)
 
 
-ORDER = ['test_patches', 'test_modes', 'test_night', 'test_order', 'test_refusals', 'test_night_dirs']
+ORDER = ['test_patches', 'test_modes', 'test_removed_before_builder', 'test_night', 'test_order', 'test_refusals', 'test_night_dirs']
 
 
 def main(names):

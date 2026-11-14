@@ -449,13 +449,15 @@ def recorded_table(grouping_dir, stokes, _rec=None):
 FROZEN_MODES = ('', 'record', 'delta', 'passthrough')     # the runner's EXOPIPE3_FROZEN_MODE (its FROZEN STATISTICS text)
 
 
-def builder_env(table, tier, mode_=None, sha1=None, cfg=None, frozen='', frozen_record=None, frozen_touch=''):
+def builder_env(table, tier, mode_=None, sha1=None, cfg=None, frozen='', frozen_record=None, frozen_touch='', removed_dirs=()):
     """The environment of the runner: the grouping table of the key's Stokes and its expected sha1 (the runner refuses a table
     that changed after the stage checked it), the tier, the repeat rungs, and the accepted builders (catalog_grouping.
     BUILDER_SHA1: path-normalized sha1s of the builders the patches were written for; review 2026-11-04, F7).
     frozen: the frozen-statistics mode of the per-hour delta build - '' (none), 'record' (an all-nights build writes
     builder_frozen.json), 'delta' (a night's build on the record ``frozen_record``), 'passthrough' (the check of the hooks).
-    The four names are ALWAYS set, so a value inherited from the caller's environment never reaches a build."""
+    removed_dirs: the run directories whose removal tables (selection / ephemeris) the build's record reads
+    (wraps/builder_grouping.removed_before_builder); empty = the directory of the build's input. The frozen names and
+    EXOPIPE3_REMOVED_DIRS are ALWAYS set, so a value inherited from the caller's environment never reaches a build."""
     if frozen not in FROZEN_MODES:
         raise StageRefusal(f'builder_env: frozen={frozen!r} is not one of {FROZEN_MODES} - REFUSING')
     if (frozen == 'delta') != bool(frozen_record):
@@ -469,7 +471,8 @@ def builder_env(table, tier, mode_=None, sha1=None, cfg=None, frozen='', frozen_
            'EXOPIPE3_GROUPING_PROVENANCE': '1',     # grouping_table.json beside the catalogues (the cumulative's one-table gate)
            'EXOPIPE3_FROZEN_MODE': frozen, 'EXOPIPE3_FROZEN_RECORD': os.path.abspath(frozen_record) if frozen_record else '',
            'EXOPIPE3_FROZEN_TOUCH': frozen_touch or '',
-           'EXOPIPE3_FROZEN_BUILDER_SHA1': ','.join(g.FROZEN_BUILDER_SHA1)}
+           'EXOPIPE3_FROZEN_BUILDER_SHA1': ','.join(g.FROZEN_BUILDER_SHA1),
+           'EXOPIPE3_REMOVED_DIRS': os.pathsep.join(os.path.abspath(d) for d in removed_dirs)}
     if sha1:
         env['EXOPIPE3_GROUPING_TABLE_SHA1'] = sha1
     return env
