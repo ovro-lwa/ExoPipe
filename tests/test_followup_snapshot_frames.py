@@ -33,10 +33,11 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
 os.environ.setdefault('NUMPY_MADVISE_HUGEPAGE', '0')
 
-try:
-    import bdsf                                                     # noqa: F401
-except ImportError:            # the data-free runner: phase2.cascade_dewarp imports bdsf at load; apply_warp does not use it
-    sys.modules['bdsf'] = types.ModuleType('bdsf')
+for _m in ('bdsf', 'h5py'):    # the data-free runner: phase2.cascade_dewarp and extractor_pb_75 import them at load;
+    try:                       # apply_warp uses neither
+        __import__(_m)
+    except ImportError:
+        sys.modules[_m] = types.ModuleType(_m)
 from exopipe.phase3.config import CFG                               # noqa: E402
 from exopipe.phase3.core import exclusions as EX                    # noqa: E402
 
