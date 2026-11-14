@@ -15,6 +15,13 @@ gate-copy  (unit snapshot_<name>_gate_copy)  the gate again on the copy, right b
 carry      (unit snapshot_<name>_carry)  --carry-from (default 'served'): G18 (no served run, a journal already in DST,
            no CARRY report), snapshot_carry_judgements.py OLD DST in place, the HOLD rule in process (G19: a missed
            non-FP verdict holds the serve; carry_missed.csv written either way).
+scintillation, page-context, bright-filter, page-index  (units snapshot_<name>_scintillation / _page_context / _bright_filter /
+           _page_index)  the four tools in place on DST, in production's order, before any page starts (snapshot_serve.sh:164-198):
+           scintillation_index.py --tier snapshot (class scintillation_index), page_context_snapshot.py (panel text + the sliders'
+           frame counts; class snapshot_page_context), bright_source_filter_precompute.py --tier snapshot per served Stokes and
+           cadence (class bright_source_filter), build_detections_index.py (class detections_index). Each refuses on failure, the
+           page context too (exopipe_ops acfa685). Logs in DST under production's names. A start without them in the same
+           invocation needs their records done and current (G28), as the gate on the copy.
 test, start, hub, verify: lib/serve/flow (expected sources = queue length, snapshot_rechain_batch.sh:419-426).
 
 Before every stage (snapshot_serve.sh, exopipe_ops aa100bf): G29 THE SERVE HOLD - while serve.SNAPSHOT_SERVE_HOLD exists (any
@@ -44,7 +51,8 @@ import subprocess
 from exopipe.phase3.core.record import NoInput
 from exopipe.phase3.lib.serve import exclusion_gate, flow, journals, scripts
 
-STAGES = ('gate', 'copy', 'localize', 'gate-copy', 'carry', 'test', 'start', 'hub', 'verify')
+STAGES = ('gate', 'copy', 'localize', 'gate-copy', 'carry', 'scintillation', 'page-context', 'bright-filter', 'page-index', 'test',
+          'start', 'hub', 'verify')
 
 
 def _S():
@@ -425,6 +433,117 @@ def carry_stage(run, plan, args):
     return u
 
 
+# ---- the four steps on the review copy before any page starts (snapshot_serve.sh:164-198, exopipe_ops 607f7a2 + acfa685) -----------
+NOHUGE = {'NUMPY_MADVISE_HUGEPAGE': '0'}    # snapshot_serve.sh:168, :176, :187 (numpy's huge-page advice stalls the kernel on fragmented
+                                            # memory); the page index runs without it (:196)
+
+
+def _parity_cache(plan, name):
+    """A parity run's path for a tool cache (serve.SERVE_PARITY_CACHE: the parity guard refuses writes outside --out), else None."""
+    if not plan.parity:
+        return None
+    d = _S().SERVE_PARITY_CACHE.format(out=plan.out)
+    os.makedirs(d, exist_ok=True)
+    return os.path.join(d, name)
+
+
+def _step(u, name, args, log, cwd=None, env=None, what=''):
+    """One tool in place on the review copy, its output in ``log`` (production's log in DST); a failure refuses the unit, so
+    nothing is served and no server is replaced (snapshot_serve.sh exit 4)."""
+    res = scripts.run(name, args, log=log, unit=u, env=env, cwd=cwd)
+    if not res.ok:
+        u.refuse(f'{scripts.SCRIPTS[name][0]} {what}on the review copy: {res.reason or scripts.last_line(res.tail)} - nothing '
+                 f'served, servers untouched (see {log})')
+    u.note(f'{name} {what}: {scripts.last_line(res.tail)[:200]}')
+    return res
+
+
+def scintillation_stage(run, plan):
+    """SCINTILLATION INDEX (snapshot_serve.sh:164-170; R-GREGG-20261112-FILTERS-FINALIZE-BRIGHT-AND-SCINTILLATION): scintillation_index.py
+    DST --tier serve.SNAPSHOT_FILTER_TIER in place - <DST>/scintillation_index.{csv,json}, every searched hour-band of the run's own
+    hours ranked within its band (the pages' scintillation slider; nothing hidden by default since Gregg 2026-11-14,
+    R-GREGG-20261114-SCINTILLATION-SLIDER-STARTS-AT-100). After the gate on the copy (the tool leaves excluded hour-bands out with the
+    gate's own reader), before the page context, whose panel text quotes the hour's percentile."""
+    DST, S = plan.U, _S()
+    with run.unit(f'snapshot_{plan.run_name}_scintillation', stage='scintillation', tier='snapshot') as u:
+        args = [DST, '--tier', S.SNAPSHOT_FILTER_TIER]
+        cache = _parity_cache(plan, 'scintillation_table_index.json')
+        if cache:
+            args += ['--cache', cache]
+        _step(u, 'scintillation_index', args, os.path.join(DST, 'scintillation_index.log'), cwd=S.SNAPSHOT_STEP_CWD, env=NOHUGE)
+        u.add_output(os.path.join(DST, 'scintillation_index.csv'), 'scintillation_index', tier=S.SNAPSHOT_FILTER_TIER)
+    return u
+
+
+def page_context_stage(run, plan):
+    """PAGE CONTEXT (snapshot_serve.sh:171-181): page_context_snapshot.py DST --workers serve.SNAPSHOT_PAGE_CONTEXT_WORKERS in place, from
+    the exopipe_ops root - each panel's <png>.page.json (the run context as page text, Gregg 2026-10-22) and, for a run that is its own
+    view, frame_counts.json + frame_counts_<S>_<tier>.csv.gz: the n_i_epoch / n_v_epoch sliders' per-frame counts
+    (R-GREGG-20261114-NEPOCH-SLIDERS-PER-FRAME, exopipe_ops 604876e). After the scintillation index. A failure refuses (exopipe_ops
+    acfa685; before it, page text only and the serve continued): a page without the frame counts falls back to the superseded counts
+    with no refusal. The tool keeps its header-beam cache in one shared file (page_context_snapshot.BEAM_CACHE, no option), so a parity
+    run on frames that cache does not hold is refused by the parity guard."""
+    DST, S = plan.U, _S()
+    with run.unit(f'snapshot_{plan.run_name}_page_context', stage='page-context', tier='snapshot') as u:
+        _step(u, 'page_context_snapshot', [DST, '--workers', S.SNAPSHOT_PAGE_CONTEXT_WORKERS],
+              os.path.join(DST, 'page_context_snapshot.log'), env=NOHUGE)
+        u.add_output(DST, 'snapshot_page_context')
+    return u
+
+
+def bright_stokes(plan):
+    """The bright-source filter's Stokes: those of the served pages, I first (snapshot_serve.sh:183: I and V; SNAP_STOKES=V, which
+    serves the V pages only: V)."""
+    return [s for s in ('I', 'V') if any(pg.stokes == s for pg in plan.pages)]
+
+
+def bright_filter_stage(run, plan):
+    """BRIGHT-SOURCE FILTER (snapshot_serve.sh:179-190; same ruling): bright_source_filter_precompute.py DST --tier snapshot per Stokes
+    (bright_stokes) and cadence (serve.SNAPSHOT_BRIGHT_CADENCES) - <DST>/bright_source_filter_<S>_<cadence>.npz, which each page picks -
+    with --workers serve.SNAPSHOT_BRIGHT_WORKERS and --peak-cache serve.SNAPSHOT_BRIGHT_PEAK_CACHE (a parity run: under --out). First
+    the live tool must offer the snapshot tier (its --help names it, :184-185). Any failure refuses. Production pins the precompute to
+    the recorder-free cores (taskset node_free_cores.sh); the CLI pins the whole serve process to the same list (--cores auto,
+    runner.FREE_CORES_CMD), which its children inherit."""
+    DST, S = plan.U, _S()
+    with run.unit(f'snapshot_{plan.run_name}_bright_filter', stage='bright-filter', tier='snapshot') as u:
+        h = scripts.run('bright_source_filter', ['--help'], unit=u, cwd=S.SNAPSHOT_STEP_CWD, tail_lines=1000)
+        has = h.rc == 0 and re.search(r'\b%s\b' % re.escape(S.SNAPSHOT_FILTER_TIER), h.tail or '') is not None
+        u.check('bright_filter_offers_snapshot_tier', has, value=h.rc, detail=scripts.last_line(h.tail))
+        if not has:
+            u.refuse(f'the live bright_source_filter_precompute.py has no {S.SNAPSHOT_FILTER_TIER} tier (its --help does not name it) '
+                     f'- nothing served, servers untouched (snapshot_serve.sh:184-185)')
+        stokes = bright_stokes(plan)
+        if not stokes:
+            u.refuse('no page to serve: the bright-source filter has no Stokes')
+        cache = _parity_cache(plan, 'bright_filter_snapshot_peaks') or S.SNAPSHOT_BRIGHT_PEAK_CACHE
+        for ST in stokes:
+            for C in S.SNAPSHOT_BRIGHT_CADENCES:
+                out = os.path.join(DST, f'bright_source_filter_{ST}_{C}.npz')
+                _step(u, 'bright_source_filter', [DST, '--tier', S.SNAPSHOT_FILTER_TIER, '--stokes', ST, '--cadence', C, '--out', out,
+                                                  '--workers', S.SNAPSHOT_BRIGHT_WORKERS, '--peak-cache', cache],
+                      os.path.join(DST, f'bright_source_filter_{ST}_{C}.log'), cwd=S.SNAPSHOT_STEP_CWD, env=NOHUGE, what=f'{ST} {C} ')
+                u.add_output(out, 'bright_source_filter', tier=S.SNAPSHOT_FILTER_TIER, stokes=ST, cadence=C)
+    return u
+
+
+def page_index_stage(run, plan):
+    """PAGE INDEX (snapshot_serve.sh:191-198; Gregg 2026-11-11 "a clear design flaw that needs correcting"): build_detections_index.py
+    --run DST in place - <DST>/page_index/ (manifest.json + one shard per parent directory of the review folders), which the review
+    server reads instead of one detections.csv per folder (20+ h per build of the combined view without it). Last of the four, once
+    the panels, their sidecars, astrometry.png, localization_figs/ and the survivors catalogs are final, and before any page starts.
+    A failure refuses: a page without a current index reads every folder."""
+    DST, S = plan.U, _S()
+    with run.unit(f'snapshot_{plan.run_name}_page_index', stage='page-index', tier='snapshot') as u:
+        _step(u, 'build_detections_index', ['--run', DST], os.path.join(DST, 'page_index_build.log'), cwd=S.SNAPSHOT_STEP_CWD)
+        u.add_output(os.path.join(DST, 'page_index', 'manifest.json'), 'detections_index', run=DST)
+    return u
+
+
+# stage -> function, in production's order (snapshot_serve.sh:164-198); unit snapshot_<name>_<stage with '_'>
+STEP_STAGES = (('scintillation', scintillation_stage), ('page-context', page_context_stage), ('bright-filter', bright_filter_stage),
+               ('page-index', page_index_stage))
+
+
 def run(args, run, plan, stages):
     state = flow.new_state()
     # a refused stage stops the later ones (flow.halts): snapshot_serve.sh exits at a refused gate (:27 exit 5), localization
@@ -447,6 +566,9 @@ def run(args, run, plan, stages):
         return
     if 'carry' in stages and flow.halts(carry_stage(run, plan, args), 'carry'):
         return
+    for st, fn in STEP_STAGES:              # snapshot_serve.sh:164-198 (exit 4): nothing served, no server replaced
+        if st in stages and flow.halts(fn(run, plan), st, need_done=True):
+            return
     if 'test' in stages:
         if flow.halts(flow.test_stage(run, plan, state, f'snapshot_{plan.run_name}_test', probe=False), 'test'):
             return
@@ -457,6 +579,9 @@ def run(args, run, plan, stages):
     if 'start' in stages:
         if 'gate-copy' not in stages:
             flow.require_done(run, f'snapshot_{plan.run_name}_gate_copy', 'start (the gate on the copy)')
+        for st, _ in STEP_STAGES:
+            if st not in stages:
+                flow.require_done(run, f'snapshot_{plan.run_name}_{st.replace("-", "_")}', f'start (the {st} step on the copy)')
         flow.start_stage(run, plan, state)
     if 'hub' in stages and not getattr(args, 'no_hub', False):
         flow.hub_stage(run, plan, state)
@@ -488,3 +613,6 @@ def describe(plan, stages, args):
               + (' - WOULD REFUSE' if scan.hits else ''))
     print(f'  carry from: {getattr(args, "carry_from", None) or "served"} (run on {plan.all_pages[0].port_cfg}: '
           f'{journals.served_run_of_port(plan.all_pages[0].port_cfg)})')
+    print(f'  steps on the copy before any page starts, each refusing: scintillation_index.py --tier {_S().SNAPSHOT_FILTER_TIER}; '
+          f'page_context_snapshot.py; bright_source_filter_precompute.py Stokes {"+".join(bright_stokes(plan)) or "(none)"} x '
+          f'{"+".join(_S().SNAPSHOT_BRIGHT_CADENCES)}; build_detections_index.py')

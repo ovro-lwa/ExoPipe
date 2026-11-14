@@ -1646,6 +1646,250 @@ def test_sublst_filters():
     ok(f'filters content tests fail on {", ".join(n_ for n_, _ in neg)}')
 
 
+def test_snapshot_steps():
+    """THE FOUR STEPS ON THE SNAPSHOT REVIEW COPY (snapshot_serve.sh:164-198, exopipe_ops 607f7a2 + acfa685): after the carry and
+    before any page starts, snapshot_copy runs scintillation_index.py, page_context_snapshot.py, bright_source_filter_precompute.py
+    (after its --help names the snapshot tier; per served Stokes, I first, and cadence) and build_detections_index.py on DST with
+    production's arguments, working directories and environment (a parity run's tool caches under --out); each output is recorded
+    under its class and its content tests pass; a failure of any refuses its unit and stops the later stages; a start without them
+    needs their records (G28); the classes' content tests fail on malformed or stale files."""
+    import gzip
+    import hashlib
+    import types
+    from collections import Counter
+    import numpy as np
+    from exopipe.phase3.core.record import Run
+    from exopipe.phase3.lib.serve import flow, snapshot_copy as SC
+    from exopipe.phase3.lib.serve import tests as stests
+    S = CFG.serve
+    sh = open(f'{OPS}/snapshot_serve.sh').read()
+    tier, cw = S.SNAPSHOT_FILTER_TIER, S.SNAPSHOT_STEP_CWD
+    frag = [f'cd {cw} && NUMPY_MADVISE_HUGEPAGE=0 {PY} {scripts.path("scintillation_index")} $DST --tier {tier} > '
+            f'$DST/scintillation_index.log 2>&1',
+            f'cd {OPS} && NUMPY_MADVISE_HUGEPAGE=0 {PY} page_context_snapshot.py $DST --workers {S.SNAPSHOT_PAGE_CONTEXT_WORKERS} > '
+            f'$DST/page_context_snapshot.log 2>&1',
+            'REFUSING: the page context of $NAME was not built',
+            'BSF_STOKES="I V"; [ "$SNAP_STOKES" = V ] && BSF_STOKES=V',
+            f'{PY} {scripts.path("bright_source_filter")} --help 2>&1 | grep -qw {tier}',
+            f'for S in $BSF_STOKES; do for C in {" ".join(S.SNAPSHOT_BRIGHT_CADENCES)}; do',
+            f'cd {cw} && NUMPY_MADVISE_HUGEPAGE=0 taskset -c \\$(bash {OPS}/node_free_cores.sh) {PY} '
+            f'{scripts.path("bright_source_filter")} $DST --tier {tier} --stokes $S --cadence $C --out '
+            f'$DST/bright_source_filter_${{S}}_${{C}}.npz --workers {S.SNAPSHOT_BRIGHT_WORKERS} --peak-cache '
+            f'{S.SNAPSHOT_BRIGHT_PEAK_CACHE} > $DST/bright_source_filter_${{S}}_${{C}}.log 2>&1',
+            f'cd {cw} && {PY} {scripts.path("build_detections_index")} --run $DST > $DST/page_index_build.log 2>&1',
+            'serve() {']
+    pos = [sh.find(f_) for f_ in frag]
+    assert all(p_ >= 0 for p_ in pos) and pos == sorted(pos), [f_[:70] for f_, p_ in zip(frag, pos) if p_ < 0] or pos
+    rf = sh[pos[2]:sh.find('\n', pos[2])]
+    assert 'exit 4' in rf and all(os.path.isfile(scripts.path(n_)) for n_ in
+                                  ('scintillation_index', 'page_context_snapshot', 'bright_source_filter', 'build_detections_index')), rf
+    ok('snapshot steps: production runs the scintillation index, the page context (refusing, acfa685), the bright-source filter '
+       '(after its --help check; I and V, or V for SNAP_STOKES=V; per cadence) and the page index on $DST in this order before the '
+       'pages, with the port\'s arguments, working directories, environment and peak cache; all four resolve in place')
+
+    D = f'{T}/snap_steps'
+    a = _ns(tier='snapshot', run_label='Run_SNAPSTEP', source=f'{D}/src/Run_SNAPSTEP', label='steps test')
+    out = f'{D}/out'
+    plan = planmod.make(a, out)
+    DST = plan.U
+    assert plan.parity and SC.bright_stokes(plan) == ['I', 'V'] and SC._parity_cache(types.SimpleNamespace(parity=False), 'x') is None
+    cell, band, ts = '05h_2025-01-02', '23MHz', '20250102_030000'
+    cid = f'{cell}_{band}_V_10s_{ts}'
+    rd = 'candidates/V/J0100+0100_23MHz'
+    png = f'{DST}/{rd}/rank1_05h_2025-01-02_23MHz{ts.replace("_", "")}.png'
+    os.makedirs(os.path.dirname(png))
+    open(png, 'wb').write(b'png')
+    wcsv(f'{DST}/{rd}/detections.csv', ['cand_id', 'band', 'ts', 'tier'], [dict(cand_id=cid, band=band, ts=ts, tier='10s')])
+    wcsv(f'{DST}/master_catalog.csv', ['cand_id', 'lst', 'date', 'band', 'stokes'],
+         [dict(cand_id=cid, lst='05h', date='2025-01-02', band=band, stokes='V')])
+    wcsv(f'{DST}/source_catalogs_V_10s/23MHz_source_members.csv', ['source_id', 'cand_id'],
+         [dict(source_id='J0100+0100_23MHz', cand_id=cid), dict(source_id='J0100+0100_23MHz', cand_id=cid),
+          dict(source_id='J0100+0100_23MHz', cand_id=f'{cell}_{band}_V_10s_20250102_030010')])
+    surv = f'{DST}/source_catalogs/23MHz_sources_survivors.csv'
+    wcsv(surv, ['source_id', 'review_dir'], [dict(source_id='J0100+0100_23MHz', review_dir=rd)])
+    cat = f'{D}/parents/master_R075_05h_23MHz.gaul.csv'
+    os.makedirs(os.path.dirname(cat))
+    open(cat, 'w').write('# Gaus_id, Isl_id\n')
+    states = ['worst 10% of its band', 'other', 'not measured']
+    lines = ['hours searched el>25d: 1 of 1 (all hour-cells of this view)', 'global noise V: -', 'global noise I: -',
+             'served detections in this frame, Stokes I (n_i_epoch): - (this view holds no Stokes I 10s catalog)',
+             'served detections in this frame, Stokes V (n_v_epoch): 2  (100 pctile of band, all admitted frames, FLOOD)',
+             'scintillation of the hour and band: index 0.100 (50 pctile of the band\'s hours)', 'beam epoch/hour: -']
+    sidecar = png[:-4] + '.page.json'
+
+    def w_sci():
+        wcsv(f'{DST}/scintillation_index.csv', list(stests.SCI_FIELDS),
+             [dict(lst='05h', date='2025-01-02', band=band, scint_index='0.1000', n_sources=10, n_frames=100, pct_in_band='50.0000',
+                   state=states[1])])
+        json.dump(dict(tier=tier, default_hidden=False, hour_bands=1, states=states, worst_pct=90.0, forced_run=False,
+                       counts={band: {states[0]: 0, states[1]: 1, states[2]: 0}}), open(f'{DST}/scintillation_index.json', 'w'))
+
+    def w_pctx(ctx_lines=None, frame=None, view=None, n=2):
+        json.dump(dict(ctx_lines=ctx_lines or lines, builder=stests.SPCTX_TOOL, code='x', frame=frame or [cell, band, 'V', '10s', ts]),
+                  open(sidecar, 'w'))
+        json.dump(dict(builder=stests.SPCTX_TOOL, view=view or DST, cells=[cell], held=['V_10s'],
+                       hist={'V_10s': {band: {'0': 3, '1': 1, '2': 1}}}), open(f'{DST}/frame_counts.json', 'w'))
+        with gzip.open(f'{DST}/frame_counts_V_10s.csv.gz', 'wt', newline='') as f:
+            f.write(f'cell,band,ts,n\r\n{cell},{band},{ts},{n}\r\n{cell},{band},20250102_030010,1\r\n')
+
+    def w_bsf(path, stokes, cadence):
+        Z = dict(det_cand=np.array(['a']), det_ra=np.array([1.]), det_dec=np.array([3.]), det_stokes=np.array([stokes]),
+                 det_cell=np.array([0], np.int16), det_sin_el=np.array([.5], np.float32), dfront_n=np.array([0], np.uint8),
+                 det_peak=np.array([1.], np.float32), det_psr=np.array([0], np.uint8), ctl_cell=np.array([0], np.int16),
+                 ctl_sin_el=np.array([.1]), cfront_n=np.array([0], np.uint8), cell_lst=np.array(['05h']),
+                 cell_bandname=np.array([band]), cell_band=np.array([0], np.int16), cell_beam_deg=np.array([1.]),
+                 cell_freq=np.array([23e6]), cell_ep_I=np.array([1.]), cell_ep_V=np.array([1.]), cell_cap_sr=np.array([1.]),
+                 cell_n_draw=np.array([3.]), cell_n_src=np.array([5]), pair_det=np.array([0], np.int32),
+                 pair_snr=np.array([7.], np.float32), pair_sep=np.array([10], np.uint16), dfront_snr=np.array([], np.float32),
+                 dfront_sep=np.array([], np.uint16), dfront_flux=np.array([], np.float32), cfront_snr=np.array([], np.uint16),
+                 cfront_sep=np.array([], np.uint16))
+        Z['meta'] = np.array(json.dumps(dict(tier=tier, stokes=stokes, cadence=cadence, catalogs={'05h_23MHz': cat},
+                                             catalog_mtimes={'05h_23MHz': os.path.getmtime(cat)})))
+        with open(path, 'wb') as f:
+            np.savez_compressed(f, **Z)
+
+    def w_index():
+        fd = f'{DST}/{rd}'
+        names = [fn for fn in sorted(os.listdir(fd)) if '.png' in fn]
+        st = os.stat(f'{fd}/detections.csv')
+        stats = [[st.st_size, st.st_mtime_ns], [[os.stat(f'{fd}/{n_}').st_size, os.stat(f'{fd}/{n_}').st_mtime_ns] for n_ in names],
+                 names]
+        rec = dict(d=True, t=open(f'{fd}/detections.csv').read(), n=names, m=[os.path.getmtime(f'{fd}/{n_}') for n_ in names],
+                   a=False)
+        os.makedirs(f'{DST}/page_index', exist_ok=True)
+        sp = f'{DST}/page_index/shard_000.tsv.gz'
+        with gzip.open(sp, 'wt', encoding='UTF-8', newline='\n') as f:
+            f.write(f'{rd}\t{json.dumps(stats, separators=(",", ":"))}\t{json.dumps(rec, separators=(",", ":"))}\n')
+        cs = os.stat(surv)
+        json.dump(dict(format=S.PAGE_INDEX_FORMAT, run_dir=DST, encoding='UTF-8', n_errors=0, n_folders=1, n_det_rows=1,
+                       started_ns=time.time_ns() - 10 ** 9, created_utc='now',   # file times use the coarse kernel clock
+                       catalogs={surv: dict(size=cs.st_size, mtime_ns=cs.st_mtime_ns)},
+                       shards={'candidates/V': dict(file='shard_000.tsv.gz', n_folders=1, n_det_rows=1,
+                                                    sha256=hashlib.sha256(open(sp, 'rb').read()).hexdigest())}),
+                  open(f'{DST}/page_index/manifest.json', 'w'))
+    calls, mode = [], {}
+
+    def fake_run(name, args=(), log=None, unit=None, env=None, cwd=None, **k):
+        calls.append((name, list(args), log, cwd, dict(env or {})))
+        if list(args) == ['--help']:
+            txt = 'usage: bright_source_filter_precompute.py RUN --tier {tenmin,deep%s}' % (',snapshot' if mode.get('fail') != 'help'
+                                                                                          else '')
+            return types.SimpleNamespace(ok=True, rc=0, reason='', tail=txt)
+        good = mode.get('fail') != name
+        if good:
+            if name == 'scintillation_index':
+                w_sci()
+            elif name == 'page_context_snapshot':
+                w_pctx()
+            elif name == 'bright_source_filter':
+                w_bsf(args[args.index('--out') + 1], args[args.index('--stokes') + 1], args[args.index('--cadence') + 1])
+            else:
+                w_index()
+        return types.SimpleNamespace(ok=good, rc=0 if good else 1, reason='' if good else 'exit 1 - error',
+                                     tail=f'wrote {name}' if good else 'REFUSED: no input')
+    NH = {'NUMPY_MADVISE_HUGEPAGE': '0'}
+    pc = f'{out}/_cache'
+    want = ([('scintillation_index', [DST, '--tier', tier, '--cache', f'{pc}/scintillation_table_index.json'],
+              f'{DST}/scintillation_index.log', cw, NH),
+             ('page_context_snapshot', [DST, '--workers', S.SNAPSHOT_PAGE_CONTEXT_WORKERS], f'{DST}/page_context_snapshot.log', None,
+              NH),
+             ('bright_source_filter', ['--help'], None, cw, {})]
+            + [('bright_source_filter', [DST, '--tier', tier, '--stokes', s_, '--cadence', c_, '--out',
+                                         f'{DST}/bright_source_filter_{s_}_{c_}.npz', '--workers', S.SNAPSHOT_BRIGHT_WORKERS,
+                                         '--peak-cache', f'{pc}/bright_filter_snapshot_peaks'],
+                f'{DST}/bright_source_filter_{s_}_{c_}.log', cw, NH) for s_ in ('I', 'V') for c_ in S.SNAPSHOT_BRIGHT_CADENCES]
+            + [('build_detections_index', ['--run', DST], f'{DST}/page_index_build.log', cw, {})])
+    steps = tuple(st for st, _ in SC.STEP_STAGES)
+    unit_of = {st: f'snapshot_Run_SNAPSTEP_{st.replace("-", "_")}' for st in steps}
+    orig = (scripts.run, S.SNAPSHOT_SERVE_HOLD)
+    scripts.run, S.SNAPSHOT_SERVE_HOLD = fake_run, f'{D}/NO_HOLD'
+    try:
+        res = {}
+        for case in ('ok', 'scintillation_index', 'page_context_snapshot', 'help', 'bright_source_filter', 'build_detections_index'):
+            calls.clear()
+            mode['fail'] = case
+            for f_ in glob.glob(f'{DST}/scintillation_index.*') + glob.glob(f'{DST}/bright_source_filter_*.npz') + [sidecar]:
+                if os.path.exists(f_):
+                    os.remove(f_)
+            shutil.rmtree(f'{DST}/page_index', ignore_errors=True)
+            run = Run('serve', ['test'], f'{out}_{case}', CFG, config_sections=None)
+            SC.run(a, run, plan, steps)
+            res[case] = run
+            n_want = {'ok': len(want), 'scintillation_index': 1, 'page_context_snapshot': 2, 'help': 3,
+                      'bright_source_filter': 4, 'build_detections_index': len(want)}[case]
+            assert calls == want[:n_want], (case, calls[len(calls) - 1:], want[n_want - 1:n_want])
+        u = {x.name: x for x in res['ok'].units}
+        assert [x.name for x in res['ok'].units] == [unit_of[st] for st in steps] and all(x.status == 'done' for x in u.values()), \
+            [(x.name, x.status, x.reason) for x in res['ok'].units]
+        cls = Counter(o['class'] for x in u.values() for o in x.outputs)
+        assert cls == {'scintillation_index': 1, 'snapshot_page_context': 1, 'bright_source_filter': 4, 'detections_index': 1}, cls
+        tests_ = [t for x in u.values() for t in x.tests]
+        assert tests_ and all(t['passed'] for t in tests_), [t for t in tests_ if not t['passed']]
+        assert res['ok'].exit_code() == 0
+        for case, st, text in (('scintillation_index', 'scintillation', 'scintillation_index.py on the review copy'),
+                               ('page_context_snapshot', 'page-context', 'page_context_snapshot.py on the review copy'),
+                               ('help', 'bright-filter', f'has no {tier} tier'),
+                               ('bright_source_filter', 'bright-filter', 'bright_source_filter_precompute.py I 10s on the review copy'),
+                               ('build_detections_index', 'page-index', 'build_detections_index.py on the review copy')):
+            r_ = res[case]
+            last = r_.units[-1]
+            assert (last.name == unit_of[st] and last.status == 'refused' and text in last.reason and r_.exit_code() == 2
+                    and len(r_.units) == steps.index(st) + 1), (case, [(x.name, x.status, x.reason) for x in r_.units])
+        ok(f'snapshot steps: {len(want)} calls in production\'s order with its arguments (parity: caches under --out); 7 outputs '
+           f'recorded, their {len(tests_)} content tests and checks pass; a failure of each tool (and a --help without the {tier} tier) '
+           f'refuses its unit and nothing later runs - exit 2')
+        # G28: a start without the four steps in the same invocation needs their records
+        req = []
+        o_req, o_start, o_exp = flow.require_done, flow.start_stage, flow.expected_from_record
+        flow.require_done = lambda run_, unit, what: req.append(unit)
+        flow.start_stage = lambda *a_, **k_: None
+        flow.expected_from_record = lambda *a_, **k_: ({}, {})
+        try:
+            SC.run(a, Run('serve', ['test'], f'{out}_start', CFG, config_sections=None), plan, ('start',))
+        finally:
+            flow.require_done, flow.start_stage, flow.expected_from_record = o_req, o_start, o_exp
+        assert req == ['snapshot_Run_SNAPSTEP_gate_copy'] + [unit_of[st] for st in steps], req
+        ok('snapshot steps: a start without them in the invocation requires the records of the gate on the copy and of all four '
+           '(G28)')
+    finally:
+        scripts.run, S.SNAPSHOT_SERVE_HOLD = orig
+    # negative controls on the content tests (the files of the 'ok' case rewritten one fault at a time)
+    neg = []
+    w_sci()
+    mf = f'{DST}/page_index/manifest.json'
+    for name_, fault, test in (
+            ('frame count', lambda: w_pctx(n=3), lambda: stests.frame_counts_match_members(DST)),
+            ('frame counts of another view', lambda: w_pctx(view=f'{D}/other'), lambda: stests.frame_counts_match_members(DST)),
+            ('sidecar frame', lambda: w_pctx(frame=[cell, band, 'V', '1min', ts]), lambda: stests.snapshot_sidecar_per_panel(DST)),
+            ('scintillation not computed', lambda: w_pctx(ctx_lines=lines[:5] + [stests.SPCTX_NO_SCINT + ' (no csv)'] + lines[6:]),
+             lambda: stests.snapshot_sidecar_per_panel(DST)),
+            ('sidecar missing', lambda: (w_pctx(), os.remove(sidecar)), lambda: stests.snapshot_sidecar_per_panel(DST)),
+            ('orphan sidecar', lambda: (w_pctx(), shutil.copy(sidecar, f'{DST}/{rd}/rank2_gone.page.json')),
+             lambda: stests.snapshot_sidecar_per_panel(DST)),
+            ('bright cadence', lambda: w_bsf(f'{DST}/bright_source_filter_V_10s.npz', 'V', '1min'),
+             lambda: stests.arrays_consistent(f'{DST}/bright_source_filter_V_10s.npz', tier=tier, stokes='V', cadence='10s')),
+            ('shard bytes', lambda: (w_index(), open(f'{DST}/page_index/shard_000.tsv.gz', 'ab').write(b'x')),
+             lambda: stests.manifest_current(mf, run=DST)),
+            ('catalog changed', lambda: (w_index(), os.utime(surv, ns=(1, 1))), lambda: stests.manifest_current(mf, run=DST)),
+            ('DIRTY', lambda: (w_index(), open(f'{DST}/page_index/DIRTY', 'w').write('x writer')),
+             lambda: stests.manifest_current(mf, run=DST)),
+            ('folder not indexed', lambda: (os.remove(f'{DST}/page_index/DIRTY'),
+                                            wcsv(surv, ['source_id', 'review_dir'], [dict(source_id='J0100+0100_23MHz', review_dir=rd),
+                                                                                     dict(source_id='J2', review_dir='candidates/V/J2')]),
+                                            w_index()),
+             lambda: stests.folders_cover_catalogs(mf)),
+            ('detections.csv changed', lambda: (wcsv(surv, ['source_id', 'review_dir'], [dict(source_id='J0100+0100_23MHz',
+                                                                                              review_dir=rd)]),
+                                                w_index(), open(f'{DST}/{rd}/detections.csv', 'a').write('x\n')),
+             lambda: stests.records_current(mf))):
+        if os.path.exists(f'{DST}/{rd}/rank2_gone.page.json') and name_ != 'orphan sidecar':
+            os.remove(f'{DST}/{rd}/rank2_gone.page.json')
+        fault()
+        neg.append((name_, test()))
+    assert all(not r_[0] for _, r_ in neg), [(n_, r_) for n_, r_ in neg if r_[0]]
+    ok(f'snapshot steps content tests fail on {", ".join(n_ for n_, _ in neg)}')
+
+
 def test_serve_hold():
     """G29 THE SERVE HOLD (snapshot_serve.sh, exopipe_ops aa100bf): while serve.SNAPSHOT_SERVE_HOLD exists - empty included, as
     production's `[ -e ]` - unit snapshot_<name>_hold refuses BEFORE every stage (G27, the gate, the copy, any server; --waive
@@ -2730,6 +2974,7 @@ def main():
         test_stage_halting()
         test_page_context_stage()
         test_sublst_filters()
+        test_snapshot_steps()
         test_serve_hold()
         test_card2_rejudge_go()
         test_inplace_gate_agrees()

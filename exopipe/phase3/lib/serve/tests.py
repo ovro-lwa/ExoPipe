@@ -11,6 +11,10 @@ is read-only (verify may run it on production files). Registered with @content_t
   tenmin_page_context  sidecar_per_panel, no_orphan_sidecars  (the served 10-minute run; page_context_tenmin.py's sidecars)
   bright_source_filter  arrays_consistent, parents_current   (bright_source_filter_precompute.py's npz)
   scintillation_index  table_matches_definition, run_own_hours  (scintillation_index.csv + .json)
+  snapshot_page_context  frame_counts_match_members, sidecar_per_panel  (a snapshot review copy; page_context_snapshot.py's
+                     frame counts and sidecars)
+  detections_index   manifest_current, folders_cover_catalogs, records_current  (<run>/page_index/manifest.json;
+                     build_detections_index.py)
   stopped_page       not_listening                           (record of `serve --stop`)
   sublst_cumulative  merge_invariants, figures, served_tests_c_d
   review_copy        byte_copy, no_excluded_rows
@@ -20,6 +24,7 @@ A test that does not apply to the given file (e.g. fork_equal on a sub-LST queue
 import ast
 import csv
 import glob
+import gzip
 import json
 import os
 import re
@@ -868,14 +873,16 @@ def _bsf(path):
 
 
 @content_test('bright_source_filter')
-def arrays_consistent(path, tier=None, **ctx):
-    """The npz loads without pickles and its meta parses, naming the tier asked for; each array group (per detection, per control,
+def arrays_consistent(path, tier=None, stokes=None, cadence=None, **ctx):
+    """The npz loads without pickles and its meta parses, naming the tier asked for (and the Stokes and cadence asked for: the
+    snapshot tier's one file per Stokes and cadence); each array group (per detection, per control,
     per cell, heatmap pairs, detection fronts, control fronts) has one length; the front counts sum to the front arrays' lengths
     (the tool's own assert); every pair, detection cell (-1 = none) and control cell indexes inside its table."""
     Z = _bsf(path)
     bad = []
-    if tier and Z['meta'].get('tier') != tier:
-        bad.append(f"meta tier {Z['meta'].get('tier')!r}, not {tier!r}")
+    for k, want in (('tier', tier), ('stokes', stokes), ('cadence', cadence)):
+        if want and Z['meta'].get(k) != want:
+            bad.append(f"meta {k} {Z['meta'].get(k)!r}, not {want!r}")
     for g in BSF_GROUPS:
         miss = [k for k in g if k not in Z]
         n = {k: len(Z[k]) for k in g if k in Z}
@@ -914,7 +921,8 @@ def _sci_meta(path):
 @content_test('scintillation_index')
 def table_matches_definition(path, tier=None, **ctx):
     """scintillation_index.csv has the tool's columns and the scintillation_index.json beside it parses: its tier is the one asked
-    for; default_hidden is true on the snapshot tier only (Gregg 2026-11-12 "All tiers, off on deep/10-min"); hour_bands = the
+    for; default_hidden is false on every tier (Gregg 2026-11-14 "I want the slider to start ar 100%, so nothing is hidden at the
+    start", R-GREGG-20261114-SCINTILLATION-SLIDER-STARTS-AT-100, exopipe_ops 73ae49b; before, true on the snapshot tier); hour_bands = the
     table's rows and its per-band counts = the table's states; each row's state follows its percentile (above worst_pct: the
     first state; measured otherwise: the second; no index: the third, with no percentile)."""
     try:
@@ -929,7 +937,7 @@ def table_matches_definition(path, tier=None, **ctx):
         bad.append(f'columns {head}')
     if tier and meta.get('tier') != tier:
         bad.append(f"tier {meta.get('tier')!r}, not {tier!r}")
-    if meta.get('default_hidden') is not (meta.get('tier') == 'snapshot'):
+    if meta.get('default_hidden') is not False:
         bad.append(f"default_hidden {meta.get('default_hidden')} on tier {meta.get('tier')}")
     if meta.get('hour_bands') != len(rows):
         bad.append(f"hour_bands {meta.get('hour_bands')} != {len(rows)} rows")
@@ -977,6 +985,279 @@ def run_own_hours(path, **ctx):
     return not out, len(out), (f'{len(out)} (LST, night) not in master_catalog.csv, e.g. {out[:3]}' if out else
                                f'{len({(r["lst"], r["date"]) for r in rows})} hours, all cells of master_catalog.csv '
                                f'({len(cells)} cells)')
+
+
+# =====================================================================================================================
+# snapshot_page_context (page_context_snapshot.py, snapshot_serve.sh:171-181) and detections_index (build_detections_index.py,
+# snapshot_serve.sh:191-198) on a snapshot review copy
+# =====================================================================================================================
+SPCTX_TOOL = 'page_context_snapshot.py'     # the sidecars' and frame_counts.json's 'builder' (page_context_snapshot.py TOOL)
+SPCTX_PNG_RE = re.compile(r'^rank\d+_(\d{2}h)_(\d{4}-\d{2}-\d{2})_([A-Za-z]+|\d+MHz)(\d{14})(1min)?\.png$')   # its PNG
+SPCTX_HEADS = (('hours searched el>', 'transient-search view of the counts'), ('global noise V:',), ('global noise I:',),
+               ('served detections in this frame, Stokes I (n_i_epoch):',),
+               ('served detections in this frame, Stokes V (n_v_epoch):',),
+               ('scintillation of the hour and band:',), ('beam epoch/hour:',))   # its ctx_lines, in order (own view or forced run)
+SPCTX_NO_SCINT = 'scintillation of the hour and band: not computed for this run'
+SNAP_CAND_RE = re.compile(r'^(\d\dh_\d{4}-\d\d-\d\d)_(\w+?)_([IV])_(10s|1min)_(\d{8}_\d{6})')   # a snapshot cand_id
+
+
+@content_test('snapshot_page_context')
+def frame_counts_match_members(path, **ctx):
+    """The n_i_epoch / n_v_epoch sliders' input (R-GREGG-20261114-NEPOCH-SLIDERS-PER-FRAME): <run>/frame_counts.json written by
+    page_context_snapshot.py names the run as its own view; it holds exactly the Stokes and tiers of the run's
+    source_catalogs_<S>_<tier>/*_source_members.csv, each with its per-band histogram; and every frame_counts_<S>_<tier>.csv.gz
+    equals an independent count of those member rows per frame (cell, band, ts; cand_id parsed here) over the json's hour-cells."""
+    fj = os.path.join(path, 'frame_counts.json')
+    try:
+        meta = json.load(open(fj))
+    except (OSError, ValueError) as e:
+        return False, None, f'frame_counts.json: {type(e).__name__}: {e}'
+    bad = []
+    if meta.get('builder') != SPCTX_TOOL:
+        bad.append(f"builder {meta.get('builder')!r}")
+    if os.path.realpath(meta.get('view') or '') != os.path.realpath(path):
+        return False, None, f"frame_counts.json names the view {meta.get('view')!r}, not this run (a forced run's pointer)"
+    held = set()
+    count = defaultdict(Counter)
+    for mf in glob.glob(os.path.join(path, 'source_catalogs_[IV]_*', '*_source_members.csv')):
+        st = os.path.basename(os.path.dirname(mf))[len('source_catalogs_'):]
+        if st.count('_') != 1 or st.split('_')[1] not in ('10s', '1min'):
+            continue
+        held.add(st)
+        with open(mf, newline='') as f:
+            for r in csv.DictReader(f):
+                m = SNAP_CAND_RE.match(r.get('cand_id') or '')
+                if m:
+                    cell, band, S, T, ts = m.groups()
+                    count[f'{S}_{T}'][(cell, band, ts)] += 1
+    if set(meta.get('held') or ()) != held:
+        bad.append(f"held {sorted(meta.get('held') or ())} != the run's member catalogs {sorted(held)}")
+    cells = set(meta.get('cells') or ())
+    if not cells:
+        bad.append('no hour-cells')
+    nrows = 0
+    for st in sorted(held):
+        if not (meta.get('hist') or {}).get(st):
+            bad.append(f'{st}: no histogram')
+        want = {k: n for k, n in count[st].items() if k[0] in cells}
+        tab = os.path.join(path, f'frame_counts_{st}.csv.gz')
+        try:
+            with gzip.open(tab, 'rt', newline='') as f:
+                got = {(r['cell'], r['band'], r['ts']): int(r['n']) for r in csv.DictReader(f)}
+        except (OSError, ValueError, KeyError) as e:
+            bad.append(f'{os.path.basename(tab)}: {type(e).__name__}')
+            continue
+        nrows += len(got)
+        diff = sorted(k for k in set(want) | set(got) if want.get(k) != got.get(k))
+        if diff:
+            bad.append(f'{st}: {len(diff)} frames differ from the member rows, e.g. {diff[0]} table {got.get(diff[0])} members '
+                       f'{want.get(diff[0])}')
+    return not bad, len(bad), ('; '.join(bad[:4]) if bad else
+                               f'{len(held)} Stokes/tiers {sorted(held)}, {nrows} frames with a served detection, each equal to the '
+                               f'member rows counted here, over {len(cells)} hour-cells')
+
+
+@content_test('snapshot_page_context', 'sidecar_per_panel')    # its own module name: tenmin_page_context has a sidecar_per_panel
+def snapshot_sidecar_per_panel(path, sample=None, seed=0, **ctx):
+    """Every panel (rank*.png of the tool's name pattern) in a seeded sample of the review folders of candidates/{V,I}
+    (serve.SNAPSHOT_PCTX_SAMPLE_DIRS folders; all when fewer) has its <png>.page.json: ctx_lines = the tool's seven lines in order
+    (hours searched or the forced run's view, global noise V / I, served detections I / V, scintillation, beam) and frame = [cell,
+    band, Stokes, tier, ts] of the panel's own name and folder; with <run>/scintillation_index.csv present its line is not 'not
+    computed' (the page context ran after the scintillation index). No sidecar of the tool stands without its panel. A sidecar
+    another builder wrote is left as the tool leaves it (counted)."""
+    import random
+    from concurrent.futures import ThreadPoolExecutor
+    n_want = sample or _S().SNAPSHOT_PCTX_SAMPLE_DIRS
+    dirs = []
+    for S in ('V', 'I'):
+        base = os.path.join(path, 'candidates', S)
+        if os.path.isdir(base):
+            dirs += sorted((S, e.path) for e in os.scandir(base) if e.is_dir())
+    if not dirs:
+        return False, 0, 'no review folder under candidates/V or candidates/I'
+    pick = dirs if len(dirs) <= n_want else random.Random(seed).sample(dirs, n_want)
+    scint = os.path.exists(os.path.join(path, 'scintillation_index.csv'))
+
+    def one(sd):
+        S, d = sd
+        bad, n, other = [], 0, 0
+        names = os.listdir(d)
+        for fn in names:
+            m = SPCTX_PNG_RE.match(fn)
+            if fn.endswith('.page.json') and not os.path.exists(os.path.join(d, fn[:-10] + '.png')):
+                try:
+                    if json.load(open(os.path.join(d, fn))).get('builder') == SPCTX_TOOL:
+                        bad.append(f'{os.path.relpath(os.path.join(d, fn), path)}: sidecar without its panel')
+                except (OSError, ValueError):
+                    pass
+            if not m:
+                continue
+            n += 1
+            sc = os.path.join(d, fn[:-4] + '.page.json')
+            try:
+                obj = json.load(open(sc))
+            except (OSError, ValueError) as e:
+                bad.append(f'{os.path.relpath(sc, path)}: {type(e).__name__}')
+                continue
+            if obj.get('builder') != SPCTX_TOOL:
+                other += 1
+                continue
+            lst, date, band, digits, one_ = m.groups()
+            frame = [f'{lst}_{date}', band, S, '1min' if one_ else '10s', f'{digits[:8]}_{digits[8:]}']
+            lines = obj.get('ctx_lines') or []
+            if len(lines) != len(SPCTX_HEADS) or not all(str(l_).startswith(h) for l_, h in zip(lines, SPCTX_HEADS)):
+                bad.append(f'{os.path.relpath(sc, path)}: ctx_lines {lines[:2]}...')
+            elif obj.get('frame') != frame:
+                bad.append(f'{os.path.relpath(sc, path)}: frame {obj.get("frame")} != {frame}')
+            elif scint and lines[5].startswith(SPCTX_NO_SCINT):
+                bad.append(f'{os.path.relpath(sc, path)}: scintillation "not computed" beside scintillation_index.csv')
+        return n, bad, other
+    with ThreadPoolExecutor(8) as ex:
+        res = list(ex.map(one, pick))
+    n, other = sum(r[0] for r in res), sum(r[2] for r in res)
+    bad = [b for r in res for b in r[1]]
+    if not n:
+        return False, 0, f'no panel in {len(pick)} sampled review folders'
+    return not bad, len(bad), ('; '.join(bad[:4]) if bad else
+                               f'{n} panels in {len(pick)} of {len(dirs)} review folders (seed {seed}), each with its sidecar '
+                               f'({other} written by another builder, kept)')
+
+
+def _pidx(path):
+    return json.load(open(path))
+
+
+def _shard_lines(path, man):
+    """(parent, review_dir, stats, record text) of every line of every shard of the manifest at ``path``."""
+    d = os.path.dirname(path)
+    for parent, sh in sorted((man.get('shards') or {}).items()):
+        with gzip.open(os.path.join(d, sh['file']), 'rt', encoding=man.get('encoding') or 'UTF-8', newline='\n') as f:
+            for line in f:
+                rd, stats, rec = line.rstrip('\n').split('\t', 2)
+                yield parent, rd, stats, rec
+
+
+def _catalog_dirs(man):
+    """review_dir of every survivors catalog the manifest records (the folders the page reads)."""
+    out = set()
+    for c in sorted(man.get('catalogs') or {}):
+        for r in _rows(c):
+            if r.get('review_dir'):
+                out.add(r['review_dir'])
+    return out
+
+
+@content_test('detections_index')
+def manifest_current(path, run=None, **ctx):
+    """<run>/page_index/manifest.json is what the review server takes as current (classify_transients._page_index): format
+    serve.PAGE_INDEX_FORMAT; run_dir = this run; no unreadable folder; every shard file present with its recorded sha256, the
+    shards' folder and detection-row counts summing to the manifest's; every survivors catalog recorded (at least one) unchanged
+    (size, mtime_ns); no DIRTY marker newer than the build's start."""
+    import hashlib
+    try:
+        man = _pidx(path)
+    except (OSError, ValueError) as e:
+        return False, None, f'manifest: {type(e).__name__}: {e}'
+    d, bad = os.path.dirname(path), []
+    run = run or os.path.dirname(d)
+    if man.get('format') != _S().PAGE_INDEX_FORMAT:
+        bad.append(f"format {man.get('format')} != {_S().PAGE_INDEX_FORMAT}")
+    if os.path.realpath(man.get('run_dir') or '') != os.path.realpath(run):
+        bad.append(f"run_dir {man.get('run_dir')}")
+    if man.get('n_errors'):
+        bad.append(f"{man['n_errors']} unreadable folders")
+    sh = man.get('shards') or {}
+    for parent, e in sorted(sh.items()):
+        h = hashlib.sha256()
+        try:
+            with open(os.path.join(d, e['file']), 'rb') as f:
+                for b in iter(lambda: f.read(1 << 22), b''):
+                    h.update(b)
+        except OSError as x:
+            bad.append(f"{e['file']}: {type(x).__name__}")
+            continue
+        if h.hexdigest() != e.get('sha256'):
+            bad.append(f"{e['file']} ({parent}): sha256 differs")
+    for k in ('n_folders', 'n_det_rows'):
+        if sum(int(e.get(k) or 0) for e in sh.values()) != man.get(k):
+            bad.append(f'shard {k} do not sum to {man.get(k)}')
+    cats = man.get('catalogs') or {}
+    if not cats:
+        bad.append('no catalog recorded')
+    for c, e in sorted(cats.items()):
+        try:
+            st = os.stat(c)
+        except OSError:
+            bad.append(f'{os.path.basename(c)} missing')
+            continue
+        if [st.st_size, st.st_mtime_ns] != [e.get('size'), e.get('mtime_ns')]:
+            bad.append(f'{os.path.relpath(c, run)} changed since the index')
+    dirty = os.path.join(d, 'DIRTY')
+    if os.path.exists(dirty) and os.stat(dirty).st_mtime_ns > int(man.get('started_ns') or 0):
+        bad.append(f'DIRTY newer than the build: {open(dirty).read().strip()[:120]}')
+    return not bad, len(bad), ('; '.join(bad[:4]) if bad else
+                               f"{man.get('n_folders')} folders, {man.get('n_det_rows')} detection rows in {len(sh)} shards (sha256 "
+                               f"equal), {len(cats)} catalogs unchanged, built {man.get('created_utc')}")
+
+
+@content_test('detections_index')
+def folders_cover_catalogs(path, **ctx):
+    """Every review_dir of the survivors catalogs the manifest records is a folder of the index, recorded as a directory
+    (record d true), once: the page finds every source's folder in the index."""
+    try:
+        man = _pidx(path)
+    except (OSError, ValueError) as e:
+        return False, None, f'manifest: {type(e).__name__}: {e}'
+    want = _catalog_dirs(man)
+    seen, dup, notdir = set(), 0, []
+    for _, rd, _, rec in _shard_lines(path, man):
+        dup += rd in seen
+        seen.add(rd)
+        if rd in want and not rec.startswith('{"d":true') and json.loads(rec).get('d') is not True:
+            notdir.append(rd)
+    miss = sorted(want - seen)
+    bad = ([f'{len(miss)} catalog folders not indexed, e.g. {miss[:2]}'] if miss else []) + \
+          ([f'{len(notdir)} recorded as not a folder, e.g. {notdir[:2]}'] if notdir else []) + \
+          ([f'{dup} folders indexed twice'] if dup else [])
+    return not bad, len(bad), ('; '.join(bad) if bad else
+                               f'{len(want)} catalog folders, all indexed as folders ({len(seen)} folders indexed)')
+
+
+@content_test('detections_index')
+def records_current(path, sample=None, seed=0, **ctx):
+    """A seeded sample of the catalogs' folders (serve.PAGE_INDEX_RECHECK) read again here: each folder's stats now (detections.csv
+    [size, mtime_ns], each .png's, the .png names in sorted order - classify_transients._pidx_stats) equal the recorded stats, and
+    the recorded detections.csv text equals the file's: the page uses those records as they are."""
+    import random
+    try:
+        man = _pidx(path)
+    except (OSError, ValueError) as e:
+        return False, None, f'manifest: {type(e).__name__}: {e}'
+    run = os.path.dirname(os.path.dirname(path))
+    want = sorted(_catalog_dirs(man))
+    if not want:
+        return False, 0, 'no catalog folder'
+    pick = set(want if len(want) <= (sample or _S().PAGE_INDEX_RECHECK) else
+               random.Random(seed).sample(want, sample or _S().PAGE_INDEX_RECHECK))
+    got = {rd: (stats, rec) for _, rd, stats, rec in _shard_lines(path, man) if rd in pick}
+    bad = []
+    for rd in sorted(pick):
+        if rd not in got:
+            bad.append(f'{rd}: not indexed')
+            continue
+        d = os.path.join(run, rd)
+        names = [fn for fn in sorted(os.listdir(d)) if '.png' in fn]
+        dc = os.path.join(d, 'detections.csv')
+        cs = [os.stat(dc).st_size, os.stat(dc).st_mtime_ns] if os.path.exists(dc) else None
+        now = [cs, [[os.stat(os.path.join(d, fn)).st_size, os.stat(os.path.join(d, fn)).st_mtime_ns] for fn in names], names]
+        stats, rec = json.loads(got[rd][0]), json.loads(got[rd][1])
+        if stats != now:
+            bad.append(f'{rd}: stats changed since the index')
+        elif rec.get('t') != (open(dc, encoding=man.get('encoding') or 'UTF-8').read() if cs else None):
+            bad.append(f'{rd}: detections.csv text differs from its record')
+    return not bad, len(bad), ('; '.join(bad[:4]) if bad else
+                               f'{len(pick)} of {len(want)} catalog folders (seed {seed}) re-read: stats and detections.csv text '
+                               f'equal to their records')
 
 
 @content_test('stopped_page')

@@ -398,6 +398,25 @@ class serve(_Section):
                                             # tables). Production sets none (a random seed per run: not reproducible, so no parity
                                             # value exists); '' = unset, as production. The refactor's reproducibility setting, not a
                                             # ruling: the figures' content is the same, only the marker stacking is fixed [step]
+    # the four steps on the review copy after the gate on the copy and the carry, before any page starts (snapshot_serve.sh:164-198,
+    # exopipe_ops 607f7a2; lib/serve/snapshot_copy.py stages scintillation, page-context, bright-filter, page-index)
+    SNAPSHOT_FILTER_TIER = 'snapshot'       # --tier of scintillation_index.py and bright_source_filter_precompute.py (:168, :187;
+                                            # R-GREGG-20261112-FILTERS-FINALIZE-BRIGHT-AND-SCINTILLATION)
+    SNAPSHOT_PAGE_CONTEXT_WORKERS = 16      # page_context_snapshot.py --workers (:176)
+    SNAPSHOT_BRIGHT_CADENCES = ('10s', '1min')   # one bright-source npz per Stokes and cadence (:186; the Stokes are the served pages')
+    SNAPSHOT_BRIGHT_WORKERS = 6             # bright_source_filter_precompute.py --workers (:187; at most 6 Lustre readers)
+    SNAPSHOT_BRIGHT_PEAK_CACHE = '/data07/gh/bright_filter_snapshot_peaks'   # --peak-cache (:187): the batch records' served rows
+                                            # kept between runs, on the review host's local disk
+    SNAPSHOT_STEP_CWD = '/tmp'              # the working directory of the scintillation index, bright-source filter and page index
+                                            # (:168, :187, :196 `cd /tmp`); the page context runs in the exopipe_ops root (:176)
+    SERVE_PARITY_CACHE = '{out}/_cache'     # a parity run's tool caches (the parity guard refuses writes outside --out): the
+                                            # scintillation index's --cache and the bright-source filter's --peak-cache. Production
+                                            # names none of them (the tools' defaults; the peak cache above)
+    SNAPSHOT_PCTX_SAMPLE_DIRS = 5000        # content test snapshot_page_context.sidecar_per_panel: the review folders read (a seeded
+                                            # sample; every panel in each). The full view holds ~950,000 folders and 2.7M panels
+    PAGE_INDEX_FORMAT = 3                   # the page index's format the review server reads (classify_transients.PAGE_INDEX_FORMAT,
+                                            # build_detections_index.py FORMAT); content test detections_index.manifest_current
+    PAGE_INDEX_RECHECK = 200                # content test detections_index.records_current: folders re-read against their record
 
     # ---- the COMBINED SNAPSHOT VIEW: the snapshot tier's cumulative step (`serve --tier snapshot --family comb`,
     # lib/serve/snapshot_view.py; spec docs/specs/snapshot_combined_view.md). Port of exopipe_ops snapshot_combined_view.py
@@ -478,6 +497,7 @@ class serve(_Section):
         'DEEP_VIEW_REVIEW_DIR': 'FIX-REFACTOR-DEFECTS-D2-D6-D7-D9-D10-AND-RULINGS-D1-D5-D8-20261013',
         'HOLD_FP_VERDICTS': 'R-SNAPSHOT-SERVE-HOLD-ONLY-ON-NON-FP-MISSED-JUDGEMENTS',
         'SNAPSHOT_LOCALIZE': 'R-SNAP-EACH-DETECTION-OWN-FIT-AND-PER-TIER-COMBINED-POSITIONS-IMPLEMENTED',
+        'SNAPSHOT_FILTER_TIER': 'R-GREGG-20261112-FILTERS-FINALIZE-BRIGHT-AND-SCINTILLATION',
         # the combined snapshot view: one page per tier and Stokes over every batch (Gregg 2026-10-26 "No! I just mean combine
         # the batches for each tier/polarization into one page."), one tier per page directory (Gregg 2026-10-03)
         'SNAPSHOT_CARD2_REJUDGE_APPROVED': 'R-GREGG-20261104-DEEP-OMISSION-SHORT-TIERS-ANSWERS',   # "the count of removed
