@@ -309,7 +309,8 @@ WORLD_I_JUPITER_DEG = '50.0'
 MC_COLS = ['cand_id', 'lst', 'date', 'band', 'stokes', 'cadence', 'ra', 'dec', 'peak_jy', 'snr', 'global_snr', 'jupiter_deg',
            'moon_deg', 'epoch_qa', 'size_beams', 'size_flag', 'axis_norm']
 LED_COLS = ['lst', 'scope', 'stokes', 'date', 'final', 'ra', 'dec', 'veto_reason', 'snr', 'peak_jy', 'pix_y']
-IMG_COLS = ['lst', 'scope', 'stokes', 'date', 'frame']
+IMG_COLS = ['lst', 'scope', 'stokes', 'date', 'frame', 'n_after_morph', 'n_after_mstruct', 'n_raw_floor']   # the search's
+# per-image counts as production's tables carry them (Stokes I: no master-structure count) - the QA percentile table's input
 SRC = {'A': (82.5, 37.0), 'B': (83.0, 38.0), 'C': (82.0, 36.5)}
 
 
@@ -362,7 +363,9 @@ def make_attempt(cell, st, node='nodeA', att='20300104T000000'):
     for date in DATES:                                   # source A on every night (a repeat for the fork)
         ra, dec = det('A', date, 9.0 if band == 'Full' else 8.0)
         led.append(dict(lst=lst, scope=band, stokes=st, date=date, final='1', ra=ra, dec=dec, veto_reason='', snr='9', pix_y='3'))
-        img.append(dict(lst=lst, scope=band, stokes=st, date=date, frame=f'{date}_{st}'))
+        k = DATES.index(date)
+        img.append(dict(lst=lst, scope=band, stokes=st, date=date, frame=f'{date}_{st}', n_after_morph=str(2 + k),
+                        n_after_mstruct=str(1 + k) if st == 'V' else '', n_raw_floor=str(5 + 2 * k)))
     if band == 'Full':
         ra, dec = det('B', DATES[0], 7.5)                # B once: a survivor of the singles tiers only
         led.append(dict(lst=lst, scope=band, stokes=st, date=DATES[0], final='1', ra=ra, dec=dec, snr='7.5', pix_y='4'))
@@ -558,6 +561,15 @@ def test_chain_to_fork_then_union_to_list():
     assert reasons == ['duplicate'] * 2 + ['no final ledger row'] * 2, reasons
     n_acc = len(rows(f'{U}/master_catalog_asrun.csv'))
     assert n_acc == 2 * (8 + 3 - 2), n_acc               # per Stokes: 8 Full + 3 23MHz rows in, 2 refused
+    # the run's Phase 3 QA percentile table: the merge writes it beside the per-image table, tier 'deep', and records it with
+    # its content test (one row per image with a recorded count; Stokes I counted after the morphology gate)
+    qa = rows(f'{U}/qa_percentiles.csv')
+    img = rows(f'{U}/v_deep_images.csv')
+    assert len(qa) == len(img) and {r['tier'] for r in qa} == {'deep'}, (len(qa), len(img), {r['tier'] for r in qa})
+    assert {r['count_kind'] for r in qa if r['stokes'] == 'I'} == {'after_morph'} and \
+        {r['count_kind'] for r in qa if r['stokes'] == 'V'} == {'after_mstruct'}, qa[:2]
+    t = [x for x in rec(f'{LABEL}.merge')['tests'] if x['cls'] == 'qa_percentiles']
+    assert t and all(x['passed'] for x in t) and t[0]['path'] == os.path.abspath(f'{U}/qa_percentiles.csv'), t
     # the staleness gate edited the COPY of the search state only (nothing stale here; the copy exists)
     assert os.path.isdir(f'{U}/_state/{LABEL.lower()}_state/markers_V')
     # select ran for real with the verdict file: V rows carry the conform stub's fp_prediction (M8)
@@ -758,6 +770,22 @@ def test_b30_unharvested_merge():
     cli('--stages', 'merge', '--set', 'catalog_merge.UNHARVESTED=warn', expect=2)
     r = rec(f'{LABEL}.merge')
     assert 'merged_record' in r['reason'] and r['meta'].get('unharvested_warning'), r['reason'][:300]
+
+
+def test_qa_percentiles_refuse_a_table_without_counts():
+    """The merge writes the run's QA percentile table from the merged per-image table; a per-image table without the
+    search's count columns cannot give it and refuses the merge, naming the table (nothing recorded as done)."""
+    make_world()
+    imgs = sorted(glob.glob(f'{T}/collect/**/transients/Run_{LABEL}/v_deep_images.csv', recursive=True))
+    assert imgs
+    for p in imgs:
+        write_csv(p, ['lst', 'scope', 'stokes', 'date', 'frame'],
+                  [{k: r[k] for k in ('lst', 'scope', 'stokes', 'date', 'frame')} for r in rows(p)])
+    cli('--stages', 'preflight,harvest,merge', expect=2)
+    r = rec(f'{LABEL}.merge')
+    assert r['status'] == 'refused' and r['reason'].startswith('QA percentile table of ') and 'lacks' in r['reason'], \
+        (r['status'], r['reason'][:300])
+    assert not os.path.exists(f'{U}/qa_percentiles.csv')
 
 
 def test_merge_refresh_replaces_a_changed_attempt():
@@ -1325,6 +1353,7 @@ ORDER = ['test_help_and_dry_run', 'test_preflight_refuses_missing_parent', 'test
          'test_chain_to_fork_then_union_to_list',
          'test_stale_directory_refused_d9', 'test_changed_input_makes_records_stale', 'test_overrides_of_bound_keys_refused',
          'test_harvest_refuses_unharvested_outside_production', 'test_b30_unharvested_merge',
+         'test_qa_percentiles_refuse_a_table_without_counts',
          'test_merge_refresh_replaces_a_changed_attempt', 'test_merge_refusal_record_keeps_extraction_rows',
          'test_size_rule_in_the_chain', 'test_full_band_in_the_chain', 'test_b30_identity_pre_check',
          'test_b30_ephem_pre_check', 'test_b02_check_mode_in_the_chain', 'test_b02_check_chain_to_conform',

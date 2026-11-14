@@ -558,6 +558,66 @@ def test_qa_percentile_table_and_ionosphere_percentiles():
         shutil.rmtree(d, ignore_errors=True)
 
 
+def test_qa_percentile_blank_count_after_an_empty_morphology_gate_is_zero():
+    # the Stokes V search records no master-structure count for an image with nothing left after the morphology gate
+    # (Run_SLSTB: 319 of 31,078 V images): its count is 0 and it is in the population; any other blank count is left out
+    from exopipe.phase3.lib.qa import percentiles
+    d = tempfile.mkdtemp(prefix='test_email_')
+    try:
+        _w(os.path.join(d, 'v_deep_images.csv'),
+           'lst,scope,stokes,date,n_after_morph,n_after_mstruct,n_raw_floor\n'
+           '15h,41MHz,V,2025-05-01T00,0,,0\n'           # nothing after the morphology gate: count 0
+           '15h,41MHz,V,2025-05-01T01,6,2,9\n'
+           '15h,41MHz,V,2025-05-01T02,6,,9\n'           # a count that is not recorded: left out
+           '15h,41MHz,V,2025-05-01T03,,,9\n'            # no count at all: left out
+           '15h,41MHz,I,2025-05-01T00,,,40\n')          # Stokes I counts after the morphology gate: blank = left out
+        rows = percentiles.table(d, percentiles.TENMIN)
+        got = [(r['date'], r['stokes'], r['count'], r['count_kind'], r['percentile'], r['population']) for r in rows]
+        assert got == [('2025-05-01T00', 'V', 0, 'after_mstruct', 25.0, 2),
+                       ('2025-05-01T01', 'V', 2, 'after_mstruct', 75.0, 2)], got
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_qa_percentile_review59_optional_raw_count_refusal_and_no_stray_tmp():
+    # review of PR 59: n_raw_floor is reference only (an older per-image table without it gives count_raw ''); the chain's
+    # call raises core.record.Refusal itself; a write that fails leaves no tmp file beside the run's products
+    from exopipe.phase3.core.record import Refusal
+    from exopipe.phase3.lib.qa import percentiles
+    d = tempfile.mkdtemp(prefix='test_email_')
+    try:
+        _w(os.path.join(d, 'v_deep_images.csv'),
+           'lst,scope,stokes,date,n_after_morph,n_after_mstruct\n'
+           '15h,41MHz,V,2025-05-01T00,3,1\n15h,41MHz,V,2025-05-01T01,6,2\n')
+        path = percentiles.write_for_chain(d, percentiles.TENMIN)
+        rows = percentiles.read(d, percentiles.TENMIN)
+        assert rows[1] == 'table' and [(r['count'], r['count_raw'], r['percentile_raw']) for r in rows[0]] == [(1, '', ''), (2, '', '')], rows
+        _w(os.path.join(d, 'v_deep_images.csv'), 'lst,scope,stokes,date,n_after_morph,n_after_mstruct\n15h,41MHz,V,x,7,\n')
+        try:
+            percentiles.write_for_chain(d, percentiles.TENMIN)
+            why = ''
+        except Refusal as e:
+            why = str(e)
+        assert 'no searched image with a recorded count' in why and not os.path.exists(path), why
+        _w(os.path.join(d, 'v_deep_images.csv'), 'lst,scope,stokes,n_after_morph\n')
+        try:
+            percentiles.write_for_chain(d, percentiles.TENMIN)
+            why = ''
+        except Refusal as e:
+            why = str(e)
+        assert 'lacks' in why and 'n_raw_floor' not in why, why
+        _w(os.path.join(d, 'v_deep_images.csv'), 'lst,scope,stokes,date,n_after_morph,n_after_mstruct\n15h,41MHz,V,x,3,1\n')
+        os.makedirs(os.path.join(d, 'blocked'))
+        try:
+            percentiles.write(d, percentiles.TENMIN, path=os.path.join(d, 'blocked'))   # os.replace onto a directory fails
+            failed = False
+        except OSError:
+            failed = True
+        assert failed and not [f for f in os.listdir(d) if '.tmp' in f], os.listdir(d)
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def test_page_rule_on_the_served_deep_page_readonly():
     """The rule of the real served deep Stokes V page, built from its own code (read only): the staircase holds the
     allowed mean sky loss, and the process is left as it was. Skipped where the registry or the page is absent."""
