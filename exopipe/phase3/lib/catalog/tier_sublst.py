@@ -1290,7 +1290,7 @@ def st_merge(ctx, s, plan):
         # the run's Phase 3 QA percentile table beside its per-image table (deep_chain's merge stage; tier = the email's name).
         # Not in a night pass: its per-image table holds one night, and a percentile's population is every image of the run
         from exopipe.phase3.lib.qa import percentiles
-        qp = percentiles.write_for_chain(U, percentiles.TENMIN, refuse)
+        qp = percentiles.write_for_chain(U, percentiles.TENMIN)
         s.u.add_output(qp, 'qa_percentiles', tier=percentiles.TENMIN)
         s.written.append(qp)
     s.u.set_admitted(_admitted(U))

@@ -579,6 +579,45 @@ def test_qa_percentile_blank_count_after_an_empty_morphology_gate_is_zero():
         shutil.rmtree(d, ignore_errors=True)
 
 
+def test_qa_percentile_review59_optional_raw_count_refusal_and_no_stray_tmp():
+    # review of PR 59: n_raw_floor is reference only (an older per-image table without it gives count_raw ''); the chain's
+    # call raises core.record.Refusal itself; a write that fails leaves no tmp file beside the run's products
+    from exopipe.phase3.core.record import Refusal
+    from exopipe.phase3.lib.qa import percentiles
+    d = tempfile.mkdtemp(prefix='test_email_')
+    try:
+        _w(os.path.join(d, 'v_deep_images.csv'),
+           'lst,scope,stokes,date,n_after_morph,n_after_mstruct\n'
+           '15h,41MHz,V,2025-05-01T00,3,1\n15h,41MHz,V,2025-05-01T01,6,2\n')
+        path = percentiles.write_for_chain(d, percentiles.TENMIN)
+        rows = percentiles.read(d, percentiles.TENMIN)
+        assert rows[1] == 'table' and [(r['count'], r['count_raw'], r['percentile_raw']) for r in rows[0]] == [(1, '', ''), (2, '', '')], rows
+        _w(os.path.join(d, 'v_deep_images.csv'), 'lst,scope,stokes,date,n_after_morph,n_after_mstruct\n15h,41MHz,V,x,7,\n')
+        try:
+            percentiles.write_for_chain(d, percentiles.TENMIN)
+            why = ''
+        except Refusal as e:
+            why = str(e)
+        assert 'no searched image with a recorded count' in why and not os.path.exists(path), why
+        _w(os.path.join(d, 'v_deep_images.csv'), 'lst,scope,stokes,n_after_morph\n')
+        try:
+            percentiles.write_for_chain(d, percentiles.TENMIN)
+            why = ''
+        except Refusal as e:
+            why = str(e)
+        assert 'lacks' in why and 'n_raw_floor' not in why, why
+        _w(os.path.join(d, 'v_deep_images.csv'), 'lst,scope,stokes,date,n_after_morph,n_after_mstruct\n15h,41MHz,V,x,3,1\n')
+        os.makedirs(os.path.join(d, 'blocked'))
+        try:
+            percentiles.write(d, percentiles.TENMIN, path=os.path.join(d, 'blocked'))   # os.replace onto a directory fails
+            failed = False
+        except OSError:
+            failed = True
+        assert failed and not [f for f in os.listdir(d) if '.tmp' in f], os.listdir(d)
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def test_page_rule_on_the_served_deep_page_readonly():
     """The rule of the real served deep Stokes V page, built from its own code (read only): the staircase holds the
     allowed mean sky loss, and the process is left as it was. Skipped where the registry or the page is absent."""

@@ -71,7 +71,8 @@ def table(run, tier):
     ver = version(run)
     with open(os.path.join(run, IMAGES), newline='') as f:
         rd = csv.DictReader(f)
-        need = {'lst', 'scope', 'stokes', 'date', 'n_after_morph', 'n_after_mstruct', 'n_raw_floor'}
+        need = {'lst', 'scope', 'stokes', 'date', 'n_after_morph', 'n_after_mstruct'}   # n_raw_floor: reference only,
+                                                                                    # optional (older tables lack it)
         if not need <= set(rd.fieldnames or ()):
             raise ValueError(f'{os.path.join(run, IMAGES)} lacks {sorted(need - set(rd.fieldnames or ()))}')
         rows = []
@@ -83,7 +84,7 @@ def table(run, tier):
             if n is None:
                 continue
             rows.append(dict(lst=r['lst'], date=r['date'], band=r['scope'], stokes=r['stokes'], tier=tier, count=n,
-                             count_kind=kind, count_raw=_int(r['n_raw_floor'])))
+                             count_kind=kind, count_raw=_int(r.get('n_raw_floor'))))
     pops, raws = {}, {}
     for r in rows:
         k = (r['band'], r['stokes'])
@@ -108,25 +109,30 @@ def write(run, tier, path=None):
     rows = table(run, tier)
     path = path or os.path.join(run, TABLE)
     tmp = f'{path}.tmp{os.getpid()}'
-    with open(tmp, 'w', newline='') as f:
-        w = csv.DictWriter(f, fieldnames=COLUMNS, lineterminator='\n')
-        w.writeheader()
-        w.writerows(rows)
-    os.replace(tmp, path)
+    try:
+        with open(tmp, 'w', newline='') as f:
+            w = csv.DictWriter(f, fieldnames=COLUMNS, lineterminator='\n')
+            w.writeheader()
+            w.writerows(rows)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):                 # a failed write leaves nothing beside the run's products
+            os.remove(tmp)
     return path, len(rows)
 
 
-def write_for_chain(run, tier, refuse):
+def write_for_chain(run, tier):
     """A catalog chain's call, right after its merge wrote <run>/v_deep_images.csv: write the table beside it and return
-    its path. A per-image table the table cannot be made from, or one with no image whose count is recorded, is
-    ``refuse``d with the reason (the chain's refusal: nothing is half-written; a later merge writes both again)."""
+    its path. A per-image table the table cannot be made from, or one with no image whose count is recorded, REFUSES the
+    chain's unit (core.record.Refusal, with the reason; the unit is not done and a later merge writes both again)."""
+    from exopipe.phase3.core.record import Refusal
     try:
         path, n = write(run, tier)
     except (OSError, ValueError) as e:
-        refuse(f'QA percentile table of {run}: {e}')
+        raise Refusal(f'QA percentile table of {run}: {e}')
     if not n:
         os.remove(path)
-        refuse(f'QA percentile table of {run}: {IMAGES} has no searched image with a recorded count')
+        raise Refusal(f'QA percentile table of {run}: {IMAGES} has no searched image with a recorded count')
     return path
 
 

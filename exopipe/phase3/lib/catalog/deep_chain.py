@@ -749,7 +749,7 @@ class DeepRun:
             # the run's Phase 3 QA percentile table beside its per-image table (Gregg 2026-11-14, R-GREGG-20261114-SPEEDUP-ALL-
             # APPROVED-...: the per band and tier table is a product; PHASE3_ARCHITECTURE.md section 3), after every merge
             from exopipe.phase3.lib.qa import percentiles
-            qp = percentiles.write_for_chain(self.U, percentiles.DEEP, u.refuse)
+            qp = percentiles.write_for_chain(self.U, percentiles.DEEP)
             self.copy(u, qp, d)
             self.out(u, qp, 'qa_percentiles', tier=percentiles.DEEP)
             # MERGE REFRESH (production exopipe_ops e668670, the deep chat 2026-10-30): a (cell, Stokes) whose published attempt
