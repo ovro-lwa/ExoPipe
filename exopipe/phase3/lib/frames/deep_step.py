@@ -333,7 +333,7 @@ def published_population(ctx, plan):
     Returns its path; refuses without a published attempt or without the file (an attempt published before the record:
     search --tier deep --stages gate-backfill)."""
     from exopipe.phase3.lib.search import deep_step as SDS, gate_population as GP
-    base = SDS.resolve_published(plan.cell, plan.stokes, ctx.args.out or ctx.attempts_root)
+    base = SDS.resolve_published(plan.cell, plan.stokes, ctx.args.out or default_out(ctx.args))   # its register, else production's
     if base is None:
         raise Refusal(f'{plan.cell} {plan.stokes}: no published search attempt - the listed nights {plan.dates} are judged '
                       f'by its frozen beam-gate population (R-GREGG-20261112-PER-HOUR-STEPS-SIX-RULINGS (2))')

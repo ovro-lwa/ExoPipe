@@ -93,6 +93,9 @@ def test_engine_wiring():
           and "_bok = _enough(len(_fin), BEAM_GATE_MIN_NIGHTS, f'{lst} {scope}: beam gate, nights with a beam area')" in src
           and "_bmed = _fin[len(_fin) // 2] if _bfz is None else _bfz['median']" in src
           and "if _areas.get(d, 0) > _thr * _bmed]" in src)
+    check('an append with the gate off (P3_BEAM_GATE_OFF=1) reads the base row and refuses unless the base ran with it off',
+          "if os.environ.get('P3_BEAM_GATE_OFF') == '1' and cadence == 'deep' and included_dates:" in src
+          and "if _bfz is None or _bfz['outcome'] != 'off':" in src)
 
 
 def _copy_attempt():
@@ -157,6 +160,35 @@ def test_real_backfill_and_verdicts():
     check('the content test fails a row whose outcome contradicts the recorded beam refusals; a beam refusal whose ratio the '
           'reconstruction does not reproduce makes the backfill refuse', res2 and not all(x['passed'] for x in res2)
           and r3 is None and 'does not reproduce' in rep3.get('refused', ''), (res2, rep3.get('refused')))
+    # nights refused after the gate (daytime, source extraction) stay in its population (review of pull request 26, finding 1)
+    bf = lambda at, a=adm: GP.backfill_attempt(at, CELL, STOKES, cd, fac, mn, area, a, lambda d: ex.is_excluded(lst, scope, d))
+    searched = sorted(set(fz['nights']) - batch)
+    for gate, extra in (('daytime', []), ('extraction_I', ['2026-11-01T00:00:00Z'])):
+        dp = os.path.join(T, f'after_{gate}')
+        shutil.copytree(dst, dp)
+        prd = glob.glob(os.path.join(dp, 'transients', 'Run_*'))[0]
+        os.remove(os.path.join(prd, GP.FILE))
+        night, tag = searched[len(searched) // 2], r[10]
+        ip = os.path.join(prd, 'v_deep_images.csv')
+        rows = list(csv.DictReader(open(ip, newline='')))
+        with open(ip, 'w', newline='') as fh:
+            w = csv.DictWriter(fh, fieldnames=list(rows[0]))
+            w.writeheader()
+            w.writerows(x for x in rows if not (x['date'] == night and x['stokes'] == STOKES))
+        ra, repa = bf(dp)
+        with open(os.path.join(prd, 'refusals', f'{CELL}_{gate}_excluded.csv'), 'a', newline='') as fh:
+            csv.writer(fh).writerow([lst, scope, night, STOKES, f'{gate}, synthetic', tag, *extra])
+        rb, repb = bf(dp)
+        check(f'a night the attempt refused for {gate} (after the beam gate) stays in its population: the same row; without '
+              f'that record it is unplaced', ra is None and 'do not place' in repa.get('refused', '')
+              and rb is not None and rb[3:9] == r[3:9], (repa.get('refused'), repb.get('refused')))
+    # admitted nights: an engine without admissions kept them in the population (finding 2) - never a silent choice
+    one = searched[0]
+    rk, repk = bf(dst, adm | {one})
+    check(f'with a night admitted now ({one}): the row is the reading that reproduces the records, or the backfill refuses '
+          f'when both readings do with different rows', (rk is not None and rk[3:9] == r[3:9]
+                                                        and repk.get('admitted_reading', '').startswith(('kept', 'either')))
+          or (rk is None and 'cannot be told' in repk.get('refused', '')), (repk.get('admitted_reading'), repk.get('refused')))
 
 
 def main():
