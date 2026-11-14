@@ -475,6 +475,55 @@ def test_refusals_write_nothing():
         same(t.snapshot(), t.reference()[0])
 
 
+def test_a_night_in_the_window_masters_ends_no_input():
+    """Gregg 2026-11-13: a night IN the installed window Masters of the band ends the unit no-input (the per-hour chain
+    goes on; its tree entry is the batch stage's), the tree untouched; a group with the subband among its members too.
+    Without --scopes the band keeps its unit. A frozen deep weight above 0 of a night NOT in the window Masters still
+    refuses T-2."""
+    from exopipe.phase3.core import cells
+    from exopipe.phase3.lib.masters import sublst_nonmember as NM
+    S = CFG.frames_sublst
+    with Tree() as t:
+        t.write_weights(dict(MEMBERS, **{NEW: 0.7}))
+        wp = os.path.join(t.root, f'{LST}_masters', SB, 'I', f'sublst_master_{LST}_{SB}_I_w1_weights.csv')
+        os.makedirs(os.path.dirname(wp))
+        open(wp[:-len('_weights.csv')] + '.fits', 'w').close()        # membership counts an installed Master only
+
+        def window_weights(w):
+            with open(wp, 'w') as f:
+                f.write('night,weight\n' + ''.join(f'{n},{x}\n' for n, x in sorted(dict(MEMBERS, **{NEW: w}).items())))
+
+        window_weights(0.5)
+        r, _ = t.run()
+        u = unit(r)
+        assert u.status == 'no-input' and r.exit_code() == 3, (u.status, u.reason, r.exit_code())
+        for n in ('IS in the installed window Master', 'w1 Stokes I weight 0.5', "'sublst-lst'"):
+            assert n in u.reason, (n, u.reason)
+        assert u.meta['master_member'] == {SB: [['I', 1, 0.5]]}, u.meta
+        same(t.snapshot(), t.before)
+        assert not t.leases_held()
+        # the dry run says so and refuses nothing
+        said = []
+        with Patch((FT, 'plan', said.append)):
+            _r, rc = t.run(dry=True)
+        assert rc != 2 and any('NO-INPUT' in m and 'IS in the installed window Master' in m for m in said), (rc, said)
+        # without --scopes: the band keeps its unit although the night's plan holds no stack job of it, and the group with
+        # the subband among its members ends no-input too
+        G = [b for b in S.TREE_BANDS if b not in CFG.instrument.ALL_SUBBANDS and SB in cells.band_members(b)]
+        assert len(G) == 1, G
+        with Patch((NM, 'night_plan', lambda run, opts, lst, night, planned_now=False: ([], ['plan.txt'], 'record'))):
+            r, _ = t.run(scopes=None)
+        got = {x.name: x for x in r.units}
+        for b in (SB, G[0]):
+            x = got[TN.unit_name(LST, b, NEW)]
+            assert x.status == 'no-input' and 'IS in the installed window Master' in x.reason, (b, x.status, x.reason)
+        same(t.snapshot(), t.before)
+        # listed in the window Master at weight 0 (not a constituent): the frozen deep weight decides, T-2 as before
+        window_weights(0.0)
+        u = refused(t, 'T-2')
+        assert 'co-add weight 0.7' in u.reason, u.reason
+
+
 def test_refusals_of_the_tree_it_adds_to():
     with Tree() as t:
         # T-6: no tree, an empty one, one recorded as having no window, other columns
@@ -871,6 +920,7 @@ def test_the_builders_literals():
 
 TESTS = [test_entry_equals_the_builders_tree, test_the_earliest_night_gives_the_map_its_header,
          test_two_nights_one_after_the_other, test_a_window_with_one_stokes_is_skipped, test_refusals_write_nothing,
+         test_a_night_in_the_window_masters_ends_no_input,
          test_refusals_of_the_tree_it_adds_to, test_an_interrupted_run_is_completed,
          test_resume_skips_a_presented_night_with_a_valid_record, test_one_writer_per_tree,
          test_dry_run_plans_and_writes_nothing, test_stage_wiring, test_the_default_selection_is_the_bands_the_night_owes,

@@ -49,7 +49,9 @@ Failure modes (exit 2 = refused, the gate named in the record; nothing is writte
        (a window missing or extra, NFRAMES), no window at all, a sibling (_nframes, _pb) missing, or the windows on disk
        are not those of the stack record / completion line.
   N-5  the night IS a member (weight above 0 in an installed window Master): its residual needs the leave-one-out path
-       of the batch stage `masters --tier sublst --stages loo` (unit loo_<LST>_<sb>).
+       of the batch stage `masters --tier sublst --stages loo` (unit loo_<LST>_<sb>). Checked first (master_member), before
+       the stack evidence: the unit ends NO-INPUT (exit 3; Gregg 2026-11-13: a member night's 10-minute products stay the
+       batch chain's, the per-hour chain goes on), its record names the member windows (meta master_member).
   N-6  no installed window Master of the (LST, subband, Stokes) at all: `masters --tier sublst --stages loo` writes them.
   N-7  the installed Master of ONE window is missing where the night has a stack: that window's residual is an item
        refusal (production's batch writes no residual for a window without a Master either); the unit completes with
@@ -91,6 +93,11 @@ BATCH_STAGE = 'masters --tier sublst --stages loo'      # writes the window Mast
 STACK_STAGE = 'frames --tier sublst --stages stack'     # writes a night's window stacks (admit + stack)
 STACK_EVIDENCE = ('record', 'log')
 CODE_COMMENT = 'exopipe3 lib/masters/sublst_nonmember.py'
+# Gregg 2026-11-13 (R-GREGG-20261113-PERHOUR-CHAIN-SNAPSHOT-CUBE-BEFORE-TENMIN-MEMBER-NIGHTS-NO-INPUT): a night that is IN
+# the window Masters ends the per-hour 10-minute steps no-input, its 10-minute products stay the batch chain's; membership
+# is per subband (master_member)
+MEMBER_NO_INPUT = ("its 10-minute products are the batch chain 'sublst-lst''s, so the per-hour 10-minute steps end no-input "
+                   "(Gregg 2026-11-13)")
 
 
 # =====================================================================================================================
@@ -106,6 +113,87 @@ def master_products(root, lst, sb, S, k):
     clv15/phase3_sublst_loo.py:153-156)."""
     base = os.path.join(root, f'{lst}_masters', sb, S, f'sublst_master_{lst}_{sb}_{S}_w{k}')
     return base + '.fits', base + '_weights.csv'
+
+
+_WEIGHTS = {}          # weights record path -> ((size, mtime_ns), {night: weight}): each record parsed once while unchanged
+
+
+def _weights_of(wp):
+    """{night: weight} of a window Master's weights record, parsed once per process while its size and mtime stand. An
+    unreadable record refuses, naming the file (it may be being rewritten by the batch stage `loo`)."""
+    try:
+        st = os.stat(wp)
+        key = (st.st_size, st.st_mtime_ns)
+        hit = _WEIGHTS.get(wp)
+        if hit is None or hit[0] != key:
+            hit = _WEIGHTS[wp] = (key, dict(read_weights(wp)))
+        return hit[1]
+    except (OSError, ValueError, KeyError) as e:
+        raise Refusal(f'N-5: the weights record {wp} of an installed window Master cannot be read ({type(e).__name__}: '
+                      f'{e}): membership of the night cannot be decided') from None
+
+
+def master_member(root, lst, sb, night):
+    """[(Stokes, window, weight)] of the installed window Masters of (LST, subband) under <root>/<LST>_masters/ whose weights
+    record gives the night a weight above 0: the night IS in the Master there (N-5). Membership is per subband, both
+    Stokes: the batch unit loo_<LST>_<sb> writes both. As in assess, only a Master whose FITS is installed counts; a Master
+    without its weights record is not read here (N-8 judges it). An unreadable weights record refuses (_weights_of)."""
+    out = []
+    pat = os.path.join(root, f'{lst}_masters', sb, '[IV]', f'sublst_master_{lst}_{sb}_[IV]_w[0-9]_weights.csv')
+    for wp in sorted(glob.glob(pat)):
+        q = re.search(rf'_{re.escape(sb)}_([IV])_w(\d)_weights\.csv$', wp)
+        if not q or not os.path.isfile(wp[:-len('_weights.csv')] + '.fits'):
+            continue
+        w = _weights_of(wp).get(night)
+        if w is not None and w > 0:
+            out.append((q.group(1), int(q.group(2)), w))
+    return out
+
+
+def member_unless_excluded(root, lst, sb, night):
+    """master_member of a subband night that is not excluded; [] for an excluded one, whose own refusal (N-1 / T-1 / the
+    stack's) comes first. Excluded = the 10-minute tier's own reader (core.exclusions.for_tier('sublst')), as the tree and
+    wideband stages read it; the two-readers check G-M01 stays with the stages that run it. The one entry of every
+    per-hour 10-minute stage (Gregg 2026-11-13). An unreadable weights record raises Refusal (_weights_of)."""
+    from exopipe.phase3.core import exclusions
+    if exclusions.for_tier('sublst').is_excluded(lst, sb, night):
+        return []
+    return master_member(root, lst, sb, night)
+
+
+def all_member(root, lst, night, subbands):
+    """{subband: member} when the night IS in the window Masters of EVERY given subband (none excluded), else None: the
+    stack stage then writes no job plan of the night, and the stages after it end no-input instead of refusing N-2."""
+    m = {sb: member_unless_excluded(root, lst, sb, night) for sb in subbands}
+    return m if subbands and all(m.values()) else None
+
+
+def member_stack_unit_name(lst, night, sb):
+    """The no-input unit of a member subband at the per-hour stack stage. NOT stack_unit_name: that record would shadow
+    the batch stack's done record of the same night (tier_sublst.stack_record takes the newest across steps)."""
+    return f'stack-member_{lst}_{night}_{sb}'
+
+
+def member_why(lst, night, sb, member):
+    """The no-input reason of a per-hour 10-minute unit of a member subband."""
+    return (f'{lst} {night} {sb}: the night IS in the installed window Master(s) ('
+            + ', '.join(f'w{k} Stokes {S} weight {w:g}' for S, k, w in member[:12]) + f'): {MEMBER_NO_INPUT}')
+
+
+def band_member(root, lst, band, night):
+    """{subband: master_member} of the band's member subbands (a subband is its own member) where the night IS in the
+    installed window Masters. A wideband group with ANY member subband is a member: its windows stack that subband's
+    batch residuals, so its 10-minute products are the batch chain's too."""
+    from exopipe.phase3.core import cells
+    return {sb: m for sb in cells.band_members(band) for m in [member_unless_excluded(root, lst, sb, night)] if m}
+
+
+def band_member_why(lst, night, band, bm):
+    """The no-input reason of a per-hour 10-minute unit of a member band (band_member's dict)."""
+    if list(bm) == [band]:
+        return member_why(lst, night, band, bm[band])
+    return (f'{lst} {night} {band}: the night IS in the installed window Masters of {len(bm)} member subband(s) '
+            f'({", ".join(sorted(bm, key=lambda s: int(s[:-3])))}): {MEMBER_NO_INPUT}')
 
 
 def residual_path(window):
@@ -458,6 +546,10 @@ def _unit(run, opts, root, lst, cell, sb, stokes, plan_files, how):
         ex, excluded = _exclusion_gate(lst, sb, night)
         if excluded:
             u.refuse(excluded)
+        member = master_member(root, lst, sb, night)
+        if member:
+            u.meta['master_member'] = [list(x) for x in member]
+            raise NoInput(member_why(lst, night, sb, member))
         u.set_admitted([f'{night}/{sb}'])
         a = assess(run, root, lst, cell, sb, stokes, how, ex)
         for p in _inputs(a, plan_files):
@@ -526,6 +618,19 @@ def stage_nonmember(run, opts, sel, root, planned_now=False):
             night = cell.split('_', 1)[1]
             key = f'{lst}_{night}'
             try:
+                # a night IN the window Masters of every selected subband has no job plan (the stack stage skipped it):
+                # no-input, not N-2 (Gregg 2026-11-13)
+                every = all_member(root, lst, night, [sb for sb in sel.subbands if sel.scope_ok(cell, sb)])
+                if every:
+                    why = '; '.join(member_why(lst, night, sb, m) for sb, m in sorted(every.items())[:3])
+                    if run.dry_run:
+                        TS.say(f'[sublst {STAGE} {key}] NO-INPUT: {why}')
+                        continue
+                    for sb, m in sorted(every.items()):     # one unit per subband, as when the night has a plan
+                        with run.unit(unit_name(lst, night, sb), lst=lst, cell=cell, subband=sb, stage=STAGE) as u:
+                            u.meta['master_member'] = [list(x) for x in m]
+                            raise NoInput(member_why(lst, night, sb, m))
+                    continue
                 jobs, files, plan_how = night_plan(run, opts, lst, night, planned_now)
             except Refusal as e:
                 if run.dry_run:
@@ -554,6 +659,10 @@ def stage_nonmember(run, opts, sel, root, planned_now=False):
                 for c, sb, st in units:
                     try:
                         ex, why = _exclusion_gate(lst, sb, night)
+                        member = None if why else master_member(root, lst, sb, night)     # N-1 checked just above
+                        if member:
+                            TS.say(f'    {unit_name(lst, night, sb)}: NO-INPUT: {member_why(lst, night, sb, member)}')
+                            continue
                         a = None if why else assess(run, root, lst, c, sb, st, how, ex)
                         why = why or a['refuse']
                         old = _earlier(root, lst, c, sb, st)

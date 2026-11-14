@@ -29,8 +29,10 @@ Stages (always run in the order of frames_sublst.ORDER; defaults per operating m
             subband's newest window stack ends 'refused=0', or exopipe_ops/sublst_refine_approved.py accepts its refusals).
             Per hour with ONE night, arm A of a member subband is judged by the record of the night's own unit
             nonmember_<LST>_<night>_<sb> (stage nonmember, under this root) where this root holds one: done passes, any
-            other status refuses; a subband without such a record (the night is in the window Masters there, or the
-            batch stage wrote its residuals) keeps the LST-wide evidence above (night_arm_a_complete, wideband_arm_a).
+            other status refuses; a subband without such a record (the batch stage wrote its residuals) keeps the
+            LST-wide evidence above (night_arm_a_complete, wideband_arm_a). Per hour, a group where the night IS in the
+            window Masters of any member subband (sublst_nonmember.band_member) ends no-input before these gates: its
+            windows stack that subband's batch residuals, so they are the batch chain's (Gregg 2026-11-13).
             Outputs <root>/<LST>/<LST>_<night>/<G>/<S>/sublst_<LST>_<night>_<G>_<S>_w<k>{,_pb,_nframes,_resid_loo}.fits and
             <root>/<LST>_x2/.../..._resid_loo.fits [sublst_wideband]; logs <root>/<LST>/logs/wideband_<LST>_<G>_<night>.log.
             Per hour: the epoch's night; intermittent: every night (or --nights), and a group with no window over the LST
@@ -371,6 +373,17 @@ def unit_refused(run, name, reason, dry, counter=None, **meta):
     report(u)
 
 
+def unit_no_input(run, name, reason, dry, counter=None, **meta):
+    """A unit with nothing to do (exit 3 when no other unit of the step did anything; the per-hour chain goes on)."""
+    from exopipe.phase3.core.record import NoInput
+    if dry:
+        plan(f'  UNIT {name}: NO-INPUT - {reason}')
+        return
+    with run.unit(name, **meta) as u:
+        raise NoInput(reason)
+    report(u)
+
+
 # =====================================================================================================================
 # tier sublst
 # =====================================================================================================================
@@ -545,8 +558,24 @@ def stage_stack(ctx, lst, nights):
                      ctx.dry, ctx, tier=TIER)
         return
     from exopipe.phase3.lib.masters import tier_sublst as MT
-    sbs = [s for s in ctx.C.instrument.ALL_SUBBANDS if not ctx.scopes or s in ctx.scopes] or None
+    from exopipe.phase3.lib.masters import sublst_nonmember as NM
+    sel = [s for s in ctx.C.instrument.ALL_SUBBANDS if not ctx.scopes or s in ctx.scopes]
     for n in nights:
+        # a subband where the night IS in the installed window Masters is not restacked: its stacks are the Masters'
+        # constituents and its 10-minute products the batch chain's (Gregg 2026-11-13) - one no-input unit each
+        # (an excluded subband night is not a member here: the stack's own exclusion refusal judges it; a unit name of its
+        # own, never stack_<LST>_<night>_<sb>, whose record would shadow the batch stack's done record)
+        try:
+            member = {sb: m for sb in sel for m in [NM.member_unless_excluded(ctx.root, lst, sb, n)] if m}
+        except Refusal as e:
+            unit_refused(ctx.run, f'stack-member_{lst}_{n}', str(e), ctx.dry, ctx, tier=TIER, lst=lst)
+            continue
+        for sb, m in sorted(member.items()):
+            unit_no_input(ctx.run, NM.member_stack_unit_name(lst, n, sb), NM.member_why(lst, n, sb, m), ctx.dry, ctx,
+                          tier=TIER, lst=lst, subband=sb, master_member=[list(x) for x in m])
+        if member and len(member) == len(sel):
+            continue
+        sbs = [s for s in sel if s not in member] if member else (sel or None)      # (sel or None): as before
         if ctx.dry:
             plan(f'  STAGE stack {lst}_{n}: lib/masters/tier_sublst.stack_night (admit + stack; config masters_sublst) '
                  f'into {ctx.root}')
@@ -714,13 +743,15 @@ def arm_a_complete(ctx, lst, sb, base=None):
 def night_arm_a_complete(ctx, lst, sb, night):
     """Arm A of ONE night of the per-hour path at one subband, from the record of the night's own unit
     nonmember_<LST>_<night>_<sb> (stage nonmember) under this root: (ok, why, record path), ok only for status done. None
-    when this root holds no record of that unit: the night's arm-A residuals at that subband are then not the per-hour
-    unit's (the night is in the window Masters there, or the batch stage wrote them) and the LST-wide evidence decides."""
+    when this root holds no record of that unit, or its record ended no-input because the night was in the window Masters
+    there (meta master_member; Gregg 2026-11-13; a group with such a subband ends no-input before this is read, unless
+    the Masters have changed since): the night's arm-A residuals at that subband are then not the per-hour unit's (the
+    batch stage wrote them) and the LST-wide evidence decides."""
     from exopipe.phase3.core import record
     from exopipe.phase3.lib.masters import sublst_nonmember as NM
     name = NM.unit_name(lst, night, sb)
     rec = record.load_record(ctx.root, 'frames', name)
-    if not rec:
+    if not rec or (rec.get('status') == 'no-input' and (rec.get('meta') or {}).get('master_member')):
         return None
     p = record.record_path(ctx.root, 'frames', name)
     st = rec.get('status')
@@ -867,6 +898,7 @@ def wideband_products(root, x2, lst, night, G, S, k):
 
 def stage_wideband(ctx, lst, nights, per_hour):
     from exopipe.phase3.core.record import NoInput
+    from exopipe.phase3.lib.masters import sublst_nonmember as NM
     S = ctx.S
     groups = ctx.groups()
     members = sorted({sb for G in groups for sb in group_members(G)}, key=lambda s: int(s[:-3]))
@@ -877,7 +909,13 @@ def stage_wideband(ctx, lst, nights, per_hour):
              f'{",".join(alln) if len(alln) <= 6 else "all %d" % len(alln)}; inputs {ctx.lst_dir(lst, base)} + '
              f'{ctx.x2_dir(lst, base)}; outputs {ctx.lst_dir(lst)} + {ctx.x2_dir(lst)}')
         one_night = alln[0] if per_hour and len(alln) == 1 else None
-        for sb in members:
+        # as the run decides it (one() below): a group where the night IS in the window Masters ends no-input before its
+        # gates, so the arm-A and S-G8 gates are judged only for the subbands of the groups that would run
+        ex = exclusions()
+        member_of = {G: (NM.band_member(ctx.root, lst, G, one_night) if one_night and ex.admitted(lst, G, [one_night])
+                         else None) for G in groups}
+        live = {sb for G in groups if not member_of[G] for sb in group_members(G)}
+        for sb in [s for s in members if s in live]:
             ok, why, _, _ = wideband_arm_a(ctx, lst, sb, one_night, base if ctx.loo_evidence() == 'log' else None)
             ctx.gate(f'arm A complete {sb}', ok, why)
             ok, why, _ = refine_complete(ctx, lst, sb, base)
@@ -885,6 +923,10 @@ def stage_wideband(ctx, lst, nights, per_hour):
         ok, py = check_interpreter(interpreter_key('frames_sublst', 'wideband'))
         ctx.gate('interpreter', ok, py)
         for G in groups:
+            bm = member_of[G]
+            if bm:
+                plan(f'    UNIT {lst}_wideband_{G}_{one_night}: NO-INPUT - {NM.band_member_why(lst, one_night, G, bm)}')
+                continue
             plan(f'    UNIT {lst}_wideband_{G}' + (f'_{alln[0]}' if per_hour and len(alln) == 1 else '')
                  + f': phase3_sublst_wideband.py --root {ctx.lst_dir(lst)} --x2-root {ctx.x2_dir(lst)} --lst {lst} '
                    f'--groups {G} --nights <each of {len(alln)}>')
@@ -902,6 +944,17 @@ def stage_wideband(ctx, lst, nights, per_hour):
     def one(G):
         name = f'{lst}_wideband_{G}' + (f'_{one_night}' if one_night else '')
         mem = group_members(G)
+        from exopipe.phase3.core.record import Refusal
+        try:
+            bm = NM.band_member(ctx.root, lst, G, one_night) if one_night and ex.admitted(lst, G, [one_night]) else None
+        except Refusal as e:    # an unreadable weights record or G-M01: the unit's record says so (parallel only prints)
+            unit_refused(ctx.run, name, str(e), False, None, tier=TIER, stage='wideband', lst=lst, group=G, nights=alln)
+            return
+        if bm:                  # the night's group windows are the batch chain's (Gregg 2026-11-13)
+            unit_no_input(ctx.run, name, NM.band_member_why(lst, one_night, G, bm), False, None, tier=TIER,
+                          stage='wideband', lst=lst, group=G, nights=alln,
+                          master_member={sb: [list(x) for x in m] for sb, m in bm.items()})
+            return
         ev = {sb: (wideband_arm_a(ctx, lst, sb, one_night), refine_complete(ctx, lst, sb)) for sb in mem}
         inputs = [p for sb in mem for p in (ev[sb][0][2], ev[sb][1][2]) if os.path.exists(p)] + [script]
         admitted = ex.admitted(lst, G, alln)

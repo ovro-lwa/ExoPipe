@@ -40,7 +40,8 @@ is always judged). Without --scopes - the per-hour chain - the bands that owe th
 records under this root: a subband when the night's job plan (the stack's admit record) holds a stack job of it; a
 wideband group unless the night's wideband unit <LST>_wideband_<G>_<night> ended no-input (the band rule or an exclusion
 left the group without a window of the night). The bands left out are named in the log with the reason, never dropped
-silently; a root without a job plan of the night keeps every band (each then refuses or enters on its own evidence).
+silently; a root without a job plan of the night keeps every band (each then refuses or enters on its own evidence). A
+band where the night IS in the window Masters keeps its unit, which ends no-input (T-2 above).
 
 Inputs (read only): <root>/<LST>_x2/<LST>_<night>/<band>/<S>/sublst_<LST>_<night>_<band>_<S>_w<k>_resid_loo.fits (S = I,
 V), <root>/<LST>/<LST>_<night>/<band>/I/sublst_<LST>_<night>_<band>_I_w<k>_pb.fits, the frozen deep weights of the band,
@@ -53,7 +54,11 @@ Failure modes (exit 2 = refused; every gate is checked before anything is writte
        frames tier's reader, core.exclusions.for_tier('sublst'): the builder's own per-night read, tree:98-108).
   T-2  the night has a co-add weight above 0 in the band (a member changes the PB_bin pixels: the batch stage `tree`),
        or no weight at all (not in the frozen deep weights and not on the non-member nights list), or the band has no
-       frozen deep weights file (the builder fails on it).
+       frozen deep weights file (the builder fails on it). A night that IS in the installed window Masters of the band
+       (lib/masters/sublst_nonmember.band_member: a weight above 0 in a window Master's weights record; a group when any
+       member subband is) ends the unit no-input before T-2 (exit 3, the per-hour chain goes on): its tree entry is the
+       batch stage's, as are its other 10-minute products (Gregg 2026-11-13). A weight above 0 in the frozen deep weights
+       of a night NOT in the window Masters still refuses T-2.
   T-3  no x2 residual of the night in the band, or no window with both Stokes.
   T-4  a residual without LSTBIN or DURATION, or with BINMSTR (the builder's refusal).
   T-5  a presented window without the night's window primary-beam map.
@@ -393,7 +398,8 @@ def owed_bands(ctx, lst, night, bands):
       - a wideband group is owed unless the record of the night's wideband unit <LST>_wideband_<G>_<night> says no-input
         (the band rule or an exclusion left the group without a window of the night); a group whose unit is done,
         refused, in error or absent keeps its unit here, which then enters the night or refuses (T-3) on what it finds;
-      - a root without a job plan of the night (the stack ran elsewhere, or has not run) keeps every band."""
+      - a root without a job plan of the night (the stack ran elsewhere, or has not run) keeps every band;
+      - a band where the night IS in the installed window Masters keeps its unit, which ends no-input (N-5 there)."""
     from exopipe.phase3.core import record
     from exopipe.phase3.core.record import Refusal
     from exopipe.phase3.lib.masters import sublst_nonmember as NM
@@ -407,6 +413,9 @@ def owed_bands(ctx, lst, night, bands):
     subbands = set(ctx.C.instrument.ALL_SUBBANDS)
     owed, rest = [], []
     for b in bands:
+        if NM.band_member(ctx.root, lst, b, night):
+            owed.append(b)              # its unit ends no-input: the night is in the band's window Masters (assess_night)
+            continue
         if b in subbands:
             if b in stacked:
                 owed.append(b)
@@ -426,7 +435,9 @@ def stage(ctx, lst, nights):
     """Run (or plan) the stage for the named nights of an LST hour: one unit per band of TREE_BANDS in the selection.
     With --scopes every named band has a unit (a band without an x2 residual of the night refuses T-3: it is recorded,
     never left out); without, the bands the night owes (owed_bands), the others named in the log."""
+    from exopipe.phase3.core.record import NoInput
     from exopipe.phase3.lib.frames import tier_sublst as F
+    from exopipe.phase3.lib.masters import sublst_nonmember as NM
     if not nights:
         F.unit_refused(ctx.run, f'{lst}_{STAGE}', f'the {STAGE} stage adds ONE named night to the tree: give --epochs '
                        f'<LST>_<date> (or --lsts with --nights); the tree of every night of an LST is `{BATCH_STAGE}`',
@@ -454,6 +465,10 @@ def stage(ctx, lst, nights):
                       if ctx.mirror else ''))
             for b in bands:
                 name = unit_name(lst, b, night)
+                bm = None if ex.is_excluded(lst, b, night) else NM.band_member(ctx.root, lst, b, night)
+                if bm:
+                    F.plan(f'    UNIT {name}: NO-INPUT - {NM.band_member_why(lst, night, b, bm)}')
+                    continue
                 a = assess(lst, b, night, x2, root, tree, cols, ex)
                 why, inputs = a['refuse'], None
                 if not why:
@@ -488,6 +503,12 @@ def stage(ctx, lst, nights):
                         and F.try_resume(ctx.run, ctx.args, name, unit_inputs(ctx, a0, lst, b, ex)[1], [night]):
                     return
             with ctx.run.unit(name, tier=F.TIER, stage=STAGE, lst=lst, band=b, night=night) as u:
+                # a night in the band's window Masters (an excluded one refuses T-1 below): its tree entry is the batch
+                # stage's (Gregg 2026-11-13)
+                bm = None if ex.is_excluded(lst, b, night) else NM.band_member(ctx.root, lst, b, night)
+                if bm:
+                    u.meta['master_member'] = {sb: [list(x) for x in m] for sb, m in bm.items()}
+                    raise NoInput(NM.band_member_why(lst, night, b, bm))
                 # before the lease, the refusals that need no look at the tree: an excluded cell (T-1) and a band with
                 # no x2 residual of the night (T-3, or T-2 before it); then a band without a tree (T-6)
                 if ex.is_excluded(lst, b, night) or not night_residuals(x2, lst, night, b):

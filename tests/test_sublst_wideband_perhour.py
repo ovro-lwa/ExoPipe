@@ -260,6 +260,63 @@ def test_the_dry_run_reads_the_same_evidence():
         assert not os.path.exists(os.path.join(t.root, '_records', 'frames', f'{LST}_wideband_{G}_{NIGHT}.json'))
 
 
+# =====================================================================================================================
+# a night IN the window Masters (Gregg 2026-11-13): the per-hour 10-minute steps end no-input
+# =====================================================================================================================
+
+def window_weights(t, sb, w, S='I', k=3):
+    """One installed window Master's weights record of (LST, sb) giving the night the weight w."""
+    p = os.path.join(t.root, f'{LST}_masters', sb, S, f'sublst_master_{LST}_{sb}_{S}_w{k}_weights.csv')
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    with open(p, 'w') as f:
+        f.write(f'night,weight\n2024-01-02,0.8\n{NIGHT},{w}\n')
+    open(p[:-len('_weights.csv')] + '.fits', 'w').close()             # membership counts an installed Master only
+
+
+def test_a_group_with_a_member_subband_ends_no_input():
+    with Root() as t:
+        name = f'{LST}_wideband_{G}_{NIGHT}'
+        for sb in t.members:
+            t.night_record(sb)
+        sb = t.members[1]
+        window_weights(t, sb, 0.0)                    # listed at weight 0: not a constituent, the gates and engine run
+        u = only(t.run()[0], name)
+        assert u.status == 'refused' and STUB_LINE in u.reason and len(t.calls) == 1, (u.status, u.reason)
+        window_weights(t, sb, 0.6)                    # a constituent of ONE member subband's window Master
+        u = only(t.run()[0], name)
+        assert u.status == 'no-input' and not t.calls, (u.status, u.reason, t.calls)
+        assert f'Masters of 1 member subband(s) ({sb})' in u.reason and "'sublst-lst'" in u.reason, u.reason
+        assert u.meta['master_member'] == {sb: [['I', 3, 0.6]]}, u.meta
+        units, out = t.run(dry_run=True)
+        assert not units and f'UNIT {name}: NO-INPUT - ' in out and not t.calls, out
+        # an LST-wide run is the batch chain's: membership does not apply
+        u = only(t.run(epochs=None, lsts=LST, nights=f'{NIGHT},2024-01-02')[0], f'{LST}_wideband_{G}')
+        assert u.status != 'no-input' or 'IS in the installed window' not in u.reason, (u.status, u.reason)
+
+
+def test_the_stack_of_a_member_subband_ends_no_input():
+    got = []
+
+    def stack_night(run, lst, night, subbands=None, **kw):
+        got.append(list(subbands or []))
+        return {'stack_units': [], 'jobs': [], 'left_out': []}
+
+    from exopipe.phase3.lib.masters import tier_sublst as MT
+    with Root() as t, Patch((MT, 'stack_night', stack_night)):
+        a, b = t.members[1], t.members[2]
+        window_weights(t, a, 0.9, S='V', k=0)
+        units, _out = t.run(stages='stack', scopes=f'{a},{b}')
+        from exopipe.phase3.lib.masters import sublst_nonmember as NM
+        u = only(units, NM.member_stack_unit_name(LST, NIGHT, a))   # its own name: never the night's stack unit
+        assert u.name != MT.stack_unit_name(LST, NIGHT, a), u.name
+        assert u.status == 'no-input' and 'w0 Stokes V weight 0.9' in u.reason, (u.status, u.reason)
+        assert u.meta['master_member'] == [['V', 0, 0.9]] and got == [[b]], (u.meta, got)
+        window_weights(t, b, 0.2)                     # every selected subband a member: no stack call at all
+        del got[:]
+        units, _out = t.run(stages='stack', scopes=f'{a},{b}')
+        assert sorted(x.status for x in units) == ['no-input', 'no-input'] and not got, ([(x.name, x.status) for x in units], got)
+
+
 def test_the_per_hour_chain_names_the_ten_minute_stages_in_order():
     """runner.CHAINS['epoch']: the 10-minute tier of ONE night is the list line + stack + arm A, the x2-aligned residual,
     the wideband groups + the tree entry, then the search and the catalog - each stage named (the tier's defaults are the
@@ -285,6 +342,35 @@ def test_the_per_hour_chain_names_the_ten_minute_stages_in_order():
     assert got[1][0] in FLOW.STAGES['sublst'] and got[1][0] not in CFG.flow.DEFAULT_STAGES['sublst']
     # the defaults would not make the night's residuals or its tree entry: the stages must be named
     assert tuple(S.STAGES['per-hour']) == ('stack',)
+
+
+def test_the_per_hour_chain_makes_the_night_cubes_before_the_ten_minute_tier():
+    """Gregg 2026-11-13: the 10-minute stack reads the night's 10-second cubes (G-S02), so CHAINS['epoch'] runs snapshot
+    frames, snapshot flow and `frames --tier snapshot --stages cube,movies` before the 10-minute steps, the rest of the
+    snapshot steps after them, and pages / serve / archive last."""
+    from exopipe.phase3.core import runner
+    steps = [a[:a.index('--epochs')] if '--epochs' in a else a for a in runner.chain_steps('epoch')]
+
+    def tier(a):
+        return a[a.index('--tier') + 1] if '--tier' in a else None
+
+    ten = [i for i, a in enumerate(steps) if tier(a) == 'sublst']
+    snap = [(i, a) for i, a in enumerate(steps) if tier(a) == 'snapshot']
+    before = [a for i, a in snap if i < ten[0]]
+    after = [a for i, a in snap if i > ten[-1]]
+    assert before == [['frames', '--tier', 'snapshot'], ['flow', '--tier', 'snapshot'],
+                      ['frames', '--tier', 'snapshot', '--stages', 'cube,movies']], before
+    assert [a[0] for a in after] == ['search', 'curves', 'catalog', 'forced'], after
+    assert all(i < ten[0] for i, a in enumerate(steps) if tier(a) == 'deep')
+    assert [a[0] for a in steps[snap[-1][0] + 1:]] == ['pages', 'serve', 'archive'], steps[snap[-1][0] + 1:]
+    T = CFG.frames_snapshot
+    args = argparse.Namespace(stages='cube,movies', from_stage=None, until_stage=None)
+    assert FT.requested_stages(args, T.ORDER, T.DEFAULT_STAGES) == ['cube', 'movies']    # known, in pipeline order
+    assert 'cube' not in T.DEFAULT_STAGES             # the default frames step makes no cube: the stage must be named
+    # every catalog step of the per-hour chain is incremental: steps/catalog.py takes --epochs only with --incremental (a
+    # usage error, exit 1, otherwise); a tier with no incremental path then refuses (exit 2) with its reason recorded
+    cats = [a for a in runner.chain_steps('epoch') if a[0] == 'catalog']
+    assert [tier(a) for a in cats] == ['deep', 'sublst', 'snapshot'] and all('--incremental' in a for a in cats), cats
 
 
 def main(argv):
