@@ -37,6 +37,7 @@ import csv
 import glob
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -104,6 +105,9 @@ def tree(d):
             if rel.endswith('incremental.log') or '/_records/' in p:
                 continue
             out[rel] = open(p, 'rb').read()
+            if rel == os.path.join('page_index', 'DIRTY'):   # the stale-index marker '<UTC stamp> <writer>' (build_detections_index
+                # .mark_run_dirty, exopipe_ops 2026-11-11): its writer is compared, its stamp (to the second) is the time of the write
+                out[rel] = re.sub(rb'(?m)^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ ', b'', out[rel])
     return out
 
 
