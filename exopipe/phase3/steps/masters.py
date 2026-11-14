@@ -46,7 +46,9 @@ build,pbmaps,vclean,fluxscale,verify - stage-in runs alone, BEFORE the flow step
              coadd_final/build_stats.superseded_<UTC>.json).
   admit-prep on demand (D-ADMIT, after build-stats): the nights an installed cell admits (in no record of its build,
              survey image newer than the build's night record, not excluded; --epochs restricts, the only deep stage
-             that takes it), the reference (the installed masters / their pixel factor -> <cell>/admit/ref/) and each
+             that takes it - given alone (the per-hour form, `--epochs <LST>_<date>`), it selects every cell of the named LSTs
+             and a night no cell has to admit ends no-input instead of refused), the reference (the installed masters /
+             their pixel factor -> <cell>/admit/ref/) and each
              night's flow input by the co-add's per-night prep (coadd.prep_night) -> <cell>/admit/prep/<date>_scaled.fits
              [flow_prep_scaled]; same cell-tree rule. Then `exopipe3 flow --tier deep --stages admit` flows them.
   admit      on demand (D-ADMIT slice 4), after the flow step's admit stage: each prepared night aligned to the installed
@@ -105,7 +107,7 @@ Failure modes (exit 2 = refused, the gate named in the record; 3 = no input; 1 =
   another host refuses (site NODE_LOCAL_ROOTS; chain_cell.sh:17).
   Window: --set on a key in a section's PROTECTED_KEYS (pinned inputs, ruling-fixed values, and every MIRROR of a literal
   inside the in-place code) refuses (exit 2, config.py). --nights refuses for the deep tier, --epochs too except
-  for admit-prep alone (exit 2).
+  for the admission stages admit-prep / admit (exit 2).
   Inherited P3_* environment variables are removed before the in-place modules are imported (recorded in the build note).
 """
 import importlib

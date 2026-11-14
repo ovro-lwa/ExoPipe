@@ -130,12 +130,16 @@ def select_cells(args, out=None):
     if getattr(args, 'nights', None):
         raise Refusal('--nights is refused for --tier deep: a deep master is built from every admitted night of the cell '
                       '(exclusions are data_decisions.csv rows, never a command-line subset)')
+    derived = epochs_only(args)
     if args.cells:
         cells = C.expand_cells(args.cells)
     elif getattr(args, 'lsts', None) or getattr(args, 'scopes', None):
         lsts = C.expand(args.lsts, universe=C.LSTS, kind='LST') if args.lsts else list(C.LSTS)
         scs = C.expand(args.scopes, universe=C.scopes(), kind='scope') if args.scopes else list(C.scopes())
         cells = [f'{l}_{s}' for l in lsts for s in scs]
+    elif derived:                                      # the per-hour form: --epochs alone,
+        lsts = C.epoch_lsts(args.epochs)               # every cell of the named LSTs (as `search --tier deep --epochs`)
+        cells = [x for x in C.all_cells() if x.split('_', 1)[0] in lsts]
     else:
         raise SystemExit('masters --tier deep: give --cells (e.g. 23h_23MHz, 04h_*, @list) or --lsts/--scopes')
     if getattr(args, 'exclude_cells', None):
@@ -147,11 +151,22 @@ def select_cells(args, out=None):
         cells, why = _admission_cells(args, cells, out or default_out(args))
         if not cells:
             told = '; '.join(f'{c} {d}: {w}' for c, ws in sorted(why.items()) for d, w in ws.items())
-            raise Refusal(f'--epochs names no night that a selected cell has to admit (it names {sorted(lsts)}'
-                          + (f'; {told[:600]}' if told else '') + '): no cell selected, no record changed')
+            msg = (f'--epochs names no night that a selected cell has to admit (it names {sorted(lsts)}'
+                   + (f'; {told[:600]}' if told else '') + '): no cell selected, no record changed')
+            if derived:                                # per-hour chain: a night no cell of its LST has to admit (a member,
+                raise NoInput(msg)                     # excluded, already admitted, no Phase-2 image) is nothing to do here
+            raise Refusal(msg)
     for x in cells:
         C.parse_cell(x)
     return cells
+
+
+def epochs_only(args):
+    """True when --epochs is the only cell selector (no --cells, --lsts, --scopes): the per-hour form (`--epochs
+    <LST>_<date>` alone, as runner.CHAINS['epoch'] gives its steps). The admission stages then take every cell of the named
+    LSTs, and a night that no cell has to admit ends no-input (a chain goes on) instead of refused."""
+    return bool(getattr(args, 'epochs', None)) and not (getattr(args, 'cells', None) or getattr(args, 'lsts', None)
+                                                       or getattr(args, 'scopes', None))
 
 
 def done_record(out, stage, cell):

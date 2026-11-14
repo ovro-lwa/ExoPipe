@@ -604,6 +604,14 @@ def test_admit_prep():
           'cell: refused (exit 2) - never every night, and the cell\'s record is not replaced by "no input"',
           rc == 2 and rc2 == 2 and 'names no night that a selected cell has to admit' in txt + txt2
           and json.load(open(rp)) == before, (rc, rc2, txt[-200:], txt2[-200:]))
+    p = subprocess.run([sys.executable, '-m', 'exopipe.phase3', 'masters', '--tier', 'deep', '--stages', 'admit-prep',
+                        '--epochs', f'13h_{night}', '--deep-installed-root', wt, '--dry-run', '--cores', 'none', '--out',
+                        out], cwd=REPO, env=dict(os.environ), capture_output=True, text=True, timeout=1800)
+    txt = p.stdout + p.stderr
+    check('admit-prep per-hour form (--epochs alone, dry run): every cell of the LST is planned - the copied cell plans its '
+          'new night, the 18 cells absent from the tree would be refused (never skipped) - and nothing is written',
+          f'== admit-prep_{cell}' in txt and night in txt and '19 cell(s)' in txt and '18 unit(s) would be refused' in txt
+          and json.load(open(rp)) == before, (p.returncode, txt[-600:]))
     bsp = os.path.join(cd, 'coadd_final', 'build_stats.json')
     good = open(bsp).read()
     st = json.loads(good)

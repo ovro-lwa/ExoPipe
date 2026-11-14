@@ -225,6 +225,46 @@ def test_epochs_select_cells():
         FD.run_admit, FD.plan_admit = real_ra, real_pa
     check('the flow step\'s run() selects by --epochs before the stage and before its dry-run plan; none selected refuses',
           seen == [('run', '13h_78MHz'), ('plan', ('13h_78MHz',))] and 'no cell selected' in r_, (seen, r_))
+    test_epochs_only_per_hour_form(sel_out)
+
+
+def test_epochs_only_per_hour_form(sel_out):
+    """The per-hour form, --epochs <LST>_<date> alone (no --cells / --lsts / --scopes): the admit stage takes every cell of
+    the named LSTs, selects of those the cells whose done admit-prep record prepared the night, and a night prepared in no
+    cell is no input (exit 3, a chain goes on) - with --cells it stays refused (above). Build flow stages still refuse
+    --epochs. The masters admission stages select the same way: on the real installed 14h tree (read only) a night no cell
+    has to admit is no input."""
+    from exopipe.phase3.core import cells as C
+    from exopipe.phase3.core.record import NoInput
+    from exopipe.phase3.lib.masters import deep_stages as DS
+    c13 = [c for c in C.all_cells() if c.startswith('13h_')]
+    got = FD.items(args(cells=None, epochs='13h_2025-01-10'), admit=True)
+    try:
+        FD.items(args(cells=None, epochs='13h_2025-01-10'))
+        build = 'no refusal'
+    except Refusal as e:
+        build = str(e)
+    sel = FD.admit_cells(args(cells=None, epochs='13h_2025-01-10'), sel_out, got)
+    outcomes = []
+    for f in (lambda: FD.admit_cells(args(cells=None, epochs='13h_2025-01-11'), sel_out, got),
+              lambda: FD.run(args(cells=None, epochs='13h_2025-01-11', flow_stages=['admit']),
+                             record.Run('flow', ['test'], sel_out, CFG, config_sections=())),
+              lambda: DS.select_cells(argparse.Namespace(cells=None, epochs='14h_2025-01-01', nights=None, lsts=None,
+                                                         scopes=None, exclude_cells=None, stages_resolved=['admit-prep']),
+                                      os.path.join(T, 'sel_out_perhour'))):
+        try:
+            f()
+            outcomes.append('no exception')
+        except NoInput as e:
+            outcomes.append(('no-input', str(e)))
+        except Refusal as e:
+            outcomes.append(('refused', str(e)))
+    check('per-hour form (--epochs alone): the admit stage takes every cell of the LST (19), the build flow stages still '
+          'refuse --epochs, the cell whose admit-prep prepared the night is selected, and a night prepared in no cell is no '
+          'input in admit_cells, in run(), and in masters select_cells (real 14h tree)',
+          sorted(got) == sorted(c13) and len(got) == 19 and 'except --stages admit' in build and sel == ['13h_78MHz']
+          and [o[0] for o in outcomes] == ['no-input'] * 3 and 'no cell selected' in outcomes[0][1]
+          and 'names no night that a selected cell has to admit' in outcomes[2][1], (len(got), build, sel, outcomes))
 
 
 def test_read_only():
