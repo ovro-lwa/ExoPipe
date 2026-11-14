@@ -2240,7 +2240,9 @@ def test_start_registers():
         want = plan.argv(V, '2026-11-02 06:00 UT')[2:]
         del want[want.index('--port'):want.index('--port') + 2]
         assert '--port' not in e['argv'] and e['argv'] == want, (e['argv'], want)
-        assert e['env'] == {k: v for k, v in sorted(plan.server_env_extra().items()) if k.startswith('P3_')}
+        # the tier's P3_ variables + the FITS cutouts button of a review page (config serve.CUTOUTS_TIER: deep; its own id)
+        assert e['env'] == dict({k: v for k, v in sorted(plan.server_env_extra().items()) if k.startswith('P3_')},
+                                P3_CUTOUTS_TIER='deep', P3_PAGE_ID='p29766'), e['env']
         assert (e['legacy_port'], e['inspection_legacy_port'], e['greenlit'], 'inspection_title' in e) == (29766, 29796, True, False)
         assert reg['p29768']['greenlit'] is False and reg['p29768']['inspection_title'] is None
         assert e['title'] == e['argv'][e['argv'].index('--title') + 1] and 'served 2026-11-02 06:00 UT' in e['title']
@@ -2406,7 +2408,10 @@ def test_production_readonly():
             mine = mine[2:i] + mine[i + 2:]
             assert mine == e['argv'], (tier, pg.key, [x for x in zip(mine, e['argv']) if x[0] != x[1]][:3])
             env = {k: v for k, v in p.server_env_extra().items() if k != 'NUMPY_MADVISE_HUGEPAGE'}
-            assert env == e['env'], (tier, pg.key, env, e['env'])
+            # the tier's server environment; the page's own FITS cutouts keys (register.page_entry) are compared with the
+            # whole entry below
+            live_env = {k: v for k, v in e['env'].items() if k not in ('P3_CUTOUTS_TIER', 'P3_PAGE_ID')}
+            assert env == live_env, (tier, pg.key, env, e['env'])
             n_pages += 1
             n_chain += '--mchain-queue' in mine
     assert n_pages == 8 and n_chain == 4, (n_pages, n_chain)
