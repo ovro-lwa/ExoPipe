@@ -381,6 +381,12 @@ def test_detect_seeds_through_seed_attempt_and_the_plan_holds_the_gate():
     eng = open(ENGINE).read()
     assert "cadence='deep', nonmember_nights=None):" in eng
     assert "and _kd(d) not in _nm10):" in eng and "_wr = {**_wr, **_nm10}" in eng
+    # a night handed as a non-member and found in the co-add record refuses over EVERY row of weights.csv (with a value or
+    # not) and BEFORE the minimum-nights branch of the Stokes I sanity gate: the provenance gate above exempts the night
+    # whatever that branch does (code review of pull request 30)
+    i_nm = eng.index("_nmw = sorted(set(_nm10) & {r['date'] for r in _wrows})")
+    i_min = eng.index("Stokes I sanity gate, nights with a qa3 rms")
+    assert i_nm < eng.index("handed as outside the window Masters are in the co-add record") < i_min
 
 
 def test_seed_state_names_a_record_changed_since_the_seed():

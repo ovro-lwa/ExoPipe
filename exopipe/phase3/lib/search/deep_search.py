@@ -1757,12 +1757,13 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
         _wr = {r['date']: float(r['qa3_rms_mjy']) for r in _wrows
                if r.get('qa3_rms_mjy') not in (None, '', 'nan')}
         _fin = sorted(v for v in _wr.values() if np.isfinite(v) and v > 0)
+        _nmw = sorted(set(_nm10) & {r['date'] for r in _wrows})            # PER-HOUR 10-minute: a night of the build is no non-member -
+        if _nmw:                                                           # EVERY row of the record (with a value or not), and before
+            raise RuntimeError(f'{lst} {scope}: night(s) {_nmw} handed as outside the window Masters are in the co-add record '   # the
+                               f'{base}/coadd_final/weights.csv - REFUSING')   # minimum-nights branch: the provenance gate exempts them
         if _enough(len(_fin), SANITY_MIN_NIGHTS, f'{lst} {scope}: Stokes I sanity gate, nights with a qa3 rms', perhour=_ph):   # WAVE2 B-30
             _med = _fin[len(_fin) // 2]
             _wr = {**_wr, **_ADS.values(_adm, 'qa3_rms_mjy')}                # WAVE2 D-ADMIT: an admitted night's own value, after the median
-            if set(_nm10) & set(_wr):                                      # PER-HOUR 10-minute: a night of the build is no non-member
-                raise RuntimeError(f'{lst} {scope}: night(s) {sorted(set(_nm10) & set(_wr))} handed as outside the window Masters '
-                                   f'are in the co-add record {base}/coadd_final/weights.csv - REFUSING')
             _wr = {**_wr, **_nm10}                                         # the non-member night's own value, after the median
             _unm_qa3 = {d for d in dates if not (_wr.get(_kd(d), 0) > 0)}   # WAVE2 B-30: unmeasured (named after (1e))
             _bad = [d for d in dates

@@ -10,7 +10,9 @@ over EVERY refusal file of the cell, drop-patch rows aside), only the frames the
 unchanged; a newest tag that is not older than the append's refuses. A night outside the window Masters
 (tier_sublst.nonmember_admission): a night of the co-add copy's record is the build's (None); else the night is admitted by
 its own done tree-entry record and takes its Stokes I sanity value from the deep cell's admissions.csv row, whatever the
-verdict; no record, no row (a deep cell with the master dewarp named), or a row without the value leave it unadmitted.
+verdict; no record, no row (a deep cell with the master dewarp named), a row made into another Master than the installed
+one, or a row without the value leave it unadmitted. The step lists the record as a product (class gate_population), so
+its content test runs at verify and publish.
 NOT checked here: the engine's use of the records on frames (a run on real data, in the pull request's record).
 Run: python tests/test_search_gate_population_tenmin.py
 """
@@ -107,6 +109,22 @@ def test_record_and_reader():
     check('the new night\'s windows are judged by the frozen median alone: above 2.0 x it refused, exactly at it and '
           'unmeasured kept (its own values, one of them 50 x larger, move nothing); a thin row refuses none',
           got == ['2025-10-30T01', '2025-10-30T02'] and GP.judge(thin, new, sorted(new)) == [], got)
+    # the 10-minute step registers the record as a product, so its content test runs at verify and publish (code review of
+    # pull request 30): a good record passes, the inconsistent one above fails
+    from exopipe.phase3.lib.search import tests as ST
+    plan = dict(label='SLST02B', cell=CELL, stokes='I', band=BAND, coadd=os.path.join(T, 'no_coadd'))
+    out = {}
+    for name, src in (('good', d), ('bad', bad)):
+        root = os.path.join(T, f'products_{name}')
+        rr = TS._run_root(root, plan['label'])
+        os.makedirs(rr)
+        shutil.copy(os.path.join(src, GP.FILE), os.path.join(rr, GP.FILE))
+        mine = [(p, cls, ctx) for p, cls, ctx in TS.products(root, plan) if os.path.basename(p) == GP.FILE]
+        out[name] = (mine, [ST.frozen_gate_population(p, **ctx)[0] for p, _c, ctx in mine])
+    check('the step lists gate_population.csv as a product of class gate_population, with the cell: its content test passes '
+          'the good record and fails the inconsistent one',
+          [(c, x.get('cell')) for _p, c, x in out['good'][0]] == [('gate_population', CELL)]
+          and out['good'][1] == [True] and out['bad'][1] == [False], out)
 
 
 def _write(refdir, gate, rows):
@@ -153,7 +171,7 @@ def test_nonmember_admission():
     deep = os.path.join(deep_root, CELL)
     for d in (os.path.join(coadd, 'coadd_final'), os.path.join(deep, 'coadd_final')):
         os.makedirs(d)
-    cfg0, ref0 = TS.cfg, A.installed_reference
+    cfg0, ref0, ident0 = TS.cfg, A.installed_reference, A.master_identity
     TS.cfg = lambda: types.SimpleNamespace(paths=types.SimpleNamespace(COADD_SB_ROOT=deep_root))
     try:
         new, member = '2025-10-30', '2024-12-27'
@@ -183,12 +201,14 @@ def test_nonmember_admission():
         check('no row in a deep cell that carries the master dewarp: named (a census can count it)',
               n3['value'] is None and 'MDWARP' in n3['value_text'] and 'admit.mdwarp' in n3['value_text'], n3)
         adm = os.path.join(deep, 'coadd_final', A.ADMISSIONS)
+        A.master_identity = lambda cell_dir: ('CDG-INSTALLED', 'md5-installed')
 
-        def rows(*rr):
+        def rows(*rr, ref=('CDG-INSTALLED', 'md5-installed')):
             with open(adm, 'w', newline='') as f:
-                w = csv.DictWriter(f, ['date', 'verdict', 'reason', 'qa3_rms_mjy'])
+                w = csv.DictWriter(f, ['date', 'verdict', 'reason', 'qa3_rms_mjy', 'reference_constdig', 'reference_md5'])
                 w.writeheader()
-                w.writerows(rr)
+                w.writerows(dict(r, reference_constdig=r.get('reference_constdig', ref[0]),
+                                 reference_md5=r.get('reference_md5', ref[1])) for r in rr)
         rows(dict(date=new, verdict='refused', reason='alignment: off the master grid', qa3_rms_mjy=''))
         n4 = call(new)
         check('a row refused at alignment holds no value: no value, the row\'s verdict and reason named',
@@ -201,8 +221,27 @@ def test_nonmember_admission():
               'night\'s row is not read', n5['entry_ok'] and n5['value'] == 1234.56 and "'refused'" in n5['value_text'], n5)
         rows(dict(date=new, verdict='admitted', reason='', qa3_rms_mjy='310.25'))
         check('an admitted row gives its value', call(new)['value'] == 310.25)
+        # code review of pull request 30: only a row made into the INSTALLED Master is read
+        rows(dict(date=new, verdict='admitted', reason='', qa3_rms_mjy='99.00'), ref=('CDG-EARLIER', 'md5-installed'))
+        n6 = call(new)
+        rows(dict(date=new, verdict='admitted', reason='', qa3_rms_mjy='99.00'), ref=('CDG-INSTALLED', 'md5-rebaked'))
+        n7 = call(new)
+        check('a row made into another Master (another constituent digest, or the same nights and other data) gives no '
+              'value, and both Masters are named',
+              n6['value'] is None and 'another Master' in n6['value_text'] and 'CDG-EARLIER' in n6['value_text']
+              and 'CDG-INSTALLED' in n6['value_text'] and n7['value'] is None and 'md5-rebaked' in n7['value_text'], (n6, n7))
+        rows(dict(date=new, verdict='admitted', reason='', qa3_rms_mjy='99.00', reference_constdig='CDG-EARLIER'),
+             dict(date=new, verdict='refused', reason='night-image check FAIL: x', qa3_rms_mjy='410.50'),
+             dict(date=new, verdict='admitted', reason='', qa3_rms_mjy='77.00', reference_md5='md5-earlier'))
+        n8 = call(new)
+        check('of several rows of the night, the last one made into the installed Master is read',
+              n8['value'] == 410.5 and "'refused'" in n8['value_text'], n8)
+        A.master_identity = lambda cell_dir: ('', '')
+        n9 = call(new)
+        check('a deep cell without an installed Master: no row can be its own, no value',
+              n9['value'] is None and 'another Master' in n9['value_text'], n9)
     finally:
-        TS.cfg, A.installed_reference = cfg0, ref0
+        TS.cfg, A.installed_reference, A.master_identity = cfg0, ref0, ident0
 
 
 def main():
