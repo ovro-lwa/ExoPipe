@@ -18,6 +18,7 @@ the per-tier evaluation without removals reproduces the batch's served_tiers.csv
 
 Child entry (Python 3.6, the standard library + clv15 + deep_omission.py loaded from its file): python rejudge.py JOB.json
   job: run, decisions (deep_omission.csv), proto (the fleet root), names (the fleet file names), card2 (the run's Card 2 det_uids),
+  elev1min (its 1-minute elevation-floor det_uids, b114ff3),
   clv15 (the chain's root), samples_dir, deep_omission_py, result (the JSON written: the touched (source, tier) rows in production's
   order, the counts, the removed detections by reason in first-seen order, the 3-D-gate neighbours). REFUSING + exit 2 on a gate.
 """
@@ -220,8 +221,9 @@ def rejudge(run, removed, samples_dir, log=print):
     return out, n, rem_uid, g3d_nb
 
 
-def removed_fn(DO, dec_rows, recs, c2_uids):
-    """removed(record_row) of snapshot_rejudge.run_inputs: 'omit' (the deep omission per image), 'card2', 'omit;card2' or ''.
+def removed_fn(DO, dec_rows, recs, c2_uids, el_uids=frozenset()):
+    """removed(record_row) of snapshot_rejudge.run_inputs (b114ff3): the ';'-joined reasons among 'omit' (the deep omission per
+    image), 'card2' and 'elev1min' (the 1-minute elevation floor, deep_omission.elev1min_removed), in that order, or ''.
     The omission is deep_omission.Omission (the decisions per image, its member tables under the fleet root); its count of
     images absent from a member table is returned with it."""
     om = DO.Omission(dec_rows, recs)
@@ -231,7 +233,8 @@ def removed_fn(DO, dec_rows, recs, c2_uids):
         k = (lst, r["subband"], date, r["stokes"], r["tier"])
         o = om.key(k, r["ts"])
         c2 = r["det_uid"] in c2_uids
-        return "omit;card2" if (o and c2) else ("omit" if o else ("card2" if c2 else ""))
+        el = r["det_uid"] in el_uids
+        return ";".join(w for w, on in (("omit", o), ("card2", c2), ("elev1min", el)) if on)
     return removed, om
 
 
@@ -253,8 +256,9 @@ def child_main(job_path):
         dec = list(csv.DictReader(f))
     recs = DO.SnapshotRecords(job["proto"], DO.Reader(workers=1), names=job["names"])
     c2 = set(job["card2"])
+    el = set(job.get("elev1min") or ())        # b114ff3; a job written before it carries none
     try:
-        removed, om = removed_fn(DO, dec, recs, c2)
+        removed, om = removed_fn(DO, dec, recs, c2, el)
         out, n, rem_uid, g3d = rejudge(job["run"], removed, job["samples_dir"], log=lambda *a: None)
     except (RejudgeRefusal, DO.OmissionRefusal) as e:
         print("REFUSING: re-judging %s: %s" % (os.path.basename(job["run"]), e), flush=True)

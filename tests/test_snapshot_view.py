@@ -237,7 +237,8 @@ def batch_run(root, name, idents, cells, extra_files=(), card2=()):
     '<identity>_<cell>_<band>' and the best detection's ts / subband; members '<identity>_<cell>_<band>'), page directories per
     (band, tier) with panels (.png + .page.json per detection, astrometry.png, ``extra_files``), the queues with their header
     lines, card2_filter.csv, card2_vleak.csv (every 10-s Stokes V detection; ``card2`` = the cand_ids Card 2 flags, a row not
-    evaluated, a flagged row the chain did not serve). idents: [(J, (ra, dec, err_arcsec), [detections])]."""
+    evaluated, a flagged row the chain did not serve), FLUXSCAL_APPLIED.json with no scaled hour-band (production's flux-scale
+    gate, exopipe_ops 5c49199). idents: [(J, (ra, dec, err_arcsec), [detections])]."""
     run = os.path.join(root, name)
     gen = collections.defaultdict(list)
     per = collections.defaultdict(list)
@@ -307,6 +308,8 @@ def batch_run(root, name, idents, cells, extra_files=(), card2=()):
                 f.write(f'{d["cand_id"]},keep\n')
         f.write('shared_row,keep\n')
     card2_file(run, idents, card2)
+    with open(os.path.join(run, 'FLUXSCAL_APPLIED.json'), 'w') as f:
+        json.dump({'factors': {}}, f)
     return run
 
 
@@ -389,6 +392,13 @@ def world(name='world', seed=31):
                                             det('05h', N[0], 'Green', 'I', '10s', 15, 9.5, 84.0, 36.0),     # 46 MHz: omitted per
                                             det('05h', N[1], '23MHz', 'I', '10s', 13, 16.0, 84.0, 36.0)]),  # image; frame 15 not
         ('J0612+2200', (93.0, 22.0, 60.0), [det('06h', N[1], 'Red', 'I', '10s', 14, 16.0, 93.0, 22.0)]),    # fail closed (06h)
+        # the 1-minute elevation floor (b114ff3): elev_bin -1 1-min detections, re-measured at their block's middle - at dec
+        # -55 deg below 30 deg at every time (removed: its member row and panel leave the 1-min page, which keeps a later
+        # block's detection and is re-pointed to it; the 10-s one stays), at dec +89 deg 37 +- 1 deg (kept)
+        ('J0524-5500', (81.0, -55.0, 60.0), [det('05h', N[0], '23MHz', 'I', '10s', 16, 15.0, 81.0, -55.0),
+                                             dict(det('05h', N[0], '23MHz', 'I', '1min', 17, 14.0, 81.0, -55.0), elev_bin='-1'),
+                                             det('05h', N[0], '23MHz', 'I', '1min', 45, 12.5, 81.0, -55.0)]),
+        ('J0528+8900', (82.0, 89.0, 60.0), [dict(det('05h', N[1], '23MHz', 'I', '1min', 17, 13.0, 82.0, 89.0), elev_bin='-1')]),
     ]
     c2['A'] = {a[5][2][1]['cand_id']}
     b = [  # batch B: 05h nights 3-4, 06h night 3
@@ -605,7 +615,14 @@ def test_drift():
     assert 'd.get("tier") == "10s" and d.get("stokes") == "V"' in src
     assert 'CARD2_RATIO = 0.05' in srj and _cfg().catalog_omission.CARD2_RATIO == 0.05
     assert 'return JC_C2[(r, J, cand)] > 0 and JC_C2[(r, J, cand)] == JC_ALL[(r, J, cand)]' in src
-    assert 'if pm and S == "V" and T == "10s" and JC_C2 and jc_card2(' in src
+    assert 'if pm and ((S == "V" and T == "10s") or T == "1min") and JC_C2 and jc_card2(' in src
+    # the 1-minute elevation floor (b114ff3) and the flux-scale gate (5c49199)
+    assert 'def elev1min_removed(run):' in srj and 'lsts[r["ts"]] = lst_deg_at(datetime.strptime(r["ts"], "%Y%m%d_%H%M%S")' \
+        '.replace(tzinfo=timezone.utc).timestamp() + 30.0)' in srj and DO.ELEV1MIN_RULING in src
+    assert 'kind="card2 member row" if T == "10s" else "elevation-floor member row"' in src and \
+        'kind="card2 panel" if T == "10s" else "elevation-floor panel"' in src
+    assert 'return ";".join(w for w, on in (("omit", om), ("card2", c2), ("elev1min", el)) if on)' in srj
+    assert 'if d.get("status") != "ok" or abs(d["factor"] - v) > 2e-6:' in src and 'mk = os.path.join(r, FS.APPLIED_RUN_FILE)' in src
     # the decisions (dde1760 / dbc40a6): the member reasons, the members' order, the fail-closed rule, the rate population
     flat_d = sdo.replace("'\n                                      '", '')
     assert DO.snapshot_member_image_reason('%s', '%s') in flat_d.replace("' % (', '.join(sorted(why)), g))", '')
@@ -687,8 +704,14 @@ def test_parity():
     kinds = collections.Counter(x['kind'] for x in rec)
     assert summ['multi_batch_identities'] >= 2 and summ['renamed'] >= 1, summ
     for k in ('detection', 'identity dropped', 'source dropped', 'member row', 'panel', 'source partial', 'card2 detection',
-              'card2 member row', 'card2 panel', 'source re-judged', 'member row re-judged'):
+              'card2 member row', 'card2 panel', 'source re-judged', 'member row re-judged', 'elevation-floor 1min detection',
+              'elevation-floor member row', 'elevation-floor panel'):
         assert kinds.get(k), (k, kinds)
+    # b114ff3: J0524-5500's dec -55 deg 1-min detection removed, J0528+8900's dec +89 deg one kept (both elev_bin -1)
+    assert {x['identity'] for x in rec if x['kind'] == 'elevation-floor 1min detection'} == {'J0524-5500'}, rec
+    el = summ['elev1min']
+    assert (el['rows_1min_elev_bin_minus1'], el['below_floor_records'], el['below_floor_served'], el['removed_from_view']) == \
+        (2, 1, 1, 1), el
     # dde1760: a per-image wideband key (05h Green I night 1, 46 MHz omitted) omitted one Green detection (its frame holds 46
     # MHz) and kept the other (a frame stacked without it); a fail-closed key (06h, no member table) dropped J0612+2200
     assert summ['deep_omission']['omit_wb_image_keys'] >= 1, summ['deep_omission']
@@ -1069,6 +1092,24 @@ def test_incomplete_inputs():
         assert not os.path.exists(bout) and not os.path.exists(bout + '.part'), name
 
 
+def test_fluxscal_gate():
+    """G-V12 (exopipe_ops 5c49199, R-GREGG-20261112-FLUXSCAL-ONE-FACTOR-POST-HOC): the build refuses a batch without
+    FLUXSCAL_APPLIED.json, and a batch whose applied hour-band no longer has status ok and that factor
+    (snapshot_fluxscal.band_factors, in place: here a cell with no light-curve table), naming the batch; nothing written."""
+    W = shared_world()
+    od = os.path.join(W['out'], 'snapshot', 'deep_omission', VIEW)
+    runs = _copy_runs(W, 'fs')
+    mk = os.path.join(runs[1], 'FLUXSCAL_APPLIED.json')
+    for name, fix, want in (('none', lambda: os.remove(mk), 'G-V12 %s has no FLUXSCAL_APPLIED.json' % runs[1]),
+                            ('changed', lambda: json.dump({'factors': {'05h_2099-01-01|23MHz': 1.25}}, open(mk, 'w')),
+                             'G-V12 %s - 1 hour-band(s) changed since the flux-scale apply' % runs[1])):
+        fix()
+        out = os.path.join(W['root'], 'fs_build_' + name, VIEW)
+        rc, log = _build_job(W, od, out, runs=runs)
+        assert rc == 2 and want in log, (name, rc, log[-1200:])
+        assert not os.path.exists(out) and not os.path.exists(out + '.part'), name
+
+
 def test_stale_omit():
     """F5 (V_combview review): the build applies only an omit product whose decisions are CURRENT - G-V8 re-decides from the
     refusal record and fleet records the build reads (with the served counts the product records) and refuses a product
@@ -1405,7 +1446,7 @@ def test_ready():
 
 
 TESTS = [test_production_pin, test_drift, test_py36, test_parity, test_repoint, test_kept_refusals, test_gates, test_filtercat_procs,
-         test_incomplete_inputs, test_stale_omit, test_copy_fallback, test_content, test_m1_mutation, test_figure_seed, test_ready]
+         test_incomplete_inputs, test_fluxscal_gate, test_stale_omit, test_copy_fallback, test_content, test_m1_mutation, test_figure_seed, test_ready]
 
 
 def main(argv):
