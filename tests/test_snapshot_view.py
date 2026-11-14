@@ -1110,6 +1110,68 @@ def test_fluxscal_gate():
         assert not os.path.exists(out) and not os.path.exists(out + '.part'), name
 
 
+def test_fluxscal_inputs():
+    """Review of PR 57, F1: the build unit records G-V12's inputs, so a serve stage's require_done (G28) refuses a view whose
+    flux-scale gate would now refuse. The shared world's build record holds every batch's FLUXSCAL_APPLIED.json. On synthetic
+    roots: a scaled subband records its light-curve table and noise table; a scaled wideband (Red, without 18 MHz) its members'
+    tables, its own and its members' noise tables and wideband_members_I.csv; a missing file is not recorded; a light-curve
+    table rewritten after the record (its FLUXSCAL card) and a FLUXSCAL_APPLIED.json rewritten after it each make require_done
+    refuse."""
+    from astropy.io import fits
+    from exopipe.phase3.config import CFG
+    from exopipe.phase3.core import record
+    from exopipe.phase3.core.record import Refusal
+    from exopipe.phase3.lib.serve import flow
+    W = shared_world()
+    rec = unit_records(W['out'])[f'snapshot_{VIEW}_build']
+    want = {os.path.abspath(os.path.join(r, 'FLUXSCAL_APPLIED.json')) for r in W['runs']}
+    assert rec['status'] == 'done' and want <= set(rec['inputs']), sorted(want - set(rec['inputs']))
+    SV = _SV()
+    root = os.path.join(W['root'], 'fsin')
+    shutil.rmtree(root, ignore_errors=True)
+    lc, srch, run, out = (os.path.join(root, x) for x in ('lc', 'search', 'Run_SNAPB_FS', 'out'))
+    cell = '05h_2025-06-01'
+    for d in (os.path.join(lc, cell), os.path.join(srch, cell), run):
+        os.makedirs(d)
+    tab = {sb: os.path.join(lc, cell, f'{cell}_{sb}_I_lightcurves.fits') for sb in ('23MHz', '27MHz', '32MHz', '36MHz')}
+    for p in tab.values():
+        h = fits.PrimaryHDU()
+        h.header['FLUXSCAL'], h.header['NREFSCAL'] = 1.1, 10
+        h.writeto(p)
+    noise = {b: os.path.join(srch, cell, f'noise_{b}_I_median.csv') for b in ('23MHz', 'Red')}
+    for p in noise.values():
+        open(p, 'w').write('x\n')
+    members = os.path.join(srch, cell, 'wideband_members_I.csv')
+    open(members, 'w').write('group,members\n')
+    mk = os.path.join(run, 'FLUXSCAL_APPLIED.json')
+    json.dump({'factors': {f'{cell}|23MHz': 1.1, f'{cell}|Red': 1.1}}, open(mk, 'w'))
+    CFG.authorize(out=out)
+    try:
+        rr = record.Run('serve', ['test'], out, CFG)
+        with rr.unit('fsin_build', stage='build', tier='snapshot') as u:
+            n = SV.fluxscal_inputs(u, [run], lc_root=lc, search_root=srch)
+            open(os.path.join(root, 'built.txt'), 'w').write('x\n')            # an output: the unit ends done
+            u.add_output(os.path.join(root, 'built.txt'), 'test_output', test=False)
+        got = set(u.inputs)
+        exp = {os.path.abspath(p) for p in [mk, members, *tab.values(), *noise.values()]}
+        assert u.status == 'done' and n == len(exp) and got == exp, (u.status, n, sorted(got ^ exp))
+        flow.require_done(rr, 'fsin_build', 'the test')                     # unchanged: stands
+        for label, p, fix in (('table', tab['32MHz'], lambda p: fits.setval(p, 'FLUXSCAL', value=1.2)),
+                              ('applied', mk, lambda p: open(p, 'a').write(' '))):
+            keep = open(p, 'rb').read()
+            fix(p)
+            try:
+                flow.require_done(rr, 'fsin_build', 'the test')
+                raise AssertionError(f'{label}: require_done stood after {p} changed')
+            except Refusal as e:
+                assert 'G28' in str(e) and p in str(e), (label, str(e))
+            with open(p, 'wb') as f:
+                f.write(keep)
+    finally:
+        CFG.reset()
+        CFG.authorize()
+
+
 def test_stale_omit():
     """F5 (V_combview review): the build applies only an omit product whose decisions are CURRENT - G-V8 re-decides from the
     refusal record and fleet records the build reads (with the served counts the product records) and refuses a product
@@ -1446,7 +1508,7 @@ def test_ready():
 
 
 TESTS = [test_production_pin, test_drift, test_py36, test_parity, test_repoint, test_kept_refusals, test_gates, test_filtercat_procs,
-         test_incomplete_inputs, test_fluxscal_gate, test_stale_omit, test_copy_fallback, test_content, test_m1_mutation, test_figure_seed, test_ready]
+         test_incomplete_inputs, test_fluxscal_gate, test_fluxscal_inputs, test_stale_omit, test_copy_fallback, test_content, test_m1_mutation, test_figure_seed, test_ready]
 
 
 def main(argv):

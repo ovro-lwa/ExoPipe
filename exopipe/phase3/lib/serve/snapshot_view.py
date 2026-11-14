@@ -94,7 +94,8 @@ summary's card2 / rejudge keys - production's view byte for byte (tests/test_sna
 the cells (the rate population) and the re-judging / Card 2 inputs (size, mtime) against the omit product; G-V9 a partial source
 whose own detection is absent from its page; G-V10 an image absent from a member table.
 G-V12 (exopipe_ops 5c49199) a batch without FLUXSCAL_APPLIED.json, or an hour-band it scaled that no longer has status ok and that
-factor (snapshot_fluxscal.band_factors, in place). The 1-minute elevation floor (b114ff3; R-GREGG-20261112-1MIN-ELEVATION-POSTHOC-
+factor (snapshot_fluxscal.band_factors, in place); the files it reads are inputs of the build unit (fluxscal_inputs), so a serve
+stage's require_done (G28) refuses once one changed. The 1-minute elevation floor (b114ff3; R-GREGG-20261112-1MIN-ELEVATION-POSTHOC-
 REPAIR) acts at every site Card 2 acts on (record kinds 'elevation-floor 1min detection', 'elevation-floor member row',
 'elevation-floor panel'; summary key elev1min), re-derived from each batch's detection record and checked against the omit product.
 Production details carried for parity, not ruled (spec 'Pending Gregg'): the name-clash rule, the queue order, the survivors
@@ -1228,6 +1229,57 @@ def move_aside(path):
     return aside
 
 
+def _fluxscal():
+    """Production's snapshot_fluxscal, in place, imported as the build's G-V12 imports it (clv15 before exopipe_ops on the path);
+    the two roots are taken off the path again."""
+    roots = (_legacy_root('exopipe_ops'), _legacy_root('clv15'))
+    for p in roots:
+        sys.path.insert(0, p)
+    try:
+        import snapshot_fluxscal as FS           # noqa: E402
+    finally:
+        for p in roots:
+            sys.path.remove(p)
+    return FS
+
+
+def fluxscal_inputs(u, runs, lc_root=None, search_root=None):
+    """G-V12's inputs as inputs of the build unit (review of PR 57, F1), so require_done (G28) refuses at serve a view whose
+    flux-scale gate would now refuse: each batch's FLUXSCAL_APPLIED.json and, for every hour-band it scaled, what
+    snapshot_fluxscal.band_factors reads for it - the light-curve table of the subband or of each member of the wideband
+    (FLUXSCAL and NREFSCAL cards; the members' RMS), and in the cell's search outputs the band's and the members'
+    noise_<band>_I_median.csv and a wideband's wideband_members_I.csv (which members were searched). The exclusion list and the
+    GPU-frame cell list are inputs already (flow.excl_note). A path that does not exist is not recorded (a missing input
+    never matches). Returns the number of files recorded."""
+    FS = _fluxscal()
+    lc_root, search_root = lc_root or FS.LC_ROOT, search_root or FS.SEARCH_ROOT
+    paths = []
+    for r in runs:
+        mk = os.path.join(r, FS.APPLIED_RUN_FILE)
+        if not os.path.isfile(mk):
+            continue                                        # G-V12 (the build) refuses the batch
+        paths.append(mk)
+        try:
+            with open(mk) as fh:
+                applied = json.load(fh).get('factors') or {}
+        except ValueError:
+            continue                                        # unreadable: G-V12 refuses it; the file is recorded
+        for k in applied:
+            cell, band = k.split('|')
+            members = list(FS.GROUPS.get(band, [band]))
+            paths += [FS._table(cell, sb, lc_root) for sb in members]
+            d = os.path.join(search_root, cell)
+            paths += [os.path.join(d, 'noise_%s_I_median.csv' % b) for b in dict.fromkeys([band] + members)]
+            if band in FS.GROUPS:
+                paths.append(os.path.join(d, 'wideband_members_I.csv'))
+    n = 0
+    for p in dict.fromkeys(paths):
+        if os.path.exists(p):
+            u.add_input(p)
+            n += 1
+    return n
+
+
 def build_stage(run, plan):
     from exopipe.phase3.core import legacy
     from exopipe.phase3.lib.serve import flow
@@ -1249,6 +1301,8 @@ def build_stage(run, plan):
             u.note(f'{len(other)} batch run(s) on another file system than this scratch view: their panels are copied')
         for r in plan.runs:
             u.add_input(os.path.join(r, 'source_catalogs'))
+        u.note(f'G-V12 inputs recorded: {fluxscal_inputs(u, plan.runs)} files (FLUXSCAL_APPLIED.json, light-curve tables, '
+               f'search tables)')
         recs = os.path.join(plan.out, '_records', 'serve', 'snapshot_view')
         os.makedirs(recs, exist_ok=True)
         check_decisions_current(u, plan, summ, recs)        # G-V8 (F5)
