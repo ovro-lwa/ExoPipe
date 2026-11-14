@@ -1314,6 +1314,13 @@ def st_merge(ctx, s, plan):
     for name in ('master_catalog_refused.csv', 'v_deep_images.csv'):
         if os.path.exists(f'{U}/{name}'):
             s.out(f'{U}/{name}', 'csv_table')
+    if os.path.exists(f'{U}/v_deep_images.csv') and not ctx.night:
+        # the run's Phase 3 QA percentile table beside its per-image table (deep_chain's merge stage; tier = the email's name).
+        # Not in a night pass: its per-image table holds one night, and a percentile's population is every image of the run
+        from exopipe.phase3.lib.qa import percentiles
+        qp = percentiles.write_for_chain(U, percentiles.TENMIN)
+        s.u.add_output(qp, 'qa_percentiles', tier=percentiles.TENMIN)
+        s.written.append(qp)
     s.u.set_admitted(_admitted(U))
     s.keep_stage_copy()
 

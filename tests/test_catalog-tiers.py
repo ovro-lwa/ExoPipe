@@ -751,6 +751,7 @@ def test_e2e_sublst(site):
         json.dump(srec, open(f'{rd}/{SZ.RUN_RECORD}', 'w'))
     rc, out = cli(common + ['--stages', 'preflight'], site)
     ok('S-G7: the jobs back under the configured rule: the preflight passes again', rc == 0, out[-400:])
+    merge_qa_percentiles(site, common, U)
     # a merge record (fabricated: the merge stage's classes are the catalog-deep unit's) and its stage copy
     from exopipe.phase3.core import record
     hdr = ['cand_id', 'lst', 'date', 'band', 'stokes', 'cadence', 'ra', 'dec', 'snr']
@@ -795,6 +796,62 @@ def test_e2e_sublst(site):
     ok('--stages with a gap (preflight,conform): conform refuses without the record of tie-pulsars (exit 2)',
        rc == 2 and rec['status'] == 'refused' and '14h_B.tie-pulsars' in (rec.get('reason') or ''), (rc, rec.get('reason')))
     sg13_size_rule(site, common)
+
+
+# the merge stage with production's p3s3_merge.py stood in for by a script that writes the catalog and the per-image table the
+# test puts beside it (the merge itself is production's, run in place; what is tested here is what the stage does after it)
+STUB_MERGE = r'''
+import os, shutil, sys
+here = os.path.dirname(os.path.abspath(__file__))
+shutil.copy(os.path.join(here, 'p3s3_merge_master.csv'), os.path.join(sys.argv[1], 'master_catalog.csv'))
+shutil.copy(os.path.join(here, 'p3s3_merge_images.csv'), os.path.join(sys.argv[1], 'v_deep_images.csv'))
+with open(os.path.join(sys.argv[1], 'master_catalog_refused.csv'), 'w') as f:
+    f.write('cand_id,lst,date,band,stokes,cadence,ra,dec,snr,refusal_reason\n')
+print('merge: stand-in wrote master_catalog.csv, master_catalog_refused.csv (no row) and v_deep_images.csv')
+'''
+
+
+def merge_qa_percentiles(site, common, U):
+    ops = f'{T}/stub/exopipe_ops'
+    open(f'{ops}/p3s3_merge.py', 'w').write(STUB_MERGE)
+    wcsv(f'{ops}/p3s3_merge_master.csv', ['cand_id', 'lst', 'date', 'band', 'stokes', 'cadence', 'ra', 'dec', 'snr'],
+         [['V1', '14h', '2025-04-06T00', '18MHz', 'V', '10min', '210.0', '37.0', '6']])
+    hdr = ['lst', 'scope', 'stokes', 'date', 'n_after_morph', 'n_after_mstruct', 'n_raw_floor']
+    wcsv(f'{ops}/p3s3_merge_images.csv', hdr, [['14h', '18MHz', 'V', '2025-04-06T00', '9', '2', '11'],
+                                               ['14h', '18MHz', 'V', '2025-04-07T00', '9', '5', ''],
+                                               ['14h', '41MHz', 'I', '2025-04-06T00', '12', '', '30'],
+                                               ['14h', '41MHz', 'I', '2025-04-07T00', '', '', '31']])
+    rc, out = cli(common + ['--stages', 'merge'], site)
+    rec = json.load(open(f'{U}/_records/catalog/14h_B.merge.json'))
+    qa = rcsv(f'{U}/qa_percentiles.csv') if os.path.exists(f'{U}/qa_percentiles.csv') else []
+    got = [(r['band'], r['stokes'], r['date'], r['tier'], r['count'], r['count_kind'],
+            r['percentile'], r['count_raw'], r['percentile_raw'], r['population']) for r in qa]
+    t = [x for x in rec.get('tests', []) if x['cls'] == 'qa_percentiles']
+    ok("merge: the QA percentile table beside the per-image table, tier '10-minute' (the email's name): V counted after "
+       "the master-structure gate, I after the morphology gate, an image without its count left out; recorded and its "
+       "content test passes",
+       rc == 0 and rec['status'] == 'done'
+       and got == [('18MHz', 'V', '2025-04-06T00', '10-minute', '2', 'after_mstruct', '25.0', '11', '50.0', '2'),
+                   ('18MHz', 'V', '2025-04-07T00', '10-minute', '5', 'after_mstruct', '75.0', '', '', '2'),
+                   ('41MHz', 'I', '2025-04-06T00', '10-minute', '12', 'after_morph', '50.0', '30', '50.0', '1')]
+       and t and all(x['passed'] for x in t) and t[0]['path'] == os.path.abspath(f'{U}/qa_percentiles.csv'),
+       (rc, rec.get('status'), rec.get('reason'), got, t, out[-500:]))
+    wcsv(f'{ops}/p3s3_merge_images.csv', ['lst', 'scope', 'stokes', 'date', 'n_final'], [['14h', '18MHz', 'V', '2025-04-06T00', '1']])
+    rc, out = cli(common + ['--stages', 'merge'], site)
+    rec = json.load(open(f'{U}/_records/catalog/14h_B.merge.json'))
+    ok('merge: a per-image table without the counts refuses the stage (exit 2), naming the missing columns',
+       rc == 2 and rec['status'] == 'refused' and (rec.get('reason') or '').startswith('QA percentile table of ')
+       and 'lacks' in rec['reason'] and 'n_after_morph' in rec['reason'], (rc, rec.get('reason'), out[-400:]))
+    wcsv(f'{ops}/p3s3_merge_images.csv', hdr, [['14h', '18MHz', 'V', '2025-04-06T00', '', '', '3']])
+    rc, out = cli(common + ['--stages', 'merge'], site)
+    rec = json.load(open(f'{U}/_records/catalog/14h_B.merge.json'))
+    ok('merge: a per-image table with no recorded count refuses the stage and leaves no QA percentile table',
+       rc == 2 and 'no searched image with a recorded count' in (rec.get('reason') or '')
+       and not os.path.exists(f'{U}/qa_percentiles.csv'), (rc, rec.get('reason'), out[-400:]))
+    for n in ('p3s3_merge.py', 'p3s3_merge_master.csv', 'p3s3_merge_images.csv'):
+        os.remove(f'{ops}/{n}')
+    for n in ('v_deep_images.csv', 'master_catalog_refused.csv'):     # the stages below run on the fabricated merge as before
+        os.remove(f'{U}/{n}')
 
 
 # S-G13 under the size / axis rule: the conformance stage on the rule's search jobs, production's p3s2_conform.py stood in for by
