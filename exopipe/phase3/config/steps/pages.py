@@ -222,8 +222,15 @@ class pages_sublst(_Section):
     # THE PAGES OF A NIGHT (design 2.3a of plan/PER_HOUR_GAP_DESIGNS_20261111.md, stage 3; lib/pages/night.py)
     NIGHT_INDEX = 'hour_views.json'   # in a night pass's catalog directory: its view of every hour (lib/catalog/delta_build.INDEX)
     NIGHT_STAGING = '_night/{lst}/catalog'   # under the pass's out root: the staged catalog view prep reads (links)
-    NIGHT_ALL_NIGHTS_FILES = ('rejected.csv', 'rejected_index.npz', 'detection_ts.csv', 'table_filter.csv', 'table_inputs.csv',
-                              'catalogs.log')   # carried from the hour's all-nights catalog directory (a night pass does not write them again); sublst_pages_prep.py:63-83
+    NIGHT_ALL_NIGHTS_FILES = ('rejected.csv', 'rejected_index.npz', 'detection_ts.csv', 'table_filter.csv',
+                              'table_inputs.csv')   # carried from the hour's all-nights catalog directory (a night pass does not write them again); sublst_pages_prep.py:71-83
+    # the view root's OWN conformance read of its merged window-tie table, never the all-nights one (DECISION-20261114-PR50-
+    # VIEW-ROOT-RECORDS-ITS-OWN-CONFORMANCE-READ): staged from the view root, a view without them REFUSED; sublst_pages_prep.py:52-70
+    NIGHT_CONFORM_FILES = ('pertie/conform_inputs/pertie_detections.csv', 'pertie/conform_inputs/pertie_frames.csv',
+                           'pertie/conform_inputs/SHA256SUMS', 'catalogs.log')
+    # the view root's reference-tie table (DECISION-20261114-PR50-VIEW-CARRIES-ITS-REFERENCE-TIE-TABLE): prep's copy of
+    # tie_members.csv reads it (wraps/prep_catalog.py); an annotation, so a view without one is not refused; sublst_pages_prep.py:46
+    NIGHT_TIE = 'tie_members.csv'
     PREP_SHA1 = ('38da7a8723f0a789f799b021b71c82bf913497cb',   # sublst_pages_prep.py of the frozen trees up to 2026-11-13 (path-normalized sha1)
                  '187acd897b30e8f5ce6c189fc4a8bc6ca0e838d4')   # live exopipe_ops since 2026-11-13 (tie_members.csv travels with the pages)
     RULED = {'SERVED_CATALOG_TAG': 'R-SUBLST-FORCED-SKIP-V110-AND-LEAK-VETO',

@@ -457,29 +457,43 @@ def test_stage_catalog():
     for n in ('master_catalog.csv', 'v_deep_images.csv', 'selected_V_sb.csv', 'catalogs_noveto_loc.log'):
         put(f'{VR}/{n}', f'view {n}')
     put(f'{VR}/pertie/pertie_detections.csv', 'view')
+    CONF = ('pertie/conform_inputs/pertie_detections.csv', 'pertie/conform_inputs/pertie_frames.csv',
+            'pertie/conform_inputs/SHA256SUMS', 'catalogs.log')            # config pages_sublst.NIGHT_CONFORM_FILES
+    for n in CONF[:3]:
+        put(f'{VR}/{n}', f'view read {os.path.basename(n)}')
+    put(f'{VR}/catalogs.log', 'x CATALOGS B conform\nconform: window-tie table read: view-sha\n')
+    put(f'{VR}/tie_members.csv', 'view tie')
+    put(f'{AN}/pertie/conform_inputs/pertie_frames.csv', 'all nights frames')
     put(f'{VR}/source_catalogs_noveto_V_sb/x.csv', 'view')
     put(f'{VR}/localizations_noveto/localizations.csv', 'view')
     put(f'{VR}/_loc/side.csv', 'side')
     put(f'{ST}/stale.csv', 'from an earlier pass')
-    files = ('rejected.csv', 'rejected_index.npz', 'detection_ts.csv', 'catalogs.log')
-    st = NV.stage_catalog(ST, VR, files)
+    files = ('rejected.csv', 'rejected_index.npz', 'detection_ts.csv')
+    st = NV.stage_catalog(ST, VR, files, CONF)
     rd = lambda n: open(f'{ST}/{n}').read()                                    # noqa: E731
     check('staged catalog: the view root\'s tables, catalogs and window-tie table',
           rd('master_catalog.csv') == 'view master_catalog.csv' and rd('selected_V_sb.csv') == 'view selected_V_sb.csv'
           and rd('pertie/pertie_detections.csv') == 'view' and rd('source_catalogs_noveto_V_sb/x.csv') == 'view'
           and rd('localizations_noveto/localizations.csv') == 'view')
     check('staged catalog: from the all-nights directory, the records a night does not write and the keys it did not view',
-          rd('rejected.csv') == 'all nights rejected.csv' and rd('pertie/conform_inputs/SHA256SUMS') == 'sums'
-          and rd('selected_I_sb.csv') == 'all nights selected_I_sb.csv' and rd('catalogs.log') == 'all nights catalogs.log')
+          rd('rejected.csv') == 'all nights rejected.csv' and rd('selected_I_sb.csv') == 'all nights selected_I_sb.csv')
+    check('staged catalog: the conformance read and its checksum log are the VIEW root\'s own, never the all-nights read '
+          '(DECISION-20261114-PR50-VIEW-ROOT-RECORDS-ITS-OWN-CONFORMANCE-READ); the tie table is the view\'s '
+          '(DECISION-20261114-PR50-VIEW-CARRIES-ITS-REFERENCE-TIE-TABLE)',
+          rd('pertie/conform_inputs/SHA256SUMS') == 'view read SHA256SUMS'
+          and rd('pertie/conform_inputs/pertie_frames.csv') == 'view read pertie_frames.csv'
+          and 'view-sha' in rd('catalogs.log') and rd('tie_members.csv') == 'view tie'
+          and os.path.realpath(f'{ST}/pertie/conform_inputs/SHA256SUMS') == os.path.realpath(f'{VR}/pertie/conform_inputs/SHA256SUMS'))
     check('staged catalog: the record, side directories and logs of the view stage are left out; an earlier staging is removed',
           not any(os.path.lexists(f'{ST}/{n}') for n in ('hour_view.json', '_loc', 'catalogs_noveto_loc.log', 'stale.csv')))
     check('staged catalog: what it returns', st['all_nights'] == AN and st['absent'] == ['rejected_index.npz']
-          and 'pertie/conform_inputs' in st['carried'] and 'selected_I_sb.csv' in st['carried'] and 'pertie/pertie_detections.csv' in st['view'], str(st))
+          and not any(n.startswith('pertie/conform_inputs') for n in st['carried']) and 'catalogs.log' in st['view']
+          and 'selected_I_sb.csv' in st['carried'] and 'pertie/pertie_detections.csv' in st['view'], str(st))
 
     def refuses(name, expect, prepare, restore):
         prepare()
         try:
-            NV.stage_catalog(ST, VR, files)
+            NV.stage_catalog(ST, VR, files, CONF)
             ok = False
         except NV.NightRefusal as e:
             ok = expect in str(e) and str(e).endswith('REFUSING')
@@ -493,12 +507,26 @@ def test_stage_catalog():
     refuses('no window-tie table', 'window-tie table', lambda: os.rename(f'{VR}/pertie', f'{VR}/pertie_x'),
             lambda: os.rename(f'{VR}/pertie_x', f'{VR}/pertie'))
     refuses('not a view root', f'holds no {NV.VIEW_ROOT_RECORD}', lambda: os.rename(rec, rec + '_x'), lambda: os.rename(rec + '_x', rec))
+    sums = f'{VR}/pertie/conform_inputs/SHA256SUMS'
+    refuses('a view root without its own conformance read (the all-nights read is there)', 'no conformance read',
+            lambda: os.rename(sums, sums + '_x'), lambda: os.rename(sums + '_x', sums))
+    refuses('a view root whose log has no conform checksum line', 'checksum line',
+            lambda: put(f'{VR}/catalogs.log', 'x CATALOGS B conform\n'),
+            lambda: put(f'{VR}/catalogs.log', 'x CATALOGS B conform\nconform: window-tie table read: view-sha\n'))
+    os.remove(f'{VR}/tie_members.csv')
+    st = NV.stage_catalog(ST, VR, files, CONF)
+    check('staged catalog: a view without a tie table is staged (an annotation, never refused) and never takes another one',
+          not os.path.lexists(f'{ST}/tie_members.csv'))
 
 
 STUB_PREP = '''import os, sys
 LST = os.environ.get('SUBLST_LST', ''); ARM, OUT = sys.argv[1], sys.argv[2]
 SL = '/nowhere'; CAT = f'{SL}/compare_{LST}/new_{ARM}/catalog'; OLD = f'{SL}/compare_{LST}/old'
 print('STUB', __name__, os.path.basename(__file__), sys.argv[1:], CAT, OLD, sys.path[0] == os.path.dirname(os.path.abspath(__file__)))
+'''
+
+STUB_TIE = '''_RT = f'{SL}/compare_{LST}/new_{ARM}/tie/tie_members.csv'
+print('TIE', _RT)
 '''
 
 
@@ -511,8 +539,9 @@ def test_wrap():
     pin = PC.normalized_sha1(script, STUB_PREP)
     cat = f'{T}/an'
 
-    def go(script=script, pins=pin, catalog=cat):
-        env = dict(os.environ, EXOPIPE3_PAGES_CATALOG=catalog, EXOPIPE3_PAGES_PREP_SHA1=pins, SUBLST_LST='17h')
+    def go(script=script, pins=pin, catalog=cat, tie=f'{T}/an/tie_members.csv'):
+        env = dict(os.environ, EXOPIPE3_PAGES_CATALOG=catalog, EXOPIPE3_PAGES_PREP_SHA1=pins, SUBLST_LST='17h',
+                   EXOPIPE3_PAGES_TIE=tie)
         r = subprocess.run([sys.executable, wrap, script, 'B', f'{T}/outrun'], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                            universal_newlines=True)
         return r.returncode, r.stdout
@@ -526,6 +555,16 @@ def test_wrap():
     check('prep runner REFUSES without pins', rc == 2 and 'is empty' in out, out)
     rc, out = go(catalog=f'{T}/nowhere')
     check('prep runner REFUSES a catalog directory that does not exist', rc == 2 and 'is not a directory' in out, out)
+    rc, out = go(tie='')
+    check('prep runner REFUSES when the tie table of the catalog is not named', rc == 2 and 'EXOPIPE3_PAGES_TIE' in out, out)
+    tied = f'{T}/code4/exopipe_ops/sublst_pages_prep.py'
+    put(tied, STUB_PREP + STUB_TIE)
+    rc, out = go(script=tied, pins=PC.normalized_sha1(tied, open(tied).read()))
+    check('prep runner: the tie table path is the one named (EXOPIPE3_PAGES_TIE), never production\'s current one',
+          rc == 0 and f'TIE {T}/an/tie_members.csv' in out and '/nowhere/' not in out.split('TIE ')[-1].split('\n')[0], out)
+    put(tied, STUB_PREP + STUB_TIE + STUB_TIE)
+    rc, out = go(script=tied, pins=PC.normalized_sha1(tied, open(tied).read()))
+    check('prep runner REFUSES a script that holds the tie-table path twice', rc == 2 and 'tie-table path 2 times' in out, out)
     twice = f'{T}/code2/exopipe_ops/sublst_pages_prep.py'
     put(twice, STUB_PREP + STUB_PREP.split('\n')[2] + '\n')
     rc, out = go(script=twice, pins=PC.normalized_sha1(twice, open(twice).read()))
@@ -537,10 +576,12 @@ def test_wrap():
           PC.normalized_sha1(f'{tree}/exopipe_ops/sublst_pages_prep.py', open(f'{tree}/exopipe_ops/sublst_pages_prep.py').read()) == live)
     try:
         _src, sha1, norm = PC.patched(f'{OPS}/sublst_pages_prep.py', S.PREP_SHA1)
-        ok = norm in S.PREP_SHA1 and _src.count(PC.NEW) == 1 and PC.OLD not in _src
+        ok = (norm in S.PREP_SHA1 and _src.count(PC.NEW) == 1 and PC.OLD not in _src
+              and _src.count(PC.NEW_TIE) == 1 and PC.OLD_TIE not in _src)
     except PC.Refused as e:
         ok, sha1 = False, str(e)
-    check('production sublst_pages_prep.py is one of pages_sublst.PREP_SHA1 and holds the assignment once', ok, str(sha1))
+    check('production sublst_pages_prep.py is one of pages_sublst.PREP_SHA1; its catalog assignment and tie-table path are '
+          'each replaced once', ok, str(sha1))
     trees = sorted(glob.glob('/lustre/gh/main/phase3/sublst/code_frozen/[0-2][0-9]h_*/exopipe_ops/sublst_pages_prep.py'),
                    key=lambda p: p.split('/')[-3].split('_', 1)[1])          # the hours' trees, by their freeze time
     bad = []
@@ -552,7 +593,9 @@ def test_wrap():
     check(f'the newest frozen code trees\' copies are accepted ({len(trees[-3:])} read)', not bad, str(bad))
     check('config: the night keys', S.NIGHT_INDEX == 'hour_views.json' and '{lst}' in S.NIGHT_STAGING
           and set(S.REQUIRED_FILES) - {'pertie/pertie_detections.csv'} <= set(S.NIGHT_ALL_NIGHTS_FILES)
-          and 'PREP_SHA1' in S.PROTECTED_KEYS)
+          and 'PREP_SHA1' in S.PROTECTED_KEYS and 'catalogs.log' not in S.NIGHT_ALL_NIGHTS_FILES
+          and 'catalogs.log' in S.NIGHT_CONFORM_FILES and S.NIGHT_TIE == 'tie_members.csv'
+          and all(f.startswith('pertie/conform_inputs/') for f in S.NIGHT_CONFORM_FILES if f != 'catalogs.log'))
 
 
 STUB_GUARD = '''import os, sys
@@ -580,6 +623,54 @@ except Exception:
 '''
 
 
+def test_review50():
+    """review of PR 50: a view root naming no all-nights directory refuses; a Master older than its inputs is vouched for by
+    no record; a night run's frozen build comes from the pass index; the wrap's path normalization is builder_grouping's;
+    the place stage does not publish the reduced selections"""
+    VR = f'{T}/r50/views/17h'
+    put(f'{VR}/hour_view.json', json.dumps(dict(complete=True)))
+    put(f'{VR}/pertie/pertie_detections.csv', 'view')
+    try:
+        NV.stage_catalog(f'{T}/r50/st', VR, ())
+        ok, msg = False, ''
+    except NV.NightRefusal as e:
+        ok, msg = 'names no all-nights' in str(e) and str(e).endswith('REFUSING'), str(e)
+    check('stage_catalog: a view record without all_nights REFUSES (a NightRefusal, not a KeyError)', ok, msg)
+    R, SB = f'{T}/r50/run', f'{T}/r50/sub'
+    a = f'{SB}/17h/17h_2026-10-01/sb3/I/sublst_17h_2026-10-01_sb3_I_w2.fits'
+    put(a, 'stack')
+    put(a[:-5] + '_resid_loo.fits', 'resid')
+    m = f'{R}/loo_masters/17h_2026-10-01/sb3/I/loo_master_w2.fits'
+    put(m, 'master')
+    t0 = os.stat(a).st_mtime_ns
+    os.utime(m, ns=(t0 + 10 ** 9, t0 + 10 ** 9))
+    fresh, want = NV.masters_made_from(R, SB, '17h', '2026-10-01', 2, 'sb3'), NV.masters_in(SB, '17h', '2026-10-01', 2, 'sb3')
+    os.utime(a, ns=(t0 + 2 * 10 ** 9, t0 + 2 * 10 ** 9))                   # the stack rebuilt after its Master was written
+    stale = NV.masters_made_from(R, SB, '17h', '2026-10-01', 2, 'sb3')
+    check('masters_made_from: the inputs\' digest for a Master newer than its inputs; None once an input is newer',
+          fresh == want and fresh is not None and stale is None, (fresh, want, stale))
+    from exopipe.phase3.lib.pages import tier_sublst as TS
+    from exopipe.phase3.lib.catalog.wraps import builder_grouping as BG
+    tag = TS.common.CFG().pages_sublst.SERVED_CATALOG_TAG
+    P = f'{T}/r50/P'
+    put(f'{P}/source_catalogs_V_sb/catalog_view.json', json.dumps(dict(frozen_record_sha1='from-the-carried-root')))
+    c = type('C', (), {})()
+    c.night_dir, c.views = f'{T}/r50', {'17h': dict(kind='view', root=VR, keys={f'{tag}_V_sb': dict(record_sha1='from-the-index')})}
+    c2 = type('C', (), {})()
+    c2.night_dir, c2.views = None, {}
+    check('a night run\'s frozen build: the pass index entry\'s record_sha1, never the carried root\'s catalog_view.json '
+          '(DECISION-20261114-PR47-CARRIED-ROOT-READERS-TAKE-TABLE-FROM-INDEX); an all-nights run reads its copy',
+          TS.frozen_of(c, '17h', P, 'V_sb') == 'from-the-index' and TS.frozen_of(c, '17h', P, 'I_sb') == ''
+          and TS.frozen_of(c2, '17h', P, 'V_sb') == 'from-the-carried-root')
+    fz = f'{T}/r50/frozen_tree/exopipe_ops/sublst_pages_prep.py'
+    src = "X = '/lustre/gh/main/exopipe_ops/a'; Y = '" + f'{T}/r50/frozen_tree' + "/exopipe_ops/b'\n"
+    check('the wrap\'s path normalization is builder_grouping\'s (a frozen tree\'s root and the live root)',
+          PC.normalized_sha1(fz, src) == BG.normalized_sha1(fz, src) and PC.LIVE_ROOT == BG.LIVE_ROOT)
+    tsrc = open(TS.__file__).read()
+    check('place: the reduced selections (source_catalogs/_night/) are excluded from the rsync to the review host',
+          "['--exclude', night.REDUCED_DIR + '/', P + '/', tgt + '/']" in tsrc and NV.REDUCED_DIR == os.path.join('source_catalogs', '_night'))
+
+
 def test_site_hooks():
     """the refactor's start-up hook first on PYTHONPATH and a sitecustomize that chains to the next one (the frozen-code
     guard) second: each is installed once, and imports work"""
@@ -591,6 +682,13 @@ def test_site_hooks():
                        env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True, cwd=T)
     names = r.stdout.strip().split('\n')[-1]
     check('start-up hooks: the refactor\'s hook and a chaining guard are each installed once; imports work',
+          r.returncode == 0 and names.count("'FrozenCodeGuard'") == 1 and names.count("'_PatchImportGuard'") == 1
+          and 'RecursionError' not in r.stdout, r.stdout[-400:])
+    env['PYTHONPATH'] = f'{T}/guard' + os.pathsep + boot          # review of PR 50: the guard FIRST (sublst_code_root.sh
+    r = subprocess.run([sys.executable, '-c', 'import sys, csv, colorsys; print([type(f).__name__ for f in sys.meta_path])'],
+                       env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True, cwd=T)   # prepends it)
+    names = r.stdout.strip().split('\n')[-1]
+    check('start-up hooks, the guard first: the refactor\'s hook never chains back to it, each hook installed once, imports work',
           r.returncode == 0 and names.count("'FrozenCodeGuard'") == 1 and names.count("'_PatchImportGuard'") == 1
           and 'RecursionError' not in r.stdout, r.stdout[-400:])
     src = open(f'{OPS}/sublst_frozen_guard/sitecustomize.py').read()
@@ -610,6 +708,7 @@ def main():
         test_files(ident, B, P)
         test_stage_catalog()
         test_wrap()
+        test_review50()
         test_site_hooks()
     finally:
         if not os.environ.get('EXOPIPE3_TEST_KEEP'):

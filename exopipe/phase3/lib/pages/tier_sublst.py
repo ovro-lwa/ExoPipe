@@ -168,6 +168,18 @@ def night_view(c, lst):
     return e
 
 
+def frozen_of(c, lst, P, K):
+    """The all-nights catalog build set K's catalogs stand on. A night run takes it from the pass's index entry of the hour
+    (DECISION-20261114-PR47-CARRIED-ROOT-READERS-TAKE-TABLE-FROM-INDEX: a carried view root's own catalog_view.json is never
+    read for it): the record_sha1 of the served build's key (source_catalogs_<served tag>_<K>, which prep copies as
+    source_catalogs_<K>); '' when the entry names none. Otherwise night.frozen_id of the run's copy."""
+    e = c.views.get(lst) if c.night_dir else None
+    if e is None:
+        return night.frozen_id(os.path.join(P, f'source_catalogs_{K}'))
+    tag = common.CFG().pages_sublst.SERVED_CATALOG_TAG          # sublst_pages_prep.py:104 copies source_catalogs_<tag>_<K>
+    return ((e.get('keys') or {}).get(f'{tag}_{K}') or {}).get('record_sha1') or ''
+
+
 def base_run(c, lst):
     """The earlier page run of the hour (--sublst-base-runs), or None. REFUSES when it is this pass's own page run (prep
     removes the run directory before anything is read from it)."""
@@ -227,7 +239,7 @@ def stage_prep(c, run, done, lst):
             # THE PAGES OF A NIGHT: the hour's catalog view of the night pass, staged as the directory the script reads
             staging = os.path.join(c.out, S.NIGHT_STAGING.format(lst=lst))
             try:
-                st = night.stage_catalog(staging, view['root'], S.NIGHT_ALL_NIGHTS_FILES)
+                st = night.stage_catalog(staging, view['root'], S.NIGHT_ALL_NIGHTS_FILES, S.NIGHT_CONFORM_FILES)
             except night.NightRefusal as e:
                 raise common.Refusal(f'P18 pages of a night, {lst}: {e}')
             loc, cat = os.path.join(staging, os.path.relpath(loc, cat)), staging
@@ -259,7 +271,12 @@ def stage_prep(c, run, done, lst):
         script = common.legacy_script(c.roots, 'ops', 'sublst_pages_prep.py')
         env = dict(code_env(c), SUBLST_LST=lst)
         if view or c.catalog_dir:
-            env.update(EXOPIPE3_PAGES_CATALOG=cat, EXOPIPE3_PAGES_PREP_SHA1=','.join(S.PREP_SHA1))
+            # the tie table of the catalog read: the view's own (staged with it), or beside a catalog directory as production
+            # lays it out (<...>/new_<arm>/catalog and <...>/new_<arm>/tie/tie_members.csv)
+            tie = (os.path.join(cat, S.NIGHT_TIE) if view else
+                   os.path.join(os.path.dirname(os.path.abspath(cat)), 'tie', 'tie_members.csv'))
+            env.update(EXOPIPE3_PAGES_CATALOG=cat, EXOPIPE3_PAGES_TIE=tie, EXOPIPE3_PAGES_PREP_SHA1=','.join(S.PREP_SHA1))
+            u.meta['tie_table'] = dict(path=tie, present=os.path.isfile(tie))
             wrap = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'wraps', 'prep_catalog.py')
             res = common.lrun(u, wrap, [script, S.ARM, P], env=env, cwd=P, log=os.path.join(P, 'logs', 'prep.log'))
             u.meta.setdefault('legacy_code', {})[os.path.abspath(script)] = common.sha1_file(script)
@@ -360,7 +377,7 @@ def stage_build(c, run, done, lst):
                 carried_any = carried_any or bool(pl['link'])
                 blocks[K] = dict(rows=len(pl['blocks']), rendered=len(pl['render']), carried=got['linked'] + got['copied'],
                                  carried_as_copies=got['copied'], rendered_whole=pl['whole'], rendered_why=pl['why'],
-                                 renamed=moved, frozen=night.frozen_id(os.path.join(P, f'source_catalogs_{K}')))
+                                 renamed=moved, frozen=frozen_of(c, lst, P, K))
         except night.NightRefusal as e:
             raise common.Refusal(f'P18 blocks of {lst}: {e}')
         ok, detail, counts = night.test(P, sets, frames)
@@ -456,7 +473,8 @@ def stage_place(c, run, done, lst):
         if os.path.basename(tgt) != run_name:
             tgt = os.path.join(tgt, run_name)
         os.makedirs(tgt, exist_ok=True)
-        cmd = ['rsync', '-a'] + (['--delete'] if S.PLACE_DELETE else []) + [P + '/', tgt + '/']
+        cmd = (['rsync', '-a'] + (['--delete'] if S.PLACE_DELETE else [])   # the reduced selections of a night run are the
+               + ['--exclude', night.REDUCED_DIR + '/', P + '/', tgt + '/'])   # renderer's input, not a served selection
         r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
         u.meta['rsync'] = dict(cmd=cmd, rc=r.returncode, tail=r.stdout[-500:])
         if r.returncode != 0:
@@ -538,8 +556,17 @@ def dry_run(c, run_):
         print(f'    gate P11 localizations: {"present" if okloc else "MISSING " + loc}')
         if not okloc and 'prep' in c.stages:
             refuse.append(f'{lst}: P11 {loc}')
-        miss = [f for f in S.REQUIRED_FILES
-                if not any(os.path.exists(os.path.join(d, f)) for d in ((vroot, an) if e else (cat,)))]
+        if e:                                     # as night.stage_catalog stages them: the view root's entries; from the
+            carried = set(S.NIGHT_ALL_NIGHTS_FILES)   # all-nights directory only the records a night does not write and pertie/
+            miss = [f for f in S.REQUIRED_FILES if not os.path.exists(os.path.join(vroot, f))
+                    and not (an and (f in carried or f.startswith('pertie' + os.sep) or f.startswith('pertie/'))
+                             and os.path.exists(os.path.join(an, f)))]
+            if not an:
+                miss.append('all_nights (the index entry names no all-nights catalog directory)')
+            miss += [f'{f} (the view root\'s own conformance read)' for f in S.NIGHT_CONFORM_FILES
+                     if not os.path.isfile(os.path.join(vroot, f))]
+        else:
+            miss = [f for f in S.REQUIRED_FILES if not os.path.exists(os.path.join(cat, f))]
         print(f'    gate P12/P13 required files: {"present" if not miss else "MISSING " + str(miss)}')
         if miss and 'prep' in c.stages:
             refuse.append(f'{lst}: P12/P13 {miss}')
