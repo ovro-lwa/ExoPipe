@@ -1,4 +1,4 @@
-"""Per-hour refusals of the deep search with a named reason (a deep append, included_dates; batch unchanged).
+"""Per-hour refusals of the deep search with a named reason (a deep append, included_dates; batch unchanged but for (c)).
 
 R-GREGG-20261112-PER-HOUR-STEPS-SIX-RULINGS (2), "Approved.": frozen statistics from earlier nights judge a new night. A thin
 population is the recorded outcome - the skip the whole-cell search made, counted under fallbacks.SEARCH_GATE_SKIP_PERHOUR_FALLBACK
@@ -10,10 +10,11 @@ Checks: (a) the skip key, its ruling, default and parity value, and the engine's
 by frozen_v_sanity (no row, an 'applied' row without a frame_noise.csv median, another factor or minimum, an inconsistent row
 refuse; 'below-minimum' is returned), read before the gate's try (a refusal is never caught), the content test; (c) the wideband
 member mirror: a searched member night without the value a running gate judges it by is refused in that Stokes, a gate below its
-minimum judges nobody, 18 MHz and a member the image does not hold are not judged, a record without perhour is the batch record.
+minimum judges nobody, 18 MHz and a member the image does not hold are not judged, a record without unmeasured adds nothing.
 Real data (read only, the production co-add root; skipped without it): on three wideband cells the per-hour record and verdict
-equal the batch ones for every measured night, the added refusals are exactly the unmeasured nights; the census of unmeasured
-present member nights over every subband cell is printed.
+(every present night searched) equal the whole-cell ones, unmeasured nights included (one rule on both paths, DECISION-20261114-
+PR27-WIDEBAND-UNMEASURED-MEMBER-NIGHT-ONE-RULE-BOTH-PATHS), and the refusals for an unmeasured member night are exactly those
+nights; the census of unmeasured present member nights over every subband cell is printed.
 Run: python tests/test_search_perhour_refusals.py
 """
 import csv
@@ -159,7 +160,7 @@ def test_wideband_synthetic():
     ref = W.refusals('11h', 'Green', days + ['2025-02-01'], recs, img)
     who = {k: sorted({m for m, _ in v}) for k, v in ref.items()}
     check('(c) refusals(): the unmeasured night is refused in that Stokes by its member, with the named reason; 18 MHz and a '
-          'member the image does not hold (64 MHz) are not judged; the batch record (55 MHz, no unmeasured) adds nothing',
+          'member the image does not hold (64 MHz) are not judged; a record without unmeasured (55 MHz) adds nothing',
           who == {(days[4], 'V'): ['59MHz'], (days[5], 'I'): ['59MHz'], (days[5], 'V'): ['59MHz'], ('2025-02-01', 'V'): ['59MHz']}
           and all(r.startswith('member night unmeasured') for v in ref.values() for _, r in v), ref)
 
@@ -188,23 +189,21 @@ def test_wideband_real():
             adm = ADS.nights(cd, m, 'deep')
             recs_b[m] = W.member_record(cd, m, lst, P, rd, admitted=adm)
             recs_p[m] = W.member_record(cd, m, lst, P, rd, admitted=adm, perhour=recs_b[m]['present'])
-        same = all({k: v for k, v in recs_p[m].items() if k != 'unmeasured'} == recs_b[m] and 'unmeasured' not in recs_b[m]
-                   for m in recs_b)
+        same = all(recs_p[m] == recs_b[m] for m in recs_b)   # one rule: the whole-cell record holds the unmeasured nights too
         nights = sorted(set().union(*(r['present'] for r in recs_b.values())))
         img = {n: {st: (set(recs_b), []) for st in ('I', 'V')} for n in nights}   # every member held: the records alone decide
         ref_b = W.refusals(lst, scope, nights, recs_b, img)
         ref_p = W.refusals(lst, scope, nights, recs_p, img)
-        kept = {k: [x for x in v if not x[1].startswith('member night unmeasured')] for k, v in ref_p.items()}
-        kept = {k: v for k, v in kept.items() if v}
-        added = {(n, st, m) for (n, st), v in ref_p.items() for m, r in v if r.startswith('member night unmeasured')}
-        want = {(n, st, m) for m, r in recs_p.items() if m != W.EXCEPTION for n, d in r['unmeasured'].items() for st in d}
+        added = {(n, st, m) for (n, st), v in ref_b.items() for m, r in v if r.startswith('member night unmeasured')}
+        want = {(n, st, m) for m, r in recs_b.items() if m != W.EXCEPTION
+                for n, d in (r.get('unmeasured') or {}).items() for st in d}
         tot_un += len({(n, st) for n, st, _ in added})
         tot_n += 2 * len(nights)
-        check(f'real {lst} {scope} (read only): the per-hour member records equal the batch ones but for "unmeasured"; every '
-              f'batch refusal stands with the same reasons; the per-hour verdict adds exactly the unmeasured member nights '
-              f'({len(added)} of them, {len(nights)} nights)', same and kept == ref_b and added == want,
-              (same, sorted(set(kept) ^ set(ref_b))[:4], sorted(added ^ want)[:4]))
-    print(f'      real: {tot_un} of {tot_n} night-Stokes of the three cells refused per hour for an unmeasured member night')
+        check(f'real {lst} {scope} (read only): the per-hour member records and verdict equal the whole-cell ones, unmeasured '
+              f'nights included; the refusals for an unmeasured member night are exactly those nights ({len(added)} of them, '
+              f'{len(nights)} nights)', same and ref_p == ref_b and added == want,
+              (same, sorted(set(ref_p) ^ set(ref_b))[:4], sorted(added ^ want)[:4]))
+    print(f'      real: {tot_un} of {tot_n} night-Stokes of the three cells refused (both paths) for an unmeasured member night')
     # under fallbacks.SEARCH_SANITY_FALLBACK 'fallback' the member's own search searches an unmeasured epoch, counted: the
     # mirror admits it and counts the same site (review of pull request 27, finding 3)
     from exopipe.phase3.core import fallback as FB
@@ -222,9 +221,9 @@ def test_wideband_real():
             recs_f[m] = (b, W.member_record(cd, m, lst, P, rd, admitted=adm, perhour=b['present']))
     finally:
         FB.policy, FB.site = pol, site
-    check(f"real {lst} {scope} under SEARCH_SANITY_FALLBACK 'fallback': no member night is refused for being unmeasured; the "
-          f"site is counted once per member with unmeasured nights ({len(counted)} members)",
-          counted and all(not p_['unmeasured'] for _b, p_ in recs_f.values())
+    check(f"real {lst} {scope} under SEARCH_SANITY_FALLBACK 'fallback': no member night is refused for being unmeasured on "
+          f"either path; the site is counted once per path and member with unmeasured nights ({len(counted)} counts)",
+          counted and len(counted) % 2 == 0 and all(not b_['unmeasured'] and not p_['unmeasured'] for b_, p_ in recs_f.values())
           and all(k == W.UNMEASURED_KEY for k, _n in counted), counted)
     # census over every subband cell: present member nights an append would refuse for a value the member's tables miss
     from exopipe.phase3.core import cells as CC
