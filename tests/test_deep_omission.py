@@ -893,6 +893,7 @@ def merge_ready(tr, lsts):
     with pos_kind, pertie_detections.csv (one row per detection), a survivors table per members table (one row per
     (source_id, band), identity_id, best = its first member), candidates/<S>/<page>/ with one block per member detection
     (rank0001_<lst>_<night>_bin<k>_<band>.png, the drop's BLOCK pattern)."""
+    from exopipe.phase3.lib.catalog import conform_inputs as CI
     DO = _DO()
     for L in lsts:
         R = os.path.join(tr, f'Run_SLST{L[:2]}B')
@@ -901,6 +902,11 @@ def merge_ready(tr, lsts):
               [dict(r, pos_kind='fitted', peak_jy='1.0') for r in mc])
         _wcsv(os.path.join(R, 'pertie_detections.csv'), ['cand_id', 'tie_sys_arcsec'],
               [dict(cand_id=r['cand_id'], tie_sys_arcsec='30') for r in mc])
+        _wcsv(os.path.join(R, 'pertie_frames.csv'), ['frame'], [dict(frame='f0')])
+        # G8 (PR 37): the recorded copy of the tie tables and a read line of it that travels with the pages
+        cid, _ = CI.record(R)
+        with open(os.path.join(cid, CI.LOG_COPY), 'w') as f:
+            f.write(f"{CI.READ}{cid}/pertie_detections.csv sha256 {CI.sums(cid)['pertie_detections.csv']}\n")
         for S in ('I', 'V'):
             os.makedirs(os.path.join(R, 'candidates', S), exist_ok=True)
             for T in ('sb', 'wb'):
