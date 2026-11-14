@@ -154,7 +154,10 @@ def build(item, chain_text, limits, targets, target_note, transients, n_pass, pe
                    f'size below {cfg.SIZE_MAX_BEAMS:g} beams and a fitted axis ratio below {cfg.AXIS_RATIO_MAX:g}; passing '
                    f'its page\'s default filters; not removed by its page\'s bright-source filter at an allowed mean sky '
                    f'loss of {100 * cfg.BRIGHT_SKY_LOSS:g}%; and not of a candidate its page matches to a known pulsar. A '
-                   f'missing value fails its filter. One row per candidate, tier and Stokes: its most significant passing '
+                   f'missing value fails its filter. Of the listed candidates of each Stokes at least '
+                   f'{100 * cfg.DEEP_MIN_FRACTION:g}% are of the deep tier: a 10-minute candidate is listed only while '
+                   f'that holds, so the # column (the rank among all passing candidates of the Stokes) can skip numbers. '
+                   f'One row per candidate, tier and Stokes: its most significant passing '
                    f'detection of the hour. S/N, local-empirical is the search\'s own local statistic; S/N, formal is given '
                    f'where the tier\'s table records one. Galactic latitude is in bold below {cfg.GAL_LAT_BOLD_DEG:g} deg '
                    f'from the plane.</p>')
@@ -175,6 +178,8 @@ def build(item, chain_text, limits, targets, target_note, transients, n_pass, pe
         ('Page', lambda r: link(r.get('link'), r.get('link_text') or 'page')),
     ]
     for stokes, rows, n in transients:
-        out.append(f'<p><strong>Stokes {esc(stokes)}: top {len(rows)} of {n}</strong></p>')
+        n_deep = sum(r.get('tier') == 'deep' for r in rows)
+        out.append(f'<p><strong>Stokes {esc(stokes)}: top {len(rows)} of {n}</strong> (listed: {n_deep} deep, '
+                   f'{len(rows) - n_deep} 10-minute)</p>')
         out.append(table(cols, rows) if rows else '<p>None.</p>')
     return '\n'.join(out)

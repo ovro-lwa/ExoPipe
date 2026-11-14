@@ -254,16 +254,30 @@ def collect(item, CFG):
     return _CACHE[item]
 
 
+def at_least_deep(sel, top_n, fraction):
+    """The listed rows of one Stokes: the top_n most significant of `sel` (sorted by significance), changed until at
+    least `fraction` of the listed rows are of the deep tier: while they are fewer, the least significant listed row of
+    another tier leaves and the next most significant deep row not yet listed, if there is one, enters. With no passing
+    deep candidate nothing is listed. The rows keep their rank among all passing candidates of the Stokes."""
+    chosen = list(sel[:top_n])
+    rest = [r for r in sel[top_n:] if r['tier'] == 'deep']
+    while chosen and sum(r['tier'] == 'deep' for r in chosen) < fraction * len(chosen):
+        del chosen[max(k for k, r in enumerate(chosen) if r['tier'] != 'deep')]
+        if rest:
+            chosen.append(rest.pop(0))
+    return chosen
+
+
 def transients(item, CFG, top_n):
-    """([(Stokes, the top_n rows of that Stokes, number passing in that Stokes)] with Stokes V first (the hub's order),
-    number passing in all, per-page counts, limits)."""
+    """([(Stokes, the listed rows of that Stokes (at_least_deep), number passing in that Stokes)] with Stokes V first (the
+    hub's order), number passing in all, per-page counts, limits)."""
     rows, per_tier, _xm_rows, limits, _extra = collect(item, CFG)
     parts = []
     for st in ('V', 'I'):
         sel = [dict(r) for r in rows if r['stokes'] == st]
         for i, r in enumerate(sel):
             r['rank'] = i + 1
-        parts.append((st, sel[:top_n], len(sel)))
+        parts.append((st, at_least_deep(sel, top_n, CFG.notify.DEEP_MIN_FRACTION), len(sel)))
     return parts, len(rows), per_tier, list(limits)
 
 

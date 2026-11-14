@@ -342,11 +342,12 @@ def _stub_pages(d):
 class _Config:
     """config notify and paths pointed at the stub for the length of a test."""
 
-    def __init__(self, reg, rev, pages, phase2_root=None):
+    def __init__(self, reg, rev, pages, phase2_root=None, **notify):
         from exopipe.phase3.config import CFG
         from exopipe.phase3.lib.notify import qa, sources
         self.CFG, self.mods = CFG, (sources, qa)
         self.new = {'notify': {'REGISTRY': reg, 'PAGES': pages}, 'paths': {'SNAPSHOT_REVIEW_ROOT': rev}}
+        self.new['notify'].update(notify)
         if phase2_root:
             self.new['paths']['PHASE2_ROOT'] = phase2_root
 
@@ -376,7 +377,7 @@ def test_sources_apply_the_filters_of_the_list_through_the_page_code():
     try:
         reg, _r1, rev = _stub_pages(d)
         pages = {('deep', 'V'): 'pD', ('10-minute', 'I'): 'pT', ('10-minute', 'V'): 'pGone'}
-        with _Config(reg, rev, pages) as CFG:
+        with _Config(reg, rev, pages, DEEP_MIN_FRACTION=0.0) as CFG:
             parts, n_pass, per_tier, limits = sources.transients('04h_2024-12-19', CFG, 10)
             (sv, rows_v, nv), (si, rows_i, ni) = parts
             assert (sv, si, nv, ni, n_pass) == ('V', 'I', 3, 1, 4), parts
@@ -397,6 +398,17 @@ def test_sources_apply_the_filters_of_the_list_through_the_page_code():
                      **{'pass': 4}, listed=3, n_max=40.0), c
             assert c['bright']['mean_sky_loss'] == 0.0499 and c['bright']['bands'] == 2 and c['bright']['listed'] == 10, c
             assert per_tier['10-minute Stokes I']['pass'] == 1 and len(per_tier) == 2
+            # at least half of the listed candidates of a Stokes are deep: no deep Stokes I candidate, so none is listed
+            CFG.notify.DEEP_MIN_FRACTION = 0.5
+            (_sv, rows_v2, _nv), (_si, rows_i2, ni2) = sources.transients('04h_2024-12-19', CFG, 10)[0]
+            assert rows_v2 == rows_v and rows_i2 == [] and ni2 == 1, (rows_v2, rows_i2)
+            R = lambda tiers: [{'tier': 'deep' if t == 'd' else '10-minute', 'rank': i + 1} for i, t in enumerate(tiers)]   # noqa: E731
+            pick = lambda tiers, n, f=0.5: [r['rank'] for r in sources.at_least_deep(R(tiers), n, f)]                     # noqa: E731
+            assert pick('ttttdddd', 4) == [1, 2, 5, 6]            # two 10-minute rows leave, the two best deep rows enter
+            assert pick('ttdtttd', 4) == [1, 2, 3, 7]
+            assert pick('tttd', 4) == [1, 4] and pick('tttt', 4) == [] and pick('dtdt', 4) == [1, 2, 3, 4]
+            assert pick('tdt', 3) == [1, 2] and pick('tttt', 3, 0.0) == [1, 2, 3] and pick('', 4) == []
+            CFG.notify.DEEP_MIN_FRACTION = 0.0
             assert len(limits) == 1 and 'pGone' in limits[0], limits
             # the page's environment and the module path are as before; each page had its own module
             assert os.environ.get('P3_PAGE_ID') == env0 and sys.path == path0

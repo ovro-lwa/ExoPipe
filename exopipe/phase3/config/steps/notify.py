@@ -37,6 +37,8 @@ class notify(_Section):
     BRIGHT_SKY_LOSS = 0.05           # allowed mean sky loss of the page's bright-source filter, a fraction
     REMOVE_KNOWN_PULSARS = True      # a candidate the page credibly matches to a known pulsar is not listed
     SITE_LAT_DEG = 37.2398           # the pages' site latitude (their elevation formula), for the forced-photometry events
+    # Gregg 2026-11-14, a further requirement: "at least half the candodates must be deep in each polarization".
+    DEEP_MIN_FRACTION = 0.5          # of the listed candidates of each Stokes, at least this fraction is of the deep tier
     GAL_LAT_BOLD_DEG = 10.0          # Galactic latitude: shown in bold when |b| is below this, degrees
     # Ionosphere quality (Gregg 2026-11-14: "The ionospheric QA is poorly calibrated. Even the best night i have ever seen
     # is listed as 'Moderate (Structured)'"): the email gives each number's percentile among the processed hours instead
