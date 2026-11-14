@@ -1414,6 +1414,60 @@ def test_stage_halting():
         servers.replace, flow.register_pages, register.write = orig
 
 
+def test_cumulative_reuses():
+    """SPEED (design 2.3a stage 4 of PER_HOUR_GAP_DESIGNS_20261111.md): the 10-minute cumulative's localizations run with
+    production's own row-index and shard switches (same tables), and the page context's frame-noise table is carried from the
+    served run into the build before the swap (the tool re-validates every entry by size and mtime)."""
+    import inspect
+    S = CFG.serve
+    src = open(f'{OPS}/build_localizations.py').read()
+    assert set(S.SUBLST_LOC_SPEED_ENV) == {'P3_LOC_ROW_INDEX', 'P3_LOC_SHARDS'} and not set(S.SUBLST_LOC_SPEED_ENV) & set(S.SUBLST_LOC_ENV)
+    assert "NSHARD = int(os.environ.get('P3_LOC_SHARDS') or 0)" in src and "_pool.imap(_locate, sorted(idents), chunksize=50)" in src \
+        and "if os.environ.get('P3_LOC_ROW_INDEX') == '1':\n    LOC.enable_row_index()" in src, 'build_localizations.py: the switches moved'
+    assert S.SUBLST_LOC_SPEED_ENV['P3_LOC_ROW_INDEX'] == '1' and 1 < int(S.SUBLST_LOC_SPEED_ENV['P3_LOC_SHARDS']) <= 6
+    b = inspect.getsource(sublst_build.build_stage)
+    assert "dict(S.SUBLST_LOC_ENV, **dict(S.SUBLST_LOC_SPEED_ENV or {}), P3_TENMIN_PERTIE=f'{B}/pertie_detections.csv'" in b
+    ok(f'cumulative reuses: the localizations run with production\'s own speed switches {S.SUBLST_LOC_SPEED_ENV} '
+       f'(build_localizations.py holds both; at most 6 processes)')
+    psrc = open(f'{OPS}/page_context_tenmin.py').read()
+    assert S.SUBLST_PAGE_CONTEXT_CACHE == 'page_context_frames.csv' and "cache_p = run + '/page_context_frames.csv'" in psrc \
+        and 'rms=repr(v)' in psrc and "float(c['rms'])" in psrc \
+        and "c['size'] == str(st.st_size) and c['mtime'] == str(int(st.st_mtime))" in psrc, 'page_context_tenmin.py: the cache moved'
+    c = inspect.getsource(sublst_build.carry_swap_stage)
+    assert 0 < c.index('carry_page_context_cache(src, B, u)') < c.index('journals.sublst_swap(')
+    d = f'{T}/reuses'
+    shutil.rmtree(d, ignore_errors=True)
+    served, B = f'{d}/served', f'{d}/build'
+    os.makedirs(served)
+    os.makedirs(B)
+    name = S.SUBLST_PAGE_CONTEXT_CACHE
+    r = sublst_build.carry_page_context_cache(served, B)
+    assert r['carried'] is False and not os.path.exists(f'{B}/{name}'), r
+    open(f'{served}/{name}', 'w').close()
+    r = sublst_build.carry_page_context_cache(served, B)
+    assert r['carried'] is False and not os.path.exists(f'{B}/{name}'), r
+    text = 'path,size,mtime,rms\n/x/a.fits,9103680,1791465397,0.38537807207107544\n/x/b.fits,9103680,1791465448,nan\n'
+    open(f'{served}/{name}', 'w').write(text)
+    os.utime(f'{served}/{name}', (1700000000, 1700000000))
+    r = sublst_build.carry_page_context_cache(served, B)
+    assert r['carried'] is True and r['frames'] == 2 and open(f'{B}/{name}').read() == text \
+        and int(os.stat(f'{B}/{name}').st_mtime) == 1700000000 and not os.path.exists(f'{B}/{name}.part'), r
+    assert float(repr(0.38537807207107544)) == 0.38537807207107544
+    open(f'{B}/{name}', 'w').write('path,size,mtime,rms\n')
+    r = sublst_build.carry_page_context_cache(served, B)
+    assert r['carried'] is False and open(f'{B}/{name}').read() == 'path,size,mtime,rms\n', r
+    os.remove(f'{B}/{name}')
+    saved = S.SUBLST_PAGE_CONTEXT_CACHE
+    S.SUBLST_PAGE_CONTEXT_CACHE = None
+    try:
+        r = sublst_build.carry_page_context_cache(served, B)
+        assert r['carried'] is False and os.listdir(B) == [], (r, os.listdir(B))
+    finally:
+        S.SUBLST_PAGE_CONTEXT_CACHE = saved
+    ok('cumulative reuses: the frame-noise table of the served run is copied into the build before the swap (bytes and mtime kept; '
+       'a missing or empty table, a table the build holds, or the key unset: nothing carried, as production)')
+
+
 def test_page_context_stage():
     """THE 10-MINUTE PAGE CONTEXT (sublst_cumulative.sh:295-300): after the swap and before the registration, unit
     sublst_<run>_page_context runs page_context_tenmin.py on the swapped-in run U with production's arguments and environment
@@ -2601,6 +2655,7 @@ def main():
         test_exclusion_gate_per_page_stage()
         test_stage_halting()
         test_page_context_stage()
+        test_cumulative_reuses()
         test_serve_hold()
         test_card2_rejudge_go()
         test_inplace_gate_agrees()

@@ -732,6 +732,86 @@ def test_tenmin():
             assert t['passed'], t
 
 
+def test_tenmin_window_status():
+    """SPEED (design 2.3a stage 4): the cached windows' status (size, mtime) is read ONCE per path and on threads
+    (TenminRecords.stats; catalog_omission.TENMIN_STAT_THREADS) - the decision table and the window-rms cache files are the
+    bytes of the one-after-another run (1 thread) and of production's own driver, on a first run (every window read from the
+    page-context table) and on a second (every window from the cache), with one cache row made stale and one window removed."""
+    import threading
+    DO, C = _DO(), _cfg()
+    SDO, PDO, PDROP = _prod()
+    root, rdir, sl, tr, frms = tenmin_world('tenmin_status')
+    lsts = ['05h', '06h']
+    pc = os.path.join(root, 'prodcache')
+    os.makedirs(pc)
+
+    def prod(tag):
+        with Patch((PDO, 'SL', sl), (PDO, 'RUNS', tr), (PDO, 'FRAME_RMS', frms), (PDO, '_FR', None), (PDO, '_WBW', {}), (PDO, '_WBM', {})):
+            rows = []
+            for L in lsts:
+                rows += PDO.decide(L, rdir, pc)
+        for r in rows:
+            r['rate_definition'] = DO.TENMIN_RATE_DEF
+        with open(os.path.join(root, f'prod_{tag}.csv'), 'w', newline='') as f:
+            w = csv.DictWriter(f, fieldnames=list(rows[0]))
+            w.writeheader()
+            w.writerows(rows)
+
+    def port(n, tag, count=None):
+        cd = os.path.join(root, f'cache_{n}')
+        items = [(C.paths, 'SUBLST_ROOT', sl), (C.paths, 'TRANSIENTS_ROOT', tr), (C.catalog_omission, 'TENMIN_STAT_THREADS', n)]
+        if count is not None:
+            real, lock = os.stat, threading.Lock()
+
+            def counting(path, *a, **k):
+                if sys._getframe(1).f_code.co_filename.endswith('deep_omission.py'):      # the stage's own status calls
+                    with lock:
+                        count[str(path)] += 1
+                return real(path, *a, **k)
+            items.append((os, 'stat', counting))
+        with Patch(*items):
+            _rows_, recs = DO.tenmin_table(lsts, os.path.join(root, f'port_{n}_{tag}.csv'), rdir=rdir, cache_dir=cd, seed_dir=None,
+                                           frame_rms=frms)
+        return dict(recs.n)
+
+    def same(tag):
+        for n in (1, 16):
+            assert filecmp.cmp(os.path.join(root, f'prod_{tag}.csv'), os.path.join(root, f'port_{n}_{tag}.csv'), shallow=False), \
+                f'{tag}: the decision table on {n} thread(s) differs from production\'s'
+            for L in lsts:
+                a, b = os.path.join(pc, f'window_rms_{L}.csv'), os.path.join(root, f'cache_{n}', f'window_rms_{L}.csv')
+                assert filecmp.cmp(a, b, shallow=False), f'{tag}: the window-rms cache of {L} on {n} thread(s) differs from production\'s'
+    prod('first')
+    n1 = [port(n, 'first') for n in (1, 16)]
+    assert n1[0] == n1[1] and n1[0].get('page-context', 0) > 0 and not n1[0].get('recomputed') and not n1[0].get('loaded-cache'), n1
+    same('first')
+    cached = [r['path'] for L in lsts for r in _rows(os.path.join(pc, f'window_rms_{L}.csv'))]
+    assert len(cached) > 20 and len(set(cached)) == len(cached), len(cached)
+    prod('second')
+    count = collections.Counter()
+    n2 = [port(1, 'second'), port(16, 'second', count)]
+    assert n2[0] == n2[1] and n2[0].get('cache', 0) >= len(cached) and not n2[0].get('page-context') \
+        and not n2[0].get('recomputed'), (n2, len(cached))
+    same('second')
+    per = [count[p] for p in cached]
+    assert per and set(per) == {1}, collections.Counter(per)
+    # a stale cache row (the window rewritten: other mtime) and a window that is gone: re-read / left out, as production
+    stale, gone = cached[0], cached[-1]
+    st = os.stat(stale)
+    os.utime(stale, (st.st_atime, st.st_mtime + 100))
+    held = gone + '.held'
+    os.rename(gone, held)
+    try:
+        prod('third')
+        n3 = [port(n, 'third') for n in (1, 16)]
+        assert n3[0] == n3[1] and n3[0].get('recomputed', 0) >= 1 and n3[0].get('not-finite', 0) >= 1, n3
+        same('third')
+        got = {r['path']: r for L in lsts for r in _rows(os.path.join(root, 'cache_16', f'window_rms_{L}.csv'))}
+        assert gone not in got and got[stale]['mtime'] == str(int(st.st_mtime + 100)), (gone in got, got.get(stale))
+    finally:
+        os.rename(held, gone)
+
+
 def test_serve_build():
     """`serve --tier sublst` build: the decision table (this stage's) is written outside the build, recorded (class
     omission_decisions) and passed to the in-place merge as SUBLST_DEEP_OMISSION (sublst_cumulative.sh:98-100)."""
@@ -1729,7 +1809,7 @@ def test_real_one_lst():
     print(f'    07h on B6H ({n} served detections): {len(port)} decisions identical to production ({time.time() - t0:.0f} s)')
 
 
-TESTS = [test_production_pin, test_drift, test_snapshot, test_tenmin, test_tenmin_rejudge, test_serve_build, test_serve_build_merge,
+TESTS = [test_production_pin, test_drift, test_snapshot, test_tenmin, test_tenmin_window_status, test_tenmin_rejudge, test_serve_build, test_serve_build_merge,
          test_gates, test_content,
          test_kept_product, test_stage, test_refusals_override, test_pending_values, test_production_bugs_pinned,
          test_injected_record, test_real_one_lst]

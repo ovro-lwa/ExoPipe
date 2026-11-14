@@ -359,6 +359,18 @@ class serve(_Section):
     # ---- sub-LST cumulative build -----------------------------------------------------------------------------------
     SUBLST_LOC_ENV = {'P3_LOC_COMMON_FRAME': '1', 'P3_LOC_CATS': 'source_catalogs_[IV]_[sw]b'}   # sublst_cumulative.sh:28-29 (ruling item 4,
                                             # 2026-10-08, per sublst_cumulative.sh:27-28; ledger ID not located - not in RULED)
+    SUBLST_LOC_SPEED_ENV = {'P3_LOC_ROW_INDEX': '1', 'P3_LOC_SHARDS': '6'}   # SPEED ONLY, production's own two switches of
+                                            # build_localizations.py (2026-10-17 row index: each catalog file read once, not once
+                                            # per identity; 2026-10-27 shards: N processes, the identities in the same sorted
+                                            # order) - the tables are byte-identical to the serial run's (proven on the served
+                                            # 24-LST run, 19,332 identities); production's 10-minute build sets neither
+                                            # (sublst_cumulative.sh:102-103; 110 min on 2026-11-02). {} = as production. 6: the
+                                            # Lustre rule (each process reads every Master once)
+    SUBLST_PAGE_CONTEXT_CACHE = 'page_context_frames.csv'   # the page context's frame-noise table (path, size, mtime, rms of every
+                                            # searched frame; page_context_tenmin.py:117), CARRIED from the served run into the build
+                                            # before the swap: the tool re-validates every entry by size and mtime and measures
+                                            # only the rest (production starts each build without it and measures every frame:
+                                            # 61,926 frames in 2,451 of the step's 2,554 s on 2026-11-02). None = as production
     SUBLST_FIG_THREADS = 4                  # figures drawn at once; sublst_cumulative.sh:57
     SUBLST_FIG_TIMEOUT_S = 600              # s per figure; sublst_cumulative.sh:54
     SUBLST_INDEX_TIERS = ('V_sb', 'I_sb', 'V_wb', 'I_wb')   # p3t_pages_index.py per tier; sublst_cumulative.sh:62-64 (wb optional)
