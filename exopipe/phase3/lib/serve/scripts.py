@@ -35,8 +35,14 @@ SCRIPTS = {
     'astrometry_panel': ('source_astrometry_panel.py', 'sublst_cumulative.sh:53'),
     'pages_index': ('p3t_pages_index.py', 'sublst_cumulative.sh:62-64'),
     'page_context_tenmin': ('page_context_tenmin.py', 'sublst_cumulative.sh:295-300 (after the swap; page text)'),
-    'bright_source_filter': ('bright_source_filter_precompute.py', 'sublst_cumulative.sh:177-178 (the new build, before the swap)'),
-    'scintillation_index': ('scintillation_index.py', 'sublst_cumulative.sh:179-180 (the new build, before the swap)'),
+    'bright_source_filter': ('bright_source_filter_precompute.py', 'sublst_cumulative.sh:177-178 (the new build, before the swap); '
+                                                                  'snapshot_serve.sh:184-190 (the review copy, per Stokes and cadence)'),
+    'scintillation_index': ('scintillation_index.py', 'sublst_cumulative.sh:179-180 (the new build, before the swap); '
+                                                      'snapshot_serve.sh:168-170 (the review copy)'),
+    'page_context_snapshot': ('page_context_snapshot.py', 'snapshot_serve.sh:176-178 (the review copy, after the scintillation index; '
+                                                          'page text and the n_i_epoch / n_v_epoch sliders\' frame counts)'),
+    'build_detections_index': ('build_detections_index.py', 'snapshot_serve.sh:196-198 (the review copy\'s page index, before any '
+                                                            'page starts)'),
     'sublst_served_test': ('sublst_reserve_test_served.py', 'sublst_catalog_publish.sh:106'),
     'forced_adleo': ('test_snapshot_forced_reserve.py', 'snapshot_forced_serve_20261007.sh:68'),
     'snapshot_filter_catalog': ('snapshot_filter_catalog.py', 'snapshot_batch/comb_build_20261102.sh:52 (the combined view)'),
