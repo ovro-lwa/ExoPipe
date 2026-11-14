@@ -104,6 +104,8 @@ def tree(d):
             if rel.endswith('incremental.log') or '/_records/' in p:
                 continue
             out[rel] = open(p, 'rb').read()
+            if rel == os.path.join('page_index', 'DIRTY'):    # '<UTC stamp to the second> <writer>': compare the writer only
+                out[rel] = out[rel].split(b' ', 1)[-1]
     return out
 
 
@@ -460,21 +462,31 @@ def test_sublst_ports():
 
 
 def test_generation_mix():
+    from exopipe.phase3.lib.catalog import conform_inputs as CI
     R = f'{T}/lstruns'
-    for l, (pert, posk) in {'04h': (True, True), '05h': (False, True), '06h': (True, False)}.items():
+    # (window tie, fitted positions, conform inputs: 'ok' recorded + read line of the copy, None absent, 'sha' another sha256)
+    for l, (pert, posk, ci) in {'04h': (True, True, 'ok'), '05h': (False, True, None), '06h': (True, False, 'ok'),
+                                '08h': (True, True, None), '09h': (True, True, 'sha')}.items():
         d = f'{R}/Run_SLST{l[:-1]}B'
         os.makedirs(f'{d}/candidates', exist_ok=True)
         if pert:
             open(f'{d}/pertie_detections.csv', 'w').write('cand_id\n')
+            open(f'{d}/pertie_frames.csv', 'w').write('frame\n')
+        if ci:                                     # sublst_pages_prep.py:43-63: the copy + the read lines travel with the pages
+            cid, _ = CI.record(d)
+            h = CI.sums(cid)['pertie_detections.csv'] if ci == 'ok' else '0' * 64
+            open(f'{cid}/{CI.LOG_COPY}', 'w').write(f'{CI.READ}/x/catalog/pertie/{CI.DIR}/pertie_detections.csv sha256 {h}\n')
         open(f'{d}/master_catalog.csv', 'w').write('cand_id,ra' + (',pos_kind' if posk else '') + '\n')
     orig = sublst_build.lst_run
     sublst_build.lst_run = lambda l: f'{R}/Run_SLST{l[:-1]}B'
     try:
-        bad = dict(sublst_build.generation_mix(['04h', '05h', '06h', '07h']))
+        bad = dict(sublst_build.generation_mix(['04h', '05h', '06h', '07h', '08h', '09h']))
     finally:
         sublst_build.lst_run = orig
-    assert set(bad) == {'05h', '06h', '07h'} and 'pertie' in bad['05h'] and 'pos_kind' in bad['06h'], bad
-    ok('sub-LST G8: LST runs without the window tie / fitted positions / candidates are named (generation mix)')
+    assert set(bad) == {'05h', '06h', '07h', '08h', '09h'} and 'pertie' in bad['05h'] and 'pos_kind' in bad['06h'] \
+        and f'{CI.DIR}/pertie_detections.csv' in bad['08h'] and 'logged sha256' in bad['09h'], bad
+    ok('sub-LST G8: LST runs without the window tie / fitted positions / candidates / a verified record of the tie tables the '
+       'conformance read (sublst_cumulative.sh:60, 76-96) are named (generation mix)')
 
 
 # ---- 1c. journals ------------------------------------------------------------------------------------------------------
@@ -1417,6 +1429,82 @@ def test_stage_halting():
         ok(f'snapshot: G17 refuses the chain run ({l_} {d_} {s_}MHz excluded now) and nothing is copied or served')
     finally:
         servers.replace, flow.register_pages, register.write = orig
+
+
+def test_cumulative_reuses():
+    """SPEED (design 2.3a stage 4 of PER_HOUR_GAP_DESIGNS_20261111.md): the 10-minute cumulative's localizations run with
+    production's own row-index and shard switches (same tables), and the page context's frame-noise table is carried from the
+    served run into the build before the swap (the tool re-validates every entry by size and mtime)."""
+    import inspect
+    S = CFG.serve
+    src = open(f'{OPS}/build_localizations.py').read()
+    assert set(S.SUBLST_LOC_SPEED_ENV) == {'P3_LOC_ROW_INDEX', 'P3_LOC_SHARDS'} and not set(S.SUBLST_LOC_SPEED_ENV) & set(S.SUBLST_LOC_ENV)
+    assert "NSHARD = int(os.environ.get('P3_LOC_SHARDS') or 0)" in src and "_pool.imap(_locate, sorted(idents), chunksize=50)" in src \
+        and "if os.environ.get('P3_LOC_ROW_INDEX') == '1':\n    LOC.enable_row_index()" in src, 'build_localizations.py: the switches moved'
+    assert S.SUBLST_LOC_SPEED_ENV['P3_LOC_ROW_INDEX'] == '1' and 1 < int(S.SUBLST_LOC_SPEED_ENV['P3_LOC_SHARDS']) <= 6
+    b = inspect.getsource(sublst_build.build_stage)
+    assert "dict(S.SUBLST_LOC_ENV, **dict(S.SUBLST_LOC_SPEED_ENV or {}), P3_TENMIN_PERTIE=f'{B}/pertie_detections.csv'" in b
+    ok(f'cumulative reuses: the localizations run with production\'s own speed switches {S.SUBLST_LOC_SPEED_ENV} '
+       f'(build_localizations.py holds both; at most 6 processes)')
+    psrc = open(f'{OPS}/page_context_tenmin.py').read()
+    assert S.SUBLST_PAGE_CONTEXT_CACHE == 'page_context_frames.csv' and "cache_p = run + '/page_context_frames.csv'" in psrc \
+        and 'rms=repr(v)' in psrc and "float(c['rms'])" in psrc \
+        and "c['size'] == str(st.st_size) and c['mtime'] == str(int(st.st_mtime))" in psrc, 'page_context_tenmin.py: the cache moved'
+    c = inspect.getsource(sublst_build.carry_swap_stage)
+    assert 0 < c.index('carry_page_context_cache(src, B, u)') < c.index('journals.sublst_swap(')
+    d = f'{T}/reuses'
+    shutil.rmtree(d, ignore_errors=True)
+    served, B = f'{d}/served', f'{d}/build'
+    os.makedirs(served)
+    os.makedirs(B)
+    name = S.SUBLST_PAGE_CONTEXT_CACHE
+    saved_root = CFG.paths.SUBLST_ROOT                 # the 10-minute tree whose frames.csv lists the frames to keep
+    CFG.paths.SUBLST_ROOT = f'{d}/sl'
+    tree = CFG.catalog_sublst.TENMIN_TREE.format(root=f'{d}/sl', tree=CFG.catalog_sublst.ARM_TREES['B'])
+    os.makedirs(f'{tree}/17h_sb3')
+    open(f'{tree}/17h_sb3/frames.csv', 'w').write('key,stokes,sub_path\nk1,V,/x/a.fits\nk2,V,/x/b.fits\n')
+    r = sublst_build.carry_page_context_cache(served, B)
+    assert r['carried'] is False and not os.path.exists(f'{B}/{name}'), r
+    open(f'{served}/{name}', 'w').close()
+    r = sublst_build.carry_page_context_cache(served, B)
+    assert r['carried'] is False and not os.path.exists(f'{B}/{name}'), r
+    text = 'path,size,mtime,rms\n/x/a.fits,9103680,1791465397,0.38537807207107544\n/x/b.fits,9103680,1791465448,nan\n'
+    open(f'{served}/{name}', 'w').write(text)
+    os.utime(f'{served}/{name}', (1700000000, 1700000000))
+    r = sublst_build.carry_page_context_cache(served, B)
+    assert r['carried'] is True and r['frames'] == 2 and open(f'{B}/{name}').read() == text \
+        and int(os.stat(f'{B}/{name}').st_mtime) == 1700000000 and not os.path.exists(f'{B}/{name}.part'), r
+    os.remove(f'{B}/{name}')                           # review of PR 55: rows of frames the tree no longer lists are dropped
+    open(f'{served}/{name}', 'w').write(text + '/x/gone.fits,1,1,0.5\n')
+    r = sublst_build.carry_page_context_cache(served, B)
+    assert r['carried'] is True and r['frames'] == 2 and r['dropped'] == 1 and open(f'{B}/{name}').read() == text, r
+    os.remove(f'{B}/{name}')                           # a carry that fails never blocks the swap: no table, no .part left
+    os.rename(f'{tree}/17h_sb3/frames.csv', f'{tree}/17h_sb3/frames.csv_x')
+    r = sublst_build.carry_page_context_cache(served, B)
+    os.rename(f'{tree}/17h_sb3/frames.csv_x', f'{tree}/17h_sb3/frames.csv')
+    assert r['carried'] is False and 'not carried' in r['why'] and os.listdir(B) == [], (r, os.listdir(B))
+    open(f'{served}/{name}', 'w').write('size,mtime,rms\n1,1,0.5\n')
+    r = sublst_build.carry_page_context_cache(served, B)
+    assert r['carried'] is False and 'not carried' in r['why'] and os.listdir(B) == [], (r, os.listdir(B))
+    open(f'{served}/{name}', 'w').write(text)
+    r = sublst_build.carry_page_context_cache(served, B)
+    assert r['carried'] is True and open(f'{B}/{name}').read() == text, r
+    assert float(repr(0.38537807207107544)) == 0.38537807207107544
+    open(f'{B}/{name}', 'w').write('path,size,mtime,rms\n')
+    r = sublst_build.carry_page_context_cache(served, B)
+    assert r['carried'] is False and open(f'{B}/{name}').read() == 'path,size,mtime,rms\n', r
+    os.remove(f'{B}/{name}')
+    saved = S.SUBLST_PAGE_CONTEXT_CACHE
+    S.SUBLST_PAGE_CONTEXT_CACHE = None
+    try:
+        r = sublst_build.carry_page_context_cache(served, B)
+        assert r['carried'] is False and os.listdir(B) == [], (r, os.listdir(B))
+    finally:
+        S.SUBLST_PAGE_CONTEXT_CACHE = saved
+        CFG.paths.SUBLST_ROOT = saved_root
+    ok('cumulative reuses: the frame-noise table of the served run is copied into the build before the swap (bytes and mtime kept; '
+       'a missing or empty table, a table the build holds, or the key unset: nothing carried, as production; rows of frames the '
+       '10-minute tree no longer lists dropped; a carry that fails is noted and never blocks the swap)')
 
 
 def test_page_context_stage():
@@ -2395,6 +2483,70 @@ def test_register_matches_production():
        'refused entry writes neither file; the production registry and a production run\'s hold are refused (G23)')
 
 
+def test_registry_lock():
+    """THE REGISTRY LOCK (2026-11-13): register.registry_lock is production's register_page.py lock - the same file name
+    (serve.TWO_PORT_LOCK = register_page.py LOCK, read from the live file); 12 concurrent registrations (separate interpreters,
+    as production's registrations are) in one sandbox all survive in registered_pages.json and registry.json; while this
+    process holds the lock a registration waits, then completes; held past wait_s it is refused and neither file changes; the
+    production directory is refused (G23) before its lock is taken."""
+    import re as _re
+    src = open('/lustre/gh/main/phase3/serve/register_page.py').read()
+    m = _re.search(r"^LOCK = os\.path\.join\(D, '([^']+)'\)", src, _re.M)
+    assert m and m.group(1) == CFG.serve.TWO_PORT_LOCK, (m and m.group(1), CFG.serve.TWO_PORT_LOCK)
+    D = f'{T}/reglock'
+    site = f'{T}/reglock_site'
+    os.makedirs(D); os.makedirs(site)
+    for name, obj in (('registry.json', {'pages': [dict(id='hub', kind='static', root=site, greenlit=False)]}),
+                      ('registered_pages.json', {'pages': []}), ('greenlit_pages.json', {'pages': {}})):
+        with open(f'{D}/{name}', 'w') as f:
+            json.dump(obj, f)
+    child = ('''import sys; sys.path.insert(0, sys.argv[1])
+from exopipe.phase3.core import env; env.legacy()
+from exopipe.phase3.core.record import Refusal
+from exopipe.phase3.lib.serve import register
+D, i, wait = sys.argv[2], int(sys.argv[3]), float(sys.argv[4])
+e = dict(id=f'p{i}', kind='review', code='/x/ops/classify_transients.py', argv=['--run', f'/data99/r/Run_{i}', '--queue',
+         f'/data99/r/Run_{i}/q.txt', '--title', f'T{i}'], env={'P3_X': str(i)}, legacy_port=i, greenlit=False,
+         inspection_legacy_port=None, inspection_title=None, title=f'T{i}')
+try:
+    with register.registry_lock(D, wait_s=wait):
+        register.write(register.prepare([e], D))
+    print('ok')
+except Refusal as x:
+    print('REFUSED', x)
+''')
+
+    def start(i, wait=60):
+        return subprocess.Popen([PY, '-c', child, ROOT, D, str(i), str(wait)], stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True)
+    ps = {9100 + k: start(9100 + k) for k in range(12)}
+    got = {i: p_.communicate(timeout=300)[0].strip().splitlines()[-1:] for i, p_ in ps.items()}
+    ids = {f'p{i}' for i in ps}
+    rp = {e['id'] for e in json.load(open(f'{D}/registered_pages.json'))['pages']}
+    rg = {e['id'] for e in json.load(open(f'{D}/registry.json'))['pages']}
+    assert all(v == ['ok'] for v in got.values()) and ids <= rp and ids <= rg, (got, sorted(ids - rp), sorted(ids - rg))
+    with register.registry_lock(D):                 # held here: the registration waits, then completes
+        t0 = time.time(); p_ = start(9200)
+        time.sleep(8)
+        assert p_.poll() is None, ('the registration did not wait for the held lock', p_.communicate())
+    out = p_.communicate(timeout=120)[0].strip().splitlines()[-1:]
+    assert out == ['ok'] and time.time() - t0 >= 8 and 'p9200' in {
+        e['id'] for e in json.load(open(f'{D}/registered_pages.json'))['pages']}, out
+    before = {n: open(f'{D}/{n}', 'rb').read() for n in ('registry.json', 'registered_pages.json')}
+    with register.registry_lock(D):                 # held past the writer's wait_s: refused, nothing written
+        out = start(9300, wait=1).communicate(timeout=120)[0].strip().splitlines()[-1:]
+    assert out and out[0].startswith('REFUSED') and 'held by another writer' in out[0], out
+    assert before == {n: open(f'{D}/{n}', 'rb').read() for n in before}
+    try:
+        with register.registry_lock(CFG.serve.TWO_PORT_DIR):
+            pass
+        raise AssertionError('the production registry lock was not refused')
+    except Refusal as e:
+        assert 'G23' in str(e), e
+    ok('registry lock = production register_page.py\'s (.registry.lock): 12 concurrent registrations (separate interpreters) '
+       'all kept in registered_pages.json and registry.json; a held lock makes a registration wait, then it completes; held '
+       'past wait_s it is refused and neither file changes; the production directory is refused (G23)')
+
 def _rules_entry(d, pid_, title='Page', run=None, extra=()):
     run = run or f'{d}/runs/{pid_}'
     os.makedirs(f'{run}/judgements', exist_ok=True)
@@ -3008,11 +3160,13 @@ def main():
         test_page_context_stage()
         test_sublst_filters()
         test_snapshot_steps()
+        test_cumulative_reuses()
         test_serve_hold()
         test_card2_rejudge_go()
         test_inplace_gate_agrees()
         test_forced_probe_before_stop()
         test_register_matches_production()
+        test_registry_lock()
         srv = TwoPortServer(f'{T}/tp_rules', 29865, 29895)
         try:
             test_two_port_rules(srv)

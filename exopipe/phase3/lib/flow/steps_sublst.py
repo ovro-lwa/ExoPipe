@@ -11,7 +11,10 @@ Units:
                py310_orca itself (flock -w 86400). Then content test (b) is recomputed INDEPENDENTLY of the module (frozen
                weights + membership vetoes + the stack listing): R1 every residual allowed with its LOONCOAD, R2 every expected
                residual written, except EXACTLY the approved (night, window) rows (G-C7, structural - never from log text),
-               and the cards (G-C9).
+               and the cards (G-C9). With named nights the log stays the subband's whole record: this run's lines, plus
+               the earlier log's lines of every other night, the final line counted again over both (keep_other_nights;
+               the frames S-G8 gate and sublst_refine_approved.py compare the refusals with EVERY approved row of the LST
+               and subband); an earlier log without its final line refuses first (G-C13: a batch refine failed or runs).
   check_<LST>_<sb>[_<night>]   the same verdict on residuals already on disk (no GPU); runs only when refine did not run in
                the same invocation.
   refine-nonmember_<LST>_<sb>_<night>   (stage refine-nonmember, on request only, named nights only) the x2 residuals of ONE
@@ -218,16 +221,22 @@ def refine_unit(u, args, run, lst, sb, nights):
     x2 = os.path.join(run.out_root, f'{lst}_x2')
     old = T.residuals_on_disk(x2, lst, sb, nset)
     log = os.path.join(x2, 'logs', f'{lst}_{sb}.log')
+    if nights:
+        why = log_unfinished(log, lst, sb)
+        if why:
+            raise Refusal(why)
     if old:
         if not args.fresh:
             raise Refusal(f'G-C5: {len(old)} residual(s) of an earlier run of {lst} {sb} under {x2} - pass --fresh '
                           f'--supersede TAG to move them aside first (as sublst_resume_from_x2.sh:54-56 does by hand)')
         moves = C.supersede(sorted(old.values()), run.out_root, run.out_root, args.supersede, f'flow refine {u.name} --fresh')
         u.note(f'--fresh: {len(moves)} earlier residuals moved aside under {run.out_root}/_superseded/{args.supersede}/')
+    prev = None
     if os.path.exists(log):
         # one run per log, as production's `> $L` (sublst_refine_pass.sh:23): the frames S-G8 gate and
         # sublst_refine_approved.py read the log's REFUSED lines against its LAST SUBLST-REFINE line, so a per-hour run
-        # (--nights) must not append to an earlier run's log either; the earlier log is kept under logs/_previous/
+        # (--nights) must not append to an earlier run's log either; the earlier log is kept under logs/_previous/, and a
+        # run of named nights takes the other nights' lines back from it when it ends (keep_other_nights)
         prev_dir = os.path.join(x2, 'logs', '_previous')
         os.makedirs(prev_dir, exist_ok=True)
         dst = os.path.join(prev_dir, f'{lst}_{sb}.log.{C.utcstamp()}')
@@ -236,6 +245,7 @@ def refine_unit(u, args, run, lst, sb, nights):
             dst = os.path.join(prev_dir, f'{lst}_{sb}.log.{C.utcstamp()}.{k}')
             k += 1
         os.rename(log, dst)
+        prev = dst
     # ---- the child ------------------------------------------------------------------------------------------------------
     work = os.path.join(fitsio.scratch_root(args.work), fr.WORK_SUBDIR, f'gpu{g}')
     argv = ['--root', os.path.join(base, lst), '--out', x2, '--work', work, '--lst', lst, '--subband', sb]
@@ -262,7 +272,46 @@ def refine_unit(u, args, run, lst, sb, nights):
         raise Refusal(f'phase3_sublst_refine.py: {line.strip()[:600]}')         # G-C1/G-C2/G-C5/G-C6 (the module's own)
     if res.rc not in (0, 3):
         raise RuntimeError(f'phase3_sublst_refine.py exit {res.rc}: {(res.tail or "")[-600:]}')
+    if nights and prev and final:
+        u.meta['refine'].update(child_final=final, final=keep_other_nights(u, x2, log, prev, lst, sb, nights))
     verdict(u, run, args, lst, sb, nights, rc_child=res.rc)
+
+
+def log_unfinished(log, lst, sb):
+    """G-C13: None, or why a run of named nights refuses: the subband's refine log exists without its final SUBLST-REFINE
+    line and without a refine-nonmember marker - a batch refine failed or is running, so the other nights' lines it holds
+    are no complete record to keep (refine the whole subband)."""
+    from exopipe.phase3.lib.flow import sublst_nonmember_refine as R
+    if R.log_gate(log, lst, sb) is None:
+        return None
+    return (f'G-C13: the refine log {log} has no final SUBLST-REFINE line (a batch refine of {lst} {sb} failed or is '
+            f"running): a run of named nights cannot keep the other nights' lines from it - refine the whole subband")
+
+
+def keep_other_nights(u, x2, log, prev, lst, sb, nights):
+    """A run of named nights leaves the subband's refine log its whole record: the log this run wrote keeps its lines, the
+    earlier log (logs/_previous/) gives back its per-night lines (R.line_night: ALIGNED, REFUSED-NIGHT '... no flow
+    returned', ALIGNER-ERROR, REFUSED-RESIDUAL, a refine-nonmember marker) of every night this run did not name and the log
+    does not mention now (a refine-nonmember unit may have merged a night meanwhile), and the final line is counted again
+    over the whole log (R.final_line) - or left out while a night's marker stands, as R.merge_log. Window lines come from
+    this run only (the module prints them over every night). Under the subband's x2 lease, as refine-nonmember's merge.
+    Returns the final line or None."""
+    from exopipe.phase3.lib.flow import sublst_nonmember_refine as R
+    lease = R.x2_lease(x2, lst, sb, u.name)
+    lease.acquire(say=u.note)
+    try:
+        cur = [ln for ln in R._log_lines(log) or [] if not ln.startswith(f'SUBLST-REFINE {lst} {sb} ')]
+        skip = set(nights) | {R.line_night(ln, sb) for ln in cur}
+        back = [ln for ln in R._log_lines(prev) or [] if R.line_night(ln, sb) is not None and R.line_night(ln, sb) not in skip]
+        lines = cur + back
+        markers = [ln for ln in lines if ln.startswith(R.INCOMPLETE + ' ')]
+        final = None if markers else R.final_line(lines, lst, sb)
+        R.write_log(log, lines + ([final] if final else []))
+    finally:
+        lease.release()
+    u.note(f'named nights: {len(back)} line(s) of the other nights kept from the earlier log {prev}; '
+           + (final or f'no final line while {len(markers)} night marker(s) stand: {markers[0][:200]}'))
+    return final
 
 
 def check_unit(u, args, run, lst, sb, nights):
@@ -382,6 +431,8 @@ def plan(args, run, its, stages):
             if excl and fr.EXCLUDED_STACK == 'refuse':
                 refusal = f'G-C12: stacks of excluded nights {excl}'
             if 'refine' in stages:
+                if nights:
+                    refusal = refusal or log_unfinished(os.path.join(x2, 'logs', f'{lst}_{sb}.log'), lst, sb)
                 if have and not run.fresh:
                     refusal = refusal or f'G-C5: {len(have)} earlier residuals under {x2} (needs --fresh --supersede TAG)'
                 lock = '-'

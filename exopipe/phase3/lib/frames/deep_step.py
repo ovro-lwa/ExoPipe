@@ -16,9 +16,12 @@ Item kinds:
 Stages: ``residuals`` (the engine in a child per unit) then ``verify`` (re-runs every content test on the outputs listed in
 the residuals record - never a glob - or, with ``--deep-adopt``, registers and tests production attempts read-only).
 """
+import filecmp
+import glob
 import hashlib
 import os
 import re
+import shutil
 import sys
 import time
 
@@ -323,6 +326,25 @@ def _new_attempt(ctx, plan):
     return p
 
 
+def published_population(ctx, plan):
+    """PER-HOUR (R-GREGG-20261112-PER-HOUR-STEPS-SIX-RULINGS (2)): an incremental unit's engine judges the listed nights by
+    the frozen beam-gate population of the cell's published search attempt, read from its run dir (gate_population.csv) as
+    a search append reads its base copy's; a unit's attempt is fresh (_new_attempt), so the unit copies that file into it.
+    Returns its path; refuses without a published attempt or without the file (an attempt published before the record:
+    search --tier deep --stages gate-backfill)."""
+    from exopipe.phase3.lib.search import deep_step as SDS, gate_population as GP
+    base = SDS.resolve_published(plan.cell, plan.stokes, ctx.args.out or default_out(ctx.args))   # its register, else production's
+    if base is None:
+        raise Refusal(f'{plan.cell} {plan.stokes}: no published search attempt - the listed nights {plan.dates} are judged '
+                      f'by its frozen beam-gate population (R-GREGG-20261112-PER-HOUR-STEPS-SIX-RULINGS (2))')
+    pops = glob.glob(os.path.join(base, 'transients', 'Run_*', GP.FILE))
+    if len(pops) != 1:
+        raise Refusal(f'{base}: {len(pops)} {GP.FILE} files, not one - the listed nights {plan.dates} are judged by the '
+                      f'published attempt\'s frozen beam-gate population (backfill it: search --tier deep --stages '
+                      f'{GP.BACKFILL_STAGE})')
+    return pops[0]
+
+
 def _check_pregates(u, gates):
     """Record every passing pre-gate as a check; raise at the first failing one (Refusal, or NoInput for 'noinput')."""
     first = None
@@ -396,11 +418,20 @@ def _residuals_unit(ctx, plan):
             # every listed night is excluded or not an epoch of this cell
             raise NoInput(f'none of the listed nights {plan.dates} is an admitted epoch of {plan.cell} (excluded by '
                           f'data_decisions or no stage-1 product): nothing to build')
+        pop = published_population(ctx, plan) if plan.dates else None
         attempt = _new_attempt(ctx, plan)
         spec = deep_engine.UnitSpec(tier='deep', cadence='deep', lst=c.lst, scope=c.scope, stokes=plan.stokes,
                                     label=ctx.label, included_dates=plan.dates, attempt=attempt, coadd_root=root,
                                     archive_root=ctx.archive_root, archive_run=ctx.archive_run,
                                     archive_copy=ctx.archive_copy, work_root=ctx.flow_root)
+        if pop:
+            u.add_input(pop)
+            os.makedirs(spec.run_root(), exist_ok=True)
+            dst = os.path.join(spec.run_root(), os.path.basename(pop))
+            shutil.copyfile(pop, dst)
+            if not filecmp.cmp(pop, dst, shallow=False):           # a Lustre copy can come out short, silently
+                raise RuntimeError(f'{dst}: the copy of {pop} differs from it')
+            u.note(f'frozen beam-gate population of the published attempt: {pop}')
         for d in owed:
             u.plan(spec.frame_path(d, plan.stokes), 'search_frame')
             u.plan(spec.frame_path(d, plan.stokes, True), 'search_frame')
@@ -814,13 +845,25 @@ def print_plan(ctx, plans, adopt):
                            'not an epoch of this cell')
                     pr(f'    listed night {d}: no frame ({why}; recorded as an item refusal)')
         # in the order of the real unit: deep-producer / archive-quarantine, (pre-gates above), engine-seam, no listed
-        # night admitted (no-input), then the engine (LOO refusal; every listed night gated -> every item refused)
+        # night admitted (no-input), the published beam-gate population (per hour), then the engine (LOO refusal; every
+        # listed night gated -> every item refused)
+        pop = None
+        if plan.dates:
+            try:
+                pop = published_population(ctx, plan)
+                pr(f"    PASS {'beam-population':13s} {pop} (copied into <attempt>/transients/Run_{ctx.label}/)")
+            except Refusal as e:
+                pop = e
+                pr(f"    REFUSE {'beam-population':13s} {e}")
         if prod or seam:
             pr(f"    REFUSE {prod.split(':', 1)[0] if prod else 'engine-seam':13s} (see above)")
             n_ref += 1
         elif plan.dates and not [d for d in plan.dates if d in pv['dates'] and d not in pv['excluded']]:
             pr('    NO-INPUT listed      no listed night is an admitted epoch of this cell')
             n_noin += 1
+        elif isinstance(pop, Refusal):
+            pr(f"    REFUSE {'beam-population':13s} (see above)")
+            n_ref += 1
         elif bad:
             pr(f"    REFUSE {'loo-master':13s} (see above)")
             n_ref += 1

@@ -18,9 +18,14 @@ register(entries, d)   register_page.py 'register --entry' (the TWO_PORT_DIR san
     here);
   - the merged registry is checked with the server's own loader (two_port.load_registry, on a temporary file in <d>) BEFORE
     anything is written; then registered_pages.json and registry.json are written - BOTH, as production: the 15-minute re-seed
-    (reseed_loop_v4.sh -> registry_merge.py) rebuilds registry.json and keeps the registered entries - each ATOMICALLY (a
+    (reseed_loop_v5.sh -> registry_merge.py) rebuilds registry.json and keeps the registered entries - each ATOMICALLY (a
     temporary file in <d>, mode 0664, os.replace) and each with its modification time strictly later than before (Lustre keeps
     whole seconds: a second write within the same second looked unchanged to the server, B6A p9024 2026-10-22).
+  THE REGISTRY LOCK (registry_lock, register_page.py since 2026-11-13): an exclusive flock on <d>/serve.TWO_PORT_LOCK held from
+  the reads of prepare() to the writes of write() - production's register_page.py and the re-seed (reseed_loop_v5.sh) hold the
+  same lock, so two writers never interleave (two concurrent registrations each read the old files and the last write dropped
+  the other's page: 1 of 24 survived without the lock, 24 of 24 with it). It waits serve.TWO_PORT_LOCK_WAIT_S, then refuses
+  with nothing written. /lustre is mounted with cluster-wide flock.
   ONE REGISTRATION PER SERVE: every page a serve passes goes into one register() call - one registry change (every change makes
   each backend rebuild every page it built; two registrations seconds apart lost the second, B6A; snapshot_serve.sh and the
   forced serve register in one call, the deep re-registration its four pages in one).
@@ -66,6 +71,8 @@ run's marker) - G23. A parity serve registers in <out>/two_port/ and needs a two
 (serve.HUB_PORT / INSPECTION_HUB_PORT + --port-offset; server_command prints its command line); serve never starts or stops a
 two-port server.
 """
+import contextlib
+import fcntl
 import hashlib
 import json
 import os
@@ -149,6 +156,32 @@ def guard(path, what):
 
 
 # ---- register_page.py ------------------------------------------------------------------------------------------------
+@contextlib.contextmanager
+def registry_lock(d, wait_s=None):
+    """register_page.py registry_lock: hold the exclusive flock on <d>/serve.TWO_PORT_LOCK for one read-modify-write of the
+    registry; Refusal after ``wait_s`` (default serve.TWO_PORT_LOCK_WAIT_S) seconds held by another writer. The descriptor is
+    close-on-exec (Python's default), so no program started inside keeps the lock (a bare fork would share it)."""
+    S = _S()
+    path = os.path.join(d, S.TWO_PORT_LOCK)
+    guard(path, 'the registry lock')
+    wait_s = float(S.TWO_PORT_LOCK_WAIT_S if wait_s is None else wait_s)
+    f = open(path, 'a')
+    try:
+        t0 = time.time()
+        while True:
+            try:
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.time() - t0 > wait_s:
+                    raise Refusal(f'registration: the registry lock {path} is held by another writer for more than '
+                                  f'{wait_s:g} s - nothing written')
+                time.sleep(0.5)
+        yield path
+    finally:
+        f.close()                                   # closing releases the lock
+
+
 def _load(path):
     """register_page.py:34-38."""
     if not os.path.exists(path):
@@ -262,8 +295,10 @@ def write(prep):
 
 
 def register(entries, d):
-    """register_page.py 'register --entry' with ``entries``: one call, one registry change (prepare, then write)."""
-    return write(prepare(entries, d))
+    """register_page.py 'register --entry' with ``entries``: one call, one registry change (prepare, then write), under the
+    registry lock."""
+    with registry_lock(d):
+        return write(prepare(entries, d))
 
 
 def page_entry(plan, page, utc, root=None):

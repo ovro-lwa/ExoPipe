@@ -15,6 +15,7 @@ not refused for its excluded 18 MHz, which the image does not hold; 11h Green 20
 Run: python tests/test_search_wbmember.py
 """
 import csv
+import glob
 import os
 import shutil
 import subprocess
@@ -207,7 +208,9 @@ def main():
                         for m in W.members(scope, SUBBAND_BANDS)}
                 sci = {r['date']: r.get('sci_dir', '') for r in csv.DictReader(open(os.path.join(PROD_COADD, '%s_%s' % (lst, scope),
                                                                                              'coadd_final', 'weights.csv')))}
-                imgs = {n: W.image_findings(lst, scope, sci.get(n, ''), n, scope in ('Red', 'Full') and (lst, '18', n) in excl)
+                # a night a later rebuild dropped from the cell (04h Red 2024-12-20 since the 2026-11-08 rebuild): its Phase 2 Science dir
+                p2 = lambda n: (sorted(glob.glob('/lustre/pipeline/exopipe/phase2/%s/%s/Science_*' % (lst, n))) or [''])[-1]
+                imgs = {n: W.image_findings(lst, scope, sci.get(n) or p2(n), n, scope in ('Red', 'Full') and (lst, '18', n) in excl)
                         for n in nights}
                 return W.refusals(lst, scope, nights, recs, imgs)
 

@@ -732,39 +732,66 @@ class TenminRecords:
         self.n = collections.Counter()           # window rms by source: seed, cache, page-context, recomputed, not-finite
         self._fr = None
         self._wbw, self._wbm, self._served = {}, {}, {}
+        self._st = {}                            # {window path: (size, int mtime) or None}: its status, read once per run
+
+    def stats(self, paths):
+        """{path: (size, int mtime)} of the paths that exist: ONE os.stat per path, on catalog_omission.TENMIN_STAT_THREADS
+        threads (a searched window is a link to another Lustre file: about 70 ms a status call when cold, 47,433 cached
+        windows on 2026-11-14 - the 50-110 min of the table when they are read one after another, as production does;
+        measured 4.0 ms each on 16 threads). The values are what the serial calls return; remembered for write_cache."""
+        todo = [p for p in dict.fromkeys(paths) if p not in self._st]
+
+        def one(p):
+            try:
+                st = os.stat(p)
+                return p, (st.st_size, int(st.st_mtime))
+            except OSError:
+                return p, None
+        n = max(1, int(getattr(_c(), 'TENMIN_STAT_THREADS', 1) or 1))
+        if n > 1 and len(todo) > 1:
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(n) as ex:
+                self._st.update(ex.map(one, todo))
+        else:
+            self._st.update(one(p) for p in todo)
+        return {p: self._st[p] for p in paths if self._st.get(p) is not None}
 
     def load_cache(self, lst):
         """{window path: rms} of the LST's cache files whose window still has the size and mtime it was measured at
-        (sublst_deep_omission.decide; the seed first, the stage's own cache over it)."""
-        cache = {}
+        (sublst_deep_omission.decide; the seed first, the stage's own cache over it). The windows' status is read once per
+        path, on threads (``stats``), not once per cache row in turn: the same rows pass."""
+        cache, rows = {}, []
         for d, tag in ((self.seed_dir, 'seed'), (self.cache_dir, 'cache')):
             f = os.path.join(d, 'window_rms_%s.csv' % lst) if d else None
             if not f or not os.path.exists(f):
                 continue
-            for r in csv.DictReader(open(f, newline='')):
-                try:
-                    st = os.stat(r['path'])
-                except OSError:
-                    continue
-                if r.get('size') == str(st.st_size) and r.get('mtime') == str(int(st.st_mtime)):
-                    cache[r['path']] = (float(r['rms']), tag)
+            rows += [(r, tag) for r in csv.DictReader(open(f, newline=''))]
+        st = self.stats([r['path'] for r, _t in rows])
+        for r, tag in rows:
+            s = st.get(r['path'])
+            if s is None:
+                continue
+            if r.get('size') == str(s[0]) and r.get('mtime') == str(s[1]):
+                cache[r['path']] = (float(r['rms']), tag)
         return {k: v for k, (v, _t) in cache.items()}, collections.Counter(t for _v, t in cache.values())
 
     def write_cache(self, lst, cache):
-        """The LST's cache file (every window measured or read this run; sublst_deep_omission.decide), atomically."""
+        """The LST's cache file (every window measured or read this run; sublst_deep_omission.decide), atomically. A window's
+        size and mtime are the ones its value was validated or measured at in this run (``stats`` / ``rms``) - production
+        reads the status again here, a second pass over every window that returns the same values unless a window was
+        rewritten during the run (and then production records the new status beside the OLD value); a window with no status
+        of this run is read here, as production."""
         if not self.cache_dir:
             return
         os.makedirs(self.cache_dir, exist_ok=True)
         f = os.path.join(self.cache_dir, 'window_rms_%s.csv' % lst)
+        st = self.stats(list(cache))
         with open(f + '.tmp', 'w', newline='') as o:
             w = csv.writer(o)
             w.writerow(['path', 'size', 'mtime', 'rms'])
             for k, v in cache.items():
-                try:
-                    st = os.stat(k)
-                    w.writerow([k, st.st_size, int(st.st_mtime), v])
-                except OSError:
-                    pass
+                if k in st:
+                    w.writerow([k, st[k][0], st[k][1], v])
         os.replace(f + '.tmp', f)
 
     def run_dir(self, lst):
@@ -804,9 +831,12 @@ class TenminRecords:
                     self._fr[r['path']] = (r['size'], r['mtime'], r['rms'])
         v = np.nan
         try:
-            st = os.stat(path)
+            s = self._st.get(path)                               # read on threads before the median (decide_tenmin)
+            if s is None:
+                st = os.stat(path)                               # (a path without a status: raises, as before)
+                s = self._st[path] = (st.st_size, int(st.st_mtime))   # the status this value belongs to (write_cache)
             rec = self._fr.get(path)
-            if rec and rec[0] == str(st.st_size) and rec[1] == str(int(st.st_mtime)):
+            if rec and rec[0] == str(s[0]) and rec[1] == str(s[1]):
                 v = float(rec[2])
                 self.n['page-context'] += 1
             else:
@@ -885,6 +915,7 @@ def decide_tenmin(lst, rdir=None, recs=None, reader=None):
         per_night = collections.defaultdict(list)
         for key, nt, path in W[S]:
             per_night[nt].append((key, path))
+        recs.stats([path for _k, _n, path in W[S] if path not in cache])   # the windows no cache row holds: their status
         med = {nt: np.nanmedian([recs.rms(p, cache) for _, p in v]) for nt, v in per_night.items()}
         rate = {nt: sum(served.get((band, k, S), 0) for k, _ in v) / len(v) for nt, v in per_night.items()}
         thr = mad_thr(list(med.values()))
