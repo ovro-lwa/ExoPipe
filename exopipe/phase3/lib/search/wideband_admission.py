@@ -141,13 +141,16 @@ def member_record(cell_dir, member, lst, p, readers, admitted=({}, {}), perhour=
     admitted = (accepted, refused) of lib/search/admitted.nights(cell_dir, member). Returns dict(present, both={night: [reasons]},
     i_only={night: [reasons]}, v_only={night: [reasons]}, tier={stokes: {night: (rms, thr)}}). REFUSES (RuntimeError naming the
     member) when its records are missing or stale, or a night it would search has no readable beam.
-    perhour (PER-HOUR, a deep append: the set of nights it searches; None = the whole-cell mirror, unchanged): the record also
-    holds unmeasured={night: {stokes: [reasons]}} - a present night of them that the member's sanity gate (weights.csv /
-    admissions.csv qa3_rms_mjy) or its search-tier gate in a Stokes (residuals_provisional.csv / admissions.csv stage-1 rms)
-    cannot judge for want of its value while that gate runs (its population at the minimum). The member's own search sends such an
-    epoch through fallbacks.SEARCH_SANITY_FALLBACK: under 'refuse' (the default) it refuses the member's search, so refusals()
-    refuses the wideband night in that Stokes (the member admits nothing for it); under 'fallback' it searches the epoch, counted,
-    so the mirror admits it and counts the same site (unmeasured is then empty)."""
+    perhour (PER-HOUR, a deep append: the set of nights it searches; None = the whole-cell mirror, which searches every present
+    night): the record also holds unmeasured={night: {stokes: [reasons]}} on both paths (one rule, DECISION-20261114-PR27-
+    WIDEBAND-UNMEASURED-MEMBER-NIGHT-ONE-RULE-BOTH-PATHS; until then the whole-cell mirror admitted such a night) - a night the
+    member searches in that Stokes (searched_in: no gate above refused it there, its product exists) that the member's sanity
+    gate (weights.csv / admissions.csv qa3_rms_mjy) or its search-tier gate in a Stokes (residuals_provisional.csv /
+    admissions.csv stage-1 rms) cannot judge for want of its value while that gate runs (its population at the minimum). The
+    member's own search sends such an epoch through fallbacks.SEARCH_SANITY_FALLBACK: under 'refuse' (the default) it
+    refuses the member's search, so refusals() refuses the wideband night in that Stokes (the member admits nothing for it);
+    under 'fallback' it searches the epoch, counted, so the mirror admits it and counts the same site (unmeasured is then
+    empty)."""
     final = os.path.join(cell_dir, 'coadd_final')
     wp = os.path.join(final, 'weights.csv')
     pp = os.path.join(cell_dir, 'residuals_provisional.csv')
@@ -219,20 +222,35 @@ def member_record(cell_dir, member, lst, p, readers, admitted=({}, {}), perhour=
             if a > p['beam_ratio'] * bmed:
                 both.setdefault(d, []).append('beam gate (area %.2f x the median)' % (a / bmed))
     out = dict(present=present, both=both, i_only=i_only, v_only=v_only, tier=tier)
-    if perhour is not None:                     # PER-HOUR: the searched nights each gate cannot judge (docstring)
-        um = unmeasured_nights(wrows, prows, adm, sorted(present & set(perhour)), p)
-        if um:
-            from exopipe.phase3.core import fallback
-            if fallback.policy(UNMEASURED_KEY) == 'fallback':   # as the member's own search: an unmeasured epoch is searched,
-                fallback.site('fallbacks.SEARCH_SANITY_FALLBACK',   # counted; = UNMEASURED_KEY, a literal as every site's key
-                              f'wideband member {member}: night(s) {sorted(um)} unmeasured - admitted, as '
-                              f'the member\'s own search admits them under this policy', n=len(um))
-                um = {}
-        out['unmeasured'] = um
+    # the searched nights each gate cannot judge (docstring), on both paths: per hour the append's nights, whole-cell every present one
+    um = unmeasured_nights(wrows, prows, adm, sorted(present if perhour is None else present & set(perhour)), p)
+    # as the engine names them (deep_search._unmeasured_searched): only epochs that member searches in that Stokes - not refused
+    # by a gate above (both; i_only in I, v_only in V; the search tier) and with that Stokes' product (review of PR 62, F1)
+    um = {d: kept for d, kept in ((d, {st: r for st, r in by.items() if searched_in(cell_dir, member, d, st, out)})
+                                  for d, by in um.items()) if kept}
+    if um:
+        from exopipe.phase3.core import fallback
+        if fallback.policy(UNMEASURED_KEY) == 'fallback':   # as the member's own search: an unmeasured epoch is searched,
+            for st in ('I', 'V'):                           # counted per Stokes, n = its epochs (deep_search: the B-30 site)
+                ds = sorted(d for d, by in um.items() if st in by)
+                if ds:
+                    fallback.site('fallbacks.SEARCH_SANITY_FALLBACK',   # = UNMEASURED_KEY, a literal as every site's key
+                                  f'wideband member {member} {st}: night(s) {ds} unmeasured - admitted, as the member\'s '
+                                  f'own search admits them under this policy', n=len(ds))
+            um = {}
+    out['unmeasured'] = um
     return out
 
 
 UNMEASURED_KEY = 'fallbacks.SEARCH_SANITY_FALLBACK'   # the member's own search sends an unmeasured epoch through this site
+
+
+def searched_in(cell_dir, member, night, st, rec):
+    """The member searches ``night`` in Stokes ``st`` (deep_search._unmeasured_searched's set): no gate of ``rec`` refused it in
+    that Stokes (both, i_only / v_only, the search tier) and its product subtracted/<night>_<st>_sub_<member>.fits exists."""
+    if night in rec['both'] or night in rec['i_only' if st == 'I' else 'v_only'] or night in rec['tier'].get(st, {}):
+        return False
+    return os.path.exists(os.path.join(cell_dir, 'subtracted', f'{night}_{st}_sub_{member}.fits'))
 
 
 def _values(rows, col):
@@ -324,7 +342,7 @@ def refusals(lst, scope, nights, records, images):
                 t = rec['tier'].get(st, {}).get(night)
                 if t:
                     rs.append('search tier (%s stage-1 rms %.1f > %.1f mJy)' % (st, t[0], t[1]))
-                rs += (rec.get('unmeasured') or {}).get(night, {}).get(st, [])   # PER-HOUR (member_record perhour): none in batch
+                rs += (rec.get('unmeasured') or {}).get(night, {}).get(st, [])   # both paths (member_record)
                 for r in rs:
                     out.setdefault((night, st), []).append((m, r))
     return out
