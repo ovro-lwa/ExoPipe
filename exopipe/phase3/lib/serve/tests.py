@@ -9,6 +9,8 @@ is read-only (verify may run it on production files). Registered with @content_t
                      registered on the two-port server or one with a server of its own)
   page_registration  entries_registered, one_change          (record of the ONE registration of a serve)
   tenmin_page_context  sidecar_per_panel, no_orphan_sidecars  (the served 10-minute run; page_context_tenmin.py's sidecars)
+  bright_source_filter  arrays_consistent, parents_current   (bright_source_filter_precompute.py's npz)
+  scintillation_index  table_matches_definition, run_own_hours  (scintillation_index.csv + .json)
   stopped_page       not_listening                           (record of `serve --stop`)
   sublst_cumulative  merge_invariants, figures, served_tests_c_d
   review_copy        byte_copy, no_excluded_rows
@@ -842,6 +844,139 @@ def no_orphan_sidecars(path, **ctx):
         n += 1
     return not orph, len(orph), ('; '.join(orph[:4]) if orph else f'no orphan sidecar ({n} sidecars without a panel, '
                                                                     f'none of them written by {PCTX_TOOL})')
+
+
+# =====================================================================================================================
+# bright_source_filter (bright_source_filter_precompute.py) and scintillation_index (scintillation_index.py); Gregg 2026-11-12,
+# R-GREGG-20261112-FILTERS-FINALIZE-BRIGHT-AND-SCINTILLATION
+# =====================================================================================================================
+BSF_GROUPS = (('det_cand', 'det_ra', 'det_dec', 'det_stokes', 'det_cell', 'det_sin_el', 'dfront_n', 'det_peak', 'det_psr'),
+              ('ctl_cell', 'ctl_sin_el', 'cfront_n'),
+              ('cell_lst', 'cell_bandname', 'cell_band', 'cell_beam_deg', 'cell_freq', 'cell_ep_I', 'cell_ep_V', 'cell_cap_sr',
+               'cell_n_draw', 'cell_n_src'),
+              ('pair_det', 'pair_snr', 'pair_sep'), ('dfront_snr', 'dfront_sep', 'dfront_flux'), ('cfront_snr', 'cfront_sep'))
+SCI_FIELDS = ('lst', 'date', 'band', 'scint_index', 'n_sources', 'n_frames', 'pct_in_band', 'state')   # scintillation_index FIELDS
+
+
+def _bsf(path):
+    """bright_source_filter_precompute.load: the arrays without a memory map or pickles, meta parsed."""
+    import numpy as np
+    with np.load(path, allow_pickle=False) as z:
+        Z = {k: z[k] for k in z.files}
+    Z['meta'] = json.loads(str(Z['meta']))
+    return Z
+
+
+@content_test('bright_source_filter')
+def arrays_consistent(path, tier=None, **ctx):
+    """The npz loads without pickles and its meta parses, naming the tier asked for; each array group (per detection, per control,
+    per cell, heatmap pairs, detection fronts, control fronts) has one length; the front counts sum to the front arrays' lengths
+    (the tool's own assert); every pair, detection cell (-1 = none) and control cell indexes inside its table."""
+    Z = _bsf(path)
+    bad = []
+    if tier and Z['meta'].get('tier') != tier:
+        bad.append(f"meta tier {Z['meta'].get('tier')!r}, not {tier!r}")
+    for g in BSF_GROUPS:
+        miss = [k for k in g if k not in Z]
+        n = {k: len(Z[k]) for k in g if k in Z}
+        if miss or len(set(n.values())) > 1:
+            bad.append(f'arrays {g[0]}..: missing {miss}' if miss else f'lengths differ {n}')
+    if bad:
+        return False, len(bad), '; '.join(bad)
+    nd, nc = len(Z['det_cand']), len(Z['cell_lst'])
+    if int(Z['dfront_n'].sum()) != len(Z['dfront_snr']) or int(Z['cfront_n'].sum()) != len(Z['cfront_snr']):
+        bad.append('front counts do not sum to the front arrays')
+    for k, lo, hi in (('pair_det', 0, nd), ('det_cell', -1, nc), ('ctl_cell', 0, nc)):
+        if len(Z[k]) and (int(Z[k].min()) < lo or int(Z[k].max()) >= hi):
+            bad.append(f'{k} outside [{lo}, {hi})')
+    return not bad, len(bad), ('; '.join(bad) if bad else
+                               f"tier {Z['meta'].get('tier')}: {nd} detections, {nc} cells, {len(Z['ctl_cell'])} controls, "
+                               f"{len(Z['pair_det'])} heatmap pairs")
+
+
+@content_test('bright_source_filter')
+def parents_current(path, **ctx):
+    """Every parent catalog the file was built from (meta 'catalogs', by real path) exists with the modification time it recorded
+    ('catalog_mtimes'): the precompute is current against its Master sources."""
+    m = _bsf(path)['meta']
+    cats, mt = m.get('catalogs') or {}, m.get('catalog_mtimes') or {}
+    if not cats:
+        return False, 0, 'no parent catalog recorded'
+    bad = [f'{k}: {"missing" if not os.path.isfile(p) else "changed since"}' for k, p in sorted(cats.items())
+           if not os.path.isfile(p) or abs(os.path.getmtime(p) - float(mt.get(k, -1))) > 1e-3]
+    return not bad, len(bad), '; '.join(bad[:4]) if bad else f'{len(cats)} parent catalogs, each unchanged since the precompute'
+
+
+def _sci_meta(path):
+    return json.load(open(os.path.join(os.path.dirname(path), 'scintillation_index.json')))
+
+
+@content_test('scintillation_index')
+def table_matches_definition(path, tier=None, **ctx):
+    """scintillation_index.csv has the tool's columns and the scintillation_index.json beside it parses: its tier is the one asked
+    for; default_hidden is true on the snapshot tier only (Gregg 2026-11-12 "All tiers, off on deep/10-min"); hour_bands = the
+    table's rows and its per-band counts = the table's states; each row's state follows its percentile (above worst_pct: the
+    first state; measured otherwise: the second; no index: the third, with no percentile)."""
+    try:
+        meta = _sci_meta(path)
+    except (OSError, ValueError) as e:
+        return False, None, f'scintillation_index.json: {e}'
+    with open(path, newline='') as f:
+        rd = csv.DictReader(f)
+        head, rows = tuple(rd.fieldnames or ()), list(rd)
+    bad = []
+    if head != SCI_FIELDS:
+        bad.append(f'columns {head}')
+    if tier and meta.get('tier') != tier:
+        bad.append(f"tier {meta.get('tier')!r}, not {tier!r}")
+    if meta.get('default_hidden') is not (meta.get('tier') == 'snapshot'):
+        bad.append(f"default_hidden {meta.get('default_hidden')} on tier {meta.get('tier')}")
+    if meta.get('hour_bands') != len(rows):
+        bad.append(f"hour_bands {meta.get('hour_bands')} != {len(rows)} rows")
+    states, worst = meta.get('states') or [], float(meta.get('worst_pct', 'nan'))
+    counts, wrong = defaultdict(Counter), []
+    for r in rows if not bad else ():
+        counts[r['band']][r['state']] += 1
+        if r['scint_index'] == '':
+            want = states[2] if r['pct_in_band'] == '' else None
+        else:
+            want = states[0] if float(r['pct_in_band']) > worst else states[1]
+        if r['state'] != want:
+            wrong.append(f"{r['lst']} {r['date']} {r['band']}: {r['state']!r} at {r['pct_in_band'] or 'no'} pctile")
+    if wrong:
+        bad.append(f'{len(wrong)} rows whose state does not follow the percentile, e.g. {wrong[0]}')
+    if not bad:
+        mc = {b: {s_: n for s_, n in c.items() if n} for b, c in (meta.get('counts') or {}).items()}
+        if mc != {b: dict(c) for b, c in counts.items()}:
+            bad.append('the json counts per band are not the table\'s states')
+    return not bad, len(bad), ('; '.join(bad) if bad else
+                               f"tier {meta.get('tier')}: {len(rows)} hour-bands in {len(counts)} bands, default_hidden "
+                               f"{meta.get('default_hidden')}")
+
+
+@content_test('scintillation_index')
+def run_own_hours(path, **ctx):
+    """Only the run's own hours are ranked: every (LST, night) of the table is a cell of the run's master_catalog.csv (a 10-minute
+    date's T<k> suffix dropped), as the tool reads them. A forced-photometry run's hours come from its forced record (n/a here)."""
+    try:
+        meta = _sci_meta(path)
+    except (OSError, ValueError) as e:
+        return False, None, f'scintillation_index.json: {e}'
+    if meta.get('forced_run'):
+        return True, None, 'n/a: a forced-photometry run (its hours come from the forced record)'
+    mc = os.path.join(os.path.dirname(path), 'master_catalog.csv')
+    if not os.path.isfile(mc):
+        return False, None, f'no {mc}'
+    cells = set()
+    with open(mc, newline='') as f:
+        for r in csv.DictReader(f):
+            if r.get('lst') and r.get('date'):
+                cells.add((r['lst'], r['date'][:10]))
+    rows = _rows(path)
+    out = sorted({(r['lst'], r['date']) for r in rows} - cells)
+    return not out, len(out), (f'{len(out)} (LST, night) not in master_catalog.csv, e.g. {out[:3]}' if out else
+                               f'{len({(r["lst"], r["date"]) for r in rows})} hours, all cells of master_catalog.csv '
+                               f'({len(cells)} cells)')
 
 
 @content_test('stopped_page')
