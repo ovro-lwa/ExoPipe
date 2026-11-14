@@ -45,10 +45,12 @@ EXOPIPE3_CONFORM_NOISE_MODE:
   frozen       the values of the record, whole (every recorded key, so a look-up of a key this run has no row of answers
                as it did LST-wide). REFUSES: no record; a record of another module version; a module version outside
                EXOPIPE3_CONFORM_NOISE_SHA1 (the path-normalized sha1s the frozen mode was checked for - another version
-               may hold a second population statistic, which this run would compute over one night's rows); a (LST, band,
-               Stokes) of this run's rows that the record does not hold (no earlier night gives its noise: run the
-               LST-wide conformance, which records it). The medians of this run's own rows are printed beside the frozen
-               ones and not used. The run is ONE NIGHT's (EXOPIPE3_CONFORM_NOISE_NIGHT; a row of another night refuses)
+               may hold a second population statistic, which this run would compute over one night's rows); a recorded
+               key whose value is no finite positive number. A (LST, band, Stokes) of this run's rows that the record
+               does not hold (no earlier night gives its noise, or none with a finite value) takes the night's OWN
+               median, as an LST-wide pass would compute it (Gregg 2026-11-14 "Fine."; line 'CONFORM-NOISE own ...'),
+               and refuses only when the night's own rows give no finite positive median either. The medians of this
+               run's own rows are printed beside the frozen ones and not used. The run is ONE NIGHT's (EXOPIPE3_CONFORM_NOISE_NIGHT; a row of another night refuses)
                and reads the pulsar evidence EXOPIPE3_CONFORM_NOISE_EVIDENCE of the same LST-wide run (no evidence
                record, one of another module version, or an evidence row a group needs that holds no position error:
                refusals).
@@ -322,12 +324,18 @@ class Hook:
         if self.mode == 'record':
             self.pending = (own, counts)        # written by run() when the module has ended: a refused conformance leaves
             return own                          # the record of the last one that ended
+        # A key the record lacks (no earlier night has a row of it, or none with a finite value) takes the night's OWN
+        # median, which is what an LST-wide pass over this night would compute for it (Gregg 2026-11-14 "Fine.", ledger
+        # R-GREGG-20261114-SPEEDUP-SIX-ANSWERS-OWN-MEDIAN-TENMIN-ROWS-PATCH-STOKESI-TESTSEND-PR59-PR60-PR68 item 1).
         missing = sorted(k for k in own if k not in self.frozen or self.frozen[k][0] == 0)
-        if missing:
-            raise Refused(f'{self.record}: no recorded noise for {len(missing)} (LST, band, Stokes) of this run\'s rows, '
-                          f'e.g. {missing[:4]}: no earlier night gives it - run the LST-wide conformance, which records '
-                          f'it (`exopipe3 catalog --tier sublst --stages conform`) - REFUSING')
-        unusable = sorted(k for k in own if not (math.isfinite(self.frozen[k][1]) and self.frozen[k][1] > 0))
+        no_own = [k for k in missing if not (counts[k] > 0 and math.isfinite(own[k]) and own[k] > 0)]
+        if no_own:
+            raise Refused(f'{self.record}: no recorded noise for {len(no_own)} (LST, band, Stokes) of this run\'s rows, '
+                          f'e.g. {no_own[:4]}, and the night\'s own rows give no finite positive median for it either '
+                          f'(e.g. {own[no_own[0]]!r} Jy over {counts[no_own[0]]} finite rows) - the bright-parent table '
+                          f'cannot judge the night by it - REFUSING')
+        unusable = sorted(k for k in own if k not in missing
+                          and not (math.isfinite(self.frozen[k][1]) and self.frozen[k][1] > 0))
         if unusable:                            # the LST-wide run computed it (and the record reads back), but it is no noise
             k = unusable[0]
             raise Refused(f'{self.record}: the recorded noise of {len(unusable)} (LST, band, Stokes) of this run\'s rows is '
@@ -335,12 +343,20 @@ class Hook:
                           f'the bright-parent table cannot judge a night by it; look at the peak fluxes and global S/N of '
                           f'the LST-wide catalog\'s rows of that key - REFUSING')
         for k in sorted(own):
+            if k in missing:
+                rn = self.frozen[k][0] if k in self.frozen else 0
+                print(f'CONFORM-NOISE own {k[0]} {k[1]} {k[2]}: no recorded median ({rn} recorded rows); this run\'s '
+                      f'own {counts[k]} rows give {own[k]!r} Jy (used)', flush=True)
+                continue
             n, med = self.frozen[k]
             print(f'CONFORM-NOISE frozen {k[0]} {k[1]} {k[2]}: recorded median {med!r} Jy over {n} rows (used); this '
                   f'run\'s own {counts[k]} rows give {own[k]!r} Jy (not used)', flush=True)
-        self.summary = (f'{len(own)} (LST, band, Stokes) of this run read frozen from {self.record} (sha1 '
-                        f'{self.record_sha1}; {len(self.frozen)} recorded)')
-        return {k: v[1] for k, v in self.frozen.items()}    # every recorded key, as the LST-wide run held them
+        self.summary = (f'{len(own) - len(missing)} (LST, band, Stokes) of this run read frozen from {self.record} (sha1 '
+                        f'{self.record_sha1}; {len(self.frozen)} recorded), {len(missing)} from the night\'s own rows'
+                        + (f' ({", ".join(" ".join(k) for k in missing)}: none recorded)' if missing else ''))
+        out = {k: v[1] for k, v in self.frozen.items()}     # every recorded key, as the LST-wide run held them
+        out.update({k: own[k] for k in missing})            # and the night's own median where none was recorded
+        return out
 
     # ---- the pulsar evidence (patches P2 - P5) ----------------------------------------------------------------------
     def _step(self, name):
