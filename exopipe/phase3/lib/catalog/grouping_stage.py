@@ -391,12 +391,8 @@ def builder_runner():
 UNIT_LOCK = '.grouping.lock'              # the 10-minute unit's lock in its output (the shared state's) directory
 
 
-def recorded_table(grouping_dir, stokes):
-    """(table path, sha1) of the 10-minute grouping the LST builds read (review 2026-11-04, F2): the group unit records of
-    grouping_dir (<dir>/_records/catalog/*.json of stage 'group') that grouped Stokes ``stokes`` - the LATEST must be done and
-    have recorded this table (grouping_<S>/detections.csv) with the sha1 it has now. A refused latest run, a table its run did
-    not record, or a table changed since REFUSES (StageRefusal) - a build never reads a grouping no successful run made."""
-    table = os.path.join(os.path.abspath(grouping_dir), f'grouping_{stokes}', DETECTIONS)
+def _latest_group_record(grouping_dir, stokes):
+    """(finished, record path, record) of the LATEST group unit record of grouping_dir that grouped Stokes ``stokes``."""
     recs = []
     for p in sorted(glob.glob(os.path.join(grouping_dir, '_records', 'catalog', '*.json'))):
         try:
@@ -410,7 +406,30 @@ def recorded_table(grouping_dir, stokes):
     if not recs:
         raise StageRefusal(f'no record of a 10-minute grouping run of Stokes {stokes} under {grouping_dir}/_records/catalog - '
                            f'run `exopipe3 catalog --tier sublst --stages group` - REFUSING')
-    fin, p, r = max(recs)
+    return max(recs, key=lambda x: (x[0], x[1]))
+
+
+def recorded_inputs(grouping_dir, stokes, with_table=False):
+    """({LST: all-nights catalog directory}, [(LST, night catalog directory), ...]) the grouping the builds read was assembled
+    from: the record recorded_table reads (same refusals: the latest run must be done and its table unchanged). A night's delta
+    build (lib/catalog/tier_sublst._build_delta) takes its appended nights from here, so the builder is never handed other
+    nights than the grouping was. with_table: also recorded_table's (table, sha1), from the SAME record (one read: a grouping
+    run finishing in between cannot give the table of one run and the nights of another)."""
+    rec = _latest_group_record(grouping_dir, stokes)
+    tab = recorded_table(grouping_dir, stokes, _rec=rec)
+    meta = rec[2].get('meta') or {}
+    inp = meta.get('input')
+    out = (dict(inp) if isinstance(inp, dict) else {}), [(L, D) for L, D in (meta.get('input_nights') or [])]
+    return out + (tab,) if with_table else out
+
+
+def recorded_table(grouping_dir, stokes, _rec=None):
+    """(table path, sha1) of the 10-minute grouping the LST builds read (review 2026-11-04, F2): the group unit records of
+    grouping_dir (<dir>/_records/catalog/*.json of stage 'group') that grouped Stokes ``stokes`` - the LATEST must be done and
+    have recorded this table (grouping_<S>/detections.csv) with the sha1 it has now. A refused latest run, a table its run did
+    not record, or a table changed since REFUSES (StageRefusal) - a build never reads a grouping no successful run made."""
+    table = os.path.join(os.path.abspath(grouping_dir), f'grouping_{stokes}', DETECTIONS)
+    fin, p, r = _rec or _latest_group_record(grouping_dir, stokes)   # _rec: recorded_inputs' one read of the record
     if r.get('status') != 'done':
         raise StageRefusal(f'the latest 10-minute grouping run of Stokes {stokes} ({os.path.basename(p)}, {fin}) ended '
                            f'{r.get("status")}: {(r.get("reason") or "")[:200]} - group again before building - REFUSING')
@@ -427,15 +446,30 @@ def recorded_table(grouping_dir, stokes):
     return table, sha
 
 
-def builder_env(table, tier, mode_=None, sha1=None, cfg=None):
+FROZEN_MODES = ('', 'record', 'delta', 'passthrough')     # the runner's EXOPIPE3_FROZEN_MODE (its FROZEN STATISTICS text)
+
+
+def builder_env(table, tier, mode_=None, sha1=None, cfg=None, frozen='', frozen_record=None, frozen_touch=''):
     """The environment of the runner: the grouping table of the key's Stokes and its expected sha1 (the runner refuses a table
     that changed after the stage checked it), the tier, the repeat rungs, and the accepted builders (catalog_grouping.
-    BUILDER_SHA1: path-normalized sha1s of the builders the patches were written for; review 2026-11-04, F7)."""
+    BUILDER_SHA1: path-normalized sha1s of the builders the patches were written for; review 2026-11-04, F7).
+    frozen: the frozen-statistics mode of the per-hour delta build - '' (none), 'record' (an all-nights build writes
+    builder_frozen.json), 'delta' (a night's build on the record ``frozen_record``), 'passthrough' (the check of the hooks).
+    The four names are ALWAYS set, so a value inherited from the caller's environment never reaches a build."""
+    if frozen not in FROZEN_MODES:
+        raise StageRefusal(f'builder_env: frozen={frozen!r} is not one of {FROZEN_MODES} - REFUSING')
+    if (frozen == 'delta') != bool(frozen_record):
+        raise StageRefusal(f'builder_env: frozen={frozen!r} with frozen_record={frozen_record!r}: a delta build names the '
+                           f'all-nights build\'s record, no other build does - REFUSING')
     m = mode_ or mode(cfg)
+    g = (cfg or _cfg()).catalog_grouping
     env = {'EXOPIPE3_GROUPING_MODE': 'design-b', 'EXOPIPE3_GROUPING_TABLE': os.path.abspath(table),
            'EXOPIPE3_GROUPING_TIER': TIER_OF.get(tier, tier), 'EXOPIPE3_GROUPING_RUNGS': m.rungs,
-           'EXOPIPE3_GROUPING_BUILDER_SHA1': ','.join((cfg or _cfg()).catalog_grouping.BUILDER_SHA1),
-           'EXOPIPE3_GROUPING_PROVENANCE': '1'}     # grouping_table.json beside the catalogues (the cumulative's one-table gate)
+           'EXOPIPE3_GROUPING_BUILDER_SHA1': ','.join(g.BUILDER_SHA1),
+           'EXOPIPE3_GROUPING_PROVENANCE': '1',     # grouping_table.json beside the catalogues (the cumulative's one-table gate)
+           'EXOPIPE3_FROZEN_MODE': frozen, 'EXOPIPE3_FROZEN_RECORD': os.path.abspath(frozen_record) if frozen_record else '',
+           'EXOPIPE3_FROZEN_TOUCH': frozen_touch or '',
+           'EXOPIPE3_FROZEN_BUILDER_SHA1': ','.join(g.FROZEN_BUILDER_SHA1)}
     if sha1:
         env['EXOPIPE3_GROUPING_TABLE_SHA1'] = sha1
     return env
@@ -1027,6 +1061,10 @@ def add_arguments(p):
                    help='tier sublst: take this LST\'s detections from its CATALOGUE directory DIR (master_catalog.csv, '
                         'pertie/pertie_detections.csv) instead of its published run - the LST being catalogued, grouped '
                         'before its build stage (repeatable)')
+    p.add_argument('--group-night-dir', action='append', default=[], metavar='LST=DIR',
+                   help='tier sublst, the per-hour catalog build: ALSO take the detections of a night appended to this LST '
+                        'since its all-nights build, from the night\'s catalog directory DIR (master_catalog.csv, pertie/'
+                        'pertie_detections.csv); repeatable, in the order the nights were appended (the newest last)')
 
 
 def wants(args):
@@ -1052,26 +1090,39 @@ def _pertie_of(d):
     return os.path.join(d, 'pertie_detections.csv')
 
 
-def assemble_tenmin_input(lsts, out_dir, cfg=None, lst_dirs=None):
+def assemble_tenmin_input(lsts, out_dir, cfg=None, lst_dirs=None, night_dirs=None):
     """The 10-minute grouping input: the master_catalog.csv and pertie_detections.csv rows of every published LST run of
     ``lsts`` (header union, LST order, the run's row order) - every detection the LSTs' builds see, BEFORE the cumulative's deep
     omission (the merge applies it, as production; a build refuses a detection the grouping does not hold). Writes
     out_dir/grouping_input/{master_catalog,pertie_detections}.csv; returns (their paths, {lst: run dir}). A run without
-    either file, or a cand_id in two runs, REFUSES."""
+    either file, or a cand_id in two runs, REFUSES.
+    night_dirs (the per-hour catalog build): [(LST, directory)], the catalog directories of the nights appended since the LSTs'
+    last all-nights builds - each one's rows follow its LST's run, in the order given, so the earlier nights' rows keep their
+    places and the grouping's incremental mode sees only the newest night's detections as new. A night row whose cand_id
+    the LST's run (or an earlier night) already holds with the same content is the same detection (kept once); with another
+    content it REFUSES, as two runs do."""
     d = os.path.join(out_dir, 'grouping_input')
     os.makedirs(d, exist_ok=True)
     lst_dirs = dict(lst_dirs or {})
     bad = sorted(set(lst_dirs) - set(lsts))
     if bad:
         raise StageRefusal(f'--group-lst-dir names LST(s) {bad} outside --lsts {lsts} - REFUSING')
+    nights = [(L, os.path.abspath(D)) for L, D in (night_dirs or [])]
+    bad = sorted({L for L, _ in nights} - set(lsts))
+    if bad:
+        raise StageRefusal(f'--group-night-dir names LST(s) {bad} outside --lsts {lsts} - REFUSING')
+    if len(set(nights)) != len(nights):
+        raise StageRefusal('--group-night-dir names a night directory twice - REFUSING')
     runs = {L: lst_dirs.get(L) or lst_run(L, cfg) for L in lsts}
+    srcs = [x for L, R in runs.items() for x in [(L, R, L)] + [(L2, D, f'{L2} night directory {D}') for L2, D in nights if L2 == L]]
     out = []
     for name in ('master_catalog.csv', 'pertie_detections.csv'):
         hdr, rows, seen = [], [], {}
-        for L, R in runs.items():
+        for L, R, what in srcs:
             p = os.path.join(R, name) if name == 'master_catalog.csv' else _pertie_of(R)
             if not os.path.exists(p):
-                raise StageRefusal(f'{L}: no {p} - publish the LST before grouping the cumulative')
+                raise StageRefusal(f'{what}: no {p} - ' + ('publish the LST before grouping the cumulative' if what == L else
+                                                           'a night directory holds the night\'s catalog and window-tie rows'))
             with open(p, newline='') as f:
                 rd = csv.DictReader(f)
                 hdr += [k for k in (rd.fieldnames or []) if k not in hdr]
@@ -1079,7 +1130,7 @@ def assemble_tenmin_input(lsts, out_dir, cfg=None, lst_dirs=None):
                     c = r.get('cand_id')
                     if c in seen:
                         if seen[c] != (L, r):
-                            raise StageRefusal(f'{name}: cand_id {c} in {seen[c][0]} and {L} - REFUSING')
+                            raise StageRefusal(f'{name}: cand_id {c} in {seen[c][0]} and {what} - REFUSING')
                         continue
                     seen[c] = (L, r)
                     rows.append(r)
@@ -1135,9 +1186,17 @@ def _run_tenmin_unit(args, u, m, label, out, src, stokes, lsts, cells):
                     raise StageRefusal(f'--group-lst-dir {x!r}: LST=DIR - REFUSING')
                 k, v = x.split('=', 1)
                 ld[cells.parse_lst(k)] = os.path.abspath(v)
-            mc, pt, runs = assemble_tenmin_input(lsts, out, lst_dirs=ld)
+            nd = []
+            for x in getattr(args, 'group_night_dir', None) or []:
+                if '=' not in x:
+                    raise StageRefusal(f'--group-night-dir {x!r}: LST=DIR - REFUSING')
+                k, v = x.split('=', 1)
+                nd.append((cells.parse_lst(k), os.path.abspath(v)))
+            mc, pt, runs = assemble_tenmin_input(lsts, out, lst_dirs=ld, night_dirs=nd)
             u.meta['input'] = {L: R for L, R in runs.items()}
-            for R in runs.values():
+            if nd:
+                u.meta['input_nights'] = [[L, D] for L, D in nd]
+            for R in list(runs.values()) + [D for _, D in nd]:
                 u.add_input(os.path.join(R, 'master_catalog.csv'))
                 u.add_input(_pertie_of(R))
     except StageRefusal as e:

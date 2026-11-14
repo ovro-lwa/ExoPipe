@@ -10,7 +10,9 @@ verified strictly, so 12h Red passed the preflight and was refused inside the en
 Checks: the key (ruled 'keep', the ledger IDs; production's strict 'refuse' in the parity file); master_held_18 (a value checked,
 the step's environment before the config, an unknown value refused); the search step and the frames engine hand it to the engine
 child; the preflight and the engine's gate call the one helper (no second copy of the rule). Real data (read only; skipped without
-the co-add root): the installed 12h Red master, holding its excluded 18 MHz on 2025-01-08 - the engine's own membership-gate block,
+the co-add root): the installed 12h Red master, holding its excluded 18 MHz on 2025-01-08 (and on 2025-04-05, whose 18 MHz
+data_decisions.csv excludes since 2026-11-13; the checks take the held nights from the 'keep' report, not a fixed list) - the engine's
+own membership-gate block,
 cut from deep_search.run_deep_cell and executed, passes under the default and REFUSES under the parity value; the step's dry run
 plans the cell under the default and refuses it at gate E3 under the parity value.
 The variable EXOPIPE3_MASTER_HELD_18MHZ carries only the step's own config value to an engine child: an inherited value that differs
@@ -65,6 +67,11 @@ class _Env:
         os.environ.pop(self.k, None)
         if self.old is not None:
             os.environ[self.k] = self.old
+
+
+def _nights(msgs):
+    """The nights ('YYYY-MM-DD') that verify_master's messages name after '12h Red '."""
+    return sorted({m.split('12h Red ', 1)[1][:10] for m in msgs if '12h Red ' in m})
 
 
 def gate_block():
@@ -196,8 +203,10 @@ def test_inherited_variable():
     with _Env('refuse'):
         vk = ADS.verify_master(CELL, held_18='keep')
         ve = ADS.verify_master(CELL)
-    check('real 12h Red: verify_master with the step\'s value (\'keep\') ignores a variable, the engine path (no value) reads it '
-          '(its step\'s)', not vk[0] and len(ve[0]) == 1 and '18 MHz excluded but' in ve[0][0], (vk[0][:1], ve[0][:1]))
+    held = _nights(m for m in vk[1] if 'holds its excluded 18 MHz' in m)
+    check(f'real 12h Red: verify_master with the step\'s value (\'keep\') ignores a variable, the engine path (no value) reads it '
+          f'(its step\'s): its violations are the held nights {held}', not vk[0] and ve[0] and '2025-01-08' in held
+          and all('18 MHz excluded but' in v for v in ve[0]) and _nights(ve[0]) == held, (vk[0][:1], held, ve[0][:2]))
     runs = {}
     for name, inh, extra in (('refuse inherited, default config', 'refuse', []),
                              ('keep inherited, config refuse', 'keep', ['--set', 'search_detect.MASTER_HELD_18MHZ=refuse']),
@@ -227,10 +236,10 @@ def test_real_12h_red():
         vk, rk = ADS.verify_master(CELL)
     with _Env('refuse'):
         vr, rr = ADS.verify_master(CELL)
-    held = [v for v in vr if '2025-01-08' in v and '18 MHz excluded but' in v]
-    check('real 12h Red: verify_master keeps the 2025-01-08 night holding its excluded 18 MHz (reported) under \'keep\', and it is '
-          'the one violation under \'refuse\'', not vk and any('2025-01-08' in r and '18 MHz' in r for r in rk) and len(vr) == 1
-          and held, (vk[:2], rk[:2], vr[:2]))
+    held = _nights(r for r in rk if 'holds its excluded 18 MHz' in r)
+    check(f'real 12h Red: verify_master keeps the nights holding their excluded 18 MHz {held} (reported) under \'keep\', and '
+          f'they are exactly the violations under \'refuse\'', not vk and '2025-01-08' in held and vr
+          and all('18 MHz excluded but' in v for v in vr) and _nights(vr) == held, (vk[:2], rk[:2], vr[:2]))
     code = gate_block()
     res = {}
     for val in ('keep', 'refuse'):

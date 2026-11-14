@@ -122,16 +122,21 @@ def test_v_sanity_record():
     check('(b) content test gate_population: passes a beam and a v_sanity row; fails a v_sanity row applied below its minimum',
           r1 and all(z['passed'] for z in r1) and r2 and not all(z['passed'] for z in r2), (r1, r2))
     src = _src()
+    i_b0 = src.find("_vb0 = _RR.base_vsanmed(run_root) if (_b02 and included_dates) else None")
     i_read = src.find('_vfz = _GP.frozen_v_sanity(run_root, lst, scope, SANITY_I_X, SANITY_MIN_NIGHTS)')
     i_try = src.find('    try:\n', i_read)
     i_vr = src.find('        _vr = {}\n', i_read)
-    check('(b) the engine: an append whose base has no V median reads the base\'s V row BEFORE the gate\'s try (its refusal is '
-          'never caught); a whole-cell deep search with a V search writes the row (median _vf[len // 2] when applied, the '
-          'recorded below-minimum otherwise)', i_read > 0 and i_read < i_try < i_vr
-          and "if _b02 and included_dates and resid_V and _RR.base_vsanmed(run_root) is None:" in src
+    i_row = src.find("_vsrow = _GP.row(lst, scope, 'v_sanity', _vfn, _vf[len(_vf) // 2] if _ok_v else None,", i_vr)
+    i_exc = src.find("fallback.site('fallbacks.SEARCH_SANITY_FALLBACK', f'{lst} {scope}: the V sanity gate could not run", i_row)
+    i_wr = src.find('    else:', i_exc)
+    check('(b) the engine: an append reads its base\'s V median ONCE and, without one, the base\'s V row, both BEFORE the gate\'s '
+          'try (a refusal is never caught); a whole-cell deep search with a V search builds the row inside the gate (median '
+          '_vf[len // 2] when applied, the recorded below-minimum otherwise) and writes it AFTER the try, only when the gate ran '
+          'to its end (a write failure never drops the gate\'s refusals)', 0 < i_b0 < i_read < i_try < i_vr < i_row < i_exc < i_wr
+          and "if _b02 and included_dates and resid_V and _vb0 is None:" in src and "_vb = _vb0" in src
           and "if cadence in ('deep', '10min') and not included_dates and resid_V:" in src   # the 10-minute cadence records it too
-          and "lst, scope, 'v_sanity', _vfn, _vf[len(_vf) // 2] if _ok_v else None, SANITY_I_X, SANITY_MIN_NIGHTS," in src
-          and "'applied' if _ok_v else 'below-minimum', 'search', _attempt)])" in src, (i_read, i_try, i_vr))
+          and src.find('_GP.append(run_root, [_vsrow])', i_wr) == src.find('_GP.append(run_root, [_vsrow])') > i_wr
+          and src.count('_RR.base_vsanmed(run_root)') == 1, (i_b0, i_read, i_try, i_vr, i_row, i_exc, i_wr))
 
 
 def _rows():
@@ -291,6 +296,27 @@ def test_wideband_real():
               f'({len(added)} of them, {len(nights)} nights)', same and kept == ref_b and added == want,
               (same, sorted(set(kept) ^ set(ref_b))[:4], sorted(added ^ want)[:4]))
     print(f'      real: {tot_un} of {tot_n} night-Stokes of the three cells refused per hour for an unmeasured member night')
+    # under fallbacks.SEARCH_SANITY_FALLBACK 'fallback' the member's own search searches an unmeasured epoch, counted: the
+    # mirror admits it and counts the same site (review of pull request 27, finding 3)
+    from exopipe.phase3.core import fallback as FB
+    lst, scope = '10h', 'Blue'                     # 20 unmeasured member night-Stokes above
+    pol, counted = FB.policy, []
+    site = FB.site
+    FB.policy = lambda k: 'fallback'
+    FB.site = lambda k, detail, n=1: counted.append((k, n))
+    try:
+        recs_f = {}
+        for m in W.members(scope, SUBBAND_BANDS):
+            cd = os.path.join(root, f'{lst}_{m}')
+            adm = ADS.nights(cd, m, 'deep')
+            b = W.member_record(cd, m, lst, P, rd, admitted=adm)
+            recs_f[m] = (b, W.member_record(cd, m, lst, P, rd, admitted=adm, perhour=b['present']))
+    finally:
+        FB.policy, FB.site = pol, site
+    check(f"real {lst} {scope} under SEARCH_SANITY_FALLBACK 'fallback': no member night is refused for being unmeasured; the "
+          f"site is counted once per member with unmeasured nights ({len(counted)} members)",
+          counted and all(not p_['unmeasured'] for _b, p_ in recs_f.values())
+          and all(k == W.UNMEASURED_KEY for k, _n in counted), counted)
     # census over every subband cell: present member nights an append would refuse for a value the member's tables miss
     from exopipe.phase3.core import cells as CC
     subs = sorted({m for g in ('Red', 'Green', 'Blue') for m in SUBBAND_BANDS[g]})
