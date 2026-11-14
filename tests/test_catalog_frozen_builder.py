@@ -410,6 +410,11 @@ def test_refusals():
     sx, tx, _ix = write_world(d, 'lack', [r for r in BASE + NIGHT1 if r[0] != 'I_05h_B1'])
     refuses('an input without a detection of the all-nights build', 'are not in this build\'s input', sel=sx, table=tx)
     refuses('a builder that is not the pinned one for the frozen statistics', 'population-wide quantities', frozen_accepted='0' * 40)
+    shutil.rmtree(f'{d}/out_rs', ignore_errors=True)
+    rc, txt = run(d, b, sha, sel, 'out_rs', tab, img, frozen='record', frozen_accepted='0' * 40)
+    check('record mode with a builder not pinned for the frozen statistics (an older tree\'s, accepted for the grouping): the '
+          'all-nights build runs and writes no record', rc == 0 and 'FROZEN-BUILDER record skipped' in txt
+          and not os.path.exists(f'{d}/out_rs/builder_frozen.json') and 'GROUPING-BUILDER done' in txt, (rc, txt[-400:]))
     refuses('the record mode with the grouping in pass-through', 'needs the design-B grouping', frozen='record', record=None,
             mode='passthrough')
     refuses('a delta build with a weighted null density (P3_REP_DENSITY_CSV)', 'P3_REP_DENSITY_CSV',

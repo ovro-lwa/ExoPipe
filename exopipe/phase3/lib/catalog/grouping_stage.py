@@ -409,24 +409,27 @@ def _latest_group_record(grouping_dir, stokes):
     return max(recs, key=lambda x: (x[0], x[1]))
 
 
-def recorded_inputs(grouping_dir, stokes):
+def recorded_inputs(grouping_dir, stokes, with_table=False):
     """({LST: all-nights catalog directory}, [(LST, night catalog directory), ...]) the grouping the builds read was assembled
     from: the record recorded_table reads (same refusals: the latest run must be done and its table unchanged). A night's delta
     build (lib/catalog/tier_sublst._build_delta) takes its appended nights from here, so the builder is never handed other
-    nights than the grouping was."""
-    recorded_table(grouping_dir, stokes)
-    meta = _latest_group_record(grouping_dir, stokes)[2].get('meta') or {}
+    nights than the grouping was. with_table: also recorded_table's (table, sha1), from the SAME record (one read: a grouping
+    run finishing in between cannot give the table of one run and the nights of another)."""
+    rec = _latest_group_record(grouping_dir, stokes)
+    tab = recorded_table(grouping_dir, stokes, _rec=rec)
+    meta = rec[2].get('meta') or {}
     inp = meta.get('input')
-    return (dict(inp) if isinstance(inp, dict) else {}), [(L, D) for L, D in (meta.get('input_nights') or [])]
+    out = (dict(inp) if isinstance(inp, dict) else {}), [(L, D) for L, D in (meta.get('input_nights') or [])]
+    return out + (tab,) if with_table else out
 
 
-def recorded_table(grouping_dir, stokes):
+def recorded_table(grouping_dir, stokes, _rec=None):
     """(table path, sha1) of the 10-minute grouping the LST builds read (review 2026-11-04, F2): the group unit records of
     grouping_dir (<dir>/_records/catalog/*.json of stage 'group') that grouped Stokes ``stokes`` - the LATEST must be done and
     have recorded this table (grouping_<S>/detections.csv) with the sha1 it has now. A refused latest run, a table its run did
     not record, or a table changed since REFUSES (StageRefusal) - a build never reads a grouping no successful run made."""
     table = os.path.join(os.path.abspath(grouping_dir), f'grouping_{stokes}', DETECTIONS)
-    fin, p, r = _latest_group_record(grouping_dir, stokes)
+    fin, p, r = _rec or _latest_group_record(grouping_dir, stokes)   # _rec: recorded_inputs' one read of the record
     if r.get('status') != 'done':
         raise StageRefusal(f'the latest 10-minute grouping run of Stokes {stokes} ({os.path.basename(p)}, {fin}) ended '
                            f'{r.get("status")}: {(r.get("reason") or "")[:200]} - group again before building - REFUSING')

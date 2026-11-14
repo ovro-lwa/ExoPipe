@@ -78,12 +78,17 @@ def _json(path):
 
 
 # ---- the staged catalog directory --------------------------------------------------------------------------------------
-def stage_catalog(staging, view_root, files):
+CONFORM_LOG_LINE = 'conform: window-tie table read: '      # sublst_pages_prep.py:66 (the checksum line it requires)
+
+
+def stage_catalog(staging, view_root, files, conform=()):
     """Make ``staging`` (removed first when it exists: this stage's own directory) = the catalog directory
     sublst_pages_prep.py is to read, as links: every table and catalog of the complete view root ``view_root``; from the
     all-nights catalog directory its record names, the files ``files`` and every selected_*.csv and pertie/ entry the view
-    root does not hold. Returns dict(all_nights=<directory>, view=[names], carried=[names], absent=[names of ``files`` the
-    all-nights directory does not hold])."""
+    root does not hold, except its conformance read: the files ``conform`` (the read of the view's merged window-tie table and
+    the log holding its checksum line) come from the view root only, and a view root without any of them REFUSES. Returns
+    dict(all_nights=<directory>, view=[names], carried=[names], absent=[names of ``files`` the all-nights directory does not
+    hold])."""
     view_root = os.path.abspath(view_root)
     recp = os.path.join(view_root, VIEW_ROOT_RECORD)
     if not os.path.exists(recp):
@@ -91,12 +96,22 @@ def stage_catalog(staging, view_root, files):
     rec = _json(recp)
     if rec.get('complete') is not True:
         raise NightRefusal(f'{view_root}: the view root is not complete (its localizations are not in) - REFUSING')
-    all_nights = rec['all_nights']
+    all_nights = rec.get('all_nights')
+    if not all_nights:
+        raise NightRefusal(f'{view_root}: its {VIEW_ROOT_RECORD} names no all-nights catalog directory - REFUSING')
     if not os.path.isdir(all_nights):
         raise NightRefusal(f'{view_root} stands on the all-nights catalog directory {all_nights}, which is gone - REFUSING')
     pt = os.path.join(view_root, PERTIE)
     if not os.path.exists(pt):
         raise NightRefusal(f'{view_root} holds no window-tie table ({PERTIE}) - REFUSING')
+    nocf = [n for n in conform if not os.path.isfile(os.path.join(view_root, n))]
+    logs = [n for n in conform if n.endswith('.log') and n not in nocf]
+    if not nocf and any(CONFORM_LOG_LINE not in open(os.path.join(view_root, n)).read() for n in logs):
+        nocf = [f'the checksum line ({CONFORM_LOG_LINE.strip()} ...) in {logs}']
+    if nocf:
+        raise NightRefusal(f'{view_root} holds no conformance read of its merged window-tie table (missing: {nocf}; '
+                           f'DECISION-20261114-PR50-VIEW-ROOT-RECORDS-ITS-OWN-CONFORMANCE-READ: the all-nights read never '
+                           f'stands for it) - REFUSING')
     if os.path.lexists(staging):
         shutil.rmtree(staging)
     os.makedirs(os.path.join(staging, 'pertie'))
@@ -108,14 +123,22 @@ def stage_catalog(staging, view_root, files):
         out['view'].append(n)
     os.symlink(pt, os.path.join(staging, PERTIE))
     out['view'].append(PERTIE)
+    for n in conform:                                 # the view's own conformance read (checked above)
+        if not os.path.lexists(os.path.join(staging, n)):
+            os.makedirs(os.path.dirname(os.path.join(staging, n)), exist_ok=True)
+            os.symlink(os.path.join(view_root, n), os.path.join(staging, n))
+            out['view'].append(n)
+    cf_dirs = {n.split('/')[1] for n in conform if n.startswith('pertie/') and n.count('/') >= 2}
     apt = os.path.join(all_nights, 'pertie')
     for n in (sorted(os.listdir(apt)) if os.path.isdir(apt) else []):
+        if n in cf_dirs:
+            continue                                  # the all-nights conformance read never stands for the view's table
         if not os.path.lexists(os.path.join(staging, 'pertie', n)):
             os.symlink(os.path.join(apt, n), os.path.join(staging, 'pertie', n))
             out['carried'].append(os.path.join('pertie', n))
     names = list(files) + sorted(os.path.basename(p) for p in glob.glob(os.path.join(all_nights, 'selected_*.csv')))
     for n in names:
-        if os.path.lexists(os.path.join(staging, n)):
+        if os.path.lexists(os.path.join(staging, n)) or n in conform:
             continue
         if os.path.exists(os.path.join(all_nights, n)):
             os.symlink(os.path.join(all_nights, n), os.path.join(staging, n))
@@ -209,13 +232,28 @@ def masters_in(sub_root, lst, night, k, band):
     return _digest(st)
 
 
+def masters_made_from(run, sub_root, lst, night, k, band):
+    """masters_in() when every leave-one-out window Master the run holds for the frame is not older than the files it is
+    made from (so it was made from them, or carried for them); None when an input changed after its Master was written
+    (a window stack rebuilt between prep and build): the record then vouches for no Master of the frame."""
+    for S in ('I', 'V'):
+        m = _stat(os.path.join(run, 'loo_masters', f'{lst}_{night}', band, S, f'loo_master_w{int(k)}.fits'))
+        if m is None:
+            continue
+        a = os.path.join(sub_root, lst, f'{lst}_{night}', band, S, f'sublst_{lst}_{night}_{band}_{S}_w{int(k)}.fits')
+        if any(x is not None and x[2] > m[2] for x in (_stat(a), _stat(a[:-5] + '_resid_loo.fits'))):
+            return None
+    return masters_in(sub_root, lst, night, k, band)
+
+
 def frame_ids(run, search_root, sub_root, keys):
     """{frame key: dict(searched, n_searched, masters_in, masters)} of the frames ``keys`` ({(lst, night, window, band)}) as
     the page run ``run`` reads them. Each value is a digest of [name, size, modification time] lists:
       searched    the search's residual images of the frame, both Stokes, with and without the primary-beam correction
                   (build_tenmin_pages.py:296-300; n_searched counts them), the predicted-V images of the frame in the
                   run's v110_products/<LST>_<band> (:199-203) and the band's parent catalog (:218);
-      masters_in  masters_in() - what prep makes the frame's leave-one-out window Masters from;
+      masters_in  masters_in() - what prep makes the frame's leave-one-out window Masters from; None when an input is newer
+                  than the run's Master of it (masters_made_from: then no later run carries that Master);
       masters     the run's own leave-one-out window Masters of the frame (:307), named relative to the run."""
     rdirs, preds, parents, out = {}, {}, {}, {}
     for lst, night, k, band in sorted(keys):
@@ -251,7 +289,7 @@ def frame_ids(run, search_root, sub_root, keys):
         st.append(parents[c])
         rels = [os.path.join('loo_masters', f'{lst}_{night}', band, S, f'loo_master_w{int(k)}.fits') for S in ('I', 'V')]
         out[frame_key(lst, night, k, band)] = dict(
-            searched=_digest(st), n_searched=n, masters_in=masters_in(sub_root, lst, night, k, band),
+            searched=_digest(st), n_searched=n, masters_in=masters_made_from(run, sub_root, lst, night, k, band),
             masters=_digest([_stat(os.path.join(run, rel), rel) for rel in rels]))
     return out
 
@@ -264,12 +302,24 @@ def run_frames(run, sets, search_root, sub_root):
     return frame_ids(run, search_root, sub_root, keys)
 
 
+_RECORDS = {}                                     # read_record's cache: {path: ((size, mtime in ns), record)}
+
+
 def read_record(run):
-    """The page run's block record, or None (none written, or unreadable)."""
+    """The page run's block record, or None (none written, or unreadable). Parsed once per file version (the base run's
+    record is read by run_vouches, by plan() for every set and by link_masters); callers must not modify it."""
+    p = os.path.join(run, RECORD)
     try:
-        return _json(os.path.join(run, RECORD))
+        st = os.stat(p)
+        ver = (st.st_size, st.st_mtime_ns)
+        hit = _RECORDS.get(p)
+        if hit is not None and hit[0] == ver:
+            return hit[1]
+        rec = _json(p)
     except (OSError, ValueError):
         return None
+    _RECORDS[p] = (ver, rec)
+    return rec
 
 
 def write_record(run, rec):
@@ -278,6 +328,7 @@ def write_record(run, rec):
         json.dump(rec, f, indent=1, sort_keys=True)
         f.write('\n')
     os.replace(p + '.tmp', p)
+    _RECORDS.pop(p, None)
     return p
 
 
@@ -452,7 +503,8 @@ def plan(K, run, base, ident, frames=None):
             w = 'the reference-tie row changed'
         elif not cell_same(r):
             w = 'the predicted-V directory of the cell differs'
-        elif frames.get(fkeys[pos]) is None or frames[fkeys[pos]] != bframes.get(fkeys[pos]):
+        elif (frames.get(fkeys[pos]) is None or frames[fkeys[pos]].get('masters_in') is None   # a Master older than its inputs
+              or frames[fkeys[pos]] != bframes.get(fkeys[pos])):
             w = 'a file of the frame changed (searched image, predicted image, parent catalog or window Master)'
         elif not os.path.isfile(os.path.join(base, bimg[kk])):
             w = 'the earlier page run holds no image of the row'
@@ -553,7 +605,8 @@ def link_masters(base, run, ident, sub_root):
             lst, night, band, _S, k = m.groups()
             fk = frame_key(lst, night, k, band)
             if fk not in same:
-                same[fk] = fk in bframes and bframes[fk].get('masters_in') == masters_in(sub_root, lst, night, k, band)
+                bm = bframes[fk].get('masters_in') if fk in bframes else None
+                same[fk] = bm is not None and bm == masters_in(sub_root, lst, night, k, band)
             b = os.path.join(run, rel)
             if not same[fk] or os.path.lexists(b):
                 out['not_carried'] += 1

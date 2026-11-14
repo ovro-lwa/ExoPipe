@@ -113,7 +113,7 @@ def run_gate(code, rows, refdir, lst='05h', scope='78MHz', ratio=2.0, adm=None, 
     ns = dict(np=np, os=os, _prov=rows, _kd=lambda d: d, cadence='deep', stokes='IV', lst=lst, scope=scope,
               dates=sorted(dates if dates is not None else {r['date'] for r in rows if r.get('date')}), _refdir=refdir,
               _attempt=attempt, _ADS=_Adm, _adm=adm or {}, _unm_tier=set(), print=lambda *a, **k: said.append(' '.join(map(str, a))),
-              _enough=lambda n, need, what, count=True: n >= need, SEARCH_TIER_RATIO=ratio, SEARCH_TIER_SIGMA=5.0,
+              _enough=lambda n, need, what, count=True, perhour=False: n >= need, _ph=False, SEARCH_TIER_RATIO=ratio, SEARCH_TIER_SIGMA=5.0,
               SEARCH_TIER_MIN=5)
     exec(code, ns)
     tier = {(d, st): (r, thr) for d, st, r, thr in ns['_tier']}
@@ -646,8 +646,10 @@ def test_drop_patches():
     print(f'      production registers: {n} published (cell, Stokes) on disk, {n_patch} of them drop patches')
     check(f'real: for every published (cell, Stokes) the search step\'s published attempt is the one production\'s own '
           f'p3s3_sources picks ({n}; {n_patch} drop patches current)', n > 0 and not diff, diff[:4])
-    check('real: every current drop patch\'s source is superseded by it (an append to the source would refuse)',
-          n_patch > 0 and not sup_bad, sup_bad[:4])
+    check(f'real: every current drop patch\'s source is superseded by it (an append to the source would refuse; {n_patch} current - '
+          f'none since the Release 1 re-search of 2026-11-08 superseded them)' if not n_patch else
+          f'real: every current drop patch\'s source is superseded by it (an append to the source would refuse; {n_patch} current)',
+          not sup_bad, sup_bad[:4])
     patches = sorted(glob.glob(os.path.join(COLLECT, 'p3s5_collect_*', 'attempts', '*stdrop')))
     old_all = [d for d in patches if (A.rows_utc(d) or '9') < ST.ELEV_RECORD_FIX_UTC]
     new_all = [d for d in patches if d not in old_all]

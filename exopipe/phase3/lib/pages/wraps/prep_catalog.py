@@ -13,7 +13,7 @@ PINS: the script's PATH-NORMALIZED sha1 (a frozen tree's own root replaced by /l
 lib/catalog/wraps/builder_grouping.py) must be one of EXOPIPE3_PAGES_PREP_SHA1 (config pages_sublst.PREP_SHA1), and the
 patched text must occur exactly once; any other script REFUSES (exit 2) - re-port this file.
 
-usage: prep_catalog.py <sublst_pages_prep.py> ARM OUT    (env EXOPIPE3_PAGES_CATALOG, EXOPIPE3_PAGES_PREP_SHA1, SUBLST_LST)
+usage: prep_catalog.py <sublst_pages_prep.py> ARM OUT    (env EXOPIPE3_PAGES_CATALOG, EXOPIPE3_PAGES_TIE, EXOPIPE3_PAGES_PREP_SHA1, SUBLST_LST)
 """
 import hashlib
 import os
@@ -23,6 +23,10 @@ import types
 LIVE_ROOT = '/lustre/gh/main'               # the live code root a frozen tree's rewrites point away from
 OLD = "CAT = f'{SL}/compare_{LST}/new_{ARM}/catalog'; OLD = "
 NEW = "CAT = os.environ['EXOPIPE3_PAGES_CATALOG']; OLD = "     # EXOPIPE3 NIGHT: the hour's staged catalog view
+# the reference-tie table that travels with the pages (DECISION-20261114-PR50-VIEW-CARRIES-ITS-REFERENCE-TIE-TABLE): the one
+# of the catalog read, never production's current one; scripts before 2026-11-13 copy none (the line is absent: 0 or 1 times)
+OLD_TIE = "_RT = f'{SL}/compare_{LST}/new_{ARM}/tie/tie_members.csv'"
+NEW_TIE = "_RT = os.environ['EXOPIPE3_PAGES_TIE']"                  # EXOPIPE3 NIGHT: the catalog's own tie table
 
 
 class Refused(RuntimeError):
@@ -54,13 +58,22 @@ def patched(script, accepted):
     if n != 1:
         raise Refused(f'the script {script} holds the catalog-directory assignment {n} times (1 expected) - re-port '
                       f'lib/pages/wraps/prep_catalog.py - REFUSING')
-    return src.replace(OLD, NEW), sha1, norm
+    nt = src.count(OLD_TIE)
+    if nt > 1:
+        raise Refused(f'the script {script} holds the tie-table path {nt} times (at most 1 expected) - re-port '
+                      f'lib/pages/wraps/prep_catalog.py - REFUSING')
+    return src.replace(OLD, NEW).replace(OLD_TIE, NEW_TIE), sha1, norm
 
 
-def run(script, args, catalog, accepted):
+def run(script, args, catalog, accepted, tie=None):
     script = os.path.abspath(script)
     if not catalog or not os.path.isdir(catalog):
         raise Refused(f'EXOPIPE3_PAGES_CATALOG={catalog!r} is not a directory - REFUSING')
+    tie = tie if tie is not None else os.environ.get('EXOPIPE3_PAGES_TIE', '')
+    if not tie:
+        raise Refused('EXOPIPE3_PAGES_TIE is not set: the tie table of the catalog read must be named (absent is allowed, '
+                      'unnamed is not) - REFUSING')
+    os.environ['EXOPIPE3_PAGES_TIE'] = tie
     src, sha1, _norm = patched(script, accepted)
     mod = types.ModuleType('__main__')
     mod.__file__ = script
@@ -70,7 +83,8 @@ def run(script, args, catalog, accepted):
     sys.argv = [script] + list(args)
     sys.modules['__main__'] = mod
     print(f'PAGES-PREP start: script {script} sha1 {sha1}; catalog directory {catalog} (in place of the hour\'s all-nights '
-          f'catalog directory)', flush=True)
+          f'catalog directory); tie table {tie}' + ('' if os.path.exists(tie) else ' (absent: the blocks say the tie has not run)'),
+          flush=True)
     exec(compile(src, script, 'exec'), mod.__dict__)
     print(f'PAGES-PREP done: script sha1 {sha1}', flush=True)
 
