@@ -361,6 +361,14 @@ def _remove_left_cut_copies(images, logger):
         logger.warning(f"  [BDSF] Removed {n} elevation-cut copies that stopped up-front workers left")
 
 
+def _writeto_atomic(out_path, data, header):
+    """Write a FITS file through a temporary name in its directory, then rename it into place, so a killed run leaves no
+    cut-off <image>_dewarped.fits that a rerun in the same work directory would skip as done."""
+    tmp = out_path + '.part'
+    fits.writeto(tmp, data, header, overwrite=True)
+    os.replace(tmp, out_path)
+
+
 def _extract_up_front(work_dir, subbands, logger):
     """Extract the not-yet-dewarped hour image of each of ``subbands`` in a process pool and keep the catalogs for
     dewarp_subband's step 3. Any failure here leaves the cascade to extract at step 3, as before."""
@@ -1002,11 +1010,13 @@ def save_diagnostics(anchors, screen_x, screen_y, wcs, shape, subband,
 
             disturbance_rms_arcmin = float(np.sqrt(np.mean(resid_mag_arcmin**2)))
 
-            if disturbance_rms_arcmin < 0.10:
+            # Label limits = the quartiles of the 541 processed hours measured 2026-11-14 (0.37, 0.46, 0.55 arcmin;
+            # range 0.28 to 1.20). The earlier limits (0.10, 0.20, 0.40) labeled no hour Excellent or Good.
+            if disturbance_rms_arcmin < 0.37:
                 disturbance_quality = "Excellent (smooth)"
-            elif disturbance_rms_arcmin < 0.20:
+            elif disturbance_rms_arcmin < 0.46:
                 disturbance_quality = "Good"
-            elif disturbance_rms_arcmin < 0.40:
+            elif disturbance_rms_arcmin < 0.55:
                 disturbance_quality = "Moderate (structured)"
             else:
                 disturbance_quality = "Poor (highly structured)"
@@ -1095,14 +1105,16 @@ def find_deep_pb_image(work_dir, subband, logger):
     Used for the anchor step (73 MHz vs VLSSr) where VLSSr has true fluxes.
 
     Searches: {work_dir}/{subband}/I/deep/*Taper*pbcorr*.fits
-    Excludes NoTaper, dewarped, and already-processed variants.
+    Excludes NoTaper, dewarped, and already-processed variants, and the elevation-cut copies (<image>.elcut*.fits,
+    extract_sources' temporary input) that a killed run can leave behind; every image finder here excludes them.
     Returns path or None.
     """
     pat = os.path.join(work_dir, subband, "I", "deep", "*Taper*pbcorr*.fits")
     candidates = [f for f in glob.glob(pat)
                   if "NoTaper" not in os.path.basename(f)
                   and "_dewarped" not in os.path.basename(f)
-                  and ".pybdsf" not in os.path.basename(f)]
+                  and ".pybdsf" not in os.path.basename(f)
+                  and ".elcut" not in os.path.basename(f)]
     if not candidates:
         logger.warning(f"  No deep tapered pbcorr image found for {subband}")
         return None
@@ -1128,7 +1140,8 @@ def find_deep_raw_image(work_dir, subband, logger):
                   if "NoTaper" not in os.path.basename(f)
                   and "pbcorr" not in os.path.basename(f)
                   and "_dewarped" not in os.path.basename(f)
-                  and ".pybdsf" not in os.path.basename(f)]
+                  and ".pybdsf" not in os.path.basename(f)
+                  and ".elcut" not in os.path.basename(f)]
     if not candidates:
         logger.warning(f"  No deep tapered raw image found for {subband}")
         return None
@@ -1165,7 +1178,7 @@ def find_all_images_to_warp(work_dir, subband, categories=None):
                 bn = os.path.basename(f)
                 if "_dewarped" in bn:
                     continue
-                if ".pybdsf" in bn:
+                if ".pybdsf" in bn or ".elcut" in bn:
                     continue
                 if '-image' not in bn:
                     continue
@@ -1333,8 +1346,7 @@ def dewarp_subband(work_dir, subband, ref_catalog, ref_label, is_anchor,
                 if data.shape == screen_x.shape:
                     warped = apply_warp(data, screen_x, screen_y)
                     if warped is not None:
-                        fits.writeto(out_path, warped, hf[0].header,
-                                     overwrite=True)
+                        _writeto_atomic(out_path, warped, hf[0].header)
                         n_warped += 1
                 else:
                     logger.warning(f"  Shape mismatch: {os.path.basename(fpath)} "
@@ -1607,7 +1619,8 @@ def find_deep_raw_image_dewarped(work_dir, subband, logger):
                   if "NoTaper" not in os.path.basename(f)
                   and "pbcorr" not in os.path.basename(f)
                   and "_dewarped_dewarped" not in os.path.basename(f)
-                  and ".pybdsf" not in os.path.basename(f)]
+                  and ".pybdsf" not in os.path.basename(f)
+                  and ".elcut" not in os.path.basename(f)]
     if not candidates:
         return None
     robust075 = [f for f in candidates if "Robust-0.75" in os.path.basename(f)]
@@ -2129,11 +2142,13 @@ def _make_ionosphere_movie_from_flow(work_dir, diag_dir, logger):
     mean_var = float(np.mean(variabilities[1:])) if len(variabilities) > 1 else 0.0
     max_var = float(np.max(variabilities[1:])) if len(variabilities) > 1 else 0.0
 
-    if mean_var < 0.10:
+    # Label limits = the quartiles of the 541 processed hours measured 2026-11-14 (0.26, 0.35, 0.47); the earlier
+    # limits were 0.10, 0.25, 0.50.
+    if mean_var < 0.26:
         iono_quality = "Excellent (stable)"
-    elif mean_var < 0.25:
+    elif mean_var < 0.35:
         iono_quality = "Good (slow evolution)"
-    elif mean_var < 0.50:
+    elif mean_var < 0.47:
         iono_quality = "Moderate (active)"
     else:
         iono_quality = "Poor (rapid evolution)"
@@ -2239,6 +2254,7 @@ def _dewarp_10min_flow(work_dir, subband_list, diag_dir, logger):
             f for f in glob.glob(os.path.join(i_10min_dir, "*Taper*image*.fits"))
             if "_dewarped" not in os.path.basename(f)
             and ".pybdsf" not in os.path.basename(f)
+            and ".elcut" not in os.path.basename(f)
             and "pbcorr" not in os.path.basename(f)
             and "NoTaper" not in os.path.basename(f)
         ])
@@ -2433,7 +2449,7 @@ def _dewarp_remaining_snapshots(work_dir, subband_list, diag_dir, logger):
 
                 warped = apply_warp(data, screen_x, screen_y)
                 if warped is not None:
-                    fits.writeto(out_path, warped, snap_hdr, overwrite=True)
+                    _writeto_atomic(out_path, warped, snap_hdr)
                     n_warped += 1
             except Exception as e:
                 logger.warning(f"  {subband}: warp failed for "
@@ -2539,6 +2555,7 @@ def dewarp_10min_intervals(work_dir, subband_list, diag_dir, logger,
             f for f in glob.glob(os.path.join(i_10min_dir, "*Taper*pbcorr*.fits"))
             if "_dewarped" not in os.path.basename(f)
             and ".pybdsf" not in os.path.basename(f)
+            and ".elcut" not in os.path.basename(f)
         ])
 
         for i_img in i_images:
@@ -2551,7 +2568,7 @@ def dewarp_10min_intervals(work_dir, subband_list, diag_dir, logger,
                     continue
                 for f in glob.glob(os.path.join(pol_dir, f"*{timestamp}*.fits")):
                     bn = os.path.basename(f)
-                    if "_dewarped" in bn or ".pybdsf" in bn:
+                    if "_dewarped" in bn or ".pybdsf" in bn or ".elcut" in bn:
                         continue
                     if '-image' not in bn:
                         continue
@@ -2850,8 +2867,7 @@ def _dewarp_one_interval(task):
                     if data.shape == screen_x.shape:
                         warped = apply_warp(data, screen_x, screen_y)
                         if warped is not None:
-                            fits.writeto(out_path, warped, hf[0].header,
-                                         overwrite=True)
+                            _writeto_atomic(out_path, warped, hf[0].header)
                             n_warped += 1
             except Exception:
                 pass
@@ -2872,7 +2888,8 @@ def find_deep_pb_image_dewarped(work_dir, subband, logger):
     candidates = [f for f in glob.glob(pat)
                   if "NoTaper" not in os.path.basename(f)
                   and "_dewarped_dewarped" not in os.path.basename(f)
-                  and ".pybdsf" not in os.path.basename(f)]
+                  and ".pybdsf" not in os.path.basename(f)
+                  and ".elcut" not in os.path.basename(f)]
     if not candidates:
         return None
     robust075 = [f for f in candidates if "Robust-0.75" in os.path.basename(f)]
@@ -2996,11 +3013,13 @@ def _make_ionosphere_movie(work_dir, results_10min, diag_dir, logger):
     }
 
     # Classify ionospheric quality
-    if mean_var < 0.10:
+    # Label limits = the quartiles of the 541 processed hours measured 2026-11-14 (0.26, 0.35, 0.47); the earlier
+    # limits were 0.10, 0.25, 0.50.
+    if mean_var < 0.26:
         iono_quality = "Excellent (stable)"
-    elif mean_var < 0.25:
+    elif mean_var < 0.35:
         iono_quality = "Good (slow evolution)"
-    elif mean_var < 0.50:
+    elif mean_var < 0.47:
         iono_quality = "Moderate (active)"
     else:
         iono_quality = "Poor (rapid evolution)"

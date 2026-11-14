@@ -1951,11 +1951,16 @@ def restore_email_inputs(run_dir):
 
 
 def send_email_report(run_dir, run_command=None, run_duration=None, lst=None, date=None,
-                      highlights_html=None, phases="Phase 2", write_to=None):
+                      highlights_html=None, phases="Phase 2", write_to=None,
+                      qa_extra_html=None, ionosphere_rank=None):
     """Send summary email with diagnostics and detection list.
 
-    highlights_html: an HTML block placed above the Phase 2 sections (the Phase 3 highlights of the hour; the step at
-    the end of Phase 3 passes it with phases="Phases 2-3"). Nothing else of the report changes.
+    highlights_html: the Phase 3 highlights of the hour (the step at the end of Phase 3 passes it with
+    phases="Phases 2-3"). Gregg 2026-11-14: the QA sections (Thermal Noise, Ionosphere Quality, then qa_extra_html, the
+    Phase 3 QA percentiles) stand ABOVE it, and the "Transient Detections" section of Phase 2 is not in that email (the
+    highlights list the transients). Without highlights_html the report is Phase 2's, unchanged.
+    ionosphere_rank: {'disturbance': words, 'variability': words} shown in place of the fixed-threshold quality words of
+    the two ionosphere numbers (their percentiles among the processed hours).
     write_to: a path prefix; the message is written to <write_to>.eml and its body to <write_to>.html and NOTHING is
     sent or posted (the review copy).
     Returns True when the email was sent (or the review copy written), False when the send failed (logged)."""
@@ -1986,8 +1991,7 @@ def send_email_report(run_dir, run_command=None, run_duration=None, lst=None, da
         hours = int(run_duration // 3600)
         mins = int((run_duration % 3600) // 60)
         body += f"<p>Duration: {hours}h {mins}m ({run_duration:.0f}s)</p>"
-    if highlights_html:
-        body += highlights_html
+    ionosphere_rank = ionosphere_rank or {}
 
     # Attach the pipeline log file
     log_files = sorted(glob.glob(os.path.join(run_dir, "phase2_*.log")))
@@ -2033,8 +2037,8 @@ def send_email_report(run_dir, run_command=None, run_duration=None, lst=None, da
                 dist_qual = anchor_stats.get('disturbance_quality')
                 med_shift = anchor_stats.get('median_shift_arcmin', 0)
                 if dist_rms is not None:
-                    body += (f"<p><strong>Disturbance: {dist_qual} "
-                             f"(RMS {dist_rms:.2f}')</strong> — "
+                    dist_words = ionosphere_rank.get('disturbance') or f"{dist_qual} (RMS {dist_rms:.2f}')"
+                    body += (f"<p><strong>Disturbance: {dist_words}</strong> — "
                              f"median shift {med_shift:.2f}', "
                              f"{anchor_stats.get('n_anchors', 0)} anchors "
                              f"at 73 MHz</p>")
@@ -2048,8 +2052,8 @@ def send_email_report(run_dir, run_command=None, run_duration=None, lst=None, da
             try:
                 with open(var_jsons[-1]) as _f:
                     iono_data = json.load(_f)
-                body += (f"<p><strong>Variability: "
-                         f"{iono_data.get('quality', 'Unknown')}"
+                var_words = ionosphere_rank.get('variability') or iono_data.get('quality', 'Unknown')
+                body += (f"<p><strong>Variability: {var_words}"
                          f"</strong></p><ul>")
                 body += (f"<li>Mean variability: "
                          f"{iono_data.get('mean_variability', 0):.3f}</li>")
@@ -2087,16 +2091,21 @@ def send_email_report(run_dir, run_command=None, run_duration=None, lst=None, da
         for dp in dewarp_pngs:
             ATTACHMENT_FILES.append(dp)
 
-    # Transient detection summary  scan detections directory for CSVs
-    body += "<h4>Transient Detections</h4>"
+    # Transient detection summary  scan detections directory for CSVs (the scan also attaches the tables it reads)
     det_dir = os.path.join(run_dir, "detections")
     transient_summary = _summarize_transient_detections(det_dir)
-    if transient_summary:
-        body += transient_summary
-    elif EMAIL_REPORT_LINES:
-        body += "<pre>" + "\n".join(EMAIL_REPORT_LINES) + "</pre>"
+    if highlights_html:
+        # the one email at the end of Phase 3: the QA above, then the Phase 3 QA percentiles and the highlights; the
+        # attachments are Phase 2's, unchanged
+        body += (qa_extra_html or "") + highlights_html
     else:
-        body += "<p>No transient search results found.</p>"
+        body += "<h4>Transient Detections</h4>"
+        if transient_summary:
+            body += transient_summary
+        elif EMAIL_REPORT_LINES:
+            body += "<pre>" + "\n".join(EMAIL_REPORT_LINES) + "</pre>"
+        else:
+            body += "<p>No transient search results found.</p>"
 
     msg.attach(MIMEText(body, 'html'))
 

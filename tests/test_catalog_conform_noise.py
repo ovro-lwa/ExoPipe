@@ -296,13 +296,29 @@ def test_frozen(rec, m, used_all):
     new_band = [('01h', '82MHz', 'I', '2025-01-09T00', '5.0', '10')]
     d3, _ = rundir('night_new_band', new_band)
     rc, out = child(m, d3, 'frozen', rec, acc)
-    check('frozen: a (LST, band, Stokes) of the run\'s rows that the record lacks refuses, naming it',
-          rc == 2 and "('01h', '82MHz', 'I')" in out and 'no earlier night gives it' in out, out[-300:])
+    # Gregg 2026-11-14 "Fine." (R-GREGG-20261114-SPEEDUP-SIX-ANSWERS-...-PR68 item 1): the night's own median, not a refusal
+    check('frozen: a (LST, band, Stokes) of the run\'s rows that the record lacks takes the night\'s own median (0.5 Jy), '
+          'named on its own line and in the done line',
+          rc == 0 and used(d3).splitlines()[0].split(',')[4] == '0.5'
+          and 'CONFORM-NOISE own 01h 82MHz I: no recorded median (0 recorded rows); this run\'s own 1 rows give 0.5 Jy (used)'
+          in out and '1 from the night\'s own rows (01h 82MHz I: none recorded)' in out, (used(d3), out[-500:]))
     nan_band = [('01h', '55MHz', 'I', '2025-01-09T00', '5.0', '10')]
     d4, _ = rundir('night_nan_band', nan_band)
     rc, out = child(m, d4, 'frozen', rec, acc)
-    check('frozen: a key recorded with no finite value refuses as a missing one', rc == 2 and "('01h', '55MHz', 'I')" in out,
-          out[-300:])
+    check('frozen: a key recorded with no finite value takes the night\'s own median as a missing one does',
+          rc == 0 and used(d4).splitlines()[0].split(',')[4] == '0.5' and 'CONFORM-NOISE own 01h 55MHz I' in out
+          and '(0 recorded rows)' in out, (used(d4), out[-500:]))
+    mixed = night + new_band                           # a recorded key stays frozen beside a missing one
+    d5, _ = rundir('night_mixed', mixed)
+    rc, out = child(m, d5, 'frozen', rec, acc)
+    g5 = {ln.split(',')[1]: ln.split(',')[4] for ln in used(d5).splitlines() if ln.startswith('01h,')}
+    check('frozen: beside a missing key the recorded one is still read frozen (73 MHz 3.85 Jy, 82 MHz its own 0.5 Jy)',
+          rc == 0 and g5.get('73MHz') == '3.85' and g5.get('82MHz') == '0.5', (g5, out[-400:]))
+    no_own = [('01h', '82MHz', 'I', '2025-01-09T00', 'x', '7')]
+    d6, _ = rundir('night_new_band_nan', no_own)
+    rc, out = child(m, d6, 'frozen', rec, acc)
+    check('frozen: a missing key whose own rows give no finite median either refuses, naming it',
+          rc == 2 and "('01h', '82MHz', 'I')" in out and 'no finite positive median' in out, out[-300:])
     body = open(rec).read()
     bad = os.path.join(T, 'dup.csv')
     with open(bad, 'w') as f:

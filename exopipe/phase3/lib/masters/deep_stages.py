@@ -1177,7 +1177,11 @@ def build_stats_stage(cell, args, run, out, ran_now):
                      f'rebuild the cell (exclusions are absolute, DESIGN 5 (d))')
         mods, _ = inplace(out)
         with IP.capture_stdout(_log(out, cell, 'build-stats'), echo=False):   # the stage-2 rule's notes: in the stage's log
-            viol = list(_admit().verify(cell_src)[0])        # D-ADMIT: a night admitted into the master is not a violation
+            try:
+                held_18 = _build_stats_held_18()              # an unknown search_detect.MASTER_HELD_18MHZ refuses; nothing else
+            except RuntimeError as e:                         # is caught here (a record fault is the unit's error)
+                u.refuse(f'{cell}: {e}')
+            viol = _build_stats_violations(cell_src, held_18)  # D-ADMIT + the 18 MHz carve-out: as the deep search judges it
             try:
                 st = None if viol else BS.compute(cell_src, lst, sc, mods['coadd'], _cfg(), 'stage')
             except BS.NoRecord as e:
@@ -1216,6 +1220,23 @@ STAGES = {'stage-in': stage_in, 'build': build, 'pbmaps': pbmaps, 'vclean': vcle
           'verify': verify, 'sources': sources, 'variants': variants, 'build-stats': build_stats_stage,
           'admit-prep': lambda cell, args, run, out, ran_now: _admit_stages().admit_prep(cell, args, run, out, ran_now),
           'admit': lambda cell, args, run, out, ran_now: _admit_stages().admit_stage(cell, args, run, out, ran_now)}
+
+
+def _build_stats_held_18():
+    """The 18 MHz carve-out choice build-stats judges the installed master with: the deep search's own value (search_detect.
+    MASTER_HELD_18MHZ, read and checked as the search step reads it - admitted.step_held_18), so a cell the search accepts is never
+    refused here and the two can never be set apart. An unknown value raises RuntimeError (the stage refuses the cell)."""
+    from exopipe.phase3.lib.search import admitted as ADS
+    return ADS.step_held_18(_cfg().search_detect.MASTER_HELD_18MHZ)
+
+
+def _build_stats_violations(cell_src, held_18):
+    """The membership violations of the installed master of ``cell_src`` as the deep search judges it (lib/search/admitted.
+    verify_master: a night admitted into the master is not a violation, and under ``held_18`` 'keep' a Red / Full night held only
+    for its excluded 18 MHz is kept until the master's next rebuild). build-stats records the population an admitted night - and
+    the per-hour search - is judged by."""
+    from exopipe.phase3.lib.search import admitted as ADS
+    return list(ADS.verify_master(cell_src, held_18=held_18)[0])
 
 
 def _admit_stages():
@@ -1439,7 +1460,12 @@ def _plan_simple(stage):
                 if stale:
                     gates.append(f'night(s) {stale} of the build population are excluded now (rebuild the cell)')
                 inplace(out)
-                viol = list(_admit().verify(cs)[0])           # D-ADMIT: as the stage reads it
+                try:
+                    viol = _build_stats_violations(cs, _build_stats_held_18())   # as the stage reads it
+                except RuntimeError as e:                     # only the value check maps to a plan refusal
+                    if 'MASTER_HELD_18MHZ' not in str(e):
+                        raise
+                    viol = [str(e)]
                 if viol:
                     gates.append(f'the cell fails membership.verify ({len(viol)}): {viol[0][:200]}')
         return lines, gates

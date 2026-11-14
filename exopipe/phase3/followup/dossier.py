@@ -288,6 +288,10 @@ def _run_snapshot(cand, ev, ra, dec, best_sub, spec, bpix, log):
                                     pad_s=C.SNAPSHOT_PAD_S)
     snap['peak_bin'] = peak_bin
     ev['snapshot'] = snap
+    if snap.get('refused'):             # an excluded subband-night (snapshots.snap_refusal): no frames read
+        log(f'T5 snapshot [{sc}]: {snap["refused"]}')
+        ev['escalation']['snapshot'] = snap['refused']
+        return
     log(f'T5 snapshot [{sc}, bin{peak_bin}]: {len(snap.get("frames",[]))} frames, '
         f'peak {snap.get("peak_snr",0):.1f} at {snap.get("peak_time")}')
     if not snap.get('peak_time'):

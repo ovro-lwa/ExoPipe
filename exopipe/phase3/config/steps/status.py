@@ -285,6 +285,11 @@ class status_snapshot(_Section):
     """Snapshot eligibility audit, batch lists and frame-time staleness (ops/snapshot_batch_audit.py,
     snapshot_batch_lists.py, snapshot_frametime_worklist.py; in place)."""
     FLEET_CLAIMS = '{ops}/snapshot_fleet_claims'           # <cell>/done = shipped; snapshot_batch_audit.py:52, 140
+    # the fleets that ship a cell's CURRENT products (snapshot_batch_audit.py:50-62, exopipe_ops e5fc9f1, 2026-11-14): a GPU-frame
+    # cell (paths.SNAPSHOT_GPU_FRAME_CELLS) only by the Dec 18-27 GPU fleet's marker; any other cell by FLEET_CLAIMS or the v11
+    # own-CLEANed fleet's marker
+    GPU_FLEET_CLAIMS = '{ops}/snapshot_fleet_claims_dec18_27_20261110'
+    OWN_CLEAN_FLEET_CLAIMS = '{ops}/snapshot_fleet_claims_own_clean_20261113'
     DEFAULT_WORKLIST = '{ops}/snapshot_fleet_worklist_v9_20261005.txt'   # snapshot_batch_audit.py:139
     ORDER_LIST = '{ops}/snapshot_prefit_worklist_20261008.txt'   # snapshot_batch_lists.py:69
     ELIGIBILITY_TABLE = 'eligibility.csv'                  # under <out>/snapshot (the batch driver writes <L>/eligibility.csv)

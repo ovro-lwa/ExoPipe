@@ -306,12 +306,12 @@ def run_tenmin_search(lst, scope, label='PROD', included_dates=None,
     # 10-min night set inconsistent with deep (deep-rejected nights leaked into
     # the 10-min reference -> cand-#11-class false positives). The SEARCH still
     # runs on every epoch; only the master (reference) is restricted to survivors.
-    from exopipe.phase3.lib.masters.coadd import (load_exclusions, is_excluded,
+    from exopipe.phase3.lib.masters.coadd import (snapshot_exclusion_test,
                                      get_good_dates_for_interval)
-    _excl = load_exclusions()
+    _xtest = snapshot_exclusion_test()   # the 10-minute tier's scope per night: snapshot-gpu / snapshot (2026-11-13)
     base = set(included_dates) if included_dates else set(dates_all)
     incl_dates = [d for d in dates_all if d in base
-                  and not is_excluded(lst, scope, d, _excl)]   # epochs to align+search
+                  and not _xtest(lst, scope, d)]   # epochs to align+search
     deep_good = get_good_dates_for_interval(wd, interval=None)  # deep 2-stage QA good
     if deep_good is None:
         deep_good = set(incl_dates)

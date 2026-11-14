@@ -7,6 +7,8 @@ read-only real products.
   seam       lib/frames/deep_seam: the proposed frames_only edit of the REAL engine source keeps the default call
              AST-identical and makes the search unreachable; a tampered default path and a literal fold are detected
   items      per-hour --epochs (core.cells epoch kind) x bands x Stokes, bulk --cells, --nights, unit names, Stokes order
+  population a per-hour unit's fresh attempt gets the published attempt's frozen beam-gate population (gate_population.csv)
+             the engine judges the listed nights by; a published attempt without one refuses, naming the backfill stage
   overrides  an engine literal override refuses; a detection-key override is noted
   child      core.legacy.run plumbing with a FAKE engine child: env from config, inherited P3_* cleared, result mapping
              (ok / refused -> Refusal / policy skip -> NoInput / error / crash -> RuntimeError)
@@ -21,7 +23,8 @@ read-only real products.
   real       READ-ONLY: content tests on production frames, siblings, archive copies, sigma stacks and epoch images;
              --deep-adopt of a published attempt (records under the scratch dir); --dry-run on the real cell 07h_18MHz,
              the per-hour item 07h_2025-10-15 Red (D-G3: the 18 MHz exception, ruled and production) and 07h_2025-10-14
-             Blue (a night outside the master: central master)
+             Blue (a night outside the master: central master; both per-hour items name the published attempt's
+             frozen beam-gate population or refuse for its lack)
 
 Scratch: /tmp/exopipe3_tests_frames-deep/ (removed at the end). Production trees are only read.
 Run standalone:  python tests/test_frames-deep.py [test_name ...]
@@ -216,6 +219,33 @@ def test_items():
         except ValueError:
             pass
     print('items: per-hour, bulk, incremental units and refusals of bad item specs')
+
+
+def test_population():
+    import types
+    from exopipe.phase3.core.record import Refusal
+    from exopipe.phase3.lib.frames import deep_step
+    from exopipe.phase3.lib.search import gate_population as GP
+    d = _fresh('population')
+    with open(os.path.join(d, 'published_V.csv'), 'w') as f:      # this --out's own register: the newest row is current
+        f.write('07h_Blue,lwacalim01,20261101T000000\n07h_Blue,lwacalim02,20261102T000000\n')
+    run = os.path.join(d, 'attempts', '07h_Blue_V_20261102T000000', 'transients', 'Run_P3S5')
+    os.makedirs(run)
+    ctx = types.SimpleNamespace(args=types.SimpleNamespace(out=d), attempts_root=os.path.join(d, 'deep_attempts'))
+    plan = types.SimpleNamespace(cell='07h_Blue', stokes='V', dates=['2025-10-14'])
+    try:
+        deep_step.published_population(ctx, plan)
+        raise AssertionError('a published attempt without gate_population.csv was accepted')
+    except Refusal as e:
+        assert GP.BACKFILL_STAGE in str(e) and '0 gate_population.csv' in str(e), e
+    with open(os.path.join(run, GP.FILE), 'w') as f:
+        f.write(','.join(GP.COLS) + '\n')
+    assert deep_step.published_population(ctx, plan) == os.path.join(run, GP.FILE)
+    src = open(os.path.join(os.path.dirname(deep_step.__file__), 'deep_step.py')).read()
+    i_pop, i_att = src.index('pop = published_population(ctx, plan) if plan.dates'), src.index('attempt = _new_attempt(ctx, plan)')
+    i_cp = src.index('shutil.copyfile(pop, dst)')
+    i_run = src.index('res = deep_engine.run_child(spec')
+    assert i_pop < i_att < i_cp < i_run, 'the unit resolves the population before its attempt and copies it before the engine'
 
 
 def test_overrides():
@@ -698,11 +728,13 @@ def test_real():
                      '--out', os.path.join(d, 'dry'), '--work', os.path.join(d, 'work')])
     assert rc == 2 and 'owed frames' in o and 'PASS D-G3' in o and 'REFUSE deep-producer' in o, (rc, o[-800:], e[-300:])
     assert '18 against their LOO V master, 1 against the central master' in o, o
-    # D-G3 on 07h_Red (rebuild pending, exopipe_ops/rebuild_pending/wideband_admission_20261017.csv): its master holds
-    # 2024-12-23, stacked without 23 and 36 MHz - a violation, the gate refuses - and 2025-10-14 with its 18 MHz excluded
-    # - the 18 MHz exception keeps that night until the master's next rebuild (reported, not a violation). Production's
-    # strict reading (parity/production_20261013.cfg) counts it as a violation too.
-    per_hour_red = ['frames', '--tier', 'deep', '--epochs', '07h_2025-10-15', '--scopes', 'Red', '--stokes', 'V',
+    # D-G3 through the per-hour CLI on a real cell. Since the 2026-11-08 rebuild no installed deep cell holds a membership
+    # violation (all 456 scanned 2026-11-13; the 07h Red case this used is gone, and its 2025-10-15 is excluded): 7 Red cells
+    # hold 12 nights with their excluded 18 MHz. 16h_Red holds 2025-04-05 so - the 18 MHz exception keeps that night until
+    # the master's next rebuild (reported, not a violation); production's strict reading (parity/production_20261013.cfg)
+    # refuses it. A violation itself (a member subband missing) is tested on synthetic records in
+    # test_masters_wideband_admission.py; the carve-out against the engine's own gate in test_d_g3_engine_agree.
+    per_hour_red = ['frames', '--tier', 'deep', '--epochs', '16h_2025-05-08', '--scopes', 'Red', '--stokes', 'V',
                     '--deep-rebuild', '--dry-run', '--cores', 'none', '--out', os.path.join(d, 'dry'), '--work',
                     os.path.join(d, 'work')]
     for parity in (False, True):
@@ -710,26 +742,27 @@ def test_real():
                                                                               'production_20261013.cfg')] if parity else []))
         g3 = next((x for x in o.splitlines() if ' D-G3 ' in x), '')
         viol, _, rep = g3.partition('reported, not violations:')
-        assert rc == 2 and 'REFUSE D-G3' in g3 and '07h Red 2024-12-23: IN the master' in viol \
-            and 'missing 23MHz, 36MHz' in viol, (parity, rc, g3, o[-600:], e[-300:])
         if parity:
-            assert '07h Red 2025-10-14: IN the master' in viol and '18 MHz excluded but' in viol, g3
+            assert rc == 2 and 'REFUSE D-G3' in g3 and '16h Red 2025-04-05: IN the master' in viol \
+                and '18 MHz excluded but' in viol, (parity, rc, g3, o[-600:], e[-300:])
         else:
-            assert '2025-10-14' not in viol and '07h Red 2025-10-14: holds its excluded 18 MHz' in rep \
-                and "kept until the master's next rebuild" in rep, g3
-    lines.append('per-hour 07h_2025-10-15 Red: D-G3 refuses 2024-12-23 (no 23/36 MHz) and keeps 2025-10-14 (18 MHz '
-                 'exception; production strict refuses both)')
+            assert 'PASS D-G3' in g3 and '2025-04-05' not in viol \
+                and '16h Red 2025-04-05: holds its excluded 18 MHz' in rep and "kept until the master's next rebuild" in rep, \
+                (parity, rc, g3, o[-600:], e[-300:])
+    lines.append('per-hour 16h_2025-05-08 Red: D-G3 keeps 2025-04-05 (18 MHz exception, reported); production strict '
+                 'refuses it')
     # a night outside the master subtracts the central master: 07h_Blue (no rebuild pending), 2025-10-14 in_master 0
     rc, o, e = _cli(['frames', '--tier', 'deep', '--epochs', '07h_2025-10-14', '--scopes', 'Blue', '--stokes', 'V',
                      '--deep-rebuild', '--dry-run', '--cores', 'none', '--out', os.path.join(d, 'dry'), '--work',
                      os.path.join(d, 'work')])
     assert 'PASS D-G3' in o and "nights outside the master ['2025-10-14']" in o, o[-800:]
+    assert 'PASS beam-population' in o or 'REFUSE beam-population' in o, o[-800:]     # the published attempt's record
     assert not os.path.exists(os.path.join(d, 'dry')), 'the dry run wrote something'
     lines.append('dry-run 07h_18MHz V: 19 owed frames (18 LOO, 1 central); per-hour 07h_2025-10-14 Blue: central master')
     print('real:\n  ' + '\n  '.join(lines))
 
 
-TESTS = ['test_config', 'test_seam', 'test_items', 'test_overrides', 'test_preview_sanity_minimum', 'test_child', 'test_register',
+TESTS = ['test_config', 'test_seam', 'test_items', 'test_population', 'test_overrides', 'test_preview_sanity_minimum', 'test_child', 'test_register',
          'test_cli', 'test_d_g3_engine_agree', 'test_real']
 
 

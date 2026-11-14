@@ -1,7 +1,7 @@
 """Content tests of the sub-LST catalogue chain (catalog --tier sublst), registered with core/validate.
 
-Tier-unique classes: catalog_preflight (also the snapshot tier's), tier_rule_removals, window_tie, leak_veto_table,
-rejected_record, compare_copy. Sub-LST checks of SHARED classes (whose generic tests are the catalog-deep unit's,
+Tier-unique classes: catalog_preflight (also the snapshot tier's), tier_rule_removals, window_tie, conform_inputs,
+leak_veto_table, rejected_record, compare_copy, table_filter, detection_record. Sub-LST checks of SHARED classes (whose generic tests are the catalog-deep unit's,
 lib/catalog/tests.py) are registered under the shared class name with a 'sublst_' test name and apply only to a sub-LST
 product (ctx tier='sublst', or the catalogue's cadence column '10min'); on any other product they pass with value 'n/a':
 conformant_catalog (TABLE-NOTES), fitted_catalog (F3 and the blanked deep systematic), selection (split partition, SNR,
@@ -104,7 +104,10 @@ def tier_rules_recomputed(path, **ctx):
     """Tier rules 3/4 and the 10-minute elevation floor recomputed with the in-place functions: every removed row satisfies
     its rule (and carries it), no kept row of master_catalog.csv satisfies any (kept rows at their PEAK position when
     fitted positions were added later). The floor at the FITTED positions (exopipe_ops 24d2b39): every row of
-    master_catalog_elevation_floor_fitted.csv lies below the floor at its fitted position, with that elevation written."""
+    master_catalog_elevation_floor_fitted.csv lies below the floor at its fitted position, with that elevation written. The
+    2024-12-28 ghost-track gate (exopipe_ops d1616d6): every row of master_catalog_ghost_removed.csv is of a GHOST_DATES night,
+    within its gate radius and absent from master_catalog.csv beside it, and the gate run again on that master_catalog.csv
+    removes nothing."""
     import numpy as np
     clv, ops = _legacy('clv15'), _legacy('exopipe_ops')
     import phase3_tier_rules as TR
@@ -140,6 +143,19 @@ def tier_rules_recomputed(path, **ctx):
                 bad.append(r[ix['cand_id']])
         return not bad, len(lrows), f'{len(lrows)} removed below {floor} deg at their fitted positions, {len(bad)} not ' \
                                     f'below it / wrong value' + (f' e.g. {bad[:3]}' if bad else '')
+    if base == 'master_catalog_ghost_removed.csv':
+        _legacy('clv15')
+        import phase3_snapshot_chain as CH
+        lhdr, lrows = _list_rows(os.path.join(os.path.dirname(os.path.abspath(path)), 'master_catalog.csv'))
+        kept = [dict(zip(lhdr, r)) for r in lrows]          # last occurrence of a repeated column, as the stage
+        ids = {r['cand_id'] for r in kept}
+        bad = [r['cand_id'] for r in rows if r['ts'].partition('T')[0] not in CH.GHOST_DATES or r['cand_id'] in ids
+               or not float(r['offset_arcmin']) <= float(r['radius_arcmin'])]
+        again = G.ghost_gate_tenmin(kept)[1]
+        return not bad and not again, len(rows), (
+            f'{len(rows)} removed on a 2024-12-28 ghost track, {len(bad)} not on a ghost night, beyond the radius or still in '
+            f'master_catalog.csv' + (f' e.g. {bad[:3]}' if bad else '') + f'; the gate again on master_catalog.csv beside it '
+            f'removes {len(again)}' + (f' e.g. {[r["cand_id"] for r in again[:3]]}' if again else ''))
     if base == 'master_catalog.csv':
         if not _is_sublst(path, ctx):
             return _NA
@@ -187,6 +203,48 @@ def window_tie_rows(path, **ctx):
     return ok, len(rows), (f'{len(rows)} rows, {dup} duplicate cand_ids, {len(badsys)} without a positive systematic, '
                            f'unknown statuses {badst}, {len(nocov)} of {len(sel)} selected without a row'
                            + (f' e.g. {nocov[:3]}' if nocov else ''))
+
+
+@content_test('conform_inputs')
+def conform_inputs_verify(path, **ctx):
+    """pertie/conform_inputs/ (lib/catalog/conform_inputs.py): the two window-tie tables the conformance read and their
+    SHA256SUMS, each present and non-empty, every listed file with its listed sha256."""
+    from exopipe.phase3.lib.catalog import conform_inputs as CI
+    why = CI.verify(path)
+    sums = CI.sums(path)
+    return not why, len(sums), why or f'{len(sums)} files verify against {CI.SUMS} ({", ".join(sorted(sums))})'
+
+
+@content_test('table_filter')
+def table_filter_rows(path, **ctx):
+    """table_filter.csv (make_table_filter_tenmin.py; '#' comment lines skipped): the TABLE-FILTER test of sublst_catalogs.sh
+    :333-345 - one row per master_catalog.csv row beside it, same cand_id order, no row 'n/a' in complete_table or
+    today_table. Value: the rows today's parents remove (non-zero = the pulsar step read another window tie than the
+    conformance did; recorded, not refused, as production)."""
+    with open(path, newline='') as f:
+        tf = list(csv.DictReader(ln for ln in f if not ln.startswith('#')))
+    mc = os.path.join(os.path.dirname(os.path.abspath(path)), 'master_catalog.csv')
+    with open(mc, newline='') as f:
+        rd = csv.reader(f)
+        h = next(rd)
+        ids = [r[h.index('cand_id')] for r in rd if r]
+    same = [r.get('cand_id') for r in tf] == ids
+    na = sum(r.get('complete_table') == 'n/a' or r.get('today_table') == 'n/a' for r in tf)
+    rm = sum(r.get('today_table') == 'remove' for r in tf)
+    return same and na == 0, rm, (f'{len(tf)} rows for {len(ids)} master_catalog.csv rows (same order: {same}); not evaluated '
+                                  f'{na}; today\'s parents remove {rm} conformant rows')
+
+
+@content_test('detection_record')
+def detection_record_summary(path, **ctx):
+    """detection_record_10min_summary.json (tenmin_detection_record.py): its own content tests passed (status PASS) and the
+    record file beside it exists."""
+    import json
+    with open(path) as f:
+        j = json.load(f)
+    gz = os.path.join(os.path.dirname(os.path.abspath(path)), 'detection_record_10min.csv.gz')
+    st = j.get('status')
+    return st == 'PASS' and os.path.isfile(gz), j.get('rows'), f"status {st}; {gz}{'' if os.path.isfile(gz) else ' MISSING'}"
 
 
 @content_test('leak_veto_table')
@@ -282,7 +340,9 @@ def rejected_record_consistent(path, **ctx):
 @content_test('compare_copy')
 def compare_copy_equal(path, **ctx):
     """The compare copy (compare_<L>/new_<arm>/catalog): the window-tie tables whole (pertie_detections.csv non-empty); with
-    ctx source=<catalogue dir>, every top-level CSV and pertie file equals its source (sha1)."""
+    ctx source=<catalogue dir>, every top-level CSV, every file under pertie/ (conform_inputs/ included), the per-detection
+    record and the complete-parent verdicts (complete_parent/<LST>/ -> complete_parent/; sublst_catalog_chain.sh:50-57) of
+    the source equal their copy (sha1)."""
     import hashlib
 
     def sha(p):
@@ -298,9 +358,15 @@ def compare_copy_equal(path, **ctx):
     if not src:
         n = len(glob.glob(os.path.join(path, '*.csv')))
         return n > 0, n, f'{n} top-level CSVs, window-tie tables present (no source given: equality not checked)'
+    pairs = [(p, os.path.join(path, os.path.relpath(p, src))) for p in sorted(glob.glob(os.path.join(src, '*.csv')))]
+    for dp, _, fs in sorted(os.walk(os.path.join(src, 'pertie'))):
+        pairs += [(os.path.join(dp, f), os.path.join(path, os.path.relpath(os.path.join(dp, f), src))) for f in sorted(fs)]
+    pairs += [(p, os.path.join(path, os.path.basename(p))) for p in sorted(glob.glob(os.path.join(src, 'detection_record_10min*')))]
+    pairs += [(p, os.path.join(path, 'complete_parent', os.path.basename(p)))
+              for p in sorted(glob.glob(os.path.join(src, 'complete_parent', '*', '*')))
+              if os.path.basename(p) in ('cells.csv', 'complete_parent_rows.csv', 'provenance.json')]
     diff, n = [], 0
-    for p in sorted(glob.glob(os.path.join(src, '*.csv'))) + sorted(glob.glob(os.path.join(src, 'pertie', '*'))):
-        q = os.path.join(path, os.path.relpath(p, src))
+    for p, q in pairs:
         n += 1
         if not os.path.exists(q) or sha(p) != sha(q):
             diff.append(os.path.relpath(p, src))

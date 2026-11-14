@@ -1640,7 +1640,7 @@ _SPECTRUM_COLS = ['scope', 'freq_mhz', 'is_subband', 'v_source', 'v_peak', 'v_er
                   'i_snr', 'vi_ratio', 'v_fwhm_maj_deg', 'v_axis_ratio', 'v_ra', 'v_dec', 'v_detected', 'i_detected']
 _SNAP_LC_COLS = ['time', 'mjd', 'peak', 'snr', 'sign']                              # io_products.py:143
 _SNAP_SPEC_COLS = ['scope', 'freq_mhz', 'dewarped', 'V_peak', 'V_err', 'V_snr', 'V_sign', 'I_peak', 'I_err', 'I_snr',
-                   'I_sign', 'vi_ratio']                                             # io_products.py:158-159
+                   'I_sign', 'vi_ratio', 'refused']                                  # io_products.py:158-159
 # _SPECTRUM_COLS = io_products.py:126-129. tests/test_followup.py writes a dossier through the package writers and checks
 # these three lists against what they write.
 
