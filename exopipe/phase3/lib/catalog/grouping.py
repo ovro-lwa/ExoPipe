@@ -20,6 +20,8 @@ the approved preview (10-minute I and V) and on the research's deep I and V inpu
 it on frozen subsets. Changes that cannot alter a result: dead parameters and an unused helper dropped (probe_r, ref_of,
 categories()); the frozen-window dict no longer shadows the group-seeding switch (in the research _run only groups=False
 together with frozen labels behaved differently); an unknown band refuses instead of taking the Blue-class pixel scale.
+The ONE change that alters a result (2026-11-14, AMEND-20261114-GROUPING-INCREMENTAL-CHANGES-ONLY-WHAT-NEW-DETECTIONS-TOUCH): in
+the incremental mode a merge or a seeded group needs a component holding a new unit (below); the batch mode is unchanged.
 
 WHAT IT DOES (one rule at two levels). A unit j against a component k, in k's tangent plane (east, north; arcsec):
   d = x_j - m_k, m_k the inverse-covariance mean of k's members; S = C_j + (sum C_i^-1)^-1 + FLOOR^2 I [+ the chromatic term in
@@ -38,7 +40,14 @@ WHAT IT DOES (one rule at two levels). A unit j against a component k, in k's ta
   merge test) - it only coarsens the identities, never re-partitions them.
   INCREMENTAL: frozen labels (the earlier nights) keep their components; only new units are assigned; components may still
   merge, so no identity seen before is ever split (group_catalog checks it and refuses). A window holding both frozen and new
-  detections would be re-grouped in stage A, so group_catalog refuses that case (mode='regroup' instead).
+  detections would be re-grouped in stage A, so group_catalog refuses that case (mode='regroup' instead). It changes only what
+  a new unit touches (the grouping form of R-GREGG-20261113-SPEEDUP-CHECKIN-TEN-ANSWERS (3), "the builder runs only on the
+  sources the new night touches"): at both levels a merge needs one of its two components to hold a new unit, and a seeded
+  group needs a new member; the earlier multiples groups are restored by forced joins as before. So a run without a new
+  detection changes nothing, and a new night changes only the components its own units join or bridge. (The research code's
+  incremental run also merged and seeded among frozen components alone: on the 24 published 10-minute runs, an incremental run
+  WITHOUT a new detection over a batch state merged 49 Stokes I identities - speed-up chat, RESULT-20261113-SPEEDUP-TENMIN-
+  GROUPING-NO-NEW-DETECTION-RUNS.)
 
 KNOWN LIMITS (review 2026-11-02)
   - The incremental mode is for PURE APPENDS - whole new windows (new nights). A re-search re-numbers and re-measures the
@@ -50,9 +59,15 @@ KNOWN LIMITS (review 2026-11-02)
   - In the incremental mode the MULTIPLES level can split an earlier multiples group: two of its identities that gain detections
     in one new window cannot be joined again (one window-source per window per group; research group_B.py:639-645). The ruling
     protects identities, which never split (checked); a multiples-level split is recorded ('split' event, a 'move' per detection).
-    Nor is the incremental mode idempotent at the multiples level: its merge passes restart from the frozen identities and can
-    merge further groups even on an unchanged input (10-minute V subset: 1 merge; identities unchanged; recorded). Regroup on an
-    unchanged input changes nothing.
+    An incremental run without a new detection changes nothing at either level (since 2026-11-14: merges and seeded groups need
+    a new unit; before, its merge passes restarted from the frozen components and merged further - 10-minute V subset: 1
+    multiples-level merge). Regroup on an unchanged input changes nothing.
+  - The batch mode's stage B does not always reach a fixed point: on the 24 published 10-minute runs (Stokes I, 37,724
+    window-sources) every pass after the third re-assigns ~500 window-sources, merges 34-52 components and changes the component
+    of 48-71 window-sources, with no downward trend to pass 30 - re-assignment and merge undo each other (Stokes V closes at pass
+    3; speed-up chat, PREAMBLE-20261114-SPEEDUP-TENMIN-GROUPING-PASS-CAP-30-RUNS). PASSES = 3 (the research value) makes it a
+    deterministic point of that cycle; an all-nights batch and an incremental run over the same detections therefore differ
+    in those components (recorded by the regroup's events, not refused).
   - cand_ids are not stable across re-searches (production re-numbers them: exopipe_ops p3s3_merge.py:77-81; 10-25 vs 10-31:
     1,562 of 67,317 shared cand_ids name a detection more than 1 deg away). The state keeps each detection's fingerprint (window
     key, band, catalog ra, dec, S/N at full precision) and match errors; a detection is matched exactly or within tolerance
@@ -679,14 +694,15 @@ def _assign_pass(M, order, cands_of, rho, prof, p_thr, u_cap, first, hyst, movab
     return moved
 
 
-def _group_seed(M, order, nbrs, prof, rho, p_thr, u_cap, u_link, max_k):
+def _group_seed(M, order, nbrs, prof, rho, p_thr, u_cap, u_link, max_k, movable=None):
     """GROUP EVIDENCE (round 4): among units still ALONE in their components, grow groups of mutually consistent units in different
     windows (each new member the strongest candidate within u_link of the group's mean, up to max_k) and seed a group as one source
     when (1) its CHAIN ODDS - the product, in brightest-first order, of each member's odds against the members before it (the same
     W f / rho as every assignment: the evidence of k coincident units grows as ~ (f / rho)^(k-1) while chance falls as
     (rho x area)^(k-1)) - reach the threshold odds p/(1-p), and (2) every member is admitted given the others (leave-one-out odds
     >= p/(1-p), u <= U_CAP; members failing it are dropped). For a pair both conditions equal the ordinary pair rule, so only
-    k >= 3 is new. Returns the number of groups seeded."""
+    k >= 3 is new. movable (the incremental mode): a group is seeded only when it holds a new unit. Returns the number of groups
+    seeded."""
     othr = p_thr / (1 - p_thr); rank = np.empty(M.n, int); rank[order] = np.arange(len(order)); formed = 0
     for j in order:
         k = M.lab[j]
@@ -695,6 +711,8 @@ def _group_seed(M, order, nbrs, prof, rho, p_thr, u_cap, u_link, max_k):
         cs = np.array([c for c in nbrs[j] if c != j and M.lab[c] >= 0 and M.cnt[M.lab[c]] == 1 and M.slot[c] != M.slot[j]], int)
         if len(cs) < 2:
             continue
+        if movable is not None and not movable[j] and not movable[cs].any():
+            continue                                      # the incremental mode: no new unit among them, no group
         O, U = M.evaluate_units(cs, k, prof, rho)          # the pair prefilter: partners within u_link of the anchor
         cs = cs[U <= min(u_link, u_cap)]
         if len(cs) < 2:
@@ -735,7 +753,7 @@ def _group_seed(M, order, nbrs, prof, rho, p_thr, u_cap, u_link, max_k):
         k2 = M.new(gsr[0]); chain = 1.0
         for i in gsr[1:]:
             o, u = M.evaluate(i, np.array([k2]), prof, rho); chain *= o[0]; M.add(i, k2)
-        if chain >= othr:
+        if chain >= othr and (movable is None or movable[gsr].any()):
             formed += 1
         else:
             for i in gsr[1:]:
@@ -743,11 +761,12 @@ def _group_seed(M, order, nbrs, prof, rho, p_thr, u_cap, u_link, max_k):
     return formed
 
 
-def _merge_pass(M, prof, p_thr, u_cap, rho, radius_deg):
+def _merge_pass(M, prof, p_thr, u_cap, rho, radius_deg, new=None):
     """UNIT-LEVEL merge test: component l joins k when EVERY unit of l, taken alone, would be admitted to k (u <= U_CAP against k's
     mean with its covariance, odds >= P) and the two share no window. (A mean-against-mean test with independent errors is too
     strict: systematics correlated within a night or LST hour leave well-sampled pieces of one source many 'mean sigmas' apart
-    while every member sits within 2 sigma of the other piece's mean - J0034-0721.)"""
+    while every member sits within 2 sigma of the other piece's mean - J0034-0721.) new (the incremental mode: the movable
+    units): only a pair of which one component holds a new unit may merge."""
     live = np.nonzero(M.cnt > 0)[0]
     if len(live) < 2:
         return 0
@@ -760,6 +779,14 @@ def _merge_pass(M, prof, p_thr, u_cap, rho, radius_deg):
     wa, wb = M.cnt[live[a]], M.cnt[live[b]]
     big = np.where(wa >= wb, a, b); sm = np.where(wa >= wb, b, a)
     kb, ksm = live[big], live[sm]
+    if new is not None:                                   # the incremental mode: a merge needs a component holding a new unit
+        hn = np.zeros(len(M.cnt), bool)
+        for k_ in live:
+            hn[k_] = any(new[j] for j in M.mem[k_])
+        keep = hn[kb] | hn[ksm]
+        if not keep.any():
+            return 0
+        big, sm, kb, ksm = big[keep], sm[keep], kb[keep], ksm[keep]
     # prefilter: l's mean against k's mean with the covariance of l's loosest unit (each unit must pass the cap on its own)
     cmax = {}
     for l in set(ksm.tolist()):
@@ -890,7 +917,7 @@ def _run(det, P, frozen=None):
                 MB.add(u_, k)
     MB.pooled = P.pooled
     _assign_pass(MB, order, candsB, rhoB, P.prof_ws, p_thr, u_cap, True, P.hyst, movable)
-    seeded = _group_seed(MB, order, nbrs, P.prof_ws, rhoB, p_thr, u_cap, P.u_link, P.max_k) if P.groups else 0
+    seeded = _group_seed(MB, order, nbrs, P.prof_ws, rhoB, p_thr, u_cap, P.u_link, P.max_k, movable) if P.groups else 0
 
     def canon():
         lo = np.full(nu, nu); np.minimum.at(lo, MB.lab, np.arange(nu)); return lo[MB.lab]
@@ -898,7 +925,7 @@ def _run(det, P, frozen=None):
     for p in range(passes):
         MB.rebuild()
         mv = _assign_pass(MB, order, candsB, rhoB, P.prof_ws, p_thr, u_cap, False, P.hyst, movable)
-        mg = _merge_pass(MB, P.prof_ws, p_thr, u_cap, rhoB, P.merge_radius)
+        mg = _merge_pass(MB, P.prof_ws, p_thr, u_cap, rhoB, P.merge_radius, movable)
         cur = canon(); ch = int((cur != prev).sum()); prev = cur; hist.append((mv, mg, ch))
         if ch == 0:
             break
@@ -907,7 +934,7 @@ def _run(det, P, frozen=None):
     lab = MB.lab[inv]
     info = dict(labA=labA, inv=inv, n_windowsources=nu, passes=hist, w0_table=w0_table, rhoA=rhoA, rhoB=rhoB, groups_seeded=seeded,
                 Ura=Ura, Ude=Ude, UC=UC, Uw=Uw, labU=MB.lab.copy())
-    return lab, info, dict(MB=MB, inv=inv, rhoB=rhoB, nu=nu, order=order, nbrs=nbrs)
+    return lab, info, dict(MB=MB, inv=inv, rhoB=rhoB, nu=nu, order=order, nbrs=nbrs, movable=movable)
 
 
 def group(det, p_thr=None, u_cap=None, frozen=None, return_info=False, P=None, **over):
@@ -962,10 +989,11 @@ def group_fork(det, p_thr=None, p_fork='config', u_cap=None, frozen=None, frozen
                 forced += 1
     seeded = 0
     if P.groups:                                          # group evidence at the multiples level, among single-unit identities only
-        MB.rebuild(); seeded = _group_seed(MB, st['order'], st['nbrs'], P.prof_ws, rhoB, p_fork, P.u_cap, P.u_link, P.max_k)
+        MB.rebuild(); seeded = _group_seed(MB, st['order'], st['nbrs'], P.prof_ws, rhoB, p_fork, P.u_cap, P.u_link, P.max_k,
+                                           st['movable'])
     rounds = []
     for r in range(P.max_rounds):
-        mg = _merge_pass(MB, P.prof_ws, p_fork, P.u_cap, rhoB, P.merge_radius)
+        mg = _merge_pass(MB, P.prof_ws, p_fork, P.u_cap, rhoB, P.merge_radius, st['movable'])
         rounds.append(mg)
         if mg == 0:
             break
