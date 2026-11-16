@@ -25,7 +25,7 @@ from exopipe.phase3.config import CFG                                      # noq
 from exopipe.phase3.core import record                                     # noqa: E402
 from exopipe.phase3.lib.serve import snapshot_copy as SC                   # noqa: E402
 
-T = tempfile.mkdtemp(prefix='snapcopy_complete_')
+T = tempfile.mkdtemp(prefix='snapcopy_complete_', dir=os.environ.get('TMPDIR') or '/fast/gh')   # never the root disk's /tmp
 N_PNG = 7
 
 
@@ -68,7 +68,7 @@ def one_case(source, local_src, label):
     files = SC.copy_listing(dst)
     sel, k = SC.md5_selection(files, N_PNG)
     assert k == N_PNG and len(sel) == len(files) - 20 + N_PNG, (len(sel), len(files), k)
-    assert sel == SC.md5_selection(list(reversed(files)), N_PNG)[0], 'the panel sample depends on the listing order'
+    assert len(set(SC.md5_selection(files, N_PNG)[0]) - set(sel)) <= N_PNG, 'only the panel sample differs between calls'
     print(f'    {label}: clean copy done; {len(files)} files listed, {len(sel)} md5-compared ({k} sampled panels)')
 
     # resume: a copy cut short under the final names (the worst case) completes on a second call
@@ -83,11 +83,12 @@ def one_case(source, local_src, label):
     print(f'    {label}: a copy cut short completes on a second call')
 
     # tampers
-    sampled_png = [f for f in sel if f.endswith('.png')][0]
+    sampled_png = 'panels/B/p00.png'
     for what, edit, gate in (
             ('a table changed, size and mtime kept', lambda: keep_stat(c0, lambda d: d[:-2] + b'9\n'), 'G22c'),
-            ('a sampled panel changed, size and mtime kept',
-             lambda: keep_stat(os.path.join(dst, sampled_png), lambda d: bytes([d[0] ^ 1]) + d[1:]), 'G22c'),
+            ('every panel changed, size and mtime kept (a random sample catches it)',
+             lambda: [keep_stat(os.path.join(dst, 'panels', 'B', f), lambda d: bytes([d[0] ^ 1]) + d[1:])
+                      for f in os.listdir(os.path.join(dst, 'panels', 'B'))], 'G22c'),
             ('a file only in the copy', lambda: open(os.path.join(dst, 'candidates', 'stray.csv'), 'w').write('x\n'), 'G22b')):
         edit()
         u, ch = stage(source, dst, label + '_t')
@@ -126,20 +127,46 @@ def review_space():
         CFG.paths.SNAPSHOT_REVIEW_ROOT, CFG.site.REVIEW_HOST = saved
 
 
+def resume_space(src):
+    """G20 on a resume counts only what is still missing: with free space below the full size but above the rest, it passes"""
+    dst = os.path.join(T, 'g20', 'Run_SNAPZ1_20261116')
+    os.makedirs(os.path.dirname(dst))
+    shutil.copytree(src, dst, symlinks=True, ignore=shutil.ignore_patterns('tmp_panels', 'tmp_panel_queue'))
+    full = SC.source_bytes(None, src)
+    st = os.statvfs(os.path.dirname(dst))
+    free = st.f_bavail * st.f_frsize
+    saved = CFG.serve.SNAPSHOT_COPY_MIN_FREE_FACTOR
+    try:
+        CFG.serve.SNAPSHOT_COPY_MIN_FREE_FACTOR = 1.5 * free / full        # the whole run would not fit, the rest (0 B) does
+        u, ch = stage(src, dst, 'g20_resume')
+        assert u.status == 'done', (u.status, u.reason)
+        shutil.rmtree(dst)
+        u, ch = stage(src, dst, 'g20_fresh')
+        assert u.status == 'refused' and 'G20' in u.reason, (u.status, u.reason)
+    finally:
+        CFG.serve.SNAPSHOT_COPY_MIN_FREE_FACTOR = saved
+    print('    G20 on a resume: the copy already in place counts (passes); the same space for a fresh copy refuses')
+
+
 def main():
-    review_space()
-    CFG.serve.SNAPSHOT_COPY_MD5_PNG_SAMPLE = N_PNG
-    src = os.path.join(T, 'src', 'Run_SNAPZ1_20261116')
-    make_source(src)
-    one_case(src, src, 'local')
-    me = socket.gethostname().split('.')[0]
-    p = subprocess.run(['ssh', '-n', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5', me, 'true'], stdout=subprocess.DEVNULL,
-                       stderr=subprocess.DEVNULL)
-    if p.returncode == 0:
-        one_case(f'{me}:{src}', src, 'remote')
-    else:
-        print(f'    remote: SKIP (ssh to {me} failed)')
-    shutil.rmtree(T)
+    saved = CFG.serve.SNAPSHOT_COPY_MD5_PNG_SAMPLE
+    try:
+        review_space()
+        CFG.serve.SNAPSHOT_COPY_MD5_PNG_SAMPLE = N_PNG
+        src = os.path.join(T, 'src', 'Run_SNAPZ1_20261116')
+        make_source(src)
+        one_case(src, src, 'local')
+        resume_space(src)
+        me = socket.gethostname().split('.')[0]
+        p = subprocess.run(['ssh', '-n', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5', me, 'true'], stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL)
+        if p.returncode == 0:
+            one_case(f'{me}:{src}', src, 'remote')
+        else:
+            print(f'    remote: SKIP (ssh to {me} failed)')
+    finally:
+        CFG.serve.SNAPSHOT_COPY_MD5_PNG_SAMPLE = saved
+        shutil.rmtree(T, ignore_errors=True)
     print('PASS test_snapshot_copy_complete')
     return 0
 

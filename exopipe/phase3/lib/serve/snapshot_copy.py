@@ -10,8 +10,8 @@ copy       (unit snapshot_<name>_copy)  G20 free space on the review disk >= SNA
            (snapshot_serve.sh:28); G22 rsync status, then the COMPLETION TEST (exopipe_ops snapshot_batch/next_wave_20261113/
            rechain_copy_after_enospc_20261115.sh, OPS-20261115-RECHAIN-COPY-AFTER-DATA07-ENOSPC): G22b `rsync -a -n --delete
            --itemize-changes` with the same excludes lists no file (size + mtime of every file, no extra file in the copy) and
-           G22c md5 of the source = md5 of the copy for every file but the panel PNGs and for SNAPSHOT_COPY_MD5_PNG_SAMPLE of
-           those (chosen by the md5 of their relative path: the same sample on every run; production draws it with shuf)
+           G22c md5 of the source = md5 of the copy for every file but the panel PNGs and for a random
+           SNAPSHOT_COPY_MD5_PNG_SAMPLE of those (a new draw on every call, as production's shuf)
            (class review_copy). The stage is resumable alone: `serve --tier snapshot --from copy` re-runs the rsync (it sends
            only what is missing or differs; a file cut short by a full disk is rsync's temporary file, never the final name)
            and the same completion test.
@@ -350,11 +350,13 @@ def copy_stage(run, plan):
         need = source_bytes(host, src)
         if need is None:
             u.refuse(f'G20 review-disk space: the size of {plan.source} could not be read')
+        have = source_bytes(None, DST) if os.path.isdir(DST) else 0      # a resumed copy needs only what is still missing
+        need = max(0, need - have)
         os.makedirs(os.path.dirname(DST), exist_ok=True)
         st = os.statvfs(os.path.dirname(DST))
         free = st.f_bavail * st.f_frsize
         u.check('G20_free_space', free >= S.SNAPSHOT_COPY_MIN_FREE_FACTOR * need, value=free,
-                detail=f'{free / 1e9:.1f} GB free, source {need / 1e9:.2f} GB')
+                detail=f'{free / 1e9:.1f} GB free, still to copy {need / 1e9:.2f} GB ({have / 1e9:.2f} GB already in the copy)')
         if free < S.SNAPSHOT_COPY_MIN_FREE_FACTOR * need:
             u.refuse(f'G20 review-disk space: {free / 1e9:.1f} GB free under {os.path.dirname(DST)} < '
                      f'{S.SNAPSHOT_COPY_MIN_FREE_FACTOR} x {need / 1e9:.2f} GB - nothing copied, servers untouched '
@@ -377,7 +379,10 @@ def copy_stage(run, plan):
         if diff:
             u.refuse(f'G22b snapshot copy: after the copy {len(diff)} entries still differ in size / mtime or exist only in the '
                      f'copy: {diff[:3]}')
-        n, n_png, bad = md5_compare(host, src, DST, S.SNAPSHOT_COPY_MD5_PNG_SAMPLE)
+        try:
+            n, n_png, bad = md5_compare(host, src, DST, S.SNAPSHOT_COPY_MD5_PNG_SAMPLE)
+        except (OSError, subprocess.SubprocessError, RuntimeError) as e:
+            u.refuse(f'G22c snapshot copy: the md5 comparison could not run ({type(e).__name__}: {str(e)[:200]})')
         u.check('G22c_md5', not bad, value=len(bad), detail=f'md5 equal for {n - len(bad)} of {n} files ({n - n_png} non-panel '
                 f'files, all; {n_png} sampled panel PNGs); first differing {bad[:3]}')
         if bad:
@@ -400,8 +405,10 @@ def copy_listing(path):
 
 
 def md5_selection(files, n_png):
-    """Every file but the panel PNGs, and n_png of those chosen by the md5 of their relative path (reproducible)."""
-    png = sorted((f for f in files if f.endswith('.png')), key=lambda f: hashlib.md5(f.encode()).hexdigest())[:n_png]
+    """Every file but the panel PNGs, and a random n_png of those (a new draw on every call, as production's shuf -n)."""
+    import random
+    allp = [f for f in files if f.endswith('.png')]
+    png = random.sample(allp, min(n_png, len(allp)))
     return sorted(f for f in files if not f.endswith('.png')) + sorted(png), len(png)
 
 
@@ -421,9 +428,12 @@ def _md5_local(root, files):
 
 def _md5_remote(host, root, files):
     from exopipe.phase3.config import CFG
-    p = subprocess.run(['ssh', '-o', 'BatchMode=yes', host, f'cd {shlex.quote(root)} && xargs -0 -r md5sum --'],
-                       input=b''.join(f.encode() + b'\0' for f in files), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+    p = subprocess.run(['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=30', host,
+                        f'cd {shlex.quote(root)} && xargs -0 -r md5sum --'],
+                       input=b''.join(f.encode() + b'\0' for f in files), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                        env=dict(os.environ, **CFG.runner.SSH_PREFIX_ENV), timeout=_S().LEGACY_TIMEOUT_S)
+    if p.returncode != 0:          # a file that md5sum could not read, or ssh itself: not a content mismatch
+        raise RuntimeError(f'md5sum on {host} rc {p.returncode}: {p.stderr.decode("utf-8", "replace").strip()[-200:]}')
     out = dict.fromkeys(files)
     for line in p.stdout.decode('utf-8', 'replace').splitlines():
         h, _, name = line.partition('  ')
@@ -445,9 +455,12 @@ def size_mtime_diff(source, dst, ex):
     """The entries `rsync -a -n --delete --itemize-changes` would still change (directory time-only lines left out, as the
     dated driver), or None when the comparison itself failed."""
     from exopipe.phase3.config import CFG
-    p = subprocess.run(['rsync', '-a', '-n', '--delete', '--itemize-changes'] + ex + [source.rstrip('/') + '/', dst + '/'],
-                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=dict(os.environ, **CFG.runner.SSH_PREFIX_ENV),
-                       timeout=_S().LEGACY_TIMEOUT_S)
+    try:                           # stdout only: an ssh / rsync warning on stderr is not a differing entry
+        p = subprocess.run(['rsync', '-a', '-n', '--delete', '--itemize-changes'] + ex + [source.rstrip('/') + '/', dst + '/'],
+                           stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=dict(os.environ, **CFG.runner.SSH_PREFIX_ENV),
+                           timeout=_S().LEGACY_TIMEOUT_S)
+    except (OSError, subprocess.SubprocessError):
+        return None
     if p.returncode != 0:
         return None
     return [x for x in p.stdout.decode('utf-8', 'replace').splitlines() if x.strip() and not x.startswith('.d')]

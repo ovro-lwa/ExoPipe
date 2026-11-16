@@ -757,6 +757,7 @@ def served_run(ctx):
 def review_free_bytes():
     """Free bytes under paths.SNAPSHOT_REVIEW_ROOT on the site's REVIEW_HOST (statvfs on that host, else `df` over ssh), or
     None when they cannot be read."""
+    import shlex
     import socket
     import subprocess
     from exopipe.phase3.config import CFG
@@ -765,7 +766,7 @@ def review_free_bytes():
         if not rh or rh.split('.')[0] == socket.gethostname().split('.')[0]:
             st = os.statvfs(root)
             return st.f_bavail * st.f_frsize
-        p = subprocess.run(['ssh', '-n', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', rh, 'df -B1 --output=avail %s' % root],
+        p = subprocess.run(['ssh', '-n', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', rh, 'df -B1 --output=avail %s' % shlex.quote(root)],
                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=60,
                            env=dict(os.environ, **CFG.runner.SSH_PREFIX_ENV))
         v = p.stdout.decode().split()
@@ -826,11 +827,11 @@ def st_preflight(ctx, s, plan):
         plan.append('P-G5 single writer: non-production run - every store and tie-cache write goes to copies under %s '
                     '(production writers are not blocked; the store-quiet wait below still applies)' % os.path.dirname(ctx.L))
     # P-G25 review-disk space before the build (the chain's last step copies its run to the review disk)
-    free = review_free_bytes()
+    free = review_free_bytes() if ctx.prod else None      # read only where it binds (no ssh wait in a test or parity run)
     need = c.REVIEW_MIN_FREE_GB * 1e9
     how = ('unreadable' if free is None else '%.0f GB free' % (free / 1e9)) + ' on the review disk (need >= %d GB)' % (
         c.REVIEW_MIN_FREE_GB)
-    plan.append('P-G25 review-disk space: %s%s' % (how, '' if ctx.prod else ' - non-production run: recorded, not binding'))
+    plan.append('P-G25 review-disk space: %s' % (how if ctx.prod else 'not read - a non-production run copies nothing to it'))
     if ctx.prod:
         u.check('P-G25.review-space', free is not None and free >= need, value=free, detail=how)
         if (free is None or free < need) and not ctx.dry:
