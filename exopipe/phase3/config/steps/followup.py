@@ -148,10 +148,12 @@ class followup_investigate(_Section):
     passed to the package as CANDINV_<NAME> before it is first imported (FC:14-15, followup/_cfg_adapter.py, gate G13), so
     an override IS applied; every other key mirrors a literal of the package (PROTECTED_KEYS)."""
     # ---- inputs and outputs (ENV)
-    TOP50_CSV = '/fast/gh/main/phase3/transients/wideband_V_search/top50_V_transients.csv'   # ENV; pinned input; FC:19-22
-                                     #   (lwacalim07 node-local; 4,661 bytes, 2026-06-26)
-    BUNDLE_DIR = '/data07/gh/top50_allsky_tmp'   # ENV; pinned input (B-41); FC:24 (lwacalim07; the only copy of the June
-                                     #   wideband deep residuals)
+    TOP50_CSV = '/lustre/gh/main/phase3/pinned_inputs/followup_20261116/top50_V_transients.csv'   # ENV; pinned input; FC:19-22
+                                     #   (4,661 bytes, 2026-06-26; md5-verified Lustre copy of lwacalim07's node-local
+                                     #   /fast/gh/main/phase3/transients/wideband_V_search/top50_V_transients.csv, 2026-11-16)
+    BUNDLE_DIR = '/lustre/gh/main/phase3/pinned_inputs/followup_20261116/top50_allsky_tmp'   # ENV; pinned input (B-41); FC:24
+                                     #   (the June wideband deep residuals: md5-verified Lustre copy, 2026-11-16, of the
+                                     #   only copy on lwacalim07's /data07/gh/top50_allsky_tmp; MANIFEST.md5 beside it)
     PROD_ROOT = '/data07/gh/phase3'  # ENV; FC:27 (the P3_PROD / P3_REDO1 per-epoch trees under it no longer exist)
     PROD_LABEL = 'PROD'              # ENV; FC:28
     REDO1_LABEL = 'REDO1'            # ENV; FC:32 (wideband deep from REDO1 first, resolve.py:48-54)

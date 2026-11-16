@@ -739,8 +739,8 @@ def test_real_products():
                         '--dec', '41.09169194', '--lst', '07h', '--date', '2024-12-31', '--band', '23MHz', '--dry-run',
                         '--out', out, '--cores', 'none'], capture_output=True, text=True,
                        env=dict(os.environ, PYTHONPATH=REPO), cwd=SCRATCH, timeout=120)
-    assert p.returncode == 0 and 'rank00_J061934+410530_LST07h' in p.stdout and 'Vresidual: /data07' in p.stdout, \
-        (p.returncode, p.stdout, p.stderr[-500:])
+    assert p.returncode == 0 and 'rank00_J061934+410530_LST07h' in p.stdout and \
+        f'Vresidual: {_cfg().followup_investigate.BUNDLE_DIR}/' in p.stdout, (p.returncode, p.stdout, p.stderr[-500:])
     rc, o, e = _cli(['periodicity', '--stages', 'search,page', '--dry-run', '--out', out])
     assert rc == 0 and o.count('24 of 24 cells present now') == 3, (rc, o, e)
     rc, o, e = _cli(['ep-plan', '--action', 'audit', '--dry-run'])
