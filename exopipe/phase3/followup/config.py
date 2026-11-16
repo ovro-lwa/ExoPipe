@@ -17,11 +17,12 @@ def _env(name, default):
 
 # --- Survey inputs (lwacalim07, node-local) --------------------------------
 TRANSIENTS_DIR = _env('TRANSIENTS_DIR', '/fast/gh/main/phase3/transients')
-TOP50_CSV = _env('TOP50_CSV',
-                 os.path.join(TRANSIENTS_DIR, 'wideband_V_search',
-                              'top50_V_transients.csv'))
+# The two pinned inputs: md5-verified Lustre copies (2026-11-16) of the lwacalim07 node-local originals
+# (TRANSIENTS_DIR/wideband_V_search/top50_V_transients.csv and /data07/gh/top50_allsky_tmp); MANIFEST.md5 beside them.
+PINNED_DIR = '/lustre/gh/main/phase3/pinned_inputs/followup_20261116'
+TOP50_CSV = _env('TOP50_CSV', os.path.join(PINNED_DIR, 'top50_V_transients.csv'))
 # Gathered per-candidate FITS (discovery V residual + I residual + I master).
-BUNDLE_DIR = _env('BUNDLE_DIR', '/data07/gh/top50_allsky_tmp')
+BUNDLE_DIR = _env('BUNDLE_DIR', os.path.join(PINNED_DIR, 'top50_allsky_tmp'))
 
 # PROD per-epoch conformant tree (subband _msub spectra, 10-min bins, aligned I).
 PROD_ROOT = _env('PROD_ROOT', '/data07/gh/phase3')

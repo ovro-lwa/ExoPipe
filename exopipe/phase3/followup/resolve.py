@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """candinv/resolve.py — locate the FITS a candidate needs, across three trees.
 
-  bundle   /data07/gh/top50_allsky_tmp/rank{NN}_{lst}_{band}_{date}_{cadence}
+  bundle   <BUNDLE_DIR>/rank{NN}_{lst}_{band}_{date}_{cadence}
            [_bin{iv}]_{Vresidual,Iresidual,Imaster}.fits   (discovery image —
-           the ONLY surviving copy of deep wideband _clean residuals)
+           the deep wideband _clean residuals: lwacalim07 /data07 original + Lustre copy)
   PROD     /data07/gh/phase3/{lst}/{date}/P3_PROD/{scope}/{V,I}/{deep,10min}/
            {scope}_{S}_{cadence}_Taper_Robust+0.0_dewarped_{aligned,msub}_...fits
            (per-subband + 10-min spectra)
