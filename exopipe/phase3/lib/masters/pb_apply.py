@@ -151,6 +151,44 @@ def deep_pb_name(scope, robust):
         return f'PB_deep_{scope}.fits'
     raise ValueError(f'unknown robust weighting {robust!r} for the deep PB map')
 
+
+# THE PB-MAP HEADER (Gregg 2026-11-16 'go/approved', R-GREGG-20261116-PB-MAPS-SH-CARDS-REMOVE-BUNIT-BLANK-GO): a primary-beam
+# map is dimensionless and carries no flux scale. A map whose header starts as a master's (phase3_pbcorr_masters) or as an
+# earlier map's (phase3_master_dewarp) drops the master's SH* flux-scale cards and gets a blank BUNIT; the archived maps were
+# rewritten the same way on 2026-11-16 (exopipe_ops/pb_map_header_fix_20261116.py), and the archive refuses any other PB map
+# (refuse_pb_map_header).
+PB_MAP_SH_CARDS = ('SHSCALE', 'SHERR', 'SHNSRC', 'SHSRCS', 'SHMETHOD', 'SHFREQ', 'SHFRQSRC', 'SHDATE')
+PB_MAP_BUNIT = ('', 'dimensionless (primary-beam response)')
+PB_MAP_RULING = 'R-GREGG-20261116-PB-MAPS-SH-CARDS-REMOVE-BUNIT-BLANK-GO'
+
+
+def pb_map_header(h):
+    """Header h made a PB map's header, in place (also returned): the SH* cards removed, BUNIT blank, a HISTORY line when
+    SH* cards were removed."""
+    gone = [k for k in PB_MAP_SH_CARDS if k in h]
+    for k in gone:
+        del h[k]
+    h['BUNIT'] = PB_MAP_BUNIT
+    if gone:
+        h['HISTORY'] = (f'removed {" ".join(gone)}: a primary-beam map carries no flux scale; BUNIT blank: the map is '
+                        f'dimensionless ({PB_MAP_RULING})')
+    return h
+
+
+def pb_map_header_problems(h):
+    """Why a PB map's header breaks the ruling (empty list = conformant)."""
+    out = [f'{k} present' for k in PB_MAP_SH_CARDS if k in h]
+    if h.get('BUNIT') != '':
+        out.append(f'BUNIT {h.get("BUNIT")!r} (ruled blank)')
+    return out
+
+
+def refuse_pb_map_header(path):
+    """Raise unless the PB map at path is conformant: called before a PB map is copied into the archive."""
+    bad = pb_map_header_problems(fits.getheader(path))
+    if bad:
+        raise RuntimeError(f'{path}: PB map header breaks {PB_MAP_RULING} ({"; ".join(bad)}) - REFUSING to archive')
+
 _FREQ_TO_LABEL = {float(int(l[:-3])): l for l in cfg.ALL_SUBBANDS}  # 18.0 -> '18MHz'
 
 

@@ -832,6 +832,14 @@ def three_factor_cards(path, **ctx):
 
 
 @content_test('pb_map')
+def header_dimensionless(path, **ctx):
+    """No SH* flux-scale card and BUNIT blank (R-GREGG-20261116-PB-MAPS-SH-CARDS-REMOVE-BUNIT-BLANK-GO; pb_apply.pb_map_header)."""
+    from exopipe.phase3.lib.masters import pb_apply as PB
+    probs = PB.pb_map_header_problems(_hdr(path))
+    return not probs, len(probs), '; '.join(probs) or 'no SH* card, BUNIT blank'
+
+
+@content_test('pb_map')
 def values(path, **ctx):
     """Every pixel finite and inside masters_pbmaps.PB_VALUE_RANGE, and >= 1 pixel above PB_FLOOR (refuses the all-zero
     Full map of latent defect D2)."""

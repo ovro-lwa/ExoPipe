@@ -244,6 +244,15 @@ def _gates(cell, gen, kind, rebuild_root=None):
     _pv = _MB.verify_products(gen, token=('_mdewarp' if kind == 'mdewarp' else ''), cell=cell)
     if _pv:
         raise RuntimeError(f'{cell}: the master does not carry what the rulings require ({len(_pv)}): ' + ' | '.join(_pv[:5]) + ' - REFUSING')
+    # G-PROD, PB-MAP HEADER (R-GREGG-20261116-PB-MAPS-SH-CARDS-REMOVE-BUNIT-BLANK-GO): the generation's PB maps carry no SH* card
+    # and a blank BUNIT - checked here, before anything moves (the archive publish refuses them too, after the working-tree moves)
+    from astropy.io import fits as _fh
+    from exopipe.phase3.lib.masters import pb_apply as _PBA
+    _pbh = [f'{r}: ' + '; '.join(_PBA.pb_map_header_problems(_fh.getheader(f'{gen}/{r}'))) for r in _fits_under(gen)
+            if os.path.basename(r).startswith('PB_deep') and _PBA.pb_map_header_problems(_fh.getheader(f'{gen}/{r}'))]
+    if _pbh:
+        raise RuntimeError(f'{cell}: the master does not carry what the rulings require ({len(_pbh)}): PB map header ' +
+                           ' | '.join(_pbh[:5]) + ' - REFUSING')
     # G1b (kind 'mdewarp'): the applied screen is on record for this generation and unchanged since the content test
     smeta = None
     if kind == 'mdewarp':

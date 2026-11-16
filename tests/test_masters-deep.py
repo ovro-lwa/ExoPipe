@@ -494,12 +494,20 @@ def test_content_synthetic():
     yy, xx = np.mgrid[:64, :64]
     pb = np.clip(1 - ((yy - 32) ** 2 + (xx - 32) ** 2) / 900.0, 0, 1).astype(np.float32)
     ph = fits.Header({'PBLIBV': 'v1-2026-07-04', 'PBMODEL': 'v1-2026-07-04', 'PBCHROM': 'bs-sqbp-v1',
-                      'PBRESID': 'residual_pb_v2-perband', 'PBROBUST': '0', 'PBBMAJ': 0.2})
+                      'PBRESID': 'residual_pb_v2-perband', 'PBROBUST': '0', 'PBBMAJ': 0.2, 'BUNIT': ''})
     for name in ('PB_deep', 'PB_deep_R075'):
         write(f'{fd}/{name}_{sc}.fits', pb, ph)
     r = tests_of('pb_map', f'{fd}/PB_deep_{sc}.fits')
     check('pb_map: values and both maps pass', r['values']['passed'] and r['both_maps']['passed'],
           r['values']['detail'])
+    check('pb_map: no SH* card and BUNIT blank pass', r['header_dimensionless']['passed'], r['header_dimensionless']['detail'])
+    shh = ph.copy()
+    shh['SHSCALE'] = 1.02
+    shh['BUNIT'] = 'JY/BEAM'
+    shpb = write(f'{T}/cells/shpb/coadd_final/PB_deep_{sc}.fits', pb, shh)
+    r = tests_of('pb_map', shpb)['header_dimensionless']
+    check('pb_map: an SH* card and BUNIT JY/BEAM fail (R-GREGG-20261116-PB-MAPS-SH-CARDS-REMOVE-BUNIT-BLANK-GO)',
+          not r['passed'] and r['value'] == 2, r['detail'])
     zero = write(f'{T}/cells/zero/coadd_final/PB_deep_{sc}.fits', np.zeros((64, 64)), ph)
     check('pb_map: all-zero map fails (latent defect D2)', not tests_of('pb_map', zero)['values']['passed'])
     sib = np.where(pb > 0.1, IMG / np.where(pb > 0, pb, 1), np.nan).astype(np.float32)

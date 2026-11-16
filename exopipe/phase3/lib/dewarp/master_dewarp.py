@@ -304,6 +304,8 @@ def _apply(lst, scope, groot, root, screen, row):
         w = resample(d, sx, sy).astype(np.float32).reshape(shp)
         for k, v in cards.items():
             hh[k] = v
+        if os.path.basename(p).startswith('PB_deep'):
+            PB.pb_map_header(hh)       # a PB map: no SH* flux-scale cards, BUNIT blank (2026-11-16 ruling)
         hh['HISTORY'] = (f'mdewarp: resampled with the RBF screen measured on I_deep_Taper_R075_{scope} vs {row["ref"]} '
                          f'(stage B of MASTER_SHFLUX_VLSSR_DEWARP_SPEC_20260828; method ruled 2026-10-01; cubic-spline resampling 2026-10-05)')
         fits.writeto(f'{dst}/{_out_name(p, scope)}', w, hh, overwrite=False); nw += 1
