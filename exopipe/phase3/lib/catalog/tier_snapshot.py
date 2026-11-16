@@ -34,12 +34,15 @@ Stages (--stages / --from / --until; default all, in this order):
              --curve-constants-restore <table> to every chain call (prefit lists, tie items, the chain); P-G21 (preflight) refuses
              a named table that is missing or empty
   wavediff   (only when named; after the pages) THE RESTORE-ONLY WAVE'S PER-BATCH TEST (lib/catalog/restore_wave, port of
-             exopipe_ops snapshot_restore_wave_diff.py 8ff3fc8): every detection the run this run REPLACES served, classified in
-             this run's record (served / card2 / secondary / secondary-pool / 3d-gate / other-later / other-earlier / not-served /
-             absent = FAIL) -> RUN/restore_wave_served_diff.{csv,json} (class restore_wave_diff), the file the snapshot serve's
-             G27 reads. The run it replaces: --snap-replaces RUN, else the wave schedules catalog_snapshot.REPLACES_SCHEDULES (a
-             row whose 'new' is this run names its 'run'), under paths.SNAPSHOT_REVIEW_ROOT. NO-INPUT for a run without the
-             restore-only gate; P-G22 a restore-only run without the run it replaces (or that run without its record, or itself);
+             exopipe_ops snapshot_restore_wave_diff.py 8ff3fc8 + 9cfcca4..0904351): every detection the run this run REPLACES
+             served, classified in this run's record (served / card2 / secondary / secondary-pool / 3d-gate / other-later /
+             other-earlier / not-served / excluded / reprocessed / absent = FAIL; a detection served on a cell-band excluded now =
+             FAIL) -> RUN/restore_wave_served_diff.{csv,json} (class restore_wave_diff), the file the snapshot serve's G27 reads.
+             The run it replaces: --snap-replaces RUN, else the wave schedules catalog_snapshot.REPLACES_SCHEDULES (a row whose
+             'new' is this run names its 'run'), under paths.SNAPSHOT_REVIEW_ROOT; 'none' = a FIRST VERSION (a batch with no
+             earlier run: nothing served before; refused when the batch has another run in the review directory). NO-INPUT for a
+             run without the restore-only gate; P-G22 a restore-only run without the run it replaces (or that run without its
+             record, or itself);
              P-G23 the pages not built; P-G24 the test FAILED (its files are written either way, as production writes them)
   test       snapshot_rechain_content_test.py R1-R5, R7 (P-G19; R6 after the pages is `pages`'); class snapshot_run also reads
              Card 2 per frame (card2_removed.csv against the summary and the record) and the restore-only gate (restored_by
@@ -1236,16 +1239,20 @@ def st_fit_shard(ctx, s, plan):
 def replaced_run(ctx):
     """(the run directory this run REPLACES or None, how it was named): --snap-replaces (a directory, or a run name under
     paths.SNAPSHOT_REVIEW_ROOT), else the first row of the wave schedules (catalog_snapshot.REPLACES_SCHEDULES: production's
-    CSV, columns 'new' and 'run') whose 'new' is this run."""
+    CSV, columns 'new' and 'run') whose 'new' is this run. 'none' (either way) = a first version, returned as 'none'."""
     v = arg_val(ctx.args, 'snap_replaces')
     root = ctx.cfg.paths.SNAPSHOT_REVIEW_ROOT
     if v:
+        if v == 'none':
+            return 'none', '--snap-replaces none (a first version)'
         return (os.path.abspath(v) if (os.sep in v or os.path.isdir(v)) else os.path.join(root, v)), '--snap-replaces %s' % v
     for sch in ctx.c.REPLACES_SCHEDULES or ():
         try:
             with open(sch, newline='') as f:
                 for r in csv.DictReader(f):
                     if (r.get('new') or '').strip() == ctx.name and (r.get('run') or '').strip():
+                        if r['run'].strip() == 'none':
+                            return 'none', 'schedule %s (a first version)' % sch
                         return os.path.join(root, r['run'].strip()), 'schedule %s' % sch
         except OSError:
             continue
@@ -1268,17 +1275,18 @@ def st_wavediff(ctx, s, plan):
     if 'gate3d_restore_only' not in json.load(open(sp)):
         raise NoInput('%s ran no restore-only 3-D gate (its chain summary has no gate3d_restore_only): no wave test' % ctx.name)
     if old is None:
-        refuse('P-G22: %s ran the restore-only 3-D gate and the run it replaces is not known: %s - give --snap-replaces RUN'
-               % (ctx.name, how))
-    if os.path.abspath(old) == os.path.abspath(ctx.RUN):
+        refuse('P-G22: %s ran the restore-only 3-D gate and the run it replaces is not known: %s - give --snap-replaces RUN '
+               '(or none for a first version)' % (ctx.name, how))
+    if old != 'none' and os.path.abspath(old) == os.path.abspath(ctx.RUN):
         refuse('P-G22: %s cannot replace itself (%s)' % (ctx.name, old))
-    if not os.path.isfile(os.path.join(old, 'detection_record.csv.gz')):
+    if old != 'none' and not os.path.isfile(os.path.join(old, 'detection_record.csv.gz')):
         refuse('P-G22: the replaced run %s (%s) has no detection_record.csv.gz' % (old, how))
     pages = [p for st in ('I', 'V') for p in glob.glob(os.path.join(ctx.RUN, 'candidates', st, '*', 'detections.csv'))[:1]]
     if not pages:
         refuse('P-G23: %s has no pages (candidates/I, candidates/V): build them first (pages --tier snapshot) - the test reads '
                'every served detections.csv, as production runs it after the run is BUILT' % ctx.RUN)
-    s.inp(os.path.join(old, 'detection_record.csv.gz'), os.path.join(ctx.RUN, 'detection_record.csv.gz'), sp)
+    s.inp(*([os.path.join(old, 'detection_record.csv.gz')] if old != 'none' else []),
+          os.path.join(ctx.RUN, 'detection_record.csv.gz'), sp)
     j = RW.diff(old, ctx.RUN)
     s.u.meta['wave'] = dict(old=old, how=how, status=j['status'], counts=j['counts'], later_stages=j['later_stages'])
     s.u.note(j['line'][:1500])
@@ -1328,7 +1336,8 @@ def add_arguments(p):
                                                        '<tag>:<part>) - set by the stage that submits the job')
     p.add_argument('--snap-replaces', metavar='RUN',
                    help='stage wavediff: the batch run this run REPLACES (a directory, or a run name under '
-                        'paths.SNAPSHOT_REVIEW_ROOT); default: the row of catalog_snapshot.REPLACES_SCHEDULES whose new is this run')
+                        'paths.SNAPSHOT_REVIEW_ROOT; none = a first version, its batch has no earlier run); default: the row of '
+                        'catalog_snapshot.REPLACES_SCHEDULES whose new is this run')
 
 
 def run(args, run):

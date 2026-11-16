@@ -678,7 +678,13 @@ class catalog_snapshot(_Section):
                                                           # RUN REPLACES, for the wave's per-batch test (stage wavediff): a row whose
                                                           # 'new' is the run names the replaced run in 'run' (under
                                                           # paths.SNAPSHOT_REVIEW_ROOT); production's wave schedule (8ff3fc8, the
-                                                          # mapping its view driver tests with); --snap-replaces RUN overrides [step]
+                                                          # mapping its view driver tests with); --snap-replaces RUN overrides; a
+                                                          # 'run' of none = a first version (production 9cfcca4) [step]
+    RESTORE_WAVE_REMADE_ROOTS = ('/lustre/pipeline/exopipe/phase3/Run_SNAP_FRAMETIME_QUARANTINE_20261007',)   # the wave test's
+                                                          # RECORDED RE-RUNS: <root>/<cell>/<UTC stamp>/MANIFEST.csv lists the
+                                                          # candidate tables a re-run replaced (a previously served detection from
+                                                          # one replaced between the two records is 'reprocessed', not absent);
+                                                          # production snapshot_restore_wave_diff.py REMADE_ROOTS (236ce9e) [step]
     RESTORED_BY = 'restore-only 3-D gate 20261104'        # the tag; RESTORED_BY
     RESTORE_TOL_BEAMS = 1e-6                              # beams a restore radius may exceed the installed one (else the chain refuses); RESTORE_TOL_BEAMS
     # ---- run content test (snapshot_rechain_content_test.py R1-R7 operating points)

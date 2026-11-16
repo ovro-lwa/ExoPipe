@@ -8,12 +8,15 @@ cache file), snapshot_tie_summary (the chain_summary.json a per-cell --stop-afte
 operating points are config (catalog_snapshot.TEST_GATE3D_PCT, TEST_MEMBER_ORDER, GHOST_DATES). R6 (missing panels) is the
 pages step's class snapshot_page_run. Every test reads content and returns (passed, value, detail).
 """
+import calendar
 import collections
 import csv
 import glob
 import json
 import math
 import os
+import re
+import time
 
 from exopipe.phase3.core.validate import content_test
 
@@ -346,16 +349,65 @@ def tie_summary(path, **ctx):
         pf.get('n_without_fit'), pf.get('n_at_per_frame_fit_step'), tc.get('from_cache'), tc.get('tied_now'))
 
 
+_REFOUND = re.compile(r'; re-found (served|not served) within (\d+) px(?: at a time stamp (\d+) s away)? as (\S+)')
+
+
+def _cand_table(o):
+    """the candidate table of a detection, by this read-back's own rule: candidates_<subband>_<Stokes>_median[_1min].csv"""
+    return 'candidates_{}_{}_median{}.csv'.format(o['subband'], o['stokes'], '_1min' if o['tier'] == '1min' else '')
+
+
+def _reprocessed_ok(r, o, now, t_old, t_new):
+    """a 'reprocessed' row read back: the quarantine directory it names (stamped strictly between the two records) has a
+    MANIFEST.csv listing the row's own cell's candidate table, and a re-found detection it names is in the new record, served or
+    not as stated, of the same cell, subband, Stokes and tier, its offset recomputed here: the stated pixel distance (the larger
+    axis offset, at most 2 px) and a time stamp at most one frame interval away (10 s; 60 s at 1 minute)"""
+    from exopipe.phase3.lib.catalog import restore_wave as RW
+    pre = 'table replaced by the re-run quarantined in '
+    det = r['removed_detail']
+    if not o or not det.startswith(pre) or t_old is None:
+        return False
+    qd = det[len(pre):].split(';')[0]
+    try:
+        t_q = calendar.timegm(time.strptime(os.path.basename(qd), '%Y%m%dT%H%M%SZ'))
+        with open(os.path.join(qd, 'MANIFEST.csv'), newline='') as f:
+            listed = {(os.path.basename(os.path.dirname(x['original_path'])), os.path.basename(x['original_path']))
+                      for x in csv.DictReader(f)}
+    except (OSError, ValueError, KeyError):
+        return False
+    if not (t_old < t_q < t_new) or (o['cell'], _cand_table(o)) not in listed:
+        return False
+    m = _REFOUND.search(det)
+    if m:
+        d2 = now.get(m.group(4))
+        if not d2 or (d2['served'] == '1') != (m.group(1) == 'served') or any(d2[k] != o[k] for k in
+                                                                               ('cell', 'subband', 'stokes', 'tier')):
+            return False
+        a, b = RW.pixel(r['det_uid'], o['cand_id']), RW.pixel(m.group(4), d2['cand_id'])
+        ta, tb = RW.cts(o['cand_id']), RW.cts(d2['cand_id'])
+        if not (a and b and ta and tb):
+            return False
+        px, dt = max(abs(a[0] - b[0]), abs(a[1] - b[1])), abs(ta[1] - tb[1])
+        return (px == int(m.group(2)) <= 2 and dt == int(m.group(3) or 0)
+                and dt <= (60 if o['tier'] == '1min' else 10))
+    return '; not re-found within 2 px and one frame interval' in det
+
+
 @content_test('restore_wave_diff')
 def restore_wave_rows(path, **ctx):
     """restore_wave_served_diff.json and the .csv beside it (lib/catalog/restore_wave, port of exopipe_ops
     snapshot_restore_wave_diff.py; the file G27 reads) read back against BOTH runs' records, on its own reading (not the port's):
     the csv's columns; one row per previously served detection not served now (the old record's served rows less the new
-    record's served ones), none twice; each row's cause from the new record - absent (not in it), card2 / 3d-gate / not-served /
-    other-earlier by the removing stage, and for a stage after the 3-D gate: secondary only with restored detections listed,
-    each tagged in the new record and (for a grouping column) in the row's group; other-later / secondary-pool with none; the
-    json's counts = the rows' and the records' (previously served, served again, restored, restored served); its status PASS
-    exactly when no detection is absent and the restored rows agree with their pair and the chain summary."""
+    record's served ones), none twice; each row's cause from the new record - for a detection not in it: excluded exactly when
+    its cell-band is excluded now (the snapshot serve gate's read, lib/serve/exclusion_gate.fresh_exclusions('snapshot')), else
+    reprocessed only when the quarantine directory it names holds a MANIFEST.csv listing that cell's candidate table, stamped
+    strictly between the two records, and its re-found detection (if named) is in the new record served or not as stated, else
+    absent; card2 / 3d-gate / not-served / other-earlier by the removing stage, and for a stage after the 3-D gate: secondary only
+    with restored detections listed, each tagged in the new record and (for a grouping column) in the row's group; other-later /
+    secondary-pool with none; the json's counts = the rows' and the records' (previously served, served again, restored,
+    restored served, served on cell-bands excluded now; the re-found split adds up to reprocessed); its status PASS exactly when
+    no detection is absent, none is served on an excluded cell-band and the restored rows agree with their pair and the chain
+    summary. A first version (old 'none') has no previously served detection and no row."""
     from exopipe.phase3.lib.catalog import restore_wave as RW
     try:
         j = json.load(open(path))
@@ -372,17 +424,45 @@ def restore_wave_rows(path, **ctx):
     msgs = []
     if cols != RW.COLS:
         msgs.append(f'columns {cols} are not the wave test\'s')
-    for p in (os.path.join(old, 'detection_record.csv.gz'), os.path.join(new, 'detection_record.csv.gz')):
+    recs = [os.path.join(r, 'detection_record.csv.gz') for r in ([old] if old != 'none' else []) + [new]]
+    for p in recs:
         if not os.path.exists(p):
             return False, None, f'{p} is not readable: the wave test cannot be read back'
-    it, _h = _record_cols(os.path.join(old, 'detection_record.csv.gz'), ['det_uid', 'served'])
-    prev = {d['det_uid'] for d in it if d['served'] == '1'}
-    want = ['det_uid', 'cand_id', 'ra_peak', 'dec_peak', 'served', 'first_removed_by', 'restored_by', 'gate_3d_installed',
-            'gate_3d_restore'] + list(RW.FALLBACK)
+    prev, old_rows = set(), {}
+    if old != 'none':
+        it, _h = _record_cols(os.path.join(old, 'detection_record.csv.gz'),
+                              ['det_uid', 'cand_id', 'cell', 'subband', 'stokes', 'tier', 'served'])
+        for d in it:
+            if d['served'] == '1':
+                prev.add(d['det_uid'])
+                old_rows[d['det_uid']] = d
+    try:
+        from exopipe.phase3.lib.serve.exclusion_gate import fresh_exclusions
+        ex = fresh_exclusions('snapshot')
+    except Exception as e:      # noqa: BLE001 - the wave test FAILs on an unreadable list; read back, nothing can be checked
+        return False, None, f'the exclusion list could not be read ({type(e).__name__}: {e})'
+    if 'exclusion_rows' in j and j['exclusion_rows'] != len(ex.rows):
+        # the causes were judged against the list as it stood then: a changed list cannot be read back - re-run the test
+        return False, None, (f'the exclusion list changed since the wave test ran ({j["exclusion_rows"]} rows then, '
+                             f'{len(ex.rows)} now): re-run it')
+    _xc = {}
+
+    def excluded(cell, sb):
+        if (cell, sb) not in _xc:
+            if '_' not in cell:
+                msgs.append(f'a record row with no <LST>_<date> cell ({cell!r}, subband {sb!r})')
+                _xc[(cell, sb)] = False
+            else:
+                lst, date = cell.split('_', 1)
+                _xc[(cell, sb)] = bool(ex.is_excluded(lst, sb, date))
+        return _xc[(cell, sb)]
+    want = ['det_uid', 'cand_id', 'cell', 'subband', 'stokes', 'tier', 'ra_peak', 'dec_peak', 'served', 'first_removed_by', 'restored_by',
+            'gate_3d_installed', 'gate_3d_restore'] + list(RW.FALLBACK)
     it, _h = _record_cols(os.path.join(new, 'detection_record.csv.gz'), want)
-    now, n_tag, served_tag, pair_bad = {}, 0, 0, 0
+    now, n_tag, served_tag, pair_bad, served_excl = {}, 0, 0, 0, 0
     for d in it:
         now[d['det_uid']] = d
+        served_excl += d['served'] == '1' and excluded(d['cell'], d['subband'])
         pair = d['gate_3d_installed'] == 'remove' and d['gate_3d_restore'] != 'remove'
         if d['restored_by']:
             n_tag += 1
@@ -398,12 +478,20 @@ def restore_wave_rows(path, **ctx):
         msgs.append(f'rows {len(set(listed))}, previously served not served now {len(want_listed)} ({len(set(listed) - want_listed)} '
                     f'listed wrongly, {len(want_listed - set(listed))} missing)')
     bad_cause = []
+    t_old, t_new = ((os.path.getmtime(os.path.join(old, 'detection_record.csv.gz')),
+                     os.path.getmtime(os.path.join(new, 'detection_record.csv.gz'))) if old != 'none' else (None, None))
     for r in rows:
         u, c = r['det_uid'], r['cause']
         d = now.get(u)
         st = d['first_removed_by'] if d else None
         if d is None:
-            ok_ = c == 'absent'
+            o = old_rows.get(u, {})
+            if o and excluded(o['cell'], o['subband']):
+                ok_ = c == 'excluded'
+            elif c == 'reprocessed':
+                ok_ = _reprocessed_ok(r, o, now, t_old, t_new)
+            else:
+                ok_ = c == 'absent'
         elif st == 'card2':
             ok_ = c == 'card2'
         elif st == 'bright-parent-3d':
@@ -431,18 +519,23 @@ def restore_wave_rows(path, **ctx):
         if counts.get(c) != by.get(c, 0):
             msgs.append(f'counts {c} {counts.get(c)} != {by.get(c, 0)} rows')
     n_served = sum(1 for u in prev if u in now and now[u]['served'] == '1')
-    for k, v in (('prev_served', len(prev)), ('served', n_served), ('restored', n_tag), ('restored_served', served_tag)):
+    for k, v in (('prev_served', len(prev)), ('served', n_served), ('restored', n_tag), ('restored_served', served_tag),
+                 ('served_on_excluded', served_excl)):
         if counts.get(k) != v:
             msgs.append(f'counts {k} {counts.get(k)} != {v} read from the records')
+    split = sum(counts.get(k) or 0 for k in ('reprocessed_refound_served', 'reprocessed_refound_not_served',
+                                             'reprocessed_not_refound'))
+    if split != by.get('reprocessed', 0):
+        msgs.append(f'the re-found split adds up to {split}, not the {by.get("reprocessed", 0)} reprocessed rows')
     try:
         ro = json.load(open(os.path.join(new, 'chain_summary.json'))).get('gate3d_restore_only') or {}
     except (OSError, ValueError):
         ro = {}
     rest_ok = bool(ro) and int(ro.get('restored', -1)) == n_tag and not pair_bad
-    expect_pass = not by.get('absent') and rest_ok
+    expect_pass = not by.get('absent') and rest_ok and not served_excl
     if (j.get('status') == 'PASS') and not expect_pass:
-        msgs.append(f'status PASS while {by.get("absent", 0)} detections are absent / the restored rows disagree ({n_tag} tagged, '
-                    f'summary {ro.get("restored")}, {pair_bad} off their pair)')
+        msgs.append(f'status PASS while {by.get("absent", 0)} detections are absent / {served_excl} served on excluded '
+                    f'cell-bands / the restored rows disagree ({n_tag} tagged, summary {ro.get("restored")}, {pair_bad} off their pair)')
     if j.get('status') != 'PASS' and expect_pass and not str(j.get('status', '')).startswith('FAIL'):
         msgs.append(f'status {j.get("status")!r} is neither PASS nor FAIL')
     return (not msgs and j.get('status') == 'PASS'), len(rows), (
