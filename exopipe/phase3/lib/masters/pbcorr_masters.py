@@ -73,7 +73,7 @@ def do_cell(root, cell):
                     raise RuntimeError('master-dewarped cell: its PB maps must carry the cell\'s dewarp screen and are made '
                                        'by the dewarp install, not here - REFUSING')
                 pb_map, meta = PB.wideband_pb(scope, lst, bsrc, category='deep')
-                ph = fits.getheader(bsrc)
+                ph = PB.pb_map_header(fits.getheader(bsrc))   # no SH* flux-scale cards, BUNIT blank (2026-11-16 ruling)
                 for k in ('PBCORR',):
                     ph.pop(k, None)
                 ph['PBLIBV'] = ('v1-2026-07-04', 'PB library version')

@@ -3655,6 +3655,12 @@ def _archive_publish_cell(final_dir, sub_dir, lst, fl):
                            f"must be named (e.g. Run_20260909_000000); REFUSING (contract step 51)")
     from exopipe.phase3.core.products import build_name, write_standard_header
     cdir = f'{_archive_root()}/Coadd/{run}/{lst}/{fl}'
+    # PB-MAP HEADER (R-GREGG-20261116-PB-MAPS-SH-CARDS-REMOVE-BUNIT-BLANK-GO): no SH* card, BUNIT blank - refused before
+    # anything is copied, so a refusal leaves the archive cell as it was
+    from exopipe.phase3.lib.masters import pb_apply as _PBA
+    for f in (f'PB_deep_{fl}.fits', f'PB_deep_R075_{fl}.fits'):
+        if os.path.exists(f'{final_dir}/{f}'):
+            _PBA.refuse_pb_map_header(f'{final_dir}/{f}')
     n = 0
     for f in sorted(os.listdir(final_dir)):
         src = f'{final_dir}/{f}'

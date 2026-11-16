@@ -11,6 +11,8 @@ out-of-master table and the archived screen record are read by the in-place memb
          a synthetic link tree; the re-run item file
   e2e A  refused AFTER staging (an in-master night fails the epoch gate): exit 2, the cell and the archive untouched, no
          staging left, the manifest holds the plan + INSTALL-FAILED
+  e2e A2 a generation PB map with an SH* card and BUNIT JY/BEAM: refused at G-PROD before staging, cell and archive
+         untouched (R-GREGG-20261116-PB-MAPS-SH-CARDS-REMOVE-BUNIT-BLANK-GO)
   e2e B  install --round auto with today's round partly taken -> round <today>b; every output passes its content test;
          old files in the working / archive quarantine with their md5; the _msub search frame untouched; screen
          quarantined and the applied=1 row written
@@ -108,7 +110,12 @@ def real_templates():
     rels = [os.path.relpath(p, REAL_GEN) for p in sorted(glob.glob(f'{REAL_GEN}/coadd_final/*.fits'))]
     for d in nights:
         rels += [f'subtracted/{d}_{st}_{k}_mdewarp_{SCOPE}.fits' for st in 'IV' for k in ('clean', 'epoch', 'sub')]
-    return nights, {r: _hdr(f'{REAL_GEN}/{r}') for r in rels}
+    from exopipe.phase3.lib.masters import pb_apply as PB
+    hdrs = {r: _hdr(f'{REAL_GEN}/{r}') for r in rels}
+    for r, h in hdrs.items():
+        if os.path.basename(r).startswith('PB_deep'):
+            PB.pb_map_header(h)    # the PB maps a dewarp writes since R-GREGG-20261116-PB-MAPS-SH-CARDS-REMOVE-BUNIT-BLANK-GO
+    return nights, hdrs
 
 
 def build_generation(gen, hdrs, nights, seed, fail_night=None):
@@ -529,6 +536,23 @@ def _e2e(run, nights, hdrs):
     ok('A: manifest = plan (every destination free) + gates-passed? no + INSTALL-FAILED',
        any(r['step'] == 'plan-dest' for r in man) and any(r['step'] == 'INSTALL-FAILED' for r in man)
        and not any(r['step'] in ('working-quarantine', 'installed') for r in man))
+
+    # ---- A2: a generation PB map with the master's SH* card and BUNIT JY/BEAM -> G-PROD before staging
+    hdrs_sh = {r: h.copy() for r, h in hdrs.items()}
+    for r, h in hdrs_sh.items():
+        if os.path.basename(r).startswith('PB_deep'):
+            h['SHSCALE'] = 1.02
+            h['BUNIT'] = 'JY/BEAM'
+    gen_sh = build_generation(f'{ROOT}/gen_sh/{CELL}/gen_mdewarp_rbf', hdrs_sh, nights, seed=3)
+    n_log = len(list(csv.DictReader(open(f'{out}/install_record.csv')))) if os.path.exists(f'{out}/install_record.csv') else 0
+    rc = cli('install', '--cells', CELL, '--gen', gen_sh, *common)
+    rec = record(out, CELL)
+    ok('A2: PB map with an SH* card and BUNIT JY/BEAM refused at G-PROD -> exit 2', rc == 2 and rec and rec['status'] == 'refused'
+       and 'G-PROD' in rec['reason'] and 'PB map header' in rec['reason'], f'rc {rc}, {rec and rec["reason"][:200]}')
+    ok('A2: cell and archive untouched, no staging, no gates-passed row', tree_md5(cdir) == before_cell
+       and tree_md5(arch) == before_arch and not os.path.exists(f'{cdir}/.install_staging')
+       and not any(r['step'] == 'gates-passed' for r in list(csv.DictReader(open(f'{out}/install_record.csv')))[n_log:]
+                   if os.path.exists(f'{out}/install_record.csv')))
 
     # ---- B: install, round auto with today's round partly taken
     gen = build_generation(f'{ROOT}/gen/{CELL}/gen_mdewarp_rbf', hdrs, nights, seed=2)
