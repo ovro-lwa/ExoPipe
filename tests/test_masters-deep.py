@@ -13,6 +13,7 @@ import csv
 import glob
 import hashlib
 import json
+import types
 import os
 import shutil
 import subprocess
@@ -555,6 +556,23 @@ def test_content_synthetic():
     r = tests_of('master_catalog', gaul, master=good)
     check('master_catalog: raw digest, rows, recipe pass', r['sidecar_md5']['passed'] and r['rows']['passed'] and
           r['recipe']['passed'], r['sidecar_md5']['detail'])
+    # B8 cutover item: the sidecar names v2's own provenance, not production's patch path (B-01 b); other keys unchanged
+    from exopipe.phase3.lib.masters import deep_stages as DS
+    prod = dict(meta, note='stored floor 5.0 (curve consumers cut S>=25 from stored SNR); CAT3 7.0 floor is a DOC row; '
+                + DS.PATCH_NOTE, created_utc='2026-11-16T00:00:00Z')
+    json.dump(prod, open(gaul + '.gen.json', 'w'))
+    fake = types.SimpleNamespace(run_id='masters_20261116T000000Z_host_1')
+    DS.own_note(gaul + '.gen.json', fake)
+    got = json.load(open(gaul + '.gen.json'))
+    check('sources sidecar: the patch-path sentence becomes this build\'s provenance, other keys unchanged',
+          'patch path' not in got['note'] and 'masters_20261116T000000Z_host_1' in got['note']
+          and got['note'].startswith('stored floor 5.0') and {k: v for k, v in got.items() if k != 'note'}
+          == {k: v for k, v in prod.items() if k != 'note'} and not os.path.exists(gaul + '.gen.json.part'), got['note'])
+    check('sources sidecar: the digest test still passes after the note', tests_of('master_catalog', gaul, master=good)
+          ['sidecar_md5']['passed'])
+    json.dump(dict(meta, note=''), open(gaul + '.gen.json', 'w'))
+    check('sources sidecar: a note without the sentence gets the provenance', 'masters_20261116T000000Z_host_1' in
+          DS.own_note(gaul + '.gen.json', fake))
     meta['master_md5_data'] = 'f' * 32
     json.dump(meta, open(gaul + '.gen.json', 'w'))
     check('master_catalog: a digest of another master fails', not tests_of('master_catalog', gaul, master=good)['sidecar_md5']['passed'])

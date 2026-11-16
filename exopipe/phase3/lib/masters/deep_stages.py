@@ -1016,6 +1016,23 @@ def installed_cell_violations(installed, cell, reports=None):
     return list(v) + list(MB.verify_products(cd))
 
 
+PATCH_NOTE = 'P3S5 patch path: rebuilt on the final master (p3s5_parents.py 2026-10-04)'   # p3s5_parents.py:48
+
+
+def own_note(side, run):
+    """The parent writer's sidecar (<catalogue>.gen.json) says 'P3S5 patch path', production's Run_P3S4 -> Run_P3S5 route that
+    the new code does not have (B-01 b). Its note gets this build's provenance in place of that sentence (appended when the
+    sentence is absent); every other key is kept. Written atomically. Returns the new note."""
+    j = json.load(open(side))
+    own = f'built by exopipe3 masters --tier deep --stages sources (run {run.run_id}) on the installed master'
+    note = j.get('note', '')
+    j['note'] = note.replace(PATCH_NOTE, own) if PATCH_NOTE in note else (f'{note}; {own}' if note else own)
+    with open(side + '.part', 'w') as f:
+        json.dump(j, f, indent=1)
+    os.replace(side + '.part', side)
+    return j['note']
+
+
 def sources(cell, args, run, out, ran_now):
     from astropy.io import fits
     from exopipe.phase3.core import fitsio
@@ -1074,6 +1091,7 @@ def sources(cell, args, run, out, ran_now):
                 try:
                     msg = P.one(cell)
                     print(msg, flush=True)
+                    u.note('sidecar note: ' + own_note(out_csv + '.gen.json', run))
                 except Exception as e:                       # p3s5_parents prints FAILED and exits 0 (install_cell.sh:26)
                     u.refuse(f'P3S5-PARENT-FAILED {cell}: {type(e).__name__}: {e} (G-M26)')
             u.note(msg)
