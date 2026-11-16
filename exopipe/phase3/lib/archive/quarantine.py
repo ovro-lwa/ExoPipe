@@ -105,14 +105,17 @@ def plan_frame_quarantine(cell, stokes, launch, round_name, archive_root=None, r
 
 def membership_precheck(cell, unit=None, log=None):
     """G7: production's membership verdict on the cell (child process, production code), read with the cell's admitted
-    nights (D-ADMIT, masters_admit.ADMITTED_NIGHTS): the child also writes its violations to a file and a failure that is
-    only nights admitted into the master ('admitted, rebuild pending': lib/masters/admit.membership) passes. Returns
-    (ok, message)."""
+    nights (D-ADMIT, masters_admit.ADMITTED_NIGHTS) and the 18 MHz exception as the search judges the master: the child also
+    writes its violations to a file, and a failure that is only nights admitted into the master ('admitted, rebuild pending':
+    lib/masters/admit.membership) or, under search_detect.MASTER_HELD_18MHZ 'keep', nights held only for their excluded
+    18 MHz (admit.keep_held_18; production's p3s5_quarantine_frames.keep_held_18 since 2026-11-08) passes - the quarantine
+    never refuses a cell the search accepts (search/admitted.verify_master). Returns (ok, message)."""
     import json
     import shutil
     import tempfile
     from exopipe.phase3.core import legacy
     from exopipe.phase3.lib.masters import admit as AD
+    from exopipe.phase3.lib.search import admitted as SA
     q = _q()
     code = _PRECHECK % {'repo': K.sec().LEGACY_CWD, 'roots': tuple(q.PRECHECK_CELL_ROOTS), 'marker': q.PRECHECK_CELL_MARKER}
     td = tempfile.mkdtemp(prefix='exopipe3_precheck_')
@@ -124,9 +127,12 @@ def membership_precheck(cell, unit=None, log=None):
         if not res.ok and line.startswith('PRECHECK-FAIL') and os.path.exists(jp):
             with open(jp) as f:
                 got = json.load(f)
-            viol, rep = AD.membership(got['base'], got['membership'])
+            mv, rep18 = got['membership'], []
+            if SA.step_held_18(K.cfg().search_detect.MASTER_HELD_18MHZ) == 'keep':
+                mv, rep18 = AD.keep_held_18(mv)
+            viol, rep = AD.membership(got['base'], mv)
             if not viol and not got['products']:
-                return True, f'PRECHECK-OK {cell} {got["base"]} (' + '; '.join(rep) + ')'
+                return True, f'PRECHECK-OK {cell} {got["base"]} (' + '; '.join(rep18 + rep) + ')'
         return res.ok, line
     finally:
         shutil.rmtree(td, ignore_errors=True)
