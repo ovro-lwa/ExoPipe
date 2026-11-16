@@ -12,7 +12,8 @@ on a production file with no context (``exopipe3 verify <class> <file>``); the s
   sublst_admission        <cell>/<sb>/<S>/admission_*.csv: production columns; used frames per window = each window's NFRAMES;
                           a window file exists exactly where frames were used
   sublst_fluxdc_record    <cell>/<sb>/I/fluxdc_*.json: flux_dc finite > 0; B = the master's pixel factor now; master and Stokes I
-                          cube unchanged since (size, mtime) - a record of other inputs is stale
+                          cube unchanged since (size, mtime) - a record of other inputs is stale - or, for a cube rewritten
+                          into Master units after the stack, its md5-checked frame-unit original (sublst_cube_units, in place)
   sublst_window           sublst_<cell>_<sb>_<S>_w<k>.fits: header census (FLUXBAKE, FTBASIS, PRODUCT, TEFFSEC, pixel factor =
                           the master's B, FLUXDC = the I record) - the CENSUS of production test (a); the time block, NFRAMES and
                           NOISEMED against the admission rows; NaN mask = (frame count == 0) on the _nframes sibling
@@ -335,7 +336,9 @@ def admission_matches_windows(path, **ctx):
 @content_test('sublst_fluxdc_record')
 def fluxdc_current(path, master=None, **ctx):
     """flux_dc finite > 0 with its source count; B = the master's pixel factor now; master and Stokes I cube unchanged
-    (size, integer mtime) since the record (phase3_sublst_stack.fluxdc_identity: a record of other inputs is never used)."""
+    (size, integer mtime) since the record (phase3_sublst_stack.fluxdc_identity: a record of other inputs is never used) -
+    or, for a Stokes I cube rewritten into Master units after the stack, its md5-checked frame-unit original
+    (sublst_cube_units.stack_cube, in place)."""
     rec = json.load(open(path))
     problems = []
     for k in ('cube_I', 'cube_I_size', 'cube_I_mtime', 'master', 'master_size', 'master_mtime', 'cell', 'subband', 'flux_dc',
@@ -357,6 +360,20 @@ def fluxdc_current(path, master=None, **ctx):
             continue
         st = os.stat(p)
         if st.st_size != rec[f'{kind}_size'] or int(st.st_mtime) != rec[f'{kind}_mtime']:
+            if kind == 'cube_I':
+                # a cube the rewrite (snapshot_cube_rescale.py) put in Master units after the stack: the record holds for
+                # the md5-checked frame-unit original in the rewrite quarantine, of the record's size (production's
+                # sublst_cube_units.stack_cube, in place - AMEND-20261115-TENMIN-FRAME-UNITS-GATE-READ-THE-STACKS-OWN-CUBE);
+                # anything else refuses
+                try:
+                    from exopipe.phase3.core import env
+                    env.legacy()
+                    import sublst_cube_units as CU
+                    CU.stack_cube(p, path)
+                    continue
+                except RuntimeError as e:
+                    problems.append(f'cube_I {os.path.basename(p)} changed since the record (size/mtime): {e}')
+                    continue
             problems.append(f'{kind} {os.path.basename(p)} changed since the record (size/mtime)')
     mp = master or rec['master']
     if os.path.isfile(mp):

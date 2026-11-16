@@ -717,6 +717,58 @@ def test_real_content():
         print(f'  PASS {cls} on {os.path.basename(p)}: ' + '; '.join(str(t['detail'])[:90] for t in r))
 
 
+def test_fluxdc_rewritten_cube():
+    """sublst_fluxdc_record.fluxdc_current on a Stokes I cube rewritten after the stack (2026-11-16, the 09h 2024-12-29
+    18 MHz case): the record holds for the md5-checked frame-unit original named by the rewrite RESULTS row; no row, a
+    wrong md5 or an original of another size refuses."""
+    import sublst_cube_units as CU
+    import numpy as np
+    from astropy.io import fits
+    real = f'{PROD_SL}/09h/09h_2024-12-29/18MHz/I/fluxdc_09h_2024-12-29_18MHz.json'
+    if not os.path.exists(real):
+        print('  (production 09h record not reachable: skipped)')
+        return
+    d = os.path.join(scratch(), 'fluxdc_rewritten')
+    os.makedirs(os.path.join(d, 'resc'), exist_ok=True)
+    orig, cube = os.path.join(d, 'orig_flowcube.fits'), os.path.join(d, 'cube_flowcube.fits')
+    fits.writeto(orig, np.zeros((4, 4), np.float32), overwrite=True)
+    h = fits.Header()
+    h['FSAPPLD'] = 0.888974
+    fits.writeto(cube, np.zeros((40, 40), np.float32), h, overwrite=True)
+    rec = json.load(open(real))
+    rec.update(cube_I=cube, cube_I_size=os.path.getsize(orig), cube_I_mtime=int(os.stat(orig).st_mtime))
+    rp = os.path.join(d, os.path.basename(real))
+    json.dump(rec, open(rp, 'w'))
+    good = hashlib.md5(open(orig, 'rb').read()).hexdigest()
+
+    def results(md5):
+        with open(os.path.join(d, 'resc', 'RESULTS_test.csv'), 'w') as f:
+            f.write('utc,cube,quarantine,md5_frame_units\n')
+            if md5:
+                f.write(f'2026-11-16T04:22:29Z,{cube},{orig},{md5}\n')
+
+    def verdict():
+        CU._MD5.clear()
+        r = validate.run('sublst_fluxdc_record', rp)
+        return all(t['passed'] for t in r), '; '.join(str(t['detail']) for t in r)
+    with Patch((CU, 'RESC', os.path.join(d, 'resc'))):
+        results(good)
+        ok, det = verdict()
+        assert ok, det
+        results(None)
+        ok, det = verdict()
+        assert not ok and 'no rewrite RESULTS row' in det, det
+        results('0' * 32)
+        ok, det = verdict()
+        assert not ok and 'frame-unit md5' in det, det
+        results(good)
+        rec['cube_I_size'] += 2880
+        json.dump(rec, open(rp, 'w'))
+        ok, det = verdict()
+        assert not ok and 'bytes' in det, det
+    print('  PASS fluxdc_current: rewritten cube accepted through its md5-checked original; no row / wrong md5 / other size refused')
+
+
 def test_real_snapshot_parents():
     """The installed snapshot parent set (M21, exopipe_ops 3ff6565): a seeded sample of catalogues passes the contract test."""
     import random
@@ -1478,7 +1530,7 @@ TESTS = [test_config, test_grammar, test_outcome, test_cpv, test_stack_unit, tes
          test_stack_gate, test_loo_gates,
          test_sources_prep_waivers, test_admit_noinput, test_admit_nonmember, test_real_admit_nonmember, test_loo_products,
          test_snapshot_units, test_snapshot_sources, test_pb_cache_env, test_real_mirrors, test_real_content, test_real_stack_night_dry,
-         test_real_snapshot_parents]
+         test_fluxdc_rewritten_cube, test_real_snapshot_parents]
 
 
 def main(argv):
