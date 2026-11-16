@@ -589,6 +589,11 @@ class catalog_snapshot(_Section):
     # snapshot_rechain_batch.sh:280), paths.CLV15_ROOT (--samples-dir, phase3_snapshot_chain.py:3329), paths.SNAPSHOT_REVIEW_ROOT
     # (the served run, :56), paths.OPS_ROOT
     RUN_PREFIX = 'Run_SNAP'                               # snapshot_rechain_batch.sh:49 [step]
+    REVIEW_MIN_FREE_GB = 100      # P-G25: a production chain refuses BEFORE its build when the review disk (site REVIEW_HOST,
+                                  # paths.SNAPSHOT_REVIEW_ROOT) has less free; the chain's last step copies its run there (runs of
+                                  # 7-54 GB on 11-13/15; the pool also takes the recorder's ~250 GB/day). From the 11-15 /data07
+                                  # ENOSPC: seven re-chains built for hours, then refused at the copy (OPS-20261115-RECHAIN-COPY-
+                                  # AFTER-DATA07-ENOSPC; requirement (b) in plan/CUTOVER_READINESS.md)
     WORK_ROOT = '/fast/gh/main/phase3'                    # snapshot_rechain_<NAME>/<NAME>; snapshot_rechain_batch.sh:51 [step]
     BATCH_DIR = '/lustre/gh/main/exopipe_ops/snapshot_batch'   # stores, tie cache, claims, rechain_<NAME>; snapshot_rechain_batch.sh:51 [step]
     BATCH1_STORE = '/fast/gh/main/phase3/snapshot_batch1/fits_store_batch1.csv'   # on the chain host only; snapshot_rechain_batch.sh:55 [step] (host in site file)

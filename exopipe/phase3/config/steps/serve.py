@@ -72,6 +72,8 @@ class serve(_Section):
     SNAPSHOT_RESTORE_DIFF = 'restore_wave_served_diff.json'   # a restore-only run's test result (snapshot_restore_wave_diff.py)
     SNAPSHOT_VIEW_MEMBER_GLOB = 'Run_SNAP{tag}_2026????'   # a view's member run beside it, per tag of its summary's 'batches'
                                             # (snapshot_serve.sh 8ff3fc8: exactly one, else refused) [step]
+    SNAPSHOT_COPY_MD5_PNG_SAMPLE = 1000     # panel PNGs in the copy's md5 completion test (G22c); every other file is compared
+                                            # (rechain_copy_after_enospc_20261115.sh: md5 of all non-panel files + 1,000 panels)
     SNAPSHOT_COPY_MIN_FREE_FACTOR = 1.0     # x source size; free bytes on the review disk before the copy (owed refusal,
                                             # INCIDENT-REVIEW-HOST-DATA07-FULL-SERVE-FAILED-HUB-PAGE-TRUNCATED-RESTORED, ledger 1208)
     HUB_DIR = '/data07/gh/phase3/transients/review_hub'                # build_review_hub.py:24; served at / on both listeners
