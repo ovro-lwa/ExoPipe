@@ -37,8 +37,11 @@ OPS_REPO = '/lustre/gh/main/exopipe_ops'
 # size_beams - size_err_beams), d1616d6 (the 2024-12-28 ghost-track gate; pull request 44), 5c49199 (the combined view's flux-scale
 # and exclusion gate) and b114ff3 (the 1-minute elevation floor at the block's own time, the view and the re-judging); then to
 # fba778e (the view's summary 'rejudge' back under NEW_ON - FINDING-20261114-SNAPCOMB-B114FF3-REJUDGE-SUMMARY-UNDER-EL-ON; the
-# port writes it whenever Card 2 is on, so no port change).
-PIN_COMMIT = 'fba778e77ab517c01fd45149c10c5e77d6e860cf'
+# port writes it whenever Card 2 is on, so no port change). Moved from fba778e to exopipe_ops 0904351 (2026-11-16 01:03, the newest
+# commit touching a pinned file; the other pinned files unchanged since fba778e) with the port of the served-difference test's
+# changes for the Release 1 view: 9cfcca4 (first version, OLD none), 3ca5efc (cause 'excluded'), 3000328 (FAIL: served on an
+# excluded cell-band), 236ce9e + 0904351 (cause 'reprocessed', re-found within 2 px and one frame interval).
+PIN_COMMIT = '0904351efe3ec0e9e65688ae72fb4484935bf887'
 PIN_BLOBS = {
     'snapshot_combined_view.py': '9f14e919c6ae0dfd9fdc3d60fcb615d70c2a02d6',        # fba778e (b114ff3, 5c49199, dbc40a6)
     'snapshot_deep_omission.py': 'b55e6d76d64ed2d289834edce963119a2e48fdb1',        # dbc40a6
@@ -48,7 +51,7 @@ PIN_BLOBS = {
     'sublst_cumulative.py': '540491780d9d35a01bd7a8cf9e4e8c7ea00632c6',             # d1616d6 (0d4f1a9)
     'snapshot_batch/comb_build_20261102.sh': 'c68c54847628076892dbeac4775e739f68e4e807',
     'snapshot_batch/comb_build_20261104.sh': '1be26d8d82c916601edbd9c6743ac350ce93d145',   # dbc40a6
-    'snapshot_restore_wave_diff.py': '929e48baec8fc0186293e54355a6f0c62b072ae6',    # 8ff3fc8 (new)
+    'snapshot_restore_wave_diff.py': 'b63d25d6063a3033e28d501fe94465bc0df85e77',    # 0904351 (236ce9e, 3000328, 3ca5efc, 9cfcca4, 8ff3fc8)
     'snapshot_batch/comb_build_wave_20261104.sh': 'eb01aac7fa0af9fb7db6ab2eea9642c42d60999e',   # 0e05399 (8ff3fc8, 19a1831)
 }
 
