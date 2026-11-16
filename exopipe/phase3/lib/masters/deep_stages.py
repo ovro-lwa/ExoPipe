@@ -997,15 +997,23 @@ def p3s5_parents():
     return P
 
 
-def installed_cell_violations(installed, cell):
+def installed_cell_violations(installed, cell, reports=None):
     """membership.verify + membership.verify_products of the INSTALLED cell - production's `python -m exopipe.phase3.membership
     verify /data07/.../<cell>` (install_cell.sh:70-71), which stops the chain before the parent catalogue is built. Run here
     on every sources unit (also when the install record is waived during the window, and after an exclusion added since the
     install: a catalogue is never built on a master holding an excluded constituent). A night admitted into the master is
-    not a violation (D-ADMIT: lib/masters/admit.verify)."""
-    from exopipe.phase3.lib.masters import admit as AD, membership as MB
+    not a violation (D-ADMIT), nor, under search_detect.MASTER_HELD_18MHZ 'keep' (ruled), a night held only for its excluded
+    18 MHz, kept until the master's next rebuild (Gregg 2026-10-17 "enforce going forward, no rebuild now"): the deep search's
+    own verdict on the master (lib/search/admitted.verify_master, gate E3), since the catalogue is the search's parent list - a
+    master the search accepts is never refused its catalogue here (2026-11-16: 12h Red 2025-01-08 was). ``reports``: a list
+    the kept / admitted nights are added to."""
+    from exopipe.phase3.lib.masters import membership as MB
+    from exopipe.phase3.lib.search import admitted as SA
     cd = os.path.join(installed, cell)
-    return list(AD.verify(cd)[0]) + list(MB.verify_products(cd))
+    v, rep = SA.verify_master(cd, held_18=SA.step_held_18(_cfg().search_detect.MASTER_HELD_18MHZ))
+    if reports is not None:
+        reports.extend(rep)
+    return list(v) + list(MB.verify_products(cd))
 
 
 def sources(cell, args, run, out, ran_now):
@@ -1035,9 +1043,12 @@ def sources(cell, args, run, out, ran_now):
         u.add_input(master)
         h = fits.getheader(master)
         inplace(out)                       # the co-add's exclusion reader and membership's config values for the check below
-        viol = installed_cell_violations(installed, cell)
+        rep = []
+        viol = installed_cell_violations(installed, cell, rep)
         u.check('masters_sources.installed_cell_membership', not viol, value=len(viol),
                 detail=('; '.join(viol[:3]) if viol else f'membership.verify + verify_products of {installed}/{cell}: PASS'))
+        for r in rep:
+            u.note(r)
         if viol:                           # a gate, not a content test: never waivable (an excluded constituent)
             u.refuse(f'the installed cell fails membership.verify / verify_products ({len(viol)}: {viol[0][:300]}) - no '
                      f'parent catalogue on it (install_cell.sh:70-71 stops the chain before p3s5_parents; G-M26)')

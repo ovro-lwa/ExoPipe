@@ -724,6 +724,41 @@ def test_review_fixes():
             vv = list(MB.verify(f'{real}/{clean}', exclusions=ex))
             check(f'membership.verify flags a master night of {clean} once it is excluded ({night})',
                   any(night in x and 'excluded' in x for x in vv), str(vv[:2]))
+        # the 18 MHz exception as the search judges the master (search/admitted.verify_master, gate E3): a night held only for
+        # its excluded 18 MHz is kept, reported; with search_detect.MASTER_HELD_18MHZ 'refuse' the same cell is strict
+        # (2026-11-16: sources refused 12h Red 2025-01-08 on a master the search and the install accept)
+        from exopipe.phase3.lib.masters import admit as AD
+        held = None
+        for c in sorted(os.listdir(real)):
+            if held or not os.path.isdir(f'{real}/{c}/coadd_final'):
+                continue
+            try:
+                strict = AD.verify(f'{real}/{c}', keep_18=False)[0]
+            except Exception:
+                continue
+            if any(AD.HELD_18 in x for x in strict):
+                held = c
+        if held is None:
+            print('SKIP  no installed master holds a night for its excluded 18 MHz today')
+        else:
+            rep = []
+            v = DS.installed_cell_violations(real, held, rep)
+            check(f'sources keeps the nights of {held} held only for their excluded 18 MHz, as the search does - reported',
+                  not any(AD.HELD_18 in x for x in v) and any('excluded 18 MHz' in r for r in rep), f'{v[:2]} {rep[:2]}')
+            # the archive pre-search quarantine's precheck (G7: production's verdict in a child, re-read here) judges it the same
+            from exopipe.phase3.lib.archive import quarantine as Q
+            okq, msgq = Q.membership_precheck(held)
+            check(f'the pre-search quarantine precheck accepts {held} as the search does (18 MHz night reported)',
+                  okq and 'excluded 18 MHz' in msgq, msgq[:300])
+            old = CFG.search_detect.MASTER_HELD_18MHZ
+            try:
+                CFG.search_detect.MASTER_HELD_18MHZ = 'refuse'
+                vs = DS.installed_cell_violations(real, held)
+                okq2, msgq2 = Q.membership_precheck(held)
+            finally:
+                CFG.search_detect.MASTER_HELD_18MHZ = old
+            check(f'with search_detect.MASTER_HELD_18MHZ "refuse" the sources check and the quarantine precheck of {held} are '
+                  f'strict', any(AD.HELD_18 in x for x in vs) and not okq2, f'{vs[:2]} {msgq2[:200]}')
         if bad is None:
             print('SKIP  no installed master holds an excluded night today: the sources refusal on a real cell is not '
                   'exercised (membership.verify itself is checked above with an injected exclusion)')
