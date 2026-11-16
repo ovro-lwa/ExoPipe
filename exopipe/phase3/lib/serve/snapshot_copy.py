@@ -7,7 +7,14 @@ gate       (unit snapshot_<name>_gate)  the serve-time exclusion gate on the cha
            in-place gate writes its check file into the source run) and nothing for a remote source (the copy gate binds).
 copy       (unit snapshot_<name>_copy)  G20 free space on the review disk >= SNAPSHOT_COPY_MIN_FREE_FACTOR x source size,
            checked before anything is copied or stopped (owed, ledger 1208); rsync -a minus SNAPSHOT_COPY_EXCLUDE
-           (snapshot_serve.sh:28); G22 rsync status + `rsync -anc` byte check (class review_copy).
+           (snapshot_serve.sh:28); G22 rsync status, then the COMPLETION TEST (exopipe_ops snapshot_batch/next_wave_20261113/
+           rechain_copy_after_enospc_20261115.sh, OPS-20261115-RECHAIN-COPY-AFTER-DATA07-ENOSPC): G22b `rsync -a -n --delete
+           --itemize-changes` with the same excludes lists no file (size + mtime of every file, no extra file in the copy) and
+           G22c md5 of the source = md5 of the copy for every file but the panel PNGs and for a random
+           SNAPSHOT_COPY_MD5_PNG_SAMPLE of those (a new draw on every call, as production's shuf)
+           (class review_copy). The stage is resumable alone: `serve --tier snapshot --from copy` re-runs the rsync (it sends
+           only what is missing or differs; a file cut short by a full disk is rsync's temporary file, never the final name)
+           and the same completion test.
 localize   (unit snapshot_<name>_localize)  snapshot_localize_tiers.sh DST in place - serve owns it in the window
            (decision 6, group 7) - must end LOCALIZE-TIERS-OK (G21).
 gate-copy  (unit snapshot_<name>_gate_copy)  the gate again on the copy, right before any server is replaced
@@ -42,6 +49,7 @@ A name counts only as a whole token of the go file (production's grep: a substri
 unit (production checks nothing there).
 """
 import glob
+import hashlib
 import json
 import os
 import re
@@ -342,11 +350,13 @@ def copy_stage(run, plan):
         need = source_bytes(host, src)
         if need is None:
             u.refuse(f'G20 review-disk space: the size of {plan.source} could not be read')
+        have = source_bytes(None, DST) if os.path.isdir(DST) else 0      # a resumed copy needs only what is still missing
+        need = max(0, need - have)
         os.makedirs(os.path.dirname(DST), exist_ok=True)
         st = os.statvfs(os.path.dirname(DST))
         free = st.f_bavail * st.f_frsize
         u.check('G20_free_space', free >= S.SNAPSHOT_COPY_MIN_FREE_FACTOR * need, value=free,
-                detail=f'{free / 1e9:.1f} GB free, source {need / 1e9:.2f} GB')
+                detail=f'{free / 1e9:.1f} GB free, still to copy {need / 1e9:.2f} GB ({have / 1e9:.2f} GB already in the copy)')
         if free < S.SNAPSHOT_COPY_MIN_FREE_FACTOR * need:
             u.refuse(f'G20 review-disk space: {free / 1e9:.1f} GB free under {os.path.dirname(DST)} < '
                      f'{S.SNAPSHOT_COPY_MIN_FREE_FACTOR} x {need / 1e9:.2f} GB - nothing copied, servers untouched '
@@ -360,8 +370,100 @@ def copy_stage(run, plan):
                            timeout=S.LEGACY_TIMEOUT_S)
         if p.returncode != 0:
             u.refuse(f'G22 snapshot copy: rsync rc {p.returncode}: {scripts.last_line(p.stdout.decode("utf-8", "replace"))}')
+        diff = size_mtime_diff(plan.source, DST, ex)
+        u.check('G22b_size_mtime', diff == [], value=len(diff) if diff is not None else None,
+                detail='rsync -a -n --delete --itemize-changes after the copy: ' +
+                       ('failed' if diff is None else f'{len(diff)} differing or extra entries {diff[:3]}'))
+        if diff is None:
+            u.refuse('G22b snapshot copy: the size + mtime comparison (rsync -n --delete) failed - the copy is not complete')
+        if diff:
+            u.refuse(f'G22b snapshot copy: after the copy {len(diff)} entries still differ in size / mtime or exist only in the '
+                     f'copy: {diff[:3]}')
+        try:
+            n, n_png, bad = md5_compare(host, src, DST, S.SNAPSHOT_COPY_MD5_PNG_SAMPLE)
+        except (OSError, subprocess.SubprocessError, RuntimeError) as e:
+            u.refuse(f'G22c snapshot copy: the md5 comparison could not run ({type(e).__name__}: {str(e)[:200]})')
+        u.check('G22c_md5', not bad, value=len(bad), detail=f'md5 equal for {n - len(bad)} of {n} files ({n - n_png} non-panel '
+                f'files, all; {n_png} sampled panel PNGs); first differing {bad[:3]}')
+        if bad:
+            u.refuse(f'G22c snapshot copy: md5 of the copy differs from the source for {len(bad)} of {n} files: {bad[:3]}')
         u.add_output(DST, 'review_copy', source=plan.source)
     return u
+
+
+def copy_listing(path):
+    """Relative paths of the regular files under path (symbolic links left out, as production's find -type f), the
+    SNAPSHOT_COPY_EXCLUDE directories pruned at any depth (rsync --exclude NAME), sorted."""
+    out = []
+    for dp, dn, fn in os.walk(path):
+        dn[:] = sorted(d for d in dn if d not in _S().SNAPSHOT_COPY_EXCLUDE)
+        for f in sorted(fn):
+            q = os.path.join(dp, f)
+            if not os.path.islink(q) and os.path.isfile(q):
+                out.append(os.path.relpath(q, path))
+    return out
+
+
+def md5_selection(files, n_png):
+    """Every file but the panel PNGs, and a random n_png of those (a new draw on every call, as production's shuf -n)."""
+    import random
+    allp = [f for f in files if f.endswith('.png')]
+    png = random.sample(allp, min(n_png, len(allp)))
+    return sorted(f for f in files if not f.endswith('.png')) + sorted(png), len(png)
+
+
+def _md5_local(root, files):
+    out = {}
+    for f in files:
+        h = hashlib.md5()
+        try:
+            with open(os.path.join(root, f), 'rb') as fh:
+                for b in iter(lambda: fh.read(1 << 22), b''):
+                    h.update(b)
+            out[f] = h.hexdigest()
+        except OSError:
+            out[f] = None
+    return out
+
+
+def _md5_remote(host, root, files):
+    from exopipe.phase3.config import CFG
+    p = subprocess.run(['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=30', host,
+                        f'cd {shlex.quote(root)} && xargs -0 -r md5sum --'],
+                       input=b''.join(f.encode() + b'\0' for f in files), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                       env=dict(os.environ, **CFG.runner.SSH_PREFIX_ENV), timeout=_S().LEGACY_TIMEOUT_S)
+    if p.returncode != 0:          # a file that md5sum could not read, or ssh itself: not a content mismatch
+        raise RuntimeError(f'md5sum on {host} rc {p.returncode}: {p.stderr.decode("utf-8", "replace").strip()[-200:]}')
+    out = dict.fromkeys(files)
+    for line in p.stdout.decode('utf-8', 'replace').splitlines():
+        h, _, name = line.partition('  ')
+        if name in out and not h.startswith('\\'):
+            out[name] = h
+    return out
+
+
+def md5_compare(host, src, dst, n_png):
+    """(files compared, sampled PNGs among them, [relative paths whose md5 differs or could not be read]): the selection is
+    made from the copy's listing (equal to the source's once G22b passed); the source is hashed where it lives."""
+    files, k = md5_selection(copy_listing(dst), n_png)
+    a = _md5_local(src, files) if host is None else _md5_remote(host, src, files)
+    b = _md5_local(dst, files)
+    return len(files), k, [f for f in files if a.get(f) is None or a.get(f) != b.get(f)]
+
+
+def size_mtime_diff(source, dst, ex):
+    """The entries `rsync -a -n --delete --itemize-changes` would still change (directory time-only lines left out, as the
+    dated driver), or None when the comparison itself failed."""
+    from exopipe.phase3.config import CFG
+    try:                           # stdout only: an ssh / rsync warning on stderr is not a differing entry
+        p = subprocess.run(['rsync', '-a', '-n', '--delete', '--itemize-changes'] + ex + [source.rstrip('/') + '/', dst + '/'],
+                           stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=dict(os.environ, **CFG.runner.SSH_PREFIX_ENV),
+                           timeout=_S().LEGACY_TIMEOUT_S)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if p.returncode != 0:
+        return None
+    return [x for x in p.stdout.decode('utf-8', 'replace').splitlines() if x.strip() and not x.startswith('.d')]
 
 
 def localize_stage(run, plan, env=None):
