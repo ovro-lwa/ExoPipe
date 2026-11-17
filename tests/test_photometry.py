@@ -998,8 +998,9 @@ def test_snapshot_e2e():
         return
     short = os.path.join(TMP, 'refused_wb_short.csv')
     open(short, 'w').write('cell,reason\n')
-    rc, txt = step(ev + ['--kinds', 'wb', '--refused-cells', 'wb=%s' % short, '--dry-run'])
-    check('SE-LISTED: a --refused-cells list that omits a pinned refused cell refuses (dry run, exit 2)',
+    rc, txt = step(ev + ['--kinds', 'wb', '--cells', '%s,%s' % (SYN_SNAP_CELL, pin[0]), '--refused-cells', 'wb=%s' % short,
+                         '--dry-run'])
+    check('SE-LISTED: a --refused-cells list that omits a selected pinned refused cell refuses (dry run, exit 2)',
           rc == 2 and 'omits the pinned refused cell' in txt, txt)
     t = time.time()
     rc, txt = step(['photometry'] + SNAP_COMMON + ['--stages', 'evaluate', '--out', SNAP_OUT, '--eval-tag', 'T3', '--kinds',
@@ -1271,6 +1272,70 @@ def test_negative():
 # 7. real production products (read only) and dry runs on real items
 # ---------------------------------------------------------------------------------------------------------------------
 
+def pin_scope_checks(prod, g4):
+    """The pinned refused-cell list (corrupt generation-4 cutouts) per cell on the real generation-4 and generation-5 stage 1
+    (prod = the snapshot OUT_ROOT, g4 = generation 4's stage 1), plus falsifiers on copies of one manifest."""
+    pin = [r['cell'] for r in T.read_csv(CFG.photometry_evaluate.REFUSED_CELLS['snapshot'])[1]]
+    g4root = KS.pin_generation_root()
+    g4man = [r['file'] for cl in pin for mp in glob.glob(os.path.join(g4, cl, 'forced_manifest*.csv'))
+             for r in T.read_csv(mp)[1]]
+    check('the pinned list\'s generation (photometry.RETIRED_CUTOUT_ROOTS[0] = %s) is the root of every file the pinned '
+          'cells\' generation-4 manifests name (%d files)' % (g4root, len(g4man)),
+          g4man and all(f.startswith(g4root.rstrip('/') + '/') for f in g4man), g4man[:2])
+    have = [cl for cl in pin if os.path.isfile(os.path.join(REAL_STAGE1, cl, 'forced_manifest.csv'))]
+    lifted5 = KS.pin_lifted(REAL_STAGE1, pin)
+    check('generation 5 (the served stage 1, %s): the pinned cells it measured (%s) are lifted, as production\'s '
+          'generation-5 evaluation evaluated them; a pinned cell without a generation-5 stage 1 keeps the pin'
+          % (S1, have), len(have) == 3 and lifted5 == set(have), (have, lifted5))
+    if len(have) != 3:
+        return
+    sel = sorted(have + [REAL_SNAP_CELL])
+    dflt = {k: [cl for cl in KS.refused_for(k, {}, REAL_STAGE1, sel)[0] if cl in pin] for k in ('sb', 'wb')}
+    check('generation 5, default lists: only the pinned cells without a generation-5 stage 1 stay listed (%s)' % dflt,
+          dflt == {k: [cl for cl, _ in KS.refused_list(k) if cl not in have] for k in ('sb', 'wb')}, dflt)
+    ref_g5 = {k: os.path.join(prod, 'refused_cells_%s_gen5.csv' % k) for k in ('sb', 'wb')}
+    try:
+        ok = all(KS.refused_for(k, ref_g5, REAL_STAGE1, sel)[1] == ref_g5[k] for k in ('sb', 'wb'))
+    except KS.Refusal as e:
+        ok = str(e)
+    check('generation 5: production\'s own per-kind refused lists (which name no pinned cell) are accepted as given',
+          ok is True, ok)
+    check('generation 4 (%s): no pinned cell is lifted' % g4, KS.pin_lifted(g4, pin) == set(), KS.pin_lifted(g4, pin))
+    work = os.path.join(TMP, 'pin_lift')
+    shutil.rmtree(work, ignore_errors=True)
+    rows = open(os.path.join(REAL_STAGE1, have[0], 'forced_manifest.csv')).read().splitlines(True)
+    cut = CFG.photometry.CUTOUT_ROOT
+
+    def stage(name, manifests):
+        d = os.path.join(work, name, have[0])
+        os.makedirs(d)
+        for fn, text in manifests.items():
+            open(os.path.join(d, fn), 'w').write(text)
+        return os.path.dirname(d)
+
+    mixed = stage('mixed', {'forced_manifest.csv': ''.join(rows[:-1] + [rows[-1].replace(cut, g4root, 1)])})
+    sub = stage('subset', {'forced_manifest.csv': ''.join(rows),
+                           'forced_manifest_wb.csv': rows[0] + rows[-1].replace(cut, g4root, 1)})
+    os.symlink(g4root, os.path.join(work, 'link_g4'))
+    link = stage('link', {'forced_manifest.csv': rows[0] + rows[-1].replace(cut, os.path.join(work, 'link_g4'), 1)})
+    adhoc = stage('adhoc', {'forced_manifest.csv': rows[0] + rows[-1].replace(cut, os.path.join(work, 'adhoc'), 1)})
+    empty = os.path.join(work, 'none')
+    os.makedirs(os.path.join(empty, have[0]))
+    got = {n: KS.pin_lifted(d, [have[0]]) for n, d in (('mixed', mixed), ('subset', sub), ('link', link),
+                                                         ('adhoc', adhoc), ('none', empty))}
+    check('... falsified: the pin stays when the LAST row names a generation-4 file, when a second manifest '
+          '(forced_manifest_wb.csv) does, when the file path reaches generation 4 through a symlink, and when the cell has no '
+          'manifest; a cell measured from another (ad-hoc) root is lifted', got == dict(mixed=set(), subset=set(),
+          link=set(), adhoc={have[0]}, none=set()), got)
+    rs = str(raises(lambda: KS.refused_for('sb', {'sb': ref_g5['sb']}, mixed, [have[0]])))
+    check('... falsified: a given list without the kept pinned cell refuses SE-LISTED when the cell is selected, and '
+          'not when it is not selected', 'omits the pinned' in rs
+          and KS.refused_for('sb', {'sb': ref_g5['sb']}, mixed, [REAL_SNAP_CELL])[1] == ref_g5['sb'], rs)
+    pend = {r: KS.pin_lifted(empty, [have[0]], pending={have[0]}, planned_root=r) for r in (cut, g4root)}
+    check('... a dry run whose measure stage writes the pinned cell: lifted when that measure reads %s, kept when it reads '
+          'generation 4' % cut, pend == {cut: {have[0]}, g4root: set()}, pend)
+
+
 def test_real():
     s1 = os.path.join(REAL_STAGE1, REAL_SNAP_CELL)
     if not os.path.isdir(s1):
@@ -1336,12 +1401,14 @@ def test_real():
     ok, bad = all_pass('photometry_zone_flags', os.path.join(prod, 'zones_recomputed_gen5.csv'))
     check('real zones_recomputed_gen5.csv (the served zone flags) passes ZF1', ok, bad)
     same = {}
+    g4 = os.path.join(prod, 'stage1')         # generation 4's stage 1, from which the 2026-10-07 lists were written
     for kind in ('sb', 'wb'):
-        ref, _ = KS.refused_for(kind, {}, REAL_STAGE1, [])
+        ref, _ = KS.refused_for(kind, {}, g4, [])
         same[kind] = KS.refused_text(ref).encode() == open(os.path.join(prod, 'refused_cells_%s_20261007.csv' % kind),
                                                            'rb').read()
     check('the per-kind refused-cell lists the step writes from the pinned file are byte-identical to the 2026-10-07 '
           'production lists (reserve :138-147)', all(same.values()), same)
+    pin_scope_checks(prod, g4)
     fl = '/fast/gh/main/phase3/deep_forced/run3/frames_07.csv'
     if os.path.exists(fl):
         a, b = T.fl1_header(fl), T.fl3_pb(fl)

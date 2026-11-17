@@ -340,15 +340,69 @@ def refused_given(args):
     return out
 
 
-def refused_for(kind, given, stage1, cells):
+def pin_generation_root():
+    """The cutout tree whose corrupt files the pinned refused-cell list names: generation 4, the FIRST entry of
+    photometry.RETIRED_CUTOUT_ROOTS (later retired generations are appended after it; tests/test_photometry.py checks the
+    pinned cells' generation-4 manifests lie under it)."""
+    return K.cfg().photometry.RETIRED_CUTOUT_ROOTS[0]
+
+
+def _cutout_base(path):
+    """<root> of a cutout <root>/<sample>/<band>/<object>/<file> (phase3_snapshot_cutouts.write_cutouts layout)."""
+    for _ in range(4):
+        path = os.path.dirname(path)
+    return path
+
+
+def pin_lifted(stage1, cells, pending=(), planned_root=None):
+    """{cell} of the given pinned cells whose pin does not apply in this stage 1, decided per cell from its OWN stage-1
+    manifests (every forced_manifest*.csv in <stage1>/<cell>, as the evaluation's done evidence reads them): lifted when at
+    least one manifest exists and none of its files lies under pin_generation_root() (each file's cutout root compared after
+    os.path.realpath, so a symlinked or non-normalized path to generation 4 still counts). A cell with no manifest keeps the
+    pin, unless it is in ``pending`` (a dry run whose measure stage writes it) and ``planned_root`` (that measure's cutout
+    root) is outside generation 4."""
+    from exopipe.phase3.lib.photometry.tests import read_csv
+    g4 = os.path.normpath(pin_generation_root())
+    g4r = os.path.realpath(g4)
+    real = {}
+
+    def under_g4(path):
+        base = os.path.normpath(_cutout_base(path))
+        if base not in real:
+            real[base] = os.path.realpath(base)
+        return any(x == r or x.startswith(r + os.sep) for x in (base, real[base]) for r in (g4, g4r))
+
+    out = set()
+    for cl in cells:
+        mans = sorted(glob.glob(os.path.join(stage1, cl, 'forced_manifest*.csv')))
+        if not mans:
+            if cl in pending and planned_root and not under_g4(os.path.join(planned_root, 's', 'b', 'o', 'f')):
+                out.add(cl)
+            continue
+        files = [r.get('file') or '' for mp in mans for r in read_csv(mp)[1]]
+        if files and all(f and not under_g4(f) for f in files):
+            out.add(cl)
+    return out
+
+
+def refused_for(kind, given, stage1, cells, lifted=None):
     """(OrderedDict cell -> reason, path of a given list or None) of the cells refused before the evaluation of ``kind``.
     Default: the pinned file's rows for the kind in file order (reserve :140-141), then the cells whose measure unit was
     refused (:142-144). A given list (--refused-cells) is read as written and must hold every pinned cell of the kind (the
     pinned cells are never re-admitted, DECISION-FORCED-CORRUPT-CUTOUT-CELLS-REFUSED); the measure refusals are added after
-    its rows."""
+    its rows.
+    The pinned file names corrupt GENERATION-4 archive cutouts (written 2026-09-18..22 under the retired root). Generation 5
+    re-cut every cutout from the cubes, and production's generation-5 evaluation (snapshot_forced_gen5_stages_20261026.sh)
+    reads no pinned file: it evaluated 04h 2025-01-06, 09h 2025-01-01 and 08h 2025-01-09. So a pinned cell whose own
+    stage-1 manifests name no generation-4 file (pin_lifted; ``lifted`` = its precomputed result) is neither added nor
+    required, and a given list must hold the remaining pinned cells only where they are among ``cells`` (an unselected cell
+    is not evaluated, so it cannot be re-admitted)."""
     from collections import OrderedDict
     from exopipe.phase3.lib.photometry.tests import read_csv
-    pinned = refused_list(kind)
+    rows = refused_list(kind)
+    if lifted is None:
+        lifted = pin_lifted(stage1, sorted({cl for cl, _ in rows}))
+    pinned = [(cl, why) for cl, why in rows if cl not in lifted]
     ref = OrderedDict()
     path = given.get(kind)
     if path:
@@ -359,7 +413,8 @@ def refused_for(kind, given, stage1, cells):
             raise Refusal('SE-LISTED: --refused-cells %s=%s: header %s, expected cell,reason' % (kind, path, cols))
         for r in rows:
             ref.setdefault(r['cell'], r['reason'])
-        miss = [cl for cl, _ in pinned if cl not in ref]
+        sel = set(cells)
+        miss = [cl for cl, _ in pinned if cl not in ref and cl in sel]
         if miss:
             raise Refusal('SE-LISTED: --refused-cells %s=%s omits the pinned refused cell(s) %s of %s '
                           '(DECISION-FORCED-CORRUPT-CUTOUT-CELLS-REFUSED: never re-admitted)'
@@ -453,9 +508,14 @@ def stage_evaluate(run, args):
     units = []
     done_kinds = []
     given = refused_given(args)
+    pin_cells = sorted({cl for k in ev.KINDS['snapshot'] for cl, _ in refused_list(k)})
+    lifted = pin_lifted(stage1, pin_cells, pending, cutout_root(args) if pending else None)
+    if lifted:
+        K.plan(run, '[evaluate]   pinned refused cells measured here without generation-4 cutouts, evaluated: %s'
+               % sorted(lifted))
     for kind in kinds:
         try:
-            ref, ref_path = refused_for(kind, given, stage1, cells)
+            ref, ref_path = refused_for(kind, given, stage1, cells, lifted)
         except Refusal as e:
             if run.dry_run:
                 K.would_refuse(run, 'evaluate', str(e))
