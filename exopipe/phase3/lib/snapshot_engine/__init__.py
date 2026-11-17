@@ -40,7 +40,12 @@ The pin (PIN_COMMIT / PIN_BLOBS below)
   --stamp of the standard header and rescale's acceptance check - the ported file is production's, byte for byte; it differed
   from this directory's earlier copy in five comment lines) and b3bedae (phase3_snapshot_search.py: the 1-minute tier bins a
   block at its minute's middle, clipped to the hour's bins, so the first block no longer takes the elevation mask of the
-  hour's last bin; applied to this directory's copy, its speed-ups kept). The cell driver passes no --stamp. PIN_BLOBS holds the
+  hour's last bin; applied to this directory's copy, its speed-ups kept). The cell driver passes no --stamp.
+  clv15 5142b5c (2026-11-15) = b3bedae plus production's cube rescale gate (phase3_snapshot_cube.py: exact re-quantization
+  bound of half the tile step, step no coarser than archived / F, lossless tiles bit-exact; replaces the fixed 0.05
+  worst-pixel limit), ported 2026-11-17. This directory's copy is production's file at 5142b5c except for four no-memory-map
+  lines (R-GREGG-20261117-NO-MMAP-OF-LUSTRE-FILES-READ-OR-WRITE: the module-level switch, memmap=False twice, Cube.flow
+  reading one frame through .section); no other pinned file changed between the two commits. PIN_BLOBS holds the
   git blob id of every ported file at that commit. Production keeps moving: tests/test_snapshot_engine.py reports every pinned
   file production has changed since (one explicit failure naming what to port), as tests/production_pin.py does for the ops
   ports. Moving the pin is a port round.
@@ -57,13 +62,13 @@ This module itself is import-safe and holds only the pin; nothing here is import
 """
 
 CLV15_REPO = '/lustre/gh/main/clv15'
-PIN_COMMIT = 'b3bedae8301a5a61b154c8dea1b27fb109c9d653'
+PIN_COMMIT = '5142b5c7d75cd1d51229397a6083e9db7a3838a3'
 PIN_BLOBS = {
     'phase3_snapshot_search.py': '292ad2dd79a5ac0d8d0b1c041534366d356de13b',
     'phase3_snapshot_group_search.py': '860b42e94cc6073596583997d416a3d4a83ffc24',
     'phase3_snapshot_cutouts.py': '5c6fa63521b581e27d31524c6aec819fc779de9d',
     'phase3_snapshot_lightcurves.py': '8f669f5504115267a7b9551e06b0a120bf36e8c4',
-    'phase3_snapshot_cube.py': '65698f613b44753a7e649177a4d6487c746dde6c',
+    'phase3_snapshot_cube.py': '9bd02c950dad57c02471fb1649f24c62a88682c9',
     'phase3_snapshot_frame_movie.py': '709a9448ddb2ba218754ee88347696e32ecef965',
     'phase3_snapshot_flow_movie.py': '0407eb749f1e2fd34329d9f41a4ad8a40873572c',
     'phase3_snapshot_flow.py': 'ff7c35eb50ce120a71a68cf4f94f4ca19b0e21be',
