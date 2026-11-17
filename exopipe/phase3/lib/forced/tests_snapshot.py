@@ -81,11 +81,11 @@ def has_position(fr):
         fr.get('fit_kind') == 'template' and fr.get('fit_status') == 'ok'))
 
 
-def radio_of(fr, tr):
+def radio_of(fr):
+    """The event's radio position: its fitted position. The tie never moves it (measure, don't move: Gregg 2026-10-08,
+    installed in production 2026-10-14; snapshot_ties refuses a tied position or a moved untied one)."""
     if not has_position(fr):
         return None
-    if tr and tr.get('tie_status') == 'tied' and tr.get('ra_tied'):
-        return float(tr['ra_tied']), float(tr['dec_tied'])
     return float(fr['fit_ra_deg']), float(fr['fit_dec_deg'])
 
 
@@ -260,29 +260,52 @@ def snapshot_fits(path, **ctx):
 
 @content_test('forced_ties')
 def snapshot_ties(path, **ctx):
-    """One tie row per positioned fit record (cmd_tie: dets = has_position); a tied row has a finite tied position; where
-    both the applied correction (tie_dx/dy) and the used-reference reconstruction (used_dx/dy) are recorded they agree
-    within TIE_RECON_TOL_ARCMIN (add_used_refs, :996-997)."""
+    """One tie row per positioned fit record (cmd_tie: dets = has_position). Measure, don't move (Gregg 2026-10-08,
+    production since 2026-10-14): no row carries a tied position (ra_tied / dec_tied empty) and every row's ra_untied /
+    dec_untied is its fitted position (both written to 5 decimals); every row has its own finite systematic
+    (event_sys_arcmin) and its source; a tied row's systematic IS its per-case tie (tie_sys_arcmin; tie_pool rounds both to 3
+    decimals, so equal), and where both the measured offset (tie_dx/dy) and the used-reference reconstruction (used_dx/dy)
+    are recorded they agree within TIE_RECON_TOL_ARCMIN; an untied row carries no tie (tie_sys / tie_dx / tie_dy empty;
+    used_dx/dy may be filled: add_used_refs reconstructs from any references used)."""
     s = _cfg().forced_snapshot
     run = os.path.dirname(os.path.abspath(path))
     ties = _rows(path)
-    want = {r['cand_id'] for r in _rows(os.path.join(run, 'forced_fits.csv')) if has_position(r)}
+    fits = {r['cand_id']: r for r in _rows(os.path.join(run, 'forced_fits.csv')) if has_position(r)}
+    want = set(fits)
     have = [r.get('cand_id') for r in ties]
     bad = []
     if set(have) != want or len(set(have)) != len(have):
         bad.append('tie rows %d (%d distinct) vs positioned fits %d' % (len(have), len(set(have)), len(want)))
     n_tied = 0
     for r in ties:
-        if r.get('tie_status') == 'tied':
+        if r.get('ra_tied') or r.get('dec_tied'):
+            bad.append('%s: a tied position %s %s (the tie measures, it never moves a position)'
+                       % (r['cand_id'], r.get('ra_tied'), r.get('dec_tied')))
+        f = fits.get(r.get('cand_id'))
+        if f and (_num(r.get('ra_untied')) is None or _num(r.get('dec_untied')) is None
+                  or abs(float(r['ra_untied']) - float(f['fit_ra_deg'])) > 1e-5
+                  or abs(float(r['dec_untied']) - float(f['fit_dec_deg'])) > 1e-5):
+            bad.append('%s: position moved: ra/dec_untied %s %s vs fitted %s %s' % (
+                r['cand_id'], r.get('ra_untied'), r.get('dec_untied'), f['fit_ra_deg'], f['fit_dec_deg']))
+        es = _num(r.get('event_sys_arcmin'))
+        if es is None or not r.get('sys_source'):
+            bad.append('%s: no systematic of its own (event_sys_arcmin %r, sys_source %r)'
+                       % (r['cand_id'], r.get('event_sys_arcmin'), r.get('sys_source')))
+        if r.get('tie_status') != 'tied':
+            if any(r.get(k) for k in ('tie_sys_arcmin', 'tie_dx_arcmin', 'tie_dy_arcmin')):
+                bad.append('%s: %s but carries a tie (tie_sys/dx/dy %r %r %r)' % (
+                    r['cand_id'], r.get('tie_status'), r.get('tie_sys_arcmin'), r.get('tie_dx_arcmin'),
+                    r.get('tie_dy_arcmin')))
+        else:
             n_tied += 1
-            if _num(r.get('ra_tied')) is None or _num(r.get('dec_tied')) is None:
-                bad.append('%s: tied without a tied position' % r['cand_id'])
+            ts = _num(r.get('tie_sys_arcmin'))
+            if ts is None or es is None or es != ts:
+                bad.append('%s: tied, but its systematic %r is not its per-case tie %r'
+                           % (r['cand_id'], r.get('event_sys_arcmin'), r.get('tie_sys_arcmin')))
             for a, b in (('used_dx_arcmin', 'tie_dx_arcmin'), ('used_dy_arcmin', 'tie_dy_arcmin')):
                 x, y = _num(r.get(a)), _num(r.get(b))
                 if x is not None and y is not None and abs(x - y) > s.TIE_RECON_TOL_ARCMIN:
                     bad.append('%s: %s %s vs %s %s' % (r['cand_id'], a, x, b, y))
-        elif r.get('ra_tied'):
-            bad.append('%s: %s with a tied position' % (r['cand_id'], r.get('tie_status')))
     if bad:
         return False, len(bad), _detail(bad)
     return True, len(ties), '%d tie rows, %d tied' % (len(ties), n_tied)
@@ -372,7 +395,8 @@ def png_size(p):
 def snapshot_panels(path, stokes=None, **ctx):
     """missing_panels.csv is empty; the served tree candidates/<Stokes>/ holds one panel per served event, each at least
     VERIFY_PANEL_MIN_HEIGHT_PX high (the light-curve strip); one cadence among the served events; every served event's
-    position is its radio position (tied where tied) or blank where it has none (RULING-RADIO-POSITION-ONLY)."""
+    position is its radio position (its fitted position: the tie never moves it) or blank where it has none
+    (RULING-RADIO-POSITION-ONLY)."""
     s = _cfg().forced_snapshot
     run = os.path.dirname(os.path.abspath(path))
     bad = []
@@ -397,10 +421,9 @@ def snapshot_panels(path, stokes=None, **ctx):
     if len(tiers) > 1:
         bad.append('served events of %s - one cadence per run' % sorted(tiers))
     fits = {r['cand_id']: r for r in _rows(os.path.join(run, 'forced_fits.csv'))}
-    ties = {r['cand_id']: r for r in _rows(os.path.join(run, 'forced_ties.csv'))}
     badp = 0
     for e in sev:
-        p = radio_of(fits.get(e['cand_id']), ties.get(e['cand_id']))
+        p = radio_of(fits.get(e['cand_id']))
         if (p is None) != (not e.get('ra')) or (p and (abs(float(e['ra']) - p[0]) > 1e-4 or abs(float(e['dec']) - p[1]) > 1e-4)):
             badp += 1
     if badp:
