@@ -689,7 +689,13 @@ class catalog_snapshot(_Section):
                                                           # RECORDED RE-RUNS: <root>/<cell>/<UTC stamp>/MANIFEST.csv lists the
                                                           # candidate tables a re-run replaced (a previously served detection from
                                                           # one replaced between the two records is 'reprocessed', not absent);
-                                                          # production snapshot_restore_wave_diff.py REMADE_ROOTS (236ce9e) [step]
+                                                          # production snapshot_restore_wave_diff.py REMADE_ROOTS (236ce9e); in
+                                                          # v2 the re-runs production's ship script made before cutover (they
+                                                          # have no v2 record) [step]
+    RESTORE_WAVE_RECORDS_ROOTS = None                     # where the wave test reads v2's RECORDED RE-RUNS: the run records of
+                                                          # `exopipe3 archive supersede` under <root>/_records/archive/ (each names
+                                                          # its quarantine root, cell and quarantine directory); None = the archive
+                                                          # step's default records root, archive.RECORDS_ROOT; () = none read [step]
     RESTORED_BY = 'restore-only 3-D gate 20261104'        # the tag; RESTORED_BY
     RESTORE_TOL_BEAMS = 1e-6                              # beams a restore radius may exceed the installed one (else the chain refuses); RESTORE_TOL_BEAMS
     # ---- run content test (snapshot_rechain_content_test.py R1-R7 operating points)

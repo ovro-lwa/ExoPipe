@@ -138,8 +138,8 @@ def remade_root(new):
 
 
 def wdiff(old, new, out=None):
-    """the port on a world (its own re-run root)"""
-    return _RW().diff(old, new, out=out, remade_roots=[remade_root(new)])
+    """the port on a world (its own re-run root; no supersede records)"""
+    return _RW().diff(old, new, out=out, remade_roots=[remade_root(new)], records_roots=[])
 
 
 # the classes: (old row fields, new row fields or None = absent from the new record)
@@ -604,7 +604,79 @@ def test_real():
           f'production\'s ({time.time() - t0:.0f} s)')
 
 
-TESTS = [test_production_pin, test_parity, test_content, test_stage, test_view_gate, test_real]
+def test_recorded_reruns():
+    """v2's own re-runs: the quarantine an `exopipe3 archive supersede` run record names is read, wherever its --quar-root put it
+    (catalog_snapshot.RESTORE_WAVE_RECORDS_ROOTS), not only the configured roots of production's re-runs"""
+    RW = _RW()
+    old, new = world('recorded')
+    root = os.path.dirname(os.path.dirname(new))
+    base = wdiff(old, new, out=os.path.join(root, 'o_base'))
+    assert base['status'] == 'PASS' and base['remade_manifests'] == 1 and base['counts']['reprocessed'] == 3, base
+    qroot, cell = os.path.join(root, 'quarantine_elsewhere'), '07h_2025-10-29'
+    shutil.move(remade_root(new), qroot)                      # the same re-run, quarantined under another root
+    recs = os.path.join(root, 'records')
+    qdir = os.path.join(qroot, cell, stamp(T0 + 3600))
+    os.makedirs(os.path.join(recs, '_records', 'archive'))
+    with open(os.path.join(recs, '_records', 'archive', f'supersede_{cell}.json'), 'w') as f:
+        json.dump(dict(unit=f'supersede_{cell}', status='done',
+                       meta=dict(cell=cell, quar_root=qroot, shipped=dict(quarantine=qdir))), f)
+    rec = RW.diff(old, new, out=os.path.join(root, 'o_rec'), remade_roots=[remade_root(new)], records_roots=[recs])
+    assert rec['status'] == 'PASS' and rec['counts'] == base['counts'] and rec['remade_manifests'] == 1, rec
+    assert all(r['cause'] != 'reprocessed' or qdir in r['removed_detail']
+               for r in csv.DictReader(open(os.path.join(root, 'o_rec', RW.CSV_NAME)))), 'removed_detail names the quarantine'
+    none = RW.diff(old, new, out=os.path.join(root, 'o_none'), remade_roots=[remade_root(new)], records_roots=[])
+    assert none['status'].startswith('FAIL') and none['counts'].get('reprocessed', 0) == 0, none['status'][:300]
+    # a record whose script stopped before its SHIPPED line (no shipped key): the cell's quarantine directories still count
+    with open(os.path.join(recs, '_records', 'archive', f'supersede_{cell}.json'), 'w') as f:
+        json.dump(dict(unit=f'supersede_{cell}', status='refused', meta=dict(cell=cell, quar_root=qroot)), f)
+    part = RW.diff(old, new, out=os.path.join(root, 'o_part'), remade_roots=[], records_roots=[recs])
+    assert part['status'] == 'PASS' and part['counts'] == base['counts'], part['status'][:300]
+    # a record naming a quarantine without its MANIFEST.csv; an unreadable record
+    with open(os.path.join(recs, '_records', 'archive', f'supersede_{cell}.json'), 'w') as f:
+        json.dump(dict(meta=dict(cell=cell, quar_root=qroot, shipped=dict(quarantine=qdir + '_gone'))), f)
+    with open(os.path.join(recs, '_records', 'archive', 'supersede_08h_2025-10-30.json'), 'w') as f:
+        f.write('{not json')
+    bad = RW.diff(old, new, out=os.path.join(root, 'o_bad'), remade_roots=[], records_roots=[recs])
+    assert bad['status'].startswith('FAIL') and 'which has no MANIFEST.csv' in bad['status'] \
+        and 'could not be read' in bad['status'], bad['status'][:500]
+    # FAILs only for what can bear on the window: an unreadable record written before OLD's record, and a named quarantine
+    # without its MANIFEST.csv stamped outside the window, are not FAILs
+    arch = os.path.join(recs, '_records', 'archive')
+    with open(os.path.join(arch, f'supersede_{cell}.json'), 'w') as f:
+        json.dump(dict(meta=dict(cell=cell, quar_root=qroot, shipped=dict(quarantine=os.path.join(qroot, cell, stamp(T0 - 3600))))), f)
+    os.utime(os.path.join(arch, 'supersede_08h_2025-10-30.json'), (T0 - 10, T0 - 10))
+    old_rec = RW.diff(old, new, out=os.path.join(root, 'o_oldrec'), remade_roots=[], records_roots=[recs])
+    assert old_rec['status'] == 'PASS' and old_rec['counts'] == base['counts'], old_rec['status'][:500]
+    # a record of the wrong shape is a FAIL, not a crash
+    for i, meta in enumerate(('x', dict(cell=cell, quar_root=qroot, shipped=['q']), dict(cell=cell, quar_root=[qroot]))):
+        with open(os.path.join(arch, 'supersede_09h_2025-10-31.json'), 'w') as f:
+            json.dump(dict(meta=meta), f)
+        sh = RW.diff(old, new, out=os.path.join(root, f'o_shape{i}'), remade_roots=[], records_roots=[recs])
+        assert sh['status'].startswith('FAIL') and 'supersede_09h_2025-10-31.json' in sh['status'] \
+            and 'could not be read' in sh['status'], (meta, sh['status'][:500])
+    os.remove(os.path.join(arch, 'supersede_09h_2025-10-31.json'))
+    # a records root given as text is one root; production's roots list as it is (a root given twice counts its manifest twice)
+    # and a record's manifest already among them is not added again
+    one = RW.diff(old, new, out=os.path.join(root, 'o_text'), remade_roots=[], records_roots=recs)
+    assert one['status'] == 'PASS' and one['remade_manifests'] == 1, one['status'][:300]
+    dup = RW.diff(old, new, out=os.path.join(root, 'o_dup'), remade_roots=[qroot, qroot], records_roots=[recs])
+    assert dup['status'] == 'PASS' and dup['remade_manifests'] == 2 and dup['counts'] == base['counts'], dup
+    # config: () reads no records; None reads the archive step's records root
+    from exopipe.phase3.config import CFG
+    k = 'catalog_snapshot.RESTORE_WAVE_RECORDS_ROOTS'
+    try:
+        CFG.set(k, ())
+        emp = RW.diff(old, new, out=os.path.join(root, 'o_empty'), remade_roots=[])
+        assert emp['status'].startswith('FAIL') and emp['counts'].get('reprocessed', 0) == 0, emp['status'][:300]
+        CFG.set(k, None)
+        CFG.set('archive.RECORDS_ROOT', recs)
+        dflt = RW.diff(old, new, out=os.path.join(root, 'o_default'), remade_roots=[])
+        assert dflt['status'] == 'PASS' and dflt['counts'] == base['counts'], dflt['status'][:300]
+    finally:
+        CFG.reset()
+
+
+TESTS = [test_production_pin, test_parity, test_content, test_recorded_reruns, test_stage, test_view_gate, test_real]
 
 
 def main(argv):
