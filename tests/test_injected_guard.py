@@ -597,10 +597,28 @@ def test_source_flags():
               and 'holds an injected run' in r.stderr, (r.returncode, r.stderr[-400:]))
 
 
+def _outside_existing():
+    """An existing directory outside every root an injected run may write: its --out (under T), /tmp, /dev/shm, $TMPDIR and
+    this host's node-local scratch root (site SCRATCH_ROOT, which check_flags allows). The repository's parent when it lies
+    outside all of them (a checkout on Lustre), else /usr. From a worktree on node-local scratch the parent is under the
+    scratch root, so every 'outside' destination was allowed and 28 checks failed (2026-11-17)."""
+    from exopipe.phase3.core import fitsio
+    try:
+        scratch = fitsio.scratch_root(None)
+    except Exception:                  # noqa: BLE001 - no scratch root on this host (as core/injected.check_flags)
+        scratch = None
+    allowed = [os.path.realpath(x).rstrip('/') for x in (T, '/tmp', '/dev/shm', os.environ.get('TMPDIR'), scratch) if x]
+    for d in (os.path.dirname(REPO), '/usr'):
+        r = os.path.realpath(d).rstrip('/')
+        if os.path.isdir(r) and not any(r == a or r.startswith(a + '/') or a.startswith(r + '/') for a in allowed):
+            return d
+    raise SystemExit(f'test_injected_guard: no existing directory outside every root an injected run may write {allowed}')
+
+
 def test_dest_flags():
     out = os.path.join(T, 'dest_out')
     inside = os.path.join(out, 'inside')
-    outside_existing = os.path.dirname(REPO)          # an existing directory outside every scratch root: never written here
+    outside_existing = _outside_existing()            # an existing directory outside every scratch root: never written here
     with Clean():
         injected.begin('test: destinations', out)
         for step, flags in sorted(injected.DEST_FLAGS.items()):
