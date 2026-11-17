@@ -288,6 +288,17 @@ def registry():
         return p, json.load(f)
 
 
+def served_row(reg, S, k):
+    """(key, row) the hub serves for tier key k of Stokes S: the combined view '<k>-comb' when that row is live, else the key's
+    own row - production's rule, ops/build_review_hub.py tier_page (2026-11-17: the snapshot '10-sec' / '1-min' rows still name
+    the retired Run_SNAPCOMB_20261026; the hub serves their '-comb' rows)."""
+    rows = reg.get(S) or {}
+    c = rows.get(k + '-comb')
+    if isinstance(c, dict) and c.get('live'):
+        return k + '-comb', c
+    return k, rows.get(k)
+
+
 def served_runs(tier):
     """{run name: [registry rows]} served for the tier according to the hub registry (read only, B-56)."""
     _, reg = registry()
@@ -295,9 +306,9 @@ def served_runs(tier):
     out = {}
     for S in ('V', 'I'):
         for k in keys:
-            row = (reg.get(S) or {}).get(k)
+            key, row = served_row(reg, S, k)
             if isinstance(row, dict) and row.get('run'):
-                out.setdefault(row['run'], []).append(dict(row, stokes=S, key=k))
+                out.setdefault(row['run'], []).append(dict(row, stokes=S, key=key))
     return out
 
 

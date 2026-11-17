@@ -295,7 +295,8 @@ def stage_tess(c, run, done):
             if D.TESS_IS_GATE:
                 raise common.Refusal(msg)
             raise common.NoInput(msg)
-        args = ['--run', c.U] + ([] if D.TESS_STOKES == 'I,V' else ['--stokes', D.TESS_STOKES])
+        args = (['--run', c.U] + ([] if D.TESS_STOKES == 'I,V' else ['--stokes', D.TESS_STOKES])
+                + ([] if D.TESS_REFRESH_IN_READER else ['--no-refresh']))   # the table is then refreshed by lib/pages/tess_orbits.py
         res = common.lrun(u, script, args, python='tess', cwd=c.U, log=os.path.join(c.U, 'pages_tess.log'))
         if not res.ok:
             msg = f"TESS COVERAGE FAILED - the pages will say 'coverage not computed' ({res.reason})"

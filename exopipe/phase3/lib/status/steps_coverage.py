@@ -254,7 +254,7 @@ def served_sublst_lsts():
     keys = K.cfg().status.REGISTRY_KEYS.get('sublst', ())
     for S in ('V', 'I'):
         for k in keys:
-            g = ((reg.get(S) or {}).get(k) or {}).get('generation', '')
+            g = (K.served_row(reg, S, k)[1] or {}).get('generation', '')
             if 'LSTs:' in g:
                 return set(re.findall(r'\b\d\dh\b', g.split('LSTs:', 1)[1])), g
     return set(), ''

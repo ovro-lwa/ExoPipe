@@ -23,8 +23,10 @@ HISTORY_COLUMNS = ('checked_utc', 'cells', 'pass', 'fail', 'fail_not_in_rebuild_
 
 
 def membership_drift():
-    """S-G6: lines where the branch membership module differs from production other than import lines and the
-    NAMED_OUT_OF_MASTER path line; [] when only those differ (and the named table files are identical)."""
+    """S-G6: lines where the branch membership module differs from production other than import lines, the
+    NAMED_OUT_OF_MASTER path line and the entry point's no-mmap switch (``_fits_nommap.conf.use_memmap = False``,
+    R-GREGG-20261117-NO-MMAP-OF-LUSTRE-FILES-READ-OR-WRITE; tests/test_no_mmap.py check 3 requires it in every entry point);
+    [] when only those differ (and the named table files are identical)."""
     import difflib
     import hashlib
     from exopipe.phase3.lib.masters import membership as BM
@@ -38,7 +40,7 @@ def membership_drift():
         if ln.startswith(('---', '+++', '@@')):
             continue
         body = ln[1:].strip()
-        if body.startswith(('import ', 'from ')) or body.startswith('NAMED_OUT_OF_MASTER ='):
+        if body.startswith(('import ', 'from ', 'NAMED_OUT_OF_MASTER =', '_fits_nommap.conf.use_memmap = False')):
             continue
         bad.append(ln[:160])
     pa = os.path.join(os.path.dirname(prod), 'named_out_of_master.csv')

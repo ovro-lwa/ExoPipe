@@ -220,8 +220,8 @@ class status_conformance(_Section):
     # Working-tree masters audited too (NEW): <COADD_SB_ROOT>/<cell>/coadd_final/<WORKING_MASTERS> HISTORY 'COADD
     # constituent' lines, judged with core.exclusions (BREACH / STALE by the DD_HISTORY_GLOB snapshots, same rule as :47-80).
     WORKING_MASTERS = ('I_deep_Taper_R075_{scope}.fits', 'V_deep_Taper_R0_{scope}.fits')
-    # S-G6 (window): the production module the branch membership module must equal but for import lines and the
-    # NAMED_OUT_OF_MASTER path line (conformance_check.py imports exopipe.phase3.membership -> branch lib/masters).
+    # S-G6 (window): the production module the branch membership module must equal but for import lines, the
+    # NAMED_OUT_OF_MASTER path line and the no-mmap switch line (conformance_check.py imports exopipe.phase3.membership -> branch lib/masters).
     PRODUCTION_MEMBERSHIP = '/lustre/gh/main/exopipe/exopipe/phase3/membership.py'
     EXCLCONF_SKIP_DIRS = ('judgements',)  # snapshot_serve_exclusion_gate.py:65-66
     EXCLCONF_SKIP_FILES = ('serve_exclusion_refusals.csv',)   # :65

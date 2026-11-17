@@ -184,6 +184,10 @@ class pages_deep(_Section):
     TESS_ORBIT_REFRESH_DAYS = 7  # days; orbit table re-fetched when older (tess_coverage.py:44) (mirror; B-58)
     TESS_ORBIT_URL = 'https://tess.mit.edu/public/files/TESS_orbit_times.csv'   # tess_coverage.py:39 (mirror)
     TESS_INTEGRATION_S = 10.03102041   # s; tess_coverage.py:77 (mirror; = instrument.INTEGRATION_S)
+    TESS_ORBIT_AHEAD_DAYS = 14   # days; the orbit table refresh step (lib/pages/tess_orbits.py) is complete only when the table
+                                 # reaches now + this (CUTOVER_READINESS, TESS item b; = tess_orbits.AHEAD_DAYS)
+    TESS_REFRESH_IN_READER = True   # True = production: tess_coverage.py refreshes the table beside itself when older than 7 days.
+                                    # False once tess_orbits runs daily: the reader is given --no-refresh and never writes it
     # ---- stratified judging queue (on request) ----
     STRAT_PER_STRATUM = None     # identities per stratum: REQUIRED (deep_stratified_queue.py:22); --deep-strat-per-stratum
     STRAT_SEED = 20260924        # deep_stratified_queue.py:23
