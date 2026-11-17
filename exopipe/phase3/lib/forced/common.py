@@ -14,8 +14,8 @@ from exopipe.phase3.core.record import Refusal
 # Config keys the WRAPPER acts on (paths it passes, stages it runs, processes it starts). Every other key of the forced
 # sections describes a literal of the in-place scripts (or a pinned input): an override would change nothing in the
 # products, so check_overrides refuses it. fitting.* and astrometry.* are used in place by the clv15/exopipe_ops modules
-# with their own values: refused as well while the forced chain runs in place. Overrides read from the shipped parity
-# file (PARITY_FILE) pass: they set production's own values, the values the in-place code carries.
+# with their own values: refused as well while the forced chain runs in place, except the keys core.wrap.WRAPS passes to
+# those modules in every child (they do change the products).
 STEERING = {
     'forced.STAGES', 'forced.DEFAULT_STAGES', 'forced.EPOCH_STAGES', 'forced.INPLACE_SCRIPTS', 'forced.INPLACE_GRANDCHILDREN',
     'forced.PYTHON_KEY', 'forced.NODE_LOCAL_RE', 'forced.LOG_TAIL_CHARS',
@@ -38,26 +38,18 @@ def cfg():
     return CFG
 
 
-PARITY_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-                           'parity', 'production_20261013.cfg')
-
-
-def _from_parity_file(source):
-    """True when an override's source ('<file>:<line>', config.apply_override_file) is the shipped parity file."""
-    path = (source or '').rsplit(':', 1)[0]
-    return bool(path) and os.path.realpath(path) == os.path.realpath(PARITY_FILE)
-
-
 def check_overrides(c=None):
     """G37 in-place config truth: refuse a --set/--config of a value the in-place scripts carry as a literal (it would not
-    change the products) or of fitting.* / astrometry.* (the in-place modules use their own values). A line of the shipped
-    parity file passes: it sets production's value, which is the value the in-place code carries."""
+    change the products) or of fitting.* / astrometry.* (the in-place modules use their own values), except a key that
+    core.wrap passes to the in-place modules (WRAPS: it changes the products)."""
+    from exopipe.phase3.core import wrap
+    wrapped = {k for w in wrap.WRAPS.values() for k in w['keys']}
     c = c or cfg()
     bad = []
     for o in c.overrides:
-        if _from_parity_file(o[3]):
-            continue
         key = o[0].split('[', 1)[0]
+        if key in wrapped:
+            continue
         sec = key.split('.', 1)[0]
         if (sec in OWN_SECTIONS and key not in STEERING) or sec in IN_PLACE_SHARED:
             bad.append(o[0])

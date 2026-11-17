@@ -119,50 +119,37 @@ def test_config():
             ok = False
         CFG.reset()
         check('G37: override of %s allowed (the step passes it to the child)' % k, ok)
-    CFG.authorize([], out=TMP)
-    CFG.set('forced_snapshot.EXCLUDED_EVENTS', "'build'")
-    try:
-        K.check_overrides()
-        ok = True
-    except record.Refusal:
-        ok = False
-    CFG.reset()
-    check('G37: override of forced_snapshot.EXCLUDED_EVENTS allowed (the wrapper\'s own gate)', ok)
-    # the shipped parity file passes as a whole (production's values are the in-place code's values); the same line
-    # from --set or from a copy of the file does not
-    check('G37: PARITY_FILE is the shipped parity file', os.path.isfile(K.PARITY_FILE), K.PARITY_FILE)
-    CFG.authorize([], out=TMP)
-    CFG.parity_replay = True              # as a --parity run into a non-production --out (the file holds protected lines)
-    try:
-        CFG.apply_override_file(K.PARITY_FILE)
-        n_g37 = sum(1 for o in CFG.overrides if o[0].split('.', 1)[0] in K.OWN_SECTIONS + K.IN_PLACE_SHARED)
-        try:
-            K.check_overrides()
-            ok, d = True, ''
-        except record.Refusal as e:
-            ok, d = False, str(e)
-    finally:
-        CFG.parity_replay = False
-        CFG.reset()
-    check('G37: the shipped parity file passes (%d of its lines are in the forced/in-place sections)' % n_g37,
-          ok and n_g37 >= 3, d)
-    cp = os.path.join(TMP, 'parity_copy.cfg')
-    shutil.copyfile(K.PARITY_FILE, cp)
-    for how, apply in (('--set', lambda: CFG.set('astrometry.LOC_ESTIMATOR', "'production'")),
-                       ('a copy of the parity file', lambda: CFG.apply_override_file(cp))):
+    def _g37(apply, parity=False):
+        """(passed, refusal text) of check_overrides after apply(); CFG reset whatever happens."""
         CFG.authorize([], out=TMP)
-        CFG.parity_replay = True
+        CFG.parity_replay = parity        # as a --parity run into a non-production --out (the parity file holds protected lines)
         try:
             apply()
-            try:
-                K.check_overrides()
-                ok, d = False, 'passed'
-            except record.Refusal as e:
-                ok, d = 'astrometry.LOC_ESTIMATOR' in str(e), str(e)
+            K.check_overrides()
+            return True, ''
+        except record.Refusal as e:
+            return False, str(e)
         finally:
             CFG.parity_replay = False
             CFG.reset()
-        check('G37: astrometry.LOC_ESTIMATOR from %s refused' % how, ok, d[:200])
+    ok, d = _g37(lambda: CFG.set('forced_snapshot.EXCLUDED_EVENTS', "'build'"))
+    check('G37: override of forced_snapshot.EXCLUDED_EVENTS allowed (the wrapper\'s own gate)', ok, d)
+    # astrometry keys that core.wrap passes to the in-place source_localization reach the products: allowed
+    from exopipe.phase3.core import wrap
+    wk = sorted(k for w in wrap.WRAPS.values() for k in w['keys'] if k.startswith('astrometry.'))
+    for k in wk:
+        ok, d = _g37(lambda: CFG.set(k, "'production'"))
+        check('G37: override of %s allowed (core.wrap passes it to the in-place module)' % k, ok, d)
+    check('G37: the wrap keys checked include astrometry.LOC_ESTIMATOR', 'astrometry.LOC_ESTIMATOR' in wk, wk)
+    # the shipped parity file passes as a whole; each of its lines in G37's sections passes on its own merits
+    pf = os.path.join(REPO, 'exopipe', 'phase3', 'parity', 'production_20261013.cfg')
+    seen = []
+    def _apply_pf():
+        CFG.apply_override_file(pf)
+        seen.extend(o[0] for o in CFG.overrides if o[0].split('.', 1)[0] in K.OWN_SECTIONS + K.IN_PLACE_SHARED)
+    ok, d = _g37(_apply_pf, parity=True)
+    check('G37: the shipped parity file passes (its lines in G37\'s sections: %s)' % ', '.join(seen),
+          ok and {'astrometry.LOC_ESTIMATOR', 'forced_snapshot.EXCLUDED_EVENTS'} <= set(seen), d)
     import importlib
     mod = importlib.import_module('exopipe.phase3.steps.forced')
     from exopipe.phase3 import config
