@@ -63,9 +63,10 @@ def limit_threads(n):
 
 
 def pool_worker_init(threads=1):
-    """A pool worker forked from the step process inherits the CLI's SIGTERM handler (cli._sigterm_interrupts: Terminated, as
-    for Ctrl-C); Pool.terminate() ends its workers with SIGTERM, so a worker takes the default action instead. Its BLAS /
-    OpenMP threads are capped at ``threads`` (the step's --threads, else 1: the step's processes are its parallelism)."""
+    """Pool worker setup. SIGTERM: the default action (Pool.terminate() ends its workers with SIGTERM). Since 2026-11-17 the CLI
+    already gives every child forked from a step that default (cli._reset_inherited_sigterm); the reset here is kept for this
+    module's use outside the CLI. Its BLAS / OpenMP threads are capped at ``threads`` (the step's --threads, else 1: the step's
+    processes are its parallelism)."""
     import signal
     signal.signal(signal.SIGTERM, signal.SIG_DFL)
     limit_threads(threads)
