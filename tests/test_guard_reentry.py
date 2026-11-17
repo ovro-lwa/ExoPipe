@@ -94,6 +94,7 @@ except RecursionError as e:
 else:
     import numpy as np
     out['import'] = 'ok'
+    out['use_memmap'] = bool(fits.conf.use_memmap)
     out['patched'] = sorted('%s.%s' % (getattr(o, '__name__', type(o).__name__), a)
                             for (o, a, k) in st.get('patched', []) if 'writeto' in k)
     out['wrappers'] = [fits.HDUList.writeto.__name__, fits.writeto.__name__]
@@ -119,6 +120,13 @@ class _Scratch(object):
 
     def __init__(self):
         self.d = tempfile.mkdtemp(prefix='exopipe3_guard_reentry_')
+        try:
+            self._fill()
+        except BaseException:
+            self.close()
+            raise
+
+    def _fill(self):
         self.child = os.path.join(self.d, 'reentry_child.py')
         with open(self.child, 'w') as f:
             f.write(CHILD)
@@ -152,12 +160,15 @@ def _run(py, sc, pythonpath, mode='flag-on'):
            if k != 'PYTHONPATH' and not k.startswith('EXOPIPE3_') and not k.startswith('SUBLST_')}
     env.update(PYTHONPATH=os.pathsep.join(pythonpath), EXOPIPE3_PARITY_ROOT=sc.parity_root, SUBLST_CODE_ROOT=sc.frozen_root,
                NUMPY_MADVISE_HUGEPAGE='0')
-    p = subprocess.run([py, sc.child, res, mode, sc.outside, inside], env=env, stdout=subprocess.PIPE,
-                       stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, timeout=600)
-    written = [sc.outside + '.' + w + '.fits' for w in ('fits.writeto', 'HDUList.writeto')]
-    written = [q for q in written if os.path.exists(q)]
-    for q in written:
-        os.remove(q)
+    written = []
+    try:
+        p = subprocess.run([py, sc.child, res, mode, sc.outside, inside], env=env, stdout=subprocess.PIPE,
+                           stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, timeout=600)
+    finally:
+        for q in [sc.outside + '.' + w + '.fits' for w in ('fits.writeto', 'HDUList.writeto')]:
+            if os.path.exists(q):
+                written.append(q)
+                os.remove(q)
     assert p.returncode == 0 and os.path.isfile(res), (py, pythonpath, mode, p.returncode,
                                                        p.stdout.decode('utf-8', 'replace')[-3000:])
     with open(res) as f:
@@ -183,6 +194,7 @@ def _check_ok(r, what, alone=None):
         assert got.startswith('ParityWriteRefused: ') and got.endswith(label), (what, 'outside write', w, got)
     assert r['outside_written'] == [], (what, 'written outside the allowed roots', r['outside_written'])
     assert r['inside'] is True, (what, 'a write under the parity root failed', r)
+    assert r['use_memmap'] is False, (what, 'astropy memory maps are on: the no-mmap finder did not run', r)
 
 
 def _order(r, first, what):
@@ -239,21 +251,29 @@ def test_hook_with_standin_frozen_guard():
 def test_hook_with_real_frozen_guard_and_site_interpreters():
     """The cluster: the real frozen-code guard (this interpreter), then the site's py36 and flow interpreters with the
     stand-in and the real guard."""
-    site = os.environ.get('EXOPIPE3_SITE') or SITE_FILE
-    if not os.path.isfile(site) or not os.path.isfile(os.path.join(FROZEN_GUARD, 'sitecustomize.py')):
-        print('      (skipped: no site file %s or no frozen-code guard %s on this node)' % (site, FROZEN_GUARD))
+    explicit = os.environ.get('EXOPIPE3_SITE')
+    site = explicit or SITE_FILE
+    if not explicit and not os.path.isfile(site):
+        print('      (skipped: no site file %s - not the cluster)' % site)
         return
-    os.environ.setdefault('EXOPIPE3_SITE', site)
-    from exopipe.phase3.core import legacy
-    sc = _Scratch()
+    assert os.path.isfile(site), ('EXOPIPE3_SITE names no file', site)
+    assert os.path.isfile(os.path.join(FROZEN_GUARD, 'sitecustomize.py')), (
+        'the cluster (site file %s) without the real frozen-code guard %s' % (site, FROZEN_GUARD))
+    os.environ['EXOPIPE3_SITE'] = site
+    sc = None
     try:
+        from exopipe.phase3.core import legacy
+        sc = _Scratch()
         lines = [x for x in _matrix(sys.executable, sc, [FROZEN_GUARD]) if 'hook alone' not in x]
         for key in ('py36', 'flow'):
             lines += _matrix(legacy.interpreter(key), sc, [sc.standin, FROZEN_GUARD])
         for line in lines:
             print(line)
     finally:
-        sc.close()
+        if sc is not None:
+            sc.close()
+        if not explicit:
+            os.environ.pop('EXOPIPE3_SITE', None)
 
 
 if __name__ == '__main__':
