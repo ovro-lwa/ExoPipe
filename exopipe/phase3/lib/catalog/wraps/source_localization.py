@@ -8,7 +8,9 @@ clv15 phase3_snapshot_anchor.py and sublst_pertie.py all get the same estimator.
 the production package (source_localization.py puts /lustre/gh/main/exopipe first on sys.path), so this file imports nothing
 from the branch; core/fallback.py arrives as an argument (loaded by path by the finder).
 
-Pin: the sha1 of the whole production FILE (its bytes) at exopipe_ops 70654c1 (source_localization.py, 2026-10-31 20:02; re-ported
+Pin: the sha1 of the whole production FILE (its bytes) at exopipe_ops faaa48c (2026-11-17 08:20, the deep chat's no-mmap commit:
+master_context reads the master cutout through .section with memmap=False and __main__ sets fits.conf.use_memmap = False -
+neither is wrapped here, the four pinned functions are unchanged; re-ported 2026-11-17). Before: 70654c1 (2026-10-31 20:02; re-ported
 2026-11-02 from 940bc26: RA ACROSS 0h - combine() places members that straddle 0h within 180 deg of the first and returns the RA in
 [0, 360) only then; consistency / crossmatch / master_context / locate take every RA difference across 0h (_dra); crossmatch strips
 the '(7.8 arcmin, ...)' statistics after the name.  The wrapped estimator below takes the same placement; locate is production's,
@@ -23,7 +25,7 @@ from astropy.io import fits as _fits_nommap   # noqa: E402
 _fits_nommap.conf.use_memmap = False   # never memory-map a Lustre file, also when run by path (R-GREGG-20261117-NO-MMAP-OF-LUSTRE-FILES-READ-OR-WRITE)
 import math
 
-FILE_SHA1 = 'c975d68c9f510e74f9bf3db3aafb34562b720773'               # source_localization.py at exopipe_ops 70654c1
+FILE_SHA1 = '84a13074beceb325f21927c098063324154629c4'               # source_localization.py at exopipe_ops faaa48c
 PINS = {'combine': '93f9d36c5ee582b86f2dc0b9cdf5cbd0b56e570e',       # source_localization.py:291-329 (70654c1: across 0h)
         'detections': '55e147a0bfb38a5a9206c3b2302b39a3747f3804',    # :160-227 (940bc26: survivor_paths / ident_rows / member_rows)
         'beam_as': 'c3ba730f3a5a4bd898a2e2a6361b50df81956b35',       # :76-88
