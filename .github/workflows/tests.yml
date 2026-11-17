@@ -64,3 +64,5 @@ jobs:
         run: python tests/test_catalog_night_view.py
       - name: follow-up 10-s light curve reads the search's frames and honors exclusion
         run: python tests/test_followup_snapshot_frames.py
+      - name: TESS orbit table refresh step (content checks, refusals keep the table, complete only 14 days ahead)
+        run: python tests/test_tess_orbits.py

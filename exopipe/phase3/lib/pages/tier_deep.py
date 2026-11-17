@@ -295,7 +295,19 @@ def stage_tess(c, run, done):
             if D.TESS_IS_GATE:
                 raise common.Refusal(msg)
             raise common.NoInput(msg)
-        args = ['--run', c.U] + ([] if D.TESS_STOKES == 'I,V' else ['--stokes', D.TESS_STOKES])
+        if not D.TESS_REFRESH_IN_READER:             # the reader does not fetch: its table must reach now (epochs after its end
+            from exopipe.phase3.lib.pages import tess_orbits   # get no coverage); the refresh step keeps it at now + 14 days
+            table = os.path.join(os.path.dirname(script), 'TESS_orbit_times.csv')
+            why = tess_orbits.stale_for_reader(table)
+            if why:                                  # as every TESS failure: no-input with the reason (TESS_IS_GATE False, B-30)
+                msg = (f"TESS COVERAGE NOT COMPUTED: the orbit table {table} {why} - the refresh step (python -m "
+                       f"exopipe.phase3.lib.pages.tess_orbits) has not kept it current and the reader runs with --no-refresh")
+                if D.TESS_IS_GATE:
+                    raise common.Refusal(msg)
+                raise common.NoInput(msg)
+            u.check('pages.tess_orbit_table_reaches_now', True, None, f'{table} reaches now', path=table)
+        args = (['--run', c.U] + ([] if D.TESS_STOKES == 'I,V' else ['--stokes', D.TESS_STOKES])
+                + ([] if D.TESS_REFRESH_IN_READER else ['--no-refresh']))   # the table is then refreshed by lib/pages/tess_orbits.py
         res = common.lrun(u, script, args, python='tess', cwd=c.U, log=os.path.join(c.U, 'pages_tess.log'))
         if not res.ok:
             msg = f"TESS COVERAGE FAILED - the pages will say 'coverage not computed' ({res.reason})"

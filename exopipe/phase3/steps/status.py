@@ -60,7 +60,7 @@ Failure modes (exit 2 = refused, the gate named; 3 = no input; 1 = error):
   status.PROTECTED_OUTPUTS while paths.PRODUCTION_WRITES is False   S-G3  a planned output in status.NEVER_WRITE
   (data_decisions.csv, the installed solar audit), at any time; the solar stage also checks the installed table unchanged
   S-G5  a stage whose input is node-local to another host (site NODE_LOCAL_ROOTS; /data07 and /fast on lwacalim07)
-  S-G6  conformance: the branch membership module differs from production (other than import lines)
+  S-G6  conformance: the branch membership module differs from production (other than import lines and the no-mmap switch)
   S-G7  served-diff: a run without served catalogues (exit 3) or two runs of different tiers (exit 2)
   S-G8  batch-list without --base (window)    S-G9  pages: the night-page content test (P1-P4, P5) fails
   S-G10 ledger with --cells/--lsts/--nights   S-G11 an empty root key   S-G12 qa provenance without --run

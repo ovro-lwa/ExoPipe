@@ -1449,6 +1449,31 @@ def test_every_content_test_has_a_negative():
     check(f'every status content test ({len(want)}) has a negative test that makes it fail', not missing, missing)
 
 
+def test_served_row():
+    """The hub serves a tier's '<key>-comb' row when it is live, else the key's own row (ops/build_review_hub.py tier_page);
+    status reads the same row (2026-11-17: the snapshot '10-sec' row still names the retired Run_SNAPCOMB_20261026)."""
+    from exopipe.phase3.lib.status.steps_common import served_row
+    reg = {'V': {'10-sec': {'run': 'Run_OLD', 'live': True}, '10-sec-comb': {'run': 'Run_COMB', 'live': True},
+                 '1-min': {'run': 'Run_1M', 'live': True}, '1-min-comb': {'run': 'Run_1MC', 'live': False}}}
+    check("served row: the live '-comb' row wins; a '-comb' row not live, or none, leaves the key's own row; no Stokes = no row",
+          served_row(reg, 'V', '10-sec') == ('10-sec-comb', reg['V']['10-sec-comb'])
+          and served_row(reg, 'V', '1-min') == ('1-min', reg['V']['1-min'])
+          and served_row(reg, 'V', '1-hour') == ('1-hour', None) and served_row(reg, 'I', '10-sec') == ('10-sec', None))
+    from exopipe.phase3.lib.serve import hub
+    check("served row: the hub's page is the same row (one rule, lib/serve/hub.tier_key)",
+          all(hub.tier_page(reg, 'V', k) is served_row(reg, 'V', k)[1] for k in ('10-sec', '1-min', '1-hour')))
+
+
+def test_drift_lines():
+    """S-G6: the no-mmap switch is a permitted difference only where the branch has it."""
+    from exopipe.phase3.lib.status.steps_hub import drift_lines
+    sw = '_fits_nommap.conf.use_memmap = False   # never memory-map a Lustre file'
+    prod, branch = ['import os', 'X = 1'], ['import os', 'import astropy.io.fits as _fits_nommap', sw, 'X = 1']
+    check('S-G6: the branch adding the switch (and its import) is not drift', drift_lines(prod, branch) == [])
+    check('S-G6: the branch lacking a switch that production has is drift', drift_lines(branch, prod) == ['-' + sw])
+    check('S-G6: any other line differing is drift', drift_lines(prod, ['import os', 'X = 2']) == ['-X = 1', '+X = 2'])
+
+
 def main():
     with world():
         for t in (test_config_and_help, test_summary, test_coverage_gaps, test_rebuild_due, test_exclusion_conformance,
@@ -1458,7 +1483,7 @@ def main():
             print(f'--- {t.__name__}')
             t()
             print(f'    ({time.time() - t0:.1f} s)')
-    for t in (test_real_products, test_real_dry_runs, test_real_coverage_records, test_real_summary_parity,
+    for t in (test_served_row, test_drift_lines, test_real_products, test_real_dry_runs, test_real_coverage_records, test_real_summary_parity,
               test_every_content_test_has_a_negative):
         t0 = time.time()
         print(f'--- {t.__name__}')

@@ -573,9 +573,10 @@ def _snapshot_runs_now():
     reg_p = CFG.status.REGISTRY_FILE.format(hub=CFG.serve.HUB_DIR)
     with open(reg_p) as fh:
         reg = json.load(fh)
-    key = CFG.status.REGISTRY_KEYS['snapshot'][-1]
+    from exopipe.phase3.lib.status.steps_common import served_row
+    key, row = served_row(reg, 'V', CFG.status.REGISTRY_KEYS['snapshot'][-1])   # the '-comb' row when live, as the hub serves
     try:
-        run = reg['V'][key]['run']
+        run = row['run']
     except (KeyError, TypeError):
         raise AssertionError(f'{reg_p} names no Stokes V {key!r} run: the served snapshot products cannot be sampled')
     view = os.path.join(SNAP_REVIEW, run)
