@@ -1721,13 +1721,31 @@ if _spec is not None:
 """
 
 
+# a finder WITHOUT find_spec (the Python 3.6-era find_module protocol), first on the path, that supplies phase2_config from
+# another copy: the check must see the module the import system would load, not skip that finder
+GT_LEGACY = """
+import os, sys
+import importlib.machinery as _lm
+class Legacy(object):
+    def find_module(self, name, path=None):
+        if name == 'exopipe.common.phase2_config':
+            return _lm.SourceFileLoader(name, %r)
+        return None
+sys.meta_path.insert(0, Legacy())
+_spec = _lm.PathFinder.find_spec('sitecustomize', [p for p in sys.path if p and os.path.abspath(p) != os.path.dirname(os.path.abspath(__file__))])
+if _spec is not None:
+    exec(compile(open(_spec.origin).read(), _spec.origin, 'exec'), {'__name__': 'sitecustomize', '__file__': _spec.origin})
+"""
+
 def test_item7_gittag_child():
     """B-30 GITTAG_FALLBACK in a legacy child (core/parity_sitecustomize, after record.check_code_identity covers the step's
     own process): a child that imports exopipe.common.phase2_config while git cannot read its tree (GIT_DIR pointing nowhere)
     reaches the site - under the ruled 'refuse' the import raises, the child swallows it and exits 0, and the parent's unit
     refuses all the same; under 'fallback' (production's behavior) it is counted once and the child keeps 'clv15'. A child
     whose tree git reads reaches no site. With a finder first on the path that asks every finder (the frozen-code guard's
-    pattern) the check still runs and the import does not recurse."""
+    pattern) the check still runs and the import does not recurse. A copy of the code inside ANOTHER repository resolves a
+    hex commit - that repository's - and refuses all the same (record.code_identity_problems' rule); so does that copy
+    supplied by a finder without find_spec ahead of the path (the check sees what the import loads)."""
     import re as _re
     from exopipe.phase3.core import fallback, legacy, record
     K = 'fallbacks.GITTAG_FALLBACK'
@@ -1764,6 +1782,42 @@ def test_item7_gittag_child():
             res = legacy.run(wrap, env=nogit, log=os.path.join(d, 'g2.log'), unit=u)
             u.add_output(out, 'csv_table')
         assert 'RecursionError' not in res.tail and res.refused and K in res.reason, (res.rc, res.reason, res.tail[-600:])
+        assert u.status == 'refused', (u.status, u.reason)
+        # a copy inside another repository: git resolves the OUTER checkout's commit (hex), which names other code
+        import shutil
+        import subprocess
+        outer = os.path.join(d, 'outer')
+        nested = os.path.join(outer, 'nested')
+        os.makedirs(os.path.join(nested, 'exopipe', 'common'))
+        for f in (('exopipe', '__init__.py'), ('exopipe', 'common', '__init__.py')):
+            open(os.path.join(nested, *f), 'w').close()
+        copy = os.path.join(nested, 'exopipe', 'common', 'phase2_config.py')
+        for f in ('phase2_config.py', 'pipeline_config.py'):        # phase2_config imports pipeline_config
+            shutil.copy(os.path.join(REPO, 'exopipe', 'common', f), os.path.join(nested, 'exopipe', 'common', f))
+        subprocess.run(['git', 'init', '-q', outer], check=True)
+        subprocess.run(['git', '-C', outer, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty',
+                        '-m', 'outer'], check=True)
+        nscript = os.path.join(d, 'child_nested.py')
+        open(nscript, 'w').write(GT_CHILD % nested)
+        with run.unit('nested_refuse') as u:
+            res = legacy.run(nscript, log=os.path.join(d, 'g4.log'), unit=u)
+            u.add_output(out, 'csv_table')
+        assert res.rc == 0 and res.refused and K in res.reason, (res.rc, res.reason, res.tail[-600:])
+        assert 'a copy inside another repository' in res.tail and 'import failed: FallbackRefused' in res.tail, res.tail
+        assert u.status == 'refused', (u.status, u.reason)
+        # the same copy supplied by a find_module-only finder first on the path (the readable tree REPO is on sys.path):
+        # the check runs on the copy the import loads, not on the copy PathFinder would have found
+        leg = os.path.join(d, 'legacy_finder')
+        os.makedirs(leg)
+        open(os.path.join(leg, 'sitecustomize.py'), 'w').write(GT_LEGACY % copy)
+        lwrap = os.path.join(d, 'lwrap.py')
+        open(lwrap, 'w').write('import os, subprocess, sys\n'
+                               f'env = dict(os.environ, PYTHONPATH={leg!r} + os.pathsep + os.environ["PYTHONPATH"])\n'
+                               f'sys.exit(subprocess.call([sys.executable, {script!r}], env=env))\n')
+        with run.unit('legacy_finder_refuse') as u:
+            res = legacy.run(lwrap, log=os.path.join(d, 'g5.log'), unit=u)
+            u.add_output(out, 'csv_table')
+        assert res.refused and K in res.reason and copy in res.tail, (res.rc, res.reason, res.tail[-600:])
         assert u.status == 'refused', (u.status, u.reason)
         CFG.set(K, 'fallback')
         with run.unit('unreadable_counts') as u:
