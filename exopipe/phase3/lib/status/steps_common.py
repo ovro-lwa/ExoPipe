@@ -283,9 +283,16 @@ def fits_cards(path):
 # ---------------------------------------------------------------------------------------------------------------------
 
 def registry():
+    """(path, the hub registry). The registry is an input: node-local to another host it refuses with the host named
+    (S-G5), absent it refuses (need_inputs), unreadable or not JSON it refuses - before 2026-11-17 an uncaught
+    FileNotFoundError on a host without it (status parity on lwacalim00). Callers that only report it catch Refusal."""
     p = expand(cfg().status.REGISTRY_FILE)
-    with open(p) as f:
-        return p, json.load(f)
+    need_inputs([p], 'hub registry')
+    try:
+        with open(p) as f:
+            return p, json.load(f)
+    except (OSError, ValueError) as e:
+        raise Refusal(f'hub registry {p} unreadable ({type(e).__name__}: {e})')
 
 
 def served_row(reg, S, k):
@@ -297,7 +304,8 @@ def served_row(reg, S, k):
 
 
 def served_runs(tier):
-    """{run name: [registry rows]} served for the tier according to the hub registry (read only, B-56)."""
+    """{run name: [registry rows]} served for the tier according to the hub registry (read only, B-56; a registry not
+    readable here refuses, registry())."""
     _, reg = registry()
     keys = cfg().status.REGISTRY_KEYS.get(tier, ())
     out = {}

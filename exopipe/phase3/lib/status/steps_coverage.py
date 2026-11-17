@@ -246,11 +246,9 @@ def sublst_generation(run_dir):
 
 
 def served_sublst_lsts():
-    """LSTs the hub registry says the served sub-LST run covers (its generation text 'LSTs: 00h 01h ...')."""
-    try:
-        _, reg = K.registry()
-    except (OSError, ValueError):
-        return set(), ''
+    """LSTs the hub registry says the served sub-LST run covers (its generation text 'LSTs: 00h 01h ...'). A registry not
+    readable here refuses the coverage (2026-11-17): before, every row read served 0."""
+    _, reg = K.registry()
     keys = K.cfg().status.REGISTRY_KEYS.get('sublst', ())
     for S in ('V', 'I'):
         for k in keys:
@@ -431,7 +429,6 @@ def snapshot_reasons(r):
 
 
 def served_snapshot_runs():
-    try:
-        return sorted(K.served_runs('snapshot'))
-    except (OSError, ValueError):
-        return []
+    """The served snapshot runs (hub registry). A registry not readable here refuses the coverage (2026-11-17): before, the
+    table was written with every served_run left empty."""
+    return sorted(K.served_runs('snapshot'))
