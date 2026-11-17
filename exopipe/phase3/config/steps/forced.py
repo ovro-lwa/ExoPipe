@@ -157,8 +157,9 @@ class forced_snapshot(_Section):
     VERIFY_SNR_TOL = 0.01                        # |S/N| stage 1 vs evaluation (:1365)
     SKIP_FIELDS = ('cell', 'sample', 'target', 'band', 'stokes', 'tier', 'ts', 'snr', 'screen', 'skip_reason')   # :574
     # the in-place build's list of the selected measurements it LEFT OUT because data_decisions.csv excludes their cell-band
-    # (snapshot_forced_panels.cmd_build, exopipe_ops 122e4d7 2026-11-12, FINDING-20261112-FORCED-PAGES-EXCLUDED-NIGHT-
-    # TIER-LABEL item 1): one '# left out: ...' line, then these columns; written even when none
+    # (snapshot_forced_panels.cmd_build, exopipe_ops 122e4d7 2026-11-12, after the forced pages were found serving events of
+    # a night excluded after their build): one '# left out: ...' line, then these columns (production's own list, kept
+    # separate from SKIP_FIELDS on purpose); written even when none
     EXCLUDED_FILE = 'excluded_events.csv'
     EXCLUDED_FIELDS = ('cell', 'sample', 'target', 'band', 'stokes', 'tier', 'ts', 'snr')
     FLOW_ENV = {'P3_SNAP_FLOW': '1'}             # the module's own setdefault (:34), passed explicitly (legacy.run clears P3_*)

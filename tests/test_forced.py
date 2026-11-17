@@ -574,12 +574,19 @@ def _mut(path, old, new):
     return txt
 
 
-def _exclusions(root, rows=()):
-    from exopipe.phase3.core.exclusions import Exclusions
-    dd = os.path.join(root, 'dd_%d.csv' % len(rows))
+_NDD = [0]
+
+
+def _exclusions(root, rows=(), gpu_cells=()):
+    """The snapshot tiers' read (core.exclusions.PerNight, as the content test's default) of a synthetic exclusion list:
+    rows (lst, subband, date[, reason]); gpu_cells [(lst, date)] the GPU-frame cells (scope 'snapshot-gpu' there)."""
+    from exopipe.phase3.core.exclusions import PerNight
+    _NDD[0] += 1
+    dd = os.path.join(root, 'dd_%03d.csv' % _NDD[0])                  # one file per read, never reused
     with open(dd, 'w') as f:
-        f.write('lst,subband,date,verdict,reason\n' + ''.join('%s,%s,%s,exclude,synthetic\n' % r for r in rows))
-    return Exclusions(dd)
+        f.write('lst,subband,date,verdict,reason\n' + ''.join(
+            '%s,%s,%s,exclude,%s\n' % (r[0], r[1], r[2], r[3] if len(r) > 3 else 'synthetic') for r in rows))
+    return PerNight(dd, gpu_cells=list(gpu_cells), fresh=True)
 
 
 def test_snapshot_tests():
@@ -653,15 +660,39 @@ def test_snapshot_tests():
                                                                        [('04h', '46MHz', '2025-01-01')])})
     check('forced_event_build refuses a build event on an excluded cell-band (exclusion is absolute)',
           not ok and 'build event(s) on a cell-band' in d, d)
+    # a GPU-readmitted exclusion row (survey frames bad, GPU frames good) excludes a cell without GPU frames, not a GPU cell
+    rd = ('04h', '46MHz', '2025-01-01', CFG.exclusions.GPU_READMIT_TAG + '] synthetic')
+    ok, d = _one('forced_event_build', q, **{'exclusions': _exclusions(os.path.join(TMP, 'snap'), [rd])})
+    check('a GPU-readmitted row excludes the cell when it has no GPU frames (the build event refuses)',
+          not ok and 'build event(s) on a cell-band' in d, d)
+    ok, d = _one('forced_event_build', q, **{'exclusions': _exclusions(os.path.join(TMP, 'snap'), [rd],
+                                                                       gpu_cells=[('04h', '2025-01-01')])})
+    check('... and not on a GPU-frame cell (scope snapshot-gpu there: the event stands)', ok, d)
+    # a build made before the in-place build wrote excluded_events.csv: judged with an empty list
     ep = os.path.join(R, CFG.forced_snapshot.EXCLUDED_FILE)
     os.rename(ep, ep + '.x')
     ok, d = _one('forced_event_build', q, **EX0)
-    check('forced_event_build refuses a build without excluded_events.csv', not ok and 'no excluded_events.csv' in d, d)
+    check('a build without excluded_events.csv passes when nothing selected is excluded (and says so)',
+          ok and 'no excluded_events.csv' in d, d)
+    with open(tp, 'a', newline='') as f:
+        csv.DictWriter(f, fieldnames=t0.splitlines()[0].split(',')).writerow(excl_row)
+    ok, d = _one('forced_event_build', q, **EX6)
+    check('... and refuses when a selected row on an excluded night is then unaccounted for',
+          not ok and 'neither built, skipped nor absorbed' in d, d)
     os.rename(ep + '.x', ep)
+    # misshapen or foreign rows refuse as a result, never as an exception
+    _excl_file(R, [dict(excl_row, stokes='I')])
+    ok, d = _one('forced_event_build', q, **EX6)
+    check('forced_event_build refuses a listed row of another Stokes (the V row it would stand for is unaccounted)',
+          not ok and 'another Stokes or cadence' in d and 'neither built, skipped nor absorbed' in d, d)
+    _excl_file(R, [excl_row])
     t1 = _mut(ep, 'cell,', 'cellx,')
-    ok, d = _one('forced_event_build', q, **EX0)
-    check('forced_event_build refuses excluded_events.csv with other columns', not ok and 'columns' in d, d)
+    ok, d = _one('forced_event_build', q, **EX6)
+    check('forced_event_build refuses excluded_events.csv with other columns (a data row present: no KeyError)',
+          not ok and 'columns' in d, d)
     open(ep, 'w').write(t1)
+    _excl_file(R, [])
+    open(tp, 'w').write(t0)
     ok, d = _one('forced_event_build', q, **EX0)
     check('forced_event_build passes again on the restored run', ok, d)
     # the selection used for no-input matches the synthetic evaluation (2 of 4 rows: below threshold and zone excluded)
