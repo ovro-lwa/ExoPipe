@@ -1070,6 +1070,19 @@ def test_item5_cli_parity_flag():
         assert r.returncode == 0 and os.path.isfile(os.path.join(out, 'failing.txt')), r.stderr
 
 
+def test_item5_umask_group_writable():
+    """core/env.apply (cli.py at import and in main): umask 0002 whatever the caller's (a batch job's non-login shell gives user
+    pipeline 0022) - a step's files are group-writable; a child process inherits it."""
+    code = ('import os, subprocess, sys; os.umask(0o022); from exopipe.phase3.core import env; env.apply(); '
+            'print(oct(os.umask(0o002))); sys.stdout.flush(); subprocess.run(["sh", "-c", "umask"])')
+    e = dict(os.environ)
+    e['PYTHONPATH'] = REPO + (os.pathsep + e['PYTHONPATH'] if e.get('PYTHONPATH') else '')
+    r = subprocess.run([PY, '-c', code], cwd=REPO, env=e, capture_output=True, text=True, timeout=120)
+    assert r.returncode == 0 and r.stdout.split() == ['0o2', '0002'], (r.stdout, r.stderr[-500:])
+    src = open(os.path.join(REPO, 'exopipe', 'phase3', 'cli.py')).read()
+    assert '_env.apply()            # before anything imports numpy' in src and '_env.apply(args.threads)' in src
+
+
 # =====================================================================================================================
 # item 6 - verify compare
 # =====================================================================================================================
