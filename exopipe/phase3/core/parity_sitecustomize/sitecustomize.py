@@ -4,7 +4,8 @@
 # legacy scripts included - imports this file at start-up and installs core/guard.py: a write outside the parity roots
 # raises a PermissionError naming the path instead of touching a production tree. An INJECTED run (core/injected.py) exports
 # the same variable over its scratch roots; with EXOPIPE3_INJECTED set the guard is labelled INJECTED-RUN GUARD and raises
-# InjectedWriteRefused. With EXOPIPE3_PARITY_ROOT unset this file does nothing but chain to the next sitecustomize on the
+# InjectedWriteRefused. With EXOPIPE3_PARITY_ROOT unset no write guard is installed; the blocks below (import wraps, GITTAG
+# policy, the FITS no-memory-map default of every process) still act, and the file chains to the next sitecustomize on the
 # path. Python 3.6+.
 import os
 import sys
@@ -324,6 +325,76 @@ if os.environ.get('EXOPIPE3_FALLBACK_POLICY'):
                 ld.load_module = _load
             return spec
     sys.meta_path.insert(0, _GittagFinder())
+
+# NO FITS MEMORY MAP BY DEFAULT (Gregg 2026-11-17, R-GREGG-20261117-NO-MMAP-OF-LUSTRE-FILES-READ-OR-WRITE: never memory-map a
+# Lustre file, for reading or writing; the 11-09 and 11-16 lwacalim07 Lustre client crashes were on mapped pages). astropy's
+# fits.open / getdata map the file unless fits.conf.use_memmap is False. exopipe/__init__.py turns it off in every process
+# that imports exopipe; the production scripts run in place (core.legacy.run, serve's shell scripts) do not import it, so
+# here, in every process that loads this file, the switch is set right after astropy.io.fits finishes loading - by a
+# meta-path finder that wraps the module's loader. astropy is never imported here (a process that reads no FITS file pays one
+# name comparison per import). Every astropy of the site interpreters reads the switch the same way (4.1 under py36, 5.2
+# under default = py38, 6.1 under flow, 8.0 under tess: fitsopen takes memmap=None to mean the switch). An explicit
+# memmap=True stays a map: its owner converts it (tests/test_no_mmap.py). The finder asks only the finders AFTER it, with a
+# re-entry flag (as _GittagFinder above): a finder that asks EVERY finder (the parity guard's astropy hook in core/guard.py,
+# the sub-LST frozen-code guard) gets None from it while it is busy, or its wrapped spec; the loader the import uses is
+# wrapped once. Idempotent: installed once per process; a module loaded before this file gets the switch at once.
+_FITS_MOD = 'astropy.io.fits'
+
+
+def _fits_no_mmap(module):
+    module.conf.use_memmap = False
+
+
+class _FitsNoMmapFinder(object):
+    _busy = False
+
+    def find_spec(self, name, path=None, target=None):
+        if name != _FITS_MOD or self._busy:
+            return None
+        later = sys.meta_path[sys.meta_path.index(self) + 1:] if self in sys.meta_path else []
+        spec = None
+        self._busy = True
+        try:
+            for f in later:                     # the spec the import would get without this finder
+                fs = getattr(f, 'find_spec', None)
+                if fs is not None:
+                    spec = fs(name, path, target)
+                elif hasattr(f, 'find_module') and sys.version_info < (3, 12):  # a finder without find_spec, as the
+                    import importlib.util as _iutil_m                             # import system uses it before 3.12
+                    ld = f.find_module(name, path)
+                    spec = _iutil_m.spec_from_loader(name, ld) if ld is not None else None
+                if spec is not None:
+                    break
+        finally:
+            self._busy = False
+        if spec is None or spec.loader is None:
+            return spec
+        ld = spec.loader
+        # the switch is set only for this module even when a finder hands out one loader for many modules
+        if hasattr(ld, 'exec_module'):
+            _orig = ld.exec_module
+
+            def _exec(module, _orig=_orig):
+                _orig(module)
+                if getattr(module, '__name__', None) == _FITS_MOD:
+                    _fits_no_mmap(module)
+            ld.exec_module = _exec
+        elif hasattr(ld, 'load_module'):        # a loader without exec_module
+            _orig_l = ld.load_module
+
+            def _load(fullname, _orig_l=_orig_l):
+                m = _orig_l(fullname)
+                if fullname == _FITS_MOD:
+                    _fits_no_mmap(m)
+                return m
+            ld.load_module = _load
+        return spec
+
+
+if not any(type(f).__name__ == '_FitsNoMmapFinder' for f in sys.meta_path):
+    sys.meta_path.insert(0, _FitsNoMmapFinder())
+if _FITS_MOD in sys.modules:
+    _fits_no_mmap(sys.modules[_FITS_MOD])
 
 # chain to any other sitecustomize on the path (the environment's own, if it has one) - never back to the sitecustomize
 # Python imported at start-up when that is another file which chained here (the sub-LST frozen-code guard first on the
