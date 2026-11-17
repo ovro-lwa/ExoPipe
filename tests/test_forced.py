@@ -480,6 +480,17 @@ def _w(path, cols, rows):
             wr.writerow({c: r.get(c, '') for c in cols})
 
 
+def _excl_file(R, rows):
+    """excluded_events.csv as the in-place build writes it (snapshot_forced_panels.cmd_build): a comment line, the columns."""
+    p = os.path.join(R, CFG.forced_snapshot.EXCLUDED_FILE)
+    with open(p, 'w', newline='') as f:
+        f.write('# left out: cell-band excluded by data_decisions.csv (scope snapshot-gpu), read 2026-11-17T00:00:00Z\n')
+        wr = csv.DictWriter(f, fieldnames=list(CFG.forced_snapshot.EXCLUDED_FIELDS), extrasaction='ignore')
+        wr.writeheader()
+        wr.writerows(rows)
+    return p
+
+
 def _snap_run(root):
     """A synthetic snapshot forced run (Stokes V, 10s) in the production layout, consistent across its files."""
     ev_sb, ev_wb = os.path.join(root, 'eval_sb'), os.path.join(root, 'eval_wb')
@@ -518,6 +529,7 @@ def _snap_run(root):
     _w(os.path.join(R, 'source_catalogs', '55MHz_sources_survivors.csv'), ['source_id', 'ra', 'dec'],
        [dict(source_id='StarB', ra='50.0', dec='-10.0')])
     _w(os.path.join(R, 'skipped_events.csv'), list(CFG.forced_snapshot.SKIP_FIELDS), [])
+    _excl_file(R, [])
     fcols = ['cand_id', 'identity', 'target', 'sample', 'cell', 'band', 'stokes', 'tier', 'ts', 'snr', 'fit_kind',
              'fit_status', 'fit_ra_deg', 'fit_dec_deg', 'astrometric']
     fa = dict(cand_id=eva['cand_id'], identity='StarA', target='StarA', sample='10pc', cell='04h_2025-01-01', band='46MHz',
@@ -562,9 +574,18 @@ def _mut(path, old, new):
     return txt
 
 
+def _exclusions(root, rows=()):
+    from exopipe.phase3.core.exclusions import Exclusions
+    dd = os.path.join(root, 'dd_%d.csv' % len(rows))
+    with open(dd, 'w') as f:
+        f.write('lst,subband,date,verdict,reason\n' + ''.join('%s,%s,%s,exclude,synthetic\n' % r for r in rows))
+    return Exclusions(dd)
+
+
 def test_snapshot_tests():
     W, R, ev_sb, ev_wb = _snap_run(os.path.join(TMP, 'snap'))
-    cases = [('forced_event_build', os.path.join(R, 'queue.txt'), {}),
+    EX0 = {'exclusions': _exclusions(os.path.join(TMP, 'snap'))}
+    cases = [('forced_event_build', os.path.join(R, 'queue.txt'), EX0),
              ('forced_fits', os.path.join(R, 'forced_fits.csv'), {}),
              ('forced_ties', os.path.join(R, 'forced_ties.csv'), {}),
              ('forced_localization', os.path.join(R, 'source_catalogs', 'localizations.csv'), {}),
@@ -590,13 +611,59 @@ def test_snapshot_tests():
     for cls, p, old, new, what in muts:
         txt = _mut(p, old, new)
         path = dict((c, q) for c, q, _ in cases)[cls]
-        ok, d = _one(cls, path, **({'inplace': False} if cls == 'forced_assoc' else {}))
+        ok, d = _one(cls, path, **dict((c, x) for c, _, x in cases)[cls])
         check('%s refuses a mutated run (%s)' % (cls, what), not ok, d)
         open(p, 'w').write(txt)
     _png(os.path.join(R, 'candidates', 'V', 'rank0000_StarA', 'StarA_04h_2025-01-01_46MHz.png'), h=900)
     ok, d = _one('forced_event_panels', os.path.join(R, 'missing_panels.csv'))
     check('forced_event_panels refuses a panel without its light-curve strip (900 px)', not ok, d)
     _png(os.path.join(R, 'candidates', 'V', 'rank0000_StarA', 'StarA_04h_2025-01-01_46MHz.png'))
+    # EXCLUSION (production exopipe_ops 122e4d7): the in-place build leaves out a selected measurement on a cell-band
+    # data_decisions.csv excludes and lists it in excluded_events.csv; the content test accounts for it there, and refuses
+    # a build event on an excluded cell-band, an unlisted left-out row, a listed row that is not excluded, a listed row that
+    # was never selected, and a missing or misshapen list
+    q = os.path.join(R, 'queue.txt')
+    excl_row = dict(cell='06h_2025-01-03', sample='10pc', target='StarA', band='46MHz', stokes='V', tier='10s',
+                    ts='20250103_060000', snr='8.5', screen='clean', sample_frac_ge='1e-6', p_gauss='1e-9')
+    tp = os.path.join(ev_sb, 'targets_ge4.csv')
+    t0 = open(tp).read()
+    with open(tp, 'a', newline='') as f:
+        csv.DictWriter(f, fieldnames=t0.splitlines()[0].split(',')).writerow(excl_row)
+    EX6 = {'exclusions': _exclusions(os.path.join(TMP, 'snap'), [('06h', '46MHz', '2025-01-03')])}
+    ok, d = _one('forced_event_build', q, **EX6)
+    check('forced_event_build refuses a selected row on an excluded night that the build neither built nor listed',
+          not ok and 'neither built, skipped nor absorbed' in d, d)
+    _excl_file(R, [excl_row])
+    ok, d = _one('forced_event_build', q, **EX6)
+    check('forced_event_build passes when that row is listed in excluded_events.csv (1 left out)',
+          ok and '1 left out on excluded cell-bands' in d, d)
+    ok, d = _one('forced_event_build', q, **EX0)
+    check('forced_event_build refuses a listed row whose cell-band data_decisions.csv does not exclude',
+          not ok and 'does not exclude' in d, d)
+    open(tp, 'w').write(t0)
+    ok, d = _one('forced_event_build', q, **EX6)
+    check('forced_event_build refuses a listed row that is not a selected row of the evaluations',
+          not ok and 'not selected rows' in d, d)
+    _excl_file(R, [])
+    ok, d = _one('forced_event_build', q, **{'exclusions': _exclusions(os.path.join(TMP, 'snap'),
+                                                                       [('04h', '64MHz', '2025-01-01')])})
+    check('forced_event_build passes when only another subband of that night is excluded (64 MHz: the 46 and 55 MHz '
+          'events stand)', ok, d)
+    ok, d = _one('forced_event_build', q, **{'exclusions': _exclusions(os.path.join(TMP, 'snap'),
+                                                                       [('04h', '46MHz', '2025-01-01')])})
+    check('forced_event_build refuses a build event on an excluded cell-band (exclusion is absolute)',
+          not ok and 'build event(s) on a cell-band' in d, d)
+    ep = os.path.join(R, CFG.forced_snapshot.EXCLUDED_FILE)
+    os.rename(ep, ep + '.x')
+    ok, d = _one('forced_event_build', q, **EX0)
+    check('forced_event_build refuses a build without excluded_events.csv', not ok and 'no excluded_events.csv' in d, d)
+    os.rename(ep + '.x', ep)
+    t1 = _mut(ep, 'cell,', 'cellx,')
+    ok, d = _one('forced_event_build', q, **EX0)
+    check('forced_event_build refuses excluded_events.csv with other columns', not ok and 'columns' in d, d)
+    open(ep, 'w').write(t1)
+    ok, d = _one('forced_event_build', q, **EX0)
+    check('forced_event_build passes again on the restored run', ok, d)
     # the selection used for no-input matches the synthetic evaluation (2 of 4 rows: below threshold and zone excluded)
     from exopipe.phase3.lib.forced.tier_snapshot import selected_events
     check('selected_events = event_rows selection (clean, >= threshold, cadence)',

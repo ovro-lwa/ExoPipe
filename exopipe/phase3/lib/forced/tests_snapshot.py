@@ -92,13 +92,20 @@ def radio_of(fr, tr):
 # ---------------------------------------------------------------------------------------------------------------------
 
 @content_test('forced_event_build')
-def snapshot_build(path, eval_sb=None, eval_wb=None, stokes=None, cadence=None, **ctx):
+def snapshot_build(path, eval_sb=None, eval_wb=None, stokes=None, cadence=None, exclusions=None, **ctx):
     """queue.txt names one Stokes and one cadence and the two evaluations; every build event has that Stokes and cadence, a
     unique cand_id and a queued identity; every queued identity has events; no two identities within MERGE_ARCMIN;
-    skipped_events.csv has the declared columns and a reason per row; recomputed from the evaluations (selection of
-    snapshot_forced_panels.event_rows): every build event is a selected row, and every selected row is built, listed as
-    skipped, or absorbed into its identity's stronger event of the same frame (merged_events)."""
-    from exopipe.phase3.lib.forced.tier_snapshot import selected_events
+    skipped_events.csv has the declared columns and a reason per row; excluded_events.csv (EXCLUDED_FILE, the measurements
+    the build left out on a cell-band data_decisions.csv excludes) has the declared columns; NO build event lies on an
+    excluded cell-band (exclusion is absolute); recomputed from the evaluations (selection of
+    snapshot_forced_panels.event_rows): every build event is a selected row, every selected row is built, listed as
+    skipped, listed as excluded, or absorbed into its identity's stronger event of the same frame (merged_events), and
+    every row listed as excluded is a selected row whose cell-band data_decisions.csv, read now, excludes. ``exclusions``:
+    the read to judge by (default core.exclusions.PerNight read now - a wideband with any excluded member subband)."""
+    from exopipe.phase3.lib.forced.tier_snapshot import excluded_events, selected_events
+    if exclusions is None:
+        from exopipe.phase3.core.exclusions import PerNight
+        exclusions = PerNight(fresh=True)
     s = _cfg().forced_snapshot
     run = os.path.dirname(os.path.abspath(path))
     qh = queue_header(run)
@@ -145,6 +152,22 @@ def snapshot_build(path, eval_sb=None, eval_wb=None, stokes=None, cadence=None, 
                 bad.append('skipped_events.csv columns %s' % rd.fieldnames)
         if any(not r.get('skip_reason') for r in skipped):
             bad.append('a skipped event without its reason')
+    exf = os.path.join(run, s.EXCLUDED_FILE)
+    excl = []
+    if not os.path.exists(exf):
+        bad.append('no %s (the build lists every measurement it leaves out on an excluded cell-band, even none)'
+                   % s.EXCLUDED_FILE)
+    else:
+        with open(exf, newline='') as f:
+            rd = csv.DictReader([ln for ln in f if not ln.startswith('#')])
+            excl = list(rd)
+            if tuple(rd.fieldnames or ()) != tuple(s.EXCLUDED_FIELDS):
+                bad.append('%s columns %s' % (s.EXCLUDED_FILE, rd.fieldnames))
+    on_ex = excluded_events([dict(cell='%s_%s' % (e.get('lst', ''), e.get('date', '')), band=e.get('band', ''),
+                                  ts=e.get('ts', '')) for e in evs], ex=exclusions)
+    if on_ex:
+        bad.append('%d build event(s) on a cell-band data_decisions.csv excludes (exclusion is absolute), e.g. %s'
+                   % (len(on_ex), on_ex[0]))
     n_sel = n_abs = 0
     if all(os.path.exists(os.path.join(e, 'thresholds.csv')) for e in (eval_sb, eval_wb)):
         sel = selected_events((eval_sb, eval_wb), S, cad)
@@ -156,11 +179,12 @@ def snapshot_build(path, eval_sb=None, eval_wb=None, stokes=None, cadence=None, 
             fk = ('%s_%s' % (e['lst'], e['date']), e['band'], e['tier'], e['ts'])
             frame[fk] = max(frame.get(fk, 0.0), abs(float(e['snr'])))
         skset = {k(r, r['cell']) for r in skipped}
+        exset = {k(r, r.get('cell', '')) for r in excl}
         selset = set()
         for r in sel:
             kk = k(r, r['cell'])
             selset.add(kk)
-            if kk in built or kk in skset:
+            if kk in built or kk in skset or kk in exset:
                 continue
             if frame.get((r['cell'], r['band'], r['tier'], r['ts']), -1.0) >= abs(float(r['snr'])):
                 n_abs += 1
@@ -169,12 +193,23 @@ def snapshot_build(path, eval_sb=None, eval_wb=None, stokes=None, cadence=None, 
         extra = [kk for kk in built if kk not in selset]
         if extra:
             bad.append('%d build events are not selected rows of the evaluations, e.g. %s' % (len(extra), extra[0]))
+        unsel = sorted(kk for kk in exset if kk not in selset)
+        if unsel:
+            bad.append('%s lists %d row(s) that are not selected rows of the evaluations, e.g. %s'
+                       % (s.EXCLUDED_FILE, len(unsel), unsel[0]))
+        really = set(excluded_events(excl, ex=exclusions))
+        kept = [(r.get('cell', ''), r.get('band', ''), r.get('ts', '')) for r in excl]
+        kept = [t for t in kept if t not in really]
+        if kept:
+            bad.append('%s lists %d row(s) whose cell-band data_decisions.csv (read now) does not exclude, e.g. %s - a '
+                       'measurement left out of the pages that should be on them' % (s.EXCLUDED_FILE, len(kept), kept[0]))
     else:
         bad.append('evaluations %s / %s not readable (no thresholds.csv)' % (eval_sb, eval_wb))
     if bad:
         return False, len(bad), _detail(bad)
-    return True, len(evs), 'Stokes %s %s: %d events, %d identities, %d skipped; %d selected rows (%d absorbed by merge)' % (
-        S, cad, len(evs), len(qset), len(skipped), n_sel, n_abs)
+    return True, len(evs), ('Stokes %s %s: %d events, %d identities, %d skipped, %d left out on excluded cell-bands; %d '
+                            'selected rows (%d absorbed by merge)' % (S, cad, len(evs), len(qset), len(skipped), len(excl),
+                                                                       n_sel, n_abs))
 
 
 @content_test('forced_fits')
