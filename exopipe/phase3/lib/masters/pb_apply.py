@@ -163,7 +163,7 @@ PB_MAP_RULING = 'R-GREGG-20261116-PB-MAPS-SH-CARDS-REMOVE-BUNIT-BLANK-GO'
 # A PB map's PRODNAME is its own name, not the paired master's (Gregg 2026-11-17 'go with your recommendation.',
 # R-GREGG-20261117-PB-PRODNAME-AND-PBDIFFUSE-SH-CARDS-GO): the paired master's tokens with 'shflux' dropped (no flux scale
 # is applied to a beam map) and 'pbmap' added (the v2 mosaic convention). The archived maps were renamed the same way on
-# 2026-11-17 (exopipe_ops/pb_map_header_fix2_20261117.py; production pb_apply.py). A map without PRODNAME (the PBdiffuse maps) keeps none.
+# 2026-11-17 (exopipe_ops/pb_map_header_fix2_20261117.py). A map without PRODNAME (the PBdiffuse maps) keeps none.
 PB_MAP_PRODNAME_RULING = 'R-GREGG-20261117-PB-PRODNAME-AND-PBDIFFUSE-SH-CARDS-GO'
 
 
