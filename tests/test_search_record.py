@@ -181,8 +181,14 @@ def test_refusal_columns():
     from exopipe.phase3.lib.search import deep_search as E
     src = open(E.__file__).read()
     written = set()
+    carried = re.search(r"for _cg in \(([^)]+)\)", src)          # the per-hour append's carried gates (3a7c57e)
+    cg = re.findall(r"'([a-zA-Z_]+)'", carried.group(1)) if carried else []
     for suf in re.findall(r"_refdir\}/\{lst\}_\{scope\}(_[a-zA-Z_{}]+_excluded\.csv)", src):
-        written |= {suf.replace('{st}', 'I'), suf.replace('{st}', 'V')} if '{st}' in suf else {suf}
+        if '{_cg}' in suf:
+            assert cg, 'a {_cg} refusal file without its "for _cg in (...)" tuple'
+            written |= {suf.replace('{_cg}', g) for g in cg}
+        else:
+            written |= {suf.replace('{st}', 'I'), suf.replace('{st}', 'V')} if '{st}' in suf else {suf}
     named = {x for x, _ in E.REFUSAL_COLUMNS}
     check('refusals/COLUMNS.csv names every refusal file deep_search writes', written <= named and len(written) >= 11,
           sorted(written - named))

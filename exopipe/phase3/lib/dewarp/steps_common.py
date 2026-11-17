@@ -36,7 +36,12 @@ CHILD_MODULES = (('exopipe/phase3/phase3_master_dewarp.py', 'exopipe/phase3/lib/
 # the one permitted difference: the import line rewritten by the move commit (6bc74ca; master_dewarp.py:294)
 CHILD_PERMITTED_LINE_DIFFS = {'exopipe/phase3/lib/dewarp/master_dewarp.py':
                               (('    from exopipe.phase3.lib.masters import pb_apply as PB',
-                                '    from exopipe.phase3 import pb_apply as PB'),)}
+                                '    from exopipe.phase3 import pb_apply as PB'),),
+                              # the PB-map product name (R-GREGG-20261117-PB-PRODNAME-AND-PBDIFFUSE-SH-CARDS-GO): the branch's
+                              # build_name / parse_name are core.products, production's exopipe.common.phase3_products
+                              'exopipe/phase3/lib/masters/pb_apply.py':
+                              (('    from exopipe.phase3.core.products import build_name, parse_name',
+                                '    from exopipe.common.phase3_products import build_name, parse_name'),)}
 CELL_STAGES = ('apply', 'verify', 'record')
 THREAD_VARS = ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS')
 CONTENT_OK = 'INSTALL_CONTENT_OK'        # sidecars written by check_mdewarp_gen beside the generation (CMG:166, :177)

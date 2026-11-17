@@ -173,7 +173,7 @@ def test_chain_stages():
     i = T.STAGES.index
     assert i('buildv') + 1 == i('tablefilter') and i('tablefilter') + 1 == i('record') and i('record') + 1 == i('test'), T.STAGES
     assert 'tablefilter' in T.HEAVY and 'record' in T.HEAVY
-    assert 'tablefilter' in T.OPTIONAL and 'record' not in T.OPTIONAL
+    assert 'tablefilter' in T.OPTIONAL and 'record' in T.OPTIONAL   # record optional since 8757de0: no-input unless both builds run
     assert T.FUNCS['tablefilter'] is T.st_tablefilter and T.FUNCS['record'] is T.st_record
 
 
