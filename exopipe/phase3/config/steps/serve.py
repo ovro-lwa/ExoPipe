@@ -91,8 +91,9 @@ class serve(_Section):
     # 2026-10-13: "serve owns all ports incl. forced pages 8775/8776/8785/8786 and jupiter 8800/8801 (one owner of ports
     # and the hub)"). Fields:
     #   family   'review' (the tier's transient pages, served by the tier's stage sequence), 'forced' (snapshot forced
-    #            photometry pages, each serving its own run), 'deep-forced' / 'strat' (no production launcher: --restart /
-    #            --stop only), 'jupiter' (the Jupiter program's pages)
+    #            photometry pages, each serving its own run), 'deep-forced' (8798/8799: since 2026-10-17 the deep table-flip
+    #            sample pages, not forced photometry) / 'strat' (no production launcher: --restart / --stop only), 'jupiter'
+    #            (the Jupiter program's pages)
     #   program  'classify' (ops/classify_transients.py), 'jupiter' (ops/jupiter_server.py ROOT PORT), 'http'
     #            (python -m http.server PORT --bind 127.0.0.1 --directory DIR)
     #   python   (jupiter / http pages) the site PYTHON key of the page's interpreter; absent = 'default'
@@ -132,10 +133,18 @@ class serve(_Section):
                                   kind='single', hub=None, twin=None),   # run_deep_repass4_tablemetric_20261001.sh:35-37 (dated)
         ('deep', 'strat-V'): dict(port=8792, family='strat', program='classify', start='restart-only', stokes='V',
                                   kind='single', hub=None, twin=None),
-        ('deep', 'forced-run3'): dict(port=8798, family='deep-forced', program='classify', start='restart-only', stokes='I',
-                                      kind='single', hub=None, twin=None),   # Run_P3S4_forced3 (ledger 1609; no launcher)
-        ('deep', 'forced-run2'): dict(port=8799, family='deep-forced', program='classify', start='restart-only', stokes='I',
-                                      kind='single', hub=None, twin=None),   # Run_P3S4_forced
+        # 8798 / 8799: the read-only TABLE-FLIP SAMPLES of the deep run Run_P3S5 (/data07/gh/phase3/transients/
+        # Sample_TableFlip_{V,I}_20261017: detections the in-search bright-source table removed then and that pass today; ledger
+        # SAMPLE-PAGES-TABLE-FLIP-V-I-RUN-P3S5-20261017; exopipe_ops table_flip_judge_run_20261017.py, no launcher). Checked
+        # against the live registry /lustre/gh/main/phase3/serve/registry.json 2026-11-17 (p8798 --run ...Sample_TableFlip_V_
+        # 20261017, p8799 ...Sample_TableFlip_I_20261017). The deep forced page runs these ports served before (Run_P3S4_forced3
+        # / Run_P3S4_forced, deep_forced_panels.py; ledger 1609) were retired 2026-10-17 (RELEASE-DEEP-DATA07-RETIRED-RUNS-
+        # BATCH2-20261017). The family id 'deep-forced' is kept: it names the restart-only deep pages on these two ports, and
+        # its serve-time exclusion gate key 'deep-deep-forced' (EXCLUSION_GATE_TIERS, RULED) still gates them
+        ('deep', 'tableflip-V'): dict(port=8798, family='deep-forced', program='classify', start='restart-only', stokes='V',
+                                      kind='single', hub=None, twin=None),
+        ('deep', 'tableflip-I'): dict(port=8799, family='deep-forced', program='classify', start='restart-only', stokes='I',
+                                      kind='single', hub=None, twin=None),
         ('sublst', 'V'): dict(port=8787, family='review', program='classify', start='stages', stokes='V', kind='single',
                               queue='judgements/queue_p3s3_V.txt', catalog='source_catalogs_V', labels='judgements_V',
                               mchain_queue='judgements/queue_p3s3_V_multi.txt',
@@ -405,7 +414,8 @@ class serve(_Section):
     # refuse PER PAGE on the rows that page's server reads (lib/serve/exclusion_gate.scan_page; 2026-10-14 ~20:3x UTC on the
     # served Run_P3S5: 0 rows on excluded nights in any page - a first folder-wide scan's 34 were 2026-10-07 index files the
     # server never reads). Production ('snapshot' only, no gate on deep / sub-LST / forced pages) is the parity file's value.
-    # Also the restart-only deep pages (stratified sample 'deep-strat', the deep forced runs 'deep-deep-forced'): they are gated
+    # Also the restart-only deep pages (stratified sample 'deep-strat'; 'deep-deep-forced' = the pages on 8798/8799, the deep
+    # forced runs until 2026-10-17 and the table-flip samples since): they are gated
     # when restarted (servers.restart_port). PROTECTED (and RULED): no --set / --config changes it outside a --parity replay
     # into a non-production --out (review 2026-10-14 m6: --ruling-for accepts any ledger ID, so RULED alone was weaker); so the
     # parity file, which sets it, applies only in a --parity run (exopipe3 config --config refuses it, as any protected key).

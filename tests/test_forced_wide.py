@@ -141,8 +141,8 @@ def test_config():
     check('steps.forced CONFIG declares the W / N sections and photometry (the cutout root)',
           {'forced_wide', 'forced_wide_search', 'forced_wide_test', 'night_activity', 'photometry'} <= set(decl), decl)
     f = CFG.forced
-    check('snapshot stages: family C, then W, then N', f.STAGES['snapshot'][-5:] == ('wide_jobs', 'wide_search', 'wide_test',
-                                                                                      'wide_publish', 'activity'))
+    check('snapshot stages: family C, then W, then N (then T, tests/test_forced_tier_pages.py)',
+          f.STAGES['snapshot'][-7:-2] == ('wide_jobs', 'wide_search', 'wide_test', 'wide_publish', 'activity'))
     check('W / N never a default nor per hour', not {'wide_jobs', 'activity'} & set(f.DEFAULT_STAGES['snapshot'] +
                                                                                    f.EPOCH_STAGES['snapshot']))
     t = CFG.forced_wide_test

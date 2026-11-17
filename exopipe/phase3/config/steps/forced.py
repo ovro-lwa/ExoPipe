@@ -35,7 +35,10 @@ class forced(_Section):
               'snapshot': ('build', 'fit', 'tie', 'loc', 'assoc', 'render', 'verify',   # snapshot_forced_pages_run_20261007.sh:29-62
                            # family W, the wide-area burst test of the forced runs, and family N, the night-activity table (the
                            # astrometry figure v2's inputs; lib/forced/wide_stages.py): named only, one family per invocation
-                           'wide_jobs', 'wide_search', 'wide_test', 'wide_publish', 'activity')}
+                           'wide_jobs', 'wide_search', 'wide_test', 'wide_publish', 'activity',
+                           # family T, the HWJ / 10 pc forced-photometry pages of the 10-minute and deep tiers (the site,
+                           # then its four review runs; lib/forced/tier_pages.py): named only, like W and N
+                           'tier_site', 'tier_runs')}
     # default without --stages: catflux is what the publish pass (between catalog fork and union) and the per-hour chain run;
     # deep panels run only when named (intermittent, after a photometry evaluation)
     DEFAULT_STAGES = {'deep': ('catflux',), 'snapshot': ('build', 'fit', 'tie', 'loc', 'assoc', 'render', 'verify')}
@@ -47,15 +50,23 @@ class forced(_Section):
     # in-place scripts (names under the site legacy root 'exopipe_ops', core.env.legacy_root)
     INPLACE_SCRIPTS = {'catflux': 'p3s3_forced_phot.py', 'panels': 'deep_forced_panels.py',
                        'snapshot': 'snapshot_forced_panels.py', 'assoc': 'snapshot_forced_assoc.py',
-                       'reserve_test': 'test_snapshot_forced_reserve.py'}
+                       'reserve_test': 'test_snapshot_forced_reserve.py',
+                       'tier_pages': 'tier_forced_page_20261027.py'}     # family T (build/verify, chain/verify-chain)
     # files the in-place scripts launch BY PATH in a grandchild (whose imports the child fingerprint may not see): their
     # sha1 enters the unit's code identity (DESIGN 11.5 'plus every script a step shells out to'); names under exopipe_ops
     INPLACE_GRANDCHILDREN = {'panels': ('build_i14_pages_std7.py', 'std7_panel.py', 'tess/tess_coverage.py'),
-                             'loc': ('build_localizations.py', 'source_astrometry_panel.py', 'source_localization.py')}
+                             'loc': ('build_localizations.py', 'source_astrometry_panel.py', 'source_localization.py'),
+                             # family T's chain: the localization (tier_forced_page_20261027.py:909, :919) and the association
+                             # (:1010, :1158) run BY PATH in grandchildren
+                             'tier_runs': ('build_localizations.py', 'source_astrometry_panel.py', 'source_localization.py',
+                                           'snapshot_forced_assoc.py')}
     # interpreter per call: a key of the site file's PYTHON (decision 2). default = py38_orca_nkosogor (p3s3_pass.sh:13 PY8;
     # deep_forced_panels.py:364); py36 = the development env of the snapshot forced scripts (pages_run:20); tess = TESS env
-    # (deep_forced_panels.py:370 TESS_PY); casa = the CASA imfit worker of the tie (P3_CASA_PYTHON, phase3_snapshot_refastro.py:72)
-    PYTHON_KEY = {'catflux': 'default', 'panels': 'default', 'snapshot': 'py36', 'tess': 'tess', 'casa': 'casa'}
+    # (deep_forced_panels.py:370 TESS_PY); casa = the CASA imfit worker of the tie (P3_CASA_PYTHON, phase3_snapshot_refastro.py:72);
+    # tier_pages = family T (the development env, as the planets page's driver ran its sibling: planets_page_orbit_build_20261028.sh:15
+    # PY; the chain's fit imports bdsf, which only that env holds)
+    PYTHON_KEY = {'catflux': 'default', 'panels': 'default', 'snapshot': 'py36', 'tess': 'tess', 'casa': 'casa',
+                  'tier_pages': 'py36'}
     # D5 (Gregg 2026-10-13 'Approve the template mirror fix and re-measure K'): the orientation of the template beam in the
     # IN-PLACE template fit the snapshot fit stage calls (clv15/phase3_template_fit.py:53-56 since clv15 44f0155: Jm = the
     # pixel scale matrix, no mirror). Recorded on every fit unit beside fitting.TEMPLATE_BEAM_ORIENTATION (the switch of
@@ -202,6 +213,50 @@ class forced_assoc(_Section):
     PROTECTED_KEYS = ('RADIO_CATDIR',)
     RULED = {'NO_LABEL': 'IMPLEMENTED-RULING-D-20261008-FORCED-I-PAGES-SERVED-ADLEO-NOT-LABELLED',
              'CEIL_PCT': 'IMPLEMENTED-FORCED-ASSOCIATION-TARGET-VS-BACKGROUND-Q8A'}
+
+
+class forced_tier_pages(_Section):
+    """Snapshot family T: the HWJ / 10 pc forced-photometry pages of the 10-minute and deep tiers (Gregg 2026-10-27 "HWJ and
+    10 pc forced photometry at 10-minute and deep - that is very valuable"). tier_forced_page_20261027.py runs in place: stage
+    tier_site = its build + verify (the static site whose page_record.json lists every event card), stage tier_runs = its
+    chain + verify-chain (the four review runs Run_SNAPFORCED_{V,I}{10min,deep}_gen5, served on p9120-p9123: each event fitted
+    in its own image, localized, associated, rendered in the 10-s / 1-min forced runs' layout). Ledger 3079 (site), 3081
+    (chain), 3394-3395 (Epoch panels, 2026-11-10). Keys marked MIRROR are literals of the in-place script, compared with the
+    file by tests/test_forced_tier_pages.py; an override of one is refused (G37)."""
+    # the site's root: the default --out of family T (records <root>/_records/forced/T_*.json); the served build is
+    # <root>/SITE_NAME (2026-10-27 06:54 UT, 462 events). A build never reuses a directory (T-G35): a new one takes --tier-site
+    SITE_ROOT = '/lustre/gh/main/phase3/snapshot_forced'     # MIRROR planets_forced_page_20261026.py SF (tier_forced_page :30)
+    SITE_NAME = 'site_hwj10pc_tiers_gen5'
+    # the four stage-2 evaluations the site lists events from (snapshot_forced_eval.py --tier T --samples HWJ,10pc [--kind wb],
+    # no v2 stage makes them yet): read in place by literal path (ev_dir :37-38), never passed
+    EVAL_DIRS = {('10min', 'sb'): '/lustre/gh/main/phase3/snapshot_forced/eval_10min_gen5_hwj10pc',     # MIRROR :37-38
+                 ('10min', 'wb'): '/lustre/gh/main/phase3/snapshot_forced/eval_10min_wb_gen5_hwj10pc',
+                 ('deep', 'sb'): '/lustre/gh/main/phase3/snapshot_forced/eval_deep_gen5_hwj10pc',
+                 ('deep', 'wb'): '/lustre/gh/main/phase3/snapshot_forced/eval_deep_wb_gen5_hwj10pc'}
+    EVAL_FILES = ('thresholds.csv', 'targets_ge4.csv', 'exceedance.csv')   # what build / verify read of each (:44, :54, :71)
+    SAMPLES = ('HWJ', '10pc')                    # MIRROR :31
+    TIERS = ('10min', 'deep')                    # MIRROR :33
+    RUN_NAME = 'Run_SNAPFORCED_{S}{tier}_gen5'   # MIRROR run_name :394-395
+    NEW_SUFFIX = '.new'                          # MIRROR :945: the chain writes <review root>/<name>.new; installing them
+                                                 # (production's `swap`, :1172-1186, dated keep names) is not ported
+    # the fit's node-local work (one plane FITS per event for PyBDSF): a module literal. A production run leaves it; under --out
+    # the stage sets it to <--work, else the site scratch root>/tier_forced_fit_work through the in-place driver's --globals
+    FIT_WORK_PRODUCTION = '/fast/gh/main/phase3/tier_forced_fit_work'   # MIRROR TIER_FIT_WORK :559
+    FIT_WORK_GLOBAL = 'TIER_FIT_WORK'
+    # processes of build / chain (--workers overrides). Production's defaults: 1 (build) and 8 (chain, :1265); the site rule is
+    # at most 6 Lustre-heavy workers (tier cutouts, Masters and epoch images are Lustre reads). The products do not depend on
+    # it (pool.map keeps the order)
+    NPROC = {'site': 6, 'runs': 6}
+    # success lines (the in-place script's own)
+    OK_LINES = {'build': 'HWJ10PC-TIERS-PAGE-BUILT', 'verify': 'HWJ10PC-TIERS-PAGE-OK',    # :249, :378
+                'chain': 'TIER-CHAIN ', 'verify_chain': 'TIER-CHAIN-OK'}               # :1099 (one per run), :1167
+    PANEL_MIN_BYTES = 10000                      # MIRROR cmd_verify :358: a card panel at or below this size is broken
+    # Exclusions downstream (as forced_snapshot.EXCLUDED_EVENTS): an event of the evaluations on an excluded (LST, band, night) -
+    # core.exclusions, read now; a wideband excluded with any member subband - refuses the site before any in-place call (the
+    # evaluation predates the exclusion and is redone first). 'build' = production: tier_forced_page has no such gate
+    EXCLUDED_EVENTS = 'refuse'
+    PROTECTED_KEYS = ('EVAL_DIRS',)
+    RULED = {'EXCLUDED_EVENTS': 'R-GREGG-20261014-REFACTOR-DECISIONS-LIST-RECOMMENDATIONS'}
 
 
 # =====================================================================================================================

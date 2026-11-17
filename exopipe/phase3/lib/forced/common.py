@@ -1,6 +1,6 @@
 """Shared helpers of `exopipe3 forced`: stage selection, the record chain between stages, resume, the one legacy call
 (core.legacy.run, decision 1), host placement of node-local stages, rsync between hosts, and the refusal of config overrides
-the in-place code would ignore. Used by lib/forced/tier_deep.py and tier_snapshot.py."""
+the in-place code would ignore. Used by lib/forced/tier_deep.py, tier_snapshot.py and tier_pages.py."""
 import csv
 import hashlib
 import os
@@ -28,8 +28,10 @@ STEERING = {
     'forced_snapshot.EPOCH_NAME', 'forced_snapshot.NPROC',
     'forced_snapshot.OK_LINES', 'forced_snapshot.REFASTRO_SCRATCH_PRODUCTION', 'forced_snapshot.LOC_COPY_BACK',
     'forced_snapshot.FLOW_ENV', 'forced_snapshot.EXCLUDED_EVENTS',
+    'forced_tier_pages.SITE_ROOT', 'forced_tier_pages.SITE_NAME', 'forced_tier_pages.NPROC', 'forced_tier_pages.OK_LINES',
+    'forced_tier_pages.EXCLUDED_EVENTS',
 }
-OWN_SECTIONS = ('forced', 'forced_panels', 'forced_catflux', 'forced_snapshot', 'forced_assoc')
+OWN_SECTIONS = ('forced', 'forced_panels', 'forced_catflux', 'forced_snapshot', 'forced_assoc', 'forced_tier_pages')
 IN_PLACE_SHARED = ('fitting', 'astrometry')
 
 

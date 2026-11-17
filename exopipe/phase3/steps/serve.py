@@ -13,8 +13,8 @@ review page (its port is its identity: entry p<port>) and the hub (8765-8801 exc
 Unit of work: a served PAGE (one unit per page, named <tier>_<run>_<page>) plus one unit per run-level stage (views, test,
 build, copy, carry, register, hub, verify ...). Pages (config serve.PAGES; family 'review' unless --family):
   deep      review V 8766, I 8768, V-multi 8772, I-multi 8773 (their former inspection twins 8796, 8797, 8793, 8794 are the
-            entries' inspection_legacy_port); strat-I/V 8791/8792 and forced-run3/run2 8798/8799 are restart-only (no
-            production launcher defines their argv)
+            entries' inspection_legacy_port); strat-I/V 8791/8792 and tableflip-V/I 8798/8799 (family deep-forced: the
+            Run_P3S5 table-flip samples since 2026-10-17) are restart-only (no production launcher defines their argv)
   sublst    review V 8787, I 8788, V-multi 8789, I-multi 8790 (the cumulative Run_SLSTB)
   snapshot  review V-10s 8779, I-10s 8780, V-1min 8781, I-1min 8782; forced pages 8786, 8785, 8775, 8776 (--family forced)
   jupiter   p1 8800 (jupiter_server.py), v2-site 8801 (http.server)
@@ -134,9 +134,9 @@ def add_arguments(p):
     g = p.add_argument_group('serve')
     g.add_argument('--family', choices=FAMILIES, default=None,
                    help="page family of the tier (default: review; jupiter for --tier jupiter): forced = the snapshot forced "
-                        "photometry pages; strat / deep-forced = restart-only deep pages; comb = the COMBINED SNAPSHOT VIEW, the "
-                        "snapshot tier's cumulative step (lib/serve/snapshot_view.py: stages omit, build, filtercat, localize, "
-                        "ready)")
+                        "photometry pages; strat / deep-forced = restart-only deep pages (deep-forced: the table-flip "
+                        "samples on 8798/8799); comb = the COMBINED SNAPSHOT VIEW, the snapshot tier's cumulative step "
+                        "(lib/serve/snapshot_view.py: stages omit, build, filtercat, localize, ready)")
     g.add_argument('--view-runs', metavar='RUN,RUN|@FILE',
                    help='--family comb: the served batch runs of the view, in order (directories, a comma list or @FILE; bare '
                         'names under paths.SNAPSHOT_REVIEW_ROOT)')
