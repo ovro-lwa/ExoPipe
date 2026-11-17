@@ -209,11 +209,11 @@ def test_config():
                 pass
     assert CFG.mosaic.LSTS is None and CFG.mosaic.REQUIRE_N_LSTS == 24
     # the renders' southern edge (R-GREGG-20261016-MOSAIC-DEC-MIN-30): -30 deg on the renders only, the maps keep -40;
-    # production's no-cut in the parity file
+    # production cuts its renders at -30 too since 2026-10-22 (exopipe fa05cf3), so the parity file sets nothing
     assert CFG.mosaic_render.RENDER_DEC_CUT_DEG == -30.0 and CFG.mosaic_coadd.DEC_FLOOR_DEG == -40.0
     assert CFG.ruled('mosaic_render.RENDER_DEC_CUT_DEG') == ('R-GREGG-20261016-MOSAIC-DEC-MIN-30',)
     par = open(os.path.join(REPO, 'exopipe', 'phase3', 'parity', 'production_20261013.cfg')).read()
-    assert '\nmosaic_render.RENDER_DEC_CUT_DEG = None\n' in par
+    assert not [ln for ln in par.splitlines() if ln.split('#', 1)[0].strip().startswith('mosaic_render.RENDER_DEC_CUT_DEG')]
     assert len(CFG.mosaic.SCOPES) == 19
     probs = SC.g0_check()
     assert probs == [], probs
