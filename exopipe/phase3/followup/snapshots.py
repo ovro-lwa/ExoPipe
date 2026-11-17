@@ -9,7 +9,8 @@ apply the per-band warp screen first (same machinery as Phase 2).
 SAFETY: the Phase-1 snapshots are fpack-compressed `.fits.fs` in the archive,
 and the pipeline's _funpack renames+deletes the original. So we COPY each
 snapshot to a scratch workdir and funpack the COPY — the archive is untouched.
-funpack lives in the `development` conda env.
+funpack is called by path (config.FUNPACK: the `development` conda env's binary, which production runs through
+`conda run -n development funpack`).
 
 FRAMES AND EXCLUSIONS (snapshot chat 2026-11-14, JUDGED-20261114-FOLLOWUP-SNAPSHOT-CUTOUTS-SURVEY-ROOT-ONLY): the frames of a
 (LST, night) come from the search's own frame root (core/inputs.frame_root: the GPU pipeline's tree for a cell of
@@ -42,7 +43,6 @@ from . import resolve as R
 from . import photometry as PHOT
 from exopipe.phase2.cascade_dewarp import apply_warp
 
-FPACK_ENV = 'development'
 # Timestamp after 'Snapshot-' regardless of any Stokes suffix (run conventions
 # vary: '-V-image' / '-I-image' on some runs, bare '-image' on others).
 _TS = re.compile(r'Snapshot-(\d{8}_\d{6})-')
@@ -288,7 +288,11 @@ def _copy_funpack(src, dst, retries=3):
     concurrent-IO truncation that made a single batch funpack fail with CFITSIO
     read/EOF errors (107/108) under parallel workers. Verifies the copy size,
     funpacks with -F (overwrite), and retries with a fresh re-copy. Returns the
-    funpacked `.fits` path or None. The archive `src` is never mutated."""
+    funpacked `.fits` path or None. The archive `src` is never mutated.
+    funpack runs by path (config.FUNPACK); a missing binary raises instead of skipping every frame (T5 then ends in an
+    escalation error, which the step refuses: G30)."""
+    if not os.access(C.FUNPACK, os.X_OK):
+        raise FileNotFoundError(f'funpack not executable: {C.FUNPACK} (followup/config.py FUNPACK, CANDINV_FUNPACK)')
     fp = dst[:-3] if dst.endswith('.fz') else dst + '.fits'
     try:
         ssz = os.path.getsize(src)
@@ -299,8 +303,7 @@ def _copy_funpack(src, dst, retries=3):
             shutil.copyfile(src, dst)
             if os.path.getsize(dst) != ssz:          # truncated copy -> retry
                 continue
-            r = subprocess.run(['conda', 'run', '-n', FPACK_ENV, 'funpack',
-                                '-F', dst], capture_output=True, timeout=180)
+            r = subprocess.run([C.FUNPACK, '-F', dst], capture_output=True, timeout=180)
             if r.returncode == 0 and os.path.exists(fp):
                 return fp
         except Exception:

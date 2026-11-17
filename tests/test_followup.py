@@ -15,6 +15,8 @@
   t5_scratch   every tempfile.mkdtemp of followup/snapshots.py takes dir=C.SCRATCH_DIR; a fresh interpreter takes
                CANDINV_SCRATCH_DIR (snapshot_spectrum makes its temp dir there and removes it) and keeps production's
                /fast/gh/main without it
+  funpack      T5 calls funpack by path (followup/config.py FUNPACK, no conda): the default binary is executable, a
+               synthetic tile-compressed frame through _copy_funpack comes back pixel-identical, a missing binary raises
   g30          the real package on the pinned rank-0 bundle (child processes: G13) with T5 replaced: T5 raising ->
                refused G30 with the partial dossier recorded and present; the same under --no-write -> refused G30
                (not no-input); T5 returning -> done
@@ -542,6 +544,45 @@ def test_t5_scratch():
     assert got.get('SCRATCH_DIR') == '/fast/gh/main' and 'SEEN' not in got, got
 
 
+def test_funpack():
+    """T5 calls funpack by path (followup/config.py FUNPACK; default the `development` env's binary, which production's
+    `conda run -n development funpack` resolves to): no conda start per frame and no conda write to its history file
+    (refused by the --parity guard 391 times per P-F7 run). A fresh interpreter (the package reads CANDINV_* once)."""
+    import subprocess
+    src = open(os.path.join(REPO, 'exopipe', 'phase3', 'followup', 'snapshots.py')).read()
+    assert "'conda'" not in src and 'subprocess.run([C.FUNPACK, ' in src, 'snapshots.py: funpack not called by path'
+    d = _fresh('funpack')
+    probe = '\n'.join([
+        'import os, sys',
+        'import numpy as np',
+        'from astropy.io import fits',
+        'from exopipe.phase3.core import env',
+        'env.legacy()',
+        'from exopipe.phase3.followup import config as C, snapshots as SN',
+        'd = sys.argv[1]',
+        'print("FUNPACK=" + C.FUNPACK + " X_OK=" + str(os.access(C.FUNPACK, os.X_OK)))',
+        'x = (np.arange(4096, dtype=np.int32).reshape(64, 64) * 7919) % 30011 - 15000',
+        'src = os.path.join(d, "f-image.fits.fs")',
+        'fits.HDUList([fits.PrimaryHDU(), fits.CompImageHDU(x, compression_type="RICE_1")]).writeto(src)',
+        'fp = SN._copy_funpack(src, os.path.join(d, "f-image.fits.fz"))',
+        'with fits.open(fp, memmap=False) as h:',
+        '    y = [u.data for u in h if u.data is not None][0]',
+        'print("EQUAL=" + str(bool(y.dtype.kind == "i" and np.array_equal(x, y))))',
+        'C.FUNPACK = os.path.join(d, "no_such_funpack")',
+        'try:',
+        '    SN._copy_funpack(src, os.path.join(d, "g-image.fits.fz"))',
+        '    print("MISSING=returned")',
+        'except FileNotFoundError:',
+        '    print("MISSING=raised")'])
+    base = {k: v for k, v in os.environ.items() if not k.startswith('CANDINV_')}
+    p = subprocess.run([sys.executable, '-c', probe, d], env=dict(base, PYTHONPATH=REPO), cwd=d, stdout=subprocess.PIPE,
+                       stderr=subprocess.PIPE, universal_newlines=True, timeout=300)
+    assert p.returncode == 0, p.stderr[-3000:]
+    got = dict(ln.split('=', 1) for ln in p.stdout.splitlines() if ln.startswith(('FUNPACK=', 'EQUAL=', 'MISSING=')))
+    assert got.get('FUNPACK') == '/opt/devel/pipeline/envs/development/bin/funpack X_OK=True', got
+    assert got.get('EQUAL') == 'True' and got.get('MISSING') == 'raised', got
+
+
 def test_g30():
     """G30: an escalation that raised refuses the investigate unit after its written outputs are recorded; the package
     (followup/dossier.py:189-194, as production) keeps 'error: ...' in the evidence and writes the dossier without the
@@ -866,8 +907,8 @@ def test_real_products():
 
 
 TESTS = ['test_cli', 'test_config', 'test_ep_plan', 'test_tess', 'test_real_products', 'test_investigate',
-         'test_t5_scratch', 'test_g30', 'test_summary', 'test_hone', 'test_periodicity', 'test_fold_and_source_page',
-         'test_negative']
+         'test_t5_scratch', 'test_funpack', 'test_g30', 'test_summary', 'test_hone', 'test_periodicity',
+         'test_fold_and_source_page', 'test_negative']
 
 
 def main(argv):
