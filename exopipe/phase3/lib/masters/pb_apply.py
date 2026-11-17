@@ -160,11 +160,32 @@ def deep_pb_name(scope, robust):
 PB_MAP_SH_CARDS = ('SHSCALE', 'SHERR', 'SHNSRC', 'SHSRCS', 'SHMETHOD', 'SHFREQ', 'SHFRQSRC', 'SHDATE')
 PB_MAP_BUNIT = ('', 'dimensionless (primary-beam response)')
 PB_MAP_RULING = 'R-GREGG-20261116-PB-MAPS-SH-CARDS-REMOVE-BUNIT-BLANK-GO'
+# A PB map's PRODNAME is its own name, not the paired master's (Gregg 2026-11-17 'go with your recommendation.',
+# R-GREGG-20261117-PB-PRODNAME-AND-PBDIFFUSE-SH-CARDS-GO): the paired master's tokens with 'shflux' dropped (no flux scale
+# is applied to a beam map) and 'pbmap' added (the v2 mosaic convention). The archived maps were renamed the same way on
+# 2026-11-17 (exopipe_ops/pb_map_header_fix2_20261117.py; production pb_apply.py). A map without PRODNAME (the PBdiffuse maps) keeps none.
+PB_MAP_PRODNAME_RULING = 'R-GREGG-20261117-PB-PRODNAME-AND-PBDIFFUSE-SH-CARDS-GO'
+
+
+def pb_map_prodname(name):
+    """The PB map's own product name from the paired master's PRODNAME; None if name does not parse."""
+    from exopipe.phase3.core.products import build_name, parse_name
+    try:
+        p = parse_name(name)
+    except ValueError:
+        return None
+    if p is None:
+        return None
+    if 'pbmap' in p['proc']:
+        return name
+    q = dict(p)
+    q['proc'] = [t for t in p['proc'] if t != 'shflux'] + ['pbmap']
+    return build_name(**q)
 
 
 def pb_map_header(h):
-    """Header h made a PB map's header, in place (also returned): the SH* cards removed, BUNIT blank, a HISTORY line when
-    SH* cards were removed."""
+    """Header h made a PB map's header, in place (also returned): the SH* cards removed, BUNIT blank, PRODNAME (when
+    present) the map's own pbmap name; a HISTORY line for each change. Raises if a PRODNAME is present and does not parse."""
     gone = [k for k in PB_MAP_SH_CARDS if k in h]
     for k in gone:
         del h[k]
@@ -172,14 +193,26 @@ def pb_map_header(h):
     if gone:
         h['HISTORY'] = (f'removed {" ".join(gone)}: a primary-beam map carries no flux scale; BUNIT blank: the map is '
                         f'dimensionless ({PB_MAP_RULING})')
+    if 'PRODNAME' in h:
+        old = str(h['PRODNAME'])
+        new = pb_map_prodname(old)
+        if new is None:
+            raise RuntimeError(f'PRODNAME {old!r} does not parse; a PB map needs its own pbmap name '
+                               f'({PB_MAP_PRODNAME_RULING}) - REFUSING')
+        if new != old:
+            h['PRODNAME'] = (new, h.comments['PRODNAME'])
+            h['HISTORY'] = (f'PRODNAME set to this primary-beam map\'s own product name (token pbmap; shflux dropped); it '
+                            f'was the paired master\'s name ({PB_MAP_PRODNAME_RULING})')
     return h
 
 
 def pb_map_header_problems(h):
-    """Why a PB map's header breaks the ruling (empty list = conformant)."""
+    """Why a PB map's header breaks the rulings (empty list = conformant)."""
     out = [f'{k} present' for k in PB_MAP_SH_CARDS if k in h]
     if h.get('BUNIT') != '':
         out.append(f'BUNIT {h.get("BUNIT")!r} (ruled blank)')
+    if 'PRODNAME' in h and pb_map_prodname(str(h['PRODNAME'])) != str(h['PRODNAME']):
+        out.append(f'PRODNAME {h["PRODNAME"]!r} is not a pbmap name ({PB_MAP_PRODNAME_RULING})')
     return out
 
 
