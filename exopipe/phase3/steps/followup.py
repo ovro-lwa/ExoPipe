@@ -81,7 +81,10 @@ Failure modes (exit 2 = refused, the gate named; 3 = nothing to do; 1 = error):
   (exit 3); replay into the archive root (refused).
   tess: G9 star not resolved by SIMBAD (refused); G10 no TESS sector observed the star in the epoch (exit 3, summary kept).
   investigate: G11 discovery V residual not in the bundle, G12 discovery fit failed (refused); G13 the package config was
-  imported before its paths were set (refused); no node-local scratch (pass --work); --no-write ends no-input (exit 3).
+  imported before its paths were set (refused); G30 an escalation raised (the package keeps 'error: ...' in the
+  evidence and writes the dossier without its products): refused after the written outputs are recorded, and under
+  --no-write (production records the candidate done); no node-local scratch (pass --work); --no-write ends no-input
+  (exit 3).
   hone: G16 reproduction gate failed (refused, per candidate); G17 no frames / no box (exit 3 per candidate).
   periodicity: G26 no frames for (LST, band, S), G27 no light curves for (band, S) (exit 3); G28 a light curve or table not
   recorded by a done unit of the previous stage (nor in the pinned pass-5 roots), fewer than 24 cells' light curves, or
@@ -820,7 +823,17 @@ def _investigate_one(u, run, args, c, R, D, C, env, no_xmatch):
     if 'error' in ev:
         gate = 'G11' if 'not found in bundle' in ev['error'] else 'G12'
         u.refuse(f'{gate}: {ev["error"]}')
+    # G30: an escalation raised. The package (followup/dossier.py:189-194, as production) catches the exception, keeps
+    # 'error: <exception>' in ev['escalation'] and writes the dossier without that escalation's products, and production
+    # records the candidate done. Here the unit refuses after its written outputs are recorded, so a re-run retries it
+    # (standing rules "Gates refuse; they do not warn" and "no done marker for zero output").
+    failed = [f'{k}: {v[len("error:"):].strip()}' for k, v in sorted((ev.get('escalation') or {}).items())
+              if isinstance(v, str) and v.startswith('error:')]
+    g30 = (f'G30: escalation failed ({"; ".join(failed)}) - the dossier lacks those products; a re-run retries the '
+           f'unit (production records it done)') if failed else None
     if args.no_write:
+        if g30:
+            u.refuse(g30)
         raise NoInput(f'--no-write: evidence kept in this record only (P(astro) {pa.get("p_astro")})')
     for key, val in sorted((ev.get('outputs') or {}).items()):
         cls = _DOSSIER_CLASSES.get(key)
@@ -829,6 +842,8 @@ def _investigate_one(u, run, args, c, R, D, C, env, no_xmatch):
         for p in (val if isinstance(val, (list, tuple)) else [val]):
             if p:
                 u.add_output(p, cls)
+    if g30:
+        u.refuse(g30)
 
 
 # ---- summary: port of attic/run_all_top50.py (SUMMARY_COLS :27-38, _round :41-42, _snap_peak_vi :45-55, _row :58-108,

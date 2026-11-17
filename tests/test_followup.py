@@ -15,6 +15,9 @@
   t5_scratch   every tempfile.mkdtemp of followup/snapshots.py takes dir=C.SCRATCH_DIR; a fresh interpreter takes
                CANDINV_SCRATCH_DIR (snapshot_spectrum makes its temp dir there and removes it) and keeps production's
                /fast/gh/main without it
+  g30          the real package on the pinned rank-0 bundle (child processes: G13) with T5 replaced: T5 raising ->
+               refused G30 with the partial dossier recorded and present; the same under --no-write -> refused G30
+               (not no-input); T5 returning -> done
   summary      synthetic top-50 + one evidence file: ranked summary, missing dossier row, re-score written back
   hone         the REAL phase3_honing.py on a 2-candidate CSV: every candidate no-products (exit 3), as production today
   periodicity  fake stage scripts: lightcurves -> search (G28 refuses 1 of 24 cells; then all 24) -> page; a second
@@ -539,6 +542,60 @@ def test_t5_scratch():
     assert got.get('SCRATCH_DIR') == '/fast/gh/main' and 'SEEN' not in got, got
 
 
+def test_g30():
+    """G30: an escalation that raised refuses the investigate unit after its written outputs are recorded; the package
+    (followup/dossier.py:189-194, as production) keeps 'error: ...' in the evidence and writes the dossier without the
+    escalation's products, and production records the candidate done. The real package on the pinned rank-0 bundle
+    (read only), one child process per run (the package reads its paths once, G13), T5 (_run_snapshot) replaced after
+    the package import."""
+    import subprocess
+    d = _fresh('g30')
+    driver = '\n'.join([
+        'import sys',
+        'from exopipe.phase3.core import env',
+        'env.legacy()',
+        'import exopipe.phase3.steps.followup as F',
+        'from exopipe.phase3 import cli',
+        'mode, real = sys.argv[1], F._package',
+        'def run_snapshot(cand, ev, *a, **k):',
+        '    if mode == "raise":',
+        '        raise RuntimeError("synthetic T5 failure (test_g30)")',
+        '    ev["escalation"]["snapshot"] = "run (test_g30 stub: no frames read)"',
+        'def package(*a, **k):',
+        '    mods, env_ = real(*a, **k)',
+        '    if "dossier" in mods:',
+        '        mods["dossier"]._run_snapshot = run_snapshot',
+        '    return mods, env_',
+        'F._package = package',
+        'sys.exit(cli.main(["followup"] + sys.argv[2:]))'])
+
+    def run(mode, name, *extra):
+        out, work = os.path.join(d, name, 'out'), os.path.join(d, name, 'work')
+        p = subprocess.run([sys.executable, '-c', driver, mode, 'investigate', '--ra', '94.895', '--dec', '41.092',
+                            '--lst', '07h', '--date', '2024-12-31', '--band', '23MHz', '--out', out, '--work', work,
+                            '--cores', 'none'] + list(extra), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                           universal_newlines=True, env=dict(os.environ, PYTHONPATH=REPO), cwd=d, timeout=900)
+        recs = _records(out) if os.path.isdir(os.path.join(out, '_records', 'followup')) else {}
+        assert len(recs) == 1, (name, p.returncode, sorted(recs), p.stderr[-2000:])
+        return p.returncode, list(recs.values())[0]
+    rc, r = run('raise', 'raise')
+    assert rc == 2 and r['status'] == 'refused', (rc, r['status'], r['reason'])
+    assert r['reason'].startswith('G30: escalation failed (snapshot: synthetic T5 failure (test_g30)) - the dossier '
+                                  'lacks those products') and r['reason'].endswith('(production records it done)'), r
+    classes = sorted({o['class'] for o in r['outputs']})
+    assert {'followup_dossier', 'followup_table', 'followup_region'} <= set(classes), classes
+    assert all(os.path.isfile(o['path']) for o in r['outputs']) and all(t['passed'] for t in r['tests']), r
+    tables = [os.path.basename(o['path']) for o in r['outputs'] if o['class'] == 'followup_table']
+    assert tables == [r['unit'] + '_spectrum.csv'], tables      # no T5 tables (_snapshot_lc.csv, _snapshot_spectrum.csv)
+    evp = [o['path'] for o in r['outputs'] if o['class'] == 'followup_dossier']
+    assert json.load(open(evp[0]))['escalation']['snapshot'] == 'error: synthetic T5 failure (test_g30)', evp
+    rc, r = run('raise', 'no_write', '--no-write')
+    assert rc == 2 and r['status'] == 'refused' and r['reason'].startswith('G30:') and not r['outputs'], (rc, r)
+    rc, r = run('return', 'done')
+    assert rc == 0 and r['status'] == 'done' and r['outputs'], (rc, r['status'], r['reason'])
+    assert r['reason'] == '' and all(t['passed'] for t in r['tests']), r
+
+
 def test_summary():
     from exopipe.phase3.followup import candidate as CM, score as SC
     d = _fresh('summary')
@@ -809,7 +866,7 @@ def test_real_products():
 
 
 TESTS = ['test_cli', 'test_config', 'test_ep_plan', 'test_tess', 'test_real_products', 'test_investigate',
-         'test_t5_scratch', 'test_summary', 'test_hone', 'test_periodicity', 'test_fold_and_source_page',
+         'test_t5_scratch', 'test_g30', 'test_summary', 'test_hone', 'test_periodicity', 'test_fold_and_source_page',
          'test_negative']
 
 
