@@ -247,6 +247,19 @@ class Terminated(KeyboardInterrupt):
     summary is written - and the process then ends as after Ctrl-C (fix verification N2, 2026-11-03)."""
 
 
+_FORK_RESET = set()           # handlers of _sigterm_interrupts now installed: a forked child gets SIGTERM's default action
+_FORK_HOOK = []
+
+
+def _reset_inherited_sigterm():
+    """os.register_at_fork(after_in_child=...): in a child forked while _sigterm_interrupts' handler is installed, SIGTERM
+    goes back to the default disposition, so the kernel ends the child at once even inside a long C call (numpy, I/O),
+    where a Python handler would only run when the call returns."""
+    import signal
+    if signal.getsignal(signal.SIGTERM) in _FORK_RESET:
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+
+
 @contextlib.contextmanager
 def _sigterm_interrupts(name):
     """While the step ``name`` runs: SIGTERM raises Terminated in the main thread, once - the first SIGTERM restores the
@@ -254,14 +267,17 @@ def _sigterm_interrupts(name):
     thread, and never for `exopipe3 run` (its supervisor and worker loops keep the default; each step they launch is a
     process of its own and gets it); the previous disposition is restored when the step returns.
 
-    Only the step's own process (the one that installed the handler) is interrupted. A process forked from it inherits the
-    handler - every pool worker of the step and of the in-place modules it calls, which v2 cannot give an initializer - and
-    Pool.terminate() (every `with Pool(...)` exit) ends its workers with SIGTERM: such a process takes the default action and
-    ends at once. Before 2026-11-17 the inherited handler raised Terminated in the child: the photometry parity run P3 wrote a
-    second run record from a forked worker that had unwound into the step's own code, and a reproduction (fork pools with
-    maxtasksperchild=1) raised Terminated in a child before multiprocessing's own try block, whose pool then signalled the
-    whole process group (os.kill(0, ...)), interrupted the step process itself and left it hanging at exit
-    (tests/test_cli_sigterm_children.py)."""
+    Only the step's own process (the one that installed the handler) is interrupted. A process forked from it - every pool
+    worker of the step and of the in-place modules it calls, which v2 cannot give an initializer; Pool.terminate(), i.e. every
+    `with Pool(...)` exit, ends its workers with SIGTERM - gets SIGTERM's default disposition at the fork
+    (_reset_inherited_sigterm), and should a SIGTERM reach it before that hook ran, the handler itself ends it with the default
+    action. So a forked worker ends at once, without Python clean-up, as every pool worker did before 2026-11-03: clean-up and
+    rollback belong to the step's own process (a placement is undone there); a child that needs its own (deep_search's
+    extractor fork) installs its handler after the fork. Before 2026-11-17 the inherited handler raised Terminated in the
+    child: the photometry parity run P3 wrote a second run record from a forked worker that had unwound into the step's own
+    code, and a reproduction (fork pools with maxtasksperchild=1) raised Terminated in a child before multiprocessing's own
+    try block, whose pool then signaled the whole process group (os.kill(0, ...)), interrupted the step process itself and
+    left it hanging at exit (tests/test_cli_sigterm_children.py)."""
     import signal
     import threading
     if name == 'run' or threading.current_thread() is not threading.main_thread() \
@@ -272,18 +288,23 @@ def _sigterm_interrupts(name):
 
     def _on_sigterm(signum, frame):
         signal.signal(signal.SIGTERM, signal.SIG_DFL)
-        if os.getpid() != owner:                    # a forked child: SIGTERM's default action, at once (docstring)
+        if os.getpid() != owner:                    # a forked child before its at-fork reset: the default action (docstring)
             os.kill(os.getpid(), signal.SIGTERM)
-            return
+            os._exit(128 + signal.SIGTERM)          # should the signal be blocked in this thread: end all the same
         print(f'SIGTERM: exopipe3 {name} interrupted as for Ctrl-C (a placement in progress is undone); a second SIGTERM '
               f'terminates at once', file=sys.stderr, flush=True)
         raise Terminated('SIGTERM')
 
+    if not _FORK_HOOK:
+        os.register_at_fork(after_in_child=_reset_inherited_sigterm)
+        _FORK_HOOK.append(True)
+    _FORK_RESET.add(_on_sigterm)
     signal.signal(signal.SIGTERM, _on_sigterm)
     try:
         yield
     finally:
         signal.signal(signal.SIGTERM, signal.SIG_DFL)
+        _FORK_RESET.discard(_on_sigterm)
 
 
 def build_parser():

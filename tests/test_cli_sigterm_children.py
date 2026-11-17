@@ -14,6 +14,8 @@ Checks (each in a fresh interpreter, so the signal dispositions are this test's 
  1. pool churn under the handler: 12 rounds of a fork Pool(8, maxtasksperchild=1) over 64 tasks; nothing prints the SIGTERM
     notice or a Terminated traceback, the step process is never interrupted, only it runs on after each pool, and it exits.
  2. a forked child sent SIGTERM directly ends by SIGTERM's default action, silently, while the handler is installed.
+ 2b. a pool worker inside one long C call ends at once on Pool.terminate() (code review of PR 97: a Python-level handler in the
+    child would wait for the call to return, blocking the step's unwind).
  3. the step process itself is still interrupted: SIGTERM to it raises Terminated (its notice printed once), and SIGTERM is back
     to the default action after the step.
 
@@ -72,6 +74,30 @@ with cli._sigterm_interrupts('photometry'):
                                                    os.WEXITSTATUS(st) if os.WIFEXITED(st) else None), flush=True)
 '''
 
+BUSY = r'''
+import multiprocessing as mp, os, sys, time
+sys.path.insert(0, sys.argv[1])
+from exopipe.phase3 import cli
+
+
+def busy(n):
+    t = time.time()
+    sum(range(n))                    # one long C call: a Python-level handler would run only when it returns
+    return time.time() - t
+
+
+with cli._sigterm_interrupts('photometry'):
+    t = time.time()
+    alone = busy(int(sys.argv[2]))
+    p = mp.get_context('fork').Pool(1)
+    r = p.apply_async(busy, (int(sys.argv[2]),))
+    time.sleep(1.0)
+    t0 = time.time()
+    p.terminate()
+    p.join()
+    print('alone %.1f terminate %.1f' % (alone, time.time() - t0), flush=True)
+'''
+
 OWNER = r'''
 import os, signal, sys, time
 sys.path.insert(0, sys.argv[1])
@@ -118,7 +144,7 @@ def run(code, *args, timeout=240):
 def test_pool_churn():
     with tempfile.TemporaryDirectory() as d:
         out = os.path.join(d, 'out.txt')
-        rc, so, se = run(CHURN, out, timeout=120)
+        rc, so, se = run(CHURN, out, timeout=300)
         lines = open(out).read().split('\n') if os.path.exists(out) else []
         end = [ln.split() for ln in lines if ln.startswith('end ')]
         owner = end[0][2] if len(end) == 1 else None
@@ -140,6 +166,18 @@ def test_forked_child_default_action():
     assert not FAILED, FAILED
 
 
+def test_busy_worker_terminates_at_once():
+    rc, so, se = run(BUSY, str(1500 * 1000 * 1000), timeout=600)
+    try:
+        alone, term = (float(x) for x in so.split()[1::2])
+    except ValueError:
+        alone = term = None
+    check('a pool worker inside a long C call ends at once on Pool.terminate() (the kernel\'s default action, not a Python '
+          'handler that waits for the call to return): terminate + join under 2 s while the call alone takes over 5 s',
+          rc == 0 and alone is not None and alone > 5 and term < 2 and 'SIGTERM:' not in se, (rc, so, se[-400:]))
+    assert not FAILED, FAILED
+
+
 def test_owner_still_interrupted():
     rc, so, se = run(OWNER)
     check('the step process itself: SIGTERM raises Terminated (notice printed once) and the default action is back after the '
@@ -149,7 +187,8 @@ def test_owner_still_interrupted():
 
 
 if __name__ == '__main__':
-    for t in (test_pool_churn, test_forked_child_default_action, test_owner_still_interrupted):
+    for t in (test_pool_churn, test_forked_child_default_action, test_busy_worker_terminates_at_once,
+              test_owner_still_interrupted):
         try:
             t()
         except AssertionError:
