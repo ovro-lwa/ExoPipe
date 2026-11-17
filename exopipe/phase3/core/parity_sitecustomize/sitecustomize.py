@@ -5,8 +5,8 @@
 # raises a PermissionError naming the path instead of touching a production tree. An INJECTED run (core/injected.py) exports
 # the same variable over its scratch roots; with EXOPIPE3_INJECTED set the guard is labelled INJECTED-RUN GUARD and raises
 # InjectedWriteRefused. With EXOPIPE3_PARITY_ROOT unset no write guard is installed; the blocks below (import wraps, GITTAG
-# policy, the FITS no-memory-map default of every process) still act, and the file chains to the next sitecustomize on the
-# path. Python 3.6+.
+# policy, the FITS no-memory-map default and the refusal of a memory map of a Lustre file, in every process) still act, and
+# the file chains to the next sitecustomize on the path. Python 3.6+.
 import os
 import sys
 
@@ -334,10 +334,11 @@ if os.environ.get('EXOPIPE3_FALLBACK_POLICY'):
 # meta-path finder that wraps the module's loader. astropy is never imported here (a process that reads no FITS file pays one
 # name comparison per import). Every astropy of the site interpreters reads the switch the same way (4.1 under py36, 5.2
 # under default = py38, 6.1 under flow, 8.0 under tess: fitsopen takes memmap=None to mean the switch). An explicit
-# memmap=True stays a map: its owner converts it (tests/test_no_mmap.py). The finder asks only the finders AFTER it, with a
-# re-entry flag (as _GittagFinder above): a finder that asks EVERY finder (the parity guard's astropy hook in core/guard.py,
-# the sub-LST frozen-code guard) gets None from it while it is busy, or its wrapped spec; the loader the import uses is
-# wrapped once. Idempotent: installed once per process; a module loaded before this file gets the switch at once.
+# memmap=True still maps (a map of a Lustre file is refused: the gate below); its owner converts it (tests/test_no_mmap.py).
+# The finder asks only the finders AFTER it, with a re-entry flag (as _GittagFinder above): a finder that asks EVERY finder
+# (the parity guard's astropy hook in core/guard.py, the sub-LST frozen-code guard) gets None from it while it is busy, or
+# its wrapped spec; the loader the import uses is wrapped once. Idempotent: installed once per process; a module loaded
+# before this file gets the switch at once.
 _FITS_MOD = 'astropy.io.fits'
 
 
@@ -394,6 +395,103 @@ class _FitsNoMmapFinder(object):
 sys.meta_path.insert(0, _FitsNoMmapFinder())      # once: this file runs once per process (the check at its top)
 if _FITS_MOD in sys.modules:
     _fits_no_mmap(sys.modules[_FITS_MOD])
+
+# NO MEMORY MAP OF A LUSTRE FILE, refused (the same ruling; gates refuse, they do not warn). The switch above is a default
+# only: an explicit memmap=True, a numpy memory map or a direct map still maps. Every map made in Python is made by the
+# type mmap.mmap, looked up when the map is made - astropy's FITS file layer (4.1, 5.2, 6.1, 8.0), numpy.memmap behind
+# np.load(mmap_mode=...) and numpy.lib.format.open_memmap (numpy 1.19, 1.24, 2.2, 2.5), pandas, PIL, scipy.io's netcdf (the
+# installed sources, 2026-11-17) - so here mmap.mmap becomes a subclass (isinstance and type checks hold) whose constructor
+# refuses a descriptor of a Lustre file: one on a mount of type lustre (/proc/self/mountinfo) or whose path
+# (/proc/self/fd/<fd>) is under /lustre/. The refusal is NoLustreMapError, a PermissionError (errno EACCES; never ENOMEM,
+# which astropy answers with a second map) whose text starts 'NO-LUSTRE-MAP:' and names the file and the ruling; it is also
+# mmap.NoLustreMapError, so a pool worker's refusal unpickles in its parent. The decision reads /proc, never Lustre.
+# Unchanged: anonymous maps (fileno -1), maps of node-local files (/fast, /dataNN, /dev/shm, /tmp), a FITS header read with
+# a map asked for (it maps nothing). astropy and numpy are not imported here. NOT covered: a map made in C (casacore maps
+# tables only when its tsm option says so; its default reads them - py36, py38 and flow, 2026-11-17), a process that does
+# not load this file (a program not in Python, python -I or -S, a PYTHONPATH without this directory).
+import errno as _errno
+import mmap as _mmap
+
+_MMAP = _mmap.mmap
+_LUSTRE_RULING = ('R-GREGG-20261117-NO-MMAP-OF-LUSTRE-FILES-READ-OR-WRITE, Gregg 2026-11-17: "Never memory-map a Lustre file, '
+                  'for reading OR writing"')
+
+
+class NoLustreMapError(PermissionError):
+    """A memory map of a Lustre file, refused (errno EACCES); str() is the refusal text, 'NO-LUSTRE-MAP: ...'."""
+
+    def __str__(self):
+        return str(self.strerror)
+
+
+def _lustre_mount(dev, _seen={}):              # _seen: the answer per device, kept for the life of the process
+    """Is device ``dev`` a mount of type lustre in /proc/self/mountinfo?"""
+    hit = _seen.get(dev)
+    if hit is None:
+        try:
+            with open('/proc/self/mountinfo') as f:
+                rows = [line.partition(' - ') for line in f]
+        except OSError:
+            return False                        # not kept: asked again at the next map
+        hit = False
+        for head, sep, tail in rows:
+            fields = head.split()
+            if sep and len(fields) > 2 and tail.split()[:1] == ['lustre']:
+                major, _c, minor = fields[2].partition(':')
+                if major.isdigit() and minor.isdigit() and os.makedev(int(major), int(minor)) == dev:
+                    hit = True
+        _seen[dev] = hit
+    return hit
+
+
+class _NoLustreMap(_MMAP):
+    """mmap.mmap in a process that loaded core/parity_sitecustomize/sitecustomize.py: a map of a Lustre file is refused with
+    NoLustreMapError; every other map is made as by the builtin type."""
+    __slots__ = ()
+    lustre_prefixes = ('/lustre/',)             # a file is on Lustre by its path ...
+    lustre_devices = None                       # ... or by its device (None: the mounts of type lustre). The tests point
+                                                # both at a local stand-in.
+
+    @staticmethod
+    def lustre_refusal(fileno):
+        """The NoLustreMapError a map of descriptor ``fileno`` gets, or None (anonymous, node-local, not a descriptor: the
+        builtin type decides)."""
+        try:
+            fd = fileno.__index__()
+        except Exception:
+            return None
+        if fd < 0:
+            return None
+        gate = _NoLustreMap
+        try:
+            path = os.readlink('/proc/self/fd/%d' % fd)
+        except OSError:
+            path = None
+        hit = path is not None and path.startswith(tuple(gate.lustre_prefixes))
+        if not hit:
+            try:
+                dev = os.fstat(fd).st_dev
+            except OSError:
+                return None
+            hit = dev in gate.lustre_devices if gate.lustre_devices is not None else _lustre_mount(dev)
+        if not hit:
+            return None
+        where = path or 'descriptor %d' % fd
+        return NoLustreMapError(_errno.EACCES, 'NO-LUSTRE-MAP: a memory map of the Lustre file %s is refused (%s); read it '
+                                'without a map (astropy memmap=False, numpy without mmap_mode)' % (where, _LUSTRE_RULING),
+                                where)
+
+    def __new__(cls, *args, **kwargs):
+        refused = _NoLustreMap.lustre_refusal(args[0] if args else kwargs.get('fileno', -1))
+        if refused is not None:
+            raise refused
+        return _MMAP.__new__(cls, *args, **kwargs)
+
+
+_NoLustreMap.__name__ = _NoLustreMap.__qualname__ = 'mmap'
+_NoLustreMap.__module__ = NoLustreMapError.__module__ = 'mmap'
+_mmap.mmap = _NoLustreMap                         # once: this file runs once per process (the check at its top)
+_mmap.NoLustreMapError = NoLustreMapError
 
 # chain to any other sitecustomize on the path (the environment's own, if it has one) - never back to the sitecustomize
 # Python imported at start-up when that is another file which chained here (the sub-LST frozen-code guard first on the

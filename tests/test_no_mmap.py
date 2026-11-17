@@ -19,6 +19,19 @@ Lustre file, for reading OR writing"; the 11-09 and 11-16 lwacalim07 Lustre clie
    child never opens the Lustre file unless its switch is off. On the cluster (the site file present) the children run
    through core.legacy.run under py38 ('default') and py36 and also read a small Lustre FITS; elsewhere (CI) the same checks
    run with this interpreter on a local file.
+5. THE NO-LUSTRE-MAP GATE: the same sitecustomize replaces mmap.mmap - the type every map made in Python goes through
+   (astropy's FITS file layer, numpy.memmap, np.load(mmap_mode=...), numpy.lib.format.open_memmap) - by a subclass that
+   refuses a descriptor of a Lustre file with NoLustreMapError (a PermissionError, errno EACCES, text 'NO-LUSTRE-MAP: ...'
+   naming the file and the ruling). NO TEST ATTEMPTS A MAP OF A REAL LUSTRE FILE, not even one expected to be refused (a gate
+   failure would then be the forbidden act). The whole chain is proven on a LOCAL STAND-IN: the child points the gate's
+   protected path prefix, then its protected device, at a scratch directory; every map call on a file there is refused and
+   leaves no map in /proc/self/maps, the same calls on a file outside it map (seen in /proc/self/maps), anonymous maps work,
+   a FITS header read that asks for a map works (it maps nothing), astropy and numpy are not imported at start-up. On the
+   real Lustre file only the gate's decision is asked (refused, by its path and by its device) and the default and
+   memmap=False reads read it with no /lustre mapping. FALSIFIER: the stand-in child with the gate taken out (mmap.mmap back
+   to the builtin type) maps every stand-in file and fails the stand-in check. On the cluster the children run through
+   core.legacy.run under py38 and py36 with and without --parity, and directly under flow (3.10) and the TESS interpreters
+   (3.12); elsewhere (CI) with this interpreter, stand-in only.
 
 Run standalone: python tests/test_no_mmap.py    Under pytest: pytest tests/test_no_mmap.py
 """
@@ -382,6 +395,348 @@ def test_inplace_children_through_core_legacy_run():
         os.environ.update(saved)
 
 
+# ---- 5. the no-Lustre-map gate --------------------------------------------------------------------------------------------
+RULING = 'R-GREGG-20261117-NO-MMAP-OF-LUSTRE-FILES-READ-OR-WRITE'
+TESS_FAST = '/fast/gh/main/envs/tess/bin/python'        # the TESS env of lwacalim07 (the site's 'tess' is its NFS copy)
+# every way of mapping the child tries; all but fits_header make a map (a header read that asks for a map maps nothing)
+GATE_CASES = ('fits_header', 'fits_data', 'fits_getdata', 'fits_update', 'np_memmap', 'np_memmap_write', 'np_load',
+              'open_memmap', 'mmap_read', 'mmap_keywords', 'mmap_write')
+DEVICE_CASES = ('fits_data', 'np_memmap', 'mmap_read')
+
+# The gate child (Python 3.6+; _GateScratch writes CASES and DEVICE_CASES above it): argv = result file, mode, ... 'standin'
+# (standin dir, outside dir, /dev/shm dir or '-', gate '1' / '0'): the gate's prefix, then its device, pointed at the
+# stand-in; every case on the files there and outside; '0' takes the gate out first (the falsifier). 'real' (Lustre FITS,
+# local FITS): the gate's decision on descriptors only, then the Lustre file read with the defaults and with memmap=False -
+# never a map of it.
+GATE_CHILD = r'''
+import json, os, sys
+res, mode = sys.argv[1], sys.argv[2]
+out = {'python': sys.version.split()[0],
+       'heavy_at_start': sorted(m for m in sys.modules if m.split('.')[0] in ('astropy', 'numpy'))}
+import mmap
+G = mmap.mmap
+out['gate'] = bool(hasattr(G, 'lustre_refusal') and G is not G.__mro__[1] and G.__mro__[1].__module__ == 'mmap')
+
+
+def maps():
+    rows = set()
+    with open('/proc/self/maps') as f:
+        for line in f:
+            p = line.rstrip('\n').split(None, 5)
+            if len(p) == 6:
+                rows.add(p[5])
+    return rows
+
+
+def refusal(e):
+    return {'type': type(e).__name__, 'oserror': isinstance(e, OSError), 'errno': getattr(e, 'errno', None), 'text': str(e)}
+
+
+def case(name, d):
+    import numpy as np
+    from astropy.io import fits
+    from numpy.lib import format as npformat
+    fp, npy, raw = (os.path.realpath(os.path.join(d, b)) for b in ('img.fits', 'arr.npy', 'raw.bin'))
+    target = {'np_memmap': raw, 'np_memmap_write': raw, 'np_load': npy, 'open_memmap': npy, 'mmap_read': raw,
+              'mmap_keywords': raw, 'mmap_write': raw}.get(name, fp)
+    r = {'ok': False, 'mapped_during': False, 'refusal': None}
+    try:
+        if name == 'fits_header':
+            with fits.open(fp, memmap=True) as h:
+                r['value'] = len(h[0].header)
+                seen = maps()
+        elif name in ('fits_data', 'fits_update'):
+            with fits.open(fp, memmap=True, mode='update' if name == 'fits_update' else 'readonly') as h:
+                a = h[0].data
+                seen = maps()
+                r['value'] = float(a.sum())
+                del a
+        elif name == 'fits_getdata':
+            a = fits.getdata(fp, memmap=True)
+            seen = maps()
+            r['value'] = float(a.sum())
+            del a
+        elif name in ('np_memmap', 'np_memmap_write'):
+            a = np.memmap(raw, dtype=np.uint8, mode='r' if name == 'np_memmap' else 'r+')
+            seen = maps()
+            r['value'] = int(a.sum())
+            del a
+        elif name in ('np_load', 'open_memmap'):
+            a = np.load(npy, mmap_mode='r') if name == 'np_load' else npformat.open_memmap(npy, mode='r')
+            seen = maps()
+            r['value'] = float(a.sum())
+            del a
+        else:
+            with open(raw, 'r+b' if name == 'mmap_write' else 'rb') as f:
+                if name == 'mmap_keywords':
+                    m = mmap.mmap(fileno=f.fileno(), length=0, access=mmap.ACCESS_READ)
+                elif name == 'mmap_read':
+                    m = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+                else:
+                    m = mmap.mmap(f.fileno(), 0)
+                seen = maps()
+                r['value'] = len(m)
+                m.close()
+        r['ok'] = True
+        r['mapped_during'] = target in seen
+    except Exception as e:
+        r['refusal'] = refusal(e)
+    r['mapped_after'] = target in maps()
+    r['target'] = target
+    return r
+
+
+if mode == 'standin':
+    standin, outside, shm, on = sys.argv[3:7]
+    if on == '0' and out['gate']:
+        mmap.mmap = G = G.__mro__[1]                     # the falsifier: the gate taken out
+    out['gate_in_use'] = hasattr(mmap.mmap, 'lustre_refusal')
+    if out['gate_in_use']:
+        G.lustre_prefixes, G.lustre_devices = (os.path.realpath(standin) + os.sep,), frozenset()
+    out['standin'] = dict((c, case(c, standin)) for c in CASES)
+    out['outside'] = dict((c, case(c, outside)) for c in CASES)
+    if shm != '-':
+        if out['gate_in_use']:
+            G.lustre_prefixes, G.lustre_devices = (), frozenset([os.stat(shm).st_dev])
+        out['device'] = dict((c, case(c, shm)) for c in DEVICE_CASES)
+        out['device_outside'] = dict((c, case(c, outside)) for c in DEVICE_CASES)
+    if out['gate_in_use']:
+        G.lustre_prefixes, G.lustre_devices = ('/lustre/',), None
+    m = mmap.mmap(-1, 1 << 16)
+    m[:5] = b'abcde'
+    out['anonymous'] = {'ok': m[:5] == b'abcde', 'isinstance': isinstance(m, mmap.mmap), 'type': type(m) is mmap.mmap}
+    m.close()
+elif mode == 'real':
+    lustre, local = sys.argv[3:5]
+    dec = {}
+    fd = os.open(lustre, os.O_RDONLY)                    # a descriptor only: nothing here maps it
+    try:
+        for key, prefixes, devices in (('default', ('/lustre/',), None), ('by_path', ('/lustre/',), frozenset()),
+                                       ('by_device', (), None)):
+            G.lustre_prefixes, G.lustre_devices = prefixes, devices
+            e = G.lustre_refusal(fd)
+            dec[key] = refusal(e) if e is not None else None
+        G.lustre_prefixes, G.lustre_devices = ('/lustre/',), None
+    finally:
+        os.close(fd)
+    fd = os.open(local, os.O_RDONLY)
+    try:
+        e = G.lustre_refusal(fd)
+        dec['local'] = refusal(e) if e is not None else None
+    finally:
+        os.close(fd)
+    e = G.lustre_refusal(-1)
+    dec['anonymous'] = refusal(e) if e is not None else None
+    out['decision'] = dec
+    out['lustre_path'] = os.path.realpath(lustre)
+    from astropy.io import fits
+    out['use_memmap'] = fits.conf.use_memmap
+    out['sums'], out['lustre_maps'] = [], []
+    if fits.conf.use_memmap is False:                  # never open the Lustre file with the switch on
+        with fits.open(lustre) as h:
+            out['sums'].append(float(h[0].data.astype('f8').sum()))
+            out['lustre_maps'] += sorted(x for x in maps() if x.startswith('/lustre/'))
+        with fits.open(lustre, memmap=False) as h:
+            out['sums'].append(float(h[0].data.astype('f8').sum()))
+            out['lustre_maps'] += sorted(x for x in maps() if x.startswith('/lustre/'))
+        a = fits.getdata(lustre)
+        out['sums'].append(float(a.astype('f8').sum()))
+        out['lustre_maps'] += sorted(x for x in maps() if x.startswith('/lustre/'))
+        del a
+    out['lustre_maps'] += sorted(x for x in maps() if x.startswith('/lustre/'))
+with open(res, 'w') as f:
+    json.dump(out, f)
+'''
+
+
+class _GateScratch(_Scratch):
+    """_Scratch plus the gate child and, in three places, a FITS image, a .npy array and raw bytes: the stand-in directory,
+    a directory outside it (same disk) and a directory on /dev/shm (another device: the device stand-in)."""
+
+    def __init__(self):
+        import numpy as np
+        from astropy.io import fits
+        super(_GateScratch, self).__init__()
+        self.gate_child = os.path.join(self.d, 'gate_child.py')
+        with open(self.gate_child, 'w') as f:
+            f.write('CASES, DEVICE_CASES = %r, %r\n' % (GATE_CASES, DEVICE_CASES) + GATE_CHILD)
+        self.standin, self.outside = os.path.join(self.d, 'standin'), os.path.join(self.d, 'outside')
+        self.shm = None
+        if os.path.isdir('/dev/shm') and os.stat('/dev/shm').st_dev != os.stat(self.d).st_dev:
+            self.shm = tempfile.mkdtemp(prefix='exopipe3_lmg_', dir='/dev/shm')
+        for d in [self.standin, self.outside] + ([self.shm] if self.shm else []):
+            if not os.path.isdir(d):
+                os.makedirs(d)
+            fits.writeto(os.path.join(d, 'img.fits'), np.arange(64, dtype=np.float32).reshape(8, 8))
+            np.save(os.path.join(d, 'arr.npy'), np.arange(256, dtype=np.float32))
+            with open(os.path.join(d, 'raw.bin'), 'wb') as f:
+                f.write(bytes(bytearray(range(256))) * 32)
+
+    def close(self):
+        if self.shm:
+            shutil.rmtree(self.shm, ignore_errors=True)
+        super(_GateScratch, self).close()
+
+
+def _gate_args(sc, mode, on='1'):
+    if mode == 'standin':
+        return [mode, sc.standin, sc.outside, sc.shm or '-', on]
+    return [mode, LUSTRE_FITS, sc.local]
+
+
+def _gate_direct(py, sc, mode, on='1', pythonpath=(BOOT,), **extra):
+    res = sc.result_path()
+    p = subprocess.run([py, sc.gate_child, res] + _gate_args(sc, mode, on), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                       stdin=subprocess.DEVNULL, env=_env(pythonpath, XDG_CONFIG_HOME=sc.xdg, **extra), timeout=600)
+    assert p.returncode == 0 and os.path.isfile(res), (py, mode, p.returncode, p.stdout.decode('utf-8', 'replace')[-2000:])
+    with open(res) as f:
+        return json.load(f)
+
+
+def _check_refused(r, what):
+    f = r['refusal']
+    assert r['ok'] is False and f, (what, 'not refused', r)
+    assert f['type'] == 'NoLustreMapError' and f['oserror'] and f['errno'] == 13, (what, 'not the gate refusal', f)
+    assert f['text'].startswith('NO-LUSTRE-MAP:') and r['target'] in f['text'] and RULING in f['text'], (what, f['text'])
+    assert not r['mapped_during'] and not r['mapped_after'], (what, 'a refused file is mapped', r)
+
+
+def _check_mapped(r, what):
+    assert r['ok'] is True and r['refusal'] is None, (what, 'a map outside the stand-in failed', r)
+    assert r['mapped_during'] is True, (what, 'a map outside the stand-in was not seen in /proc/self/maps: the check is blind',
+                                        r)
+
+
+def _check_gate_cases(r, sc, what):
+    for c in GATE_CASES:
+        s, o = r['standin'][c], r['outside'][c]
+        if c == 'fits_header':                           # exact: a header read maps nothing, so it is not refused
+            assert s['ok'] and o['ok'] and not s['mapped_during'] and not o['mapped_during'], (what, c, s, o)
+            continue
+        _check_refused(s, (what, 'stand-in', c))
+        _check_mapped(o, (what, 'outside', c))
+    if sc.shm:
+        for c in DEVICE_CASES:
+            _check_refused(r['device'][c], (what, 'device stand-in', c))
+            _check_mapped(r['device_outside'][c], (what, 'outside the device stand-in', c))
+
+
+def _check_gate_standin(r, sc, what):
+    assert r['gate'] is True and r['gate_in_use'] is True, (what, 'mmap.mmap is not the gate', r['gate'])
+    assert r['heavy_at_start'] == [], (what, 'astropy or numpy imported at start-up', r['heavy_at_start'])
+    _check_gate_cases(r, sc, what)
+    assert r['anonymous'] == {'ok': True, 'isinstance': True, 'type': True}, (what, 'anonymous map', r['anonymous'])
+
+
+def _check_gate_falsifier(r, sc, what):
+    """The stand-in child with the gate taken out maps every stand-in file, and the stand-in cases check fails on it.
+    Returns the check's failure."""
+    assert r['gate'] is True and r['gate_in_use'] is False, (what, 'the gate was not taken out', r)
+    runs = [r['standin'][c] for c in GATE_CASES if c != 'fits_header'] + [r['device'][c] for c in DEVICE_CASES if sc.shm]
+    assert all(x['ok'] is True and x['mapped_during'] is True for x in runs), (what, 'a stand-in file not mapped without '
+                                                                                'the gate', runs)
+    try:
+        _check_gate_cases(r, sc, what)
+    except AssertionError as e:
+        return '%d of %d stand-in maps made; the check: AssertionError%s' % (len(runs), len(runs), str(e)[:220])
+    raise AssertionError((what, 'the stand-in check passed without the gate - falsifier void'))
+
+
+def _check_gate_real(r, what):
+    assert r['gate'] is True and r['heavy_at_start'] == [], (what, r['gate'], r['heavy_at_start'])
+    for key in ('default', 'by_path', 'by_device'):
+        f = r['decision'][key]
+        assert f and f['type'] == 'NoLustreMapError' and f['oserror'] and f['errno'] == 13, (what, key, f)
+        assert f['text'].startswith('NO-LUSTRE-MAP:') and r['lustre_path'] in f['text'] and RULING in f['text'], (what, key, f)
+    assert r['decision']['local'] is None and r['decision']['anonymous'] is None, (what, 'a local or anonymous map refused', r)
+    assert r['use_memmap'] is False and len(r['sums']) == 3 and len(set(r['sums'])) == 1, (what, r['use_memmap'], r['sums'])
+    assert r['lustre_maps'] == [], (what, 'a /lustre mapping', r['lustre_maps'])
+
+
+def test_lustre_map_gate_standin():
+    """Section 5 with this interpreter (data-free; CI): the stand-in chain and its falsifier."""
+    sc = _GateScratch()
+    try:
+        r = _gate_direct(sys.executable, sc, 'standin')
+        _check_gate_standin(r, sc, 'gate, Python %s' % r['python'])
+        f = _check_gate_falsifier(_gate_direct(sys.executable, sc, 'standin', on='0'), sc, 'no gate')
+        print('no-Lustre-map gate, Python %s: on the stand-in %d map calls refused (NoLustreMapError, errno 13, '
+              'NO-LUSTRE-MAP text) and none mapped, the same calls outside it mapped, %s; header read with a map asked for '
+              'works; anonymous map works; falsifier (gate taken out): %s'
+              % (r['python'], len(GATE_CASES) - 1, 'device stand-in refused' if sc.shm else 'no device stand-in (no '
+                 '/dev/shm on another device)', f))
+    finally:
+        sc.close()
+
+
+def test_lustre_map_gate_children():
+    """Section 5 on the cluster: core.legacy.run children under py38 ('default') and py36, with and without --parity, and
+    direct children under flow and the TESS interpreters: the stand-in chain, the decision on the real Lustre file (no map
+    attempted), the default reads of it with no /lustre mapping; the falsifier per interpreter."""
+    site = os.environ.get('EXOPIPE3_SITE') or SITE_FILE
+    if not os.path.isfile(site):
+        print('      (skipped: no site file %s on this node - the gate children run on the cluster)' % site)
+        return
+    assert os.path.isfile(LUSTRE_FITS), ('the small Lustre FITS of this test is gone - name another', LUSTRE_FITS)
+    from exopipe.phase3.core import legacy
+    saved = {k: os.environ.pop(k) for k in list(os.environ)
+             if k == 'PYTHONPATH' or (k.startswith('EXOPIPE3_') and k != 'EXOPIPE3_SITE') or k.startswith('SUBLST_')}
+    site_set = 'EXOPIPE3_SITE' in os.environ
+    os.environ.setdefault('EXOPIPE3_SITE', site)
+    sc = None
+    try:
+        sc = _GateScratch()
+        for key in ('default', 'py36'):
+            for kw, what in (({}, 'core.legacy.run'), ({'parity_root': os.path.join(sc.d, 'gate_parity_' + key)},
+                                                       'core.legacy.run --parity')):
+                if kw:
+                    os.makedirs(kw['parity_root'])
+                for mode in ('standin', 'real'):
+                    res = sc.result_path()
+                    lr = legacy.run(sc.gate_child, [res] + _gate_args(sc, mode), python=key, env={'XDG_CONFIG_HOME': sc.xdg},
+                                    **kw)
+                    assert lr.ok and os.path.isfile(res), (key, what, mode, lr.rc, lr.reason, lr.tail[-2000:])
+                    with open(res) as f:
+                        r = json.load(f)
+                    assert r['python'].startswith('3.6' if key == 'py36' else '3.8'), (key, r['python'])
+                    if mode == 'standin':
+                        _check_gate_standin(r, sc, (key, what))
+                    else:
+                        _check_gate_real(r, (key, what))
+            f = _check_gate_falsifier(_gate_direct(legacy.interpreter(key), sc, 'standin', on='0'), sc, key)
+            frozen = 'not composed (no guard file)'
+            if os.path.isfile(os.path.join(FROZEN_GUARD, 'sitecustomize.py')):
+                froot = os.path.join(sc.d, 'gate_frozen_' + key)
+                os.makedirs(froot)
+                open(os.path.join(froot, 'MANIFEST.sha256'), 'w').close()
+                for order in ((FROZEN_GUARD, BOOT), (BOOT, FROZEN_GUARD)):
+                    _check_gate_standin(_gate_direct(legacy.interpreter(key), sc, 'standin', pythonpath=order,
+                                                     SUBLST_CODE_ROOT=froot), sc, (key, 'frozen-code guard', order))
+                frozen = 'the gate in place with it first or second on the path'
+            print('no-Lustre-map gate, core.legacy.run %s (Python %s), with and without --parity: stand-in maps refused, '
+                  'outside mapped; %s refused by path and by device without a map, read with the defaults and memmap=False, '
+                  'no /lustre mapping; frozen-code guard: %s; falsifier: %s' % (key, r['python'], LUSTRE_FITS, frozen,
+                                                                                 f[:120]))
+        pys = [('flow', legacy.interpreter('flow')), ('tess', legacy.interpreter('tess')), ('tess /fast', TESS_FAST)]
+        for name, py in pys:
+            if not os.path.isfile(py):
+                print('      (skipped: no %s interpreter %s on this node)' % (name, py))
+                continue
+            r = _gate_direct(py, sc, 'standin')
+            _check_gate_standin(r, sc, name)
+            r = _gate_direct(py, sc, 'real')
+            _check_gate_real(r, name)
+            f = _check_gate_falsifier(_gate_direct(py, sc, 'standin', on='0'), sc, name)
+            print('no-Lustre-map gate, %s %s (Python %s): stand-in maps refused, outside mapped; the Lustre file refused '
+                  'without a map and read with no /lustre mapping; falsifier: %s' % (name, py, r['python'], f[:120]))
+    finally:
+        if sc is not None:
+            sc.close()
+        if not site_set:
+            os.environ.pop('EXOPIPE3_SITE', None)
+        os.environ.update(saved)
+
+
 if __name__ == '__main__':
     test_pattern_catches_the_forms()
     test_import_turns_memmap_off()
@@ -389,4 +744,6 @@ if __name__ == '__main__':
     test_every_fits_entry_point_turns_memmap_off()
     test_inplace_child_switch_off_lazily()
     test_inplace_children_through_core_legacy_run()
+    test_lustre_map_gate_standin()
+    test_lustre_map_gate_children()
     print('PASS: no memory maps')
