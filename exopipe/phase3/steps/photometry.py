@@ -150,9 +150,9 @@ def add_arguments(p):
     s.add_argument('--refused-cells', action='append', metavar='KIND=FILE',
                    help='evaluate: the per-kind cell,reason list of cells refused before evaluation (e.g. the '
                         'refused_cells_sb_<tag>.csv of a production evaluation, to replay it); it must list every cell '
-                        'photometry_evaluate.REFUSED_CELLS refuses for that kind (generation-4 corrupt cutouts: not '
-                        'applied when every selected stage-1 cell measured the served generation). Default: that '
-                        'pinned file plus the cells whose measure unit was refused')
+                        'photometry_evaluate.REFUSED_CELLS refuses for that kind among the selected cells (generation-4 '
+                        'corrupt cutouts: a pinned cell whose stage-1 manifests name no generation-4 file is not '
+                        'refused). Default: that pinned file plus the cells whose measure unit was refused')
     s.add_argument('--eval-procs', type=int, help='evaluate: cells evaluated at a time (--nproc; outputs identical)')
     s.add_argument('--eval-tag', help='evaluate: output directories eval_<tag>, eval_wb_<tag> (default the UTC date)')
 
