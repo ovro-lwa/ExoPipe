@@ -261,18 +261,23 @@ MASTER_GROUPING = '.master_grouping'      # B + this: the design-B grouping of B
 
 def served_identity_splits(B, stokes, gid):
     """The outcome of R-GREGG-20261117-TENMIN-MASTER-IDENTITY-BEFORE-RELEASE1 on a cumulative build B, read-only (the union-find
-    of production's sublst_master_identity.py, exopipe_ops fa669f0): the served identities of Stokes ``stokes`` (identity_id,
-    else source_id - the page server's key - of every survivors row of source_catalogs_<S>_sb / _wb), linked through the
+    of production's sublst_master_identity.py, exopipe_ops fa669f0): the served identities of Stokes ``stokes`` (the
+    identity_id of every survivors row of source_catalogs_<S>_sb / _wb, as production's script reads them), linked through the
     design-B identity (``gid``: cand_id -> identity_id) of each served member detection (a members row whose (source_id, band)
     has a survivors row). Returns dict(splits=[sorted served identities of one component, for every component of two or more
     - each is one source shown under several identities], members=n served member detections, unlinked=[cand_ids not in
-    gid], twice=[(source_id, band) under two identities], identities=n served identities)."""
-    surv, twice = {}, []
+    gid], twice=[(source_id, band) under two identities], blank=[(source_id, band) of survivors rows without an identity_id:
+    production's script keys every row by identity_id, so the gate refuses such a row rather than key it by its J-name],
+    identities=n served identities)."""
+    surv, twice, blank = {}, [], []
     for t in ('sb', 'wb'):
         for p in sorted(glob.glob(os.path.join(B, f'source_catalogs_{stokes}_{t}', '*_sources_survivors.csv'))):
             with open(p, newline='') as f:
                 for r in csv.DictReader(f):
-                    k, i = (r['source_id'], r['band']), r.get('identity_id') or r['source_id']
+                    k, i = (r['source_id'], r['band']), (r.get('identity_id') or '').strip()
+                    if not i:
+                        blank.append(k)
+                        continue
                     if k in surv and surv[k] != i:
                         twice.append(k)
                     surv[k] = i
@@ -306,7 +311,7 @@ def served_identity_splits(B, stokes, gid):
     for i in parent:
         comp[find(i)].append(i)
     return dict(splits=sorted(sorted(m) for m in comp.values() if len(m) > 1), members=members, unlinked=unlinked,
-                twice=sorted(set(twice)), identities=len(parent))
+                twice=sorted(set(twice)), blank=sorted(set(blank)), identities=len(parent))
 
 
 def _served_stokes(B):
@@ -353,7 +358,7 @@ def batch_grouping(B, G, label, u=None):
     return out
 
 
-def master_identity(plan, B, u, log):
+def master_identity(plan, B, u):
     """G13, the master identity of the 10-minute cumulative (R-GREGG-20261117-TENMIN-MASTER-IDENTITY-BEFORE-RELEASE1, Gregg
     2026-11-17: "Why can't you just merge identities into a new Master identity that supersedes the older ones?"; the cross-LST
     half of R-CROSS-TIER-SINGLE-IDENTITY of 2026-09-05). Production (exopipe_ops fa669f0) runs sublst_master_identity.py right
@@ -389,7 +394,9 @@ def master_identity(plan, B, u, log):
             tabs = batch_grouping(B, G, f'{plan.run_name}.master_grouping', u)
         except GS.StageRefusal as e:
             u.refuse(f'G13 master identity: the design-B grouping of the build refused: {str(e)[:1200]}')
-        res = scripts.run('sublst_master_identity', [B, G], log=log, unit=u)
+        # its own log, fresh with G (batch_grouping removed G): the M-lines and the OK line are read from the log's tail, so a
+        # log other runs append to (production's sublst_cumulative.log) could hand this run another run's lines
+        res = scripts.run('sublst_master_identity', [B, G], log=os.path.join(G, 'master_identity.log'), unit=u)
         if not res.ok:
             tests = [ln.strip() for ln in (res.tail or '').splitlines() if ln.strip()[:2] in ('M1', 'M2', 'M3', 'M4')]
             u.refuse(f'G13 master identity: sublst_master_identity.py refused (exit {res.rc}; nothing rewritten): '
@@ -403,20 +410,22 @@ def master_identity(plan, B, u, log):
                                          grouping=G, counts={S: c for S, (_p, c) in tabs.items()})
         for S in ('I', 'V'):
             rec = os.path.join(B, 'source_catalogs', f'master_identity_{S}.csv')
-            if os.path.exists(rec):
-                u.add_output(rec, 'master_identity_record', tier='sublst', stokes=S, grouping=G)
+            if not os.path.exists(rec):          # the script writes one per Stokes after its OK, header-only when nothing merges
+                u.refuse(f'G13 master identity: sublst_master_identity.py printed its OK line but wrote no {rec}')
+            u.add_output(rec, 'master_identity_record', tier='sublst', stokes=S, grouping=G)
             with open(tabs[S][0], newline='') as f:
                 gid[S] = {r['cand_id']: r['identity_id'] for r in csv.DictReader(f)}
     outcome = {}
     for S in _served_stokes(B):
         r = served_identity_splits(B, S, gid.get(S, {}))
         outcome[S] = dict(identities=r['identities'], members=r['members'], splits=len(r['splits']),
-                          unlinked=len(r['unlinked']), twice=len(r['twice']))
+                          unlinked=len(r['unlinked']), twice=len(r['twice']), blank=len(r['blank']))
         why = ([f'{len(r["splits"])} sets of served identities that hold detections of one design-B identity, so one source '
                 f'is served under several identities (e.g. {r["splits"][:3]})'] if r['splits'] else []) + \
               ([f'{len(r["unlinked"])} of {r["members"]} served member detections are not in the grouping (e.g. '
                 f'{r["unlinked"][:3]})'] if r['unlinked'] else []) + \
-              ([f'{len(r["twice"])} (source_id, band) keys under two identities (e.g. {r["twice"][:3]})'] if r['twice'] else [])
+              ([f'{len(r["twice"])} (source_id, band) keys under two identities (e.g. {r["twice"][:3]})'] if r['twice'] else []) + \
+              ([f'{len(r["blank"])} survivors rows without an identity_id (e.g. {r["blank"][:3]})'] if r['blank'] else [])
         if why:
             u.meta['master_identity']['outcome'] = outcome
             u.refuse(f'G13 master identity, Stokes {S}: ' + '; '.join(why) + ' - the served cumulative stays as it is')
@@ -501,7 +510,7 @@ def build_stage(run, plan):
         u.note('deep omission: ' + open(os.path.join(B, 'deep_omission_summary.txt')).readline().strip())
         u.add_output(os.path.join(B, 'deep_omission_dropped.csv'), 'omission_record', tier='sublst',
                      decisions=os.path.join(B, 'deep_omission.csv'))
-        master_identity(plan, B, u, log)                 # G13: right after the merge, before the combined positions
+        master_identity(plan, B, u)                      # G13: right after the merge, before the combined positions
         # SPEED (design 2.3a stage 4): production's own row-index and shard switches - the same tables (serve.SUBLST_LOC_SPEED_ENV)
         env = dict(S.SUBLST_LOC_ENV, **dict(S.SUBLST_LOC_SPEED_ENV or {}), P3_TENMIN_PERTIE=f'{B}/pertie_detections.csv',
                    P3_LOC_OUT=f'{B}/source_catalogs')

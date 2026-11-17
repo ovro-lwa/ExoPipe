@@ -1349,7 +1349,8 @@ def master_identity_superseded(path, stokes=None, **ctx):
     sublst_master_identity.py in the sub-LST build, G13; R-GREGG-20261117-TENMIN-MASTER-IDENTITY-BEFORE-RELEASE1), read against
     the build's own catalogs (survivors of B/source_catalogs_<S>_sb / _wb): every recorded identity maps to ONE master; every
     master holds two or more recorded identities; every master is an identity of the build, named by the J-name (source_id) of
-    one of its own rows; no superseded identity (a recorded identity other than its master) is left in the build."""
+    one of its own rows; no superseded identity (a recorded identity other than its master) is left in any file the script
+    relabels (every CSV of source_catalogs_<S>_sb / _wb with an identity_id column, and pages_input_<S>_<sb|wb>.csv)."""
     S = stokes or os.path.basename(path)[len('master_identity_'):-len('.csv')]
     B = os.path.dirname(os.path.dirname(os.path.abspath(path)))
     with open(path, newline='') as f:
@@ -1368,8 +1369,18 @@ def master_identity_superseded(path, stokes=None, **ctx):
                     sources[r['identity_id']].add(r['source_id'])
     bad += [f'master {m} is not an identity of the build' for m in size if m not in sources]
     bad += [f'master {m} is not the J-name of one of its rows' for m in size if m in sources and m not in sources[m]]
-    left = sorted({r['identity_id'] for r in rec if r['identity_id'] != r['master_identity']} & set(sources))
-    bad += [f'superseded identity {i} still in the build' for i in left]
+    # every file the script relabels (sublst_master_identity.py:123-125): each CSV of source_catalogs_<S>_sb / _wb with an
+    # identity_id column (survivors, members, ...) and source_catalogs/pages_input_<S>_<sb|wb>.csv, which the pages read
+    old = {r['identity_id'] for r in rec if r['identity_id'] != r['master_identity']}
+    files = sorted(glob.glob(os.path.join(B, f'source_catalogs_{S}_[sw]b', '*.csv')) +
+                   glob.glob(os.path.join(B, 'source_catalogs', f'pages_input_{S}_[sw]b.csv')))
+    for p in files:
+        with open(p, newline='') as f:
+            rd = csv.DictReader(f)
+            if 'identity_id' not in (rd.fieldnames or ()):
+                continue
+            left = sorted({r['identity_id'] for r in rd} & old)
+        bad += [f'superseded identity {i} still in {os.path.relpath(p, B)}' for i in left[:3]]
     val = dict(masters=len(size), merged_identities=len(rec))
     return not bad, val, ('; '.join(map(str, bad[:5])) if bad else
                           f'{len(rec)} served identities merged into {len(size)} masters; none left in the build')

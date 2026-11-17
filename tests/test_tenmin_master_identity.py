@@ -208,7 +208,7 @@ def run_mi(B, name, present=None, production=False):
         with unit(name) as u:
             if present is not None:
                 u.meta['grouping_present'] = present
-            SB.master_identity(plan, B, u, os.path.join(SCRATCH, f'{name}.log'))
+            SB.master_identity(plan, B, u)
     return u
 
 
@@ -309,11 +309,33 @@ def test_production_merges():
     old = next(x['identity_id'] for x in rec if x['identity_id'] != x['master_identity'])
     d = os.path.join(B, f'source_catalogs_{ST}_sb')
     p = sorted(f for f in os.listdir(d) if f.endswith('_sources_survivors.csv'))[0]
-    rr = _rows(os.path.join(d, p))
-    rr.append(dict(rr[0], source_id='Jleft_over', identity_id=old))
+    keep = _rows(os.path.join(d, p))
+    rr = keep + [dict(keep[0], source_id='Jleft_over', identity_id=old)]
     _wcsv(os.path.join(d, p), list(rr[0]), rr)
     t = validate.run('master_identity_record', recp, stokes=ST)
-    assert not t[0]['passed'] and f'superseded identity {old} still in the build' in t[0]['detail'], t
+    assert not t[0]['passed'] and f'superseded identity {old} still in source_catalogs_{ST}_sb/{p}' in t[0]['detail'], t
+    _wcsv(os.path.join(d, p), list(keep[0]), keep)
+    # ... and a build whose pages input (production rewrites it too; the pages read it) still names one
+    pi = os.path.join(B, 'source_catalogs', f'pages_input_{ST}_sb.csv')
+    keep = _rows(pi)
+    _wcsv(pi, list(keep[0]), keep + [dict(keep[0], page_id='Jleft_over_page', identity_id=old)])
+    t = validate.run('master_identity_record', recp, stokes=ST)
+    assert not t[0]['passed'] and f'superseded identity {old} still in source_catalogs/pages_input_{ST}_sb.csv' in \
+        t[0]['detail'], t
+    _wcsv(pi, list(keep[0]), keep)
+    assert all(t['passed'] for t in validate.run('master_identity_record', recp, stokes=ST))
+    # the script printed its OK line but wrote no record: G13 refuses (no pass without the record and its content test)
+    B2 = fresh('B_norecord')
+    real = _SB().scripts.run
+
+    def run_then_drop(name, args, **kw):
+        res = real(name, args, **kw)
+        if name == 'sublst_master_identity':
+            os.remove(os.path.join(args[0], 'source_catalogs', f'master_identity_{ST}.csv'))
+        return res
+    with Patch((_SB().scripts, 'run', run_then_drop)):
+        u = run_mi(B2, 'norecord', production=True)
+    assert u.status == 'refused' and 'printed its OK line but wrote no' in u.reason, u.reason
 
 
 def test_refusals():
@@ -336,6 +358,14 @@ def test_refusals():
     _wcsv(os.path.join(B, f'source_catalogs_{ST}_sb', p), list(rr[0]), rr)
     u = run_mi(B, 'twice', present=pm)
     assert u.status == 'refused' and 'keys under two identities' in u.reason, u.reason
+    # a survivors row without an identity_id (production's script keys every row by identity_id)
+    B = fresh('B_blank')
+    p = sorted(f for f in os.listdir(os.path.join(B, f'source_catalogs_{ST}_sb')) if f.endswith('_sources_survivors.csv'))[0]
+    rr = _rows(os.path.join(B, f'source_catalogs_{ST}_sb', p))
+    rr[0] = dict(rr[0], identity_id='')
+    _wcsv(os.path.join(B, f'source_catalogs_{ST}_sb', p), list(rr[0]), rr)
+    u = run_mi(B, 'blank', present=pm)
+    assert u.status == 'refused' and 'survivors rows without an identity_id' in u.reason, u.reason
     # no present table for a served Stokes
     u = run_mi(fresh('B_nopresent'), 'nopresent', present={})
     assert u.status == 'refused' and f'Stokes {ST} is served but no present design-B grouping table' in u.reason, u.reason

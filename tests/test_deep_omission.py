@@ -1183,7 +1183,7 @@ def test_serve_build_merge():
     # outcome test passed for every served Stokes
     mi = u.meta['master_identity']
     assert mi['how'].startswith('production grouping') and set(mi['outcome']) == {'I', 'V'} and all(
-        o['splits'] == o['unlinked'] == o['twice'] == 0 and o['members'] > 0 for o in mi['outcome'].values()), mi
+        o['splits'] == o['unlinked'] == o['twice'] == o['blank'] == 0 and o['members'] > 0 for o in mi['outcome'].values()), mi
     assert any(n.startswith('MASTER-IDENTITY OK') for n in u.notes), u.notes
     assert os.path.exists(os.path.join(B, 'source_catalogs', 'master_identity_summary.txt'))
     table = [o['path'] for o in u.outputs if o['class'] == 'omission_decisions'][0]
