@@ -9,8 +9,11 @@ conformance  ops/conformance_check.py: ROOT = paths.COADD_SB_ROOT, LATEST/HIST u
              but import lines and the NAMED_OUT_OF_MASTER path line (both tables byte-identical). Whole tree only.
 pages        nights: ops/build_qa_pages.py (HUB = <out>/review_hub, LEDGER, DD, ROOT, QA from config; --cells NIGHTS ->
              its --only), then its check() (P1-P4) as the content test of class qa_night_pages (S-G9);
-             data-processing: ops/build_data_processing_page.py (OUT = <out>/review_hub/data_processing.html; its literal
-             fragment path redirected to <out>/review_hub/qa_overview_fragment.html).
+             data-processing: ops/build_qa_release1.py, the page production serves since 2026-11-10 (the Release 1 page:
+             every tier's coverage). It imports ops/build_data_processing_page.py (the 10-07 page) as B for its helpers
+             and sources; B is imported first with LEDGER, DD, ROOT, QA set from config. The builder writes into
+             <out>/status/qa_site (OUT) and reads the QA overview fragment and the night pages of <out>/review_hub (HUB);
+             the page and coverage.json are then copied into <out>/review_hub, as production installs them into the hub.
 register     ops/build_ratified_register.py AUDIT_CSV ...: REG = <out>/clv15/RATIFIED_STEPS_REGISTER.csv, PAGE =
              <out>/review_hub/ratified_steps.html.
 """
@@ -95,19 +98,35 @@ def run_nights(out, nights, unit, log, allowed):
 
 
 def run_data_page(out, unit, log, allowed):
+    """build_qa_release1.main in place (module docstring). Returns (rc, text, installed paths, builder folder)."""
+    import sys
     from exopipe.phase3.lib.status import steps_inplace as IP
     C = K.cfg()
     P = C.status_pages
-    dest = K.check_write(K.place(out, 'review_hub', P.DATA_PAGE))
-    frag_prod = os.path.join(K.hub_dir(), P.FRAGMENT)
-    frag_out = K.place(out, 'review_hub', P.FRAGMENT)
-    os.makedirs(os.path.dirname(dest), exist_ok=True)
-    attrs = dict(OUT=dest, LEDGER=C.status.LEDGER, DD=C.paths.DATA_DECISIONS, ROOT=C.paths.COADD_SB_ROOT, QA=C.status.QA_DIR)
-    IP.search_sources(C.status.SEARCH_LABEL['deep'])      # the register the page imports, pinned (2026-10-15 review)
-    rc, text, mod = IP.call_attr('build_data_processing_page', attrs, 'main', mapping={frag_prod: frag_out},
-                                 allowed_roots=allowed, log=log, unit=unit,
-                                 env=IP.search_env(C.status.SEARCH_LABEL['deep']))
-    return rc, text, dest
+    hub = K.place(out, 'review_hub', '').rstrip('/')
+    site = K.place(out, 'status', P.DATA_PAGE_SITE)
+    dests = [K.check_write(os.path.join(hub, n)) for n in P.DATA_PAGE_INSTALL]
+    K.check_write(os.path.join(site, P.DATA_PAGE))
+    os.makedirs(hub, exist_ok=True)
+    env = IP.search_env(C.status.SEARCH_LABEL['deep'])
+    IP.search_sources(C.status.SEARCH_LABEL['deep'])      # the register the 10-07 module imports, pinned (2026-10-15 review)
+    sys.modules.pop(P.DATA_PAGE_HELPER, None)             # a fresh helper module: the builder imports this one (cached)
+    B = IP.import_quiet(P.DATA_PAGE_HELPER, env=env)
+    unit.add_input(B.__file__, extra={'kind': 'code'})
+    for k, v in dict(LEDGER=C.status.LEDGER, DD=C.paths.DATA_DECISIONS, ROOT=C.paths.COADD_SB_ROOT,
+                     QA=C.status.QA_DIR).items():
+        setattr(B, k, v)
+    try:
+        rc, text, mod = IP.call_attr(P.DATA_PAGE_BUILDER, dict(OUT=site, HUB=hub), 'main', allowed_roots=allowed, log=log,
+                                     unit=unit, env=env, argv=[P.DATA_PAGE_BUILDER + '.py', os.path.dirname(site)])
+    finally:
+        sys.modules.pop(P.DATA_PAGE_HELPER, None)
+    if rc != 0:
+        return rc, text, [], site
+    for n, dest in zip(P.DATA_PAGE_INSTALL, dests):
+        shutil.copyfile(os.path.join(site, n), dest + '.part')
+        os.replace(dest + '.part', dest)
+    return rc, text, dests, site
 
 
 def run_register(out, audit_csvs, unit, log, allowed):
