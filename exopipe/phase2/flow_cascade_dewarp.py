@@ -18,6 +18,8 @@ Called from phase2_controller.py via subprocess:
 Writes _dewarped.fits files and a dewarp_results.json summary.
 """
 import os
+from astropy.io import fits as _fits_nommap   # noqa: E402
+_fits_nommap.conf.use_memmap = False   # never memory-map a Lustre file, also when run by path (R-GREGG-20261117-NO-MMAP-OF-LUSTRE-FILES-READ-OR-WRITE)
 import sys
 
 # JAX GPU memory: don't pre-allocate, cap at 40% per process.

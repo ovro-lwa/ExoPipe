@@ -26,6 +26,8 @@ Default is DRY RUN: writes the ledger CSV only.
 Ledger: /lustre/gh/main/clv15/master_beam_repair_20260711.csv
 """
 import os, re, sys, glob, csv
+from astropy.io import fits as _fits_nommap   # noqa: E402
+_fits_nommap.conf.use_memmap = False   # never memory-map a Lustre file, also when run by path (R-GREGG-20261117-NO-MMAP-OF-LUSTRE-FILES-READ-OR-WRITE)
 import numpy as np
 from astropy.io import fits
 

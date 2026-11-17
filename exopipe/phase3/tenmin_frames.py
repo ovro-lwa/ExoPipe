@@ -73,6 +73,14 @@ PER_BIN = os.environ.get('P3_TENMIN_PER_BIN', '1') != '0'
 BIN_COADDOP = 'ivw-mean-v3-bin'
 
 
+def _image_shape(path):
+    """Squeezed shape of the first image in a FITS file, from its header alone (replaces a memory-mapped getdata;
+    R-GREGG-20261117-NO-MMAP-OF-LUSTRE-FILES-READ-OR-WRITE)."""
+    with fits.open(path, memmap=False) as h:
+        hd = next(x for x in h if isinstance(x, (fits.PrimaryHDU, fits.ImageHDU, fits.CompImageHDU)) and x.header.get('NAXIS', 0))
+        return tuple(n for n in hd.shape if n != 1)
+
+
 def tenmin_root():
     """Bulk working root for the 10-minute Stage-1 trees (CLAUDE.md s7 amended
     2026-09-07: bulk products on Lustre). No default (R-COADD-ROOT-NO-DEFAULTS)."""
@@ -311,7 +319,7 @@ def _build_night(args):
             parts = []                                    # (frame, duration_s, sh, src, t0, t1, wc)
             for mjd, src, sh, _k, t0, t1 in ok_members:
                 try:
-                    d0 = fits.getdata(src, memmap=True).squeeze().shape
+                    d0 = _image_shape(src)
                 except Exception as e:
                     refused.append((f'{key} {S}', f'unreadable ({e})')); continue
                 if tuple(d0) != tuple(shape) and regrid is None:

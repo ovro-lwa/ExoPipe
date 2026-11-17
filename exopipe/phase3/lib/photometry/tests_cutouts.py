@@ -29,6 +29,7 @@ import random
 import re
 
 from exopipe.phase3.core.validate import content_test
+from exopipe.phase3.core.fitsio import hdu_shape
 
 SNAP_RE = re.compile(r'^(?P<obj>.+)_(?P<lst>\d\dh)_(?P<ymd>\d{8})T(?P<hms>\d{6})_(?P<st>[IV])\.fits$')
 TIER_RE = re.compile(r'^(?P<obj>.+)_(?P<lst>\d\dh)_(?P<tier>10min|deep)_(?P<st>[IV])\.fits$')
@@ -163,9 +164,9 @@ def tier_structure(path):
     smp, band, objd, mt, token = p
     tier = {v: k for k, v in cc.TIER_TOKEN.items()}[token]
     bad = []
-    with fits.open(path, memmap=True) as h:
+    with fits.open(path, memmap=False) as h:
         H = h[0].header
-        shp = h[0].data.shape if h[0].data is not None else ()
+        shp = hdu_shape(h[0])                                      # header only (no memory map)
         if len(shp) != 3 or shp[1] != shp[2]:
             bad.append('TC1 cube shape %s' % (shp,))
         elif shp[1] != int(round(cc.CUT_DEG / abs(float(H['CDELT2'])))):
@@ -247,7 +248,7 @@ def frame_index(lst, date, sb, stokes, tss, hdrs, search_out=None):
 
 def _cube_table(path):
     from astropy.io import fits
-    with fits.open(path, memmap=True) as h:
+    with fits.open(path, memmap=False) as h:
         t = h['FRAME_TABLE'].data
         return [str(x) for x in t['ts']], [fits.Header.fromstring(str(x), sep='\n') for x in t['header']]
 
@@ -269,7 +270,7 @@ def identity_subband(files, cell, band, stokes, cube_root=None, search_out=None)
     eps32 = float(np.finfo(np.float32).eps)
     lst, date = cell.split('_', 1)
     cp = cube_path(cell, band, stokes, cube_root)
-    with fits.open(cp, memmap=True) as h:
+    with fits.open(cp, memmap=False) as h:
         cube = np.array(h['FRAMES'].data, dtype=np.float32)
         t = h['FRAME_TABLE'].data
         cts = [str(x) for x in t['ts']]
@@ -364,7 +365,7 @@ def wideband_stack(cell, stokes, members_csv, group, files, cube_root=None, sear
         with fits.open(f) as hf:
             ch = hf[0].header
             T = hf['TIMES'].data
-            n = hf[0].data.shape[1]
+            n = hdu_shape(hf[0])[1]
         half = n // 2
         if os.path.abspath(f).split('/')[-4] == _cfg().photometry.PLANET_SAMPLE:
             px, py = w0.all_world2pix(np.asarray(T['ra_deg'], float), np.asarray(T['dec_deg'], float), 0)
@@ -378,7 +379,7 @@ def wideband_stack(cell, stokes, members_csv, group, files, cube_root=None, sear
     for r in rows:
         wsum[tix[r['ts']]] += float(r['weight'])
     for sb in subs:
-        with fits.open(cube_path(cell, sb, stokes, cube_root), memmap=True) as h:
+        with fits.open(cube_path(cell, sb, stokes, cube_root), memmap=False) as h:
             cube = np.array(h['FRAMES'].data, dtype=np.float32)
         mix = orig[sb]
         ny, nx = cube.shape[1:]
@@ -492,7 +493,7 @@ def tier_recut(files, root=None):
         if not np.isfinite(ra):
             out.append((fn, True, i, 'plane %d has no position (skipped, as the tool)' % i))
             continue
-        with fits.open(src, memmap=True) as hs:
+        with fits.open(src, memmap=False) as hs:
             hh = hs[0].header
             w = WCS(hh).celestial
             px, py = [float(v) for v in w.all_world2pix(ra, dec, 0)]
@@ -677,7 +678,7 @@ def tn2(path, cutout_root=None, **ctx):
         if not os.path.exists(fp):
             bad.append('%s: cutout %s not found' % (names[t], fp))
             continue
-        with fits.open(fp, memmap=True) as h:
+        with fits.open(fp, memmap=False) as h:
             Tt = h['TIMES'].data
             keys = [str(k).strip() for k in (Tt['key'] if tier == '10min' else Tt['night'])]
             txs, tys = np.asarray(Tt['target_x'], float), np.asarray(Tt['target_y'], float)

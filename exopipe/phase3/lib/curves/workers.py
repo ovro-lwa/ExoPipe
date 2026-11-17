@@ -288,7 +288,7 @@ def table_facts(table, st, stage_sb, admission_csv, samples_dir, samples, cell=N
     from the archive by design, unstaged_frames is 0."""
     import csv
     from astropy.io import fits
-    with fits.open(table, memmap=True) as h:
+    with fits.open(table, memmap=False) as h:
         ts = [x.decode().strip() if isinstance(x, bytes) else str(x).strip() for x in h['FRAMES'].data['ts']]
         nadmit = int(h[0].header['NADMIT'])
     adm = None
@@ -330,7 +330,7 @@ def table_facts(table, st, stage_sb, admission_csv, samples_dir, samples, cell=N
 def frame_list(table):
     """FRAMES.ts of a light-curve table, in order."""
     from astropy.io import fits
-    with fits.open(table, memmap=True) as h:
+    with fits.open(table, memmap=False) as h:
         return [x.decode().strip() if isinstance(x, bytes) else str(x).strip() for x in h['FRAMES'].data['ts']]
 
 

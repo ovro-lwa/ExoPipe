@@ -20,6 +20,8 @@ Modes: --smoke {cell}  print the mapping table + write ONE cell; default
        (after Gregg sign-off) walks both trees. Ledger rows appended.
 """
 import os, sys, csv, glob, re, shutil, argparse
+from astropy.io import fits as _fits_nommap   # noqa: E402
+_fits_nommap.conf.use_memmap = False   # never memory-map a Lustre file, also when run by path (R-GREGG-20261117-NO-MMAP-OF-LUSTRE-FILES-READ-OR-WRITE)
 
 _REAL_ARGV = list(sys.argv)           # capture BEFORE any clobbering
 sys.path.insert(0, '/lustre/gh/main/clv15')

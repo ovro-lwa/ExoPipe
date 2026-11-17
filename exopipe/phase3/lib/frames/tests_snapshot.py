@@ -178,7 +178,7 @@ def _cube_checks(path, md5=None):
     if not m:
         return [f'not a flowcube name: {b}'], None
     msgs = []
-    with fits.open(path, memmap=True) as h:
+    with fits.open(path, memmap=False) as h:
         names = [x.name for x in h]
         ph = h[0].header
         for k, want in (('PRODUCT', _cfg().frames_snapshot.CUBE_PRODUCT), ('CELL', m['cell']), ('SUBBAND', m['sb']),

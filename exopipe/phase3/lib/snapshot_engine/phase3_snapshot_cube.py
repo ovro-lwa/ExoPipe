@@ -35,6 +35,8 @@ Subcommands
 Python API: open_cube(path) -> Cube; Cube.frame(ts) -> (data float32, astropy Header); Cube.timestamps
 """
 import argparse
+from astropy.io import fits as _fits_nommap   # noqa: E402
+_fits_nommap.conf.use_memmap = False   # never memory-map a Lustre file, also when run by path (R-GREGG-20261117-NO-MMAP-OF-LUSTRE-FILES-READ-OR-WRITE)
 import csv
 import glob
 import hashlib
@@ -783,7 +785,7 @@ class Cube(object):
     def __init__(self, path):
         from astropy.io import fits
         self.path = path
-        self.h = fits.open(path, memmap=True)
+        self.h = fits.open(path, memmap=False)     # never memory-map a Lustre file (R-GREGG-20261117-NO-MMAP-OF-LUSTRE-FILES-READ-OR-WRITE)
         t = self.h["FRAME_TABLE"].data
         self.timestamps = [s.strip() if isinstance(s, str) else s.decode().strip() for s in t["ts"]]
         self._idx = {ts: i for i, ts in enumerate(self.timestamps)}
@@ -823,7 +825,7 @@ class Cube(object):
             return None
         i = self._idx[ts]
         fh = self.h["FLOW"].header
-        q = np.asarray(self.h["FLOW"].data[i])
+        q = np.asarray(self.h["FLOW"].section[i])   # FLOW is a plain int16 ImageHDU: one frame read, no memory map (Lustre rule 11-17)
         f = q.astype(np.float32) * float(fh.get("FLOWSCAL", FLOW_SCALE))
         f[q == int(fh.get("FLOWNULL", FLOW_BLANK))] = np.nan
         return None if np.isnan(f).all() else f

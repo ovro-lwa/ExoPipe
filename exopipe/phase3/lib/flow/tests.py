@@ -33,6 +33,14 @@ FLOWTREE_DIR = 'snapshot_flow'      # <out>/snapshot_flow/<cell>/ (production: p
 _NSAMPLE = 1000
 
 
+def _npy_shape(path):
+    """Shape of a .npy array from its header alone (no memory map: R-GREGG-20261117-NO-MMAP-OF-LUSTRE-FILES-READ-OR-WRITE)."""
+    import numpy as np
+    with open(path, 'rb') as f:
+        version = np.lib.format.read_magic(f)
+        return tuple(np.lib.format._read_array_header(f, version)[0])   # handles format 1.0, 2.0 and 3.0 (utf-8)
+
+
 def _cfg():
     return C.cfg()
 
@@ -249,7 +257,7 @@ def shape_and_finite(path, shape=None, **ctx):
     (_require_flow, coadd_full_pipeline.py:1825-1843; ledger 1733). Median and 99th-percentile |flow| in the 0.4 disc are
     reported (no threshold without a ruling, spec G3)."""
     import numpy as np
-    a = np.load(path, mmap_mode='r')
+    a = np.load(path)
     exp, src = (tuple(shape), 'context') if shape else _flow_grid(path)
     problems = []
     if a.dtype != np.float32:
@@ -328,7 +336,7 @@ def structure(path, **ctx):
     if data.ndim != 2:
         problems.append(f'{data.ndim}-D')
     if os.path.exists(fl):
-        fs = np.load(fl, mmap_mode='r').shape
+        fs = _npy_shape(fl)
         if tuple(fs[:2]) != tuple(data.shape):
             problems.append(f'shape {data.shape} != flow {fs[:2]}')
     else:
@@ -511,7 +519,7 @@ def _fields_of(dirpath, sb):
 def field_shape_problems(path, master=None):
     import numpy as np
     master = _master_for(path, master)
-    a = np.load(path, mmap_mode='r')
+    a = np.load(path)
     out = []
     if a.dtype != np.float16:
         out.append(f'dtype {a.dtype} (float16 expected)')

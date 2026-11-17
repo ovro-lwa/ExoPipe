@@ -7,6 +7,8 @@ Jy/beam frame onto the Master pixel grid through the two WCSs (astropy), NaN out
 header keeps the frame's own keys with the Master's NAXIS/CRPIX/CDELT/CRVAL and REGRID keys recording the
 source grid.  Usage: phase3_snapshot_regrid.py <staged subband dir> <master fits> [--nproc N]"""
 import argparse, glob, os, sys
+from astropy.io import fits as _fits_nommap   # noqa: E402
+_fits_nommap.conf.use_memmap = False   # never memory-map a Lustre file, also when run by path (R-GREGG-20261117-NO-MMAP-OF-LUSTRE-FILES-READ-OR-WRITE)
 import numpy as np
 from astropy.io import fits
 from astropy.wcs import WCS

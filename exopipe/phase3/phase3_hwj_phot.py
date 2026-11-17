@@ -25,6 +25,8 @@ Usage: phase3_hwj_phot.py TIER STOKES [--nproc N] [--lst 05h] [--limit N]
   TIER in wb_deep sb_deep wb_10min sb_10min; STOKES in V I
 """
 import os, re, sys, csv, glob, argparse, warnings
+from astropy.io import fits as _fits_nommap   # noqa: E402
+_fits_nommap.conf.use_memmap = False   # never memory-map a Lustre file, also when run by path (R-GREGG-20261117-NO-MMAP-OF-LUSTRE-FILES-READ-OR-WRITE)
 from collections import defaultdict
 from multiprocessing import Pool
 

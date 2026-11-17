@@ -21,6 +21,8 @@ align_images.py defaults (preprocess_weight 1.5, alpha 1.3, gamma 150,
 scale_factor 0.7).
 """
 import argparse, csv, glob, os, re, sys, time
+from astropy.io import fits as _fits_nommap   # noqa: E402
+_fits_nommap.conf.use_memmap = False   # never memory-map a Lustre file, also when run by path (R-GREGG-20261117-NO-MMAP-OF-LUSTRE-FILES-READ-OR-WRITE)
 import numpy as np
 
 PAT = re.compile(r"(?P<sb>\d+MHz)-(?P<kind>Clean|Pilot)-Snapshot-(?P<ts>\d{8}_\d{6})(?:-(?P<st>[IV]))?-image\.fits$")

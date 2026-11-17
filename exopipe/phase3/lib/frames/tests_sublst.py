@@ -43,19 +43,20 @@ def _cards(path):
 
 def _data(path):
     from astropy.io import fits
-    with fits.open(path, memmap=True) as h:
+    with fits.open(path, memmap=False) as h:
         return np.array(np.squeeze(h[0].data))
 
 
 def _patch(path, half=32):
-    """Central (2*half)^2 patch of a 2-D FITS image, read through the memory map."""
+    """Central (2*half)^2 patch of a 2-D FITS image (leading axes at 0), read through .section: only the patch's rows are
+    read, with no memory map (R-GREGG-20261117-NO-MMAP-OF-LUSTRE-FILES-READ-OR-WRITE)."""
     from astropy.io import fits
-    with fits.open(path, memmap=True) as h:
-        d = h[0].data
-        while d.ndim > 2:
-            d = d[0]
-        ny, nx = d.shape
-        return np.array(d[ny // 2 - half:ny // 2 + half, nx // 2 - half:nx // 2 + half], dtype=np.float64)
+    with fits.open(path, memmap=False) as h:
+        shp = h[0].shape
+        ny, nx = shp[-2:]
+        lead = (0,) * (len(shp) - 2)
+        return np.array(h[0].section[lead + (slice(ny // 2 - half, ny // 2 + half), slice(nx // 2 - half, nx // 2 + half))],
+                        dtype=np.float64)
 
 
 def _frozen_weights(lst, band):

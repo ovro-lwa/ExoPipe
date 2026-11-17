@@ -461,7 +461,7 @@ def make_snapshot(objs):
         for b in SNAP_BANDS:
             for S in ('I', 'V'):
                 src = sorted(glob.glob(os.path.join(CUT_ROOT_REAL, smp, b, o, '*_18h_20250411T*_%s.fits' % S)))[0]
-                with fits.open(src, memmap=True) as h:
+                with fits.open(src, memmap=False) as h:
                     H = h[0].header.copy()
                     tab = h['TIMES'].data[:NF]
                     n = h[0].data.shape[1]

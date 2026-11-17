@@ -20,6 +20,7 @@ import os
 import re
 
 from exopipe.phase3.core.validate import content_test
+from exopipe.phase3.core.fitsio import has_data
 
 _C_LIGHT, _K_B = 2.99792458e8, 1.380649e-23
 _FWHM2OMEGA = math.pi / (4 * math.log(2))
@@ -39,7 +40,7 @@ def _read_hpx(path):
     key = (os.path.abspath(path), st.st_mtime_ns, st.st_size)
     if key in _MAPS:
         return _MAPS[key]
-    with fits.open(path, memmap=True) as h:
+    with fits.open(path, memmap=False) as h:
         if len(h) < 2 or getattr(h[1], 'columns', None) is None or 'SIGNAL' not in h[1].columns.names:
             raise ValueError('no HDU 1 binary table with a SIGNAL column')
         sig = np.array(h[1].data['SIGNAL'], dtype=np.float32).ravel()
@@ -283,7 +284,7 @@ def pbeff_mask_matches_map(path, **ctx):
 def _render(path):
     import numpy as np
     from astropy.io import fits
-    with fits.open(path, memmap=True) as h:
+    with fits.open(path, memmap=False) as h:
         img = np.asarray(h[0].data)
         hdr = h[0].header.copy()
     return img, hdr
@@ -557,8 +558,8 @@ _UNIT = {'jysr': 'Jy/sr', 'jybeam': 'Jy/beam', 'psfmap': 'sr', 'pbmap': ''}
 def _archive_read(path):
     import numpy as np
     from astropy.io import fits
-    with fits.open(path, memmap=True) as h:
-        dh = h[0] if h[0].data is not None else h[1]
+    with fits.open(path, memmap=False) as h:
+        dh = h[0] if has_data(h[0]) else h[1]
         hdr_all = {**dict(h[0].header), **dict(dh.header)}
         arr = np.asarray(dh.data if dh is h[0] else dh.data['SIGNAL'])
         prov = None
@@ -614,8 +615,8 @@ def pixels_unchanged(path, **ctx):
         return True, None, 'no source build product given (record-based check skipped)'
     _a, arr, _p, _h = _archive_read(path)
     from astropy.io import fits
-    with fits.open(src, memmap=True) as h:
-        dh = h[0] if h[0].data is not None else h[1]
+    with fits.open(src, memmap=False) as h:
+        dh = h[0] if has_data(h[0]) else h[1]
         brr = np.asarray(dh.data if dh is h[0] else dh.data['SIGNAL'])
     ha = hashlib.md5(np.ascontiguousarray(arr).tobytes()).hexdigest()
     hb = hashlib.md5(np.ascontiguousarray(brr).tobytes()).hexdigest()

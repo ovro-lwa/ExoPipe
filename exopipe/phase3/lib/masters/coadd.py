@@ -18,6 +18,8 @@ Usage:
   conda run -n py38_orca_nkosogor python coadd_full_pipeline.py --freq Blue
 """
 import argparse
+from astropy.io import fits as _fits_nommap   # noqa: E402
+_fits_nommap.conf.use_memmap = False   # never memory-map a Lustre file, also when run by path (R-GREGG-20261117-NO-MMAP-OF-LUSTRE-FILES-READ-OR-WRITE)
 import csv
 import fcntl
 import os
@@ -3303,7 +3305,7 @@ def _alignment_peaks(path, n=100):
     """Sky positions and values of an image's n brightest local maxima (15-px neighbourhood) inside radius 0.42 of the
     smaller axis about the centre (horizon excluded). Cached per path: one alignment image serves a night's variants."""
     if path not in _GEOM_PEAKS:
-        with fits.open(path, memmap=True) as hd:
+        with fits.open(path, memmap=False) as hd:
             a = np.asarray(hd[0].data).squeeze().astype(np.float64); w = WCS(hd[0].header).celestial
         a = np.where(np.isfinite(a), a, -np.inf); ny, nx = a.shape; yy, xx = np.mgrid[0:ny, 0:nx]
         a[np.hypot(yy - ny / 2, xx - nx / 2) > 0.42 * min(nx, ny)] = -np.inf
@@ -3324,7 +3326,7 @@ def _variant_geometry_mismatch(img, ref, floor=GEOM_FLOOR):
     try:
         ra, dec, pk = _alignment_peaks(ref)
         q = []
-        with fits.open(img, memmap=True) as hd:
+        with fits.open(img, memmap=False) as hd:
             d = np.asarray(hd[0].data).squeeze(); x, y = WCS(hd[0].header).celestial.all_world2pix(ra, dec, 0)
             for xi, yi, p in zip(np.round(x).astype(int), np.round(y).astype(int), pk):
                 if p > 0 and 2 <= xi < d.shape[1] - 2 and 2 <= yi < d.shape[0] - 2:
@@ -3376,7 +3378,7 @@ VARIANT_REL_K = 3.0   # Gregg 2026-09-29 "Go at 3x"
 def _robust_rms_sub(path):
     """Robust rms (1.4826 x MAD) of an image on every 4th pixel per axis, finite non-zero pixels only - the exact
     measure of the 2026-09-29 per-epoch census (exopipe_ops/epoch_divergence_census.py), so the census predicts the gate."""
-    d = np.asarray(fits.getdata(path, memmap=True)).squeeze()[::4, ::4].astype(np.float64)
+    d = np.asarray(fits.getdata(path, memmap=False)).squeeze()[::4, ::4].astype(np.float64)
     v = d[np.isfinite(d) & (d != 0)]
     return float(1.4826 * np.median(np.abs(v - np.median(v)))) if v.size else float('nan')
 

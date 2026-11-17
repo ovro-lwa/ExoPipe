@@ -163,7 +163,7 @@ def frame_checks(rows, att, st, cd):
     for d, rs in sorted(by.items()):
         fp = os.path.join(att, 'iresid' if st == 'I' else 'vresid', CELL, f'{d}_{st}_redo_resid_{SC}.fits')
         sub = fits.getheader(os.path.join(SA.CFG.paths.COADD_SB_ROOT, CELL, 'subtracted', f'{d}_{st}_sub_{SC}.fits'))
-        with fits.open(fp, memmap=True) as h:
+        with fits.open(fp, memmap=False) as h:
             img = np.array(h[0].data, dtype=np.float32)          # a copy: the file closes below
             cdelt = abs(float(h[0].header['CDELT1']))
         img = img.reshape(img.shape[-2:])

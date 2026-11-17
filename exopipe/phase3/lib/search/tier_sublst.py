@@ -68,6 +68,8 @@ Failure modes: exit 3 = no window (NO_WINDOWS.txt) / fewer than MIN_EPOCHS windo
          too little free disk, a lease not obtained within LEASE_WAIT_S.
 """
 import contextlib
+from astropy.io import fits as _fits_nommap   # noqa: E402
+_fits_nommap.conf.use_memmap = False   # never memory-map a Lustre file, also when run by path (R-GREGG-20261117-NO-MMAP-OF-LUSTRE-FILES-READ-OR-WRITE)
 import csv
 import glob
 import hashlib
@@ -1383,7 +1385,7 @@ def _fit_frame(job):
             h1.update(blk)
     sha = h1.hexdigest()
     out = []
-    with fits.open(path, memmap=True) as hd:
+    with fits.open(path, memmap=False) as hd:
         h = hd[0].header
         d = np.squeeze(hd[0].data)
         w = WCS(h).celestial

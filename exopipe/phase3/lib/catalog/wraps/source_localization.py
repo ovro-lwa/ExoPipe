@@ -19,6 +19,8 @@ past (review MINOR 2); the per-function text pins below only name what changed i
 changed - re-port this file (even a comment edit asks for that). Design: exopipe_ops/refactor_20261012/plan/wave2/B32_DESIGN.md.
 """
 import hashlib
+from astropy.io import fits as _fits_nommap   # noqa: E402
+_fits_nommap.conf.use_memmap = False   # never memory-map a Lustre file, also when run by path (R-GREGG-20261117-NO-MMAP-OF-LUSTRE-FILES-READ-OR-WRITE)
 import math
 
 FILE_SHA1 = 'c975d68c9f510e74f9bf3db3aafb34562b720773'               # source_localization.py at exopipe_ops 70654c1
