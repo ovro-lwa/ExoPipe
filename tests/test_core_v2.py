@@ -1840,7 +1840,6 @@ def test_item7_parity_file_keys():
     LATER = {'R-GREGG-20261014-REFACTOR-A2B-C8B-C8C', 'R-GREGG-20261014-REFACTOR-A2-C8D',
              'R-GREGG-20261014-REFACTOR-DECISIONS-LIST-RECOMMENDATIONS',     # clv15 fix_ledger.csv; 2026-10-16: the output
              'R-GREGG-20261016-REFACTOR-DECIDES-BY-GOALS',                   # standard at write (masters_build.HEADER_STANDARD),
-             'R-GREGG-20261016-MOSAIC-DEC-MIN-30',                           # the renders' southern edge
              'R-GREGG-20261023-WIDEBAND-MEMBER-SEARCH-ADMISSION',            # the wideband member admission (deep search)
              'R-GREGG-20261017-18MHZ-CARVEOUT-MEANS-RED-FROM-4',             # the 18 MHz carve-out of the search's master check
              'R-GREGG-20261022-ALL-APPROVED-SIZE-GATE-READMISSION-SUBAGENTS',   # the size / axis rule at every S/N (search_detect /
