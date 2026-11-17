@@ -14,7 +14,14 @@ build  (unit sublst_<run>_build)  the build lock (G12; sublst_cumulative.sh:23 f
        sublst_deep_omission_drop.py, and records them: B/deep_omission_dropped.csv, class omission_record, with its
        per-instant test; its re-judging of a partial survivor's remaining single takes the builder's own 7-8 sigma gate under
        the configured 10-minute size rule - P3_SIZE_GATE_7_8 = inf under 'envelope', production's 1.7 under 'production',
-       deep_omission.tenmin_size_gate); build_localizations.py with the per-case tie and the common frame (G9);
+       deep_omission.tenmin_size_gate); the MASTER IDENTITY (G13; Gregg 2026-11-17, R-GREGG-20261117-TENMIN-MASTER-
+       IDENTITY-BEFORE-RELEASE1; sublst_cumulative.sh:102-108, exopipe_ops fa669f0): under production's grouping (the parity
+       file) the design-B grouping of exactly B's detections (batch, into B.master_grouping beside B) and
+       sublst_master_identity.py B <it>, which merges every served identity that grouping places together (merge-only;
+       its tests M1-M4 refuse); under design B the LST builds already name one identity per design-B identity across LSTs
+       (G8: one grouping table); in both, the outcome is tested on B and REFUSES: no two served identities hold detections
+       of one design-B identity, every served member detection is in the grouping, no (source_id, band) under two
+       identities (served_identity_splits); build_localizations.py with the per-case tie and the common frame (G9);
        the localization figures (md5-keyed reuse from the served run, else drawn, 4 at a time, 600 s each; refuse a
        missing one - port of the PYF heredoc :36-61); p3t_pages_index.py per tier (G10). Output class sublst_cumulative.
 views  (unit sublst_<run>_views)  on B: the union with the Stokes key (G5), the review_dir merge with
@@ -249,6 +256,186 @@ def figures(B, served, unit=None, log=None):
     return len(multi), linked, len(todo) - len(bad), bad
 
 
+MASTER_GROUPING = '.master_grouping'      # B + this: the design-B grouping of B's detections (production's grouping only)
+
+
+def served_identity_splits(B, stokes, gid):
+    """The outcome of R-GREGG-20261117-TENMIN-MASTER-IDENTITY-BEFORE-RELEASE1 on a cumulative build B, read-only (the union-find
+    of production's sublst_master_identity.py, exopipe_ops fa669f0): the served identities of Stokes ``stokes`` (the
+    identity_id of every survivors row of source_catalogs_<S>_sb / _wb, as production's script reads them), linked through the
+    design-B identity (``gid``: cand_id -> identity_id) of each served member detection (a members row whose (source_id, band)
+    has a survivors row). Returns dict(splits=[sorted served identities of one component, for every component of two or more
+    - each is one source shown under several identities], members=n served member detections, unlinked=[cand_ids not in
+    gid], twice=[(source_id, band) under two identities], blank=[(source_id, band) of survivors rows without an identity_id:
+    production's script keys every row by identity_id, so the gate refuses such a row rather than key it by its J-name],
+    identities=n served identities)."""
+    surv, twice, blank = {}, [], []
+    for t in ('sb', 'wb'):
+        for p in sorted(glob.glob(os.path.join(B, f'source_catalogs_{stokes}_{t}', '*_sources_survivors.csv'))):
+            with open(p, newline='') as f:
+                for r in csv.DictReader(f):
+                    k, i = (r['source_id'], r['band']), (r.get('identity_id') or '').strip()
+                    if not i:
+                        blank.append(k)
+                        continue
+                    if k in surv and surv[k] != i:
+                        twice.append(k)
+                    surv[k] = i
+    parent = {i: i for i in set(surv.values())}
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+    first, members, unlinked = {}, 0, []
+    for t in ('sb', 'wb'):
+        for p in sorted(glob.glob(os.path.join(B, f'source_catalogs_{stokes}_{t}', '*_source_members.csv'))):
+            with open(p, newline='') as f:
+                for r in csv.DictReader(f):
+                    k = (r['source_id'], r['band'])
+                    if k not in surv:
+                        continue                  # a member of a source that did not survive: not served
+                    members += 1
+                    b = gid.get(r['cand_id'])
+                    if b is None:
+                        unlinked.append(r['cand_id'])
+                        continue
+                    if b in first:
+                        a, c = find(first[b]), find(surv[k])
+                        if a != c:
+                            parent[c] = a
+                    else:
+                        first[b] = surv[k]
+    comp = collections.defaultdict(list)
+    for i in parent:
+        comp[find(i)].append(i)
+    return dict(splits=sorted(sorted(m) for m in comp.values() if len(m) > 1), members=members, unlinked=unlinked,
+                twice=sorted(set(twice)), blank=sorted(set(blank)), identities=len(parent))
+
+
+def _served_stokes(B):
+    return [S for S in ('I', 'V') if any(os.path.isdir(os.path.join(B, f'source_catalogs_{S}_{t}')) for t in ('sb', 'wb'))]
+
+
+def batch_grouping(B, G, label, u=None):
+    """Design B's grouping (identity level; lib/catalog/grouping.group_catalog, batch: every ID new) of exactly the detections
+    of the merged build B (B/master_catalog.csv + B/pertie_detections.csv), each Stokes into G/grouping_<S>/ with its
+    content tests (tests_grouping.failures) - the input production's master identity reads (sublst_cumulative.sh:105: 'the
+    design-B grouping (exopipe.phase3 catalog --tier sublst --stages group) of the published LST runs', run on exactly the
+    build's detections, its test M1). Run under production's grouping too (the parity file), whose catalog step has no group
+    stage: the mode is design B's by construction. A Stokes without detections gets a header-only table. Raises
+    grouping_stage.StageRefusal. Each table with detections is recorded on ``u`` (class grouping_table: its content test).
+    Returns {Stokes: (detections.csv path, counts)}."""
+    from exopipe.phase3.lib.catalog import grouping as GR
+    from exopipe.phase3.lib.catalog import grouping_stage as GS
+    from exopipe.phase3.lib.catalog import tests_grouping as TG
+    m = GS.Mode('design-b', 'one-rule', 'multiples-level')      # design B's own values (recorded in summary.json only)
+    mc, pt = os.path.join(B, 'master_catalog.csv'), os.path.join(B, 'pertie_detections.csv')
+    if os.path.exists(G):
+        shutil.rmtree(G)
+    out = {}
+    for S in ('I', 'V'):
+        d = GS.group_dir(G, S)
+        if not GS.stokes_rows(mc, S):
+            os.makedirs(d, exist_ok=True)
+            out[S] = (GS._write_csv(os.path.join(d, GS.DETECTIONS), GS.DET_COLS, []), dict(detections=0, identities=0))
+            continue
+        try:
+            det = GS.load_det('10min', S, mc, pt)
+            st = GR.GroupingState.load(G, '10min', S, new=True)
+            res = GR.group_catalog(det, '10min', S, state=st, run_label=label, mode='batch')
+        except GR.GroupingRefused as e:
+            raise GS.StageRefusal(f'{S}: {e}') from None
+        paths, summ = GS.write_products(det, res, '10min', S, G, dict(master_catalog=mc, pertie=pt), m, d=d)
+        paths['state_next'] = res.state.save(os.path.join(d, 'state_next'))
+        bad = TG.failures(paths, tier='10min', stokes=S, input=mc)
+        if bad:
+            raise GS.StageRefusal(f'{S}: the grouping of the build failed its content tests: ' + '; '.join(bad[:6]))
+        out[S] = (paths['detections'], summ['counts'])
+        if u is not None:
+            u.add_output(paths['detections'], 'grouping_table', tier='10min', stokes=S, input=mc)
+    return out
+
+
+def master_identity(plan, B, u):
+    """G13, the master identity of the 10-minute cumulative (R-GREGG-20261117-TENMIN-MASTER-IDENTITY-BEFORE-RELEASE1, Gregg
+    2026-11-17: "Why can't you just merge identities into a new Master identity that supersedes the older ones?"; the cross-LST
+    half of R-CROSS-TIER-SINGLE-IDENTITY of 2026-09-05). Production (exopipe_ops fa669f0) runs sublst_master_identity.py right
+    after the merge, REQUIRED (sublst_cumulative.sh:102-108).
+      production's grouping (catalog_grouping.GROUPING 'production', the parity file): the LST runs are grouped per LST and
+        joined by J-name; batch_grouping of B into B.master_grouping, then sublst_master_identity.py B B.master_grouping (its
+        tests M1-M4; it rewrites only the identity fields of B's catalogs and pages_input; record
+        B/source_catalogs/master_identity_<S>.csv + master_identity_summary.txt).
+      design B (the default): every LST build stands on ONE grouping table (G8, grouping_mix), whose identities span the LSTs,
+        so the merge already holds one identity per design-B identity: nothing is rewritten.
+    Then, in both, the outcome on B (served_identity_splits against the grouping used) REFUSES on any split identity, any
+    served member detection the grouping does not hold, or a (source_id, band) under two identities."""
+    from exopipe.phase3.lib.catalog import delta_build as DB
+    from exopipe.phase3.lib.catalog import grouping_stage as GS
+    gid = {}
+    if GS.mode().design_b:
+        present = u.meta.get('grouping_present') or {}
+        for S in _served_stokes(B):
+            if S not in present:
+                u.refuse(f'G13 master identity: Stokes {S} is served but no present design-B grouping table was read (G8)')
+            try:
+                rows, _mg, sha1, _sha256 = DB.read_grouping(present[S]['path'])
+            except (DB.DeltaRefusal, OSError, KeyError, csv.Error) as e:
+                u.refuse(f'G13 master identity: the present grouping table of {S} cannot be read ({str(e)[:300]})')
+            if sha1 != present[S]['sha1']:
+                u.refuse(f'G13 master identity: {present[S]["path"]} changed since G8 read it (sha1 {sha1[:12]} vs '
+                         f'{present[S]["sha1"][:12]})')
+            gid[S] = {c: r['identity_id'] for c, r in rows.items() if r.get('stokes', S) == S}
+        u.meta['master_identity'] = dict(how='design B: one grouping table across the LST builds (G8); nothing rewritten')
+    else:
+        G = B + MASTER_GROUPING
+        try:
+            tabs = batch_grouping(B, G, f'{plan.run_name}.master_grouping', u)
+        except GS.StageRefusal as e:
+            u.refuse(f'G13 master identity: the design-B grouping of the build refused: {str(e)[:1200]}')
+        # its own log, fresh with G (batch_grouping removed G): the M-lines and the OK line are read from the log's tail, so a
+        # log other runs append to (production's sublst_cumulative.log) could hand this run another run's lines
+        res = scripts.run('sublst_master_identity', [B, G], log=os.path.join(G, 'master_identity.log'), unit=u)
+        if not res.ok:
+            tests = [ln.strip() for ln in (res.tail or '').splitlines() if ln.strip()[:2] in ('M1', 'M2', 'M3', 'M4')]
+            u.refuse(f'G13 master identity: sublst_master_identity.py refused (exit {res.rc}; nothing rewritten): '
+                     + ('; '.join(tests[:6]) or res.reason or scripts.last_line(res.tail)))
+        ok = [ln for ln in (res.tail or '').splitlines() if ln.startswith('MASTER-IDENTITY OK')]
+        if not ok:
+            u.refuse('G13 master identity: sublst_master_identity.py ended without its MASTER-IDENTITY OK line: '
+                     + scripts.last_line(res.tail))
+        u.note(ok[-1][:600])
+        u.meta['master_identity'] = dict(how='production grouping: sublst_master_identity.py on the design-B grouping of B',
+                                         grouping=G, counts={S: c for S, (_p, c) in tabs.items()})
+        for S in ('I', 'V'):
+            rec = os.path.join(B, 'source_catalogs', f'master_identity_{S}.csv')
+            if not os.path.exists(rec):          # the script writes one per Stokes after its OK, header-only when nothing merges
+                u.refuse(f'G13 master identity: sublst_master_identity.py printed its OK line but wrote no {rec}')
+            u.add_output(rec, 'master_identity_record', tier='sublst', stokes=S, grouping=G)
+            with open(tabs[S][0], newline='') as f:
+                gid[S] = {r['cand_id']: r['identity_id'] for r in csv.DictReader(f)}
+    outcome = {}
+    for S in _served_stokes(B):
+        r = served_identity_splits(B, S, gid.get(S, {}))
+        outcome[S] = dict(identities=r['identities'], members=r['members'], splits=len(r['splits']),
+                          unlinked=len(r['unlinked']), twice=len(r['twice']), blank=len(r['blank']))
+        why = ([f'{len(r["splits"])} sets of served identities that hold detections of one design-B identity, so one source '
+                f'is served under several identities (e.g. {r["splits"][:3]})'] if r['splits'] else []) + \
+              ([f'{len(r["unlinked"])} of {r["members"]} served member detections are not in the grouping (e.g. '
+                f'{r["unlinked"][:3]})'] if r['unlinked'] else []) + \
+              ([f'{len(r["twice"])} (source_id, band) keys under two identities (e.g. {r["twice"][:3]})'] if r['twice'] else []) + \
+              ([f'{len(r["blank"])} survivors rows without an identity_id (e.g. {r["blank"][:3]})'] if r['blank'] else [])
+        if why:
+            u.meta['master_identity']['outcome'] = outcome
+            u.refuse(f'G13 master identity, Stokes {S}: ' + '; '.join(why) + ' - the served cumulative stays as it is')
+        u.check(f'G13_master_identity_{S}', True, value=outcome[S],
+                detail='every design-B identity is one served identity; every served member detection is in the grouping')
+    u.meta['master_identity']['outcome'] = outcome
+    u.note('master identity: ' + '; '.join(f'{S} {o["identities"]} served identities, {o["members"]} member detections, '
+                                           f'0 split' for S, o in outcome.items()))
+
+
 def omission_table(plan, u):
     """The deep-omission decision table of the build's LSTs (sublst_cumulative.sh:37-46: written outside the build, which the
     merge wipes; the window rms cached beside it - in a parity run production's cache is read as a seed, never written).
@@ -323,6 +510,7 @@ def build_stage(run, plan):
         u.note('deep omission: ' + open(os.path.join(B, 'deep_omission_summary.txt')).readline().strip())
         u.add_output(os.path.join(B, 'deep_omission_dropped.csv'), 'omission_record', tier='sublst',
                      decisions=os.path.join(B, 'deep_omission.csv'))
+        master_identity(plan, B, u)                      # G13: right after the merge, before the combined positions
         # SPEED (design 2.3a stage 4): production's own row-index and shard switches - the same tables (serve.SUBLST_LOC_SPEED_ENV)
         env = dict(S.SUBLST_LOC_ENV, **dict(S.SUBLST_LOC_SPEED_ENV or {}), P3_TENMIN_PERTIE=f'{B}/pertie_detections.csv',
                    P3_LOC_OUT=f'{B}/source_catalogs')

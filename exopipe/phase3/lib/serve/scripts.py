@@ -31,6 +31,8 @@ SCRIPTS = {
     'snapshot_gate': ('snapshot_serve_exclusion_gate.py', 'snapshot_serve.sh:26-27, 47-48'),
     'snapshot_localize': ('snapshot_localize_tiers.sh', 'snapshot_serve.sh:44-46'),
     'sublst_cumulative': ('sublst_cumulative.py', 'sublst_cumulative.sh:26'),
+    'sublst_master_identity': ('sublst_master_identity.py', 'sublst_cumulative.sh:107 (right after the merge; R-GREGG-20261117-'
+                                                            'TENMIN-MASTER-IDENTITY-BEFORE-RELEASE1, exopipe_ops fa669f0)'),
     'build_localizations': ('build_localizations.py', 'sublst_cumulative.sh:29'),
     'astrometry_panel': ('source_astrometry_panel.py', 'sublst_cumulative.sh:53'),
     'pages_index': ('p3t_pages_index.py', 'sublst_cumulative.sh:62-64'),
