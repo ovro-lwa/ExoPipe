@@ -280,7 +280,9 @@ class status_pages(_Section):
     DATA_PAGE_BUILDER = 'build_qa_release1'
     DATA_PAGE_HELPER = 'build_data_processing_page'
     DATA_PAGE_SITE = 'qa_site'                 # the builder's output folder, under <out>/status
-    DATA_PAGE_INSTALL = ('data_processing.html', 'coverage.json')
+    # file -> content-test class: installed into the hub (production installs these two) / kept in the builder's folder
+    DATA_PAGE_INSTALL = {'data_processing.html': 'status_page', 'coverage.json': 'qa_coverage'}
+    DATA_PAGE_SITE_ONLY = {'coverage_summary.json': 'qa_coverage_summary', 'per_night_qa_inventory.csv': 'csv_table'}
     REGISTER_PAGE = 'ratified_steps.html'      # build_ratified_register.py:15
     REGISTER_COLUMNS = ('ruling_id', 'date', 'gregg_words', 'step', 'requirement', 'superseded_by', 'enforced_where',
                         'evidence', 'status', 'note', 'source')   # build_ratified_register.py:16

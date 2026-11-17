@@ -503,10 +503,12 @@ def _plan(ctx, s):
                     notes=['--check: content test only' if a.check else 'build_qa_pages.main in place, then check()'])
     if s == 'data-processing':
         P = C.status_pages
-        return dict(unit=ctx.unit('pages', s), inputs=[C.status.LEDGER, C.paths.COADD_SB_ROOT],
+        site = K.place(out, 'status', P.DATA_PAGE_SITE)
+        return dict(unit=ctx.unit('pages', s), inputs=[C.status.LEDGER, C.paths.COADD_SB_ROOT,
+                                                       K.place(out, 'review_hub', P.FRAGMENT)],
                     need=[C.paths.COADD_SB_ROOT],
-                    outputs=[(K.place(out, 'review_hub', P.DATA_PAGE), 'status_page'),
-                             (K.place(out, 'review_hub', 'coverage.json'), 'qa_coverage')],
+                    outputs=[(os.path.join(site, n), c) for n, c in P.DATA_PAGE_SITE_ONLY.items()]
+                    + [(K.place(out, 'review_hub', n), c) for n, c in P.DATA_PAGE_INSTALL.items()],
                     notes=[f'{P.DATA_PAGE_BUILDER}.main in place (helper {P.DATA_PAGE_HELPER}) into '
                            f'{K.place(out, "status", P.DATA_PAGE_SITE)}, then {", ".join(P.DATA_PAGE_INSTALL)} copied into '
                            f'the hub; refuses (S-G17) without the hub\'s {P.FRAGMENT} (`status pages --stages nights`)'])
@@ -1121,15 +1123,20 @@ def _stage_data_processing(ctx):
             raise Refusal(f'S-G17: {frag} is absent: the data-processing page embeds the QA overview fragment that '
                           f'`status pages --stages nights` writes into this hub; run the nights stage first')
         u.add_input(frag)
-        rc, text, dests, site = HB.run_data_page(out, u, ctx.log(u.name), ctx.allowed)
+        rc, text, dests, site, bad = HB.run_data_page(out, u, ctx.log(u.name), ctx.allowed)
         if rc != 0:
             raise Refusal(f'{P.DATA_PAGE_BUILDER}.main rc {rc}: {text[-400:]}')
-        u.add_output(os.path.join(site, 'coverage_summary.json'), 'qa_coverage_summary')
-        u.add_output(os.path.join(site, 'per_night_qa_inventory.csv'), 'csv_table', required_columns=('lst', 'date'),
-                     min_rows=1)
-        u.add_output(dests[0], 'status_page')
-        u.add_output(dests[1], 'qa_coverage')
-        print(text.strip().splitlines()[-1] if text.strip() else dests[0])
+        if bad:
+            # e.g. a night square linking a night page this hub does not hold (the night pages predate the ledger, or
+            # the nights stage ran for a subset): nothing is installed into the hub
+            raise Refusal(f'{P.DATA_PAGE_BUILDER}: the page built in {site} fails its content tests, not installed: '
+                          + '; '.join(bad[:3]))
+        for n, cls in P.DATA_PAGE_SITE_ONLY.items():
+            extra = dict(required_columns=('lst', 'date'), min_rows=1) if cls == 'csv_table' else {}
+            u.add_output(os.path.join(site, n), cls, **extra)
+        for d, cls in dests.items():
+            u.add_output(d, cls)
+        print(text.strip().splitlines()[-1] if text.strip() else site)
 
 
 def _stage_ledger(ctx):

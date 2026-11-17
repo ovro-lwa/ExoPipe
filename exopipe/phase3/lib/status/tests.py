@@ -866,7 +866,10 @@ def qa_coverage(path, **ctx):
     if bad:
         return False, len(bad), f'{len(bad)} keys not <lst>_<date> of their record, e.g. {bad[0]}'
     page = os.path.join(os.path.dirname(path), K.cfg().status_pages.DATA_PAGE)
-    m = re.search(r'Every LST-night of the grids \((\d+)\)', open(page).read()) if os.path.exists(page) else None
+    m = None
+    if os.path.exists(page):
+        with open(page) as f:
+            m = re.search(r'Every LST-night of the grids \((\d+)\)', f.read())
     if not m or int(m.group(1)) != len(nights):
         return False, len(nights), (f'{len(nights)} LST-nights; the page beside it lists '
                                     f'{m.group(1) if m else "no per-night table"}')
@@ -879,10 +882,14 @@ def qa_coverage_summary(path, **ctx):
     integer counts and searched LST-nights = both_stokes + one_stokes."""
     with open(path) as f:
         d = json.load(f)
-    if not isinstance(d, list) or [r.get('tier') for r in d if isinstance(r, dict)] != ['deep', '10min', 'snap']:
-        return False, None, 'tiers are not deep, 10min, snap'
+    if not isinstance(d, list) or not all(isinstance(r, dict) for r in d) or [r.get('tier') for r in d] != [
+            'deep', '10min', 'snap']:
+        return False, None, 'not one record per tier deep, 10min, snap'
+    keys = ('lst_nights', 'nights', 'lsts', 'both_stokes', 'one_stokes')
     for r in d:
-        if r.get('lst_nights') != r.get('both_stokes', -1) + r.get('one_stokes', -1):
+        if not all(type(r.get(k)) is int and r[k] >= 0 for k in keys):
+            return False, r['tier'], f"{r['tier']}: counts {[r.get(k) for k in keys]} are not non-negative integers"
+        if r['lst_nights'] != r['both_stokes'] + r['one_stokes']:
             return False, r['tier'], f"{r['tier']}: lst_nights {r.get('lst_nights')} != both + one Stokes"
     return True, len(d), ', '.join(f"{r['tier']} {r['lst_nights']} LST-nights" for r in d)
 

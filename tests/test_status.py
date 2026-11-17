@@ -438,12 +438,16 @@ def main():
     rows = list(csv.DictReader(open(B.LEDGER)))
     frag = HUB + '/qa_overview_fragment.html'
     body = open(frag).read() if os.path.exists(frag) else ''      # production skips the section when absent
-    links = ''.join('<a href="nights/%s_%s.html">n</a>' % (r['lst'], r['date']) for r in rows)
-    cov = dict(('%s_%s' % (r['lst'], r['date']), dict(lst=r['lst'], date=r['date'])) for r in rows)
+    keys = [(r['lst'], r['date']) for r in rows]
+    if os.environ.get('FAKE_R1_EXTRA_NIGHT'):        # a searched night outside the ledger: no night page for its square
+        keys.append(('07h', '2099-02-01'))
+    links = ''.join('<a href="nights/%s_%s.html">n</a>' % k for k in keys)
+    cov = dict(('%s_%s' % k, dict(lst=k[0], date=k[1])) for k in keys)
     with open(OUT + '/coverage.json', 'w') as f:
         json.dump({'built_utc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()), 'nights': cov}, f)
     with open(OUT + '/coverage_summary.json', 'w') as f:
-        json.dump([dict(tier=t, lst_nights=len(rows), both_stokes=len(rows), one_stokes=0) for t in ('deep', '10min', 'snap')], f)
+        json.dump([dict(tier=t, lst_nights=len(keys), nights=len(keys), lsts=2, both_stokes=len(keys), one_stokes=0)
+                   for t in ('deep', '10min', 'snap')], f)
     p = OUT + '/data_processing.html'
     with open(p + '.part', 'w') as f:
         f.write('<html>' + body + links + '<h2>6. Every LST-night of the grids (%d)</h2></html>' % len(cov))
@@ -1274,6 +1278,20 @@ def test_conformance_pages_ledger_register():
         siblings=[os.path.join(out, 'review_hub', 'data_processing.html')])
     neg('qa_coverage_summary_sum', 'qa_coverage_summary', os.path.join(site, 'coverage_summary.json'),
         edit('"one_stokes": 0', '"one_stokes": 1'))
+    neg('qa_coverage_summary_null', 'qa_coverage_summary', os.path.join(site, 'coverage_summary.json'),
+        edit('"lsts": 2', '"lsts": null'))
+    links = {n: os.path.realpath(os.path.join(site, n)) for n in os.listdir(site) if os.path.islink(os.path.join(site, n))}
+    check('the builder\'s preview links point into this run\'s hub, not the production hub',
+          links and all(t.startswith(os.path.realpath(os.path.join(out, 'review_hub')) + os.sep) for t in links.values()),
+          links)
+    before = sha(os.path.join(out, 'review_hub', 'data_processing.html'))
+    os.environ['FAKE_R1_EXTRA_NIGHT'] = '1'
+    rc, txt = step(['status', 'pages', '--stages', 'data-processing', '--out', out, '--cores', 'none'])
+    os.environ.pop('FAKE_R1_EXTRA_NIGHT')
+    check('a page with a night square whose night page the hub lacks fails its content test in the builder\'s folder '
+          'and is NOT installed (the hub keeps its page)',
+          rc == 2 and 'not installed' in txt and 'night/date links missing' in txt
+          and sha(os.path.join(out, 'review_hub', 'data_processing.html')) == before, txt[-400:])
     rc, txt = step(['status', 'pages', '--stages', 'nights', '--check', '--out', out, '--cores', 'none'])
     check('pages --check: only the night-page content test on the written hub', rc == 0, txt[-300:])
     hub = os.path.join(out, 'review_hub')

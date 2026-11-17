@@ -98,35 +98,45 @@ def run_nights(out, nights, unit, log, allowed):
 
 
 def run_data_page(out, unit, log, allowed):
-    """build_qa_release1.main in place (module docstring). Returns (rc, text, installed paths, builder folder)."""
+    """build_qa_release1.main in place (module docstring). The installed files are content-tested in the builder's folder
+    first (its preview links nights/ and dates/ point at this hub), and installed only when every test passes, both
+    staged as .part before either is replaced. Returns (rc, text, {installed path: class}, builder folder, failures)."""
+    import importlib
     import sys
+    from exopipe.phase3.core import validate
     from exopipe.phase3.lib.status import steps_inplace as IP
     C = K.cfg()
     P = C.status_pages
     hub = K.place(out, 'review_hub', '').rstrip('/')
     site = K.place(out, 'status', P.DATA_PAGE_SITE)
-    dests = [K.check_write(os.path.join(hub, n)) for n in P.DATA_PAGE_INSTALL]
+    dests = {K.check_write(os.path.join(hub, n)): cls for n, cls in P.DATA_PAGE_INSTALL.items()}
     K.check_write(os.path.join(site, P.DATA_PAGE))
     os.makedirs(hub, exist_ok=True)
     env = IP.search_env(C.status.SEARCH_LABEL['deep'])
     IP.search_sources(C.status.SEARCH_LABEL['deep'])      # the register the 10-07 module imports, pinned (2026-10-15 review)
     sys.modules.pop(P.DATA_PAGE_HELPER, None)             # a fresh helper module: the builder imports this one (cached)
-    B = IP.import_quiet(P.DATA_PAGE_HELPER, env=env)
-    unit.add_input(B.__file__, extra={'kind': 'code'})
-    for k, v in dict(LEDGER=C.status.LEDGER, DD=C.paths.DATA_DECISIONS, ROOT=C.paths.COADD_SB_ROOT,
-                     QA=C.status.QA_DIR).items():
-        setattr(B, k, v)
     try:
+        with IP.redirect({}, allowed, env=env):           # the helper's import-time code runs under the write guard too
+            B = importlib.import_module(P.DATA_PAGE_HELPER)
+        unit.add_input(B.__file__, extra={'kind': 'code'})
+        for k, v in dict(LEDGER=C.status.LEDGER, DD=C.paths.DATA_DECISIONS, ROOT=C.paths.COADD_SB_ROOT,
+                         QA=C.status.QA_DIR).items():
+            setattr(B, k, v)
         rc, text, mod = IP.call_attr(P.DATA_PAGE_BUILDER, dict(OUT=site, HUB=hub), 'main', allowed_roots=allowed, log=log,
                                      unit=unit, env=env, argv=[P.DATA_PAGE_BUILDER + '.py', os.path.dirname(site)])
     finally:
         sys.modules.pop(P.DATA_PAGE_HELPER, None)
     if rc != 0:
-        return rc, text, [], site
-    for n, dest in zip(P.DATA_PAGE_INSTALL, dests):
-        shutil.copyfile(os.path.join(site, n), dest + '.part')
-        os.replace(dest + '.part', dest)
-    return rc, text, dests, site
+        return rc, text, {}, site, []
+    bad = [f'{n}: {r["name"]}: {str(r["detail"])[:200]}' for n, cls in P.DATA_PAGE_INSTALL.items()
+           for r in validate.run(cls, os.path.join(site, n)) if not r['passed']]
+    if bad:
+        return rc, text, {}, site, bad
+    for d in dests:
+        shutil.copyfile(os.path.join(site, os.path.basename(d)), d + '.part')
+    for d in dests:
+        os.replace(d + '.part', d)
+    return rc, text, dests, site, []
 
 
 def run_register(out, audit_csvs, unit, log, allowed):
