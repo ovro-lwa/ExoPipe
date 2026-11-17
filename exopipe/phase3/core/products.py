@@ -69,6 +69,8 @@ SCOPES = list(cfg.ALL_SUBBANDS) + ['Red', 'Green', 'Blue', 'Full']
 STOKES_VALUES = ['I', 'V', 'Q', 'U']
 CADENCES = ['deep', '10min', 'snap']
 TAPERS = ['Taper', 'NoTaper']
+# phase2_config._resolve_gittag's value when `git rev-parse` fails (write_standard_header refuses it, B-30)
+GITTAG_STATIC_FALLBACK = 'clv15'
 # Canonical processing order. Build emits tokens in this order; parse
 # accepts them in any order but preserves what it saw.
 # 'loo' (leave-one-out master, tag = excluded date) and tagged 'ssub'
@@ -534,6 +536,16 @@ def write_standard_header(target, *, scope, stokes,
 
     Returns the stamped fits.Header.
     """
+    # B-30 (a): GITTAG names the code commit. phase2_config._resolve_gittag returns the static GITTAG_STATIC_FALLBACK when
+    # `git rev-parse` fails for the code tree (not a git checkout, or git refuses it for this user - 'dubious ownership' when
+    # user pipeline runs a tree owned by gh): refused before the target is opened ('fallback' = production, counted)
+    if cfg.PIPELINE_GITTAG == GITTAG_STATIC_FALLBACK:
+        from exopipe.phase3.core import fallback
+        fallback.site('fallbacks.GITTAG_FALLBACK',
+                      f'{target if not isinstance(target, fits.Header) else "header object"}: GITTAG would be '
+                      f'{cfg.PIPELINE_GITTAG!r}, which names no commit (git rev-parse failed for '
+                      f'{os.path.dirname(os.path.abspath(cfg.__file__))}: not a git checkout, or not safe.directory for '
+                      f'this user)')
     path = None
     if isinstance(target, fits.Header):
         hdr = target
