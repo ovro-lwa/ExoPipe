@@ -79,6 +79,7 @@ SELECTORS = ('tier', 'cells', 'lsts', 'nights', 'run_label', 'epochs')
 CONFIG = ('status', 'status_report', 'status_rebuild', 'status_ledger', 'status_coverage', 'status_conformance',
           'status_qa', 'status_pages', 'status_snapshot', 'serve', 'runner', 'site')
 WRITES = True
+PRODUCTS = False   # writes no data product (no GITTAG to stamp): cli.main skips the code-identity check
 
 ACTIONS = ('report', 'qa', 'conformance', 'pages', 'ledger', 'register', 'eligibility', 'batch-list')
 REPORT_STAGES = ('summary', 'coverage', 'gaps', 'exclusion-conformance', 'violations', 'stale', 'served-diff',
