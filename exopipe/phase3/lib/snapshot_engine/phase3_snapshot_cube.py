@@ -903,8 +903,13 @@ def rescale(a):
     QUANTLEV, dither); MASK, FLOW and FRAME_TABLE carried over unchanged; the primary gains FSAPPLD and THE STANDARD HEADER
     STAMP (stamp_cards, CUBE_STAMP_SPEC_20261110 - done in this rewrite, not as a separate in-place header rewrite).  Writes
     <out>/<same name>, never over the source; REFUSES a cube already carrying FSAPPLD.  Content test before the rename: masks and
-    FRAME_TABLE identical, every frame's |new - old / F| at most RESCALE_TOL of that frame's robust noise / F, and the Release 1
-    acceptance cube check (release1_acceptance.header_check) passes on the new primary - else the temporary file is removed."""
+    FRAME_TABLE identical; in every quantized frame every pixel's |new - old / F| at most half of that tile's new quantization
+    step ZSCALE (the exact bound of SUBTRACTIVE_DITHER_1, plus float32 rounding) and that step no coarser than the archived
+    tile's step / F (RESCALE_STEP_TOL); a tile stored losslessly bit-exact; and the Release 1 acceptance cube check
+    (release1_acceptance.header_check) passes on the new primary - else the temporary file is removed.  The worst pixel over
+    the frame's robust noise is reported (MANIFEST, RESULTS), not tested: before 2026-11-15 it was tested against 0.05, which
+    normal re-quantization exceeds (00h 2025-08-16 69 MHz V: worst 0.0887 in one outlier frame of robust noise ~700x the others;
+    median frame 0.033, 99th percentile 0.045; OPS-20261115-CUBE-RESCALE-WAVE1-RESTART-WITHOUT-01H-04H-11H)."""
     from astropy.io import fits
     fs = a.fluxscal
     if not (np.isfinite(fs) and fs > 0):
@@ -952,6 +957,16 @@ def rescale(a):
         sys.exit("REFUSED: --out is the source directory - a rescale never overwrites its source")
     tmp = out + ".tmp"
     fits.HDUList(hdus).writeto(tmp, overwrite=True, checksum=True)
+
+    def steps(path):     # per tile (= frame): the quantization step ZSCALE, and whether the tile is stored losslessly
+        with fits.open(path, disable_image_compression=True, memmap=False) as hz:   # no memory map (Lustre rule 11-17)
+            t = hz["FRAMES"].data
+            gz = t["GZIP_COMPRESSED_DATA"] if "GZIP_COMPRESSED_DATA" in t.columns.names else [()] * len(t)
+            return np.asarray(t["ZSCALE"], dtype=np.float64), np.array([len(g) > 0 for g in gz])
+    z_old, lossless_old = steps(a.cube)
+    z_new, lossless = steps(tmp)
+    if len(z_new) != new.shape[0] or len(z_old) != new.shape[0]:
+        os.remove(tmp); sys.exit("RESCALE FAILED %s: %d / %d tiles for %d frames" % (out, len(z_old), len(z_new), new.shape[0]))
     worst = 0.0
     with fits.open(tmp, memmap=False) as n:
         # the whole MASK at once, not section[]: in a high-band cube the MASK starts past 2 GiB, where section[] overflows
@@ -971,11 +986,24 @@ def rescale(a):
             if (m != np.isfinite(d1)).any():
                 os.remove(tmp); sys.exit("RESCALE FAILED %s: NaN mask differs in frame %d" % (out, i))
             if m.any():
+                err = np.abs(d1[m] - d0[m])
+                if lossless[i]:
+                    if err.max() != 0:
+                        os.remove(tmp); sys.exit("RESCALE FAILED %s: lossless tile %d differs (max %.4g)" % (out, i, err.max()))
+                else:
+                    zi = z_new[i]
+                    if not (np.isfinite(zi) and zi > 0):
+                        os.remove(tmp); sys.exit("RESCALE FAILED %s: frame %d has quantization step %r" % (out, i, zi))
+                    lim = 0.5 * zi * (1 + 1e-3) + 2.4e-7 * np.abs(d0[m])     # + float32 rounding of the decoded value
+                    if (err > lim).any():
+                        os.remove(tmp); sys.exit("RESCALE FAILED %s: frame %d re-quantization error %.4g > half its step %.4g"
+                                                 % (out, i, err.max(), 0.5 * zi))
+                    if not lossless_old[i] and z_old[i] > 0 and zi > (1 + RESCALE_STEP_TOL) * z_old[i] / fs:
+                        os.remove(tmp); sys.exit("RESCALE FAILED %s: frame %d step %.4g coarser than the archived step / F %.4g"
+                                                 % (out, i, zi, z_old[i] / fs))
                 mad = 1.4826 * np.median(np.abs(d0[m] - np.median(d0[m])))
                 if mad > 0:
-                    worst = max(worst, float(np.max(np.abs(d1[m] - d0[m])) / mad))
-    if worst > RESCALE_TOL:
-        os.remove(tmp); sys.exit("RESCALE FAILED %s: worst pixel %.4f of frame noise > %.2f" % (out, worst, RESCALE_TOL))
+                    worst = max(worst, float(err.max() / mad))
     ok, detail = acceptance_check(tmp, left)    # the Release 1 acceptance test of the new primary: a gate, it refuses
     if not ok:
         os.remove(tmp); sys.exit("RESCALE FAILED %s: Release 1 acceptance cube check: %s; left out: %s"
@@ -985,7 +1013,7 @@ def rescale(a):
     print("RESCALE %s FSAPPLD=%.6f frames=%d worst pixel/noise=%.4f -> OK" % (out, fs, new.shape[0], worst))
 
 
-RESCALE_TOL = 0.05     # re-quantization of an already-quantized cube: measured 0.006 per quantization (2026-11-12 write test)
+RESCALE_STEP_TOL = 0.02   # a rewritten tile's step may exceed the archived step / F by 2% (measured 0.03%, 00h 2025-08-16 18 MHz V)
 
 
 def main():
