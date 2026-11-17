@@ -119,6 +119,50 @@ def test_config():
             ok = False
         CFG.reset()
         check('G37: override of %s allowed (the step passes it to the child)' % k, ok)
+    CFG.authorize([], out=TMP)
+    CFG.set('forced_snapshot.EXCLUDED_EVENTS', "'build'")
+    try:
+        K.check_overrides()
+        ok = True
+    except record.Refusal:
+        ok = False
+    CFG.reset()
+    check('G37: override of forced_snapshot.EXCLUDED_EVENTS allowed (the wrapper\'s own gate)', ok)
+    # the shipped parity file passes as a whole (production's values are the in-place code's values); the same line
+    # from --set or from a copy of the file does not
+    check('G37: PARITY_FILE is the shipped parity file', os.path.isfile(K.PARITY_FILE), K.PARITY_FILE)
+    CFG.authorize([], out=TMP)
+    CFG.parity_replay = True              # as a --parity run into a non-production --out (the file holds protected lines)
+    try:
+        CFG.apply_override_file(K.PARITY_FILE)
+        n_g37 = sum(1 for o in CFG.overrides if o[0].split('.', 1)[0] in K.OWN_SECTIONS + K.IN_PLACE_SHARED)
+        try:
+            K.check_overrides()
+            ok, d = True, ''
+        except record.Refusal as e:
+            ok, d = False, str(e)
+    finally:
+        CFG.parity_replay = False
+        CFG.reset()
+    check('G37: the shipped parity file passes (%d of its lines are in the forced/in-place sections)' % n_g37,
+          ok and n_g37 >= 3, d)
+    cp = os.path.join(TMP, 'parity_copy.cfg')
+    shutil.copyfile(K.PARITY_FILE, cp)
+    for how, apply in (('--set', lambda: CFG.set('astrometry.LOC_ESTIMATOR', "'production'")),
+                       ('a copy of the parity file', lambda: CFG.apply_override_file(cp))):
+        CFG.authorize([], out=TMP)
+        CFG.parity_replay = True
+        try:
+            apply()
+            try:
+                K.check_overrides()
+                ok, d = False, 'passed'
+            except record.Refusal as e:
+                ok, d = 'astrometry.LOC_ESTIMATOR' in str(e), str(e)
+        finally:
+            CFG.parity_replay = False
+            CFG.reset()
+        check('G37: astrometry.LOC_ESTIMATOR from %s refused' % how, ok, d[:200])
     import importlib
     mod = importlib.import_module('exopipe.phase3.steps.forced')
     from exopipe.phase3 import config
