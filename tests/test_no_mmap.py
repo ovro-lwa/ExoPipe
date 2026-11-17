@@ -175,7 +175,7 @@ if mode in ('fits', 'late'):
     out['finders'] = [type(f).__name__ for f in sys.meta_path]
     out['opened'], out['mapped'], out['lustre_maps'] = [], [], []
     for p in paths:
-        if p.startswith('/lustre/') and fits.conf.use_memmap is not False:
+        if os.path.realpath(p).startswith('/lustre/') and fits.conf.use_memmap is not False:
             continue                       # never map a Lustre file, even when the switch is missing
         seen = []
         with fits.open(p) as h:
@@ -212,6 +212,12 @@ class _Scratch(object):
         import numpy as np
         from astropy.io import fits
         self.d = tempfile.mkdtemp(prefix='exopipe3_nommap_')
+        # the falsifier maps the local file on purpose: refuse a scratch directory whose REAL path is on Lustre (a TMPDIR
+        # that reaches Lustre through a link or a bind mount included)
+        if os.path.realpath(self.d).startswith('/lustre/'):
+            shutil.rmtree(self.d, ignore_errors=True)
+            raise RuntimeError('test_no_mmap: scratch %s is on Lustre (real path %s): set TMPDIR to node-local disk'
+                               % (self.d, os.path.realpath(self.d)))
         self.child = os.path.join(self.d, 'nommap_child.py')
         with open(self.child, 'w') as f:
             f.write(CHILD)
@@ -277,6 +283,9 @@ def test_inplace_child_switch_off_lazily():
     guard's astropy hook composed (its writeto patched once, a write outside the roots still refused), a module loaded before
     the sitecustomize, a second execution refused."""
     sc = _Scratch()
+    # outside every root the guard allows (the parity root, /tmp, $TMPDIR - the scratch is under $TMPDIR): the repository's
+    # tests directory, under a name of this run only, removed whatever happens
+    outside = os.path.join(REPO, 'tests', '_nommap_write_refused_%s.fits' % os.path.basename(sc.d))
     try:
         py = sys.executable
         _check_off(_direct(py, sc, 'fits', [sc.local], [BOOT]), [sc.local], 'sitecustomize')
@@ -284,7 +293,6 @@ def test_inplace_child_switch_off_lazily():
         _check_falsifier(_direct(py, sc, 'fits', [sc.local]), sc.local, 'no sitecustomize')
         proot = os.path.join(sc.d, 'parity_root')
         os.makedirs(proot)
-        outside = os.path.join(REPO, 'tests', '_nommap_write_refused.fits')
         r = _direct(py, sc, 'fits', [sc.local], [BOOT], EXOPIPE3_PARITY_ROOT=proot, EXOPIPE3_WRAPS='{}',
                     EXOPIPE3_FALLBACK_POLICY=json.dumps({'fallbacks.GITTAG_FALLBACK': 'fallback'}), NOMMAP_TEST_REFUSED=outside)
         refused_written = os.path.exists(outside)
@@ -302,6 +310,8 @@ def test_inplace_child_switch_off_lazily():
               'module loaded first: switched off, second execution refused' % r['python'])
     finally:
         sc.close()
+        if os.path.exists(outside):
+            os.remove(outside)
 
 
 def test_inplace_children_through_core_legacy_run():
@@ -312,11 +322,18 @@ def test_inplace_children_through_core_legacy_run():
     if not os.path.isfile(site):
         print('      (skipped: no site file %s on this node - the core.legacy.run children run on the cluster)' % site)
         return
-    os.environ.setdefault('EXOPIPE3_SITE', site)
     assert os.path.isfile(LUSTRE_FITS), ('the small Lustre FITS of this test is gone - name another', LUSTRE_FITS)
     from exopipe.phase3.core import legacy
-    sc = _Scratch()
+    # core.legacy.run hands the shell's environment on: the children run without the shell's PYTHONPATH, EXOPIPE3_*
+    # (EXOPIPE3_SITE kept) and SUBLST_* variables, as _env does, so an inherited EXOPIPE3_PARITY_ROOT cannot turn the case
+    # without --parity into a parity run; all of it is restored at the end
+    saved = {k: os.environ.pop(k) for k in list(os.environ)
+             if k == 'PYTHONPATH' or (k.startswith('EXOPIPE3_') and k != 'EXOPIPE3_SITE') or k.startswith('SUBLST_')}
+    site_set = 'EXOPIPE3_SITE' in os.environ
+    os.environ.setdefault('EXOPIPE3_SITE', site)
+    sc = None
     try:
+        sc = _Scratch()
         for key in ('default', 'py36'):
             py = legacy.interpreter(key)
             paths = [sc.local, LUSTRE_FITS]
@@ -333,6 +350,8 @@ def test_inplace_children_through_core_legacy_run():
                 assert r['python'].startswith('3.6' if key == 'py36' else '3.8'), (key, r['python'])
                 if kw:
                     assert r['guard_writeto_patches'] == 1 and r['writeto'] == '_w_fits_writeto', (key, what, r)
+                else:
+                    assert r['guard_writeto_patches'] == 0, (key, what, 'a parity guard without --parity', r)
             res = sc.result_path()
             lr = legacy.run(sc.child, [res, 'plain'], python=key, env={'XDG_CONFIG_HOME': sc.xdg})
             assert lr.ok, (key, lr.reason, lr.tail[-2000:])
@@ -356,7 +375,11 @@ def test_inplace_children_through_core_legacy_run():
                   'imports no astropy; falsifier (no sitecustomize): switch on, local file mapped, Lustre file not opened; '
                   'frozen-code guard: %s' % (key, r['python'], LUSTRE_FITS, frozen))
     finally:
-        sc.close()
+        if sc is not None:
+            sc.close()
+        if not site_set:
+            os.environ.pop('EXOPIPE3_SITE', None)
+        os.environ.update(saved)
 
 
 if __name__ == '__main__':

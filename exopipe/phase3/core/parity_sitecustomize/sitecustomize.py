@@ -391,8 +391,7 @@ class _FitsNoMmapFinder(object):
         return spec
 
 
-if not any(type(f).__name__ == '_FitsNoMmapFinder' for f in sys.meta_path):
-    sys.meta_path.insert(0, _FitsNoMmapFinder())
+sys.meta_path.insert(0, _FitsNoMmapFinder())      # once: this file runs once per process (the check at its top)
 if _FITS_MOD in sys.modules:
     _fits_no_mmap(sys.modules[_FITS_MOD])
 
