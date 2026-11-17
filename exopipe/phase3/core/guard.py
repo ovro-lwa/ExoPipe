@@ -286,28 +286,40 @@ def _patch_astropy(fits):
 
 
 class _AstropyHook(object):
-    """Meta-path hook: patches astropy.io.fits writeto when the module is first imported after the guard."""
+    """Meta-path hook: patches astropy.io.fits writeto when the module is first imported after the guard.
+
+    It asks every other finder for the module's spec. A call that comes back here while it does (a finder that itself asks
+    every finder: the sub-LST frozen-code guard, exopipe_ops/sublst_frozen_guard/sitecustomize.py, ahead of or behind this
+    hook) returns None - without this re-entry flag the two called each other without end, and a parity run under a frozen
+    tree ended in RecursionError at the import of astropy.io.fits (2026-11-17, tests/test_guard_reentry.py). The loader is
+    still wrapped once, so writeto is patched once."""
+
+    _busy = False
 
     def find_spec(self, name, path=None, target=None):
-        if name != 'astropy.io.fits' or not active():
+        if name != 'astropy.io.fits' or self._busy or not active():
             return None
-        for finder in sys.meta_path:
-            if finder is self or not hasattr(finder, 'find_spec'):
-                continue
-            spec = finder.find_spec(name, path, target)
-            if spec is None:
-                continue
-            loader = spec.loader
-            orig_exec = getattr(loader, 'exec_module', None)
-            if orig_exec is None:
-                return spec
+        self._busy = True
+        try:
+            for finder in sys.meta_path:
+                if finder is self or not hasattr(finder, 'find_spec'):
+                    continue
+                spec = finder.find_spec(name, path, target)
+                if spec is None:
+                    continue
+                loader = spec.loader
+                orig_exec = getattr(loader, 'exec_module', None)
+                if orig_exec is None:
+                    return spec
 
-            def exec_module(module, _orig=orig_exec):
-                _orig(module)
-                _patch_astropy(module)
-            loader.exec_module = exec_module
-            return spec
-        return None
+                def exec_module(module, _orig=orig_exec):
+                    _orig(module)
+                    _patch_astropy(module)
+                loader.exec_module = exec_module
+                return spec
+            return None
+        finally:
+            self._busy = False
 
 
 def install(allowed_roots, defaults=DEFAULT_ALLOWED, log=None, label=None):
