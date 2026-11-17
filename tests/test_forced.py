@@ -119,6 +119,37 @@ def test_config():
             ok = False
         CFG.reset()
         check('G37: override of %s allowed (the step passes it to the child)' % k, ok)
+    def _g37(apply, parity=False):
+        """(passed, refusal text) of check_overrides after apply(); CFG reset whatever happens."""
+        CFG.authorize([], out=TMP)
+        CFG.parity_replay = parity        # as a --parity run into a non-production --out (the parity file holds protected lines)
+        try:
+            apply()
+            K.check_overrides()
+            return True, ''
+        except record.Refusal as e:
+            return False, str(e)
+        finally:
+            CFG.parity_replay = False
+            CFG.reset()
+    ok, d = _g37(lambda: CFG.set('forced_snapshot.EXCLUDED_EVENTS', "'build'"))
+    check('G37: override of forced_snapshot.EXCLUDED_EVENTS allowed (the wrapper\'s own gate)', ok, d)
+    # astrometry keys that core.wrap passes to the in-place source_localization reach the products: allowed
+    from exopipe.phase3.core import wrap
+    wk = sorted(k for w in wrap.WRAPS.values() for k in w['keys'] if k.startswith('astrometry.'))
+    for k in wk:
+        ok, d = _g37(lambda: CFG.set(k, "'production'"))
+        check('G37: override of %s allowed (core.wrap passes it to the in-place module)' % k, ok, d)
+    check('G37: the wrap keys checked include astrometry.LOC_ESTIMATOR', 'astrometry.LOC_ESTIMATOR' in wk, wk)
+    # the shipped parity file passes as a whole; each of its lines in G37's sections passes on its own merits
+    pf = os.path.join(REPO, 'exopipe', 'phase3', 'parity', 'production_20261013.cfg')
+    seen = []
+    def _apply_pf():
+        CFG.apply_override_file(pf)
+        seen.extend(o[0] for o in CFG.overrides if o[0].split('.', 1)[0] in K.OWN_SECTIONS + K.IN_PLACE_SHARED)
+    ok, d = _g37(_apply_pf, parity=True)
+    check('G37: the shipped parity file passes (its lines in G37\'s sections: %s)' % ', '.join(seen),
+          ok and {'astrometry.LOC_ESTIMATOR', 'forced_snapshot.EXCLUDED_EVENTS'} <= set(seen), d)
     import importlib
     mod = importlib.import_module('exopipe.phase3.steps.forced')
     from exopipe.phase3 import config

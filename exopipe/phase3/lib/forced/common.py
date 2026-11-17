@@ -14,7 +14,8 @@ from exopipe.phase3.core.record import Refusal
 # Config keys the WRAPPER acts on (paths it passes, stages it runs, processes it starts). Every other key of the forced
 # sections describes a literal of the in-place scripts (or a pinned input): an override would change nothing in the
 # products, so check_overrides refuses it. fitting.* and astrometry.* are used in place by the clv15/exopipe_ops modules
-# with their own values: refused as well while the forced chain runs in place.
+# with their own values: refused as well while the forced chain runs in place, except the keys core.wrap.WRAPS passes to
+# those modules in every child (they do change the products).
 STEERING = {
     'forced.STAGES', 'forced.DEFAULT_STAGES', 'forced.EPOCH_STAGES', 'forced.INPLACE_SCRIPTS', 'forced.INPLACE_GRANDCHILDREN',
     'forced.PYTHON_KEY', 'forced.NODE_LOCAL_RE', 'forced.LOG_TAIL_CHARS',
@@ -26,7 +27,7 @@ STEERING = {
     'forced_snapshot.EVAL_WB', 'forced_snapshot.ZONE_FLAGS', 'forced_snapshot.PHOT_ROOT', 'forced_snapshot.STAGE1_ROOT',
     'forced_snapshot.EPOCH_NAME', 'forced_snapshot.NPROC',
     'forced_snapshot.OK_LINES', 'forced_snapshot.REFASTRO_SCRATCH_PRODUCTION', 'forced_snapshot.LOC_COPY_BACK',
-    'forced_snapshot.FLOW_ENV',
+    'forced_snapshot.FLOW_ENV', 'forced_snapshot.EXCLUDED_EVENTS',
 }
 OWN_SECTIONS = ('forced', 'forced_panels', 'forced_catflux', 'forced_snapshot', 'forced_assoc')
 IN_PLACE_SHARED = ('fitting', 'astrometry')
@@ -39,11 +40,16 @@ def cfg():
 
 def check_overrides(c=None):
     """G37 in-place config truth: refuse a --set/--config of a value the in-place scripts carry as a literal (it would not
-    change the products) or of fitting.* / astrometry.* (the in-place modules use their own values)."""
+    change the products) or of fitting.* / astrometry.* (the in-place modules use their own values), except a key that
+    core.wrap passes to the in-place modules (WRAPS: it changes the products)."""
+    from exopipe.phase3.core import wrap
+    wrapped = {k for w in wrap.WRAPS.values() for k in w['keys']}
     c = c or cfg()
     bad = []
     for o in c.overrides:
         key = o[0].split('[', 1)[0]
+        if key in wrapped:
+            continue
         sec = key.split('.', 1)[0]
         if (sec in OWN_SECTIONS and key not in STEERING) or sec in IN_PLACE_SHARED:
             bad.append(o[0])
