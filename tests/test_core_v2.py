@@ -1627,41 +1627,43 @@ def test_item3_child_code_fingerprint_per_process():
 
 
 def test_item7_gittag_fallback_site():
-    """B-30 (a) (plan/WAVE2_RULINGS.md 2.6): products.write_standard_header refuses when GITTAG would be phase2_config's
-    static fallback - `git rev-parse` failed for the code tree (not a git checkout, or 'dubious ownership': user pipeline
-    running a tree owned by gh, git >= 2.35.2) - before it opens the target; 'fallback' stamps it, counted; a commit reaches
-    no site. _resolve_gittag's failure value is products.GITTAG_STATIC_FALLBACK."""
-    import subprocess
+    """B-30 (a) (plan/WAVE2_RULINGS.md 2.6, GITTAG 'clv15' fallback refuses): core/env.check_code_identity at step start -
+    a code tree with no readable commit (this package's GITTAG not a commit; a site LEGACY_CODE_ROOTS tree that git cannot
+    read: not a checkout, or 'dubious ownership' for another user) refuses, counted once under 'fallback'; a legacy root that
+    does not exist is skipped; every commit readable reaches no site. End to end: a step run where git cannot read any tree
+    (GIT_DIR pointing nowhere) refuses before its run()."""
     from unittest import mock
-    import numpy as np
-    from astropy.io import fits
     from exopipe.common import phase2_config
-    from exopipe.phase3.core import fallback, products
+    from exopipe.phase3.core import env, fallback
     k = 'fallbacks.GITTAG_FALLBACK'
-    with mock.patch.object(subprocess, 'run', side_effect=OSError('no git')):
-        assert phase2_config._resolve_gittag() == products.GITTAG_STATIC_FALLBACK
-    kw = dict(scope='Red', stokes='I', start='2025-08-16T09:36:31', end='2025-08-16T10:36:31')
     with cfg_restored() as CFG, Scratch('gittag') as d:
-        with mock.patch.object(phase2_config, 'PIPELINE_GITTAG', products.GITTAG_STATIC_FALLBACK):
+        assert env.code_identity_problems() == [], env.code_identity_problems()
+        m = fallback.mark()
+        env.check_code_identity()
+        assert fallback.since(m) == ([], {})
+        plain = os.path.join(d, 'not_a_checkout')
+        os.makedirs(plain)
+        with mock.patch.object(phase2_config, 'PIPELINE_GITTAG', 'clv15'), \
+                mock.patch.object(CFG.site, 'LEGACY_CODE_ROOTS', [plain, os.path.join(d, 'absent')]):
+            bad = env.code_identity_problems()
+            assert len(bad) == 2 and "GITTAG would be 'clv15'" in bad[0] and plain in bad[1] \
+                and 'git rev-parse failed' in bad[1], bad
             assert fallback.policy(k) == 'refuse' and CFG.ruled(k), 'the ruled default is refuse, with its ruling'
-            e = raises(fallback.FallbackRefused, products.write_standard_header, fits.Header(), **kw)
-            assert k in str(e) and 'names no commit' in str(e) and 'header object' in str(e), str(e)
-            # a path target is refused before it is opened: the file is byte-identical
-            f = os.path.join(d, 'a.fits')
-            fits.PrimaryHDU(data=np.zeros((2, 2), dtype=np.float32)).writeto(f)
-            before = open(f, 'rb').read()
-            e = raises(fallback.FallbackRefused, products.write_standard_header, f, validate=False, **kw)
-            assert f in str(e) and open(f, 'rb').read() == before, str(e)
-            # production value: stamped, counted
+            e = raises(fallback.FallbackRefused, env.check_code_identity)
+            assert k in str(e) and plain in str(e), str(e)
             CFG.authorize([], out=d)
             CFG.set(k, 'fallback')
             m = fallback.mark()
-            h = products.write_standard_header(fits.Header(), **kw)
-            assert h['GITTAG'] == 'clv15' and fallback.since(m) == ([], {k: 1}), (h['GITTAG'], fallback.since(m))
-    with cfg_restored():
-        m = fallback.mark()
-        h = products.write_standard_header(fits.Header(), **kw)
-        assert h['GITTAG'] == phase2_config.PIPELINE_GITTAG != 'clv15' and fallback.since(m) == ([], {}), h['GITTAG']
+            env.check_code_identity()
+            assert fallback.since(m) == ([], {k: 1}), fallback.since(m)
+        out = os.path.join(d, 'out')
+        r = cli('pages', '--tier', 'deep', '--out', out, '--dry-run', '--cores', 'none',
+                env={'GIT_DIR': os.path.join(d, 'no_git_here')})
+        assert r.returncode == 2 and 'GITTAG_FALLBACK' in r.stderr and 'REFUSED' in r.stderr, (r.returncode, r.stderr[-800:])
+        src = open(os.path.join(REPO, 'exopipe', 'phase3', 'cli.py')).read()
+        assert src.index('_env.check_code_identity()') < src.index('rc = mod.run(args, run)')
+
+
 
 def test_item7_parity_file_keys():
     """The production parity file (parity/production_20261013.cfg): every line names a config key; outside section fallbacks

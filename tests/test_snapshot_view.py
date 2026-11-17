@@ -1248,6 +1248,7 @@ def test_m1_mutation():
     r = _cli('serve', '--tier', 'snapshot', '--family', 'comb', '--run', VIEW, '--view-runs', ','.join(W['runs']), '--out', out,
              '--set', f'catalog_omission.REFUSALS={W["rdir"]}', '--set', f'paths.SNAPSHOT_FLEET_OUT={W["proto"]}',
              '--set', f'catalog_snapshot.BATCH_DIR={W["batch_dir"]}', '--stages', 'omit,build,filtercat', '--cores', 'none',
+             '--set', 'fallbacks.GITTAG_FALLBACK=fallback',     # the mutated copy is not a git checkout (no commit to read)
              repo=tree_m1)
     view = os.path.join(out, 'snapshot', VIEW)
     recs = unit_records(out)
