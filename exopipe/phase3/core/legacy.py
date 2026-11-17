@@ -17,19 +17,25 @@ What the child gets:
   module in the child that reaches a fallback site counts or refuses there, and its counts and refusals come back in
   ``res.fallbacks`` / ``res.fallback_refusals`` and into this process's fallback state, so the running unit records
   them (a refusal makes ``refused`` True even at exit 0, and the unit refuses - core/fallback.py);
+- the refusal of a memory map of a Lustre file (core/parity_sitecustomize/sitecustomize.py): EXOPIPE3_MAP_REFUSAL_LOG names
+  a file of this call, where the child and its descendants write one line per refused map; any line makes ``refused``
+  True even at exit 0 (a child that caught the refusal carried on without that file's data), the lines come back in
+  ``res.map_refusals``, and a file the parent's own environment named gets them too;
 - in an INJECTED run (core/injected.py) EXOPIPE3_INJECTED and P3_SNAP_INJECTED=1, set after ``env`` so no caller drops them;
   the write guard reaches the child through EXOPIPE3_PARITY_ROOT, as for a parity run. P3_SNAP_INJECTED binds only an engine
   that honors it: phase3_snapshot_search.run_search resets it from its own --inject argument and regen_cutouts removes it,
   so the cutout protection of an --injected run is P3_SNAP_CUTOUTS=0, a cutout root under --out and the guard;
 - the script's own sys.path handling is left alone: it runs exactly as production runs it.
 The child's stdout and stderr go to ``log`` (and a tail is kept). ``refused`` is True when the exit code is in
-``refusal_codes`` or the output contains one of ``refusal_text``; ``ok`` only when rc == 0 and not refused.
+``refusal_codes``, the output contains one of ``refusal_text`` (at a non-zero exit), a fallback site refused or a map of a
+Lustre file was refused in the child; ``ok`` only when rc == 0 and not refused.
 """
 import glob
 import json
 import os
 import re
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -98,10 +104,12 @@ def install_patch_import_guard():
 
 
 class LegacyResult:
-    def __init__(self, rc, log, tail, fingerprint, refused, reason, wall_s, argv, fallbacks=None, fallback_refusals=()):
+    def __init__(self, rc, log, tail, fingerprint, refused, reason, wall_s, argv, fallbacks=None, fallback_refusals=(),
+                 map_refusals=()):
         self.rc, self.log, self.tail, self.fingerprint = rc, log, tail, fingerprint
         self.refused, self.reason, self.wall_s, self.argv = refused, reason, wall_s, argv
         self.fallbacks, self.fallback_refusals = dict(fallbacks or {}), list(fallback_refusals)
+        self.map_refusals = list(map_refusals)
 
     @property
     def ok(self):
@@ -156,6 +164,10 @@ def run(target, args=(), python='default', module=False, env=None, cwd=None, log
     os.close(fb_fd)
     os.remove(fb_path)                  # written by the child only when it imported core/fallback
     child['EXOPIPE3_FALLBACK_OUT'] = fb_path
+    outer_mr = child.get('EXOPIPE3_MAP_REFUSAL_LOG')    # a collector of this process's caller: it gets the lines too
+    mr_fd, mr_path = tempfile.mkstemp(prefix='exopipe3_maprefusal_', suffix='.log')
+    os.close(mr_fd)
+    child['EXOPIPE3_MAP_REFUSAL_LOG'] = mr_path
     t0 = time.time()
     lf = open(log, 'a') if log else tempfile.TemporaryFile(mode='w+')
     try:
@@ -194,11 +206,42 @@ def run(target, args=(), python='default', module=False, env=None, cwd=None, log
         refused = True
         reason = (f'{os.path.basename(target)}: B-30 fallback site {fb_refs[0][0]}: {fb_refs[0][1]} - REFUSED'
                   + (f' (exit {rc})' if rc else ''))
-    res = LegacyResult(rc, log, tail, fp, refused, reason, round(time.time() - t0, 1), argv, fb_counts, fb_refs)
+    map_refusals = _map_refusals(mr_path, outer_mr)
+    if map_refusals:                    # sticky, as B-30: the child may have caught the refusal and carried on
+        mr = (f'{os.path.basename(target)}: {map_refusals[0][:300]}'
+              + (f' (+{len(map_refusals) - 1} more refused maps)' if len(map_refusals) > 1 else '') + ' - REFUSED'
+              + (f' (exit {rc})' if rc and not fb_refs else ''))
+        reason = f'{reason}; {mr}' if fb_refs else mr
+        refused = True
+    res = LegacyResult(rc, log, tail, fp, refused, reason, round(time.time() - t0, 1), argv, fb_counts, fb_refs,
+                       map_refusals)
     if unit is not None:
         unit.meta.setdefault('legacy_calls', []).append({'argv': argv, 'rc': rc, 'wall_s': res.wall_s, 'log': log})
         merge_fingerprint(unit.meta.setdefault('legacy_code', {}), fp)
     return res
+
+
+def _map_refusals(path, outer):
+    """The lines the child and its descendants wrote to their EXOPIPE3_MAP_REFUSAL_LOG ``path`` (removed here), also
+    appended to ``outer`` (the file the caller's environment named) when set."""
+    try:
+        with open(path, 'rb') as f:
+            data = f.read()
+    except OSError:
+        data = b''
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    if data and outer:
+        try:
+            with open(outer, 'ab') as f:
+                f.write(data)
+        except OSError as e:
+            print(f'NO-LUSTRE-MAP-LOG: {len(data.splitlines())} refusal lines of a child not appended to {outer}: {e}',
+                  file=sys.stderr)
+    return [ln for ln in data.decode('utf-8', 'replace').splitlines() if ln.strip()]
 
 
 def _tail(path, n):

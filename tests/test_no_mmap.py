@@ -35,7 +35,9 @@ Lustre file, for reading OR writing"; the 11-09 and 11-16 lwacalim07 Lustre clie
    real Lustre file only the gate's decision is asked (refused, by its path and by its device; no refusal line) and the
    default and memmap=False reads read it with no /lustre mapping. FALSIFIER: the stand-in child with the gate taken out
    (mmap.mmap back to the builtin type) maps every stand-in file, writes no refusal line and fails the stand-in check.
-   Through core.legacy.run the child inherits EXOPIPE3_MAP_REFUSAL_LOG from the parent. On the cluster the children run through
+   Through core.legacy.run the child writes its lines to a file of that call: any line refuses the unit even when the child
+   caught every refusal and exited 0 (res.refused, res.map_refusals, the reason naming the first refused map), and the
+   lines are appended to the file the parent's own EXOPIPE3_MAP_REFUSAL_LOG names. On the cluster the children run through
    core.legacy.run under py38 and py36 with and without --parity, and directly under flow (3.10) and the TESS interpreters
    (3.12); elsewhere (CI) with this interpreter, stand-in only.
 
@@ -769,14 +771,21 @@ def test_lustre_map_gate_children():
                                         env={'XDG_CONFIG_HOME': sc.xdg}, log=res + '.log', **kw)
                     finally:
                         os.environ.pop('EXOPIPE3_MAP_REFUSAL_LOG', None)
-                    assert lr.ok and os.path.isfile(res), (key, what, mode, lr.rc, lr.reason, lr.tail[-2000:])
+                    assert lr.rc == 0 and os.path.isfile(res), (key, what, mode, lr.rc, lr.reason, lr.tail[-2000:])
                     with open(res + '.log') as f:
                         r = _gate_result(res, f.read(), res + '.refusals')
                     assert r['python'].startswith('3.6' if key == 'py36' else '3.8'), (key, r['python'])
                     if mode == 'standin':
-                        nlines = len(_check_gate_standin(r, sc, (key, what)))
+                        nlines = len(_check_gate_standin(r, sc, (key, what)))   # the parent's file got every line
+                        # the child caught every refusal and exited 0: core.legacy.run refuses the unit all the same
+                        assert (lr.refused and not lr.ok and len(lr.map_refusals) == nlines
+                                and all(m.startswith('NO-LUSTRE-MAP: ') for m in lr.map_refusals)
+                                and lr.reason.startswith(os.path.basename(sc.gate_child) + ': NO-LUSTRE-MAP: ')
+                                and lr.reason.endswith(' - REFUSED')), (key, what, 'refused at exit 0', lr.refused,
+                                                                        lr.reason, len(getattr(lr, 'map_refusals', ())), nlines)
                     else:
                         _check_gate_real(r, (key, what))
+                        assert lr.ok and not lr.refused and lr.map_refusals == [], (key, what, 'real file', lr.reason)
             f = _check_gate_falsifier(_gate_direct(legacy.interpreter(key), sc, 'standin', on='0'), sc, key)
             frozen = 'not composed (no guard file)'
             if os.path.isfile(os.path.join(FROZEN_GUARD, 'sitecustomize.py')):
@@ -788,8 +797,8 @@ def test_lustre_map_gate_children():
                                                      SUBLST_CODE_ROOT=froot), sc, (key, 'frozen-code guard', order))
                 frozen = 'the gate in place with it first or second on the path'
             print('no-Lustre-map gate, core.legacy.run %s (Python %s), with and without --parity: stand-in maps refused, '
-                  'outside mapped, %d refusal lines in the child log and in the inherited EXOPIPE3_MAP_REFUSAL_LOG, the '
-                  'swallowed refusal included; %s refused by path and by device without a map, read with the defaults and '
+                  'outside mapped, %d refusal lines in the child log and in the parent\'s EXOPIPE3_MAP_REFUSAL_LOG, the '
+                  'swallowed refusal included, the unit refused at exit 0; %s refused by path and by device without a map, read with the defaults and '
                   'memmap=False, no /lustre mapping, no refusal line; frozen-code guard: %s; falsifier: %s'
                   % (key, r['python'], nlines, LUSTRE_FITS, frozen, f[:120]))
         pys = [('flow', legacy.interpreter('flow')), ('tess', legacy.interpreter('tess')), ('tess /fast', TESS_FAST)]
