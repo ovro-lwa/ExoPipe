@@ -395,6 +395,24 @@ def make_sublst(B):
             open(f'{B}/judgements/queue_p3s3_{K}.txt', 'w').write('\n'.join(q) + '\n')
 
 
+def test_tableflip_ports():
+    """8798 / 8799 serve the deep table-flip samples (Sample_TableFlip_{V,I}_20261017): the port map's Stokes against the
+    live registry's run path (read only; the config alone where the registry is absent, as in the data-free CI)."""
+    pages = CFG.serve.PAGES
+    for key, port, S in ((('deep', 'tableflip-V'), 8798, 'V'), (('deep', 'tableflip-I'), 8799, 'I')):
+        e = pages[key]
+        assert e['port'] == port and e['stokes'] == S and e['family'] == 'deep-forced', (key, e)
+    if not os.path.exists(TWO_PORT_REGISTRY):
+        print('SKIP  live registry absent: the table-flip ports checked against the config only', flush=True)
+        ok('tableflip ports (config)')
+        return
+    live = {e.get('legacy_port'): e for e in json.load(open(TWO_PORT_REGISTRY))['pages'] if e.get('kind') == 'review'}
+    for port, S in ((8798, 'V'), (8799, 'I')):
+        e = live.get(port)
+        assert e is not None and any(('Sample_TableFlip_%s_' % S) in a for a in e['argv']), (port, e and e['argv'][:3])
+    ok('tableflip ports: Stokes equal the live registry')
+
+
 def test_sublst_ports():
     base = f'{T}/sub_base/Run_SLSTB.build'
     make_sublst(base)
@@ -3148,6 +3166,7 @@ def main():
         B = test_deep_ports()
         test_queue_view_content(B)
         test_sublst_ports()
+        test_tableflip_ports()
         test_generation_mix()
         test_journals()
         test_exclusion_gate()

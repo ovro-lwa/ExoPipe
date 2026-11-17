@@ -59,6 +59,7 @@ from exopipe.phase3.lib.forced import common as K
 
 WIDE_STAGES = ('wide_jobs', 'wide_search', 'wide_test', 'wide_publish')
 ACTIVITY_STAGES = ('activity',)
+TIER_PAGE_STAGES = ('tier_site', 'tier_runs')     # family T: lib/forced/tier_pages.py (dispatched by steps/forced.py)
 STEP = 'forced'
 
 
@@ -84,16 +85,18 @@ def family_of(stage):
         return 'W'
     if stage in ACTIVITY_STAGES:
         return 'N'
+    if stage in TIER_PAGE_STAGES:
+        return 'T'
     return 'C'
 
 
 def family(args):
-    """('C' | 'W' | 'N', stages) of a snapshot invocation; refuses stages of two families (W-FAMILY)."""
+    """('C' | 'W' | 'N' | 'T', stages) of a snapshot invocation; refuses stages of two families (W-FAMILY)."""
     stages = K.selected_stages(args, 'snapshot')
     fams = sorted({family_of(s) for s in stages})
     if len(fams) > 1:
         raise Refusal('W-FAMILY one family per invocation: %s are stages of families %s (event panels C, wide-area test W, '
-                      'night activity N write into different roots)' % (','.join(stages), '/'.join(fams)))
+                      'night activity N, tier pages T write into different roots)' % (','.join(stages), '/'.join(fams)))
     return fams[0], stages
 
 
@@ -123,23 +126,29 @@ def run(args, run, fam, stages):
     return None
 
 
+WIDE_FLAGS = (('--wide-runs', 'wide_runs'), ('--wide-jobs', 'wide_jobs'), ('--wide-cutout-root', 'wide_cutout_root'),
+              ('--wide-bursts', 'wide_bursts'), ('--wide-only', 'wide_only'))
+
+
 def gate_args(args, fam):
-    """W-FAMILY: the W / N stages are campaign stages over whole runs - no per-hour form, no cells, no family-C run flags."""
+    """W-FAMILY: the W / N / T stages are campaign stages over whole runs - no per-hour form, no cells, no family-C run flags,
+    no flag of another of these families."""
     bad = []
     if getattr(args, 'epochs', None):
-        bad.append('--epochs (no per-hour form: the test pools every night)')
+        bad.append('--epochs (no per-hour form: %s)' % ('the site lists every night' if fam == 'T' else 'the test pools every night'))
     if getattr(args, 'cells', None):
         bad.append('--cells')
     for flag, attr in (('--snap-name', 'snap_name'), ('--snap-cadence', 'snap_cadence'), ('--stokes', 'stokes')):
         if getattr(args, attr, None):
-            bad.append(flag + (' (use --wide-only S:*)' if attr == 'stokes' else ''))
-    if fam == 'N':
-        for flag, attr in (('--wide-runs', 'wide_runs'), ('--wide-jobs', 'wide_jobs'), ('--wide-cutout-root', 'wide_cutout_root'),
-                           ('--wide-bursts', 'wide_bursts'), ('--wide-only', 'wide_only')):
+            bad.append(flag + (' (use --wide-only S:*)' if attr == 'stokes' and fam == 'W' else ''))
+    if fam in ('N', 'T'):
+        for flag, attr in WIDE_FLAGS:
             if getattr(args, attr, None):
                 bad.append(flag)
-    elif getattr(args, 'na_detections', None):
+    if fam != 'N' and getattr(args, 'na_detections', None):
         bad.append('--na-detections')
+    if fam != 'T' and getattr(args, 'tier_site', None):
+        bad.append('--tier-site')
     if bad:
         raise Refusal('W-FAMILY %s: not a flag of family %s' % (', '.join(bad), fam))
 
