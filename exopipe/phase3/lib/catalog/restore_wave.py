@@ -31,8 +31,10 @@ record (CAUSES, in this order):
                   row, a wideband by the constituent rule) - the re-chain applied an exclusion written after the old run;
   reprocessed     not in the new record, on a cell-band not excluded, from a candidate table (<cell>/candidates_<subband>_<Stokes>
                   _median[_1min].csv) that a recorded re-run replaced after the old run's record was written and before the new
-                  run's: a quarantine MANIFEST.csv under catalog_snapshot.RESTORE_WAVE_REMADE_ROOTS (<root>/<cell>/<UTC stamp>/)
-                  lists the original; the quarantine directory is in removed_detail, and whether the new record holds a detection
+                  run's: a quarantine MANIFEST.csv lists the original - one a run record of `exopipe3 archive supersede` names
+                  (recorded_quarantines: <records root>/_records/archive/supersede_*.json, catalog_snapshot.RESTORE_WAVE_RECORDS_
+                  ROOTS) or, for the re-runs production made before cutover, one under catalog_snapshot.RESTORE_WAVE_REMADE_ROOTS
+                  (<root>/<cell>/<UTC stamp>/); the quarantine directory is in removed_detail, and whether the new record holds a detection
                   of the same cell, subband, Stokes and tier within 2 px of the old peak pixel, at the same time stamp or within one
                   frame interval of it (10 s; 1 min): re-found and served, re-found and not served (its removing stage named), or
                   not re-found, the re-found at a shifted time stamp counted too;
@@ -42,22 +44,25 @@ FIRST VERSION: OLD 'none' = a batch with no earlier run (production 9cfcca4, the
 before, every check of the new run applies and its served detections count as gained; refused when the batch has any other run in
 the new run's review directory.
 FAIL when: a previously served detection is absent; the new run serves a detection on a cell-band excluded now; the exclusion list
-cannot be read; a re-run quarantine directory has no UTC stamp; the new record's restored rows (restored_by set) differ in number
+cannot be read; a re-run quarantine directory has no UTC stamp; a supersede record cannot be read, or names a quarantine
+directory without its MANIFEST.csv; the new record's restored rows (restored_by set) differ in number
 from its chain summary's gate3d_restore_only.restored (or the summary has no such key); a restored row lacks gate_3d_installed =
 remove with
 gate_3d_restore not remove, or an untagged row has that pair; a tag other than RESTORED_BY; a served detections.csv of the new run
 (candidates/<band>/ of the chain, candidates/<Stokes>/ of the pages) lacks the restored_by column; the tagged rows of the chain's
 detections.csv files differ from the record's served tagged rows.
 
-  diff(old, new, out=None, remade_roots=None)
+  diff(old, new, out=None, remade_roots=None, records_roots=None)
                              writes <out or new>/restore_wave_served_diff.csv (one row per previously served detection not served
                              now) and .json (counts, later stages, status) - production's bytes - and returns the json dict; the
                              count line is LINE % ...; OLD may be 'none' (first version); remade_roots default
-                             catalog_snapshot.RESTORE_WAVE_REMADE_ROOTS
+                             catalog_snapshot.RESTORE_WAVE_REMADE_ROOTS, records_roots catalog_snapshot.RESTORE_WAVE_RECORDS_ROOTS
+                             (None = archive.RECORDS_ROOT)
   totals(runs)               (exit status, the totals line) over the runs' json files (the wave totals Gregg is shown)
 Production's script runs as `snapshot_restore_wave_diff.py OLD NEW` (exit 1 on FAIL), `none NEW` and `--totals NEW ...`; this
 module is the same with its output directory a parameter (a scratch or parity run never writes into a member run it reads), the
-exclusion read through v2's single reader, and the re-run roots a config key (production hardcodes REMADE_ROOTS).
+exclusion read through v2's single reader, and the re-runs read from v2's own supersede records as well as from the roots of
+production's (production hardcodes REMADE_ROOTS). With no supersede record the bytes are production's.
 """
 import calendar
 import collections
@@ -165,13 +170,44 @@ def totals(runs):
     return (1 if bad else 0), line
 
 
-def remade_tables(old, new, roots, fails):
+def recorded_quarantines(records_roots, fails):
+    """MANIFEST.csv files of the re-runs v2 recorded: every run record of `exopipe3 archive supersede`
+    (<root>/_records/archive/supersede_*.json; lib/archive/snapshot.run_supersede) names its quarantine root and cell (meta
+    quar_root, cell) - every <quar_root>/<cell>/<UTC stamp>/MANIFEST.csv counts, whatever the unit's status (a refused audit, or
+    a ship script stopped before its SHIPPED line, may already have moved tables) - and, when the script ran to its SHIPPED line,
+    its quarantine directory (meta shipped.quarantine), which must hold a MANIFEST.csv. An unreadable record or a named
+    quarantine directory without its MANIFEST.csv is a FAIL (appended to ``fails``)."""
+    out = set()
+    for root in records_roots:
+        for p in sorted(glob.glob(os.path.join(root, "_records", "archive", "supersede_*.json"))):
+            try:
+                with open(p) as f:
+                    meta = json.load(f).get("meta") or {}
+            except (OSError, ValueError, AttributeError) as e:
+                fails.append("a supersede run record could not be read: %s (%s)" % (p, e))
+                continue
+            if meta.get("quar_root") and meta.get("cell"):
+                out.update(glob.glob(os.path.join(meta["quar_root"], meta["cell"], "*", "MANIFEST.csv")))
+            q = (meta.get("shipped") or {}).get("quarantine")
+            if q:
+                if os.path.isfile(os.path.join(q, "MANIFEST.csv")):
+                    out.add(os.path.join(q, "MANIFEST.csv"))
+                else:
+                    fails.append("the supersede run record %s names the quarantine %s, which has no MANIFEST.csv" % (p, q))
+    return sorted(out)
+
+
+def remade_tables(old, new, roots, fails, manifests=()):
     """(cell, candidate table name) -> the quarantine directory of the recorded re-run that replaced it after OLD's record was
-    written and before NEW's (a stamp strictly between the two records' mtimes), and the number of such MANIFEST.csv files; a
+    written and before NEW's (a stamp strictly between the two records' mtimes), and the number of such MANIFEST.csv files - those
+    under ``roots`` (<root>/<cell>/<UTC stamp>/) and the ``manifests`` given (recorded_quarantines), each counted once; a
     quarantine directory without a UTC stamp is a FAIL (appended to ``fails``)."""
     remade, n_man = {}, 0
     t_old, t_new = (os.path.getmtime(os.path.join(r, "detection_record.csv.gz")) for r in (old, new))
-    for m in sorted(p for root in roots for p in glob.glob(os.path.join(root, "*", "*", "MANIFEST.csv"))):
+    found = {os.path.realpath(p): p for root in roots for p in glob.glob(os.path.join(root, "*", "*", "MANIFEST.csv"))}
+    for p in manifests:
+        found.setdefault(os.path.realpath(p), p)
+    for m in sorted(found.values()):
         qd = os.path.dirname(m)
         try:
             t_q = calendar.timegm(time.strptime(os.path.basename(qd), "%Y%m%dT%H%M%SZ"))
@@ -200,7 +236,7 @@ def pixel(u, cand):
     return (int(xy[0]), int(xy[1])) if len(xy) == 2 and all(v.lstrip("-").isdigit() for v in xy) else None
 
 
-def diff(old, new, out=None, remade_roots=None):
+def diff(old, new, out=None, remade_roots=None, records_roots=None):
     """The test of NEW against the run it replaces, OLD, or 'none' for a first version (module docstring): writes CSV_NAME /
     JSON_NAME under ``out`` (default NEW, as production) and returns the JSON dict (its 'status' PASS or 'FAIL: ...'; 'line' the
     count line, not written). A first version whose batch has another run in NEW's directory REFUSES (core.record.Refusal),
@@ -210,6 +246,9 @@ def diff(old, new, out=None, remade_roots=None):
     if remade_roots is None:
         from exopipe.phase3.config import CFG
         remade_roots = CFG.catalog_snapshot.RESTORE_WAVE_REMADE_ROOTS
+    if records_roots is None:
+        from exopipe.phase3.config import CFG
+        records_roots = CFG.catalog_snapshot.RESTORE_WAVE_RECORDS_ROOTS or (CFG.archive.RECORDS_ROOT,)
     fails = []
     # ---- the previous run's served detections; a FIRST VERSION has none
     prev = {}
@@ -252,7 +291,8 @@ def diff(old, new, out=None, remade_roots=None):
     except Exception as e:                          # noqa: BLE001 - production's: any failure to read the list is a FAIL
         fails.append("the exclusion list could not be read (%s)" % e)
     # ---- candidate tables replaced by a recorded re-run between the two records
-    remade, n_man = remade_tables(old, new, remade_roots, fails) if old != "none" else ({}, 0)
+    remade, n_man = (remade_tables(old, new, remade_roots, fails, recorded_quarantines(records_roots, fails))
+                     if old != "none" else ({}, 0))
     # ---- the new run: the rows of the previously served, every restored row, every served row's key
     now, restored, gained = {}, {}, collections.Counter()
     gmap = {c: collections.defaultdict(list) for c in FALLBACK}
