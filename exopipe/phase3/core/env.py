@@ -8,9 +8,15 @@ Thread caps are NOT set by default (they can change floating-point reduction ord
 import os
 
 ENV_DEFAULTS = {'NUMPY_MADVISE_HUGEPAGE': '0'}
+# umask of every ExoPipe process (its children inherit it): files 664, directories 775 - group-writable, so outputs written as
+# user pipeline stay modifiable by the group that shares them with gh's chats. A login shell gives pipeline 0002, a batch job's
+# non-login shell 0022 (checked 2026-11-17; plan/CUTOVER_READINESS.md, run-as-pipeline audit). Files a step makes read-only
+# (pins, code worktrees) are chmod'ed explicitly and are not affected.
+UMASK = 0o002
 
 
 def apply(threads=None):
+    os.umask(UMASK)
     for k, v in ENV_DEFAULTS.items():
         os.environ.setdefault(k, v)
     if threads:
