@@ -224,6 +224,66 @@ if _WR:
             return spec
     sys.meta_path.insert(0, _WrapFinder())
 
+# B-30 GITTAG_FALLBACK IN A CHILD (core/record.check_code_identity checks the step's own process at its start). Every process
+# that imports exopipe.common.phase2_config - a legacy script, a spawned worker - resolves PIPELINE_GITTAG again with
+# `git rev-parse` (10 s timeout) and keeps production's static 'clv15' on ANY failure, silently: git refusing a tree another
+# user owns ('dubious ownership'), a stall under Lustre load. With the parent's fallback policies in the environment (every
+# core.legacy.run child), the module's value is checked right after it loads, with the rule of code_identity_problems
+# (a commit: 7-40 hex digits): any other value reaches the site fallbacks.GITTAG_FALLBACK under the parent's policy -
+# 'refuse' (the ruled value) raises FallbackRefused at that import, recorded for the parent (EXOPIPE3_FALLBACK_OUT: the
+# unit refuses even when the child swallows the error); 'fallback' (production's behavior, the parity file) counts it and
+# the module keeps 'clv15'. phase2_config itself is not changed (production's file, byte-identical in the branch).
+_GT_MOD = 'exopipe.common.phase2_config'
+if os.environ.get('EXOPIPE3_FALLBACK_POLICY'):
+    import importlib.abc as _iabc_g
+    import importlib.util as _iutil_g
+    import re as _re_g
+
+    def _gt_fallback():
+        m = sys.modules.get('exopipe.phase3.core.fallback')
+        if m is None:                           # by path, as the import wraps load it: the child's `exopipe` may be production's
+            _fp = os.path.join(os.path.dirname(_HERE), 'fallback.py')
+            _s = _iutil_g.spec_from_file_location('exopipe.phase3.core.fallback', _fp)
+            m = _iutil_g.module_from_spec(_s)
+            sys.modules['exopipe.phase3.core.fallback'] = m
+            _s.loader.exec_module(m)
+        return m
+
+    class _GittagFinder(_iabc_g.MetaPathFinder):
+        _busy = False
+
+        def find_spec(self, name, path, target=None):
+            # re-entered while asking the finders after it: a finder that asks EVERY finder (the sub-LST frozen-code guard,
+            # first on the path, chains here and goes ahead of this one) would call back without end - stand aside
+            if name != _GT_MOD or self._busy:
+                return None
+            later = sys.meta_path[sys.meta_path.index(self) + 1:] if self in sys.meta_path else []
+            spec = None
+            self._busy = True
+            try:
+                for f in later:                 # the spec the import would get without this finder (an import wrap's too)
+                    fs = getattr(f, 'find_spec', None)
+                    spec = fs(name, path, target) if fs is not None else None
+                    if spec is not None:
+                        break
+            finally:
+                self._busy = False
+            if spec is None or spec.loader is None or not hasattr(spec.loader, 'exec_module'):
+                return spec
+            _orig = spec.loader.exec_module
+
+            def _exec(module, _orig=_orig):
+                _orig(module)
+                g = str(getattr(module, 'PIPELINE_GITTAG', ''))
+                if not _re_g.match(r'^[0-9a-f]{7,40}$', g):
+                    _gt_fallback().site('fallbacks.GITTAG_FALLBACK',
+                                        f'{getattr(module, "__file__", _GT_MOD)}: GITTAG would be {g!r} in child process '
+                                        f'{os.getpid()} (git rev-parse of its code tree failed or timed out), so its '
+                                        f'products would carry no commit')
+            spec.loader.exec_module = _exec
+            return spec
+    sys.meta_path.insert(0, _GittagFinder())
+
 # chain to any other sitecustomize on the path (the environment's own, if it has one) - never back to the sitecustomize
 # Python imported at start-up when that is another file which chained here (the sub-LST frozen-code guard first on the
 # path): running it again would install its import hook a second time, and two such hooks call each other without end

@@ -1690,6 +1690,89 @@ def test_item7_gittag_fallback_site():
         assert notify.PRODUCTS is False and status.PRODUCTS is False
 
 
+GT_CHILD = """
+import sys
+sys.path.insert(0, %r)
+try:
+    from exopipe.common import phase2_config
+    print('GITTAG', phase2_config.PIPELINE_GITTAG)
+except Exception as e:             # swallowed: the child exits 0 - the parent's unit refuses all the same
+    print('import failed:', type(e).__name__, e)
+"""
+
+# a finder that asks EVERY finder on sys.meta_path, first on the path, as the sub-LST frozen-code guard does
+# (exopipe_ops/sublst_frozen_guard/sitecustomize.py:49-63; its own directory goes first on PYTHONPATH and it chains)
+GT_ASK_ALL = """
+import os, sys
+class AskAll(object):
+    def find_spec(self, name, path=None, target=None):
+        for f in sys.meta_path:
+            if f is self or not hasattr(f, 'find_spec'):
+                continue
+            spec = f.find_spec(name, path, target)
+            if spec is not None:
+                return spec
+        return None
+sys.meta_path.insert(0, AskAll())
+import importlib.machinery as _m
+_spec = _m.PathFinder.find_spec('sitecustomize', [p for p in sys.path if p and os.path.abspath(p) != os.path.dirname(os.path.abspath(__file__))])
+if _spec is not None:
+    exec(compile(open(_spec.origin).read(), _spec.origin, 'exec'), {'__name__': 'sitecustomize', '__file__': _spec.origin})
+"""
+
+
+def test_item7_gittag_child():
+    """B-30 GITTAG_FALLBACK in a legacy child (core/parity_sitecustomize, after record.check_code_identity covers the step's
+    own process): a child that imports exopipe.common.phase2_config while git cannot read its tree (GIT_DIR pointing nowhere)
+    reaches the site - under the ruled 'refuse' the import raises, the child swallows it and exits 0, and the parent's unit
+    refuses all the same; under 'fallback' (production's behavior) it is counted once and the child keeps 'clv15'. A child
+    whose tree git reads reaches no site. With a finder first on the path that asks every finder (the frozen-code guard's
+    pattern) the check still runs and the import does not recurse."""
+    import re as _re
+    from exopipe.phase3.core import fallback, legacy, record
+    K = 'fallbacks.GITTAG_FALLBACK'
+    with cfg_restored() as CFG, Scratch('item7g') as d:
+        CFG.authorize([], out=d)
+        script = os.path.join(d, 'child.py')
+        open(script, 'w').write(GT_CHILD % REPO)
+        out = os.path.join(d, 'a.csv')
+        open(out, 'w').write('a\n1\n')
+        run = record.Run('t7g', ['x'], d, CFG, config_sections=())
+        nogit = {'GIT_DIR': os.path.join(d, 'no_git_here')}
+        with run.unit('readable') as u:
+            res = legacy.run(script, log=os.path.join(d, 'g0.log'), unit=u)
+            u.add_output(out, 'csv_table')
+        assert res.ok and not res.fallbacks and not res.fallback_refusals, (res.rc, res.reason, res.fallbacks)
+        assert _re.search(r'^GITTAG [0-9a-f]{7,40}$', res.tail, _re.M), res.tail
+        assert fallback.policy(K) == 'refuse'
+        with run.unit('unreadable_refuse') as u:
+            res = legacy.run(script, env=nogit, log=os.path.join(d, 'g1.log'), unit=u)
+            u.add_output(out, 'csv_table')
+        assert res.rc == 0 and res.refused and K in res.reason and res.fallback_refusals, (res.rc, res.reason)
+        assert 'import failed: FallbackRefused' in res.tail and "GITTAG would be 'clv15' in child process" in res.tail, res.tail
+        assert u.status == 'refused' and K in u.reason, (u.status, u.reason)
+        # a grandchild whose PYTHONPATH puts the frozen-code guard's pattern FIRST (as sublst_code_root.sh does in a shell
+        # child): it loads first and chains to this sitecustomize; the check runs and the import does not recurse
+        ask = os.path.join(d, 'ask_all')
+        os.makedirs(ask)
+        open(os.path.join(ask, 'sitecustomize.py'), 'w').write(GT_ASK_ALL)
+        wrap = os.path.join(d, 'wrap.py')
+        open(wrap, 'w').write('import os, subprocess, sys\n'
+                              f'env = dict(os.environ, PYTHONPATH={ask!r} + os.pathsep + os.environ["PYTHONPATH"])\n'
+                              f'sys.exit(subprocess.call([sys.executable, {script!r}], env=env))\n')
+        with run.unit('ask_all_refuse') as u:
+            res = legacy.run(wrap, env=nogit, log=os.path.join(d, 'g2.log'), unit=u)
+            u.add_output(out, 'csv_table')
+        assert 'RecursionError' not in res.tail and res.refused and K in res.reason, (res.rc, res.reason, res.tail[-600:])
+        assert u.status == 'refused', (u.status, u.reason)
+        CFG.set(K, 'fallback')
+        with run.unit('unreadable_counts') as u:
+            res = legacy.run(script, env=nogit, log=os.path.join(d, 'g3.log'), unit=u)
+            u.add_output(out, 'csv_table')
+        assert res.ok and res.fallbacks == {K: 1} and 'GITTAG clv15' in res.tail, (res.rc, res.reason, res.fallbacks)
+        assert u.status == 'done' and record.load_record(d, 't7g', 'unreadable_counts')['fallbacks'] == {K: 1}
+
+
 def test_item7_parity_file_keys():
     """The production parity file (parity/production_20261013.cfg): every line names a config key; outside section fallbacks
     (where a count-only site's ruled default IS production's 'fallback') each line differs from the config default - a line
