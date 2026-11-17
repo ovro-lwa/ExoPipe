@@ -90,10 +90,17 @@ def _button(e, txt):
     return f'<a class="{cls}" href="{_html.escape(href)}" title="{_html.escape(title)}">{txt}</a>'
 
 
+def tier_key(reg, S_, t):
+    """(registry key, entry) of the tier's page: its combined view '<t>-comb' when it has one (live), else the tier's own entry
+    (build_review_hub.py:52-55). The one copy of the rule: status reads the served runs through it (status steps_common.served_row)."""
+    rows = reg.get(S_) or {}
+    c = rows.get(t + COMB_SUFFIX)
+    return (t + COMB_SUFFIX, c) if (c and c.get('live')) else (t, rows.get(t))
+
+
 def tier_page(reg, S_, t):
     """The tier's page: its combined view when it has one (live), else the tier's own entry (build_review_hub.py:52-55)."""
-    c = reg[S_].get(t + COMB_SUFFIX)
-    return c if (c and c.get('live')) else reg[S_].get(t)
+    return tier_key(reg, S_, t)[1]
 
 
 def _row(reg, S_):

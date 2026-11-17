@@ -22,27 +22,34 @@ from exopipe.phase3.lib.status import steps_common as K
 HISTORY_COLUMNS = ('checked_utc', 'cells', 'pass', 'fail', 'fail_not_in_rebuild_list')   # conformance_check.py:47-48
 
 
-def membership_drift():
-    """S-G6: lines where the branch membership module differs from production other than import lines, the
-    NAMED_OUT_OF_MASTER path line and the entry point's no-mmap switch (``_fits_nommap.conf.use_memmap = False``,
-    R-GREGG-20261117-NO-MMAP-OF-LUSTRE-FILES-READ-OR-WRITE; tests/test_no_mmap.py check 3 requires it in every entry point);
-    [] when only those differ (and the named table files are identical)."""
+def drift_lines(prod_lines, branch_lines):
+    """S-G6's comparison: diff lines of the branch module against production other than import lines, the NAMED_OUT_OF_MASTER
+    path line and the entry point's no-mmap switch (``_fits_nommap.conf.use_memmap = False``, R-GREGG-20261117-NO-MMAP-OF-
+    LUSTRE-FILES-READ-OR-WRITE; tests/test_no_mmap.py check 3 requires it in every entry point) - the switch only where the
+    BRANCH has it: a branch without a switch that production has is drift."""
     import difflib
+    bad = []
+    for ln in difflib.unified_diff(prod_lines, branch_lines, lineterm='', n=0):
+        if ln.startswith(('---', '+++', '@@')):
+            continue
+        body = ln[1:].strip()
+        if body.startswith(('import ', 'from ', 'NAMED_OUT_OF_MASTER =')):
+            continue
+        if ln.startswith('+') and body.startswith('_fits_nommap.conf.use_memmap = False'):
+            continue
+        bad.append(ln[:160])
+    return bad
+
+
+def membership_drift():
+    """S-G6: drift_lines of the branch membership module against production; [] when only the permitted lines differ (and the
+    named table files are identical)."""
     import hashlib
     from exopipe.phase3.lib.masters import membership as BM
     prod = K.cfg().status_conformance.PRODUCTION_MEMBERSHIP
     if not os.path.exists(prod):
         return [f'production module {prod} not found']
-    a = open(prod).read().splitlines()
-    b = open(BM.__file__).read().splitlines()
-    bad = []
-    for ln in difflib.unified_diff(a, b, lineterm='', n=0):
-        if ln.startswith(('---', '+++', '@@')):
-            continue
-        body = ln[1:].strip()
-        if body.startswith(('import ', 'from ', 'NAMED_OUT_OF_MASTER =', '_fits_nommap.conf.use_memmap = False')):
-            continue
-        bad.append(ln[:160])
+    bad = drift_lines(open(prod).read().splitlines(), open(BM.__file__).read().splitlines())
     pa = os.path.join(os.path.dirname(prod), 'named_out_of_master.csv')
     pb = BM.NAMED_OUT_OF_MASTER
     if os.path.exists(pa) and os.path.exists(pb):

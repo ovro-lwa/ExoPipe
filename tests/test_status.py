@@ -1459,6 +1459,19 @@ def test_served_row():
           served_row(reg, 'V', '10-sec') == ('10-sec-comb', reg['V']['10-sec-comb'])
           and served_row(reg, 'V', '1-min') == ('1-min', reg['V']['1-min'])
           and served_row(reg, 'V', '1-hour') == ('1-hour', None) and served_row(reg, 'I', '10-sec') == ('10-sec', None))
+    from exopipe.phase3.lib.serve import hub
+    check("served row: the hub's page is the same row (one rule, lib/serve/hub.tier_key)",
+          all(hub.tier_page(reg, 'V', k) is served_row(reg, 'V', k)[1] for k in ('10-sec', '1-min', '1-hour')))
+
+
+def test_drift_lines():
+    """S-G6: the no-mmap switch is a permitted difference only where the branch has it."""
+    from exopipe.phase3.lib.status.steps_hub import drift_lines
+    sw = '_fits_nommap.conf.use_memmap = False   # never memory-map a Lustre file'
+    prod, branch = ['import os', 'X = 1'], ['import os', 'import astropy.io.fits as _fits_nommap', sw, 'X = 1']
+    check('S-G6: the branch adding the switch (and its import) is not drift', drift_lines(prod, branch) == [])
+    check('S-G6: the branch lacking a switch that production has is drift', drift_lines(branch, prod) == ['-' + sw])
+    check('S-G6: any other line differing is drift', drift_lines(prod, ['import os', 'X = 2']) == ['-X = 1', '+X = 2'])
 
 
 def main():
@@ -1470,7 +1483,7 @@ def main():
             print(f'--- {t.__name__}')
             t()
             print(f'    ({time.time() - t0:.1f} s)')
-    for t in (test_served_row, test_real_products, test_real_dry_runs, test_real_coverage_records, test_real_summary_parity,
+    for t in (test_served_row, test_drift_lines, test_real_products, test_real_dry_runs, test_real_coverage_records, test_real_summary_parity,
               test_every_content_test_has_a_negative):
         t0 = time.time()
         print(f'--- {t.__name__}')
