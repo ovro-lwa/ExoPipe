@@ -572,18 +572,20 @@ def _snap_run(root):
     _w(os.path.join(R, 'forced_fits.csv'), fcols, [fa, fb])
     _w(os.path.join(R, 'master_catalog.csv'), ['cand_id', 'size_beams', 'axis_ratio'],
        [dict(cand_id=fa['cand_id'], size_beams='1.05', axis_ratio='1.10'), dict(cand_id=fb['cand_id'])])
+    # measure, don't move (production since 2026-10-14): ra_tied / dec_tied stay empty; each row its own systematic
     tc = ['cand_id', 'tie_status', 'ra_tied', 'dec_tied', 'tie_dx_arcmin', 'tie_dy_arcmin', 'used_dx_arcmin',
-          'used_dy_arcmin']
+          'used_dy_arcmin', 'event_sys_arcmin', 'tie_sys_arcmin']
     _w(os.path.join(R, 'forced_ties.csv'), tc,
-       [dict(cand_id=fa['cand_id'], tie_status='tied', ra_tied='10.02000', dec_tied='20.02000', tie_dx_arcmin='+0.50',
-             tie_dy_arcmin='-0.20', used_dx_arcmin='+0.50', used_dy_arcmin='-0.20'),
-        dict(cand_id=fb['cand_id'], tie_status='untied-few')])
+       [dict(cand_id=fa['cand_id'], tie_status='tied', ra_tied='', dec_tied='', tie_dx_arcmin='+0.50',
+             tie_dy_arcmin='-0.20', used_dx_arcmin='+0.50', used_dy_arcmin='-0.20', event_sys_arcmin='3.063',
+             tie_sys_arcmin='3.0631'),
+        dict(cand_id=fb['cand_id'], tie_status='untied-few', event_sys_arcmin='7.667')])
     _w(os.path.join(R, 'source_catalogs', 'localizations.csv'), ['identity_id', 'n_det', 'ra', 'dec'],
-       [dict(identity_id='StarA', n_det='1', ra='10.02', dec='20.02')])
+       [dict(identity_id='StarA', n_det='1', ra='10.01', dec='20.01')])
     _w(os.path.join(R, 'forced_assoc_identity.csv'), ['identity_id', 'label', 'ra', 'dec'],
-       [dict(identity_id='StarA', label='target', ra='10.02000', dec='20.02000'),
+       [dict(identity_id='StarA', label='target', ra='10.01000', dec='20.01000'),
         dict(identity_id='StarB', label='no radio position')])
-    sa = dict(eva, ra='10.02000', dec='20.02000')
+    sa = dict(eva, ra='10.01000', dec='20.01000')
     sb = dict(evb, ra='50.02000', dec='-10.02000')
     _w(os.path.join(R, 'candidates', 'V', 'rank0000_StarA', 'detections.csv'), dcols, [sa])
     _w(os.path.join(R, 'candidates', 'V', 'rank0001_StarB', 'detections.csv'), dcols, [sb])
@@ -641,11 +643,16 @@ def test_snapshot_tests():
             ('forced_fits', os.path.join(R, 'master_catalog.csv'), '1.05,1.10', ',', 'ok fit without size/axis'),
             ('forced_ties', os.path.join(R, 'forced_ties.csv'), '+0.50,-0.20,+0.50', '+0.50,-0.20,+0.60',
              'reconstruction differs by 0.1 arcmin'),
+            ('forced_ties', os.path.join(R, 'forced_ties.csv'), ',tied,,,', ',tied,10.02000,20.02000,',
+             'a tied position: the tie moved the event'),
+            ('forced_ties', os.path.join(R, 'forced_ties.csv'), ',3.063,3.0631', ',3.063,3.5',
+             'a tied row whose systematic is not its per-case tie'),
+            ('forced_ties', os.path.join(R, 'forced_ties.csv'), ',7.667,', ',,', 'a row without its own systematic'),
             ('forced_localization', os.path.join(R, 'source_catalogs', 'localizations.csv'), 'StarA,1,', 'StarA,2,',
              'n_det differs'),
             ('forced_assoc', os.path.join(R, 'forced_assoc_identity.csv'), 'StarA,target', 'StarA,maybe', 'label undeclared'),
             ('forced_event_panels', os.path.join(R, 'candidates', 'V', 'rank0000_StarA', 'detections.csv'),
-             '10.02000,20.02000', '10.00000,20.00000', 'served position = the target position, not the radio position')]
+             '10.01000,20.01000', '10.00000,20.00000', 'served position = the target position, not the radio position')]
     for cls, p, old, new, what in muts:
         txt = _mut(p, old, new)
         path = dict((c, q) for c, q, _ in cases)[cls]

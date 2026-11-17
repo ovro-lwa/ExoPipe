@@ -82,10 +82,10 @@ def has_position(fr):
 
 
 def radio_of(fr, tr):
+    """The event's radio position: its fitted position. The tie never moves it (measure, don't move: Gregg 2026-10-08,
+    installed in production 2026-10-14; snapshot_ties refuses a tied position), so tr is not read."""
     if not has_position(fr):
         return None
-    if tr and tr.get('tie_status') == 'tied' and tr.get('ra_tied'):
-        return float(tr['ra_tied']), float(tr['dec_tied'])
     return float(fr['fit_ra_deg']), float(fr['fit_dec_deg'])
 
 
@@ -260,9 +260,11 @@ def snapshot_fits(path, **ctx):
 
 @content_test('forced_ties')
 def snapshot_ties(path, **ctx):
-    """One tie row per positioned fit record (cmd_tie: dets = has_position); a tied row has a finite tied position; where
-    both the applied correction (tie_dx/dy) and the used-reference reconstruction (used_dx/dy) are recorded they agree
-    within TIE_RECON_TOL_ARCMIN (add_used_refs, :996-997)."""
+    """One tie row per positioned fit record (cmd_tie: dets = has_position). Measure, don't move (Gregg 2026-10-08,
+    production since 2026-10-14): no row carries a tied position (ra_tied / dec_tied empty); every row has its own finite
+    systematic (event_sys_arcmin); a tied row's is its per-case tie (tie_sys_arcmin, equal to 0.0005 arcmin: event_sys is
+    written to 3 decimals), and where both the measured offset (tie_dx/dy) and the used-reference reconstruction (used_dx/dy)
+    are recorded they agree within TIE_RECON_TOL_ARCMIN."""
     s = _cfg().forced_snapshot
     run = os.path.dirname(os.path.abspath(path))
     ties = _rows(path)
@@ -273,16 +275,22 @@ def snapshot_ties(path, **ctx):
         bad.append('tie rows %d (%d distinct) vs positioned fits %d' % (len(have), len(set(have)), len(want)))
     n_tied = 0
     for r in ties:
+        if r.get('ra_tied') or r.get('dec_tied'):
+            bad.append('%s: a tied position %s %s (the tie measures, it never moves a position)'
+                       % (r['cand_id'], r.get('ra_tied'), r.get('dec_tied')))
+        es = _num(r.get('event_sys_arcmin'))
+        if es is None:
+            bad.append('%s: no systematic of its own (event_sys_arcmin %r)' % (r['cand_id'], r.get('event_sys_arcmin')))
         if r.get('tie_status') == 'tied':
             n_tied += 1
-            if _num(r.get('ra_tied')) is None or _num(r.get('dec_tied')) is None:
-                bad.append('%s: tied without a tied position' % r['cand_id'])
+            ts = _num(r.get('tie_sys_arcmin'))
+            if ts is None or es is None or abs(es - ts) > 5e-4:
+                bad.append('%s: tied, but its systematic %r is not its per-case tie %r'
+                           % (r['cand_id'], r.get('event_sys_arcmin'), r.get('tie_sys_arcmin')))
             for a, b in (('used_dx_arcmin', 'tie_dx_arcmin'), ('used_dy_arcmin', 'tie_dy_arcmin')):
                 x, y = _num(r.get(a)), _num(r.get(b))
                 if x is not None and y is not None and abs(x - y) > s.TIE_RECON_TOL_ARCMIN:
                     bad.append('%s: %s %s vs %s %s' % (r['cand_id'], a, x, b, y))
-        elif r.get('ra_tied'):
-            bad.append('%s: %s with a tied position' % (r['cand_id'], r.get('tie_status')))
     if bad:
         return False, len(bad), _detail(bad)
     return True, len(ties), '%d tie rows, %d tied' % (len(ties), n_tied)
