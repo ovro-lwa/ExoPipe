@@ -8,7 +8,8 @@ Every step is independently runnable by a person or by Claude, documents its inp
 --help, refuses (exit 2) instead of warning, has --dry-run, and writes a machine-readable record of what it did under
 <out>/_records/<step>/. Exit codes: 0 done (every content test passed), 1 error, 2 refused by a gate, 3 nothing to do.
 While a step runs, SIGTERM interrupts it as Ctrl-C does (Terminated, a KeyboardInterrupt: every rollback runs, the unit is
-recorded 'interrupted'); a second SIGTERM terminates at once.
+recorded 'interrupted'); a second SIGTERM terminates at once. A process forked from the step (a pool worker) takes SIGTERM's
+default action.
 """
 import contextlib
 import os
@@ -251,16 +252,29 @@ def _sigterm_interrupts(name):
     """While the step ``name`` runs: SIGTERM raises Terminated in the main thread, once - the first SIGTERM restores the
     default action, so a second one terminates at once (as before). Installed only over the default disposition, in the main
     thread, and never for `exopipe3 run` (its supervisor and worker loops keep the default; each step they launch is a
-    process of its own and gets it); the previous disposition is restored when the step returns."""
+    process of its own and gets it); the previous disposition is restored when the step returns.
+
+    Only the step's own process (the one that installed the handler) is interrupted. A process forked from it inherits the
+    handler - every pool worker of the step and of the in-place modules it calls, which v2 cannot give an initializer - and
+    Pool.terminate() (every `with Pool(...)` exit) ends its workers with SIGTERM: such a process takes the default action and
+    ends at once. Before 2026-11-17 the inherited handler raised Terminated in the child: the photometry parity run P3 wrote a
+    second run record from a forked worker that had unwound into the step's own code, and a reproduction (fork pools with
+    maxtasksperchild=1) raised Terminated in a child before multiprocessing's own try block, whose pool then signalled the
+    whole process group (os.kill(0, ...)), interrupted the step process itself and left it hanging at exit
+    (tests/test_cli_sigterm_children.py)."""
     import signal
     import threading
     if name == 'run' or threading.current_thread() is not threading.main_thread() \
             or signal.getsignal(signal.SIGTERM) != signal.SIG_DFL:
         yield
         return
+    owner = os.getpid()
 
     def _on_sigterm(signum, frame):
         signal.signal(signal.SIGTERM, signal.SIG_DFL)
+        if os.getpid() != owner:                    # a forked child: SIGTERM's default action, at once (docstring)
+            os.kill(os.getpid(), signal.SIGTERM)
+            return
         print(f'SIGTERM: exopipe3 {name} interrupted as for Ctrl-C (a placement in progress is undone); a second SIGTERM '
               f'terminates at once', file=sys.stderr, flush=True)
         raise Terminated('SIGTERM')

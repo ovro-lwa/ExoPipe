@@ -42,6 +42,8 @@ jobs:
         run: python tests/test_r1_epoch_header_gate.py
       - name: no memory maps (R-GREGG-20261117-NO-MMAP-OF-LUSTRE-FILES-READ-OR-WRITE)
         run: python tests/test_no_mmap.py
+      - name: SIGTERM interrupts only the step's own process (forked pool workers take the default action)
+        run: python tests/test_cli_sigterm_children.py
       - name: grammar sync with production
         run: python tests/test_products_grammar_sync.py
       - name: search engine speed-ups change no product
