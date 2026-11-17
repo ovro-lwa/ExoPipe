@@ -156,6 +156,12 @@ class forced_snapshot(_Section):
     VERIFY_SNR_SAMPLE = (5, 1)                   # 5 events, random seed 1 (:1363)
     VERIFY_SNR_TOL = 0.01                        # |S/N| stage 1 vs evaluation (:1365)
     SKIP_FIELDS = ('cell', 'sample', 'target', 'band', 'stokes', 'tier', 'ts', 'snr', 'screen', 'skip_reason')   # :574
+    # the in-place build's list of the selected measurements it LEFT OUT because data_decisions.csv excludes their cell-band
+    # (snapshot_forced_panels.cmd_build, exopipe_ops 122e4d7 2026-11-12, after the forced pages were found serving events of
+    # a night excluded after their build): one '# left out: ...' line, then these columns (production's own list, kept
+    # separate from SKIP_FIELDS on purpose); written even when none
+    EXCLUDED_FILE = 'excluded_events.csv'
+    EXCLUDED_FIELDS = ('cell', 'sample', 'target', 'band', 'stokes', 'tier', 'ts', 'snr')
     FLOW_ENV = {'P3_SNAP_FLOW': '1'}             # the module's own setdefault (:34), passed explicitly (legacy.run clears P3_*)
     # success lines of the subcommands (the launcher's completion signals, pages_run:31-64)
     OK_LINES = {'build': 'FORCED-BUILD identities', 'fit': 'FORCED-FIT events', 'tie': 'FORCED-TIE ',
@@ -166,7 +172,8 @@ class forced_snapshot(_Section):
     LOC_COPY_BACK = ('source_catalogs', 'source_catalogs_{S}_loc', 'localization_figs', 'coadd_root.txt')
     # Exclusions downstream (Gregg 2026-10-14, the refactor chat's recommendation; the snapshot chat agreed): a selected event
     # on an excluded (LST, band, night) - core.exclusions, read now; a wideband excluded with any member subband - refuses the
-    # build before any in-place call: the evaluation predates the exclusion and is redone first. 'build' = production (no gate)
+    # build before any in-place call: the evaluation predates the exclusion and is redone first. 'build' = production: no gate
+    # before the call; the in-place build itself leaves such measurements out and lists them in EXCLUDED_FILE (since 122e4d7)
     EXCLUDED_EVENTS = 'refuse'
     PROTECTED_KEYS = ('MASTER_CATS', 'FROZEN_MASTERS')
     RULED = {'REFUSE_FULL': 'INCIDENT-SNAP-FULL-CUTOUTS-EQUAL-RED-62-CELLS', 'CADENCES': 'SNAP-FORCED-ONE-TIER-PER-PAGE',
