@@ -639,6 +639,41 @@ def test_recorded_reruns():
     bad = RW.diff(old, new, out=os.path.join(root, 'o_bad'), remade_roots=[], records_roots=[recs])
     assert bad['status'].startswith('FAIL') and 'which has no MANIFEST.csv' in bad['status'] \
         and 'could not be read' in bad['status'], bad['status'][:500]
+    # FAILs only for what can bear on the window: an unreadable record written before OLD's record, and a named quarantine
+    # without its MANIFEST.csv stamped outside the window, are not FAILs
+    arch = os.path.join(recs, '_records', 'archive')
+    with open(os.path.join(arch, f'supersede_{cell}.json'), 'w') as f:
+        json.dump(dict(meta=dict(cell=cell, quar_root=qroot, shipped=dict(quarantine=os.path.join(qroot, cell, stamp(T0 - 3600))))), f)
+    os.utime(os.path.join(arch, 'supersede_08h_2025-10-30.json'), (T0 - 10, T0 - 10))
+    old_rec = RW.diff(old, new, out=os.path.join(root, 'o_oldrec'), remade_roots=[], records_roots=[recs])
+    assert old_rec['status'] == 'PASS' and old_rec['counts'] == base['counts'], old_rec['status'][:500]
+    # a record of the wrong shape is a FAIL, not a crash
+    for i, meta in enumerate(('x', dict(cell=cell, quar_root=qroot, shipped=['q']), dict(cell=cell, quar_root=[qroot]))):
+        with open(os.path.join(arch, 'supersede_09h_2025-10-31.json'), 'w') as f:
+            json.dump(dict(meta=meta), f)
+        sh = RW.diff(old, new, out=os.path.join(root, f'o_shape{i}'), remade_roots=[], records_roots=[recs])
+        assert sh['status'].startswith('FAIL') and 'supersede_09h_2025-10-31.json' in sh['status'] \
+            and 'could not be read' in sh['status'], (meta, sh['status'][:500])
+    os.remove(os.path.join(arch, 'supersede_09h_2025-10-31.json'))
+    # a records root given as text is one root; production's roots list as it is (a root given twice counts its manifest twice)
+    # and a record's manifest already among them is not added again
+    one = RW.diff(old, new, out=os.path.join(root, 'o_text'), remade_roots=[], records_roots=recs)
+    assert one['status'] == 'PASS' and one['remade_manifests'] == 1, one['status'][:300]
+    dup = RW.diff(old, new, out=os.path.join(root, 'o_dup'), remade_roots=[qroot, qroot], records_roots=[recs])
+    assert dup['status'] == 'PASS' and dup['remade_manifests'] == 2 and dup['counts'] == base['counts'], dup
+    # config: () reads no records; None reads the archive step's records root
+    from exopipe.phase3.config import CFG
+    k = 'catalog_snapshot.RESTORE_WAVE_RECORDS_ROOTS'
+    try:
+        CFG.set(k, ())
+        emp = RW.diff(old, new, out=os.path.join(root, 'o_empty'), remade_roots=[])
+        assert emp['status'].startswith('FAIL') and emp['counts'].get('reprocessed', 0) == 0, emp['status'][:300]
+        CFG.set(k, None)
+        CFG.set('archive.RECORDS_ROOT', recs)
+        dflt = RW.diff(old, new, out=os.path.join(root, 'o_default'), remade_roots=[])
+        assert dflt['status'] == 'PASS' and dflt['counts'] == base['counts'], dflt['status'][:300]
+    finally:
+        CFG.reset()
 
 
 TESTS = [test_production_pin, test_parity, test_content, test_recorded_reruns, test_stage, test_view_gate, test_real]

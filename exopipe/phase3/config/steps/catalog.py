@@ -695,7 +695,7 @@ class catalog_snapshot(_Section):
     RESTORE_WAVE_RECORDS_ROOTS = None                     # where the wave test reads v2's RECORDED RE-RUNS: the run records of
                                                           # `exopipe3 archive supersede` under <root>/_records/archive/ (each names
                                                           # its quarantine root, cell and quarantine directory); None = the archive
-                                                          # step's default records root, archive.RECORDS_ROOT [step]
+                                                          # step's default records root, archive.RECORDS_ROOT; () = none read [step]
     RESTORED_BY = 'restore-only 3-D gate 20261104'        # the tag; RESTORED_BY
     RESTORE_TOL_BEAMS = 1e-6                              # beams a restore radius may exceed the installed one (else the chain refuses); RESTORE_TOL_BEAMS
     # ---- run content test (snapshot_rechain_content_test.py R1-R7 operating points)

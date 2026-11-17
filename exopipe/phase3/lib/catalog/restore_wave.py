@@ -170,48 +170,75 @@ def totals(runs):
     return (1 if bad else 0), line
 
 
-def recorded_quarantines(records_roots, fails):
+def _stamp_time(qd):
+    """the UTC time of a quarantine directory named <YYYYmmddTHHMMSSZ>, else None"""
+    try:
+        return calendar.timegm(time.strptime(os.path.basename(qd.rstrip("/")), "%Y%m%dT%H%M%SZ"))
+    except ValueError:
+        return None
+
+
+def recorded_quarantines(records_roots, fails, t_old, t_new):
     """MANIFEST.csv files of the re-runs v2 recorded: every run record of `exopipe3 archive supersede`
     (<root>/_records/archive/supersede_*.json; lib/archive/snapshot.run_supersede) names its quarantine root and cell (meta
     quar_root, cell) - every <quar_root>/<cell>/<UTC stamp>/MANIFEST.csv counts, whatever the unit's status (a refused audit, or
     a ship script stopped before its SHIPPED line, may already have moved tables) - and, when the script ran to its SHIPPED line,
-    its quarantine directory (meta shipped.quarantine), which must hold a MANIFEST.csv. An unreadable record or a named
-    quarantine directory without its MANIFEST.csv is a FAIL (appended to ``fails``)."""
-    out = set()
+    its quarantine directory (meta shipped.quarantine), which must hold a MANIFEST.csv. A record is its unit's LATEST run (a later
+    plan or apply of the cell rewrites it): a re-run under a --quar-root that a later run of the same cell did not use is found
+    only through RESTORE_WAVE_REMADE_ROOTS (else its rows FAIL as absent - never a silent pass). FAILs (appended to ``fails``)
+    are limited to what can bear on a re-run between the two records: a record that cannot be read (or is not the record's shape)
+    written after OLD's (mtime > t_old), and a named quarantine directory without its MANIFEST.csv whose stamp lies between the
+    two records or cannot be read. Each MANIFEST.csv once (by real path)."""
+    out = {}
     for root in records_roots:
         for p in sorted(glob.glob(os.path.join(root, "_records", "archive", "supersede_*.json"))):
             try:
                 with open(p) as f:
                     meta = json.load(f).get("meta") or {}
+                shipped = meta.get("shipped") or {}
+                if not (isinstance(shipped, dict)
+                        and all(isinstance(v, str) for v in (meta.get("quar_root") or "", meta.get("cell") or "",
+                                                             shipped.get("quarantine") or ""))):
+                    raise ValueError("meta.shipped not an object, or quar_root / cell / shipped.quarantine not text")
             except (OSError, ValueError, AttributeError) as e:
-                fails.append("a supersede run record could not be read: %s (%s)" % (p, e))
+                try:
+                    later = os.path.getmtime(p) > t_old
+                except OSError:
+                    later = True
+                if later:
+                    fails.append("a supersede run record could not be read: %s (%s)" % (p, e))
                 continue
+            found = []
             if meta.get("quar_root") and meta.get("cell"):
-                out.update(glob.glob(os.path.join(meta["quar_root"], meta["cell"], "*", "MANIFEST.csv")))
-            q = (meta.get("shipped") or {}).get("quarantine")
+                found += glob.glob(os.path.join(meta["quar_root"], meta["cell"], "*", "MANIFEST.csv"))
+            q = shipped.get("quarantine")
             if q:
                 if os.path.isfile(os.path.join(q, "MANIFEST.csv")):
-                    out.add(os.path.join(q, "MANIFEST.csv"))
+                    found.append(os.path.join(q, "MANIFEST.csv"))
                 else:
-                    fails.append("the supersede run record %s names the quarantine %s, which has no MANIFEST.csv" % (p, q))
-    return sorted(out)
+                    t_q = _stamp_time(q)
+                    if t_q is None or t_old < t_q < t_new:
+                        fails.append("the supersede run record %s names the quarantine %s, which has no MANIFEST.csv" % (p, q))
+            for m in found:
+                out.setdefault(os.path.realpath(m), m)
+    return sorted(out.values())
 
 
-def remade_tables(old, new, roots, fails, manifests=()):
+def remade_tables(old, new, roots, fails, records_roots=()):
     """(cell, candidate table name) -> the quarantine directory of the recorded re-run that replaced it after OLD's record was
     written and before NEW's (a stamp strictly between the two records' mtimes), and the number of such MANIFEST.csv files - those
-    under ``roots`` (<root>/<cell>/<UTC stamp>/) and the ``manifests`` given (recorded_quarantines), each counted once; a
-    quarantine directory without a UTC stamp is a FAIL (appended to ``fails``)."""
+    under ``roots`` (<root>/<cell>/<UTC stamp>/; production's list as it is, a file under two roots counted twice) and those of
+    the supersede run records under ``records_roots`` (recorded_quarantines) not already among them; a quarantine directory
+    without a UTC stamp is a FAIL (appended to ``fails``)."""
     remade, n_man = {}, 0
     t_old, t_new = (os.path.getmtime(os.path.join(r, "detection_record.csv.gz")) for r in (old, new))
-    found = {os.path.realpath(p): p for root in roots for p in glob.glob(os.path.join(root, "*", "*", "MANIFEST.csv"))}
-    for p in manifests:
-        found.setdefault(os.path.realpath(p), p)
-    for m in sorted(found.values()):
+    ms = [p for root in roots for p in glob.glob(os.path.join(root, "*", "*", "MANIFEST.csv"))]
+    seen = {os.path.realpath(p) for p in ms}
+    ms += [p for p in recorded_quarantines(records_roots, fails, t_old, t_new) if os.path.realpath(p) not in seen]
+    for m in sorted(ms):
         qd = os.path.dirname(m)
-        try:
-            t_q = calendar.timegm(time.strptime(os.path.basename(qd), "%Y%m%dT%H%M%SZ"))
-        except ValueError:
+        t_q = _stamp_time(qd)
+        if t_q is None:
             fails.append("a re-run quarantine directory without a UTC stamp: %s" % qd)
             continue
         if not t_old < t_q < t_new:
@@ -243,12 +270,16 @@ def diff(old, new, out=None, remade_roots=None, records_roots=None):
     nothing written - production's exit 'REFUSING: ...'."""
     old, new = (a.rstrip("/") for a in (old, new))
     out = (out or new).rstrip("/")
-    if remade_roots is None:
+    if remade_roots is None or records_roots is None:
         from exopipe.phase3.config import CFG
-        remade_roots = CFG.catalog_snapshot.RESTORE_WAVE_REMADE_ROOTS
-    if records_roots is None:
-        from exopipe.phase3.config import CFG
-        records_roots = CFG.catalog_snapshot.RESTORE_WAVE_RECORDS_ROOTS or (CFG.archive.RECORDS_ROOT,)
+        if remade_roots is None:
+            remade_roots = CFG.catalog_snapshot.RESTORE_WAVE_REMADE_ROOTS
+        if records_roots is None:
+            records_roots = CFG.catalog_snapshot.RESTORE_WAVE_RECORDS_ROOTS
+            if records_roots is None:                         # None = the archive step's records root; () = none read
+                records_roots = (CFG.archive.RECORDS_ROOT,)
+    if isinstance(records_roots, str):
+        records_roots = (records_roots,)
     fails = []
     # ---- the previous run's served detections; a FIRST VERSION has none
     prev = {}
@@ -291,7 +322,7 @@ def diff(old, new, out=None, remade_roots=None, records_roots=None):
     except Exception as e:                          # noqa: BLE001 - production's: any failure to read the list is a FAIL
         fails.append("the exclusion list could not be read (%s)" % e)
     # ---- candidate tables replaced by a recorded re-run between the two records
-    remade, n_man = (remade_tables(old, new, remade_roots, fails, recorded_quarantines(records_roots, fails))
+    remade, n_man = (remade_tables(old, new, remade_roots, fails, records_roots)
                      if old != "none" else ({}, 0))
     # ---- the new run: the rows of the previously served, every restored row, every served row's key
     now, restored, gained = {}, {}, collections.Counter()
