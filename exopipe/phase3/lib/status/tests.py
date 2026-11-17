@@ -471,15 +471,15 @@ def _sha1(p):
 
 @content_test('readjudication_list')
 def readjudication_rows(path, ledger=None, ledger_sha1=None, previous=None, **ctx):
-    """Columns; every row an all- or partial-excluded night with an exclude row now; go_no_go text. With the run's context
+    """Columns; every row an all- or partial-excluded night with an exclude row now (any scope tag, as the ledger counts them:
+    _ledger_exclude_counts); go_no_go text. With the run's context
     (the ledger it read and the previous state it compared with): the rows are EXACTLY the excluded nights whose
     (p1_peel, p2) differs from the previous state - none missing, none extra (CLAUDE.md 1.3)."""
     R = K.cfg().status_report
     cols = _cols(path)
     if cols != list(R.READJUDICATION_COLUMNS):
         return False, None, f'columns {cols} != {list(R.READJUDICATION_COLUMNS)}'
-    ex = K.exclusions()
-    excl_nights = {(l, d) for (l, s, d) in ex.rows}
+    excl_nights = set(_ledger_exclude_counts())
     rows = _rows(path)
     for r in rows:
         if r['dd_status'] not in ('all-excluded', 'partial-excluded'):
@@ -897,17 +897,15 @@ def qa_coverage_summary(path, **ctx):
 @content_test('processing_ledger')
 def ledger_rows_consistent(path, **ctx):
     """Columns; one row per (lst, date); p1/p2 'complete' iff the subband (and wideband) counts; dd_excl_subbands = the
-    distinct excluded scopes of the night in core.exclusions now; qa_verdict / qa_basis re-derived by the rule of
-    _build_ledger.derive (:16-32; the script runs at import, so its rule is the oracle here)."""
+    distinct excluded subbands of the night in data_decisions.csv now, every exclude row (_ledger_exclude_counts);
+    qa_verdict / qa_basis re-derived by the rule of _build_ledger.derive (:16-32; the script runs at import, so its rule is
+    the oracle here)."""
     C = K.cfg()
     L = C.status_ledger
     cols = _cols(path)
     if cols != list(L.COLUMNS):
         return False, None, f'columns {cols}'
-    ex = K.exclusions()
-    n_ex = collections.Counter()
-    for (l, s, d) in ex.rows:
-        n_ex[(l, d)] += 1
+    n_ex = _ledger_exclude_counts()
     rows = _rows(path)
     seen = set()
     for r in rows:
@@ -930,6 +928,27 @@ def ledger_rows_consistent(path, **ctx):
         if (qv, qb) != (r['qa_verdict'], r['qa_basis']) and not (qv == 'exclude' and r['qa_verdict'] == 'exclude'):
             return False, k, f"qa_verdict/basis ({r['qa_verdict']}, {r['qa_basis']}) != ({qv}, {qb})"
     return True, len(rows), f'{len(rows)} (LST, night) rows consistent'
+
+
+def _ledger_exclude_counts():
+    """{(lst, date): number of distinct subband values among the night's 'exclude' rows of data_decisions.csv}: the ledger's
+    dd_excl_subbands by _build_ledger.py:8-11 (verdict stripped equal to 'exclude'; grouped on lst and date as written; the
+    subband counted as written, pandas nunique). EVERY exclude row counts, whatever its scope tag: not core.exclusions, whose
+    default read skips [SNAPSHOT-TIERS-ONLY] rows (2026-11-17 status parity: 23h 2025-10-29, partial-excluded in the
+    ledger by one 82 MHz snapshot-tiers-only row, refused a ledger byte-identical to production's). An unreadable file
+    refuses (S-G1, ruling C-09), as core.exclusions does."""
+    import csv
+    from exopipe.phase3.core.record import Refusal
+    path = K.cfg().paths.DATA_DECISIONS
+    subs = collections.defaultdict(set)
+    try:
+        with open(path, newline='', encoding='utf-8') as f:
+            for r in csv.DictReader(f):
+                if (r.get('verdict') or '').strip() == 'exclude':
+                    subs[(r.get('lst') or '', r.get('date') or '')].add(r.get('subband') or '')
+    except (OSError, UnicodeDecodeError, csv.Error) as e:
+        raise Refusal(f'exclusion list {path} unreadable ({e}) - refusing (ruling C-09)')
+    return {k: len(v) for k, v in subs.items()}
 
 
 def _derive(r, dd_status):

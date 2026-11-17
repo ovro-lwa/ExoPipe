@@ -297,7 +297,10 @@ def served_row(reg, S, k):
 
 
 def served_runs(tier):
-    """{run name: [registry rows]} served for the tier according to the hub registry (read only, B-56)."""
+    """{run name: [registry rows]} served for the tier according to the hub registry (read only, B-56). The registry is an
+    input: node-local to another host it refuses with the host named (S-G5), absent it refuses (need_inputs) - before
+    2026-11-17 an uncaught FileNotFoundError on a host without it (status parity on lwacalim00)."""
+    need_inputs([expand(cfg().status.REGISTRY_FILE)], f'served runs of tier {tier} (hub registry)')
     _, reg = registry()
     keys = cfg().status.REGISTRY_KEYS.get(tier, ())
     out = {}
