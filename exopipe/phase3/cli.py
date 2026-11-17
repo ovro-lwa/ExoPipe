@@ -382,6 +382,8 @@ def main(argv=None):
     record.mark_injected(run)                  # an injected run's start record, before the step writes anything
     with _sigterm_interrupts(name):            # SIGTERM unwinds the step as Ctrl-C does (Terminated)
         try:
+            if getattr(mod, 'WRITES', True) and getattr(mod, 'PRODUCTS', True):
+                record.check_code_identity()   # B-30 GITTAG_FALLBACK: before the step's run() (core/record.py)
             rc = mod.run(args, run)
         except record.Refusal as e:
             print(f'REFUSED: {e}', file=sys.stderr)

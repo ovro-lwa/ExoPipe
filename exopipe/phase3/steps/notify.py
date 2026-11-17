@@ -39,6 +39,7 @@ TIERS = ()
 SELECTORS = ('epochs',)
 CONFIG = ('notify', 'paths', 'runner')
 WRITES = True
+PRODUCTS = False   # writes no data product (no GITTAG to stamp): cli.main skips the code-identity check
 
 
 def add_arguments(p):

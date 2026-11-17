@@ -292,6 +292,66 @@ def git_commit(path):
         return 'unknown'
 
 
+def _tree_problem(root):
+    """Why the code tree ``root`` names no commit of its own ('' = it does): `git -C root rev-parse --show-toplevel --short
+    HEAD` (phase2_config._resolve_gittag's 10 s timeout) must succeed, give a hex commit, and give ``root`` itself as the top
+    of the checkout - a tree inside another repository (an export or a copy under exopipe_ops) would get that repository's
+    commit, which does not identify the code."""
+    import re
+    import subprocess
+    try:
+        r = subprocess.run(['git', '-C', root, 'rev-parse', '--show-toplevel', '--short', 'HEAD'], capture_output=True,
+                           text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError) as e:
+        return f'git rev-parse failed ({e})'
+    if r.returncode != 0:
+        return f'git rev-parse failed ({(r.stderr.strip().splitlines() or ["exit %d" % r.returncode])[0][:200]})'
+    lines = r.stdout.strip().splitlines()
+    if len(lines) != 2 or not re.match(r'^[0-9a-f]{7,40}$', lines[1].strip()):
+        return f'git rev-parse gave no commit ({r.stdout.strip()[:200]!r})'
+    if os.path.realpath(lines[0].strip()) != os.path.realpath(root):
+        return f'not a checkout of its own: inside the git repository {lines[0].strip()}'
+    return ''
+
+
+def code_identity_problems():
+    """The code trees a step runs whose commit cannot be read ([] = every one names its commit): this package - the GITTAG
+    this process stamps (phase2_config.PIPELINE_GITTAG; its static fallback 'clv15' when `git rev-parse` fails) and its
+    tree's own checkout - and each site LEGACY_CODE_ROOTS tree that exists (production modules run in place stamp GITTAG
+    from their own tree). Causes: not a git checkout (an export, or a copy inside another repository), or git refuses the
+    tree for this user - 'detected dubious ownership' when user pipeline runs a tree owned by gh (git >= 2.35.2): a
+    safe.directory entry in that user's git config, or the tree owned by that user."""
+    import re
+    from exopipe.common import phase2_config
+    from exopipe.phase3.config import CFG
+    out = []
+    g = str(phase2_config.PIPELINE_GITTAG)
+    pkg = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(phase2_config.__file__))))
+    why = _tree_problem(pkg)
+    if why or not re.match(r'^[0-9a-f]{7,40}$', g):
+        out.append(f'{pkg}: GITTAG would be {g!r}' + (f'; {why}' if why else ''))
+    for root in CFG.site.LEGACY_CODE_ROOTS:
+        if os.path.isdir(root):
+            why = _tree_problem(root)
+            if why:
+                out.append(f'{root}: {why}')
+    return out
+
+
+def check_code_identity():
+    """B-30 site GITTAG_FALLBACK, at step start: cli.main calls it after the run record opens and before the step's run()
+    - no unit started, no product written; the run summary records the refusal. The step refuses (under 'fallback',
+    production's behavior, it is counted once) when code_identity_problems() is not empty. Once per process because the
+    code identity is fixed at import; a check at each header write would refuse after the product's pixels were on disk.
+    Not covered: a child process (core.legacy.run, a spawned worker) resolves GITTAG again through production's
+    phase2_config, whose 10 s timeout still falls back to 'clv15' silently on a transient stall (plan/CUTOVER_READINESS.md)."""
+    bad = code_identity_problems()
+    if bad:
+        from exopipe.phase3.core import fallback
+        fallback.site('fallbacks.GITTAG_FALLBACK', 'code tree(s) whose commit cannot be read, so products would carry no '
+                      'commit: ' + '; '.join(bad))
+
+
 def unruled_overrides(rec):
     """The overrides of RULED keys in a run record that carry no ledger ruling (allowed only into a non-production
     --out). install and serve refuse a product whose record lists any (DESIGN 11.4)."""

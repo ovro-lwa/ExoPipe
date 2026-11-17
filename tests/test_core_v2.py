@@ -1639,6 +1639,57 @@ def test_item3_child_code_fingerprint_per_process():
         assert not stray, f'stray fingerprint files: {sorted(stray)}'
 
 
+def test_item7_gittag_fallback_site():
+    """B-30 (a) (plan/WAVE2_RULINGS.md 2.6, GITTAG 'clv15' fallback refuses): core/record.check_code_identity at step start -
+    a code tree with no commit of its own (this package's GITTAG not a commit; a site LEGACY_CODE_ROOTS tree that git cannot
+    read: not a checkout, a copy inside another repository, or 'dubious ownership' for another user) refuses, counted once
+    under 'fallback'; a legacy root that does not exist is skipped; every commit readable reaches no site. End to end: a
+    step run where git cannot read any tree (GIT_DIR pointing nowhere) refuses before its run(); notify and status (no
+    data product) are not checked."""
+    import subprocess
+    from unittest import mock
+    from exopipe.common import phase2_config
+    from exopipe.phase3.core import fallback, record
+    from exopipe.phase3.steps import notify, status
+    k = 'fallbacks.GITTAG_FALLBACK'
+    with cfg_restored() as CFG, Scratch('gittag') as d:
+        assert record.code_identity_problems() == [], record.code_identity_problems()
+        m = fallback.mark()
+        record.check_code_identity()
+        assert fallback.since(m) == ([], {})
+        plain = os.path.join(d, 'not_a_checkout')
+        outer = os.path.join(d, 'outer_repo')
+        inner = os.path.join(outer, 'inner')
+        os.makedirs(plain)
+        os.makedirs(inner)
+        subprocess.run(['git', 'init', '-q', outer], check=True)
+        subprocess.run(['git', '-C', outer, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty',
+                        '-m', 't'], check=True)
+        assert record._tree_problem(outer) == '', record._tree_problem(outer)
+        with mock.patch.object(phase2_config, 'PIPELINE_GITTAG', 'clv15'), \
+                mock.patch.object(CFG.site, 'LEGACY_CODE_ROOTS', [plain, os.path.join(d, 'absent'), inner]):
+            bad = record.code_identity_problems()
+            assert len(bad) == 3 and "GITTAG would be 'clv15'" in bad[0] and plain in bad[1] \
+                and 'git rev-parse failed' in bad[1] and bad[2] == f'{inner}: not a checkout of its own: inside the git ' \
+                f'repository {os.path.realpath(outer)}', bad
+            assert fallback.policy(k) == 'refuse' and CFG.ruled(k), 'the ruled default is refuse, with its ruling'
+            e = raises(fallback.FallbackRefused, record.check_code_identity)
+            assert k in str(e) and plain in str(e) and inner in str(e), str(e)
+            CFG.authorize([], out=d)
+            CFG.set(k, 'fallback')
+            m = fallback.mark()
+            record.check_code_identity()
+            assert fallback.since(m) == ([], {k: 1}), fallback.since(m)
+        out = os.path.join(d, 'out')
+        r = cli('pages', '--tier', 'deep', '--out', out, '--dry-run', '--cores', 'none',
+                env={'GIT_DIR': os.path.join(d, 'no_git_here')})
+        assert r.returncode == 2 and 'GITTAG_FALLBACK' in r.stderr and 'REFUSED' in r.stderr, (r.returncode, r.stderr[-800:])
+        src = open(os.path.join(REPO, 'exopipe', 'phase3', 'cli.py')).read()
+        assert src.index("getattr(mod, 'PRODUCTS', True):\n                record.check_code_identity()") \
+            < src.index('rc = mod.run(args, run)')
+        assert notify.PRODUCTS is False and status.PRODUCTS is False
+
+
 def test_item7_parity_file_keys():
     """The production parity file (parity/production_20261013.cfg): every line names a config key; outside section fallbacks
     (where a count-only site's ruled default IS production's 'fallback') each line differs from the config default - a line
