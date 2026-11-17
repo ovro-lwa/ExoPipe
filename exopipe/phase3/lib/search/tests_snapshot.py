@@ -256,7 +256,7 @@ def grid(path, **ctx):
     t = _tag(path)
     if not t or t['kind'] != 'model':
         return False, None, f'not a model_<band>_<S>_<mode>.fits name: {os.path.basename(path)}'
-    with fits.open(path, memmap=True) as h:
+    with fits.open(path, memmap=False) as h:
         d = np.squeeze(h[0].data)
         w = WCS(h[0].header).celestial
         frac = float(np.isfinite(d).mean()) if d is not None and d.size else 0.0

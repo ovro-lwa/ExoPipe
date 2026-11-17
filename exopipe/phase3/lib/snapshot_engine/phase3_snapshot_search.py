@@ -1412,7 +1412,7 @@ def load_cube_from_flowcube(lst, date, subband, stokes):
     holding two Phase-1 runs is restricted to the search's own frames (flowcube_frame_index)."""
     p = os.path.join(CUBE_ROOT, "%s_%s" % (lst, date), "%s_%s_%s_%s_flowcube.fits" % (lst, date, subband, stokes))
     t0 = time.time()
-    with fits.open(p, memmap=True) as h:
+    with fits.open(p, memmap=False) as h:
         tab = h["FRAME_TABLE"].data
         tss = [str(x) for x in tab["ts"]]; hdrs = [fits.Header.fromstring(str(x), sep="\n") for x in tab["header"]]
         idx = flowcube_frame_index(lst, date, subband, stokes, tss, hdrs)

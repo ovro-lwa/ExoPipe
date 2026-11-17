@@ -1044,7 +1044,7 @@ def _fit_frame(job):
     from exopipe.phase3.core import fitting as F
     path, rows, tier, lon = job
     out = []
-    with fits.open(path, memmap=True) as hd:
+    with fits.open(path, memmap=False) as hd:
         h = hd[0].header
         d = np.squeeze(hd[0].data)
         w = WCS(h).celestial

@@ -59,7 +59,7 @@ def fixed_gauss(frame, ra, dec):
     from astropy.io import fits
     from astropy.wcs import WCS
     cf = _cfg().forced_catflux
-    with fits.open(frame, memmap=True) as hd:
+    with fits.open(frame, memmap=False) as hd:
         h = hd[0].header
         d = hd[0].data
         while d.ndim > 2:

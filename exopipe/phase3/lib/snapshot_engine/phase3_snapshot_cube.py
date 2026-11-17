@@ -783,7 +783,7 @@ class Cube(object):
     def __init__(self, path):
         from astropy.io import fits
         self.path = path
-        self.h = fits.open(path, memmap=True)
+        self.h = fits.open(path, memmap=False)     # never memory-map a Lustre file (R-GREGG-20261117-NO-MMAP-OF-LUSTRE-FILES-READ-OR-WRITE)
         t = self.h["FRAME_TABLE"].data
         self.timestamps = [s.strip() if isinstance(s, str) else s.decode().strip() for s in t["ts"]]
         self._idx = {ts: i for i, ts in enumerate(self.timestamps)}
@@ -823,7 +823,12 @@ class Cube(object):
             return None
         i = self._idx[ts]
         fh = self.h["FLOW"].header
-        q = np.asarray(self.h["FLOW"].data[i])
+        try:
+            q = np.asarray(self.h["FLOW"].section[i])           # one frame read from the file (no memory map: Lustre rule 11-17)
+        except (AttributeError, OverflowError):                  # compressed HDU on astropy < 5.3: see frame()
+            if not hasattr(self, "_allflow"):
+                self._allflow = np.asarray(self.h["FLOW"].data)
+            q = self._allflow[i]
         f = q.astype(np.float32) * float(fh.get("FLOWSCAL", FLOW_SCALE))
         f[q == int(fh.get("FLOWNULL", FLOW_BLANK))] = np.nan
         return None if np.isnan(f).all() else f

@@ -201,7 +201,7 @@ def _measure_group(args):
     for how, p in cands:
         if not os.path.exists(p):
             continue
-        with fits.open(p, memmap=True) as hh:
+        with fits.open(p, memmap=False) as hh:
             hd = hh[0].header; sec = hh[0].section; lead = (0,) * (hd['NAXIS'] - 2)
             ny, nx = hd['NAXIS2'], hd['NAXIS1']; w = WCS(hd).celestial
             cd = abs(float(hd['CDELT1'])); bmaj, bmin = float(hd['BMAJ']), float(hd['BMIN']); bpix = bmaj / cd

@@ -65,8 +65,8 @@ def audit_mosaic(dst):
         if build_name(**pn) != n:
             p.append('name does not round-trip')
         proc = pn.get('proc') or []
-        with fits.open(dst, memmap=True) as h:
-            dh = h[0] if h[0].data is not None else h[1]
+        with fits.open(dst, memmap=False) as h:
+            dh = h[0] if h[0].header.get('NAXIS', 0) else h[1]     # header test: no data read
             hdr_all = {**dict(h[0].header), **dict(dh.header)}
             if bool(hdr_all.get('PBCORR')) != ('pbcorr' in proc):
                 p.append(f"PBCORR {hdr_all.get('PBCORR')} vs name")

@@ -1383,7 +1383,7 @@ def _fit_frame(job):
             h1.update(blk)
     sha = h1.hexdigest()
     out = []
-    with fits.open(path, memmap=True) as hd:
+    with fits.open(path, memmap=False) as hd:
         h = hd[0].header
         d = np.squeeze(hd[0].data)
         w = WCS(h).celestial

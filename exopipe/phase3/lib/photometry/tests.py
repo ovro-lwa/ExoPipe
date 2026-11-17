@@ -1422,7 +1422,7 @@ def n2(path, cutout_root=None, **ctx):
         cp = _cutout_for(root, mt['smp'], mt['band'], names[0], cell, mt['st']) if names else []
         if len(cp) != 1:
             return False, None, 'the first target\'s cutout (its DATE-OBS) not found once: %d files' % len(cp)
-        with fits.open(cp[0], memmap=True) as h:
+        with fits.open(cp[0], memmap=False) as h:
             T = h['TIMES'].data
             tsc = [t if isinstance(t, str) else t.decode() for t in T['ts']]
             dob = [t if isinstance(t, str) else t.decode() for t in T['date_obs']]
@@ -1517,7 +1517,7 @@ def n4(path, cutout_root=None, **ctx):
         if len(cp) != 1:
             notfound.append('%s (%d cutouts)' % (names[i], len(cp)))
             continue
-        with fits.open(cp[0], memmap=True) as h:
+        with fits.open(cp[0], memmap=False) as h:
             tsc = [t if isinstance(t, str) else t.decode() for t in h['TIMES'].data['ts']]
             if tsc != [str(t) for t in d['ts']]:
                 bad.append('%s: the cutout\'s frame list differs from the npz (cutout rewritten since)' % names[i])
@@ -1656,7 +1656,7 @@ def c1(path, **ctx):
     parts = os.path.abspath(path).split('/')
     smp, band, objd = parts[-4], parts[-3], parts[-2]
     bad = []
-    with fits.open(path, memmap=True) as h:
+    with fits.open(path, memmap=False) as h:
         H = h[0].header
         shp = h[0].data.shape if h[0].data is not None else ()
         if len(shp) != 3 or shp[1] != shp[2]:

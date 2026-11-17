@@ -111,7 +111,7 @@ def _inject_frame(args):
     rng = random.Random(f'{seed}:{"|".join(k)}')
     p = fr.path(*k)
     out, refused = [], collections.Counter()
-    with fits.open(p, memmap=True) as hh:
+    with fits.open(p, memmap=False) as hh:
         hd = hh[0].header; sec = hh[0].section; lead = (0,) * (hd['NAXIS'] - 2)
         ny, nx = hd['NAXIS2'], hd['NAXIS1']; w = WCS(hd).celestial
         cd = abs(float(hd['CDELT1'])); bmaj, bmin, bpa = float(hd['BMAJ']), float(hd['BMIN']), float(hd.get('BPA', 0.0))

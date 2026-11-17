@@ -503,7 +503,7 @@ class _FlowCubeFrames:
     def _table(self, sb):
         if sb not in self.tab:
             from astropy.io import fits
-            with fits.open(self._path(sb), memmap=True) as h:
+            with fits.open(self._path(sb), memmap=False) as h:
                 t = h["FRAME_TABLE"].data
                 self.tab[sb] = ([str(x) for x in t["ts"]], [fits.Header.fromstring(str(x), sep="\n") for x in t["header"]])
         return self.tab[sb]
@@ -524,7 +524,7 @@ class _FlowCubeFrames:
             if sb not in self.cache:
                 from astropy.io import fits
                 t1 = time.time()
-                with fits.open(self._path(sb), memmap=True) as h:
+                with fits.open(self._path(sb), memmap=False) as h:
                     self.cache[sb] = np.array(h["FRAMES"].data, dtype=np.float32)
                 log.info("member cube %s %s loaded in %.0f s", sb, self.stokes, time.time() - t1)
                 while len(self.cache) > 2:

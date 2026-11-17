@@ -101,12 +101,12 @@ def load(sb):
     for root in (a.alt_cube_root, a.cube_root):
         q = os.path.join(root, a.cell, "%s_%s_I_flowcube.fits" % (a.cell, sb))
         if os.path.exists(q):
-            with fits.open(q, memmap=True) as h:
+            with fits.open(q, memmap=False) as h:
                 if h[0].header.get("FLOWED") and not h[0].header.get("NOMASTER"):
                     p = q; break
     if p is None:
         print("no flowed cube for", sb); return None
-    with fits.open(p, memmap=True) as h:
+    with fits.open(p, memmap=False) as h:
         # each frame's own integration label from its stored header (the 'ts' column is the file-name time; frame-time fix)
         ts = [integration_label(fits.Header.fromstring(x if isinstance(x, str) else x.decode(), sep="\n")["DATE-OBS"])
               for x in h["FRAME_TABLE"].data["header"]]

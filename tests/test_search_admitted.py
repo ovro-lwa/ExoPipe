@@ -1404,7 +1404,7 @@ def sha1_data(path):
     """sha1 of a FITS file's primary data section."""
     from astropy.io import fits
     import hashlib
-    with fits.open(path, memmap=True) as h:
+    with fits.open(path, memmap=False) as h:
         return hashlib.sha1(np.ascontiguousarray(h[0].data).tobytes()).hexdigest()
 
 

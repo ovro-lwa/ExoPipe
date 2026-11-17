@@ -43,14 +43,14 @@ def _cards(path):
 
 def _data(path):
     from astropy.io import fits
-    with fits.open(path, memmap=True) as h:
+    with fits.open(path, memmap=False) as h:
         return np.array(np.squeeze(h[0].data))
 
 
 def _patch(path, half=32):
     """Central (2*half)^2 patch of a 2-D FITS image, read through the memory map."""
     from astropy.io import fits
-    with fits.open(path, memmap=True) as h:
+    with fits.open(path, memmap=False) as h:
         d = h[0].data
         while d.ndim > 2:
             d = d[0]

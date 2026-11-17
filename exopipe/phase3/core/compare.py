@@ -370,7 +370,7 @@ def _cmp_data(xa, xb, pre, a, b, rep):
 
 def _cmp_fits(pa, pb, a, b, rep):
     from astropy.io import fits
-    with fits.open(pa, memmap=True) as ha, fits.open(pb, memmap=True) as hb:
+    with fits.open(pa, memmap=False) as ha, fits.open(pb, memmap=False) as hb:
         if len(ha) != len(hb):
             rep.emit('DIFF', 'fits', a, b, 'hdus', '', f'{len(ha)} vs {len(hb)} HDUs', value=abs(len(ha) - len(hb)))
         for i in range(min(len(ha), len(hb))):

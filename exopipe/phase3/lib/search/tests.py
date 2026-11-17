@@ -970,7 +970,7 @@ def _match_frame(path):
                 if not os.path.exists(fpath):
                     frames[fpath] = None
                 else:
-                    with fits.open(fpath, memmap=True) as h:
+                    with fits.open(fpath, memmap=False) as h:
                         frames[fpath] = (h[0].header.copy(), np.squeeze(h[0].data))
             if frames[fpath] is None:
                 probs.append(f'{cid}: searched frame missing ({os.path.basename(fpath)})')
