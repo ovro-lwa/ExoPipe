@@ -56,17 +56,24 @@ class Exclusions:
         self.keys_any = set()      # the same key for EVERY row, any verdict (a 'keep' is Gregg's readmission): a rule that
                                    # must not re-propose a decided night skips these (propagate_date_outliers.py:40-42)
         self.perband = set()       # the subset tagged [PERBAND]
+        self.exclude_subbands_as_written = {}   # {(lst, date) as written: {subband as written}} of EVERY 'exclude' row,
+                                   # whatever its tag and this read's scope: the processing ledger's dd_excl_subbands
+                                   # (production _build_ledger.py:8-11, pandas groupby + nunique); same in every scope
         self.reasons = {}
         with open(self.path, 'rb') as f:
             raw = f.read()
         self._sha1 = hashlib.sha1(raw).hexdigest()
         try:
             rd = csv.DictReader(raw.decode('utf-8').splitlines())
+            miss = [c for c in ('lst', 'subband', 'date', 'verdict') if c not in (rd.fieldnames or ())]
+            if miss:                    # without a verdict column every row would read as not excluded: an empty set
+                raise Refusal(f'header lacks {miss} (header {rd.fieldnames})')
             for r in rd:
                 key = (r['lst'].strip(), _norm_scope(r['subband']), r['date'].strip())
                 self.keys_any.add(key)
                 if (r.get('verdict') or '').strip() != 'exclude':
                     continue
+                self.exclude_subbands_as_written.setdefault((r['lst'], r['date']), set()).add(r['subband'])
                 if scope is None and CFG.exclusions.SNAPSHOT_ONLY_TAG in (r.get('reason') or ''):
                     continue
                 if scope == 'snapshot-gpu' and CFG.exclusions.GPU_READMIT_TAG in (r.get('reason') or ''):

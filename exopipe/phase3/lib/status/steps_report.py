@@ -146,7 +146,7 @@ def rulings_section():
 def served_section():
     try:
         p, reg = K.registry()
-    except (OSError, ValueError) as e:
+    except K.Refusal as e:                       # the report shows the registry's state, it does not depend on it
         return {'registry': None, 'error': str(e)}
     rows = []
     for S in ('V', 'I'):

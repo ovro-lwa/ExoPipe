@@ -990,14 +990,26 @@ def test_exclusion_conformance():
     rc, txt = step(['status', '--exclusion-conformance', '--tier', 'sublst', '--out', f'{TMP}/o_xc3', '--cores', 'none'])
     check('sub-LST tier: the served cumulative run audited (row on the excluded band)', rc == 0 and
           len(rows(os.path.join(TMP, 'o_xc3', 'QA', 'exclusion_conformance_sublst.csv'))) == 1, txt[-500:])
-    reg = os.path.join(CFG.serve.HUB_DIR, 'registry.json')            # status.REGISTRY_FILE '{hub}/registry.json'
+    from exopipe.phase3.lib.status import steps_common as SC, steps_report as SR
+    reg = SC.expand(CFG.status.REGISTRY_FILE)
     os.rename(reg, reg + '.away')
     try:
         rc, txt = step(['status', '--exclusion-conformance', '--cells', CELLS, '--out', f'{TMP}/o_xc4', '--cores', 'none'])
+        sec = SR.served_section()
     finally:
         os.rename(reg + '.away', reg)
     check('no hub registry here: refused with the input named, not an uncaught FileNotFoundError (2026-11-17 parity)',
           rc == 2 and 'hub registry' in txt and 'not found' in txt and 'Traceback' not in txt, txt[-500:])
+    check('no hub registry here: the report\'s served section shows the refusal instead of failing',
+          sec.get('registry') is None and 'hub registry' in sec.get('error', ''), sec)
+    reg_text = open(reg).read()
+    wtxt(reg, reg_text[:len(reg_text) // 2])                           # truncated mid-write
+    try:
+        rc, txt = step(['status', '--exclusion-conformance', '--cells', CELLS, '--out', f'{TMP}/o_xc5', '--cores', 'none'])
+    finally:
+        wtxt(reg, reg_text)
+    check('a truncated hub registry refuses (not an uncaught JSONDecodeError)', rc == 2 and 'unreadable' in txt and
+          'Traceback' not in txt, txt[-500:])
     neg('exclusion_row_not_excluded', 'exclusion_conformance', tab, edit(',2099-01-02,18MHz,STALE', ',2099-01-01,18MHz,STALE'))
     neg('exclusion_verdict', 'exclusion_conformance', tab, edit('18MHz,STALE', '18MHz,BREACH'))
     neg('exclusion_archive_not_excluded', 'exclusion_conformance', os.path.join(out, 'QA', 'coadd_exclusion_conformance.csv'),
@@ -1020,8 +1032,10 @@ def test_ledger_every_exclude_row():
         with open(dd, 'a', newline='') as f:
             csv.writer(f).writerow(['05h', '23MHz', '2099-01-01', 'exclude', f'{CFG.exclusions.SNAPSHOT_ONLY_TAG}] test row',
                                     '', '', ''])
-        check('fixture: the default core.exclusions read skips the snapshot-tiers-only row (the oracle before the fix)',
-              not any((l, x) == ('05h', '2099-01-01') for l, _, x in EX.Exclusions(dd).rows))
+        ex = EX.Exclusions(dd)
+        check('fixture: the default core.exclusions read skips the snapshot-tiers-only row (the oracle before the fix); '
+              'its every-row count keeps it', not any((l, x) == ('05h', '2099-01-01') for l, _, x in ex.rows) and
+              ex.exclude_subbands_as_written.get(('05h', '2099-01-01')) == {'23MHz'})
         rs = rows(CFG.status.LEDGER)
         for r in rs:
             if (r['lst'], r['date']) == ('05h', '2099-01-01'):
@@ -1045,6 +1059,15 @@ def test_ledger_every_exclude_row():
     bad = failed('readjudication_list', rj)
     check('readjudication list: without that row the night has no exclude row (fails)',
           any('no exclude row' in b for b in bad), bad)
+    nov = os.path.join(d, 'dd_no_verdict.csv')
+    wtxt(nov, ''.join(','.join(l.split(',')[:3]) + '\n' for l in dd0.decode().splitlines()))   # lst,subband,date only
+    try:
+        EX.Exclusions(nov)
+        r = 'read'
+    except Exception as e:
+        r = f'{type(e).__name__}: {e}'
+    check('core.exclusions: a file without a verdict column refuses (it read as an empty exclusion set before)',
+          r.startswith('Refusal') and 'verdict' in r, r)
 
 
 def test_fleet_claim_done():

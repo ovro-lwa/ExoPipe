@@ -919,7 +919,8 @@ def ledger_rows_consistent(path, **ctx):
                                        tuple(L.P2_COMPLETE)):
             return False, k, 'p2 status disagrees with p2_nsub / p2_nwide'
         if int(r['dd_excl_subbands'] or 0) != n_ex.get(k, 0):
-            return False, k, f"dd_excl_subbands {r['dd_excl_subbands']} != {n_ex.get(k, 0)} excluded scopes now"
+            return False, k, (f"dd_excl_subbands {r['dd_excl_subbands']} != {n_ex.get(k, 0)} distinct subbands of its "
+                              f"exclude rows in data_decisions.csv now")
         ne = int(r['dd_excl_subbands'] or 0)
         dd_status = 'all-excluded' if ne == L.ALL_EXCLUDED_N else ('partial-excluded' if ne else 'none')
         if r['dd_status'] != dd_status:
@@ -932,23 +933,11 @@ def ledger_rows_consistent(path, **ctx):
 
 def _ledger_exclude_counts():
     """{(lst, date): number of distinct subband values among the night's 'exclude' rows of data_decisions.csv}: the ledger's
-    dd_excl_subbands by _build_ledger.py:8-11 (verdict stripped equal to 'exclude'; grouped on lst and date as written; the
-    subband counted as written, pandas nunique). EVERY exclude row counts, whatever its scope tag: not core.exclusions, whose
-    default read skips [SNAPSHOT-TIERS-ONLY] rows (2026-11-17 status parity: 23h 2025-10-29, partial-excluded in the
-    ledger by one 82 MHz snapshot-tiers-only row, refused a ledger byte-identical to production's). An unreadable file
-    refuses (S-G1, ruling C-09), as core.exclusions does."""
-    import csv
-    from exopipe.phase3.core.record import Refusal
-    path = K.cfg().paths.DATA_DECISIONS
-    subs = collections.defaultdict(set)
-    try:
-        with open(path, newline='', encoding='utf-8') as f:
-            for r in csv.DictReader(f):
-                if (r.get('verdict') or '').strip() == 'exclude':
-                    subs[(r.get('lst') or '', r.get('date') or '')].add(r.get('subband') or '')
-    except (OSError, UnicodeDecodeError, csv.Error) as e:
-        raise Refusal(f'exclusion list {path} unreadable ({e}) - refusing (ruling C-09)')
-    return {k: len(v) for k, v in subs.items()}
+    dd_excl_subbands by _build_ledger.py:8-11 (core.exclusions ``exclude_subbands_as_written``: EVERY exclude row,
+    whatever its scope tag, lst / date / subband as written). Not the default read's ``rows``, which skip [SNAPSHOT-TIERS-
+    ONLY] rows (2026-11-17 status parity: 23h 2025-10-29, partial-excluded in the ledger by one 82 MHz snapshot-tiers-only
+    row, refused a ledger byte-identical to production's). A missing or unreadable file refuses (S-G1, C-09)."""
+    return {k: len(v) for k, v in K.exclusions().exclude_subbands_as_written.items()}
 
 
 def _derive(r, dd_status):
