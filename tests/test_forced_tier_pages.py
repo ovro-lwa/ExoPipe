@@ -341,6 +341,7 @@ def test_run_content(site_rp):
 
 def test_cli():
     from exopipe.phase3.lib.forced import common as K
+    from exopipe.phase3.lib.forced import tier_pages as TP
     from exopipe.phase3.lib.forced import tier_snapshot as TS
     out = os.path.join(TMP, 'o_dry')
     base = ['forced', '--tier', 'snapshot', '--cores', 'none']
@@ -366,6 +367,47 @@ def test_cli():
     check('cli: T-G35 an existing site refused (exit 2) before any in-place call',
           rc == 2 and st == 'refused' and 'T-G35' in why and not os.path.exists(os.path.join(out, '_records', 'forced', 'logs',
                                                                                              'T_site.log')), '%s %s' % (st, why))
+    # a dry run whose plan names a refusing gate exits 2 (as family W), here T-G35 on the same --out
+    rc, err = cli(base + ['--stages', 'tier_site', '--dry-run', '--out', out])
+    o = _LAST_OUT[0]
+    check('cli: a dry run whose plan names a refusing gate (T-G35) exits 2', rc == 2 and 'would refuse' in o and 'T-G35' in o,
+          '%s %s' % (rc, o[-400:]))
+    # T-WORKERS: --workers above forced_tier_pages.MAX_WORKERS (the in-place pool reads Lustre)
+    out = os.path.join(TMP, 'o_workers')
+    n = CFG.forced_tier_pages.MAX_WORKERS + 2
+    rc, err = cli(base + ['--stages', 'tier_site', '--workers', str(n), '--out', out])
+    st, why = _reason(out, 'T_site')
+    check('cli: T-WORKERS --workers %d refused (exit 2) before any in-place call' % n,
+          rc == 2 and 'T-WORKERS' in why and not os.path.exists(os.path.join(out, '_records', 'forced', 'logs', 'T_site.log')),
+          '%s %s' % (st, why))
+    rc, err = cli(base + ['--stages', 'tier_site', '--workers', str(n), '--dry-run', '--out', os.path.join(TMP, 'o_workers2')])
+    check('cli: T-WORKERS named by the dry run (exit 2)', rc == 2 and 'T-WORKERS' in _LAST_OUT[0], _LAST_OUT[0][-300:])
+    # T-BUILD: the build printed its success line but exited non-zero (the in-place call replaced in this process)
+    out = os.path.join(TMP, 'o_rc')
+
+    class _Res:
+        rc = 1
+
+        def has(self, s_):
+            return True
+
+        def line(self, s_):
+            return s_
+
+        def why(self):
+            return 'exit 1'
+
+        def lines(self):
+            return []
+    keep = TP.TCtx.inplace
+    TP.TCtx.inplace = lambda self, u, argv, log, globals_=None, test_stage=False, stage=None: _Res()
+    try:
+        rc, err = cli(base + ['--stages', 'tier_site', '--out', out])
+    finally:
+        TP.TCtx.inplace = keep
+    st, why = _reason(out, 'T_site')
+    check('cli: T-BUILD a build exiting non-zero refused although it printed its success line', rc == 2 and 'T-BUILD' in why
+          and 'exit 1' in why, '%s %s' % (st, why))
     # T-EXCL: an event on an excluded cell-band (the exclusion read replaced in this process)
     out = os.path.join(TMP, 'o_excl')
     keep = TS.excluded_events
@@ -400,8 +442,76 @@ def test_cli():
         st, why = _reason(out, 'T_runs')
         check('cli: T-SITE a site failing its content test refused (exit 2)', rc == 2 and 'T-SITE' in why and 'content test'
               in why, '%s %s' % (st, why))
+        rc, err = cli(base + ['--stages', 'tier_runs', '--dry-run', '--out', os.path.join(TMP, 'o_site3'), '--tier-site',
+                              os.path.join(TMP, 'site')])
+        o = _LAST_OUT[0]
+        check('cli: T-SITE named by a tier_runs dry run (exit 2)', rc == 2 and 'gate T-SITE' in o and 'would refuse' in o,
+              '%s %s' % (rc, o[-400:]))
+        # T-EXCL in tier_runs: a site (here accepted as an input) with a card on an excluded cell-band - a site production
+        # built has no exclusion gate, and an exclusion can postdate any site
+        out = os.path.join(TMP, 'o_excl_runs')
+        site_rp = os.path.join(TMP, 'site', 'page_record.json')
+        keep_sc, keep_ex = TP._site_check, TS.excluded_events
+        TP._site_check = lambda c: (site_rp, None, 'test: accepted')
+        TS.excluded_events = lambda rows, ex=None: [(r['cell'], r['band'], r['ts']) for r in rows][:1]
+        try:
+            rc, err = cli(base + ['--stages', 'tier_runs', '--out', out, '--tier-site', os.path.join(TMP, 'site')])
+        finally:
+            TP._site_check, TS.excluded_events = keep_sc, keep_ex
+        st, why = _reason(out, 'T_runs')
+        check('cli: T-EXCL tier_runs refuses a site card on an excluded cell-band (exit 2) before any in-place call',
+              rc == 2 and 'T-EXCL' in why and 'site card' in why
+              and not os.path.exists(os.path.join(out, '_records', 'forced', 'logs', 'T_runs.log')), '%s %s' % (st, why))
+        # T-WORK: the fit's work directory on Lustre (one plane FITS per event): refused, never a fallback
+        out = os.path.join(TMP, 'o_work')
+        rc, err = cli(base + ['--stages', 'tier_runs', '--out', out, '--work', '/lustre/gh/main/exopipe_ops/no_such_work'])
+        st, why = _reason(out, 'T_runs')
+        check('cli: T-WORK a fit work directory on Lustre refused (exit 2)', rc == 2 and 'T-WORK' in why, '%s %s' % (st, why))
+        rc, err = cli(base + ['--stages', 'tier_runs', '--dry-run', '--out', os.path.join(TMP, 'o_work2'), '--work',
+                              '/lustre/gh/main/exopipe_ops/no_such_work'])
+        check('cli: T-WORK named by the dry run (exit 2)', rc == 2 and 'T-WORK' in _LAST_OUT[0], _LAST_OUT[0][-300:])
     else:
-        print('SKIP  T-SITE cases: this host is not the review host', flush=True)
+        print('SKIP  T-SITE, T-EXCL (tier_runs) and T-WORK cases: this host is not the review host', flush=True)
+
+
+def test_resume_identity():
+    """--resume adopts a T_* record only for the same site (and review root, fit work) and the same admitted cell-bands;
+    then K.resumed decides (inputs, code, config, outputs). The record read and K.resumed are replaced in this process."""
+    from exopipe.phase3.core import record as R
+    from exopipe.phase3.lib.forced import common as K
+    from exopipe.phase3.lib.forced import tier_pages as TP
+    from exopipe.phase3.lib.forced import tier_snapshot as TS
+
+    class _Run:
+        resume, step, out_root = True, 'forced', TMP
+
+    class _C:
+        pass
+    c = _C()
+    c.run, c.W, c.t = _Run(), TMP, CFG.forced_tier_pages
+    rows = [dict(cell='04h_2025-01-01', band='41MHz', ts='a'), dict(cell='04h_2025-01-02', band='Red', ts='b')]
+    calls, bad = [], []
+    keep = R.load_record, K.resumed, TS.excluded_events
+    R.load_record = lambda out, step, unit: {'meta': {'site': '/s/A', 'review_root': '/r', 'fit_work': '/f'}}
+    K.resumed = lambda run, name, inputs, admitted=None, **meta: calls.append((name, admitted, meta)) or True
+    TS.excluded_events = lambda rows_, ex=None: list(bad)
+    try:
+        other = TP._resumed(c, 'tier_site', rows, site='/s/B')
+        other_root = TP._resumed(c, 'tier_runs', rows, site='/s/A', review_root='/r2', fit_work='/f')
+        same = TP._resumed(c, 'tier_site', rows, site='/s/A')
+        bad.append(('04h_2025-01-02', 'Red', 'b'))
+        TP._resumed(c, 'tier_site', rows, site='/s/A')
+        no_rows = TP._resumed(c, 'tier_runs', None, site='/s/A', review_root='/r', fit_work='/f')
+    finally:
+        R.load_record, K.resumed, TS.excluded_events = keep
+    check('resume: a record of another site or review root is not adopted', other is False and other_root is False
+          and all(x[2].get('site') == '/s/A' for x in calls), str(calls))
+    check('resume: the same site goes to K.resumed with the admitted cell-bands',
+          same is True and calls and calls[0][1] == ['04h_2025-01-01|41MHz', '04h_2025-01-02|Red'], str(calls[:1]))
+    check('resume: an exclusion added since changes the admitted set (the unit re-runs; its gates then refuse)',
+          len(calls) == 2 and calls[1][1] == ['04h_2025-01-01|41MHz'], str(calls[1:]))
+    check('resume: no site events to identify the exclusion state - not skipped', no_rows is False and len(calls) == 2,
+          str(calls))
 
 
 def test_import_side_effects():
@@ -421,6 +531,7 @@ def main():
         rp = test_site_content()
         test_run_content(rp)
         test_cli()
+        test_resume_identity()
         test_import_side_effects()
     finally:
         shutil.rmtree(TMP, ignore_errors=True)

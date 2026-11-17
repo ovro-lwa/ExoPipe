@@ -247,6 +247,8 @@ class forced_tier_pages(_Section):
     # at most 6 Lustre-heavy workers (tier cutouts, Masters and epoch images are Lustre reads). The products do not depend on
     # it (pool.map keeps the order)
     NPROC = {'site': 6, 'runs': 6}
+    # the most --workers may ask for: T-WORKERS refuses above it (the site rule, as forced_wide_search.MAX_WORKERS)
+    MAX_WORKERS = 6
     # success lines (the in-place script's own)
     OK_LINES = {'build': 'HWJ10PC-TIERS-PAGE-BUILT', 'verify': 'HWJ10PC-TIERS-PAGE-OK',    # :249, :378
                 'chain': 'TIER-CHAIN ', 'verify_chain': 'TIER-CHAIN-OK'}               # :1099 (one per run), :1167

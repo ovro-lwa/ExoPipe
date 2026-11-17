@@ -154,12 +154,12 @@ def run(args, run):
                 common.check_overrides()
                 rc = importlib.import_module(TIER_PAGES_MODULE).run(args, run, stages)
                 return record.EXIT_DONE if (rc is None and run.dry_run) else rc
-            if getattr(args, 'tier_site', None):
-                raise record.Refusal('W-FAMILY --tier-site: not a flag of family %s' % fam)
             if fam != 'C':
                 # families W and N run no in-place script: G37 (overrides of in-place literals) concerns families B and C
                 rc = wide.run(args, run, fam, stages)
                 return record.EXIT_DONE if (rc is None and run.dry_run) else rc
+        if getattr(args, 'tier_site', None):     # families A, B and C here; W and N refuse it in wide_stages.gate_args
+            raise record.Refusal('W-FAMILY --tier-site: a flag of family T only (--tier snapshot --stages tier_site,tier_runs)')
         common.check_overrides()
         rc = importlib.import_module(TIER_MODULES[args.tier]).run(args, run)
     except ValueError as e:
