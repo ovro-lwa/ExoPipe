@@ -183,6 +183,20 @@ if _FB_OUT:
 # loads as always, then its branch patch file loads BY PATH (it imports nothing from the branch: a child's `exopipe` can be the
 # production package), is registered as sys.modules['exopipe3_wrap.<module>'] (the code fingerprint above records it), checks
 # its pin against the production source and applies with the config values the parent passed.
+def _fallback_module():
+    """core/fallback.py, loaded by path as exopipe.phase3.core.fallback (the child's `exopipe` may be production's) - ONE
+    module for the import wraps and the GITTAG check below, so the exit dump holds every site event of the child."""
+    m = sys.modules.get('exopipe.phase3.core.fallback')
+    if m is None:
+        import importlib.util as _iu
+        _fp = os.path.join(os.path.dirname(_HERE), 'fallback.py')
+        _s = _iu.spec_from_file_location('exopipe.phase3.core.fallback', _fp)
+        m = _iu.module_from_spec(_s)
+        sys.modules['exopipe.phase3.core.fallback'] = m
+        _s.loader.exec_module(m)
+    return m
+
+
 _WRAPS = os.environ.get('EXOPIPE3_WRAPS', '')
 _WR = {}
 if _WRAPS:
@@ -192,16 +206,6 @@ if _WR:
     import importlib.abc as _iabc_w
     import importlib.machinery as _imach_w
     import importlib.util as _iutil_w
-
-    def _fallback_module():
-        m = sys.modules.get('exopipe.phase3.core.fallback')
-        if m is None:
-            _fp = os.path.join(os.path.dirname(_HERE), 'fallback.py')
-            _s = _iutil_w.spec_from_file_location('exopipe.phase3.core.fallback', _fp)
-            m = _iutil_w.module_from_spec(_s)
-            sys.modules['exopipe.phase3.core.fallback'] = m
-            _s.loader.exec_module(m)
-        return m
 
     class _WrapFinder(_iabc_w.MetaPathFinder):
         def find_spec(self, name, path, target=None):
@@ -223,6 +227,103 @@ if _WR:
             spec.loader.exec_module = _exec
             return spec
     sys.meta_path.insert(0, _WrapFinder())
+
+# B-30 GITTAG_FALLBACK IN A CHILD (core/record.check_code_identity checks the step's own process at its start). Every process
+# that imports exopipe.common.phase2_config - a legacy script, a spawned worker - resolves PIPELINE_GITTAG again with
+# `git rev-parse` (10 s timeout) and keeps production's static 'clv15' on ANY failure, silently: git refusing a tree another
+# user owns ('dubious ownership'), a stall under Lustre load. With the parent's fallback policies in the environment (every
+# core.legacy.run child), the module is checked right after it loads, with the rule of record.code_identity_problems: the
+# value is a commit (7-40 hex digits) AND the tree it was resolved in (the directory holding exopipe/common/) is the top of
+# its own checkout - a copy inside another repository would stamp that repository's commit. Anything else reaches the site
+# fallbacks.GITTAG_FALLBACK under the parent's policy: 'refuse' (the ruled value) raises FallbackRefused at that import,
+# recorded for the parent (EXOPIPE3_FALLBACK_OUT: the unit refuses even when the child swallows the error); 'fallback'
+# (production's behavior, the parity file) counts it - once per process that loads the module - and the module keeps its
+# value. The resolution itself is production's phase2_config (byte-identical in the branch; it works under Python 3.6
+# since production exopipe 4c7098c).
+_GT_MOD = 'exopipe.common.phase2_config'
+if os.environ.get('EXOPIPE3_FALLBACK_POLICY'):
+    import importlib.abc as _iabc_g
+    import importlib.util as _iutil_g
+    import re as _re_g
+    import subprocess as _sp_g
+
+    def _gt_problem(module):
+        """'' when the loaded module's PIPELINE_GITTAG is its own code tree's commit, else why not."""
+        g, pid = str(getattr(module, 'PIPELINE_GITTAG', '')), os.getpid()
+        if not _re_g.match(r'^[0-9a-f]{7,40}$', g):
+            return (f'GITTAG would be {g!r} in child process {pid} (git rev-parse of its code tree failed or timed '
+                    f'out)')
+        f = getattr(module, '__file__', None)
+        if not f:
+            return f'GITTAG {g} in child process {pid} not checked: the module has no file, so no code tree'
+        root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(f))))
+        try:                                    # Python 3.6 too: no capture_output / text
+            r = _sp_g.run(['git', '-C', root, 'rev-parse', '--show-toplevel'], stdout=_sp_g.PIPE, stderr=_sp_g.PIPE,
+                          universal_newlines=True, timeout=10)
+        except (OSError, _sp_g.SubprocessError) as e:
+            return f'GITTAG {g} in child process {pid} not checked against its code tree {root}: git failed ({e})'
+        top = r.stdout.strip()
+        if r.returncode != 0 or not top:
+            return (f'GITTAG {g} in child process {pid} not checked against its code tree {root}: git rev-parse '
+                    f'--show-toplevel exit {r.returncode}')
+        if os.path.realpath(top) != os.path.realpath(root):
+            return (f'GITTAG {g} in child process {pid} is the commit of the checkout {top}, not of its code tree {root} '
+                    f'(a copy inside another repository)')
+        return ''
+
+    def _gt_check(module):
+        why = _gt_problem(module)
+        if why:
+            _fallback_module().site('fallbacks.GITTAG_FALLBACK', f'{getattr(module, "__file__", _GT_MOD)}: {why}, so its '
+                                    f'products would carry no commit of their own code')
+
+    class _GittagFinder(_iabc_g.MetaPathFinder):
+        _busy = False
+
+        def find_spec(self, name, path, target=None):
+            # re-entered while asking the finders after it: a finder that asks EVERY finder (the sub-LST frozen-code guard:
+            # when its sitecustomize is first on the path it chains here, and this finder then sits AHEAD of it) calls back
+            # here while this finder asks it - without this guard the two call each other without end (RecursionError)
+            if name != _GT_MOD or self._busy:
+                return None
+            later = sys.meta_path[sys.meta_path.index(self) + 1:] if self in sys.meta_path else []
+            spec = None
+            self._busy = True
+            try:
+                for f in later:                 # the spec the import would get without this finder (an import wrap's too)
+                    fs = getattr(f, 'find_spec', None)
+                    if fs is not None:
+                        spec = fs(name, path, target)
+                    elif hasattr(f, 'find_module'):     # a finder without find_spec: the spec the import system builds
+                        ld = f.find_module(name, path)
+                        spec = _iutil_g.spec_from_loader(name, ld) if ld is not None else None
+                    if spec is not None:
+                        break
+            finally:
+                self._busy = False
+            if spec is None or spec.loader is None:
+                return spec
+            ld = spec.loader
+            # the check runs only for this module even when a finder hands out one loader for many modules
+            if hasattr(ld, 'exec_module'):
+                _orig = ld.exec_module
+
+                def _exec(module, _orig=_orig):
+                    _orig(module)
+                    if getattr(module, '__name__', None) == _GT_MOD:
+                        _gt_check(module)
+                ld.exec_module = _exec
+            elif hasattr(ld, 'load_module'):    # a loader without exec_module
+                _orig_l = ld.load_module
+
+                def _load(fullname, _orig_l=_orig_l):
+                    m = _orig_l(fullname)
+                    if fullname == _GT_MOD:
+                        _gt_check(m)
+                    return m
+                ld.load_module = _load
+            return spec
+    sys.meta_path.insert(0, _GittagFinder())
 
 # chain to any other sitecustomize on the path (the environment's own, if it has one) - never back to the sitecustomize
 # Python imported at start-up when that is another file which chained here (the sub-LST frozen-code guard first on the

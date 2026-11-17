@@ -27,7 +27,8 @@ def _resolve_gittag():
         out = subprocess.run(
             ['git', '-C', os.path.dirname(os.path.abspath(__file__)),
              'rev-parse', '--short', 'HEAD'],
-            capture_output=True, text=True, timeout=10)
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            universal_newlines=True, timeout=10)   # Python 3.6 too (capture_output/text are 3.7+)
         if out.returncode == 0 and out.stdout.strip():
             return out.stdout.strip()
     except Exception:
