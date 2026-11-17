@@ -22,14 +22,20 @@ Lustre file, for reading OR writing"; the 11-09 and 11-16 lwacalim07 Lustre clie
 5. THE NO-LUSTRE-MAP GATE: the same sitecustomize replaces mmap.mmap - the type every map made in Python goes through
    (astropy's FITS file layer, numpy.memmap, np.load(mmap_mode=...), numpy.lib.format.open_memmap) - by a subclass that
    refuses a descriptor of a Lustre file with NoLustreMapError (a PermissionError, errno EACCES, text 'NO-LUSTRE-MAP: ...'
-   naming the file and the ruling). NO TEST ATTEMPTS A MAP OF A REAL LUSTRE FILE, not even one expected to be refused (a gate
+   naming the file and the ruling) and, before raising, writes one line, 'NO-LUSTRE-MAP: <real path> pid <pid> <ruling>', to
+   stderr and to the file $EXOPIPE3_MAP_REFUSAL_LOG names (so a caller that swallows the exception cannot hide the refusal).
+   NO TEST ATTEMPTS A MAP OF A REAL LUSTRE FILE, not even one expected to be refused (a gate
    failure would then be the forbidden act). The whole chain is proven on a LOCAL STAND-IN: the child points the gate's
    protected path prefix, then its protected device, at a scratch directory; every map call on a file there is refused and
    leaves no map in /proc/self/maps, the same calls on a file outside it map (seen in /proc/self/maps), anonymous maps work,
-   a FITS header read that asks for a map works (it maps nothing), astropy and numpy are not imported at start-up. On the
-   real Lustre file only the gate's decision is asked (refused, by its path and by its device) and the default and
-   memmap=False reads read it with no /lustre mapping. FALSIFIER: the stand-in child with the gate taken out (mmap.mmap back
-   to the builtin type) maps every stand-in file and fails the stand-in check. On the cluster the children run through
+   a FITS header read that asks for a map works (it maps nothing), astropy and numpy are not imported at start-up. The
+   child's refusal lines, on stderr and in the log, are exactly one per refused map in the order of the refusals - the one
+   a caller swallows (`except Exception: return None` around a FITS read, the production pattern) included - and none for a
+   map that is made; an unwritable log path changes no refusal and adds a 'NO-LUSTRE-MAP-LOG:' line per refusal. On the
+   real Lustre file only the gate's decision is asked (refused, by its path and by its device; no refusal line) and the
+   default and memmap=False reads read it with no /lustre mapping. FALSIFIER: the stand-in child with the gate taken out
+   (mmap.mmap back to the builtin type) maps every stand-in file, writes no refusal line and fails the stand-in check.
+   Through core.legacy.run the child inherits EXOPIPE3_MAP_REFUSAL_LOG from the parent. On the cluster the children run through
    core.legacy.run under py38 and py36 with and without --parity, and directly under flow (3.10) and the TESS interpreters
    (3.12); elsewhere (CI) with this interpreter, stand-in only.
 
@@ -416,6 +422,7 @@ out = {'python': sys.version.split()[0],
 import mmap
 G = mmap.mmap
 out['gate'] = bool(hasattr(G, 'lustre_refusal') and G is not G.__mro__[1] and G.__mro__[1].__module__ == 'mmap')
+out['pid'] = os.getpid()
 
 
 def maps():
@@ -486,6 +493,17 @@ def case(name, d):
     return r
 
 
+def master_context(p):
+    """The production pattern (exopipe_ops source_localization.master_context): a FITS read whose failure becomes an empty
+    field."""
+    from astropy.io import fits
+    try:
+        with fits.open(p, memmap=True) as h:
+            return float(h[0].data.sum())
+    except Exception:
+        return None
+
+
 if mode == 'standin':
     standin, outside, shm, on = sys.argv[3:7]
     if on == '0' and out['gate']:
@@ -495,6 +513,9 @@ if mode == 'standin':
         G.lustre_prefixes, G.lustre_devices = (os.path.realpath(standin) + os.sep,), frozenset()
     out['standin'] = dict((c, case(c, standin)) for c in CASES)
     out['outside'] = dict((c, case(c, outside)) for c in CASES)
+    ctx = os.path.realpath(os.path.join(standin, 'ctx.fits'))
+    out['swallowed'] = {'target': ctx, 'standin': master_context(ctx),
+                        'outside': master_context(os.path.join(outside, 'ctx.fits')), 'mapped_after': ctx in maps()}
     if shm != '-':
         if out['gate_in_use']:
             G.lustre_prefixes, G.lustre_devices = (), frozenset([os.stat(shm).st_dev])
@@ -567,7 +588,8 @@ class _GateScratch(_Scratch):
         for d in [self.standin, self.outside] + ([self.shm] if self.shm else []):
             if not os.path.isdir(d):
                 os.makedirs(d)
-            fits.writeto(os.path.join(d, 'img.fits'), np.arange(64, dtype=np.float32).reshape(8, 8))
+            for b in ('img.fits', 'ctx.fits'):
+                fits.writeto(os.path.join(d, b), np.arange(64, dtype=np.float32).reshape(8, 8))
             np.save(os.path.join(d, 'arr.npy'), np.arange(256, dtype=np.float32))
             with open(os.path.join(d, 'raw.bin'), 'wb') as f:
                 f.write(bytes(bytearray(range(256))) * 32)
@@ -586,11 +608,27 @@ def _gate_args(sc, mode, on='1'):
 
 def _gate_direct(py, sc, mode, on='1', pythonpath=(BOOT,), **extra):
     res = sc.result_path()
+    env = {'XDG_CONFIG_HOME': sc.xdg, 'EXOPIPE3_MAP_REFUSAL_LOG': res + '.refusals'}
+    env.update(extra)
     p = subprocess.run([py, sc.gate_child, res] + _gate_args(sc, mode, on), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                       stdin=subprocess.DEVNULL, env=_env(pythonpath, XDG_CONFIG_HOME=sc.xdg, **extra), timeout=600)
+                       stdin=subprocess.DEVNULL, env=_env(pythonpath, **env), timeout=600)
     assert p.returncode == 0 and os.path.isfile(res), (py, mode, p.returncode, p.stdout.decode('utf-8', 'replace')[-2000:])
+    return _gate_result(res, p.stdout.decode('utf-8', 'replace'), env['EXOPIPE3_MAP_REFUSAL_LOG'])
+
+
+def _gate_result(res, output, refusal_log):
+    """The child's result, with its output (stdout and stderr) and the lines of its refusal log."""
     with open(res) as f:
-        return json.load(f)
+        r = json.load(f)
+    r['_output'], r['_refusal_log'] = output, []
+    if os.path.isfile(refusal_log):
+        with open(refusal_log) as f:
+            r['_refusal_log'] = f.read().splitlines()
+    return r
+
+
+def _refusal_lines(text, prefix='NO-LUSTRE-MAP: '):
+    return [line for line in text.splitlines() if line.startswith(prefix)]
 
 
 def _check_refused(r, what):
@@ -621,11 +659,31 @@ def _check_gate_cases(r, sc, what):
             _check_mapped(r['device_outside'][c], (what, 'outside the device stand-in', c))
 
 
-def _check_gate_standin(r, sc, what):
+def _check_gate_lines(r, sc, what, logged=True):
+    """One refusal line per refused map, in the order of the refusals - the one the caller swallowed included - on stderr
+    and in $EXOPIPE3_MAP_REFUSAL_LOG; none for a map that is made. logged=False: the log path cannot be written, so no log
+    and a NO-LUSTRE-MAP-LOG line per refusal. Returns the lines."""
+    targets = ([r['standin'][c]['target'] for c in GATE_CASES if c != 'fits_header'] + [r['swallowed']['target']]
+               + ([r['device'][c]['target'] for c in DEVICE_CASES] if sc.shm else []))
+    want = ['NO-LUSTRE-MAP: %s pid %d %s' % (t, r['pid'], RULING) for t in targets]
+    got = _refusal_lines(r['_output'])
+    assert got == want, (what, 'the refusal lines on stderr', got, want)
+    if logged:
+        assert r['_refusal_log'] == want, (what, 'the refusal log', r['_refusal_log'], want)
+    else:
+        bad = _refusal_lines(r['_output'], 'NO-LUSTRE-MAP-LOG: ')
+        assert r['_refusal_log'] == [] and len(bad) == len(want), (what, 'the unwritable refusal log', r['_refusal_log'], bad)
+    return want
+
+
+def _check_gate_standin(r, sc, what, logged=True):
     assert r['gate'] is True and r['gate_in_use'] is True, (what, 'mmap.mmap is not the gate', r['gate'])
     assert r['heavy_at_start'] == [], (what, 'astropy or numpy imported at start-up', r['heavy_at_start'])
     _check_gate_cases(r, sc, what)
     assert r['anonymous'] == {'ok': True, 'isinstance': True, 'type': True}, (what, 'anonymous map', r['anonymous'])
+    s = r['swallowed']
+    assert s['standin'] is None and s['outside'] == 2016.0 and not s['mapped_after'], (what, 'the swallowed refusal', s)
+    return _check_gate_lines(r, sc, what, logged)
 
 
 def _check_gate_falsifier(r, sc, what):
@@ -635,6 +693,9 @@ def _check_gate_falsifier(r, sc, what):
     runs = [r['standin'][c] for c in GATE_CASES if c != 'fits_header'] + [r['device'][c] for c in DEVICE_CASES if sc.shm]
     assert all(x['ok'] is True and x['mapped_during'] is True for x in runs), (what, 'a stand-in file not mapped without '
                                                                                 'the gate', runs)
+    assert r['swallowed']['standin'] == 2016.0, (what, 'the swallowing reader got no value without the gate', r['swallowed'])
+    assert _refusal_lines(r['_output'], 'NO-LUSTRE-MAP') == [] and r['_refusal_log'] == [], (
+        what, 'a refusal line without the gate', r['_output'][-1000:], r['_refusal_log'])
     try:
         _check_gate_cases(r, sc, what)
     except AssertionError as e:
@@ -651,6 +712,8 @@ def _check_gate_real(r, what):
     assert r['decision']['local'] is None and r['decision']['anonymous'] is None, (what, 'a local or anonymous map refused', r)
     assert r['use_memmap'] is False and len(r['sums']) == 3 and len(set(r['sums'])) == 1, (what, r['use_memmap'], r['sums'])
     assert r['lustre_maps'] == [], (what, 'a /lustre mapping', r['lustre_maps'])
+    assert _refusal_lines(r['_output'], 'NO-LUSTRE-MAP') == [] and r['_refusal_log'] == [], (
+        what, 'a refusal line where no map was attempted', r['_output'][-1000:], r['_refusal_log'])
 
 
 def test_lustre_map_gate_standin():
@@ -658,13 +721,20 @@ def test_lustre_map_gate_standin():
     sc = _GateScratch()
     try:
         r = _gate_direct(sys.executable, sc, 'standin')
-        _check_gate_standin(r, sc, 'gate, Python %s' % r['python'])
+        lines = _check_gate_standin(r, sc, 'gate, Python %s' % r['python'])
+        bad = os.path.join(sc.d, 'no_such_dir', 'refusals.log')
+        _check_gate_standin(_gate_direct(sys.executable, sc, 'standin', EXOPIPE3_MAP_REFUSAL_LOG=bad), sc,
+                            'gate, unwritable refusal log', logged=False)
         f = _check_gate_falsifier(_gate_direct(sys.executable, sc, 'standin', on='0'), sc, 'no gate')
         print('no-Lustre-map gate, Python %s: on the stand-in %d map calls refused (NoLustreMapError, errno 13, '
               'NO-LUSTRE-MAP text) and none mapped, the same calls outside it mapped, %s; header read with a map asked for '
               'works; anonymous map works; falsifier (gate taken out): %s'
               % (r['python'], len(GATE_CASES) - 1, 'device stand-in refused' if sc.shm else 'no device stand-in (no '
                  '/dev/shm on another device)', f))
+        print('no-Lustre-map gate, Python %s: %d refusal lines on stderr and in EXOPIPE3_MAP_REFUSAL_LOG, one per refused map '
+              'in order, including the refusal a reader swallowed (it returned None, no map); none for the maps made '
+              'outside the stand-in, none without the gate; unwritable log path: the same refusals and lines plus one '
+              'NO-LUSTRE-MAP-LOG line each; first line: %s' % (r['python'], len(lines), lines[0]))
     finally:
         sc.close()
 
@@ -693,14 +763,18 @@ def test_lustre_map_gate_children():
                     os.makedirs(kw['parity_root'])
                 for mode in ('standin', 'real'):
                     res = sc.result_path()
-                    lr = legacy.run(sc.gate_child, [res] + _gate_args(sc, mode), python=key, env={'XDG_CONFIG_HOME': sc.xdg},
-                                    **kw)
+                    os.environ['EXOPIPE3_MAP_REFUSAL_LOG'] = res + '.refusals'    # the child inherits it from this process
+                    try:
+                        lr = legacy.run(sc.gate_child, [res] + _gate_args(sc, mode), python=key,
+                                        env={'XDG_CONFIG_HOME': sc.xdg}, log=res + '.log', **kw)
+                    finally:
+                        os.environ.pop('EXOPIPE3_MAP_REFUSAL_LOG', None)
                     assert lr.ok and os.path.isfile(res), (key, what, mode, lr.rc, lr.reason, lr.tail[-2000:])
-                    with open(res) as f:
-                        r = json.load(f)
+                    with open(res + '.log') as f:
+                        r = _gate_result(res, f.read(), res + '.refusals')
                     assert r['python'].startswith('3.6' if key == 'py36' else '3.8'), (key, r['python'])
                     if mode == 'standin':
-                        _check_gate_standin(r, sc, (key, what))
+                        nlines = len(_check_gate_standin(r, sc, (key, what)))
                     else:
                         _check_gate_real(r, (key, what))
             f = _check_gate_falsifier(_gate_direct(legacy.interpreter(key), sc, 'standin', on='0'), sc, key)
@@ -714,21 +788,23 @@ def test_lustre_map_gate_children():
                                                      SUBLST_CODE_ROOT=froot), sc, (key, 'frozen-code guard', order))
                 frozen = 'the gate in place with it first or second on the path'
             print('no-Lustre-map gate, core.legacy.run %s (Python %s), with and without --parity: stand-in maps refused, '
-                  'outside mapped; %s refused by path and by device without a map, read with the defaults and memmap=False, '
-                  'no /lustre mapping; frozen-code guard: %s; falsifier: %s' % (key, r['python'], LUSTRE_FITS, frozen,
-                                                                                 f[:120]))
+                  'outside mapped, %d refusal lines in the child log and in the inherited EXOPIPE3_MAP_REFUSAL_LOG, the '
+                  'swallowed refusal included; %s refused by path and by device without a map, read with the defaults and '
+                  'memmap=False, no /lustre mapping, no refusal line; frozen-code guard: %s; falsifier: %s'
+                  % (key, r['python'], nlines, LUSTRE_FITS, frozen, f[:120]))
         pys = [('flow', legacy.interpreter('flow')), ('tess', legacy.interpreter('tess')), ('tess /fast', TESS_FAST)]
         for name, py in pys:
             if not os.path.isfile(py):
                 print('      (skipped: no %s interpreter %s on this node)' % (name, py))
                 continue
             r = _gate_direct(py, sc, 'standin')
-            _check_gate_standin(r, sc, name)
+            nlines = len(_check_gate_standin(r, sc, name))
             r = _gate_direct(py, sc, 'real')
             _check_gate_real(r, name)
             f = _check_gate_falsifier(_gate_direct(py, sc, 'standin', on='0'), sc, name)
-            print('no-Lustre-map gate, %s %s (Python %s): stand-in maps refused, outside mapped; the Lustre file refused '
-                  'without a map and read with no /lustre mapping; falsifier: %s' % (name, py, r['python'], f[:120]))
+            print('no-Lustre-map gate, %s %s (Python %s): stand-in maps refused, outside mapped, %d refusal lines on stderr '
+                  'and in EXOPIPE3_MAP_REFUSAL_LOG, the swallowed refusal included; the Lustre file refused without a map and '
+                  'read with no /lustre mapping, no refusal line; falsifier: %s' % (name, py, r['python'], nlines, f[:120]))
     finally:
         if sc is not None:
             sc.close()

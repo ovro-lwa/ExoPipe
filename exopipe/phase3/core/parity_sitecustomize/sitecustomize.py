@@ -405,6 +405,10 @@ if _FITS_MOD in sys.modules:
 # (/proc/self/fd/<fd>) is under /lustre/. The refusal is NoLustreMapError, a PermissionError (errno EACCES; never ENOMEM,
 # which astropy answers with a second map) whose text starts 'NO-LUSTRE-MAP:' and names the file and the ruling; it is also
 # mmap.NoLustreMapError, so a pool worker's refusal unpickles in its parent. The decision reads /proc, never Lustre.
+# Before it raises, each refusal writes one line, 'NO-LUSTRE-MAP: <real path> pid <pid> <ruling>', to stderr (descriptor 2:
+# a redirect of sys.stderr does not hide it) and appends it to the file $EXOPIPE3_MAP_REFUSAL_LOG names, when set (a failed
+# append adds a 'NO-LUSTRE-MAP-LOG:' line on stderr): a caller that swallows the exception (`except Exception: return None`
+# around a FITS read) cannot hide the refusal.
 # Unchanged: anonymous maps (fileno -1), maps of node-local files (/fast, /dataNN, /dev/shm, /tmp), a FITS header read with
 # a map asked for (it maps nothing). astropy and numpy are not imported here. NOT covered: a map made in C (casacore maps
 # tables only when its tsm option says so; its default reads them - py36, py38 and flow, 2026-11-17), a process that does
@@ -413,8 +417,8 @@ import errno as _errno
 import mmap as _mmap
 
 _MMAP = _mmap.mmap
-_LUSTRE_RULING = ('R-GREGG-20261117-NO-MMAP-OF-LUSTRE-FILES-READ-OR-WRITE, Gregg 2026-11-17: "Never memory-map a Lustre file, '
-                  'for reading OR writing"')
+_LUSTRE_RULING_ID = 'R-GREGG-20261117-NO-MMAP-OF-LUSTRE-FILES-READ-OR-WRITE'
+_LUSTRE_RULING = _LUSTRE_RULING_ID + ', Gregg 2026-11-17: "Never memory-map a Lustre file, for reading OR writing"'
 
 
 class NoLustreMapError(PermissionError):
@@ -442,6 +446,38 @@ def _lustre_mount(dev, _seen={}):              # _seen: the answer per device, k
                     hit = True
         _seen[dev] = hit
     return hit
+
+
+def _report_refusal(where):
+    """The line of one refused map, on stderr and appended to $EXOPIPE3_MAP_REFUSAL_LOG (when set), written before the
+    refusal is raised."""
+    line = 'NO-LUSTRE-MAP: %s pid %d %s\n' % (where, os.getpid(), _LUSTRE_RULING_ID)
+    try:
+        data = os.fsencode(line)                # the path's own bytes (os.readlink decoded them)
+    except UnicodeError:
+        data = line.encode('ascii', 'backslashreplace')
+    try:
+        sys.stderr.flush()                      # what the process wrote to stderr before stays before the line
+    except Exception:
+        pass
+    try:
+        os.write(2, data)
+    except OSError:
+        pass
+    log = os.environ.get('EXOPIPE3_MAP_REFUSAL_LOG')
+    if log:
+        try:
+            fd = os.open(log, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o664)
+            try:
+                os.write(fd, data)
+            finally:
+                os.close(fd)
+        except OSError as e:
+            try:
+                os.write(2, ('NO-LUSTRE-MAP-LOG: the line above was not appended to EXOPIPE3_MAP_REFUSAL_LOG=%s: %s\n'
+                             % (log, e)).encode('ascii', 'backslashreplace'))
+            except OSError:
+                pass
 
 
 class _NoLustreMap(_MMAP):
@@ -484,6 +520,7 @@ class _NoLustreMap(_MMAP):
     def __new__(cls, *args, **kwargs):
         refused = _NoLustreMap.lustre_refusal(args[0] if args else kwargs.get('fileno', -1))
         if refused is not None:
+            _report_refusal(refused.filename)
             raise refused
         return _MMAP.__new__(cls, *args, **kwargs)
 
