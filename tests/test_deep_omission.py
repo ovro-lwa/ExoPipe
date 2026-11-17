@@ -1101,6 +1101,37 @@ def prod_merge_copy(ops_dir, tr, sl):
     # the merge's ghost-track refusal (exopipe_ops d1616d6) imports gate_inputs from its own directory: production's live file, run
     # in place by the port too (lib/catalog/tier_sublst.py), so not pinned - as the builder beside the pinned files
     shutil.copy(os.path.join(OPS, 'gate_inputs.py'), ops_dir)
+    # the master identity (exopipe_ops fa669f0; R-GREGG-20261117-TENMIN-MASTER-IDENTITY-BEFORE-RELEASE1), run right after the
+    # merge: production's live file, run in place by the stage
+    shutil.copy(os.path.join(OPS, 'sublst_master_identity.py'), ops_dir)
+
+
+def stub_master_grouping(B, G, label, u=None):
+    """sublst_build.batch_grouping's stand-in on the merge fixture (its master_catalog has no positions to group): one design-B
+    identity per served identity (a served member detection -> its survivors row's identity_id; any other detection of the build
+    its own), so production's master identity merges nothing and passes M1-M4 on the REAL merge's catalogs. Not a grouping
+    product: nothing recorded on u. The real grouping and a real merge of identities: tests/test_tenmin_master_identity.py."""
+    out = {}
+    for S in ('I', 'V'):
+        gid = {}
+        for T in ('sb', 'wb'):
+            d = os.path.join(B, f'source_catalogs_{S}_{T}')
+            if not os.path.isdir(d):
+                continue
+            surv = {}
+            for p in sorted(glob.glob(os.path.join(d, '*_sources_survivors.csv'))):
+                for r in _rows(p):
+                    surv[(r['source_id'], r['band'])] = r['identity_id']
+            for p in sorted(glob.glob(os.path.join(d, '*_source_members.csv'))):
+                for r in _rows(p):
+                    if (r['source_id'], r['band']) in surv:
+                        gid[r['cand_id']] = 'B_' + surv[(r['source_id'], r['band'])]
+        cids = [r['cand_id'] for r in _rows(os.path.join(B, 'master_catalog.csv')) if r['stokes'] == S]
+        os.makedirs(os.path.join(G, f'grouping_{S}'), exist_ok=True)
+        p = os.path.join(G, f'grouping_{S}', 'detections.csv')
+        _wcsv(p, ['cand_id', 'identity_id'], [dict(cand_id=c, identity_id=gid.get(c, 'B_' + c)) for c in cids])
+        out[S] = (p, dict(detections=len(cids)))
+    return out
 
 
 def test_serve_build_merge():
@@ -1125,7 +1156,7 @@ def test_serve_build_merge():
 
     def run_(name, args=(), **kw):
         calls.append(name)
-        if name == 'sublst_cumulative':
+        if name in ('sublst_cumulative', 'sublst_master_identity'):
             return real_run(name, args, **kw)
         return types.SimpleNamespace(ok=False, rc=1, tail='stopped by the test', reason='stopped by the test', refused=False)
     out = os.path.join(root, 'out')
@@ -1138,6 +1169,7 @@ def test_serve_build_merge():
                    (C.catalog_omission, 'TENMIN_FRAME_RMS', frms), (C.catalog_omission, 'TENMIN_RMS_CACHE_SEED', ''),
                    (sublst_build.scripts, 'run', run_), (sublst_build.scripts, 'ops_root', lambda: ops_dir),
                    (sublst_build, 'lst_run', lambda l: os.path.join(tr, f'Run_SLST{l[:2]}B')),
+                   (sublst_build, 'batch_grouping', stub_master_grouping),
                    # production-built LST runs, a parity plan: production's grouping, as the parity file sets it (item F.3)
                    (C.catalog_grouping, 'GROUPING', 'production'), (C.catalog_grouping, 'MULTIPLES_RULE', 'production')):
             u = sublst_build.build_stage(run, plan)
@@ -1145,8 +1177,15 @@ def test_serve_build_merge():
     finally:
         os.environ.pop('SUBLST_DEEP_OMISSION', None)
     B = sublst_build.build_dir(plan)
-    assert calls == ['sublst_cumulative', 'build_localizations'], calls
+    assert calls == ['sublst_cumulative', 'sublst_master_identity', 'build_localizations'], calls
     assert u.status == 'refused' and 'G9 localizations failed' in u.reason, (u.status, u.reason)
+    # G13 the master identity ran on the real merge's catalogs (production's script: M1-M4 passed, nothing merged) and its
+    # outcome test passed for every served Stokes
+    mi = u.meta['master_identity']
+    assert mi['how'].startswith('production grouping') and set(mi['outcome']) == {'I', 'V'} and all(
+        o['splits'] == o['unlinked'] == o['twice'] == 0 and o['members'] > 0 for o in mi['outcome'].values()), mi
+    assert any(n.startswith('MASTER-IDENTITY OK') for n in u.notes), u.notes
+    assert os.path.exists(os.path.join(B, 'source_catalogs', 'master_identity_summary.txt'))
     table = [o['path'] for o in u.outputs if o['class'] == 'omission_decisions'][0]
     assert filecmp.cmp(table, os.path.join(B, 'deep_omission.csv'), shallow=False), 'the merge copied another table'
     K = lambda r: (r['lst'], r['stokes'], r['view'], r['source_id'], r['band'], r['cand_id'], r['night'], r['why'])
@@ -1184,6 +1223,7 @@ def test_serve_build_merge():
                (C.catalog_omission, 'TENMIN_FRAME_RMS', frms), (C.catalog_omission, 'TENMIN_RMS_CACHE_SEED', ''),
                (sublst_build.scripts, 'run', run_), (sublst_build.scripts, 'ops_root', lambda: ops_dir),
                (sublst_build, 'lst_run', lambda l: os.path.join(tr, f'Run_SLST{l[:2]}B')),
+               (sublst_build, 'batch_grouping', stub_master_grouping),
                (C.catalog_grouping, 'GROUPING', 'production'), (C.catalog_grouping, 'MULTIPLES_RULE', 'production'),
                (C.search_sublst, 'SIZE_RULE', 'production')):
         set_job_rule(sl, 'production')

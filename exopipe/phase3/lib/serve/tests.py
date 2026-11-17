@@ -1343,6 +1343,38 @@ def _snr_of(r):
     return 0.0
 
 
+@content_test('master_identity_record')
+def master_identity_superseded(path, stokes=None, **ctx):
+    """The 10-minute master identity's record (B/source_catalogs/master_identity_<S>.csv, written by production's
+    sublst_master_identity.py in the sub-LST build, G13; R-GREGG-20261117-TENMIN-MASTER-IDENTITY-BEFORE-RELEASE1), read against
+    the build's own catalogs (survivors of B/source_catalogs_<S>_sb / _wb): every recorded identity maps to ONE master; every
+    master holds two or more recorded identities; every master is an identity of the build, named by the J-name (source_id) of
+    one of its own rows; no superseded identity (a recorded identity other than its master) is left in the build."""
+    S = stokes or os.path.basename(path)[len('master_identity_'):-len('.csv')]
+    B = os.path.dirname(os.path.dirname(os.path.abspath(path)))
+    with open(path, newline='') as f:
+        rd = csv.DictReader(f)
+        if not {'master_identity', 'identity_id'} <= set(rd.fieldnames or ()):
+            return False, None, f'columns {rd.fieldnames} lack master_identity / identity_id'
+        rec = list(rd)
+    bad = [f'identity {i} recorded {n} times' for i, n in Counter(r['identity_id'] for r in rec).items() if n > 1]
+    size = Counter(r['master_identity'] for r in rec)
+    bad += [f'master {m} holds {n} identity' for m, n in size.items() if n < 2]
+    sources = defaultdict(set)
+    for t in ('sb', 'wb'):
+        for p in sorted(glob.glob(os.path.join(B, f'source_catalogs_{S}_{t}', '*_sources_survivors.csv'))):
+            with open(p, newline='') as f:
+                for r in csv.DictReader(f):
+                    sources[r['identity_id']].add(r['source_id'])
+    bad += [f'master {m} is not an identity of the build' for m in size if m not in sources]
+    bad += [f'master {m} is not the J-name of one of its rows' for m in size if m in sources and m not in sources[m]]
+    left = sorted({r['identity_id'] for r in rec if r['identity_id'] != r['master_identity']} & set(sources))
+    bad += [f'superseded identity {i} still in the build' for i in left]
+    val = dict(masters=len(size), merged_identities=len(rec))
+    return not bad, val, ('; '.join(map(str, bad[:5])) if bad else
+                          f'{len(rec)} served identities merged into {len(size)} masters; none left in the build')
+
+
 @content_test('sublst_cumulative')
 def merge_invariants(path, lst_runs_root=None, **ctx):
     """Every LST merged (from master_catalog.csv cand_ids) has its page directories in candidates/; pertie_detections.csv
