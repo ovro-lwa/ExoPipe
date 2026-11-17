@@ -19,6 +19,8 @@ reason, master_md5 (md5 of the I survey master's data the night was tested again
 method. Readers: the co-add membership, the search admission, the archive publish, the install, the P3S5 patch; a reader
 that needs the record and finds it missing or stale REFUSES (a gate never skips)."""
 import csv
+from astropy.io import fits as _fits_nommap   # noqa: E402
+_fits_nommap.conf.use_memmap = False   # never memory-map a Lustre file, also when run by path (R-GREGG-20261117-NO-MMAP-OF-LUSTRE-FILES-READ-OR-WRITE)
 import glob
 import hashlib
 import os

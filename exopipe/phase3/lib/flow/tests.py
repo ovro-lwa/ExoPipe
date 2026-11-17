@@ -37,9 +37,8 @@ def _npy_shape(path):
     """Shape of a .npy array from its header alone (no memory map: R-GREGG-20261117-NO-MMAP-OF-LUSTRE-FILES-READ-OR-WRITE)."""
     import numpy as np
     with open(path, 'rb') as f:
-        major, _minor = np.lib.format.read_magic(f)
-        rd = np.lib.format.read_array_header_1_0 if major == 1 else np.lib.format.read_array_header_2_0
-        return tuple(rd(f)[0])
+        version = np.lib.format.read_magic(f)
+        return tuple(np.lib.format._read_array_header(f, version)[0])   # handles format 1.0, 2.0 and 3.0 (utf-8)
 
 
 def _cfg():

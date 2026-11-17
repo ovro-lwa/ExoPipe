@@ -46,6 +46,8 @@ CLI: python -m exopipe.phase3.phase3_install <cell> --gen GEN --kind mdewarp|reb
      python -m exopipe.phase3.phase3_install --screen-table-unapplied TABLE   (after all installs: one applied=0 row per
      measured cell that was not applied, with its status, so a cell without a screen is known not to have been applied)"""
 import argparse, csv, fcntl, glob, hashlib, json, os, re, shutil, sys, time
+from astropy.io import fits as _fits_nommap   # noqa: E402
+_fits_nommap.conf.use_memmap = False   # never memory-map a Lustre file, also when run by path (R-GREGG-20261117-NO-MMAP-OF-LUSTRE-FILES-READ-OR-WRITE)
 
 ROOT = '/data07/gh/phase3/coadd_sb'
 # ONE QUARANTINE PAIR PER INSTALL ROUND (2026-10-05): a second install of an installed cell (the cubic re-apply) would find

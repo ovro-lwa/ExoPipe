@@ -41,6 +41,8 @@ RAM: 4 accumulator cubes + weights (~100 GB for the 4096^2 generation) —
 run this ALONE, after the per-subband sweep, never concurrently with it.
 """
 import argparse
+from astropy.io import fits as _fits_nommap   # noqa: E402
+_fits_nommap.conf.use_memmap = False   # never memory-map a Lustre file, also when run by path (R-GREGG-20261117-NO-MMAP-OF-LUSTRE-FILES-READ-OR-WRITE)
 import csv
 csv.field_size_limit(100000000)
 import json

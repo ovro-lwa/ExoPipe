@@ -24,6 +24,8 @@ Derived products (see pb_apply.py, NOT stored here):
 See MOSAIC_DESIGN.md for the decisions behind this.
 """
 import os
+from astropy.io import fits as _fits_nommap   # noqa: E402
+_fits_nommap.conf.use_memmap = False   # never memory-map a Lustre file, also when run by path (R-GREGG-20261117-NO-MMAP-OF-LUSTRE-FILES-READ-OR-WRITE)
 import sys
 import argparse
 import numpy as np

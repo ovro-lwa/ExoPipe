@@ -35,6 +35,8 @@ Subcommands
 Python API: open_cube(path) -> Cube; Cube.frame(ts) -> (data float32, astropy Header); Cube.timestamps
 """
 import argparse
+from astropy.io import fits as _fits_nommap   # noqa: E402
+_fits_nommap.conf.use_memmap = False   # never memory-map a Lustre file, also when run by path (R-GREGG-20261117-NO-MMAP-OF-LUSTRE-FILES-READ-OR-WRITE)
 import csv
 import glob
 import hashlib
@@ -823,12 +825,7 @@ class Cube(object):
             return None
         i = self._idx[ts]
         fh = self.h["FLOW"].header
-        try:
-            q = np.asarray(self.h["FLOW"].section[i])           # one frame read from the file (no memory map: Lustre rule 11-17)
-        except (AttributeError, OverflowError):                  # compressed HDU on astropy < 5.3: see frame()
-            if not hasattr(self, "_allflow"):
-                self._allflow = np.asarray(self.h["FLOW"].data)
-            q = self._allflow[i]
+        q = np.asarray(self.h["FLOW"].section[i])   # FLOW is a plain int16 ImageHDU: one frame read, no memory map (Lustre rule 11-17)
         f = q.astype(np.float32) * float(fh.get("FLOWSCAL", FLOW_SCALE))
         f[q == int(fh.get("FLOWNULL", FLOW_BLANK))] = np.nan
         return None if np.isnan(f).all() else f

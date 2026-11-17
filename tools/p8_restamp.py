@@ -20,6 +20,8 @@ R-01(b) folded in: proc-token repair (PROC list, SSUB/ALIGNED keys) in the
 same pass, recorded per row.
 """
 import os, re, csv, glob, sys, argparse
+from astropy.io import fits as _fits_nommap   # noqa: E402
+_fits_nommap.conf.use_memmap = False   # never memory-map a Lustre file, also when run by path (R-GREGG-20261117-NO-MMAP-OF-LUSTRE-FILES-READ-OR-WRITE)
 
 D7 = '/data07/gh/phase3'
 LU = '/lustre/pipeline/exopipe/phase3'

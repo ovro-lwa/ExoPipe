@@ -18,6 +18,8 @@ Usage:
   conda run -n py38_orca_nkosogor python coadd_full_pipeline.py --freq Blue
 """
 import argparse
+from astropy.io import fits as _fits_nommap   # noqa: E402
+_fits_nommap.conf.use_memmap = False   # never memory-map a Lustre file, also when run by path (R-GREGG-20261117-NO-MMAP-OF-LUSTRE-FILES-READ-OR-WRITE)
 import csv
 import fcntl
 import os

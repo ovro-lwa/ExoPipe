@@ -17,6 +17,8 @@ movies are made whenever a cell is staged; no dedicated backfill).
 usage: phase3_snapshot_frame_movie.py CELL OUT_DIR [--cube-root R] [--alt-cube-root R2] [--frames-root S] [--bands all|list] [--k 6]
 """
 import argparse, os, sys, subprocess
+from astropy.io import fits as _fits_nommap   # noqa: E402
+_fits_nommap.conf.use_memmap = False   # never memory-map a Lustre file, also when run by path (R-GREGG-20261117-NO-MMAP-OF-LUSTRE-FILES-READ-OR-WRITE)
 import numpy as np
 from astropy.io import fits
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))

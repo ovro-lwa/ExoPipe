@@ -56,6 +56,7 @@ def audit_mosaic(dst):
     import numpy as np
     from astropy.io import fits
     from exopipe.phase3.core.products import build_name, parse_name
+    from exopipe.phase3.core.fitsio import has_data
     unit = _p().AUDIT_BUNIT
     stride = int(_p().AUDIT_PIXEL_STRIDE)
     p = []
@@ -66,7 +67,7 @@ def audit_mosaic(dst):
             p.append('name does not round-trip')
         proc = pn.get('proc') or []
         with fits.open(dst, memmap=False) as h:
-            dh = h[0] if h[0].header.get('NAXIS', 0) else h[1]     # header test: no data read
+            dh = h[0] if has_data(h[0]) else h[1]                  # decided from the header: no data read
             hdr_all = {**dict(h[0].header), **dict(dh.header)}
             if bool(hdr_all.get('PBCORR')) != ('pbcorr' in proc):
                 p.append(f"PBCORR {hdr_all.get('PBCORR')} vs name")
@@ -78,8 +79,8 @@ def audit_mosaic(dst):
             for k in ('DATE-OBS', 'DATE-END'):
                 if not hdr_all.get(k):
                     p.append(f'no {k}')
-            arr = dh.data if dh is h[0] else dh.data['SIGNAL']
-            if not np.isfinite(np.asarray(arr[::stride])).any():
+            arr = dh.section[::stride] if dh is h[0] else dh.data['SIGNAL'][::stride]   # an image reads only the sampled rows
+            if not np.isfinite(np.asarray(arr)).any():
                 p.append('no finite pixel')
     except Exception as e:
         p.append(f'unreadable {str(e)[:60]}')

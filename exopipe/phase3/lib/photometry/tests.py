@@ -26,6 +26,7 @@ says so in its detail and does not fail; every other missing input fails. Option
 shard, nshards, refused_cells, cutout_root, stage1, max_cells (limits the Z1 / S cells - real-product spot checks only).
 """
 import csv
+from exopipe.phase3.core.fitsio import hdu_shape
 import datetime
 import glob
 import gzip
@@ -1658,7 +1659,7 @@ def c1(path, **ctx):
     bad = []
     with fits.open(path, memmap=False) as h:
         H = h[0].header
-        shp = h[0].data.shape if h[0].data is not None else ()
+        shp = hdu_shape(h[0])                                      # header only (no memory map)
         if len(shp) != 3 or shp[1] != shp[2]:
             bad.append('C1 cube shape %s' % (shp,))
         else:

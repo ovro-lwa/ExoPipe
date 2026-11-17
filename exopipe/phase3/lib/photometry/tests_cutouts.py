@@ -29,6 +29,7 @@ import random
 import re
 
 from exopipe.phase3.core.validate import content_test
+from exopipe.phase3.core.fitsio import hdu_shape
 
 SNAP_RE = re.compile(r'^(?P<obj>.+)_(?P<lst>\d\dh)_(?P<ymd>\d{8})T(?P<hms>\d{6})_(?P<st>[IV])\.fits$')
 TIER_RE = re.compile(r'^(?P<obj>.+)_(?P<lst>\d\dh)_(?P<tier>10min|deep)_(?P<st>[IV])\.fits$')
@@ -165,7 +166,7 @@ def tier_structure(path):
     bad = []
     with fits.open(path, memmap=False) as h:
         H = h[0].header
-        shp = h[0].data.shape if h[0].data is not None else ()
+        shp = hdu_shape(h[0])                                      # header only (no memory map)
         if len(shp) != 3 or shp[1] != shp[2]:
             bad.append('TC1 cube shape %s' % (shp,))
         elif shp[1] != int(round(cc.CUT_DEG / abs(float(H['CDELT2'])))):
@@ -364,7 +365,7 @@ def wideband_stack(cell, stokes, members_csv, group, files, cube_root=None, sear
         with fits.open(f) as hf:
             ch = hf[0].header
             T = hf['TIMES'].data
-            n = hf[0].data.shape[1]
+            n = hdu_shape(hf[0])[1]
         half = n // 2
         if os.path.abspath(f).split('/')[-4] == _cfg().photometry.PLANET_SAMPLE:
             px, py = w0.all_world2pix(np.asarray(T['ra_deg'], float), np.asarray(T['dec_deg'], float), 0)

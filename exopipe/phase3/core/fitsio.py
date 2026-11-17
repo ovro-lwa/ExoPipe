@@ -18,6 +18,19 @@ _CACHE = {}
 _CACHE_MAX = 8
 
 
+def has_data(hdu):
+    """True when the HDU's header declares a non-empty array (every NAXISn > 0), decided from the header alone: with memory
+    maps off (R-GREGG-20261117-NO-MMAP-OF-LUSTRE-FILES-READ-OR-WRITE) ``hdu.data is not None`` reads the whole array."""
+    h = hdu.header                       # a CompImageHDU's .header is already the image header (NAXIS, not ZNAXIS)
+    n = int(h.get('NAXIS', 0))
+    return n > 0 and all(int(h.get(f'NAXIS{i}', 0)) > 0 for i in range(1, n + 1))
+
+
+def hdu_shape(hdu):
+    """numpy-order shape of an image HDU from its header alone (() when it has no array; see has_data)."""
+    return tuple(hdu.shape) if has_data(hdu) else ()
+
+
 def write_fits(path, data, header=None, overwrite=False):
     from astropy.io import fits
     if os.path.exists(path) and not overwrite:

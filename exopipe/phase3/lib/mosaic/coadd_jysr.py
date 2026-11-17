@@ -25,6 +25,8 @@ Two modes:
     position is correct.)
 """
 import os, glob, sys
+from astropy.io import fits as _fits_nommap   # noqa: E402
+_fits_nommap.conf.use_memmap = False   # never memory-map a Lustre file, also when run by path (R-GREGG-20261117-NO-MMAP-OF-LUSTRE-FILES-READ-OR-WRITE)
 import numpy as np
 import healpy as hp
 from astropy.io import fits

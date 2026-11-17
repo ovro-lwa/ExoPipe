@@ -19,6 +19,8 @@ Task kinds (each calls exactly what production calls, with the same arguments):
            verify_mosaic.astrometry_check(scope, map, nsrc, minflux) per jysr map -> the VLSSr table.
 """
 import json
+from astropy.io import fits as _fits_nommap   # noqa: E402
+_fits_nommap.conf.use_memmap = False   # never memory-map a Lustre file, also when run by path (R-GREGG-20261117-NO-MMAP-OF-LUSTRE-FILES-READ-OR-WRITE)
 import os
 import re
 import sys

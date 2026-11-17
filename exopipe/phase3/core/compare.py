@@ -35,6 +35,8 @@ nan_to_num; the relative measure is max|A-B|/rms(A); the default CSV tolerance i
 every HDU is compared, not only the primary.
 """
 import csv
+from astropy.io import fits as _fits_nommap   # noqa: E402
+_fits_nommap.conf.use_memmap = False   # never memory-map a Lustre file, also when run by path (R-GREGG-20261117-NO-MMAP-OF-LUSTRE-FILES-READ-OR-WRITE)
 import fnmatch
 import hashlib
 import json

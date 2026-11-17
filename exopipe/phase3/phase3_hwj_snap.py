@@ -21,6 +21,8 @@ Resumable: RESULTS/{unit}.done markers.
 Usage: phase3_hwj_snap.py V|I [--nproc 24] [--lst 05h] [--limit N]
 """
 import os, re, sys, csv, glob, shutil, argparse, subprocess, warnings
+from astropy.io import fits as _fits_nommap   # noqa: E402
+_fits_nommap.conf.use_memmap = False   # never memory-map a Lustre file, also when run by path (R-GREGG-20261117-NO-MMAP-OF-LUSTRE-FILES-READ-OR-WRITE)
 from multiprocessing import Pool
 
 import numpy as np
