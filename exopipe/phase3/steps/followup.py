@@ -701,12 +701,14 @@ def _op_tess(args, run):
 # investigate / summary (the follow-up package, in-process)
 # =====================================================================================================================
 
-def _package(run, out_root, modules):
-    """Set the package's CANDINV_* paths from config (G13) and import ``modules`` from exopipe.phase3.followup."""
+def _package(run, out_root, modules, scratch=None):
+    """Set the package's CANDINV_* paths from config (G13) and import ``modules`` from exopipe.phase3.followup;
+    ``scratch`` (investigate: the op's node-local scratch directory) becomes the package's SCRATCH_DIR, where T5
+    makes its temp dirs."""
     import importlib
     from exopipe.phase3.core.record import Refusal
     from exopipe.phase3.followup import _cfg_adapter as A
-    env = A.apply(run.cfg.followup_investigate, out_root)
+    env = A.apply(run.cfg.followup_investigate, out_root, scratch)
     mods = {m: importlib.import_module(f'exopipe.phase3.followup.{m}') for m in modules}
     bad = A.check_applied(env)
     if bad:
@@ -772,7 +774,7 @@ def _op_investigate(args, run):
     here = os.getcwd()
     os.chdir(scratch)
     try:
-        mods, env = _package(run, out, ('candidate', 'resolve', 'refs', 'config', 'dossier'))
+        mods, env = _package(run, out, ('candidate', 'resolve', 'refs', 'config', 'dossier'), scratch)
         CM, R, REFS, C, D = (mods[k] for k in ('candidate', 'resolve', 'refs', 'config', 'dossier'))
         cands = _candidates(args, CM, S.TOP50_CSV)
         no_xmatch = all(REFS.target_catalog(k) is None for k in C.TARGET_CSVS)

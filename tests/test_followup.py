@@ -10,7 +10,11 @@
                stored raws (read only) equal to the archive's plans (P-F1) and of a bad one (refused)
   tess         fake TESS script: done / no sector (exit 3) / SIMBAD failure (G9)
   investigate  the package in-process: G11 on an empty synthetic bundle; G13 when the package config was imported with
-               other paths; dossier writers of the package -> the followup_* content tests (column constants checked)
+               other paths; dossier writers of the package -> the followup_* content tests (column constants checked);
+               the package's SCRATCH_DIR is the op's own scratch directory under --work
+  t5_scratch   every tempfile.mkdtemp of followup/snapshots.py takes dir=C.SCRATCH_DIR; a fresh interpreter takes
+               CANDINV_SCRATCH_DIR (snapshot_spectrum makes its temp dir there and removes it) and keeps production's
+               /fast/gh/main without it
   summary      synthetic top-50 + one evidence file: ranked summary, missing dossier row, re-score written back
   hone         the REAL phase3_honing.py on a 2-candidate CSV: every candidate no-products (exit 3), as production today
   periodicity  fake stage scripts: lightcurves -> search (G28 refuses 1 of 24 cells; then all 24) -> page; a second
@@ -429,6 +433,8 @@ def test_investigate():
     r = _records(out, 'rank00_J061934+410530_LST07h')
     assert r['status'] == 'refused' and r['reason'].startswith('G11'), r['reason']
     assert r['meta']['candinv_env']['CANDINV_BUNDLE_DIR'] == bundle
+    # T5's temp dirs (followup/snapshots.py) go to the op's own node-local scratch directory, removed at the end
+    assert os.path.dirname(r['meta']['candinv_env']['CANDINV_SCRATCH_DIR']) == os.path.abspath(work), r['meta']
     assert any('cross-match empty' in n for n in r['notes']), r['notes']
     from exopipe.phase3.core import exclusions
     assert r['admitted'] == ([] if exclusions.is_excluded('07h', '23MHz', '2024-12-31') else ['2024-12-31']), r
@@ -477,6 +483,60 @@ def test_investigate():
     assert cut, 'the package cutout writer failed on a synthetic all-sky image'
     res = validate.run('followup_fits', cut)
     assert res[0]['passed'] and res[0]['value'] == [161, 161], res
+
+
+def test_t5_scratch():
+    """T5's temp dirs follow CANDINV_SCRATCH_DIR. Found by the followup parity shadow (2026-11-17): production's
+    hard-coded dir='/fast/gh/main' was refused by the --parity guard, so T5 of every parity run ended in an escalation
+    error."""
+    import ast
+    import subprocess
+    from exopipe.phase3.followup import _cfg_adapter as A
+    src = os.path.join(REPO, 'exopipe', 'phase3', 'followup', 'snapshots.py')
+    calls = [n for n in ast.walk(ast.parse(open(src).read())) if isinstance(n, ast.Call)
+             and isinstance(n.func, ast.Attribute) and n.func.attr == 'mkdtemp']
+    assert len(calls) == 4, f'{len(calls)} mkdtemp calls in snapshots.py; this test knows 4'
+    for n in calls:
+        dv = {k.arg: k.value for k in n.keywords}.get('dir')
+        assert (isinstance(dv, ast.Attribute) and dv.attr == 'SCRATCH_DIR' and isinstance(dv.value, ast.Name)
+                and dv.value.id == 'C'), f'snapshots.py:{n.lineno}: mkdtemp without dir=C.SCRATCH_DIR'
+    d = _fresh('t5_scratch')
+    t5 = os.path.join(d, 't5')              # the probe runs in d (CASA writes its log to the cwd)
+    os.makedirs(t5)
+    sec = _cfg().followup_investigate
+    assert A.env_for(sec, d, scratch=d)['CANDINV_SCRATCH_DIR'] == d
+    assert 'CANDINV_SCRATCH_DIR' not in A.env_for(sec, d)
+    # a fresh interpreter (the package reads CANDINV_* once, at import); no frames exist for 07h 2000-01-01, so
+    # snapshot_spectrum only makes and removes its temp dir
+    probe = '\n'.join([
+        'import os, tempfile',
+        'from exopipe.phase3.core import env',
+        'env.legacy()',
+        'seen, real = [], tempfile.mkdtemp',
+        'def spy(suffix=None, prefix=None, dir=None):',
+        '    if str(prefix).startswith("candinv_"):',
+        '        seen.append(dir)',
+        '    return real(suffix, prefix, dir)',
+        'tempfile.mkdtemp = spy',
+        'from exopipe.phase3.followup import config as C, snapshots as SN',
+        'print("SCRATCH_DIR=" + C.SCRATCH_DIR)',
+        'if "CANDINV_SCRATCH_DIR" in os.environ:',
+        '    SN.snapshot_spectrum("07h", "2000-01-01", 94.895, 41.092, "20000101_073000", scopes=["23MHz"],',
+        '                         verbose=False)',
+        '    print("SEEN=" + repr(seen) + " LEFT=" + repr(os.listdir(C.SCRATCH_DIR)))'])
+    base = {k: v for k, v in os.environ.items() if not k.startswith('CANDINV_')}
+    base['PYTHONPATH'] = REPO
+
+    def probe_run(extra):
+        p = subprocess.run([sys.executable, '-c', probe], env=dict(base, **extra), cwd=d, stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE, universal_newlines=True, timeout=300)
+        assert p.returncode == 0, p.stderr[-3000:]
+        return {ln.split('=', 1)[0]: ln.split('=', 1)[1] for ln in p.stdout.splitlines()
+                if ln.startswith(('SCRATCH_DIR=', 'SEEN='))}
+    got = probe_run({'CANDINV_SCRATCH_DIR': t5})
+    assert got.get('SCRATCH_DIR') == t5 and got.get('SEEN') == f'{[t5]!r} LEFT=[]', got
+    got = probe_run({})
+    assert got.get('SCRATCH_DIR') == '/fast/gh/main' and 'SEEN' not in got, got
 
 
 def test_summary():
@@ -749,7 +809,8 @@ def test_real_products():
 
 
 TESTS = ['test_cli', 'test_config', 'test_ep_plan', 'test_tess', 'test_real_products', 'test_investigate',
-         'test_summary', 'test_hone', 'test_periodicity', 'test_fold_and_source_page', 'test_negative']
+         'test_t5_scratch', 'test_summary', 'test_hone', 'test_periodicity', 'test_fold_and_source_page',
+         'test_negative']
 
 
 def main(argv):

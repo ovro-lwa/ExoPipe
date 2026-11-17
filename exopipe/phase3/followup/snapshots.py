@@ -182,7 +182,7 @@ def save_burst_allsky(cand, lst, date, scope, ra, dec, frame_times, outdir,
     if _phase1_snap_dir(lst, date, scope) is None:      # excluded (snap_refusal) or no frames
         return []
     scr = _load_warp(scope, lst, date)
-    tmp = tempfile.mkdtemp(prefix='candinv_snapsave_', dir='/fast/gh/main')
+    tmp = tempfile.mkdtemp(prefix='candinv_snapsave_', dir=C.SCRATCH_DIR)
     written = []
     try:
         for ts in frame_times:
@@ -230,7 +230,7 @@ def snapshot_spectrum(lst, date, ra, dec, timestamp, scopes=None,
     the fixed position. timestamp = 'YYYYMMDD_HHMMSS'. Returns list of dicts.
     """
     scopes = scopes or C.SUBBANDS
-    tmp = tempfile.mkdtemp(prefix='candinv_snapspec_', dir='/fast/gh/main')
+    tmp = tempfile.mkdtemp(prefix='candinv_snapspec_', dir=C.SCRATCH_DIR)
     rows = []
     try:
         for sb in scopes:
@@ -354,7 +354,7 @@ def snapshot_morphology(lst, date, scope, ra, dec, timestamp, verbose=True):
         out['note'] = 'no snapshot dir'
         return out
     scr = _load_warp(scope, lst, date)
-    tmp = tempfile.mkdtemp(prefix='candinv_snapmorph_', dir='/fast/gh/main')
+    tmp = tempfile.mkdtemp(prefix='candinv_snapmorph_', dir=C.SCRATCH_DIR)
     try:
         vdw, vhdr, vw = _funpack_dewarp(lst, date, scope, scr, timestamp, 'V', tmp)
         idw, ihdr, iw = _funpack_dewarp(lst, date, scope, scr, timestamp, 'I', tmp)
@@ -445,7 +445,7 @@ def snapshot_lightcurve(lst, date, scope, ra, dec, start_iso, end_iso,
     out['available'] = True
     out['n_frames'] = len(snaps)
 
-    tmp = workdir or tempfile.mkdtemp(prefix='candinv_snap_', dir='/fast/gh/main')
+    tmp = workdir or tempfile.mkdtemp(prefix='candinv_snap_', dir=C.SCRATCH_DIR)
     try:
         # copy+funpack each snapshot PER-FILE (archive untouched), robust to
         # concurrent-IO truncation: a few unreadable frames are skipped rather

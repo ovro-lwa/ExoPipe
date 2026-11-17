@@ -38,6 +38,11 @@ PHASE2_ARCHIVE = _env('PHASE2_ARCHIVE', '/lustre/pipeline/exopipe/phase2')
 # the 10-second snapshots used by the T5 escalation.
 PHASE2_FAST = _env('PHASE2_FAST', '/fast/gh/main/phase2')
 
+# Node-local scratch for T5's temp dirs (snapshot copies, funpack, dewarp; snapshots.py removes each one after use).
+# The step (`exopipe3 followup investigate`) sets it to its own scratch directory under --work, the only place a
+# --parity run may write; a direct call of the package keeps production's /fast/gh/main.
+SCRATCH_DIR = _env('SCRATCH_DIR', '/fast/gh/main')
+
 # --- Output (conformant dossier home) --------------------------------------
 # phase3_paths.candidate_dir(OUT_ROOT, OUT_LABEL, cand_id) ->
 #   {OUT_ROOT}/transients/Run_{OUT_LABEL}/candidates/{cand_id}/
