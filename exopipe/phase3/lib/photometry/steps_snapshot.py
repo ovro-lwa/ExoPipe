@@ -340,15 +340,43 @@ def refused_given(args):
     return out
 
 
+def served_generation_stage1(stage1, cells):
+    """True when every selected stage-1 cell was measured from the served cutout generation (photometry.CUTOUT_ROOT): its
+    forced_manifest.csv exists, its first file lies under that root, and for a cell the pinned file names every file does.
+    A cell without a manifest, or with a file elsewhere, makes it False."""
+    from exopipe.phase3.lib.photometry.tests import read_csv
+    root = K.cfg().photometry.CUTOUT_ROOT.rstrip('/') + '/'
+    pinned = {r['cell'] for r in read_csv(K.cfg().photometry_evaluate.REFUSED_CELLS['snapshot'])[1]}
+    if not cells:
+        return False
+    for cl in cells:
+        m = os.path.join(stage1, cl, 'forced_manifest.csv')
+        if not os.path.isfile(m):
+            return False
+        if cl in pinned:
+            files = [r['file'] for r in read_csv(m)[1]]
+        else:
+            with open(m) as f:
+                f.readline()
+                files = [f.readline().split(',', 1)[0]]
+        if not files or not all(fn.startswith(root) for fn in files):
+            return False
+    return True
+
+
 def refused_for(kind, given, stage1, cells):
     """(OrderedDict cell -> reason, path of a given list or None) of the cells refused before the evaluation of ``kind``.
     Default: the pinned file's rows for the kind in file order (reserve :140-141), then the cells whose measure unit was
     refused (:142-144). A given list (--refused-cells) is read as written and must hold every pinned cell of the kind (the
     pinned cells are never re-admitted, DECISION-FORCED-CORRUPT-CUTOUT-CELLS-REFUSED); the measure refusals are added after
-    its rows."""
+    its rows.
+    The pinned file names corrupt GENERATION-4 archive cutouts (written 2026-09-18..22 under the retired root). Generation 5
+    re-cut every cutout from the cubes, and production's generation-5 evaluation (snapshot_forced_gen5_stages_20261026.sh)
+    reads no pinned file: it evaluated 04h 2025-01-06, 09h 2025-01-01 and 08h 2025-01-09. So the pin applies unless this
+    stage 1 measured the served generation only (served_generation_stage1); then no pinned row is added or required."""
     from collections import OrderedDict
     from exopipe.phase3.lib.photometry.tests import read_csv
-    pinned = refused_list(kind)
+    pinned = [] if served_generation_stage1(stage1, cells) else refused_list(kind)
     ref = OrderedDict()
     path = given.get(kind)
     if path:
