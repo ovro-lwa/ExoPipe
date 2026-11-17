@@ -5,7 +5,7 @@ the file's own columns or from the inputs it names; none tests presence alone. S
 Classes: item_list, stale_table, coverage_table, rebuild_due, exclusion_conformance, served_diff, cell_load_review,
 status_report, readjudication_list, date_outlier_proposals, qa_table, solar_audit, beam_audit, noise_plot,
 bandpass_phase_qa, provenance_audit, membership_conformance, qa_night_pages, status_page, processing_ledger,
-ratified_register, snapshot_eligibility, snapshot_batch_list.
+ratified_register, snapshot_eligibility, snapshot_batch_list, qa_coverage, qa_coverage_summary.
 """
 import ast
 import collections
@@ -850,6 +850,48 @@ def status_page(path, **ctx):
     if missing:
         return False, len(missing), f'{len(missing)} night/date links missing, e.g. {missing[0]}'
     return True, len(links), f'{len(links)} night/date links resolve'
+
+
+@content_test('qa_coverage')
+def qa_coverage(path, **ctx):
+    """coverage.json of the data-processing page (build_qa_release1.py:280-283): {'built_utc', 'nights'}, one record per
+    '<lst>_<date>' key holding that lst and date, as many as the page beside it lists in its per-night table."""
+    with open(path) as f:
+        d = json.load(f)
+    nights = d.get('nights') if isinstance(d, dict) else None
+    if not isinstance(nights, dict) or not d.get('built_utc'):
+        return False, None, 'not {built_utc, nights}'
+    bad = [k for k, r in nights.items() if not isinstance(r, dict) or k != f"{r.get('lst')}_{r.get('date')}"
+           or not re.match(r'^\d\dh_20\d\d-\d\d-\d\d$', k)]
+    if bad:
+        return False, len(bad), f'{len(bad)} keys not <lst>_<date> of their record, e.g. {bad[0]}'
+    page = os.path.join(os.path.dirname(path), K.cfg().status_pages.DATA_PAGE)
+    m = None
+    if os.path.exists(page):
+        with open(page) as f:
+            m = re.search(r'Every LST-night of the grids \((\d+)\)', f.read())
+    if not m or int(m.group(1)) != len(nights):
+        return False, len(nights), (f'{len(nights)} LST-nights; the page beside it lists '
+                                    f'{m.group(1) if m else "no per-night table"}')
+    return True, len(nights), f'{len(nights)} LST-nights, equal to the page\'s per-night table'
+
+
+@content_test('qa_coverage_summary')
+def qa_coverage_summary(path, **ctx):
+    """coverage_summary.json (build_qa_release1.py:284-285): one row per tier deep, 10min, snap, in that order, with
+    integer counts and searched LST-nights = both_stokes + one_stokes."""
+    with open(path) as f:
+        d = json.load(f)
+    if not isinstance(d, list) or not all(isinstance(r, dict) for r in d) or [r.get('tier') for r in d] != [
+            'deep', '10min', 'snap']:
+        return False, None, 'not one record per tier deep, 10min, snap'
+    keys = ('lst_nights', 'nights', 'lsts', 'both_stokes', 'one_stokes')
+    for r in d:
+        if not all(type(r.get(k)) is int and r[k] >= 0 for k in keys):
+            return False, r['tier'], f"{r['tier']}: counts {[r.get(k) for k in keys]} are not non-negative integers"
+        if r['lst_nights'] != r['both_stokes'] + r['one_stokes']:
+            return False, r['tier'], f"{r['tier']}: lst_nights {r.get('lst_nights')} != both + one Stokes"
+    return True, len(d), ', '.join(f"{r['tier']} {r['lst_nights']} LST-nights" for r in d)
 
 
 @content_test('processing_ledger')

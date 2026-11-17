@@ -267,11 +267,22 @@ class status_qa(_Section):
 
 
 class status_pages(_Section):
-    """Hub status pages (build_qa_pages.py, build_data_processing_page.py, build_ratified_register.py; in place). The hub
-    folder is serve.HUB_DIR; status never writes index.html or registry.json (serve)."""
+    """Hub status pages (build_qa_pages.py, build_qa_release1.py with its helper build_data_processing_page.py,
+    build_ratified_register.py; in place). The hub folder is serve.HUB_DIR; status never writes index.html or registry.json
+    (serve)."""
     NIGHT_PAGE = 'nights/{lst}_{date}.html'    # under the hub; build_qa_pages.py:5, 344-345
-    FRAGMENT = 'qa_overview_fragment.html'     # build_qa_pages.py:12, 443; read by build_data_processing_page.py:184-186
-    DATA_PAGE = 'data_processing.html'         # build_data_processing_page.py:14 (HUB-PAGE-DATA-PROCESSED-PHASES-1-3, 1934)
+    FRAGMENT = 'qa_overview_fragment.html'     # build_qa_pages.py:12, 443; read by build_qa_release1.py:426-429
+    DATA_PAGE = 'data_processing.html'         # build_qa_release1.py:453 (the hub page "Data processed: Phase 1 -> 2 -> 3")
+    # The served data-processing page is the Release 1 page since 2026-11-10 (hub data_processing.html and coverage.json of
+    # 2026-11-10 06:17 UTC): build_qa_release1.py, which imports the 10-07 page's module for its helpers and sources. It
+    # writes DATA_PAGE, coverage.json, coverage_summary.json and per_night_qa_inventory.csv into <argv 1>/qa_site; production
+    # installs the page and coverage.json into the hub (build_qa_release1.py:21-22).
+    DATA_PAGE_BUILDER = 'build_qa_release1'
+    DATA_PAGE_HELPER = 'build_data_processing_page'
+    DATA_PAGE_SITE = 'qa_site'                 # the builder's output folder, under <out>/status
+    # file -> content-test class: installed into the hub (production installs these two) / kept in the builder's folder
+    DATA_PAGE_INSTALL = {'data_processing.html': 'status_page', 'coverage.json': 'qa_coverage'}
+    DATA_PAGE_SITE_ONLY = {'coverage_summary.json': 'qa_coverage_summary', 'per_night_qa_inventory.csv': 'csv_table'}
     REGISTER_PAGE = 'ratified_steps.html'      # build_ratified_register.py:15
     REGISTER_COLUMNS = ('ruling_id', 'date', 'gregg_words', 'step', 'requirement', 'superseded_by', 'enforced_where',
                         'evidence', 'status', 'note', 'source')   # build_ratified_register.py:16

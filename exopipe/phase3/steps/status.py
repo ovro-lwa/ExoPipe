@@ -502,9 +502,16 @@ def _plan(ctx, s):
                     outputs=[(K.place(out, 'review_hub', 'nights'), 'qa_night_pages')],
                     notes=['--check: content test only' if a.check else 'build_qa_pages.main in place, then check()'])
     if s == 'data-processing':
-        return dict(unit=ctx.unit('pages', s), inputs=[C.status.LEDGER, C.paths.COADD_SB_ROOT],
+        P = C.status_pages
+        site = K.place(out, 'status', P.DATA_PAGE_SITE)
+        return dict(unit=ctx.unit('pages', s), inputs=[C.status.LEDGER, C.paths.COADD_SB_ROOT,
+                                                       K.place(out, 'review_hub', P.FRAGMENT)],
                     need=[C.paths.COADD_SB_ROOT],
-                    outputs=[(K.place(out, 'review_hub', C.status_pages.DATA_PAGE), 'status_page')])
+                    outputs=[(os.path.join(site, n), c) for n, c in P.DATA_PAGE_SITE_ONLY.items()]
+                    + [(K.place(out, 'review_hub', n), c) for n, c in P.DATA_PAGE_INSTALL.items()],
+                    notes=[f'{P.DATA_PAGE_BUILDER}.main in place (helper {P.DATA_PAGE_HELPER}) into '
+                           f'{K.place(out, "status", P.DATA_PAGE_SITE)}, then {", ".join(P.DATA_PAGE_INSTALL)} copied into '
+                           f'the hub; refuses (S-G17) without the hub\'s {P.FRAGMENT} (`status pages --stages nights`)'])
     if s == 'ledger':
         if sel:
             raise Refusal('S-G10: the ledger is whole-survey only (no --cells/--lsts/--nights/--epochs)')
@@ -1105,14 +1112,31 @@ def _stage_data_processing(ctx):
     from exopipe.phase3.core.record import Refusal
     from exopipe.phase3.lib.status import steps_hub as HB
     K, C, out = ctx.K, ctx.C, ctx.out
+    P = C.status_pages
     with ctx.run.unit(ctx.unit('pages', 'data-processing'), stage='data-processing') as u:
         K.exclusions()
         K.need_inputs([C.paths.COADD_SB_ROOT], 'pages data-processing')
-        rc, text, dest = HB.run_data_page(out, u, ctx.log(u.name), ctx.allowed)
+        frag = K.place(out, 'review_hub', P.FRAGMENT)
+        if not os.path.exists(frag):
+            # the builder embeds the hub's QA overview fragment and skips the section when it is absent
+            # (build_qa_release1.py:426-429): a page without it is not the served page
+            raise Refusal(f'S-G17: {frag} is absent: the data-processing page embeds the QA overview fragment that '
+                          f'`status pages --stages nights` writes into this hub; run the nights stage first')
+        u.add_input(frag)
+        rc, text, dests, site, bad = HB.run_data_page(out, u, ctx.log(u.name), ctx.allowed)
         if rc != 0:
-            raise Refusal(f'build_data_processing_page.main rc {rc}: {text[-400:]}')
-        u.add_output(dest, 'status_page')
-        print(text.strip().splitlines()[-1] if text.strip() else dest)
+            raise Refusal(f'{P.DATA_PAGE_BUILDER}.main rc {rc}: {text[-400:]}')
+        if bad:
+            # e.g. a night square linking a night page this hub does not hold (the night pages predate the ledger, or
+            # the nights stage ran for a subset): nothing is installed into the hub
+            raise Refusal(f'{P.DATA_PAGE_BUILDER}: the page built in {site} fails its content tests, not installed: '
+                          + '; '.join(bad[:3]))
+        for n, cls in P.DATA_PAGE_SITE_ONLY.items():
+            extra = dict(required_columns=('lst', 'date'), min_rows=1) if cls == 'csv_table' else {}
+            u.add_output(os.path.join(site, n), cls, **extra)
+        for d, cls in dests.items():
+            u.add_output(d, cls)
+        print(text.strip().splitlines()[-1] if text.strip() else site)
 
 
 def _stage_ledger(ctx):

@@ -10,8 +10,8 @@ Synthetic data in a fresh directory under /tmp/exopipe3_tests_status/ (removed a
   serve.HUB_DIR, ...) are pointed at it directly for the test and restored afterwards.
 - FAKE ENGINES for every production tool the step runs in place: a fake exopipe_ops root (site LEGACY_CODE_ROOTS for the
   test; first on sys.path for the in-process imports) holds stand-ins of conformance_check, build_qa_pages,
-  build_data_processing_page, build_ratified_register, _inventory_p1p2 / _build_ledger, solar_contamination_audit,
-  candidate_provenance_audit / perframe_solar_check (in process: attr / remap), build_qa_table, beam_audit,
+  build_qa_release1 (with its helper build_data_processing_page), build_ratified_register, _inventory_p1p2 /
+  _build_ledger, solar_contamination_audit, candidate_provenance_audit / perframe_solar_check (in process: attr / remap), build_qa_table, beam_audit,
   qa_noise_vs_freq_plot, bandpass_phase_warp, coadd_exclusion_conformance, snapshot_batch_audit, snapshot_batch_lists
   (children through core.legacy.run), p3s3_sources / p3s3_stale_exclusions / snapshot_frametime_worklist (imports). Each
   writes what the production tool writes, to the production tool's LITERAL path where it has one, so the step's path
@@ -427,6 +427,42 @@ def main():
     os.replace(OUT + '.part', OUT)
     print('data page -> ' + OUT)
 ''',
+    'build_qa_release1.py': '''
+import csv, json, os, sys, time
+sys.path.insert(0, '@FAKE@')
+import build_data_processing_page as B                      # the 10-07 module, imported for its sources (as production)
+OUT = os.path.join(sys.argv[1] if len(sys.argv) > 1 else '@W@/release1_default', 'qa_site')
+HUB = '@W@/hub'
+def main():
+    os.makedirs(OUT, exist_ok=True)
+    rows = list(csv.DictReader(open(B.LEDGER)))
+    frag = HUB + '/qa_overview_fragment.html'
+    body = open(frag).read() if os.path.exists(frag) else ''      # production skips the section when absent
+    keys = [(r['lst'], r['date']) for r in rows]
+    if os.environ.get('FAKE_R1_EXTRA_NIGHT'):        # a searched night outside the ledger: no night page for its square
+        keys.append(('07h', '2099-02-01'))
+    links = ''.join('<a href="nights/%s_%s.html">n</a>' % k for k in keys)
+    cov = dict(('%s_%s' % k, dict(lst=k[0], date=k[1])) for k in keys)
+    with open(OUT + '/coverage.json', 'w') as f:
+        json.dump({'built_utc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()), 'nights': cov}, f)
+    with open(OUT + '/coverage_summary.json', 'w') as f:
+        json.dump([dict(tier=t, lst_nights=len(keys), nights=len(keys), lsts=2, both_stokes=len(keys), one_stokes=0)
+                   for t in ('deep', '10min', 'snap')], f)
+    p = OUT + '/data_processing.html'
+    with open(p + '.part', 'w') as f:
+        f.write('<html>' + body + links + '<h2>6. Every LST-night of the grids (%d)</h2></html>' % len(cov))
+    os.replace(p + '.part', p)
+    with open(OUT + '/per_night_qa_inventory.csv', 'w', newline='') as f:
+        w = csv.writer(f)
+        w.writerow(['lst', 'date', 'night_page'])
+        for r in rows:
+            w.writerow([r['lst'], r['date'], int(os.path.exists('%s/nights/%s_%s.html' % (HUB, r['lst'], r['date'])))])
+    for n in ('nights', 'dates', 'qa_assets', 'qa_thumbs', 'index.html'):
+        q = os.path.join(OUT, n)
+        if not os.path.lexists(q) and os.path.exists(os.path.join(HUB, n)):
+            os.symlink(os.path.join(HUB, n), q)
+    print('wrote %s: %d LST-nights' % (OUT, len(cov)))
+''',
     'build_ratified_register.py': '''
 import collections, csv, os
 REG = '/nonexistent/RATIFIED_STEPS_REGISTER.csv'; PAGE = '/nonexistent/ratified_steps.html'
@@ -652,8 +688,8 @@ def needs(celldir):
     return set(), []
 ''',
 }
-FAKE_MODULES = ('conformance_check', 'build_qa_pages', 'build_data_processing_page', 'build_ratified_register',
-                'p3s3_sources', 'p3s3_stale_exclusions', 'snapshot_frametime_worklist')
+FAKE_MODULES = ('conformance_check', 'build_qa_pages', 'build_data_processing_page', 'build_qa_release1',
+                'build_ratified_register', 'p3s3_sources', 'p3s3_stale_exclusions', 'snapshot_frametime_worklist')
 
 
 def write_fakes():
@@ -1213,9 +1249,49 @@ def test_conformance_pages_ledger_register():
     rn, rd = rec(out, 'pages_nights_deep'), rec(out, 'pages_dataprocessing_deep')
     check('pages nights + data-processing done; P1-P4 (fake check in place) and P5 (stage-3 windows = membership) pass',
           rc == 0 and rn['status'] == 'done' and rd['status'] == 'done', txt[-800:])
-    check('the data page read the hub fragment through the path redirect (not the production hub)',
+    check('the data page read this run\'s hub fragment (HUB = <out>/review_hub), not the production hub',
           not os.path.exists(f'{W}/hub/qa_overview_fragment.html') and
           'fragment' in open(os.path.join(out, 'review_hub', 'data_processing.html')).read())
+    site = os.path.join(out, 'status', 'qa_site')
+    nled = len(rows(CFG.status.LEDGER))
+    cov = json.load(open(os.path.join(out, 'review_hub', 'coverage.json')))
+    check('release-1 builder: page and coverage.json installed into the hub, equal to the builder\'s folder; the helper '
+          'module read the configured ledger; nothing written to the production hub',
+          all(sha(os.path.join(site, n)) == sha(os.path.join(out, 'review_hub', n))
+              for n in ('data_processing.html', 'coverage.json')) and len(cov['nights']) == nled > 0
+          and not os.path.exists(f'{W}/hub/coverage.json') and not os.path.exists(f'{W}/release1_default'),
+          (nled, sorted(os.listdir(site)) if os.path.isdir(site) else None))
+    outs = {os.path.basename(o['path']): o['class'] for o in rd.get('outputs', [])}
+    check('data-processing record: page status_page, coverage.json qa_coverage, summary and inventory tested',
+          outs == {'data_processing.html': 'status_page', 'coverage.json': 'qa_coverage',
+                   'coverage_summary.json': 'qa_coverage_summary', 'per_night_qa_inventory.csv': 'csv_table'}, outs)
+    rc, txt = step(['status', 'pages', '--stages', 'data-processing', '--out', f'{TMP}/o_dp_nofrag', '--cores', 'none'])
+    check('S-G17: data-processing without this hub\'s QA overview fragment refuses (the page would lack its section)',
+          rc == 2 and 'S-G17' in txt and not os.path.exists(f'{TMP}/o_dp_nofrag/review_hub/data_processing.html'),
+          txt[-300:])
+    neg('qa_coverage_count', 'qa_coverage', os.path.join(out, 'review_hub', 'coverage.json'),
+        lambda p: json.dump(dict(cov, nights=dict(list(cov['nights'].items())[1:])), open(p, 'w')),
+        siblings=[os.path.join(out, 'review_hub', 'data_processing.html')])
+    neg('qa_coverage_key', 'qa_coverage', os.path.join(out, 'review_hub', 'coverage.json'),
+        lambda p: json.dump(dict(cov, nights=dict(('x' + k if i == 0 else k, v) for i, (k, v) in
+                                                  enumerate(cov['nights'].items()))), open(p, 'w')),
+        siblings=[os.path.join(out, 'review_hub', 'data_processing.html')])
+    neg('qa_coverage_summary_sum', 'qa_coverage_summary', os.path.join(site, 'coverage_summary.json'),
+        edit('"one_stokes": 0', '"one_stokes": 1'))
+    neg('qa_coverage_summary_null', 'qa_coverage_summary', os.path.join(site, 'coverage_summary.json'),
+        edit('"lsts": 2', '"lsts": null'))
+    links = {n: os.path.realpath(os.path.join(site, n)) for n in os.listdir(site) if os.path.islink(os.path.join(site, n))}
+    check('the builder\'s preview links point into this run\'s hub, not the production hub',
+          links and all(t.startswith(os.path.realpath(os.path.join(out, 'review_hub')) + os.sep) for t in links.values()),
+          links)
+    before = sha(os.path.join(out, 'review_hub', 'data_processing.html'))
+    os.environ['FAKE_R1_EXTRA_NIGHT'] = '1'
+    rc, txt = step(['status', 'pages', '--stages', 'data-processing', '--out', out, '--cores', 'none'])
+    os.environ.pop('FAKE_R1_EXTRA_NIGHT')
+    check('a page with a night square whose night page the hub lacks fails its content test in the builder\'s folder '
+          'and is NOT installed (the hub keeps its page)',
+          rc == 2 and 'not installed' in txt and 'night/date links missing' in txt
+          and sha(os.path.join(out, 'review_hub', 'data_processing.html')) == before, txt[-400:])
     rc, txt = step(['status', 'pages', '--stages', 'nights', '--check', '--out', out, '--cores', 'none'])
     check('pages --check: only the night-page content test on the written hub', rc == 0, txt[-300:])
     hub = os.path.join(out, 'review_hub')
