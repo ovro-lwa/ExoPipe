@@ -281,16 +281,18 @@ def test_cli_skeleton_refuses_every_unit():
                         '--set', f'hybrid_stack.COADD_SB={os.path.join(d, "no_coadd_sb")}'])
         assert rc == 2, (rc, out[-2000:])
         lines = [l for l in out.splitlines() if l.strip().startswith('refused ')]
-        assert len(lines) == 7, out[-3000:]
         assert any('stack.18h_46MHz_R075' in l and 'HG0' in l for l in lines), lines
-        # recon: HG6 where the pinned PSFs are absent (CI: md5 None), else the stage is not ported; wideband reads no PSF
+        # recon (ported, PR-3): HG6 where the pinned PSFs are absent (CI: md5 None), else no input (the stack refused, so no
+        # stack record); wideband reads no PSF and refuses: its first member holds no passed reconstruction
         rec = [l for l in lines if 'recon.18h_46MHz_R075' in l]
-        assert len(rec) == 1 and (('HG6' in rec[0] and 'md5 None' in rec[0]) or 'PR-3' in rec[0]), rec
-        assert any('wideband.18h_Blue_R075' in l and 'PR-3' in l and 'HG6' not in l for l in lines), lines
+        hg6 = len(rec) == 1 and 'HG6' in rec[0] and 'md5 None' in rec[0]
+        assert hg6 or (not rec and 'no-input 1' in out), (rec, out[-3000:])
+        assert len(lines) == (7 if hg6 else 6), out[-3000:]
+        assert any('wideband.18h_Blue_R075' in l and '64MHz holds no passed reconstruction' in l for l in lines), lines
         assert sum('UNFILLED_INPUTS' in l for l in lines) == 2, lines           # tilefill x 2
         assert sum(l.startswith('  refused hybrid.') and ('PR-4' in l or 'not the pinned' in l or 'md5 None' in l)
                    for l in lines) == 2, lines
-        assert 'refused 7; exit 2' in out, out[-500:]
+        assert f'refused {7 if hg6 else 6}' in out and 'exit 2' in out, out[-500:]
         # no --out: refused before any unit (a new work run is always named)
         rc, out = _cli(['hybrid', '--lsts', '18h', '--scopes', '46MHz'])
         assert rc == 2 and 'needs --out' in out, (rc, out[-800:])
@@ -301,7 +303,7 @@ def test_cli_skeleton_refuses_every_unit():
         # --clean-region goes through --set's checks before the run record exists (config_overrides): the record carries it
         rc, out = _cli(['hybrid', '--lsts', '18h', '--scopes', '46MHz', '--weightings', 'R075', '--stages', 'recon',
                         '--clean-region', 'elev10', '--out', os.path.join(d, 'w3')])
-        assert rc == 2, (rc, out[-800:])
+        assert rc in (2, 3), (rc, out[-800:])             # HG6 refusal (CI: no pinned PSFs) or no input (no stack in w3)
         import json
         rec = out.rsplit('; record ', 1)[-1].strip()
         ov = [o for o in json.load(open(rec))['config_overrides'] if o[0] == 'hybrid_recon.CLEAN_REGION']

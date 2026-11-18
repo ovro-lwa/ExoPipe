@@ -119,3 +119,274 @@ def md5_equals_installed(path, md5=None, installed=None, **ctx):
         return False, None, 'no recorded md5 in the context'
     got = _md5(path)
     return got == md5, got, f'md5 {got} ' + ('==' if got == md5 else '!=') + f' {md5} of {installed} at copy time'
+
+
+# ------------------------------------------------------------------------------------------- pull request PR-3: recon, wideband
+# Classes:
+#   hybrid_recon_master   the reconstruction (apparent, Jy/beam), subband or wideband: a phase3 product name with lsrecon and
+#                         without pbcorr naming the unit's scope and robust, the reconstruction cards, the installed master's
+#                         grid, finite non-zero pixels
+#   hybrid_recon_pbcorr   its split beam-corrected sibling: the split identity recomputed from the files (NL 1881), PBMETHOD,
+#                         PBFLOOR, the name with pbcorr
+#   hybrid_recon_work     a work file (model, residuals, restored point components): the master's grid, not a product
+#   hybrid_recon_record   <w>_lsrecon.json: the unit, and each of production's record tests re-evaluated against the config
+#                         rules (prior back-conversion, PSF2x core and md5, prior fit, CLEAN and step convergence, compact
+#                         sources, large-scale level)
+#   hybrid_wideband_record <w>_lsrecon_wb.json: the members, the weights, the identity, compact sources, level
+
+def _recon_rules():
+    from exopipe.phase3.lib.hybrid import recon as REC
+    return REC, REC.bind()
+
+
+def _refuses(fn, *a, **k):
+    """None when production's test function passes on the recorded values, else its refusal text."""
+    from exopipe.phase3.lib.hybrid.recon import ReconRefusal
+    try:
+        fn(*a, **k)
+        return None
+    except ReconRefusal as e:
+        return str(e)[:300]
+
+
+@content_test('hybrid_recon_master')
+def recon_name(path, scope=None, weighting=None, **ctx):
+    from exopipe.phase3.core.products import parse_name
+    from exopipe.phase3.lib.hybrid.common import VARIANT
+    _d, h = _read(path)
+    pn = parse_name(str(h.get('PRODNAME', '')))
+    bad = []
+    if pn.get('grammar') != 'phase3':
+        bad.append(f'PRODNAME {h.get("PRODNAME")!r} is not a phase3 name')
+    else:
+        proc = set(pn['proc'])
+        for k, want in (('scope', scope), ('taper', 'NoTaper'), ('robust', VARIANT[weighting][2] if weighting else None)):
+            if want is not None and pn.get(k) != want:
+                bad.append(f'{k} {pn.get(k)!r} != {want!r}')
+        if 'lsrecon' not in proc or 'pbcorr' in proc or 'lsfill' in proc:
+            bad.append(f'proc {sorted(proc)}')
+    return not bad, h.get('PRODNAME'), '; '.join(bad) if bad else 'phase3 name, lsrecon, apparent'
+
+
+@content_test('hybrid_recon_master')
+def recon_cards(path, scope=None, wideband=False, members=None, **ctx):
+    REC, g = _recon_rules()
+    _d, h = _read(path)
+    bad = []
+    if h.get('LSRECON') is not True:
+        bad.append(f'LSRECON {h.get("LSRECON")!r}')
+    if wideband:
+        if h.get('MSTRGEN') != 'lsrecon-sbcomb-v1' or h.get('COADDOP') != 'lsrecon-sbcomb-v1':
+            bad.append(f'MSTRGEN {h.get("MSTRGEN")!r} COADDOP {h.get("COADDOP")!r}')
+        if members is not None and str(h.get('LSWBSB')) != ','.join(members):
+            bad.append(f'LSWBSB {h.get("LSWBSB")!r} != {",".join(members)}')
+    else:
+        if h.get('LSRGEN') != g['RECON_GEN']:
+            bad.append(f'LSRGEN {h.get("LSRGEN")!r} != {g["RECON_GEN"]!r}')
+        if h.get('LSSCALES') != ','.join(str(s) for s in g['SCALES']):
+            bad.append(f'LSSCALES {h.get("LSSCALES")!r}')
+        if h.get('LSCLNRGN') not in ('horizon', 'elev10'):
+            bad.append(f'LSCLNRGN {h.get("LSCLNRGN")!r}')
+        lo, hi = g['PRIOR_SCALE_RANGE']
+        if not (isinstance(h.get('LSPSCALE'), float) and lo < h['LSPSCALE'] < hi):
+            bad.append(f'LSPSCALE {h.get("LSPSCALE")!r} outside ({lo}, {hi})')
+    if scope in g['CAVEAT_SCOPES'] and 'LSCAVEAT' not in h:
+        bad.append('no LSCAVEAT card in a caveat scope')
+    return not bad, h.get('LSPSCALE', h.get('LSWBW')), '; '.join(bad) if bad else 'reconstruction cards of the rule'
+
+
+@content_test('hybrid_recon_master')
+def recon_grid(path, master=None, **ctx):
+    if not master:
+        return False, None, 'no master in the context'
+    return _grid(path, master)
+
+
+@content_test('hybrid_recon_master')
+def recon_finite(path, **ctx):
+    return finite_nonzero(path)
+
+
+@content_test('hybrid_recon_pbcorr')
+def pbcorr_split(path, apparent=None, compact=None, pbs=None, **ctx):
+    """NL 1881 recomputed from the files: P x PBD = A + C x (PBD / PBF - 1) to 1e-5 of the largest value where the full beam
+    exceeds the floor (PBF = the weighted full primary beams, PBD = the weighted diffuse beams), NaN elsewhere."""
+    from exopipe.phase3.core.products import parse_name
+    from exopipe.phase3.lib.hybrid.common import rd
+    from exopipe.phase3.lib.masters import pb_apply as PBA
+    from astropy.io import fits
+    if not (apparent and compact and pbs):
+        return False, None, 'apparent, compact and pbs are needed in the context'
+    P, h = _read(path)
+    P = P.astype(np.float64)
+    A, C = rd(apparent), rd(compact)
+    PBF = 0.0
+    PBD = 0.0
+    for pbf, band, w in pbs:
+        ph = fits.getheader(pbf)
+        pb = rd(pbf)
+        ch, _ = PBA.chromatic_gain(ph, pb.shape, float(PBA.cfg.SUBBAND_FREQ_HZ[band]['center']), float(ph['PBBMAJ']))
+        PBF = PBF + w * pb
+        PBD = PBD + w * (pb / ch)
+    valid = np.isfinite(PBF) & (PBF > PBA.PB_FLOOR) & np.isfinite(A) & np.isfinite(PBD) & (PBD > 0)
+    lhs = P[valid] * PBD[valid]
+    rhs = A[valid] + C[valid] * (PBD[valid] / PBF[valid] - 1)
+    err = float(np.max(np.abs(lhs - rhs)) / np.max(np.abs(rhs))) if valid.any() else None
+    nan_out = bool(np.all(np.isnan(P[~valid])))
+    pn = parse_name(str(h.get('PRODNAME', '')))
+    bad = []
+    if err is None or not err < 1e-5:
+        bad.append(f'split identity max rel err {err}')
+    if not nan_out:
+        bad.append('finite pixels where the full beam is at or below the floor')
+    if h.get('PBMETHOD') != 'lsrecon-split' or h.get('PBFLOOR') != PBA.PB_FLOOR:
+        bad.append(f'PBMETHOD {h.get("PBMETHOD")!r} PBFLOOR {h.get("PBFLOOR")!r}')
+    if pn.get('grammar') != 'phase3' or not {'lsrecon', 'pbcorr'} <= set(pn.get('proc', ())):
+        bad.append(f'PRODNAME {h.get("PRODNAME")!r}')
+    return not bad, err, '; '.join(bad) if bad else f'split identity to {err:.2g}, NaN below the floor ({int(valid.sum())} valid px)'
+
+
+@content_test('hybrid_recon_work')
+def recon_work_grid(path, master=None, **ctx):
+    if not master:
+        return False, None, 'no master in the context'
+    return _grid(path, master)
+
+
+@content_test('hybrid_recon_work')
+def recon_work_not_product(path, **ctx):
+    return _not_product(path)
+
+
+def _load(path):
+    with open(path) as f:
+        return json.load(f)
+
+
+@content_test('hybrid_recon_record')
+def recon_unit(path, lst=None, band=None, weighting=None, **ctx):
+    _REC, g = _recon_rules()
+    rec = _load(path)
+    bad = [f'{k} {rec.get(k)!r} != {w!r}' for k, w in (('lst', lst), ('band', band), ('weighting', weighting)) if rec.get(k) != w]
+    if rec.get('generation') != g['RECON_GEN']:
+        bad.append(f'generation {rec.get("generation")!r}')
+    for k in ('product', 'product_pbcorr'):
+        if not (rec.get(k) or {}).get('md5'):
+            bad.append(f'no {k} md5')
+    return not bad, rec.get('generation'), '; '.join(bad) if bad else f'{lst} {band} {weighting}, {g["RECON_GEN"]}'
+
+
+@content_test('hybrid_recon_record')
+def prior_backconversion(path, **ctx):
+    t = (_load(path).get('prior') or {}).get('test_prior_backconversion') or {}
+    r = t.get('median_ratio')
+    ok = t.get('verdict') == 'pass' and r is not None and abs(r - 1) < 1e-6
+    return ok, r, f'median K / K ratio {r} (rule |r - 1| < 1e-6)'
+
+
+@content_test('hybrid_recon_record')
+def psf2x_core(path, band=None, weighting=None, **ctx):
+    from exopipe.phase3.config import CFG
+    rec = _load(path)
+    t = rec.get('test_psf2x') or {}
+    ent = CFG.hybrid_psf2x.REGISTRY.get((band, weighting))
+    bad = []
+    if not (t.get('verdict') == 'pass' and isinstance(t.get('core_rel_rms'), float) and t['core_rel_rms'] < 0.2):
+        bad.append(f'test_psf2x {t}')
+    if ent is None or rec.get('psf2x') != ent[0] or rec.get('psf2x_md5') != ent[1]:
+        bad.append(f'PSF2x {rec.get("psf2x")} md5 {rec.get("psf2x_md5")} is not the registry entry {ent and ent[:2]}')
+    return not bad, t.get('core_rel_rms'), '; '.join(bad) if bad else f'core rel rms {t["core_rel_rms"]:.3f} < 0.2, registry md5'
+
+
+@content_test('hybrid_recon_record')
+def prior_fit(path, **ctx):
+    REC, _g = _recon_rules()
+    f = _load(path).get('prior_fit') or {}
+    why = _refuses(REC.test_prior_fit, f) if {'scale', 'rms', 'data_rms'} <= set(f) else 'no prior_fit values'
+    return why is None, f.get('scale'), why or f'scale {f["scale"]:.4f}, rms {f["rms"]:.4g} vs data {f["data_rms"]:.4g}'
+
+
+@content_test('hybrid_recon_record')
+def clean_converged(path, **ctx):
+    REC, _g = _recon_rules()
+    c = _load(path).get('clean') or {}
+    need = {'residual_rms_test_region', 'dirty_rms_test_region'}
+    why = _refuses(REC.test_clean_converged, c) if need <= set(c) else 'no CLEAN values'
+    return why is None, c.get('residual_rms_test_region'), why or (f"residual {c['residual_rms_test_region']:.4g} < dirty "
+                                                                   f"{c['dirty_rms_test_region']:.4g} and < 2 Jy/beam")
+
+
+@content_test('hybrid_recon_record')
+def step_converged(path, **ctx):
+    REC, _g = _recon_rules()
+    s = _load(path).get('step') or {}
+    why = _refuses(REC.test_step_converged, s) if 'cg_relative_residual' in s else 'no step values'
+    return why is None, s.get('cg_relative_residual'), why or f"CG relative residual {s['cg_relative_residual']:.3g}"
+
+
+def _compact(rec, scope):
+    _REC, g = _recon_rules()
+    t = rec.get('test_compact_sources') or {}
+    tol = g['COMPACT_TOL_LOW'] if scope in g['COMPACT_LOW_SCOPES'] else g['COMPACT_TOL']
+    ok = (isinstance(t.get('n'), int) and t['n'] >= g['COMPACT_N_MIN'] and isinstance(t.get('median'), float)
+          and abs(t['median'] - 1) < tol)
+    return ok, t.get('median'), f"median {t.get('median')} over {t.get('n')} sources (rule n >= {g['COMPACT_N_MIN']}, |m - 1| < {tol})"
+
+
+def _level(rec, scope):
+    REC, _g = _recon_rules()
+    t = rec.get('test_large_scale_level')
+    if t is None:
+        return False, None, 'no large-scale level in the record'
+    why = _refuses(REC._level_verdict, t.get('ratio_by_dec_band') or {}, scope)
+    if why is None:
+        again = REC._level_verdict(t['ratio_by_dec_band'], scope)
+        if again['verdict'] != t.get('verdict') or not t['ratio_by_dec_band']:
+            why = f"recorded verdict {t.get('verdict')!r}, rule gives {again['verdict']!r} on {t['ratio_by_dec_band']}"
+    return why is None, t.get('verdict'), why or f"{t['verdict']}: {t['ratio_by_dec_band']}"
+
+
+@content_test('hybrid_recon_record')
+def compact_sources(path, band=None, **ctx):
+    return _compact(_load(path), band)
+
+
+@content_test('hybrid_recon_record')
+def large_scale_level(path, band=None, **ctx):
+    return _level(_load(path), band)
+
+
+@content_test('hybrid_wideband_record')
+def wideband_unit(path, lst=None, scope=None, weighting=None, members=None, **ctx):
+    rec = _load(path)
+    bad = [f'{k} {rec.get(k)!r} != {w!r}' for k, w in (('lst', lst), ('scope', scope), ('weighting', weighting)) if rec.get(k) != w]
+    subs = rec.get('subbands') or []
+    if members is not None and [s.get('band') for s in subs] != list(members):
+        bad.append(f'subbands {[s.get("band") for s in subs]} != {list(members)}')
+    w = [s.get('weight') for s in subs]
+    if not (w and all(isinstance(x, float) and x > 0 for x in w) and abs(sum(w) - 1) < 1e-9):
+        bad.append(f'weights {w}')
+    return not bad, w, '; '.join(bad) if bad else f'{len(subs)} members, weights sum to 1'
+
+
+@content_test('hybrid_wideband_record')
+def wideband_identity(path, **ctx):
+    t = _load(path).get('test_wideband_identity') or {}
+    ok = (t.get('verdict') == 'pass' and isinstance(t.get('max_rel_err'), float) and t['max_rel_err'] < 1e-6
+          and t.get('nan_masks_equal') is True and t.get('prodname_ok') is True)
+    return ok, t.get('max_rel_err'), f'{t}'
+
+
+@content_test('hybrid_wideband_record')
+def wideband_compact_sources(path, scope=None, **ctx):
+    return _compact(_load(path), scope)
+
+
+@content_test('hybrid_wideband_record')
+def wideband_large_scale_level(path, scope=None, **ctx):
+    _REC, g = _recon_rules()
+    rec = _load(path)
+    if scope not in g['CAVEAT_SCOPES']:
+        ok = 'test_large_scale_level' not in rec
+        return ok, None, 'no wideband level outside the caveat scopes (production records it only there)' if ok else 'unexpected level'
+    return _level(rec, scope)

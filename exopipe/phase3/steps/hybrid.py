@@ -18,6 +18,13 @@ Stages, in order (--stages a,b or --from / --until; default all), and the scopes
 
 PULL REQUEST PR-1: the selection, the unit list and the gates that need no stage code. Every unit of a stage not yet ported REFUSES
 (exit 2) with the pull request that ports it; nothing is written but the unit records.
+PULL REQUEST PR-3: the recon and wideband stages (lib/hybrid/recon.py, wideband.py). A unit recon.<LST>_<band>_<w> reads its
+stack (stage stack, same --out; no stack record = no input) and writes, in <--out>/<LST>_<band>/, the reconstruction
+I_deep_NoTaper_<w>_lsrecon_<band>.fits and its split beam-corrected sibling (..._lsrecon_pbcorr_...), the work files
+<w>_lsrecon_{model,clean_residual,compact_restored,final_residual}.fits and the record <w>_lsrecon.json; a unit refused by
+test_clean_converged is retried along hybrid_recon.CASCADE. A unit wideband.<LST>_<Red|Green|Blue>_<w> combines the members'
+reconstructions in --out into <--out>/<LST>_<scope>/ (the same names, record <w>_lsrecon_wb.json); a member without a passed
+reconstruction refuses it. Every production test refuses (ReconRefusal), and the content tests re-read the files.
 PULL REQUEST PR-2: the stack stage (lib/hybrid/stack.py, warp.py). A unit stack.<LST>_<band>_<w> writes, in <--out>/<LST>_<band>/,
 the NoTaper stacks of weighting w (<w>_dirty_stack, _dirty_halfA, _dirty_halfB, _psf_stack, <w>_stack.json, inputs/ copies) and
 the Taper residual stack of its Taper weighting (T075 for R075, T0 for R0: <t>_residual_stack, <t>_stack.json), as production's
@@ -199,8 +206,9 @@ def run(args, run):
     gates = {st: stage_gate_problems(st, CFG) for st in run.meta['stages']}
     if run.dry_run:
         for st, lst, sc, w in units:
+            plans = {'stack': stack_plan, 'recon': recon_plan, 'wideband': wideband_plan}
             what = (f'refused: {"; ".join(gates[st])}' if gates[st] else
-                    ', '.join(os.path.relpath(p, run.out_root) for p, _c in stack_plan(run.out_root, lst, sc, w)) if st == 'stack' else
+                    ', '.join(os.path.relpath(p, run.out_root) for p, _c in plans[st](run.out_root, lst, sc, w)) if st in plans else
                     f'not ported ({PORTED_BY[st]})')
             print(f'  plan {st}.{lst}_{sc}_{w}: {what}', flush=True)
         print(f'exopipe3 hybrid: DRY RUN, {len(units)} units, nothing written', flush=True)
@@ -211,6 +219,12 @@ def run(args, run):
                 u.refuse('; '.join(gates[st]) + ' - REFUSED')
             if st == 'stack':
                 stack_unit(u, lst, sc, w, run.out_root, getattr(args, 'work', None))
+                continue
+            if st == 'recon':
+                recon_unit(u, lst, sc, w, run.out_root)
+                continue
+            if st == 'wideband':
+                wideband_unit(u, lst, sc, w, run.out_root)
                 continue
             u.refuse(f'stage {st} is not ported yet ({PORTED_BY[st]} of plan/specs/hybrid.md) - REFUSED')
     return run.exit_code()
@@ -298,4 +312,180 @@ def stack_unit(u, lst, band, w, out_root, work):
                 u.add_output(p, c, lst=lst, band=band, weighting=v)
             else:
                 u.add_output(p, c, master=master)
+    u.set_admitted(sorted(nights))
+
+
+def recon_plan(out_root, lst, band, w):
+    """[(path, product class)] a recon unit owes (NL 870-915): the reconstruction and its split beam-corrected sibling (the
+    products), the four work files, the record."""
+    wd = os.path.join(out_root, f'{lst}_{band}')
+    return ([(os.path.join(wd, f'I_deep_NoTaper_{w}_lsrecon_{band}.fits'), 'hybrid_recon_master'),
+             (os.path.join(wd, f'I_deep_NoTaper_{w}_lsrecon_pbcorr_{band}.fits'), 'hybrid_recon_pbcorr')]
+            + [(os.path.join(wd, f'{w}_lsrecon_{k}.fits'), 'hybrid_recon_work')
+               for k in ('model', 'clean_residual', 'compact_restored', 'final_residual')]
+            + [(os.path.join(wd, f'{w}_lsrecon.json'), 'hybrid_recon_record')])
+
+
+def wideband_plan(out_root, lst, scope, w):
+    """[(path, product class)] a wideband unit owes (NL 954-1074)."""
+    wd = os.path.join(out_root, f'{lst}_{scope}')
+    return [(os.path.join(wd, f'I_deep_NoTaper_{w}_lsrecon_{scope}.fits'), 'hybrid_recon_master'),
+            (os.path.join(wd, f'I_deep_NoTaper_{w}_lsrecon_pbcorr_{scope}.fits'), 'hybrid_recon_pbcorr'),
+            (os.path.join(wd, f'{w}_lsrecon_compact_restored.fits'), 'hybrid_recon_work'),
+            (os.path.join(wd, f'{w}_lsrecon_wb.json'), 'hybrid_wideband_record')]
+
+
+def _clear(paths):
+    """Remove a unit's own earlier outputs and their temporaries (no stale file stands beside a new run or a refusal)."""
+    for p in paths:
+        for q in (p, f'{p}.part'):
+            if os.path.lexists(q):
+                os.remove(q)
+
+
+def _stack_inputs(wd, w):
+    from exopipe.phase3.lib.hybrid.common import inputs_dir
+    return ([os.path.join(wd, f'{w}_{k}.fits') for k in ('dirty_stack', 'dirty_halfA', 'dirty_halfB', 'psf_stack')]
+            + [os.path.join(wd, f'{w}_stack.json')])
+
+
+def recon_unit(u, lst, band, w, out_root):
+    """Stage recon of one unit (spec 2.3): production's recon_variant on the unit's stack (stage stack, same --out), with the
+    convergence cascade of hybrid_recon.CASCADE (NL 2209-2219: a unit refused by test_clean_converged is retried with NITER and
+    MAXCYC times the factor and the try's CLEAN region; each later try records the earlier ones). No stack record = no input (its
+    stack refused or was not run). Any other refusal, or a content test that fails, refuses the unit and removes what it wrote."""
+    import json
+    from exopipe.phase3.config import CFG
+    from exopipe.phase3.core.record import NoInput
+    from exopipe.phase3.lib.hybrid import recon as REC
+    from exopipe.phase3.lib.hybrid.common import inputs_dir
+    wd = os.path.join(out_root, f'{lst}_{band}')
+    srec_path = os.path.join(wd, f'{w}_stack.json')
+    if not os.path.exists(srec_path):
+        raise NoInput(f'no stack record {srec_path} (stage stack of this unit refused or was not run)')
+    plan = recon_plan(out_root, lst, band, w)
+    for p, c in plan:
+        u.plan(p, c)
+    own = [p for p, _c in plan]
+    psf2x = CFG.hybrid_psf2x.REGISTRY[(band, w)][0]
+    g = REC.bind()
+    master = os.path.join(inputs_dir(wd), f'I_deep_NoTaper_{w}_{band}.fits')
+    pb = os.path.join(inputs_dir(wd), f'PB_deep_R075_{band}.fits' if w == 'R075' else f'PB_deep_{band}.fits')
+    _clear(own)
+    done = []
+    try:
+        base = CFG.hybrid_recon.CLEAN_REGION     # NL 2209: the cascade's 'horizon' tries take the configured region (--clean-region)
+        tries = [(int(g['NITER'] * f), int(g['MAXCYC'] * f), base if region == 'horizon' else region)
+                 for _name, f, region in CFG.hybrid_recon.CASCADE]
+        for i, (ni, mc, cr) in enumerate(tries):
+            if i and (ni, mc, cr) in tries[:i]:
+                continue
+            try:
+                rec = REC.recon_variant(lst, band, w, wd, psf2x, None, ni, mc, cr, escalation=done)
+                break
+            except REC.ReconRefusal as e:
+                if 'test_clean_converged FAILED' not in str(e) or i == len(tries) - 1:
+                    raise
+                done.append(dict(niter=ni, maxcyc=mc, clean_region=cr, refused=str(e)[:300]))
+                REC.log(lst, band, w, 'convergence refused at', ni, mc, cr, '- escalating')
+    except REC.ReconRefusal as e:
+        _clear(own)
+        u.refuse(f'{e}')
+    except BaseException:
+        _clear(own)
+        raise
+    finally:
+        for p in _stack_inputs(wd, w) + [master, pb, psf2x,
+                                         os.path.join(g['CATALOGS'], f'master_R075_{lst}_{band}.gaul.csv')]:
+            if os.path.exists(p):
+                u.add_input(p)
+    for t in ('test_psf2x', 'test_compact_sources', 'test_large_scale_level'):
+        v = rec[t].get('verdict')
+        u.check(f'hybrid_recon.{t}', v in ('pass', 'caveat'), value=v, detail=json.dumps(rec[t], default=str)[:400])
+    if done:
+        u.note(f'convergence cascade: {len(done)} earlier tr{"y" if len(done) == 1 else "ies"} refused, '
+               f'clean region {rec["regions"]["clean_region"]}')
+    n0 = len(u.failed_tests())
+    pbs = [(pb, band, 1.0)]
+    for p, c in plan:
+        if c == 'hybrid_recon_master':
+            u.add_output(p, c, master=master, scope=band, weighting=w)
+        elif c == 'hybrid_recon_pbcorr':
+            u.add_output(p, c, apparent=plan[0][0], compact=os.path.join(wd, f'{w}_lsrecon_compact_restored.fits'), pbs=pbs)
+        elif c == 'hybrid_recon_work':
+            u.add_output(p, c, master=master)
+        else:
+            u.add_output(p, c, lst=lst, band=band, weighting=w)
+    bad = u.failed_tests()[n0:]
+    if bad:
+        _clear(own)
+        u.refuse('content test(s) FAILED: ' + '; '.join(f"{t['name']} {t.get('detail', '')}"[:200] for t in bad))
+    with open(srec_path) as f:
+        srec = json.load(f)
+    u.set_admitted(sorted(set(n['date'] for n in srec['nights']) - set(srec.get('dirty_nights_dropped') or ())))
+
+
+def _member_product(mwd, w):
+    """The reconstruction a member's record names (combine_wideband reads that path); '' when the record is absent."""
+    import json
+    p = os.path.join(mwd, f'{w}_lsrecon.json')
+    if not os.path.exists(p):
+        return ''
+    with open(p) as f:
+        return json.load(f)['product']['path']
+
+
+def wideband_unit(u, lst, scope, w, out_root):
+    """Stage wideband of one unit (spec 2.4): production's combine_wideband over the members' reconstructions in --out. A member
+    without a passed reconstruction refuses the unit (as production); a refusal or a failed content test removes what it wrote."""
+    import json
+    from exopipe.phase3.config import CFG
+    from exopipe.phase3.lib.hybrid import recon as REC
+    from exopipe.phase3.lib.hybrid import wideband as WB
+    from exopipe.phase3.lib.hybrid.common import inputs_dir
+    members = tuple(CFG.hybrid.WIDEBAND_MEMBERS[scope])
+    plan = wideband_plan(out_root, lst, scope, w)
+    for p, c in plan:
+        u.plan(p, c)
+    own = [p for p, _c in plan]
+    _clear(own)
+    try:
+        rec = WB.combine_wideband(lst, scope, w, out_root)
+    except REC.ReconRefusal as e:
+        _clear(own)
+        u.refuse(f'{e}')
+    except BaseException:
+        _clear(own)
+        raise
+    finally:
+        for b in members:
+            mwd = os.path.join(out_root, f'{lst}_{b}')
+            for p in [os.path.join(mwd, f'{w}_lsrecon.json'), os.path.join(mwd, f'{w}_stack.json'), _member_product(mwd, w),
+                      os.path.join(mwd, f'{w}_lsrecon_compact_restored.fits'),
+                      os.path.join(inputs_dir(mwd), f'PB_deep_R075_{b}.fits' if w == 'R075' else f'PB_deep_{b}.fits')]:
+                if os.path.exists(p):
+                    u.add_input(p)
+    sub0 = _member_product(os.path.join(out_root, f'{lst}_{members[0]}'), w)       # the product combine_wideband read
+    pbs = [(os.path.join(inputs_dir(os.path.join(out_root, f'{lst}_{s["band"]}')),
+                         f'PB_deep_R075_{s["band"]}.fits' if w == 'R075' else f'PB_deep_{s["band"]}.fits'), s['band'], s['weight'])
+           for s in rec['subbands']]
+    n0 = len(u.failed_tests())
+    for p, c in plan:
+        if c == 'hybrid_recon_master':
+            u.add_output(p, c, master=sub0, scope=scope, weighting=w, wideband=True, members=list(members))
+        elif c == 'hybrid_recon_pbcorr':
+            u.add_output(p, c, apparent=plan[0][0], compact=plan[2][0], pbs=pbs)
+        elif c == 'hybrid_recon_work':
+            u.add_output(p, c, master=sub0)
+        else:
+            u.add_output(p, c, lst=lst, scope=scope, weighting=w, members=list(members))
+    bad = u.failed_tests()[n0:]
+    if bad:
+        _clear(own)
+        u.refuse('content test(s) FAILED: ' + '; '.join(f"{t['name']} {t.get('detail', '')}"[:200] for t in bad))
+    nights = set()
+    for b in members:
+        with open(os.path.join(out_root, f'{lst}_{b}', f'{w}_stack.json')) as f:
+            s = json.load(f)
+        nights |= set(n['date'] for n in s['nights']) - set(s.get('dirty_nights_dropped') or ())
     u.set_admitted(sorted(nights))
