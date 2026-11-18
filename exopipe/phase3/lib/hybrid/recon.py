@@ -102,8 +102,12 @@ def beam_image(hdr, shape):
     return np.exp(-0.5 * ((u / smaj) ** 2 + (w / smin) ** 2))
 
 
+READS = set()                                      # v2: the sky-model and catalog files a reconstruction read (recorded as unit inputs)
+
+
 def _lfss(f):
     import healpy as hp
+    READS.add(f'{LFSS_DIR}/healpix/healpix-all-sky-rav-rsclean-map-{f}.fits')
     a = np.array(fits.open(f'{LFSS_DIR}/healpix/healpix-all-sky-rav-rsclean-map-{f}.fits', memmap=False)[1].data.field(0)).ravel().astype(np.float64)
     return np.where(np.isfinite(a) & (a > 0) & (a != hp.UNSEEN), a, np.nan)
 
@@ -113,6 +117,7 @@ _LFSM_MAPS = []
 
 def _lfsm(f):
     from scipy.interpolate import interp1d
+    READS.update((f'{LFSS_DIR}/lfsm/lfsm_component_maps_3.0deg.dat', f'{LFSS_DIR}/lfsm/lfsm_components.dat'))
     if not _LFSM_MAPS:                             # the 3.0-deg component maps, parsed once per process
         _LFSM_MAPS.append(np.loadtxt(f'{LFSS_DIR}/lfsm/lfsm_component_maps_3.0deg.dat'))
     maps = _LFSM_MAPS[0]
@@ -255,9 +260,9 @@ def half_stack_noise(halfA, halfB, sky, hdr):
 
 # ------------------------------------------------------------------------------------------------------------------------------ CLEAN
 def idclean(D, P, mask, beam_hdr, scales=None, niter=None, test_mask=None, maxcyc=None):
-    scales = SCALES if scales is None else scales; niter = NITER if niter is None else niter     # v2: defaults bound at call time
     """Image-domain capped multiscale CLEAN with exact image-plane major cycles (model (x) PSF), over `mask`; the convergence test is
     taken over test_mask (default `mask`). Returns (model Jy/pixel, its point (scale-0) components, residual, restored image, record)."""
+    scales = SCALES if scales is None else scales; niter = NITER if niter is None else niter     # v2: defaults bound at call time
     N = D.shape[0]; D = np.nan_to_num(D); P = np.nan_to_num(P / np.nanmax(P)); pky, pkx = np.unravel_index(np.argmax(P), P.shape)
     CM = mask & np.isfinite(D)
 
@@ -400,6 +405,7 @@ def compact_ratio(new, master, hdr, lst, band):
     """test_compact_sources' measurement: the ratios of background-subtracted aperture sums of new / master at the 200 brightest
     catalogued sources (n, median, 16th / 84th percentiles) and the tolerance; no verdict."""
     src = []
+    READS.add(f'{CATALOGS}/master_R075_{lst}_{band}.gaul.csv')
     for ln in open(f'{CATALOGS}/master_R075_{lst}_{band}.gaul.csv'):
         if ln.startswith('#') or not ln.strip():
             continue
@@ -522,7 +528,7 @@ def write_pbcorr_split(prod, C, band, v, ind, workdir, span):
     (extended components, the large-scale step, the residual) by the diffuse beam (model x residual); NaN where the full beam is at or
     below the floor (as pb_apply.apply_pbcorr)."""
     new = rd(prod['path']); h = fits.getheader(prod['path']).copy()
-    pbf = f'{ind}/PB_deep_R075_{band}.fits' if v == 'R075' else f'{ind}/PB_deep_{band}.fits'
+    pbf = f'{ind}/{PBA.deep_pb_name(band, v)}'
     ph = fits.getheader(pbf); pb = rd(pbf)
     ch, _ = PBA.chromatic_gain(ph, pb.shape, float(PBA.cfg.SUBBAND_FREQ_HZ[band]['center']), float(ph['PBBMAJ']))
     valid = np.isfinite(pb) & (pb > PBA.PB_FLOOR) & np.isfinite(new) & np.isfinite(ch) & (ch > 0)

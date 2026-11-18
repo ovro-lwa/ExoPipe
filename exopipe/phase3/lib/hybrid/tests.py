@@ -263,6 +263,21 @@ def _load(path):
         return json.load(f)
 
 
+def _product_md5s(rec, keys):
+    """Problems with the products a record names: each must exist with the md5 the record holds."""
+    from exopipe.phase3.lib.install.steps_common import md5
+    bad = []
+    for k in keys:
+        p = rec.get(k) or {}
+        if not p.get('md5') or not p.get('path'):
+            bad.append(f'no {k} md5')
+        elif not os.path.exists(p['path']):
+            bad.append(f'{k} {p["path"]} missing')
+        elif md5(p['path']) != p['md5']:
+            bad.append(f'{k} {os.path.basename(p["path"])} md5 differs from the record')
+    return bad
+
+
 @content_test('hybrid_recon_record')
 def recon_unit(path, lst=None, band=None, weighting=None, **ctx):
     _REC, g = _recon_rules()
@@ -270,9 +285,7 @@ def recon_unit(path, lst=None, band=None, weighting=None, **ctx):
     bad = [f'{k} {rec.get(k)!r} != {w!r}' for k, w in (('lst', lst), ('band', band), ('weighting', weighting)) if rec.get(k) != w]
     if rec.get('generation') != g['RECON_GEN']:
         bad.append(f'generation {rec.get("generation")!r}')
-    for k in ('product', 'product_pbcorr'):
-        if not (rec.get(k) or {}).get('md5'):
-            bad.append(f'no {k} md5')
+    bad += _product_md5s(rec, ('product', 'product_pbcorr'))
     return not bad, rec.get('generation'), '; '.join(bad) if bad else f'{lst} {band} {weighting}, {g["RECON_GEN"]}'
 
 
@@ -366,7 +379,8 @@ def wideband_unit(path, lst=None, scope=None, weighting=None, members=None, **ct
     w = [s.get('weight') for s in subs]
     if not (w and all(isinstance(x, float) and x > 0 for x in w) and abs(sum(w) - 1) < 1e-9):
         bad.append(f'weights {w}')
-    return not bad, w, '; '.join(bad) if bad else f'{len(subs)} members, weights sum to 1'
+    bad += _product_md5s(rec, ('product', 'product_pbcorr'))
+    return not bad, w, '; '.join(bad) if bad else f'{len(subs)} members, weights sum to 1, products as recorded'
 
 
 @content_test('hybrid_wideband_record')

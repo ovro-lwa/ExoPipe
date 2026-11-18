@@ -205,8 +205,8 @@ def run(args, run):
         raise NoInput('no unit: the selected stages take none of the selected scopes')
     gates = {st: stage_gate_problems(st, CFG) for st in run.meta['stages']}
     if run.dry_run:
+        plans = {'stack': stack_plan, 'recon': recon_plan, 'wideband': wideband_plan}
         for st, lst, sc, w in units:
-            plans = {'stack': stack_plan, 'recon': recon_plan, 'wideband': wideband_plan}
             what = (f'refused: {"; ".join(gates[st])}' if gates[st] else
                     ', '.join(os.path.relpath(p, run.out_root) for p, _c in plans[st](run.out_root, lst, sc, w)) if st in plans else
                     f'not ported ({PORTED_BY[st]})')
@@ -277,20 +277,15 @@ def stack_unit(u, lst, band, w, out_root, work):
         files = [(p, c) for p, c in plan if p in own or (v in TAPER_OF and c == 'hybrid_stack_input')]
         for p, c in files:
             u.plan(p, c)
-        def clear(paths):
-            for p in paths:
-                if os.path.lexists(p):
-                    os.remove(p)
-        temps = lambda: (sorted(q for p in own for q in [f'{p}.part'] + glob.glob(f'{glob.escape(p)}.tmp.*'))
-                         + sorted(glob.glob(os.path.join(glob.escape(inputs_dir(workdir)), f'*.{v}.part'))))
-        clear(own + temps())
+        temps = lambda: sorted(glob.glob(os.path.join(glob.escape(inputs_dir(workdir)), f'*.{v}.part')))
+        _clear(own + temps())
         prep = fitsio.scratch_dir(f'hybrid_stack_{lst}_{band}_{v}', work)
         read = set()
         try:
             rec = HST.stack_variant(lst, band, v, workdir, prep, screens, read)
         except (HST.StackRefusal, ScreenLockRefusal) as e:
             gate = getattr(e, 'gate', 'HG4')
-            clear(own + temps())
+            _clear(own + temps())
             for p, _c in files:
                 u.refuse_item(p, f'{gate}: {e}', gate=gate)
             continue
@@ -302,8 +297,9 @@ def stack_unit(u, lst, band, w, out_root, work):
         u.check(f'hybrid_stack.rebuild_{v}', True, value=t['verdict'],
                 detail=f"max |diff| {t['max_abs_diff']:.3g} Jy/beam, rms {t['rms_diff']:.3g} Jy/beam vs master peak "
                        f"{t['master_peak']:.4g} Jy/beam, rms {t['master_rms']:.4g} Jy/beam")
-        nights.update(set(n['date'] for n in rec['nights']) - set(rec.get('dirty_nights_dropped') or ()))
+        vn = set(n['date'] for n in rec['nights']) - set(rec.get('dirty_nights_dropped') or ())
         master = HST.cell_paths(CFG.hybrid_stack.COADD_SB, lst, band, v)[2]
+        n0 = len(u.failed_tests())
         for p, c in files:
             if c == 'hybrid_stack_input':
                 i = rec['inputs'][os.path.basename(p)]
@@ -312,6 +308,14 @@ def stack_unit(u, lst, band, w, out_root, work):
                 u.add_output(p, c, lst=lst, band=band, weighting=v)
             else:
                 u.add_output(p, c, master=master)
+        bad = u.failed_tests()[n0:]
+        if bad:                                   # a failed content test refuses the variant: its files go (a stack record on disk
+            why = '; '.join(f"{t['name']} {t.get('detail', '')}"[:200] for t in bad)   # is a passed stack), and a bad inputs copy too
+            _clear(own + temps() + sorted({t['path'] for t in bad if t.get('path') and t['path'] not in own}))
+            for p, _c in files:
+                u.refuse_item(p, f'content test(s) FAILED: {why}', gate='content')
+            continue
+        nights |= vn
     u.set_admitted(sorted(nights))
 
 
@@ -336,15 +340,32 @@ def wideband_plan(out_root, lst, scope, w):
 
 
 def _clear(paths):
-    """Remove a unit's own earlier outputs and their temporaries (no stale file stands beside a new run or a refusal)."""
+    """Remove a unit's own earlier outputs and their temporaries <path>.part and <path>.tmp.* (no stale file stands beside a
+    new run or a refusal)."""
+    import glob
     for p in paths:
-        for q in (p, f'{p}.part'):
+        for q in [p, f'{p}.part'] + glob.glob(f'{glob.escape(p)}.tmp.*'):
             if os.path.lexists(q):
                 os.remove(q)
 
 
+def _upstream_problem(out_root, unit, paths):
+    """Why an upstream unit's files on disk may not be used, else None: its v2 unit record (when there is one; inputs staged from
+    production have none) must be done and must not list any of `paths` as a refused item."""
+    import json
+    rp = os.path.join(out_root, '_records', 'hybrid', f'{unit}.json')
+    if not os.path.exists(rp):
+        return None
+    with open(rp) as f:
+        r = json.load(f)
+    if r.get('status') != 'done':
+        return f"unit {unit} ended {r.get('status')}: {str(r.get('reason'))[:200]}"
+    want = {os.path.abspath(p) for p in paths}
+    hit = [i for i in r.get('refused_items') or [] if i.get('path') in want]
+    return f"unit {unit} refused {os.path.basename(hit[0]['path'])}: {hit[0]['reason'][:200]}" if hit else None
+
+
 def _stack_inputs(wd, w):
-    from exopipe.phase3.lib.hybrid.common import inputs_dir
     return ([os.path.join(wd, f'{w}_{k}.fits') for k in ('dirty_stack', 'dirty_halfA', 'dirty_halfB', 'psf_stack')]
             + [os.path.join(wd, f'{w}_stack.json')])
 
@@ -359,10 +380,14 @@ def recon_unit(u, lst, band, w, out_root):
     from exopipe.phase3.core.record import NoInput
     from exopipe.phase3.lib.hybrid import recon as REC
     from exopipe.phase3.lib.hybrid.common import inputs_dir
+    from exopipe.phase3.lib.masters import pb_apply as PBA
     wd = os.path.join(out_root, f'{lst}_{band}')
     srec_path = os.path.join(wd, f'{w}_stack.json')
     if not os.path.exists(srec_path):
         raise NoInput(f'no stack record {srec_path} (stage stack of this unit refused or was not run)')
+    why = _upstream_problem(out_root, f'stack.{lst}_{band}_{w}', _stack_inputs(wd, w))
+    if why:
+        u.refuse(f'its stack may not be used: {why} - REFUSED')
     plan = recon_plan(out_root, lst, band, w)
     for p, c in plan:
         u.plan(p, c)
@@ -370,16 +395,18 @@ def recon_unit(u, lst, band, w, out_root):
     psf2x = CFG.hybrid_psf2x.REGISTRY[(band, w)][0]
     g = REC.bind()
     master = os.path.join(inputs_dir(wd), f'I_deep_NoTaper_{w}_{band}.fits')
-    pb = os.path.join(inputs_dir(wd), f'PB_deep_R075_{band}.fits' if w == 'R075' else f'PB_deep_{band}.fits')
+    pb = os.path.join(inputs_dir(wd), PBA.deep_pb_name(band, w))
     _clear(own)
     done = []
     try:
         base = CFG.hybrid_recon.CLEAN_REGION     # NL 2209: the cascade's 'horizon' tries take the configured region (--clean-region)
-        tries = [(int(g['NITER'] * f), int(g['MAXCYC'] * f), base if region == 'horizon' else region)
-                 for _name, f, region in CFG.hybrid_recon.CASCADE]
+        tries = []
+        for _name, f, region in CFG.hybrid_recon.CASCADE:     # a try equal to an earlier one is not run again
+            t = (int(g['NITER'] * f), int(g['MAXCYC'] * f), base if region == 'horizon' else region)
+            if t not in tries:
+                tries.append(t)
+        REC.READS.clear()
         for i, (ni, mc, cr) in enumerate(tries):
-            if i and (ni, mc, cr) in tries[:i]:
-                continue
             try:
                 rec = REC.recon_variant(lst, band, w, wd, psf2x, None, ni, mc, cr, escalation=done)
                 break
@@ -395,17 +422,16 @@ def recon_unit(u, lst, band, w, out_root):
         _clear(own)
         raise
     finally:
-        for p in _stack_inputs(wd, w) + [master, pb, psf2x,
-                                         os.path.join(g['CATALOGS'], f'master_R075_{lst}_{band}.gaul.csv')]:
+        for p in _stack_inputs(wd, w) + [master, pb, psf2x] + sorted(REC.READS):     # READS: sky models and the catalog
             if os.path.exists(p):
                 u.add_input(p)
+    n0 = len(u.failed_tests())
     for t in ('test_psf2x', 'test_compact_sources', 'test_large_scale_level'):
         v = rec[t].get('verdict')
         u.check(f'hybrid_recon.{t}', v in ('pass', 'caveat'), value=v, detail=json.dumps(rec[t], default=str)[:400])
     if done:
         u.note(f'convergence cascade: {len(done)} earlier tr{"y" if len(done) == 1 else "ies"} refused, '
                f'clean region {rec["regions"]["clean_region"]}')
-    n0 = len(u.failed_tests())
     pbs = [(pb, band, 1.0)]
     for p, c in plan:
         if c == 'hybrid_recon_master':
@@ -429,10 +455,11 @@ def _member_product(mwd, w):
     """The reconstruction a member's record names (combine_wideband reads that path); '' when the record is absent."""
     import json
     p = os.path.join(mwd, f'{w}_lsrecon.json')
-    if not os.path.exists(p):
+    try:
+        with open(p) as f:
+            return json.load(f)['product']['path']
+    except (OSError, ValueError, KeyError, TypeError):
         return ''
-    with open(p) as f:
-        return json.load(f)['product']['path']
 
 
 def wideband_unit(u, lst, scope, w, out_root):
@@ -443,12 +470,18 @@ def wideband_unit(u, lst, scope, w, out_root):
     from exopipe.phase3.lib.hybrid import recon as REC
     from exopipe.phase3.lib.hybrid import wideband as WB
     from exopipe.phase3.lib.hybrid.common import inputs_dir
+    from exopipe.phase3.lib.masters import pb_apply as PBA
     members = tuple(CFG.hybrid.WIDEBAND_MEMBERS[scope])
     plan = wideband_plan(out_root, lst, scope, w)
     for p, c in plan:
         u.plan(p, c)
     own = [p for p, _c in plan]
     _clear(own)
+    for b in members:
+        why = _upstream_problem(out_root, f'recon.{lst}_{b}_{w}', [os.path.join(out_root, f'{lst}_{b}', f'{w}_lsrecon.json')])
+        if why:
+            u.refuse(f'member {b} may not be used: {why} - REFUSED')
+    REC.READS.clear()
     try:
         rec = WB.combine_wideband(lst, scope, w, out_root)
     except REC.ReconRefusal as e:
@@ -462,12 +495,27 @@ def wideband_unit(u, lst, scope, w, out_root):
             mwd = os.path.join(out_root, f'{lst}_{b}')
             for p in [os.path.join(mwd, f'{w}_lsrecon.json'), os.path.join(mwd, f'{w}_stack.json'), _member_product(mwd, w),
                       os.path.join(mwd, f'{w}_lsrecon_compact_restored.fits'),
-                      os.path.join(inputs_dir(mwd), f'PB_deep_R075_{b}.fits' if w == 'R075' else f'PB_deep_{b}.fits')]:
+                      os.path.join(inputs_dir(mwd), PBA.deep_pb_name(b, w))]:
                 if os.path.exists(p):
                     u.add_input(p)
+        for p in sorted(REC.READS):               # the compact-source catalog
+            u.add_input(p)
+    # the archive masters combine_wideband read: the installed wideband master (the compact-source reference) and, where read, the
+    # members' installed masters (the caveat scopes' subband reference; THERMNOI from another master of the cell)
+    u.add_input(rec['installed_wideband_master'])
+    g = REC.bind()
+    for s in rec['subbands']:
+        if scope in g['CAVEAT_SCOPES']:
+            u.add_input(REC.installed_master(lst, s['band'], w, False)[0])
+        if not str(s.get('thermnoi_source', '')).startswith('reconstruction'):
+            ow = 'R0' if w == 'R075' else 'R075'
+            for tp_, v_ in ((True, w), (False, ow), (True, ow)):
+                try:
+                    u.add_input(REC.installed_master(lst, s['band'], v_, tp_)[0])
+                except REC.ReconRefusal:              # not reached by combine_wideband (an earlier master held THERMNOI)
+                    pass
     sub0 = _member_product(os.path.join(out_root, f'{lst}_{members[0]}'), w)       # the product combine_wideband read
-    pbs = [(os.path.join(inputs_dir(os.path.join(out_root, f'{lst}_{s["band"]}')),
-                         f'PB_deep_R075_{s["band"]}.fits' if w == 'R075' else f'PB_deep_{s["band"]}.fits'), s['band'], s['weight'])
+    pbs = [(os.path.join(inputs_dir(os.path.join(out_root, f'{lst}_{s["band"]}')), PBA.deep_pb_name(s['band'], w)), s['band'], s['weight'])
            for s in rec['subbands']]
     n0 = len(u.failed_tests())
     for p, c in plan:

@@ -307,10 +307,10 @@ def test_screen_lock_and_cache():
 
 
 # ------------------------------------------------------------------------------------------------------------- 6 unit + content tests
-def _fake_stack(fail, dropped=None, partial=(), lock=()):
+def _fake_stack(fail, dropped=None, partial=(), lock=(), nan=()):
     """A stack_variant stand-in: refuses the variants in `fail` (gate HG5; those in `partial` after writing one stack and a
     temporary), raises the screen-lock refusal for those in `lock`, else writes valid files beside a fake master; `dropped`:
-    {variant: [dates left out of its stacks]}."""
+    {variant: [dates left out of its stacks]}; `nan`: variants whose dirty stack is all NaN (fails its content test)."""
     def fn(lst, band, v, workdir, prep, screens, read=None):
         assert os.path.isdir(prep) and os.listdir(prep) == []
         if v in lock:
@@ -333,7 +333,8 @@ def _fake_stack(fail, dropped=None, partial=(), lock=()):
             HC.write_atomic(f'{workdir}/{v}_residual_stack.fits', img, HC.diag_header(mh, 'residual'))
         else:
             for n in ('dirty_stack', 'dirty_halfA', 'dirty_halfB'):
-                HC.write_atomic(f'{workdir}/{v}_{n}.fits', img, HC.diag_header(mh, n))
+                HC.write_atomic(f'{workdir}/{v}_{n}.fits', img * np.nan if v in nan and n == 'dirty_stack' else img,
+                                HC.diag_header(mh, n))
             HC.write_atomic(f'{workdir}/{v}_psf_stack.fits', img / img.max(), HC.diag_header(mh, 'psf'))
             os.makedirs(f'{workdir}/inputs', exist_ok=True)
             rec['inputs'] = {}
@@ -408,6 +409,13 @@ def test_stack_unit_items_and_content_tests():
         HST.stack_variant = _fake_stack(fail=('R0', 'T0'))
         u = _run_unit(out, work, 'R0')
         assert u.status == 'refused' and 'every planned item refused' in u.reason, (u.status, u.reason)
+        # a failed content test refuses the variant and removes its files (a stack record on disk is a passed stack)
+        HST.stack_variant = _fake_stack(fail=(), nan=('R075',))
+        u = _run_unit(out, work, 'R075')
+        assert u.status == 'done' and {r['gate'] for r in u.refused_items} == {'content'} and len(u.refused_items) == 8, u.refused_items
+        left = sorted(f for f in os.listdir(os.path.join(out, '18h_46MHz')) if f.startswith(('R075_', 'T075_')))
+        assert left == ['T075_residual_stack.fits', 'T075_stack.json'], left
+        assert u.admitted == ['2025-01-01', '2025-01-02', '2025-01-03']                               # the Taper stack's nights
         # content tests fail on bad files
         from exopipe.phase3.core import validate
         wdir = os.path.join(out, '18h_46MHz')

@@ -55,7 +55,7 @@ def combine_wideband(lst, scope, v, run_dir):
             tsrc = f"installed {'Taper' if tp_ else 'NoTaper'} {v_} master of the cell (the NoTaper {v} header lacks it)"
         if tn is None or not float(tn) > 0:
             raise ReconRefusal(f'{lst} {b} {v}: no THERMNOI for the weight - REFUSING')
-        pbf = f'{wd}/inputs/PB_deep_R075_{b}.fits' if v == 'R075' else f'{wd}/inputs/PB_deep_{b}.fits'; ph = fits.getheader(pbf); pb = rd(pbf)
+        pbf = f'{wd}/inputs/{PBA.deep_pb_name(b, v)}'; ph = fits.getheader(pbf); pb = rd(pbf)
         ch, _ = PBA.chromatic_gain(ph, pb.shape, float(PBA.cfg.SUBBAND_FREQ_HZ[b]['center']), float(ph['PBBMAJ']))
         subs.append(dict(band=b, hdr=h, span=s['span'], name=r['product']['prodname'], A=rd(r['product']['path']),
                          C=rd(f'{wd}/{v}_lsrecon_compact_restored.fits'), pbf=pb, pbd=pb / ch, w=1.0 / float(tn) ** 2, thermnoi=float(tn),
@@ -115,17 +115,18 @@ def combine_wideband(lst, scope, v, run_dir):
     if level:
         rec['test_large_scale_level'] = level
     rec['test_wideband_identity'] = test_wideband_identity(path, subs, Wn, name)
-    fits.writeto(f'{out}/{v}_lsrecon_compact_restored.fits', C.astype(np.float32), diag_header(fits.getheader(path), 'combined restored point components'),
+    ph_ = fits.getheader(path)                    # v2: the written product's header, read once (production re-read it per use)
+    fits.writeto(f'{out}/{v}_lsrecon_compact_restored.fits', C.astype(np.float32), diag_header(ph_, 'combined restored point components'),
                  overwrite=True)
     inst = [f for f in glob.glob(f'{ARCHIVE_MASTERS}/{lst}/{scope}/{scope}_I_deep_NoTaper_{"Robust-0.75" if v == "R075" else "Robust+0.0"}_*coadd_LST{lst}_*.fits')
             if '_pbcorr_' not in f]
     if len(inst) != 1:
         raise ReconRefusal(f'{lst} {scope} {v}: {len(inst)} installed wideband masters {inst} - REFUSING')
     ih = fits.getheader(inst[0])
-    if any(ih[k] != fits.getheader(path)[k] for k in WCS_KEYS):
+    if any(ih[k] != ph_[k] for k in WCS_KEYS):
         raise ReconRefusal(f'{lst} {scope} {v}: installed wideband master grid differs - REFUSING')
     rec['installed_wideband_master'] = inst[0]
-    ref, ph_ = rd(inst[0]), fits.getheader(path)
+    ref = rd(inst[0])
     if scope in CAVEAT_SCOPES:                    # Gregg 2026-11-04 "a" (ledger R-GREGG-20261104-BLUE-COMPACT-TEST-REFERENCE-SUBBAND-MASTERS): where
         sub_ref = sum(wn * rd(installed_master(lst, s['band'], v, False)[0]) for wn, s in zip(Wn, subs))   # the installed Blue master is
         cons = compact_ratio(sub_ref, ref, ph_, lst, scope); rec['installed_wideband_vs_subbands'] = cons      # inconsistent with its own
@@ -137,7 +138,7 @@ def combine_wideband(lst, scope, v, run_dir):
     valid = np.isfinite(PBF) & (PBF > PBA.PB_FLOOR) & np.isfinite(A) & np.isfinite(PBD) & (PBD > 0)
     P = np.full(A.shape, np.nan); P[valid] = C[valid] / PBF[valid] + (A[valid] - C[valid]) / PBD[valid]
     pn = parse_name(name); pn['proc'] = list(pn['proc']) + ['pbcorr']; pname = build_name(**pn); ppath = f'{out}/I_deep_NoTaper_{v}_lsrecon_pbcorr_{scope}.fits'
-    hp = fits.getheader(path).copy(); hp['PBFLOOR'] = (PBA.PB_FLOOR, 'PB floor below which pixels set NaN')
+    hp = ph_.copy(); hp['PBFLOOR'] = (PBA.PB_FLOOR, 'PB floor below which pixels set NaN')
     hp['PBMETHOD'] = ('lsrecon-split', 'compact / full PB; extended + step + residual / diffuse PB')
     hp['PBMAP'] = ('ivw mean of subband PB maps', 'same weights as the images (LSWBW)')
     fits.writeto(ppath, P.astype(np.float32), hp, overwrite=True)
