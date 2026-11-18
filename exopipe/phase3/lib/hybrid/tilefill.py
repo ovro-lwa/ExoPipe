@@ -31,12 +31,21 @@ import hashlib
 import os
 import time
 
-import healpy as hp
 import numpy as np
 from astropy.io import fits
 
 from exopipe.phase3.core.products import build_name, parse_name
 from exopipe.phase3.lib.install.steps_common import md5
+
+
+class _Healpy:
+    """healpy, imported at its first use (the data-free CI has no healpy; recon.py imports it inside each function)."""
+    def __getattr__(self, k):
+        import healpy
+        return getattr(healpy, k)
+
+
+hp = _Healpy()
 
 READS = set()                                      # every file the stage read; the step records those that are not its own outputs
 
