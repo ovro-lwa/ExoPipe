@@ -134,16 +134,27 @@ def _pin(cores):
     return cores
 
 
-def _guard_out(out):
-    """The refusal text when --out is a production root during the refactor window, else None (exit 2, not 1)."""
+def _guard_out(out, key=None):
+    """The refusal text when --out is a production root during the refactor window, else None (exit 2, not 1). ``key``: the
+    step's name in the narrow cutover allowance (paths.PRODUCTION_WRITES_ALLOWED: 'hybrid', 'mosaic:v5', ...)."""
     from exopipe.phase3.config import CFG
-    if CFG.paths.PRODUCTION_WRITES:
+    if CFG.writes_allowed(key):
         return None
     root = CFG.production_root_of(out)
     if root is not None:
-        return (f'--out {out} is under the production root {root} and paths.PRODUCTION_WRITES is False (refactor '
-                f'window). Write parity/scratch output to your own root.')
+        return (f'--out {out} is under the production root {root}, paths.PRODUCTION_WRITES is False (refactor window) and '
+                f'{key!r} is not in paths.PRODUCTION_WRITES_ALLOWED. Write parity/scratch output to your own root.')
     return None
+
+
+def _allow_key(name, args):
+    """The step's name in paths.PRODUCTION_WRITES_ALLOWED: 'mosaic:<generation>' for the mosaic step, 'archive:<class>' for
+    `archive push --class <class>` (its records beside the archive, as the push's own G2 key), else the step name."""
+    if name == 'mosaic':
+        return f'mosaic:{getattr(args, "generation", None)}'
+    if name == 'archive' and getattr(args, 'action', None) == 'push' and getattr(args, 'push_class', None):
+        return f'archive:{args.push_class}'
+    return name
 
 
 def _parity(args, out):
@@ -405,7 +416,7 @@ def main(argv=None):
         print(f'REFUSED: {e}', file=sys.stderr)
         return record.EXIT_REFUSED
     if getattr(mod, 'WRITES', True) and not args.dry_run:
-        why = _guard_out(out)
+        why = _guard_out(out, _allow_key(name, args))
         if why:
             print(f'REFUSED: {why}', file=sys.stderr)
             return record.EXIT_REFUSED

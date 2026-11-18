@@ -126,19 +126,21 @@ class Ctx:
         return os.path.join(self.archive_root, name)
 
     # ---- G2 -------------------------------------------------------------------------------------------------------
-    def guard_writes(self, paths, what):
+    def guard_writes(self, paths, what, allow=None):
         """G2: refuse an apply that would write or move anything under a production tree while paths.PRODUCTION_WRITES is
-        False (refactor window; INCIDENT-DRY-TEST-WROTE-FOUR-FILES-INTO-THE-REAL-ARCHIVE-REMOVED, ledger 897). An INJECTED
-        run (core/injected.py) never writes the archive tree, whatever PRODUCTION_WRITES says: refused first, by name."""
+        False (refactor window; INCIDENT-DRY-TEST-WROTE-FOUR-FILES-INTO-THE-REAL-ARCHIVE-REMOVED, ledger 897), unless ``allow``
+        ('archive:<push class>') is in the RULED narrow cutover allowance paths.PRODUCTION_WRITES_ALLOWED. An INJECTED run
+        (core/injected.py) never writes the archive tree, whatever either says: refused first, by name."""
         from exopipe.phase3.core import injected
         injected.check_all(paths, f'archive {what}')
-        if cfg().paths.PRODUCTION_WRITES:
+        if cfg().writes_allowed(allow if str(allow or '').startswith('archive:') else None):   # a step name never opens the archive
             return
         for p in paths:
             if p and production_like(p):
                 raise Refusal(f'G2: {what} would write under the production tree {production_like(p)} ({p}) and '
-                              f'paths.PRODUCTION_WRITES is False (refactor window: archive is plan-only; an apply runs '
-                              f'only against a mirror, --archive-root DIR outside every production tree)')
+                              f'paths.PRODUCTION_WRITES is False and {allow!r} is not in paths.PRODUCTION_WRITES_ALLOWED '
+                              f'(refactor window: archive is plan-only; an apply runs only against a mirror, --archive-root '
+                              f'DIR outside every production tree)')
 
 
 # ---------------------------------------------------------------------------------------------------------------------

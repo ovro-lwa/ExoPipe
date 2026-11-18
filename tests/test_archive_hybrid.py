@@ -149,7 +149,7 @@ class _Env:
         _fits(os.path.join(d, 'M', '18h', '46MHz', 'PB_deep_R075_46MHz.fits'), 0.9, prodname=False, BUNIT='',
               **(pb_cards or {}))
         self.ctx = types.SimpleNamespace(archive_root=os.path.join(d, 'root'), algo='md5', stamp='20261118T000000Z', dry=False,
-                                          apply=True, guard_writes=lambda paths, what: K.Ctx.guard_writes(None, paths, what))
+                                          apply=True, guard_writes=lambda paths, what, allow=None: K.Ctx.guard_writes(None, paths, what, allow))
 
     def __enter__(self):
         setattr(CFG.hybrid, 'ARCHIVE_MASTERS', os.path.join(self.d, 'M'))

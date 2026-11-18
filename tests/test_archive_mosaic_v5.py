@@ -124,7 +124,7 @@ class _Env:
         self.root = os.path.join(d, 'root')
         self.ctx = types.SimpleNamespace(archive_root=self.root, algo='md5', stamp='20261118T000000Z', dry=False, apply=True,
                                           tier='deep', manifest_dir=self._mdir,
-                                          guard_writes=lambda paths, what: K.Ctx.guard_writes(None, paths, what))
+                                          guard_writes=lambda paths, what, allow=None: K.Ctx.guard_writes(None, paths, what, allow))
         P = self.P = v5.paths(self.out, 'Blue', 'R075')
         self.prods = {}
         for kind, (sub, stem, lay, bu, pbc) in PRODUCTS.items():

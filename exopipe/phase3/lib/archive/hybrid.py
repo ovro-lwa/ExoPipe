@@ -246,7 +246,7 @@ def apply_unit(ctx, u, rows, rnd, cls='hybrid', adir=None, qdir=None, qman_name=
     qpath = qpath or (lambda old: _qpath(ctx, rnd, old))
     qman = os.path.join(qdir, qman_name)
     pman = os.path.join(adir, f'MANIFEST_{ctx.stamp}.csv')
-    ctx.guard_writes([adir, qdir, qman, pman], f'push --class {cls} {unit}')
+    ctx.guard_writes([adir, qdir, qman, pman], f'push --class {cls} {unit}', allow=f'archive:{cls}')
     for r in todo:
         if r['action'] in ('replace', 'retire') and os.path.lexists(qpath(r['replaces'])):
             raise Refusal(f'G4: quarantine destination exists: {qpath(r["replaces"])} (choose another --round)')

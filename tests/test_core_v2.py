@@ -113,6 +113,7 @@ def test_item1_protected_keys_refuse():
     with cfg_restored() as CFG:
         CFG.authorize([], out='/tmp/x')
         for k, v in [('paths.DATA_DECISIONS', '/tmp/dd.csv'), ('paths.PRODUCTION_WRITES', 'True'),
+                     ('paths.PRODUCTION_WRITES_ALLOWED', "('masters',)"),
                      ('paths.PRODUCTION_ROOTS', '()'), ('paths.FIX_LEDGER', '/tmp/l.csv'),
                      ('paths.PINNED_INPUTS', '()'), ('exclusions.SUBBAND_ONLY', '()'),
                      ('exclusions.PERBAND_TAG', 'x')]:
@@ -134,6 +135,46 @@ def test_item1_protected_keys_refuse():
     assert r.returncode == 2 and 'PROTECTED' in r.stderr, (r.returncode, r.stderr)
     r = cli('config', '--set', 'exclusions.SUBBAND_ONLY=()')
     assert r.returncode == 2 and 'PROTECTED' in r.stderr, (r.returncode, r.stderr)
+
+
+def test_item1_narrow_cutover_allowance():
+    """paths.PRODUCTION_WRITES_ALLOWED (RULED 2026-11-18): protected; only the named steps / push classes pass the --out guard
+    and archive G2 while PRODUCTION_WRITES is False; an injected run empties it."""
+    import argparse
+    from exopipe.phase3.config import CFG
+    from exopipe.phase3.config.shared import PROTECTED
+    from exopipe.phase3 import cli as CLI
+    from exopipe.phase3.core import injected
+    from exopipe.phase3.lib.archive import common as K
+    assert CFG.paths.PRODUCTION_WRITES is False and 'paths.PRODUCTION_WRITES_ALLOWED' in PROTECTED
+    assert set(CFG.paths.PRODUCTION_WRITES_ALLOWED) <= {'hybrid', 'mosaic:v5', 'archive:hybrid', 'archive:mosaic_v5'}  # the ruling
+    assert CFG.writes_allowed('hybrid') and CFG.writes_allowed('archive:hybrid') and CFG.writes_allowed('mosaic:v5')
+    for k in (None, 'masters', 'mosaic', 'mosaic:v3', 'archive:epoch', 'archive:mosaic', 'archive:mosaic_v5'):   # mosaic_v5: no parity yet
+        assert not CFG.writes_allowed(k), k
+    prod = os.path.join(CFG.paths.PRODUCTION_ROOTS[0], 'x')
+    assert CLI._guard_out(prod, 'hybrid') is None
+    assert 'PRODUCTION_WRITES_ALLOWED' in CLI._guard_out(prod, 'masters') and CLI._guard_out(prod) is not None
+    assert CLI._allow_key('mosaic', argparse.Namespace(generation='v5')) == 'mosaic:v5'
+    assert CLI._allow_key('hybrid', argparse.Namespace()) == 'hybrid'
+    assert CLI._allow_key('archive', argparse.Namespace(action='push', push_class='hybrid')) == 'archive:hybrid'
+    assert CLI._allow_key('archive', argparse.Namespace(action='sync', push_class='hybrid')) == 'archive'
+    assert CLI._guard_out(prod, 'archive:hybrid') is None and CLI._guard_out(prod, 'archive') is not None
+    assert CLI._guard_out(prod, CLI._allow_key('archive', argparse.Namespace(action='push', push_class='mosaic_v5'))) is not None
+    arch = os.path.join(CFG.paths.PHASE3_ARCHIVE_ROOT, 'x')
+    K.Ctx.guard_writes(None, [arch], 'push --class hybrid t', allow='archive:hybrid')     # allowed: no refusal
+    for a in (None, 'archive:epoch', 'hybrid', 'archive:mosaic_v5'):
+        try:
+            K.Ctx.guard_writes(None, [arch], 'push t', allow=a)
+            raise AssertionError(f'G2 let {a!r} write the archive')
+        except K.Refusal as e:
+            assert 'PRODUCTION_WRITES_ALLOWED' in str(e), e
+    saved, act = CFG.paths.PRODUCTION_WRITES_ALLOWED, injected.active
+    try:
+        injected.active = lambda: True
+        assert injected.force_no_production_writes(CFG) and CFG.paths.PRODUCTION_WRITES_ALLOWED == ()
+        assert not CFG.writes_allowed('hybrid') and CLI._guard_out(prod, 'hybrid') is not None
+    finally:
+        CFG.paths.PRODUCTION_WRITES_ALLOWED, injected.active = saved, act
 
 
 def test_item1_ruled_keys_need_ruling_or_nonproduction_out():

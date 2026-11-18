@@ -259,6 +259,14 @@ class _Config:
             return None
         return tuple(r) if isinstance(r, (list, tuple)) else (r,)
 
+    def writes_allowed(self, key=None):
+        """May a step write under a production root? True after the cutover (paths.PRODUCTION_WRITES), or when ``key`` - the step
+        name ('hybrid'), 'mosaic:<generation>' or 'archive:<push class>' - is in the RULED narrow allowance
+        paths.PRODUCTION_WRITES_ALLOWED. None (a caller that names nothing) gets the flag alone."""
+        if self.paths.PRODUCTION_WRITES:
+            return True
+        return key is not None and key in tuple(self.paths.PRODUCTION_WRITES_ALLOWED or ())
+
     def production_root_of(self, path):
         """The production root (paths.PRODUCTION_ROOTS) that holds ``path``, or None."""
         real = os.path.realpath(path)
