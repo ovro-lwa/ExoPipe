@@ -582,6 +582,29 @@ def name_roundtrip(path, **ctx):
     return ok, None, 'name round-trips' if ok else 'name does not round-trip'
 
 
+_NO_SKY_SIGNAL = ('psfmap', 'pbmap', 'pkcorr', 'caveat')
+
+
+def fill_card_problems(proc, hdr):
+    """The token-card rule of the zero-spacing fill: TPFILL proves lsfill (spec plan/specs/hybrid.md section 6 item 9; the token
+    since 2026-11-11, R-GREGG-20261111-KEEP-LSFILL-NAME-FOR-ZERO-SPACING-MOSAICS and R-GREGG-20261111-HYBRID-MASTERS-ZERO-SPACING-
+    FILL-PER-TILE). On a map that carries sky signal (a mosaic in Jy/sr or Jy/beam and its renders, a master) the name carries
+    lsfill (or the retired tpfill) exactly when the header carries TPFILL = T. A map without sky signal at large scales (psfmap,
+    pbmap, pkcorr, caveat) keeps the lsfill name of its mosaic and carries no TPFILL. LSFILL documents the hybrid composition
+    (Taper master + G (x) (reconstruction - Taper)) and proves nothing about the fill: the hybrid CLEAN residuals carry LSFILL = T
+    and neither the token nor TPFILL. Archived examples (read 2026-11-18): V5 Blue jysr/jybeam lsfill TPFILL T, psfmap/pbmap/pkcorr/
+    caveat lsfill no TPFILL; H 18h 46 MHz R075 master lsfill TPFILL T, its cleanres LSFILL T and no TPFILL. Returns the problems."""
+    named = 'lsfill' in proc or 'tpfill' in proc
+    card = hdr.get('TPFILL')
+    if any(t in proc for t in _NO_SKY_SIGNAL):
+        return ['TPFILL on a map without sky signal at large scales'] if card is not None else []
+    if named and card is not True:
+        return [f'name carries {"lsfill" if "lsfill" in proc else "tpfill"} but TPFILL is {card!r} (no zero-spacing fill recorded)']
+    if card is True and not named:
+        return ['TPFILL = T but the name carries no lsfill']
+    return []
+
+
 @content_test('mosaic')
 def cards_vs_name(path, **ctx):
     import numpy as np
@@ -602,7 +625,8 @@ def cards_vs_name(path, **ctx):
             p.append(f'no {k}')
     if not np.isfinite(np.asarray(arr.ravel()[::97])).any():
         p.append('no finite pixel')
-    return not p, dom, '; '.join(p) or f'{dom}: PBCORR, BUNIT, NSTACK, time block, finite pixels agree with the name'
+    p += fill_card_problems(proc, hdr_all)
+    return not p, dom, '; '.join(p) or f'{dom}: PBCORR, BUNIT, NSTACK, time block, zero-spacing fill, finite pixels agree with the name'
 
 
 @content_test('mosaic')

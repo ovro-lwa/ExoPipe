@@ -224,6 +224,34 @@ def test_build_refuses_tagged_new_tokens_and_1min():
     raise AssertionError("build_name accepted cadence '1min'")
 
 
+def test_retired_tpfill_parse_only():
+    """'tpfill' is retired (R-GREGG-20261111-KEEP-LSFILL-NAME-FOR-ZERO-SPACING-MOSAICS): archived names that carry it parse and
+    round-trip (they are in REAL), and parse marks them; a NEW name with it is refused, also when the marker belongs to another
+    token set; names without it carry no marker."""
+    tp = [n for n in REAL if '_tpfill_' in n]
+    assert tp, 'REAL has no tpfill name'
+    for n in tp:
+        g = P.parse_name(n)
+        assert g.get('retired') == ['tpfill'], (n, g.get('retired'))
+        assert P.build_name(**g) == n
+        new = {k: v for k, v in g.items() if k != 'retired'}
+        try:
+            P.build_name(**new)
+        except ValueError as e:
+            assert 'Retired' in str(e) and 'R-GREGG-20261111-KEEP-LSFILL' in str(e), e
+        else:
+            raise AssertionError(f'build_name accepted tpfill in a new name: {n}')
+    plain = [n for n in REAL if '_tpfill_' not in n]
+    assert all('retired' not in P.parse_name(n) for n in plain)
+    g = P.parse_name(plain[0])
+    try:
+        P.build_name(**dict(g, proc=list(g['proc']) + ['tpfill']))
+    except ValueError:
+        pass
+    else:
+        raise AssertionError('build_name accepted tpfill added to a name that never had it')
+
+
 def test_mutants_refused():
     accepted = []
     for base, old, new, why in REFUSED:
@@ -260,7 +288,8 @@ def test_same_verdicts_as_production():
 
 TESTS = [test_vocabulary_equals_production_copy, test_each_list_carries_its_token, test_real_names_round_trip,
          test_canonical_positions_whatever_the_input_order, test_build_refuses_tagged_new_tokens_and_1min,
-         test_mutants_refused, test_out_of_order_does_not_round_trip, test_same_verdicts_as_production]
+         test_retired_tpfill_parse_only, test_mutants_refused, test_out_of_order_does_not_round_trip,
+         test_same_verdicts_as_production]
 
 if _IMPORT_ERROR is not None:                            # pragma: no cover
     # Mirror test_import_side_effects: loud UNTESTED, never silent skip.

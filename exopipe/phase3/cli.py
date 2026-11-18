@@ -41,6 +41,8 @@ STEPS = [
     ('dewarp', 'master dewarp per LST: RBF screen on the rebuilt masters, cubic apply, content test D1-D6', 'survey'),
     ('install', 'gated install of rebuilt products into the working tree; quarantine round; re-run list', 'survey'),
     ('calibrate', 'versioned reference tables: derive, diff, install, verify', 'survey'),
+    ('hybrid', 'hybrid NoTaper route: stacks, large-scale reconstruction, wideband, hybrid masters, Full, per-tile zero-spacing '
+               'fill', 'survey'),
     ('mosaic', 'mosaicked products', 'survey'),
     ('photometry', 'photometry of input samples (Hot/Warm Jupiters, flare/UCD, 10/25/50 pc)', 'survey'),
     ('followup', 'follow-up of high-interest candidates (honing, dynamic spectra, periodicity, folding, dedispersion)', 'survey'),
