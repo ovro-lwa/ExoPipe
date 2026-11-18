@@ -54,6 +54,8 @@ jobs:
         run: python tests/test_hybrid_stack.py
       - name: hybrid route PR-3 (recon + wideband - config constants, record content tests, convergence cascade, refusals)
         run: python tests/test_hybrid_recon.py
+      - name: hybrid route PR-4 (hybrid + full - config constants, record and product content tests, the unit's refusals and refused items)
+        run: python tests/test_hybrid_master.py
       - name: search engine speed-ups change no product
         run: python tests/test_search_speedups.py
       - name: Phase 2 speed-ups change no product

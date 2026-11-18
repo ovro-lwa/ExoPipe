@@ -469,9 +469,11 @@ def pbdiffuse_grid(path, taper=None, **ctx):
 
 @content_test('hybrid_pbdiffuse')
 def pbdiffuse_values(path, **ctx):
+    """Finite somewhere, a positive peak of at most 1 (a primary beam). Small negative values are kept: the installed PB maps
+    carry them near the horizon (46 MHz Robust -0.75 down to -0.005; 18h Full's diffuse map -0.0019, production and v2 alike)."""
     d, _h = _read(path)
     f = np.isfinite(d)
-    ok = f.any() and float(np.nanmin(d)) >= 0 and float(np.nanmax(d)) > 0
+    ok = bool(f.any()) and 0 < float(np.nanmax(d)) <= 1 + 1e-6
     return ok, float(np.nanmax(d)) if f.any() else None, f'finite fraction {f.mean():.4f}, range {np.nanmin(d) if f.any() else None} .. {np.nanmax(d) if f.any() else None}'
 
 
@@ -504,33 +506,35 @@ def hybrid_test(path, scope=None, **ctx):
     if t.get('verdict') != ('pass' if small_ok else 'caveat'):
         bad.append(f"verdict {t.get('verdict')!r}")
     c = t.get('test_compact_sources') or {}
-    tol = g['COMPACT_TOL_LOW'] if scope in g['COMPACT_LOW_SCOPES'] else g['COMPACT_TOL']
-    if not (isinstance(c.get('n'), int) and c['n'] >= g['COMPACT_N_MIN'] and isinstance(c.get('median'), float) and abs(c['median'] - 1) < tol):
-        bad.append(f'compact sources {c}')
+    ok_c, _m, det = _compact(t, scope)
+    if not ok_c:
+        bad.append(f'compact sources: {det}')
     return not bad, t.get('verdict'), '; '.join(bad) if bad else (f"identity {t['max_rel_err']:.2g}, large {t['large_scale_rel']:.2g}, "
                                                                  f"small {t['small_scale_rel']:.3g} ({t['verdict']}), compact {c['median']:.4f}")
 
 
 @content_test('hybrid_record')
-def hybrid_products(path, **ctx):
-    """Every product the record names exists with the recorded md5; the beam-corrected identity passed; the CLEAN residual was
-    read back, or the record says why there is none."""
+def hybrid_product_tests(path, **ctx):
+    """The tests the record holds for its products: the beam-corrected identity passed; the CLEAN residual was read back, or the
+    record says why there is none."""
     g = _hybrid_rules()
-    from exopipe.phase3.lib.install.steps_common import md5
     rec = _load(path)
     bad = []
-    for k in ('product', 'product_pbcorr', 'product_cleanres'):
-        p = rec.get(k)
-        if p is None:
-            if k != 'product_cleanres' or not rec.get('cleanres_skipped'):
-                bad.append(f'no {k}' + (' and no recorded reason' if k == 'product_cleanres' else ''))
-            continue
-        if not os.path.exists(p['path']) or md5(p['path']) != p.get('md5'):
-            bad.append(f'{k} {os.path.basename(p["path"])} md5 differs from the record')
     t = (rec.get('product_pbcorr') or {}).get('test_hybrid_pbcorr') or {}
     if not (t.get('verdict') == 'pass' and isinstance(t.get('max_rel_err'), float) and t['max_rel_err'] < g['IDENTITY']):
         bad.append(f'test_hybrid_pbcorr {t}')
-    r = (rec.get('product_cleanres') or {}).get('test_readback')
-    if rec.get('product_cleanres') and not (r and r.get('verdict') == 'pass'):
-        bad.append(f'cleanres read-back {r}')
-    return not bad, None, '; '.join(bad) if bad else 'products as recorded; pbcorr identity and read-backs pass'
+    if rec.get('product_cleanres'):
+        r = rec['product_cleanres'].get('test_readback')
+        if not (r and r.get('verdict') == 'pass'):
+            bad.append(f'cleanres read-back {r}')
+    elif not rec.get('cleanres_skipped'):
+        bad.append('no product_cleanres and no recorded reason')
+    return not bad, None, '; '.join(bad) if bad else 'pbcorr identity passed; CLEAN residual read back or its absence explained'
+
+
+@content_test('hybrid_record')
+def hybrid_products(path, **ctx):
+    """Every product the record names exists with the recorded md5."""
+    rec = _load(path)
+    bad = _product_md5s(rec, ('product', 'product_pbcorr') + (('product_cleanres',) if rec.get('product_cleanres') else ()))
+    return not bad, None, '; '.join(bad) if bad else 'products as recorded'

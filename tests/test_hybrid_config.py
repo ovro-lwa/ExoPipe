@@ -286,13 +286,18 @@ def test_cli_skeleton_refuses_every_unit():
         # stack record); wideband reads no PSF and refuses: its first member holds no passed reconstruction
         rec = [l for l in lines if 'recon.18h_46MHz_R075' in l]
         hg6 = len(rec) == 1 and 'HG6' in rec[0] and 'md5 None' in rec[0]
-        assert hg6 or (not rec and 'no-input 1' in out), (rec, out[-3000:])
-        assert len(lines) == (7 if hg6 else 6), out[-3000:]
+        assert hg6 or not rec, (rec, out[-3000:])
+        # hybrid (ported, PR-4): the striation-selection gate refuses where the pinned selection is absent (CI: md5 None), else no
+        # input (18h 46MHz has no reconstruction record, 18h Blue no wideband record)
+        hyb = [l for l in lines if l.startswith('  refused hybrid.')]
+        gate = len(hyb) == 2 and all('not the pinned' in l and 'md5 None' in l for l in hyb)
+        assert gate or not hyb, (hyb, out[-3000:])
+        nref, nno = 4 + hg6 + 2 * gate, (not hg6) + 2 * (not gate)
+        assert len(lines) == nref, out[-3000:]
         assert any('wideband.18h_Blue_R075' in l and '64MHz holds no passed reconstruction' in l for l in lines), lines
         assert sum('UNFILLED_INPUTS' in l for l in lines) == 2, lines           # tilefill x 2
-        assert sum(l.startswith('  refused hybrid.') and ('PR-4' in l or 'not the pinned' in l or 'md5 None' in l)
-                   for l in lines) == 2, lines
-        assert f'refused {7 if hg6 else 6}' in out and 'exit 2' in out, out[-500:]
+        assert f'refused {nref}' in out and 'exit 2' in out, out[-500:]
+        assert nno == 0 or f'no-input {nno}' in out, out[-800:]
         # no --out: refused before any unit (a new work run is always named)
         rc, out = _cli(['hybrid', '--lsts', '18h', '--scopes', '46MHz'])
         assert rc == 2 and 'needs --out' in out, (rc, out[-800:])
