@@ -813,7 +813,7 @@ def _stage_exclusion_conformance(ctx):
                 detail=('; '.join(errors[:3]) if errors else 'every served CSV read'))
         table = K.place(out, 'QA', K.narrowed(name, C.status_conformance.EXCLCONF_TABLE.format(tier=tier)))
         K.write_csv(table, XC.COLUMNS, rows)
-        u.add_output(table, 'exclusion_conformance')
+        u.add_output(table, 'exclusion_conformance', tier=tier)
         kind = ctx.emit_kind()
         items = [_item(kind, r) for r in rows if r['verdict'] in ('BREACH', 'STALE', 'UNKNOWN-EPOCH', 'EXCLUDED-ROW')]
         ctx.emit(u, 'exclusion-conformance', kind, items, table, 'verdict=BREACH|STALE|UNKNOWN-EPOCH|EXCLUDED-ROW')
@@ -1093,6 +1093,8 @@ def _stage_nights(ctx):
             hub = hub if os.path.isdir(os.path.join(hub, 'nights')) else K.hub_dir()
             u.add_output(hub, 'qa_night_pages')
             return
+        import time
+        t0 = time.time()
         rc, text, hub = HB.run_nights(out, nights, u, ctx.log(u.name), ctx.allowed)
         if rc != 0:
             raise Refusal(f'build_qa_pages.main rc {rc}: {text[-400:]}')
@@ -1104,7 +1106,22 @@ def _stage_nights(ctx):
             u.note('narrowed run (--only): the full-hub content test P1-P4 applies to a full build; run '
                    '`status pages --check` on the complete hub')
         else:
-            u.add_output(hub, 'qa_night_pages')
+            # build_qa_pages.check() (P1-P4, the qa_night_pages content test) reads data_processing.html for P4, which the
+            # data-processing stage writes after this one: the test runs there, on the complete hub (production's order:
+            # build_qa_pages.py, build_qa_release1.py, then build_qa_pages.py --check). A full build rewrites every ledger
+            # night's page (build_qa_pages.main), so the pages written by THIS build are counted (mtime from its start; a
+            # page left from an earlier build does not count).
+            nd = os.path.join(hub, 'nights')
+            pages = [os.path.join(nd, f) for f in os.listdir(nd) if f.endswith('.html')] if os.path.isdir(nd) else []
+            new = sum(1 for p in pages if os.stat(p).st_mtime >= t0 - 1)   # 1 s: file-system time granularity
+            u.check('pages.night_pages_written', new > 0, value=new,
+                    detail=f'{new} of the {len(pages)} night pages in {nd} written by this build')
+            if 'data-processing' not in _stage_list(a) and os.path.exists(os.path.join(hub, 'data_processing.html')):
+                u.add_output(hub, 'qa_night_pages')          # no data-processing stage in this run: test the hub as it is
+            else:
+                u.add_output(hub, 'qa_night_pages', test=False)
+                u.note('night pages written; their content test (build_qa_pages.check P1-P4 + P5) runs in the data-processing '
+                       'stage, whose page P4 reads (or `status pages --check` on a complete hub)')
         print(text.strip().splitlines()[-1] if text.strip() else f'night pages -> {hub}')
 
 
@@ -1136,6 +1153,8 @@ def _stage_data_processing(ctx):
             u.add_output(os.path.join(site, n), cls, **extra)
         for d, cls in dests.items():
             u.add_output(d, cls)
+        # the night pages' content test, now that the page its P4 reads is installed (nights stage, above)
+        u.add_output(K.place(out, 'review_hub', '').rstrip('/'), 'qa_night_pages')
         print(text.strip().splitlines()[-1] if text.strip() else site)
 
 

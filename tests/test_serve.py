@@ -2236,11 +2236,24 @@ def test_inplace_gate_agrees():
          [dict(cand_id=f'{l_}_{d_}_{s_}MHz_V_10s_x'), dict(cand_id='04h_2030-01-01_Red_V_10s_x'),
           dict(cell=f'{l_}_{d_}', bands='Red;Green')])
     wcsv(f'{R}/judgements/carry_report.csv', ['cand_id'], [dict(cand_id=f'{l_}_{d_}_{s_}MHz_V_10s_x')])  # never scanned
+    # served detections counted per cell, band and tier: the in-place gate skips the file (:69-76, exopipe_ops b53be50)
+    wcsv(f'{R}/cell_load_review.csv', ['lst', 'date', 'band', 'stokes', 'tier', 'detections'],
+         [dict(lst=l_, date=d_, band=f'{s_}MHz', stokes='V', tier='10s', detections=1)])
     scan = exclusion_gate.scan_snapshot_run(R)
     rc, out, refusals = exclusion_gate.run_inplace_gate(R)
     agree, detail = exclusion_gate.agree(scan, refusals, rc)
     assert rc == 1 and agree and scan.hits and ('04h', '2030-01-01', 'Red') not in scan.per_key(), (rc, detail)
-    ok(f'G17 two readers: the in-place gate (core.legacy.run) and core.exclusions refuse the same rows ({detail})')
+    assert not any(h[0].endswith('cell_load_review.csv') for h in scan.hits), scan.hits
+    ok(f'G17 two readers: the in-place gate (core.legacy.run) and core.exclusions refuse the same rows ({detail}); '
+       f'cell_load_review.csv skipped by both')
+    saved = exclusion_gate.SNAPSHOT_SKIP_FILES
+    exclusion_gate.SNAPSHOT_SKIP_FILES = ('serve_exclusion_refusals.csv',)
+    try:
+        agree_f, detail_f = exclusion_gate.agree(exclusion_gate.scan_snapshot_run(R), refusals, rc)
+    finally:
+        exclusion_gate.SNAPSHOT_SKIP_FILES = saved
+    assert not agree_f, detail_f
+    ok(f'falsifier: scanning cell_load_review.csv as v2 did before 2026-11-18, the readers disagree ({detail_f})')
 
 
 def test_forced_probe_before_stop():
