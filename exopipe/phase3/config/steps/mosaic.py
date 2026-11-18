@@ -322,10 +322,12 @@ class mosaic_content(_Section):
     """Stage `test` of mosaic v5 (MT = production mosaic_content_test.py: TEST 1 run 108, TEST 2 provenance 95; lib/mosaic/content.py):
     the unfilled co-add, in Jy/sr and Jy/beam, against the same apertures recomputed from its staged tiles with the co-add's weights
     (production's V5 tables/summary.csv rows are the unfilled maps' values)."""
-    PARENTS = '/lustre/gh/main/phase3/deep_parent_catalogs_union_20261014T0203'
-    #   MT 201 (--parents default): master_R075_<LST>_<scope>.gaul.csv, positions and peaks of the brightest sources only. PINNED to
-    #   production's value for parity. NOTE 2026-11-18: this union is stale on 47 of 456 cells after the Release 1 master rebuilds
-    #   (RESULT-20261118-DEEP-PARENT-UNION-REFRESH); which union a v2 rebuild reads is the deep chat's call (hybrid_recon.CATALOGS)
+    PARENTS = '/lustre/gh/main/phase3/deep_parent_catalogs_union_20261118T0130'
+    #   MT 201 (--parents default): master_R075_<LST>_<scope>.gaul.csv, positions and peaks of the brightest sources only.
+    #   CHANGE FROM PRODUCTION (2026-11-18, spec section 7 B15), with hybrid_recon.CATALOGS: one rebuilt chain is tested against one
+    #   parent union, the one rebuilt on the current Masters. Production's MT reads deep_parent_catalogs_union_20261014T0203, stale on
+    #   47 of 456 cells after the Release 1 master rebuilds (RESULT-20261118-DEEP-PARENT-UNION-REFRESH). A parity run against an
+    #   archived content test sets this back to the 10-14 union (the PR-7b and PR-6c parities ran with it).
     N_SOURCES = 200
     DEC_MIN = -30.0
     ISOLATION_BEAMS = 5.0

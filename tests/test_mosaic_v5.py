@@ -714,7 +714,7 @@ def test_config_pkcorr_content_equal_production():
     assert (K.ROUNDS, K.MIN_ROUNDS, K.REC_MIN, K.REC_MAX, K.MAP_TOL) == (5, 3, 0.5, 1.2, 1e-6)                 # MP 148-158, 167
     assert (T.N_SOURCES, T.DEC_MIN, T.ISOLATION_BEAMS, T.APERTURE_BEAMS) == (200, -30.0, 5.0, 2.0)             # MT 24, 27-48, 114, 202
     assert (T.MIN_SOURCES, T.MED_TOL, T.FRAC5_MIN) == (20, 0.01, 0.90) and not hasattr(T, 'PROV_BYTES')        # MT 137; TEST 2: v5
-    assert T.PARENTS == '/lustre/gh/main/phase3/deep_parent_catalogs_union_20261014T0203'                     # MT 201
+    assert T.PARENTS == '/lustre/gh/main/phase3/deep_parent_catalogs_union_20261118T0130'                     # MT 201; B15
     assert T.RULED == {'DEC_MIN': 'R-GREGG-20261016-MOSAIC-DEC-MIN-30'} and K.RULED == {'DEC_START': 'R-GREGG-20261016-MOSAIC-DEC-MIN-30'}
     decs, ra = PK.nodes()
     assert np.array_equal(decs, np.arange(-30.0, 89.0, 2.0)) and len(decs) == 60

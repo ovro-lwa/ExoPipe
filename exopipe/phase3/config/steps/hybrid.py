@@ -61,7 +61,9 @@ class hybrid(_Section):
                     'RS': '/lustre/gh/main/phase3/lsrecon/Run_20261026_190545',
                     'RT': '/lustre/gh/main/phase3/lsrecon/Run_20261028_043135'}
     #   the production work runs the archived Release 1 hybrids were made from (spec "Paths and terms"): R1 18-59 MHz, Red, Green;
-    #   R2 64-82 MHz, Blue; RF Full; RS the NoTaper stacks and double-size PSFs; RT the Taper residual stacks. Read only: the
+    #   R2 64-82 MHz, Blue; RF Full; RS the NoTaper stacks and double-size PSFs (the 18-59 MHz night-record PSFs of the archived hybrids;
+    #   hybrid_psf2x.REGISTRY now names the July-record PSFs of the pinned input run Run_PSF2X_JULY_20261118 for 18-59 MHz, so a parity
+    #   against R1 needs the RS PSFs); RT the Taper residual stacks. Read only: the
     #   parity references of PR-2 to PR-5; their md5 manifests come with the pull request that reads each run
     FFT_WORKERS = 12
     #   scipy.fft threads of the route's FFTs (NL 80: env FFT_WORKERS, default 12); the results do not depend on it
@@ -255,9 +257,10 @@ class hybrid_recon(_Section):
     #   NL 64: the LWA1 Low Frequency Sky Survey maps (the prior)
     CATALOGS = '/lustre/gh/main/phase3/deep_parent_catalogs_union_20261118T0130'
     #   NL 65: the parent catalogs test_compact_sources reads (positions and peaks of the brightest sources only; no digest
-    #   check). CHANGE FROM PRODUCTION (2026-11-18, spec section 7): production reads deep_parent_catalogs_union_20261014T0203,
+    #   check). CHANGE FROM PRODUCTION (2026-11-18, spec section 7 B15): production reads deep_parent_catalogs_union_20261014T0203,
     #   which predates the Release 1 master rebuilds and is stale on 47 of 456 cells (RESULT-20261118-DEEP-PARENT-UNION-REFRESH).
-    #   v2 reads the union rebuilt on the current Robust -0.75 Masters (456/456 cells checked against the Master digests), as
+    #   v2 reads the union rebuilt on the current Robust -0.75 Masters (456/456 cells: each catalog's .gen.json sidecar names the
+    #   Master md5 it was made from, checked against the Masters; the directory has no MANIFEST.md5, spec section 7 B15), as
     #   production's gate_inputs.PARENT_DIR does since 2026-11-18 02:07 UTC (DONE-20261118-NEAREST-MASTER-FIX-INSTALLED)
     RULED = {'PRIOR_SCALE_RANGE': 'R-GREGG-20261027-LSRECON-SCALE-BOUND-0P5-2P0-LEVEL-REFUSALS-STAY-GAPS-55MHZ-06H-R0-N-MINUS-1',
              'COMPACT_TOL_LOW': 'R-GREGG-20261026-LSRECON-18-59MHZ-FLEET-APPROVED-KEEP-MASTERS-WIDEBAND-HIGH-PRIORITY-SPLIT-PB-COADD-ARCHIVE',
