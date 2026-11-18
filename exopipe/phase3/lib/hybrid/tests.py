@@ -114,7 +114,7 @@ def stack_rules(path, lst=None, band=None, weighting=None, **ctx):
 
 @content_test('hybrid_stack_input')
 def md5_equals_installed(path, md5=None, installed=None, **ctx):
-    from exopipe.phase3.lib.hybrid.common import md5 as _md5
+    from exopipe.phase3.lib.install.steps_common import md5 as _md5
     if not md5:
         return False, None, 'no recorded md5 in the context'
     got = _md5(path)

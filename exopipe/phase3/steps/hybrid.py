@@ -153,14 +153,10 @@ def plan_units(args, cfg):
 
 
 def _md5(path):
-    """md5 of a small pinned input (ordinary reads, no memory map); None when it cannot be read."""
-    import hashlib
+    """md5 of a small pinned input (lib/install/steps_common.md5: ordinary reads, no memory map); None when it cannot be read."""
+    from exopipe.phase3.lib.install.steps_common import md5
     try:
-        h = hashlib.md5()
-        with open(path, 'rb') as f:
-            for blk in iter(lambda: f.read(1 << 20), b''):
-                h.update(blk)
-        return h.hexdigest()
+        return md5(path)
     except OSError:
         return None
 
@@ -241,12 +237,17 @@ def stack_plan(out_root, lst, band, w):
 def stack_unit(u, lst, band, w, out_root, work):
     """Stage stack of one unit (spec 2.1): the NoTaper stacks of weighting w, then the Taper residual stack of its Taper weighting.
     A variant a gate refuses is a refused item (its files, with the gate); the other goes on. Each variant runs in a fresh node-local
-    scratch directory, removed afterwards; its own earlier outputs in the work directory are removed first (no stale file stands
-    beside a refusal)."""
+    scratch directory, removed afterwards; its own earlier outputs and their temporaries in the work directory are removed first,
+    and whatever it wrote is removed when a gate refuses it (no stale file stands beside a refusal). The inputs/ copies are verified
+    copies of installed files that the cell's two weightings share: a refusal removes only this weighting's temporaries of them.
+    A lock on a derived warp screen held past hybrid_stack.SCREEN_LOCK_WAIT_S refuses the variant (HG4). The unit's admitted nights
+    are the nights its written stacks hold (a night dropped from a stack is not admitted)."""
     from exopipe.phase3.config import CFG
     from exopipe.phase3.core import fitsio
+    import glob
     from exopipe.phase3.lib.hybrid import stack as HST
-    from exopipe.phase3.lib.hybrid.common import TAPER_OF
+    from exopipe.phase3.lib.hybrid.common import TAPER_OF, inputs_dir
+    from exopipe.phase3.lib.hybrid.warp import ScreenLockRefusal
     workdir = os.path.join(out_root, f'{lst}_{band}')
     os.makedirs(workdir, exist_ok=True)
     screens = os.path.join(fitsio.scratch_root(work), CFG.hybrid_stack.SCREEN_CACHE_SUBDIR)
@@ -257,16 +258,22 @@ def stack_unit(u, lst, band, w, out_root, work):
         files = [(p, c) for p, c in plan if p in own or (v in TAPER_OF and c == 'hybrid_stack_input')]
         for p, c in files:
             u.plan(p, c)
-        for p in own:
-            if os.path.lexists(p):
-                os.remove(p)
+        def clear(paths):
+            for p in paths:
+                if os.path.lexists(p):
+                    os.remove(p)
+        temps = lambda: (sorted(q for p in own for q in [f'{p}.part'] + glob.glob(f'{glob.escape(p)}.tmp.*'))
+                         + sorted(glob.glob(os.path.join(glob.escape(inputs_dir(workdir)), f'*.{v}.part'))))
+        clear(own + temps())
         prep = fitsio.scratch_dir(f'hybrid_stack_{lst}_{band}_{v}', work)
         read = set()
         try:
             rec = HST.stack_variant(lst, band, v, workdir, prep, screens, read)
-        except HST.StackRefusal as e:
+        except (HST.StackRefusal, ScreenLockRefusal) as e:
+            gate = getattr(e, 'gate', 'HG4')
+            clear(own + temps())
             for p, _c in files:
-                u.refuse_item(p, f'{e.gate}: {e}', gate=e.gate)
+                u.refuse_item(p, f'{gate}: {e}', gate=gate)
             continue
         finally:
             fitsio.cleanup(prep)
@@ -276,7 +283,7 @@ def stack_unit(u, lst, band, w, out_root, work):
         u.check(f'hybrid_stack.rebuild_{v}', True, value=t['verdict'],
                 detail=f"max |diff| {t['max_abs_diff']:.3g} Jy/beam, rms {t['rms_diff']:.3g} Jy/beam vs master peak "
                        f"{t['master_peak']:.4g} Jy/beam, rms {t['master_rms']:.4g} Jy/beam")
-        nights.update(n['date'] for n in rec['nights'])
+        nights.update(set(n['date'] for n in rec['nights']) - set(rec.get('dirty_nights_dropped') or ()))
         master = HST.cell_paths(CFG.hybrid_stack.COADD_SB, lst, band, v)[2]
         for p, c in files:
             if c == 'hybrid_stack_input':

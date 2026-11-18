@@ -1,9 +1,9 @@
-"""Helpers shared by the hybrid route's stages. Port of notaper_largescale.py (NL) at exopipe 4c7098c: log 85, rd 123, md5 127,
-diag_header 135, inputs_dir 144, hybrid_filter 1077, lowpass 1083, _sky_interior 1227; VARIANT / TAPER_OF 66-68.
+"""Helpers shared by the hybrid route's stages. Port of notaper_largescale.py (NL) at exopipe 4c7098c: log 85, rd 123,
+diag_header 135, inputs_dir 144, hybrid_filter 1077, lowpass 1083, _sky_interior 1227; VARIANT / TAPER_OF 66-68 (NL md5 127: v2
+uses lib/install/steps_common.md5).
 
 Arrays are read with ordinary reads (memmap=False): never a memory map of a Lustre file, for reading or writing (Gregg 2026-11-17).
 """
-import hashlib
 import os
 import time
 
@@ -31,14 +31,6 @@ def rd(path):
     """The primary image as float64, squeezed to 2-D (ordinary reads)."""
     from astropy.io import fits
     return np.squeeze(fits.getdata(path, memmap=False)).astype(np.float64)
-
-
-def md5(path):
-    h = hashlib.md5()
-    with open(path, 'rb') as f:
-        for b in iter(lambda: f.read(1 << 24), b''):
-            h.update(b)
-    return h.hexdigest()
 
 
 def diag_header(mh, what):

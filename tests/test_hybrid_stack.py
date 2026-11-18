@@ -37,6 +37,7 @@ from exopipe.phase3.core import record  # noqa: E402
 from exopipe.phase3.lib.hybrid import common as HC  # noqa: E402
 from exopipe.phase3.lib.hybrid import stack as HST  # noqa: E402
 from exopipe.phase3.lib.hybrid import warp as HW  # noqa: E402
+from exopipe.phase3.lib.install import steps_common as SC  # noqa: E402
 from exopipe.phase3.steps import hybrid as HS  # noqa: E402
 
 
@@ -207,6 +208,12 @@ def test_members_of():
         assert e.gate == 'HG1' and '!= master constituents' in str(e), e
         _master(mfile, ['2025-01-01', '2025-01-03'], ncoadd=3, gate_refused=['2025-01-02'])
         _raises(HST.StackRefusal, HST.members_of, sb, '18h', '46MHz', 'R075', excl=_Excl([]))
+        # no built cell (weights.csv or the master missing): a named refusal (HG1), not an exception
+        os.remove(mfile)
+        e = _raises(HST.StackRefusal, HST.members_of, sb, '18h', '46MHz', 'R075', excl=_Excl([]))
+        assert e.gate == 'HG1' and 'does not exist' in str(e), e
+        e = _raises(HST.StackRefusal, HST.members_of, sb, '13h', '46MHz', 'R075', excl=_Excl([]))
+        assert e.gate == 'HG1' and 'weights.csv does not exist' in str(e), e
     finally:
         HST._CFP = orig
         shutil.rmtree(d, ignore_errors=True)
@@ -234,18 +241,81 @@ def test_p1file_choice():
         shutil.rmtree(d, ignore_errors=True)
 
 
+# ------------------------------------------------------------------------------------------------------------- 7 screen lock and cache
+def test_screen_lock_and_cache():
+    import fcntl
+    import subprocess
+    from exopipe.phase2 import cascade_dewarp as CD
+    assert not issubclass(HW.ScreenLockRefusal, RuntimeError)       # the night-drop rule (except RuntimeError) never catches it
+    d = _tmp('lock')
+    names = ('find_deep_pb_image', 'find_deep_pb_image_dewarped', 'find_deep_raw_image', 'find_deep_raw_image_dewarped')
+    saved = {k: getattr(CD, k) for k in names}
+    old_wait = CFG.hybrid_stack.SCREEN_LOCK_WAIT_S
+    holder = None
+    try:
+        raw, dew = os.path.join(d, 'raw.fits'), os.path.join(d, 'raw_dewarped.fits')
+        for p in (raw, dew):
+            fits.writeto(p, np.zeros((8, 8), np.float32))
+        CD.find_deep_pb_image = CD.find_deep_pb_image_dewarped = lambda *a: None
+        CD.find_deep_raw_image, CD.find_deep_raw_image_dewarped = (lambda *a: raw), (lambda *a: dew)
+        cache = os.path.join(d, 'cache')
+        os.makedirs(cache)
+        out = os.path.join(cache, '2025-01-01_13h_78MHz_warp_screen_derived.fits')
+        sx = np.full((8, 8), 0.25, np.float32)
+        fits.HDUList([fits.PrimaryHDU(), fits.ImageHDU(sx, name='SCREEN_X'), fits.ImageHDU(-sx, name='SCREEN_Y')]).writeto(out)
+        rec = dict(pair_fingerprint=HW._pair_fp(sorted({raw, dew})))
+        with open(out + '.json', 'w') as f:
+            json.dump(rec, f)
+        holder = subprocess.Popen([sys.executable, '-c', 'import fcntl, os, sys, time; fd = os.open(sys.argv[1], os.O_CREAT | '
+                                   'os.O_WRONLY); fcntl.flock(fd, fcntl.LOCK_EX); print("held", flush=True); time.sleep(600)',
+                                   out + '.lock'], stdout=subprocess.PIPE)
+        assert holder.stdout.readline().strip() == b'held'
+        # a cached screen of this exact pair is used while another process holds the lock
+        a, b, r = HW.derive_warp_screen(d, '2025-01-01', '13h', '78MHz', cache)
+        assert np.allclose(a, 0.25) and np.allclose(b, -0.25) and r == rec
+        # the pair changed and a live process holds the lock: refused after the wait (never a RuntimeError)
+        os.utime(dew, ns=(10 ** 18, 10 ** 18))
+        CFG.hybrid_stack.SCREEN_LOCK_WAIT_S = 0
+        e = _raises(HW.ScreenLockRefusal, HW.derive_warp_screen, d, '2025-01-01', '13h', '78MHz', cache)
+        assert 'held the lock' in str(e), e
+        # the holder is killed: the kernel releases its lock (a killed derivation leaves no lock behind)
+        holder.kill()
+        holder.wait()
+        fd = os.open(out + '.lock', os.O_WRONLY)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        os.close(fd)
+    finally:
+        if holder is not None and holder.poll() is None:
+            holder.kill()
+            holder.wait()
+        for k, v in saved.items():
+            setattr(CD, k, v)
+        CFG.hybrid_stack.SCREEN_LOCK_WAIT_S = old_wait
+        shutil.rmtree(d, ignore_errors=True)
+
+
 # ------------------------------------------------------------------------------------------------------------- 6 unit + content tests
-def _fake_stack(fail):
-    """A stack_variant stand-in: refuses the variants in `fail` (gate HG5), else writes valid files beside a fake master."""
+def _fake_stack(fail, dropped=None, partial=(), lock=()):
+    """A stack_variant stand-in: refuses the variants in `fail` (gate HG5; those in `partial` after writing one stack and a
+    temporary), raises the screen-lock refusal for those in `lock`, else writes valid files beside a fake master; `dropped`:
+    {variant: [dates left out of its stacks]}."""
     def fn(lst, band, v, workdir, prep, screens, read=None):
         assert os.path.isdir(prep) and os.listdir(prep) == []
+        if v in lock:
+            raise HW.ScreenLockRefusal(f'2025-01-02 {lst} {band}: another process has held the lock - REFUSING')
+        if v in partial:
+            open(f'{workdir}/{v}_dirty_stack.fits', 'w').close()
+            open(f'{workdir}/{v}_stack.json.part', 'w').close()
         if v in fail:
             raise HST.StackRefusal(f'{lst} {band} {v}: test_stack_rebuild FAILED - REFUSING', 'HG5')
         mfile = HST.cell_paths(CFG.hybrid_stack.COADD_SB, lst, band, v)[2]
         mh = fits.getheader(mfile)
         img = (_gauss(64, [(32, 32, 10.0)]) + 0.5).astype(np.float32)
-        nights = [dict(date='2025-01-01', weight=1.0, dc=1.0), dict(date='2025-01-02', weight=1.0, dc=1.0)]
-        rec = dict(lst=lst, band=band, weighting=v, nights=nights, dirty_nights_dropped=[], nights_dropped_no_screen={},
+        nights = [dict(date=f'2025-01-0{i}', weight=1.0, dc=1.0) for i in (1, 2, 3)]
+        rec = dict(lst=lst, band=band, weighting=v, nights=nights, dirty_nights_dropped=list((dropped or {}).get(v, [])),
+                   nights_dropped_no_screen={},
+                   **({'nights_stacked': [n['date'] for n in nights if n['date'] not in (dropped or {}).get(v, [])]}
+                      if (dropped or {}).get(v) else {}),
                    test_stack_rebuild=dict(verdict='pass (exact)', max_abs_diff=0.0, rms_diff=0.0, master_peak=1.0, master_rms=1.0))
         if v in HC.TAPER_OF.values():
             HC.write_atomic(f'{workdir}/{v}_residual_stack.fits', img, HC.diag_header(mh, 'residual'))
@@ -257,7 +327,7 @@ def _fake_stack(fail):
             rec['inputs'] = {}
             for src in HST.input_copies(CFG.hybrid_stack.COADD_SB, lst, band, v):
                 shutil.copy2(src, f'{workdir}/inputs/{os.path.basename(src)}')
-                rec['inputs'][os.path.basename(src)] = dict(installed=src, md5=HC.md5(src))
+                rec['inputs'][os.path.basename(src)] = dict(installed=src, md5=SC.md5(src))
         with open(f'{workdir}/{v}_stack.json', 'w') as f:
             json.dump(rec, f)
         return rec
@@ -300,13 +370,28 @@ def test_stack_unit_items_and_content_tests():
         assert classes == {'hybrid_stack_image', 'hybrid_psf_stack', 'hybrid_stack_record', 'hybrid_stack_input'}, classes
         assert len(u.outputs) == 5 + 3 + 2, [o['path'] for o in u.outputs]       # R075: 5 files + 3 distinct inputs/; T075: 2
         assert all(t['passed'] for t in u.tests), [t for t in u.tests if not t['passed']]
-        assert u.admitted == ['2025-01-01', '2025-01-02']
+        assert u.admitted == ['2025-01-01', '2025-01-02', '2025-01-03']
         # the NoTaper variant refused: its 8 planned files are refused items (gate HG5); the Taper one is done
         HST.stack_variant = _fake_stack(fail=('R075',))
         u = _run_unit(out, work, 'R075')
         assert u.status == 'done' and '8 planned item(s) refused' in u.reason, (u.status, u.reason)    # 5 files + 3 inputs/
         assert {r['gate'] for r in u.refused_items} == {'HG5'}
         assert not os.path.exists(os.path.join(out, '18h_46MHz', 'R075_dirty_stack.fits'))   # its earlier output removed first
+        # a refusal after the variant wrote a stack and a temporary: both removed (no stale file beside a refusal)
+        HST.stack_variant = _fake_stack(fail=('R075',), partial=('R075',))
+        u = _run_unit(out, work, 'R075')
+        left = sorted(f for f in os.listdir(os.path.join(out, '18h_46MHz')) if f.startswith('R075_'))
+        assert left == [], left
+        # a screen lock held too long refuses the variant (HG4); it never drops a night
+        HST.stack_variant = _fake_stack(fail=(), lock=('T075',))
+        u = _run_unit(out, work, 'R075')
+        assert u.status == 'done' and {r['gate'] for r in u.refused_items} == {'HG4'} and len(u.refused_items) == 2, u.refused_items
+        # admitted nights: those the written stacks hold (a night dropped from every stack is not admitted)
+        HST.stack_variant = _fake_stack(fail=(), dropped={'R075': ['2025-01-02'], 'T075': ['2025-01-02']})
+        u = _run_unit(out, work, 'R075')
+        assert u.status == 'done' and u.admitted == ['2025-01-01', '2025-01-03'], (u.status, u.admitted)
+        HST.stack_variant = _fake_stack(fail=(), dropped={'R075': ['2025-01-02']})
+        assert _run_unit(out, work, 'R075').admitted == ['2025-01-01', '2025-01-02', '2025-01-03']     # the Taper stack holds it
         # both refused: the unit is refused
         HST.stack_variant = _fake_stack(fail=('R0', 'T0'))
         u = _run_unit(out, work, 'R0')

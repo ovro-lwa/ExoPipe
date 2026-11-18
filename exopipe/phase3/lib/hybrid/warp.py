@@ -1,9 +1,13 @@
 """Warp screens of the hybrid stacks. Port of notaper_largescale.py (NL) at exopipe 4c7098c: _peak_offsets 207, derive_warp_screen
 222. The acceptance limits are config hybrid_stack.WARP_MEDIAN_PX / WARP_P90_PX / WARP_MIN_SOURCES (NL 289, 350, 414).
 
-Change from production (no pixel changes): a cached screen is reused only while the raw / dewarped pair it was derived from is
+Changes from production (no pixel changes): a cached screen is reused only while the raw / dewarped pair it was derived from is
 unchanged (size and mtime of both files, recorded in the cache's JSON); production reused any cached screen of the night and
-subband. Arrays are read with ordinary reads (memmap=False)."""
+subband. The per-night lock is an flock on a node-local file (the kernel releases it when its holder dies: a killed derivation
+leaves no lock behind); a wait past hybrid_stack.SCREEN_LOCK_WAIT_S raises ScreenLockRefusal, which the stack stage turns into a
+refusal (HG4), never a dropped night (production derived the screen without the lock after its wait). Arrays are read with
+ordinary reads (memmap=False)."""
+import fcntl
 import json
 import os
 import shutil
@@ -15,6 +19,12 @@ import numpy as np
 
 class WarpRefusal(RuntimeError):
     """A night cannot be put on the master's frame (the stack stage records it, or refuses past hybrid_stack.MAX_UNDERIVABLE)."""
+
+
+class ScreenLockRefusal(Exception):
+    """Another process held a night's screen lock past hybrid_stack.SCREEN_LOCK_WAIT_S. Deliberately not a RuntimeError: the
+    stack's night-drop rule (production's `except RuntimeError`) must never catch it - a lock problem refuses the stack, it never
+    drops a night."""
 
 
 def offsets_pass(d):
@@ -46,6 +56,20 @@ def peak_offsets(A, B, nsig=40.0, size=21, box=25, inner=0.7):
             j, i = np.unravel_index(np.argmax(w), w.shape)
             d.append(np.hypot(j - box, i - box))
     return np.array(d)
+
+
+def _cached(out, fp_now):
+    """(screen_x, screen_y, record) of the cached screen when its record names this raw / dewarped pair unchanged, else None. The
+    screen is written (.part + rename) before its record, so a record that names the pair always has its screen."""
+    try:
+        with open(out + '.json') as f:
+            rec = json.load(f)
+    except (FileNotFoundError, ValueError):
+        return None
+    if rec.get('pair_fingerprint') != fp_now or not os.path.exists(out):
+        return None
+    sx, sy = _read_screen(out)
+    return sx, sy, rec
 
 
 def _pair_fp(paths):
@@ -89,28 +113,24 @@ def derive_warp_screen(sci_dir, date, lst, band, cache_dir):
     if not pairs:
         raise WarpRefusal(f'{date} {lst} {band}: no raw + dewarped deep image pair in {sci_dir} to derive its warp screen - REFUSING')
     fp_now = _pair_fp(sorted({p for pr in pairs for p in pr}))
+    lock_fd = os.open(out + '.lock', os.O_CREAT | os.O_WRONLY, 0o664)   # kept (never removed): waiters hold the same inode
     try:                                              # one derivation per night and subband: the cell's other stacks wait for it
-        os.close(os.open(out + '.lock', os.O_CREAT | os.O_EXCL | os.O_WRONLY))
-        mine = True
-    except FileExistsError:
-        mine = False
         t0 = time.time()
-        while (os.path.exists(out + '.lock') and not os.path.exists(out + '.json')
-               and time.time() - t0 < CFG.hybrid_stack.SCREEN_LOCK_WAIT_S):
-            time.sleep(20)
-    try:
-        if os.path.exists(out) and os.path.exists(out + '.json'):
-            with open(out + '.json') as f:
-                rec = json.load(f)
-            if rec.get('pair_fingerprint') == fp_now:
-                sx, sy = _read_screen(out)
-                return sx, sy, rec
-            if not mine:
-                raise WarpRefusal(f'{date} {lst} {band}: the cached warp screen {out} was derived from another raw / dewarped pair '
-                                  f'and another process holds its lock - REFUSING')
-        elif not mine:
-            raise WarpRefusal(f'{date} {lst} {band}: waited {CFG.hybrid_stack.SCREEN_LOCK_WAIT_S} s for another process deriving '
-                              f'{out} - REFUSING')
+        while True:
+            hit = _cached(out, fp_now)                # a screen of this exact pair is used whoever derived it
+            if hit:
+                return hit
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break                                 # this process derives it
+            except BlockingIOError:
+                if time.time() - t0 >= CFG.hybrid_stack.SCREEN_LOCK_WAIT_S:
+                    raise ScreenLockRefusal(f'{date} {lst} {band}: another process has held the lock of {out} for '
+                                            f'{CFG.hybrid_stack.SCREEN_LOCK_WAIT_S} s - REFUSING')
+                time.sleep(20)
+        hit = _cached(out, fp_now)                    # finished by another process between the check and the lock
+        if hit:
+            return hit
         tmp = tempfile.mkdtemp(prefix=f'screen_{date}_{lst}_{band}_', dir=cache_dir)
         try:
             # Phase 2's pair (the beam-corrected one), then its fallback pair (uncorrected) - Phase 2 falls back only when the corrected
@@ -173,5 +193,4 @@ def derive_warp_screen(sci_dir, date, lst, band, cache_dir):
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
     finally:
-        if mine and os.path.exists(out + '.lock'):
-            os.remove(out + '.lock')
+        os.close(lock_fd)                             # releases the flock (the kernel does so too if this process dies)

@@ -14,19 +14,24 @@ chain on the nights' Phase 2 images rebuilds the installed master), with the flo
 
 Changes from production (none changes a pixel): limits and paths come from config (same values); outputs are written through a
 temporary name and renamed; the scratch directory is the caller's (node-local, removed after each variant); cached derived warp
-screens are reused only while their raw / dewarped pair is unchanged (warp.py). Arrays are read with ordinary reads (memmap=False).
+screens are reused only while their raw / dewarped pair is unchanged, and a lock held too long refuses instead of dropping a
+night (warp.py); each night's dirty image is aligned once and the full and half stacks are co-added from the same aligned files
+(production aligned each night twice; the co-adds take the files in production's order); the alignment test of a dirty image on a
+derived screen runs once per night (production ran it once per dirty stack); a missing weights.csv, master or Phase 2 date list
+refuses (HG1) instead of raising. Arrays are read with ordinary reads (memmap=False).
 """
 import csv
 import glob
-import json
 import os
 import re
 import shutil
 
 import numpy as np
 
-from exopipe.phase3.lib.hybrid.common import (TAPER_OF, VARIANT, diag_header, inputs_dir, log, lowpass, md5, rd,
-                                              sky_interior, write_atomic)
+from exopipe.phase3.core.record import atomic_write_json
+from exopipe.phase3.lib.hybrid.common import (TAPER_OF, VARIANT, diag_header, inputs_dir, log, lowpass, rd, sky_interior,
+                                              write_atomic)
+from exopipe.phase3.lib.install.steps_common import md5
 from exopipe.phase3.lib.hybrid.warp import WarpRefusal, derive_warp_screen, offsets_pass, offsets_summary, peak_offsets
 
 
@@ -58,6 +63,9 @@ def members_of(coadd_sb, lst, band, v, excl=None):
     from astropy.io import fits
     CFP = _CFP()
     wd, cf, mfile = cell_paths(coadd_sb, lst, band, v)
+    for need in (f'{cf}/weights.csv', mfile):
+        if not os.path.isfile(need):
+            raise StackRefusal(f'{lst} {band} {v}: {need} does not exist (no built co-add cell) - REFUSING', 'HG1')
     with open(f'{cf}/weights.csv', newline='') as fh:
         rows = [r for r in csv.DictReader(fh) if str(r.get('in_master', '')).strip() in ('1', 'True', 'true')]
     mh = fits.getheader(mfile)
@@ -156,6 +164,8 @@ def stack_variant(lst, band, v, workdir, prep, screen_cache, read=None):
     read.update({f'{cf}/weights.csv', mfile})
     rows, refused = members_of(S.COADD_SB, lst, band, v)
     all_dates = CFP.discover_dates(lst, freq)
+    if not all_dates:
+        raise StackRefusal(f'{lst} {band} {v}: no Phase 2 dates for the co-add template - REFUSING', 'HG1')
     post = [x for x in all_dates if x[0] >= CFP.CUTOVER_DATE]
     tmpl, shape = CFP._modal_grid_template(post, all_dates[0]) if post else CFP.build_template_header(all_dates[0][2])
     shape = tuple(shape)
@@ -172,6 +182,14 @@ def stack_variant(lst, band, v, workdir, prep, screen_cache, read=None):
             sx, sy = h['SCREEN_X'].data.astype(np.float64), h['SCREEN_Y'].data.astype(np.float64)
         read.add(md)
     derived = {}                                      # nights whose warp screen was derived (no saved screen; derive_warp_screen)
+    dirty_test = {}                                   # date -> (pass, summary): the dirty image on its derived screen, tested once
+
+    def dirty_on_screen(r, a, wx, wy):
+        """The dirty image dewarped with the night's derived screen must line up with the Phase 2 image (once per night)."""
+        if r['date'] not in dirty_test:
+            d = peak_offsets(apply_warp(a, wx, wy), rd(night_input(r, 'image')))
+            dirty_test[r['date']] = (offsets_pass(d), offsets_summary(d))
+        return dirty_test[r['date']]
 
     def night_input(r, kind):
         if kind == 'image':                           # the Phase 2 product exactly as production reads it
@@ -204,10 +222,9 @@ def stack_variant(lst, band, v, workdir, prep, screen_cache, read=None):
                 raise StackRefusal(str(e), 'HG4')
             derived.setdefault(r['date'], dict(drec))
             if kind == 'dirty':
-                d = peak_offsets(apply_warp(a, wx, wy), rd(night_input(r, 'image')))
-                t = offsets_summary(d)
+                ok_, t = dirty_on_screen(r, a, wx, wy)
                 derived[r['date']][f'test_dirty_vs_phase2_{v}'] = t
-                if not offsets_pass(d):
+                if not ok_:
                     raise StackRefusal(f'{r["date"]} {lst} {band} {v}: the dirty image dewarped with the derived screen does not line '
                                        f'up with the Phase 2 image {t} - REFUSING', 'HG4')
         if wx is not None:                            # (no screen and a raw Phase 2 image: the raw image enters, the production failsafe)
@@ -220,8 +237,9 @@ def stack_variant(lst, band, v, workdir, prep, screen_cache, read=None):
         fits.writeto(out, a.astype(np.float32), h, overwrite=True)
         return out
 
-    def chain(kind, rr):
-        paths, wts = [], []
+    def align(kind, rr):
+        """{date: path} of each night's image of `kind` aligned on the master's grid (flow, flux factor, regrid), once per night."""
+        out_ = {}
         for r in rr:
             src = night_input(r, kind)
             with fits.open(src, memmap=False) as hh:
@@ -237,18 +255,28 @@ def stack_variant(lst, band, v, workdir, prep, screen_cache, read=None):
                 os.remove(out)
             if not CFP.process_variant_image(src, flow, np.full(shape, night_dc(r), dtype=float), tmpl, shape, out, rg):
                 raise StackRefusal(f'{r["date"]} {kind}: alignment failed - REFUSING', 'HG5')
-            paths.append(out)
-            wts.append(float(r['weight']))
+            out_[r['date']] = out
             if kind != 'image':
                 os.remove(src)
+        return out_
+
+    def coadd(kind, rr, aligned):
+        """Inverse-variance co-add (no clipping) of the aligned nights of rr, in rr's order; pixel factor; master dewarp."""
         cpath = f'{prep}/coadd_{kind}.fits'
         if os.path.exists(cpath):
             os.remove(cpath)
-        CFP.coadd_inverse_variance(paths, wts, cpath, tmpl, dates=[r['date'] for r in rr], sigclip=False)
+        CFP.coadd_inverse_variance([aligned[r['date']] for r in rr], [float(r['weight']) for r in rr], cpath, tmpl,
+                                   dates=[r['date'] for r in rr], sigclip=False)
         d = rd(cpath).astype(np.float32).astype(np.float64) * (pf if pf is not None else 1.0)
         if sx is not None:
             d = MDW.resample(d, sx, sy)
-        for p in paths + [cpath]:
+        os.remove(cpath)
+        return d
+
+    def chain(kind, rr):
+        aligned = align(kind, rr)
+        d = coadd(kind, rr, aligned)
+        for p in aligned.values():
             os.remove(p)
         return d
 
@@ -278,14 +306,12 @@ def stack_variant(lst, band, v, workdir, prep, screen_cache, read=None):
                 wx_, wy_, _ = derive_warp_screen(r['sci_dir'], r['date'], lst, band, screen_cache)   # MAX_UNDERIVABLE per stack, recorded -
                 if v in TAPER_OF:                     # and a night whose dewarped dirty misses the alignment test (Gregg 2026-11-04 "All
                     src_ = p1file(S.PHASE1_ROOT, lst, band, pvar, r, 'dirty')    # approved": 13h 78 MHz Robust 0 2025-05-06, 90th pct 3.7 px)
-                    d_ = peak_offsets(apply_warp(np.squeeze(fits.getdata(src_, memmap=False)).astype(np.float64), wx_, wy_),
-                                      rd(night_input(r, 'image')))
-                    if not offsets_pass(d_):
-                        t_ = offsets_summary(d_)
+                    ok_, t_ = dirty_on_screen(r, np.squeeze(fits.getdata(src_, memmap=False)).astype(np.float64), wx_, wy_)
+                    if not ok_:
                         raise WarpRefusal(f'{r["date"]} {lst} {band} {v}: the dewarped dirty image does not line up with the Phase 2 '
                                           f'image (n {t_["n"]}, median {t_["median_px"]} px, 90th pct {t_["p90_px"]} px)')
-            except RuntimeError as e:                 # as production: any refusal of the derivation or the test drops the night
-                nodrv[r['date']] = str(e)[:300]
+            except RuntimeError as e:                 # as production: a derivation that fails or a failed test drops the night
+                nodrv[r['date']] = str(e)[:300]       # (warp.ScreenLockRefusal is not a RuntimeError: a lock refuses the stack)
     if len(nodrv) > S.MAX_UNDERIVABLE:
         raise StackRefusal(f'{lst} {band} {v}: {len(nodrv)} nights that cannot be put on the master\'s frame {sorted(nodrv)} - REFUSING '
                            f'(at most {S.MAX_UNDERIVABLE} night per stack ruled, Gregg 2026-11-03 / 11-04)', 'HG4')
@@ -304,12 +330,15 @@ def stack_variant(lst, band, v, workdir, prep, screen_cache, read=None):
                      diag_header(mh, 'stack of the Phase 1 Taper CLEAN residual images'))
         log(lst, band, v, 'residual_stack')
         rec['derived_screens'] = derived
-        _dump(rec, f'{workdir}/{v}_stack.json')
+        atomic_write_json(f'{workdir}/{v}_stack.json', rec)
         return rec
+    aligned = align('dirty', rows_d)                  # each night once; the three co-adds read the same aligned files
     for name, rr in (('dirty_stack', rows_d), ('dirty_halfA', srt[0::2]), ('dirty_halfB', srt[1::2])):
-        write_atomic(f'{workdir}/{v}_{name}.fits', chain('dirty', rr).astype(np.float32),
+        write_atomic(f'{workdir}/{v}_{name}.fits', coadd('dirty', rr, aligned).astype(np.float32),
                      diag_header(mh, f'{name} of the Phase 1 dirty images'))
         log(lst, band, v, name)
+    for p in aligned.values():
+        os.remove(p)
     P = np.zeros(shape)
     wsum = 0.0
     for r in rows_d:
@@ -339,15 +368,8 @@ def stack_variant(lst, band, v, workdir, prep, screen_cache, read=None):
             os.replace(tmp, dst)
         rec['inputs'][os.path.basename(src)] = dict(installed=src, md5=want)
     rec['derived_screens'] = derived
-    _dump(rec, f'{workdir}/{v}_stack.json')
+    atomic_write_json(f'{workdir}/{v}_stack.json', rec)
     return rec
-
-
-def _dump(rec, path):
-    tmp = f'{path}.part'
-    with open(tmp, 'w') as f:
-        json.dump(rec, f, indent=1)
-    os.replace(tmp, path)
 
 
 def test_stack_rebuild(stack_img, master, wd, cf, rows, admit_hdr=None):
