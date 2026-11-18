@@ -309,3 +309,61 @@ def pkcorr_report_pass(path, map_path=None, rounds=None, **ctx):
     if map_path is not None and r.get('map') != map_path:
         probs.append(f'map {r.get("map")} != {map_path}')
     return not probs, r.get('rec_median'), '; '.join(probs) or f'test_pkcorr pass, median recovery {r.get("rec_median")}'
+
+
+# ---- conform (staged archive products) and tables -----------------------------------------------------------------------------------
+
+@content_test('mosaic_v5_product')
+def product_conformant(path, kind=None, scope=None, nstack=None, **ctx):
+    """A product conform staged: the archive push's audit (lib/archive/push.audit_mosaic: name round-trips, PBCORR and BUNIT agree
+    with the name, NSTACK = N, DATE-OBS and DATE-END, finite pixels), PRODNAME = the file name (HDU 0, and HDU 1 of a HEALPix map),
+    the PROVENANCE extension holds NSTACK rows, the 'Mosaic <run>' HISTORY line, TIMEFIX of the mosaic time basis; a Jy/beam map's
+    PSFMAP names a psfmap product of the same name stem (bug B14)."""
+    from astropy.io import fits
+    from exopipe.phase3.core.fitsio import has_data
+    from exopipe.phase3.lib.archive.push import audit_mosaic
+    probs = list(audit_mosaic(path))
+    n = os.path.basename(path)
+    try:
+        with fits.open(path, memmap=False) as h:
+            h0 = h[0].header
+            if h0.get('PRODNAME') != n:
+                probs.append(f'PRODNAME {h0.get("PRODNAME")!r}')
+            if not has_data(h[0]) and len(h) > 1 and h[1].name != 'PROVENANCE' and h[1].header.get('PRODNAME') != n:
+                probs.append(f'HDU 1 PRODNAME {h[1].header.get("PRODNAME")!r}')
+            pv = [x for x in h if x.name == 'PROVENANCE']
+            nrow = len(pv[0].data) if pv else 0
+            if not pv or (nstack is not None and nrow != int(nstack)) or nrow != int(h0.get('NSTACK', -1)):
+                probs.append(f'PROVENANCE rows {nrow}, NSTACK {h0.get("NSTACK")}')
+            hist = ' '.join(str(x) for x in h0.get('HISTORY', []))
+            if f'Mosaic {os.path.basename(_cfg().hybrid_tilefill.FILLED_MOSAIC_RUN)}:' not in hist:
+                probs.append('no Mosaic HISTORY line')
+            if not str(h0.get('TIMEFIX', '')).endswith(str(_cfg().mosaic_conform.TIME_BASIS)):
+                probs.append(f'TIMEFIX {h0.get("TIMEFIX")!r}')
+            if kind in ('jybeam', 'unfilled_jybeam'):
+                psf = str(h[1].header.get('PSFMAP', ''))
+                if 'psfmap' not in psf or not psf.startswith(n.split('_I_deep_')[0] + '_I_deep_'):
+                    probs.append(f'PSFMAP {psf!r} is not a psfmap product of the scope')
+    except Exception as e:
+        probs.append(f'unreadable {str(e)[:60]}')
+    return not probs, len(probs), '; '.join(probs) or 'audit, PRODNAME, PROVENANCE, HISTORY, TIMEFIX agree'
+
+
+@content_test('mosaic_v5_table')
+def table_complete(path, columns=None, n_rows=None, **ctx):
+    """A V5 table: its columns are the unit's, it holds n_rows rows, every result PASS."""
+    import csv
+    with open(path, newline='') as f:
+        r = list(csv.reader(f))
+    probs = []
+    if not r or (columns is not None and r[0] != list(columns)):
+        probs.append(f'columns {r[0] if r else None}')
+    rows = r[1:]
+    if n_rows is not None and len(rows) != int(n_rows):
+        probs.append(f'{len(rows)} rows != {n_rows}')
+    if r and 'result' in r[0]:
+        i = r[0].index('result')
+        bad = [x[0] for x in rows if x[i].strip() != 'PASS']
+        if bad:
+            probs.append(f'{len(bad)} rows not PASS, e.g. {bad[0]}')
+    return not probs, len(rows), '; '.join(probs) or f'{len(rows)} rows'
