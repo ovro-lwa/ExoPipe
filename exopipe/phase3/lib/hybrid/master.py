@@ -494,24 +494,28 @@ def stack_refused(run_dir, lst, band, v):
 def write_diffuse_pb(run_dir, lst, scope, v):
     """The diffuse PB map <run_dir>/<LST>_<scope>/PBdiffuse_deep_<scope>.fits of a subband or wideband cell, as production's archive
     step wrote it (NL archive_hybrid_unit 1644-1649): diffuse_pb_map as float32 under the weighting's reconstruction header made a PB
-    map's (diag_header: no PRODNAME; pbdiffuse_header: no SH* or master flux / noise card, BUNIT blank - spec D6) with PBMODEL. The
-    values are the same for both weightings: an existing map with these values and a conformant header is kept (the cell's other
-    weighting wrote it), any other is rewritten, through a temporary name of this process. Full's map is the full stage's (returned
-    as is). Returns the path."""
+    map's (diag_header: no PRODNAME; pbdiffuse_header: no SH* or master flux / noise card, BUNIT blank - spec D6) with PBMODEL. Called
+    by the hybrid_full.PBDIFFUSE_WEIGHTING unit only (the header is that weighting's). An existing map with these values and these
+    cards is kept (a rerun changes no byte), any other is rewritten, through a temporary name of this process. Full's map is the full
+    stage's (returned as is). Returns the path."""
     wd = f'{run_dir}/{lst}_{scope}'
     pbd = f'{wd}/PBdiffuse_deep_{scope}.fits'
     if scope == 'Full':
         return pbd
     a, how = diffuse_pb_map(run_dir, lst, scope, v)
     a = np.asarray(a).astype(np.float32)
-    if os.path.exists(pbd):
-        with fits.open(pbd, memmap=False) as f:
-            if np.array_equal(f[0].data, a, equal_nan=True) and not PBA.pbdiffuse_header_problems(f[0].header):
-                return pbd
     rr = _json(f'{wd}/{v}_lsrecon_wb.json' if scope in WIDEBANDS else f'{wd}/{v}_lsrecon.json')
     h = diag_header(_getheader(rr['product']['path']), 'diffuse primary beam')
     PBA.pbdiffuse_header(h)
     h['PBMODEL'] = (how[:68], 'diffuse PB = model x residual (no smearing term)')
+
+    def cards(hh):
+        return [(c.keyword, str(c.value)) for c in hh.cards if c.keyword not in ('SIMPLE', 'BITPIX', 'EXTEND')
+                and not c.keyword.startswith('NAXIS')]
+    if os.path.exists(pbd):
+        with fits.open(pbd, memmap=False) as f:
+            if np.array_equal(f[0].data, a, equal_nan=True) and cards(f[0].header) == cards(h):
+                return pbd
     part = f'{pbd}.{os.getpid()}.part'
     fits.writeto(part, a, h, overwrite=True)
     os.replace(part, pbd)

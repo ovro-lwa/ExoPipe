@@ -1059,6 +1059,16 @@ def tilefill_unit(u, lst, scope, w, out_root, mode='work'):
             rec['cleanres'] = TF.rename_cleanres(s['src']['cleanres'][0], cres[0], taper_master=taper)
             if rec['cleanres']['src_md5'] != s['src']['cleanres'][2]:
                 raise TF.TilefillRefusal(f'{s["src"]["cleanres"][0]}: md5 differs from the hybrid record when read - REFUSING')
+        if s['source'] == 'work' and w == CFG.hybrid_full.PBDIFFUSE_WEIGHTING:
+            # the cell's diffuse PB map, pushed beside a rebuilt unit's products by `archive push --class hybrid` (production wrote it at
+            # archive time, NL 1644-1649), written and pushed by the hybrid_full.PBDIFFUSE_WEIGHTING unit only (as the full stage), so
+            # its header never depends on which weighting ran first. Full's is the full stage's (not this unit's to remove).
+            from exopipe.phase3.lib.install.steps_common import md5 as _md5
+            M.bind()
+            pbd = M.write_diffuse_pb(out_root, lst, scope, w)
+            if scope != 'Full':
+                own.insert(0, pbd)                                   # own[-1] stays the record
+            rec['pbdiffuse'] = dict(path=pbd, md5=_md5(pbd))
         rp = own[-1]
         with open(rp + '.part', 'w') as f:
             json.dump(rec, f, indent=1, default=str)
@@ -1092,18 +1102,13 @@ def tilefill_unit(u, lst, scope, w, out_root, mode='work'):
     if bad:
         _clear(own)
         u.refuse('content test(s) FAILED: ' + '; '.join(f"{t['name']} {t.get('detail', '')}"[:200] for t in bad))
-    if s['source'] == 'work':
-        # the cell's diffuse PB map, pushed beside a rebuilt unit's products by `archive push --class hybrid` (production wrote it at
-        # archive time, NL 1644-1649); Full's is the full stage's. Shared by both weightings, the same values: not removed on a refusal.
-        try:
-            M.bind()
-            pbd = M.write_diffuse_pb(out_root, lst, scope, w)
-        except expected as e:
-            u.refuse(f'diffuse PB map of {lst} {scope}: {type(e).__name__}: {e} - REFUSED')
+    if rec.get('pbdiffuse'):
+        pbd = rec['pbdiffuse']['path']
         n1 = len(u.failed_tests())
         u.add_output(pbd, 'hybrid_pbdiffuse', taper=taper)
         bad = u.failed_tests()[n1:]
         if bad:
+            _clear(own)
             u.refuse(f'{pbd}: content test(s) FAILED: ' + '; '.join(f"{t['name']} {t.get('detail', '')}"[:200] for t in bad))
     cav = [k for k in ('pbcorr', 'plain') if rec[k].get('caveat')]
     if cav:

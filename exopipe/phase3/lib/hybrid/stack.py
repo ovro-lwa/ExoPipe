@@ -383,7 +383,10 @@ def archived_input(src, lst, band, archive_masters=None):
     tp, rob = ('Taper' if hit[0] in TAPER_OF.values() else 'NoTaper'), VARIANT[hit[0]][2]
     m = []
     for f in sorted(glob.glob(os.path.join(a, f'{band}_I_deep_{tp}_*coadd_LST{lst}_*.fits'))):
-        pn = parse_name(os.path.basename(f))
+        try:
+            pn = parse_name(os.path.basename(f))
+        except (ValueError, KeyError) as e:
+            raise StackRefusal(f'{f}: matches the archived master pattern but its name does not parse ({e}) - REFUSING', 'HG5')
         if (pn.get('grammar') == 'phase3' and pn.get('taper') == tp and pn.get('robust') == rob and 'pbcorr' not in pn['proc']
                 and not {'lsrecon', 'lsfill'} & set(pn['proc'])):
             m.append(f)
@@ -392,19 +395,16 @@ def archived_input(src, lst, band, archive_masters=None):
     return m[0]
 
 
-def _pixels_md5(path):
-    import hashlib
-
-    from astropy.io import fits
-    with fits.open(path, memmap=False) as h:
-        return hashlib.md5(np.ascontiguousarray(h[0].data).tobytes()).hexdigest()
-
-
 def copy_inputs(ind, coadd_sb, lst, band, v, read, archive_masters=None):
     """Copy a NoTaper stack's inputs (input_copies: masters and PB maps, the co-add build files' names) into `ind` from the archived
     files (archived_input), each refused unless its pixels equal the build file's (the file HG5 rebuilds; a master rebuilt or
     re-archived since refuses). The cell's two weightings share ind: temp copy of this weighting + atomic rename; a current copy is
-    kept. Returns {name: {installed: archived path, md5}}; `read` gains the files read."""
+    kept. Each archived file (on Lustre) is read once: its checksum, its pixels and the copy come from that read.
+    Returns {name: {installed: archived path, md5}}; `read` gains the files read."""
+    import hashlib
+    import io
+
+    from astropy.io import fits
     os.makedirs(ind, exist_ok=True)
     out = {}
     for src in input_copies(coadd_sb, lst, band, v):
@@ -412,13 +412,21 @@ def copy_inputs(ind, coadd_sb, lst, band, v, read, archive_masters=None):
         read.update((src, arc))
         if not os.path.exists(arc):
             raise StackRefusal(f'{arc}: the archived file of {src} is missing - REFUSING', 'HG5')
-        if _pixels_md5(arc) != _pixels_md5(src):
+        with open(arc, 'rb') as f:
+            raw = f.read()
+        want = hashlib.md5(raw).hexdigest()
+        with fits.open(io.BytesIO(raw)) as h:
+            pa = np.ascontiguousarray(h[0].data)
+        with fits.open(src, memmap=False) as h:
+            pb = np.ascontiguousarray(h[0].data)
+        if pa.dtype != pb.dtype or pa.shape != pb.shape or pa.tobytes() != pb.tobytes():
             raise StackRefusal(f'{arc}: pixels differ from the co-add build file {src} - REFUSING', 'HG5')
         dst = os.path.join(ind, os.path.basename(src))
-        want = md5(arc)
         if not (os.path.exists(dst) and md5(dst) == want):
             tmp = f'{dst}.{v}.part'
-            shutil.copy2(arc, tmp)
+            with open(tmp, 'wb') as f:
+                f.write(raw)
+            shutil.copystat(arc, tmp)
             if md5(tmp) != want:
                 raise StackRefusal(f'{tmp}: copy differs from {arc} - REFUSING', 'HG5')
             os.replace(tmp, dst)

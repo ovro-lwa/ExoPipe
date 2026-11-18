@@ -49,13 +49,18 @@ def _name(path, want_proc, bad_proc):
     return not bad, h.get('PRODNAME'), '; '.join(bad) if bad else f'phase3 name, proc {sorted(proc)}'
 
 
+def missing_card_keys(new_h, old_h, retired=()):
+    """D7: the card keys of old_h (commentary aside) that new_h lacks, less `retired` (keys a ruling removed). Shared by the tilefill
+    content test below and the archive push (lib/archive/hybrid.missing_keys)."""
+    have = set(new_h.keys())
+    return sorted(k for k in set(old_h.keys()) if k not in ('HISTORY', 'COMMENT', '') and k not in have and k not in set(retired))
+
+
 def card_superset(path, replaces=None, **ctx):
     """D7: every card key of the installed file this one would replace is present (commentary cards aside)."""
     if not replaces:
         return True, None, 'replaces no installed file'
-    have = set(_header(path).keys())
-    old = {k for k in _header(replaces).keys() if k not in ('HISTORY', 'COMMENT', '')}
-    miss = sorted(old - have)
+    miss = missing_card_keys(_header(path), _header(replaces))
     return not miss, len(miss), (f'missing {miss[:8]} of {os.path.basename(replaces)}' if miss else
                                  f'holds every card key of {os.path.basename(replaces)}')
 

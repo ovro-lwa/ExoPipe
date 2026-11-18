@@ -84,9 +84,8 @@ def header_problems(h, name, kind):
 
 def missing_keys(new_h, old_h, kind):
     """D7: card keys of the replaced file's header (commentary aside) absent from the new one, less the keys retired for the kind."""
-    retired = set(_p().HYBRID_RETIRED_KEYS.get(kind, ()))
-    have = set(new_h.keys())
-    return sorted(k for k in set(old_h.keys()) if k not in ('HISTORY', 'COMMENT', '') and k not in have and k not in retired)
+    from exopipe.phase3.lib.hybrid.tests_tilefill import missing_card_keys
+    return missing_card_keys(new_h, old_h, _p().HYBRID_RETIRED_KEYS.get(kind, ()))
 
 
 def archive_dir(ctx, lst=None, scope=None):
@@ -151,8 +150,12 @@ def unit_items(staging, lst, scope, w):
             reads.append(rp)
             for k, key in (('recon', 'product'), ('recon_pbcorr', 'product_pbcorr')):
                 items.append(dict(kind=k, src=rr[key]['path'], name=rr[key]['prodname'], md5=rr[key].get('md5')))
-        items.append(dict(kind='pbdiffuse', src=os.path.join(wd, f'PBdiffuse_deep_{scope}.fits'), name=f'PBdiffuse_deep_{scope}.fits',
-                          md5=None))
+        if w == CFG.hybrid_full.PBDIFFUSE_WEIGHTING:     # the cell's diffuse map: written and pushed by this weighting's unit only
+            pd = tf.get('pbdiffuse')
+            if not pd:
+                raise Refusal(f'{tp}: no diffuse PB map recorded (made before the map was written by the '
+                              f'hybrid_full.PBDIFFUSE_WEIGHTING unit only); run --stages tilefill again')
+            items.append(dict(kind='pbdiffuse', src=pd['path'], name=f'PBdiffuse_deep_{scope}.fits', md5=pd.get('md5')))
         pbf = os.path.join(CFG.hybrid.ARCHIVE_MASTERS, lst, scope, PBA.deep_pb_name(scope, w))
         items.append(dict(kind='pb', src=pbf, name=os.path.basename(pbf), md5=None))
     elif tf.get('source') != 'pinned':
@@ -178,7 +181,8 @@ def hybrid_plan(ctx, staging, lst, scope, w, checksum=True):
         raise Refusal(f'{unit}: night(s) now excluded in data_decisions.csv {bad} - never pushed; rebuild the unit')
     dd = archive_dir(ctx, lst, scope)
     inst = SH._installed(lst, scope, w, root=archive_dir(ctx))
-    many = {k: v for k, v in inst.items() if len(v) > 1}
+    kinds = {it['kind'] for it in items} | (set(PRODUCT_KINDS) if tf.get('source') == 'work' else set())   # pushed or retired here
+    many = {k: v for k, v in inst.items() if len(v) > 1 and k in kinds}
     if many:
         raise Refusal(f'{unit}: more than one installed file of a kind in {dd}: {many} - which one a new file replaces is ambiguous')
     rows, notes = [], []
@@ -205,17 +209,16 @@ def hybrid_plan(ctx, staging, lst, scope, w, checksum=True):
             act = 'replace'                                              # another night span: the new file supersedes it
         elif not checksum:
             act = 'keep-or-replace'
-        elif K.checksum(dst, ctx.algo) == m:
-            act = 'keep'                                                 # byte-identical
-        else:                                                            # same name, other bytes (pixels or header)
-            act = 'replace'
+        else:
+            dm = K.checksum(dst, ctx.algo)
+            act = 'keep' if dm == m else 'replace'                       # keep only byte-identical; other bytes (pixels or header)
         if act in ('replace', 'keep-or-replace'):
             miss = missing_keys(h, header(old), kind)
             if miss:
                 raise Refusal(f'D7: {src} lacks card key(s) {miss[:10]} of the file it replaces {old} - REFUSING the unit')
         keep = act == 'keep'
         rows.append(dict(unit=unit, kind=kind, src=src, dst=dst, bytes=os.path.getsize(dst if keep else src),
-                         md5=(K.checksum(dst, ctx.algo) if keep else m), action=act, replaces=old if not keep else '', written_at=''))
+                         md5=(dm if keep else m), action=act, replaces=old if not keep else '', written_at=''))
     if tf.get('source') == 'work':
         made = {it['kind'] for it in items}
         for k in PRODUCT_KINDS:
@@ -245,30 +248,50 @@ def apply_unit(ctx, u, rows, rnd):
     ok, free = K.free_space_ok(ctx.archive_root, K.sec().FREE_SPACE_FLOOR_GB)
     if not ok:
         raise Refusal(f'G19: {free} GB free < archive.FREE_SPACE_FLOOR_GB')
-    parts = {}
+    parts, cur = {}, None
     try:
         for r in todo:
             if r['action'] in ('publish', 'replace'):
+                # this copy's own .part (removed on any failure); a .part that existed before is G6's to report, never removed here
+                cur = None if os.path.lexists(r['dst'] + '.part') else r['dst'] + '.part'
                 parts[r['dst']] = K.verified_copy(r['src'], r['dst'], ctx.algo, want=r['md5'], preserve=True)
-    except Refusal:
-        for part, _m in parts.values():
-            if os.path.exists(part):
+                cur = None
+    except BaseException:
+        for part in [p for p, _m in parts.values()] + ([cur] if cur else []):
+            if os.path.lexists(part):
                 os.remove(part)
         raise
     t0 = K.utc()
     moved, written = [], []
-    for r in todo:
-        if r['action'] in ('replace', 'retire'):
-            q = _qpath(ctx, rnd, r['replaces'])
-            with K.CsvAppender(qman, _p().HYBRID_QUARANTINE_COLUMNS) as wq:
-                b, m, t = K.quarantine_move(r['replaces'], q, ctx.algo, what=f'push hybrid {unit} {r["action"]}')
-                wq.write(dict(unit=unit, kind=r['kind'], path=r['replaces'], dest=q, bytes=b, md5=m,
-                              replaced_by=r['dst'] if r['action'] == 'replace' else '', moved_at=t))
-            moved.append((r, q))
-        if r['action'] in ('publish', 'replace'):
-            K.commit_part(parts[r['dst']][0], r['dst'], replace=False)     # the installed file left first: nothing is overwritten
-            r['written_at'] = K.utc()
-            written.append(r)
+    try:
+        for r in todo:
+            if r['action'] in ('replace', 'retire'):
+                q = _qpath(ctx, rnd, r['replaces'])
+                with K.CsvAppender(qman, _p().HYBRID_QUARANTINE_COLUMNS) as wq:
+                    b, m, t = K.quarantine_move(r['replaces'], q, ctx.algo, what=f'push hybrid {unit} {r["action"]}')
+                    wq.write(dict(unit=unit, kind=r['kind'], path=r['replaces'], dest=q, bytes=b, md5=m,
+                                  replaced_by=r['dst'] if r['action'] == 'replace' else '', moved_at=t))
+                moved.append((r, q))
+            if r['action'] in ('publish', 'replace'):
+                K.commit_part(parts[r['dst']][0], r['dst'], replace=False)     # the installed file left first: nothing is overwritten
+                r['written_at'] = K.utc()
+                written.append(r)
+    except BaseException as e:
+        # a swap stopped part way: the files moved so far are in the quarantine manifest (a row per move), the files written so far
+        # go to the push manifest, and every unswapped .part is removed - a rerun then keeps the written files and publishes a kind
+        # left without an installed file (its old file stays in quarantine, recorded)
+        done = {r['dst'] for r in written}
+        left = [p for d_, (p, _m) in parts.items() if d_ not in done and os.path.lexists(p)]
+        for p in left:
+            os.remove(p)
+        with K.CsvAppender(pman, _p().HYBRID_PUSH_COLUMNS) as wp:
+            for r in written:
+                wp.write(r)
+        if not isinstance(e, Exception):
+            raise
+        raise Refusal(f'{unit}: the swap stopped ({type(e).__name__}: {e}) after {len(moved)} file(s) quarantined (rows in {qman}) and '
+                      f'{len(written)} written (rows in {pman}); {len(left)} unswapped .part removed - a rerun keeps the written files '
+                      f'and publishes any kind left without an installed file') from e
     with K.CsvAppender(pman, _p().HYBRID_PUSH_COLUMNS) as wp:
         for r in rows:
             if r['action'] != 'retire':

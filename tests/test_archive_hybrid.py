@@ -24,6 +24,7 @@ unfilled masters, and the plan replay of the 11-13 lost-sky tile swap; run by ha
 Run: python tests/test_archive_hybrid.py   (or under pytest)
 """
 import hashlib
+import csv
 import json
 import os
 import shutil
@@ -126,7 +127,8 @@ def _unit(d, source='work', cleanres=True, value=2.0, nights=NIGHTS, admitted=No
             rr[key] = dict(path=p, prodname=n[k], md5=_md5(p))
         with open(os.path.join(wd, 'R075_lsrecon.json'), 'w') as f:
             json.dump(rr, f)
-        _fits(os.path.join(wd, 'PBdiffuse_deep_46MHz.fits'), 0.5, prodname=False, BUNIT='', PBMODEL='m')
+        pbd = _fits(os.path.join(wd, 'PBdiffuse_deep_46MHz.fits'), 0.5, prodname=False, BUNIT='', PBMODEL='m')
+        rec['pbdiffuse'] = dict(path=pbd, md5=_md5(pbd))
     with open(os.path.join(wd, 'R075_tilefill.json'), 'w') as f:
         json.dump(rec, f)
     os.makedirs(os.path.join(out, '_records', 'hybrid'), exist_ok=True)
@@ -142,7 +144,7 @@ class _Env:
         from exopipe.phase3.core import exclusions
         self.d, self.excluded = d, excluded
         self.E = exclusions
-        self.old = (CFG.hybrid.ARCHIVE_MASTERS, exclusions.for_tier)
+        self.old = (CFG.hybrid.ARCHIVE_MASTERS, exclusions.for_tier, CFG.hybrid_full.PBDIFFUSE_WEIGHTING)
         _fits(os.path.join(d, 'M', '18h', '46MHz', 'PB_deep_R075_46MHz.fits'), 0.9, prodname=False, BUNIT='',
               **(pb_cards or {}))
         self.ctx = types.SimpleNamespace(archive_root=os.path.join(d, 'root'), algo='md5', stamp='20261118T000000Z', dry=False,
@@ -150,12 +152,14 @@ class _Env:
 
     def __enter__(self):
         setattr(CFG.hybrid, 'ARCHIVE_MASTERS', os.path.join(self.d, 'M'))
+        setattr(CFG.hybrid_full, 'PBDIFFUSE_WEIGHTING', 'R075')        # the fixture's unit owns the cell's diffuse map
         self.E.for_tier = lambda tier, fresh=False: _Excl(self.excluded)
         return self
 
     def __exit__(self, *a):
         setattr(CFG.hybrid, 'ARCHIVE_MASTERS', self.old[0])
         self.E.for_tier = self.old[1]
+        setattr(CFG.hybrid_full, 'PBDIFFUSE_WEIGHTING', self.old[2])
 
     def adir(self):
         return AH.archive_dir(self.ctx, '18h', '46MHz')
@@ -285,7 +289,10 @@ def test_gates():
             out = _unit(d)
             _fits(os.path.join(out, '18h_46MHz', 'PBdiffuse_deep_46MHz.fits'), 0.5, prodname=False, BUNIT='', FLUXFIT='x')
             assert 'HG12' in _raises(Refusal, E.plan, out)
-            _fits(os.path.join(out, '18h_46MHz', 'PBdiffuse_deep_46MHz.fits'), 0.5, prodname=False, BUNIT='')
+            _fits(os.path.join(out, '18h_46MHz', 'PBdiffuse_deep_46MHz.fits'), 0.5, prodname=False, BUNIT='', PBMODEL='m2')
+            assert 'changed since' in _raises(Refusal, E.plan, out)      # the map's recorded checksum (PR-5b review)
+            shutil.rmtree(out)
+            out = _unit(d)
         with _Env(d, pb_cards=SH) as E:
             assert 'HG12' in _raises(Refusal, E.plan, out)
         with _Env(d) as E:
@@ -316,6 +323,7 @@ def test_pinned():
         with _Env(d) as E:
             a = E.adir()
             _fits(os.path.join(a, _names()['recon']), 1.0, LSRECON=True)
+            _fits(os.path.join(a, _names('014')['recon']), 1.0, LSRECON=True)   # two reconstructions: not this unit's kinds
             rows, _r, _n = E.plan(out)
             assert sorted(r['kind'] for r in rows) == ['cleanres', 'pbcorr', 'plain'], rows
             assert {r['action'] for r in rows} == {'publish'}
@@ -351,6 +359,84 @@ def test_write_diffuse_pb():
         assert not os.path.exists(os.path.join(d, '18h_Full'))                                           # Full: the full stage's
     finally:
         M.diffuse_pb_map = old
+        shutil.rmtree(d, ignore_errors=True)
+
+
+
+def test_pbdiffuse_owner():
+    d = _tmp('ah_own_')
+    try:
+        out = _unit(d)
+        with _Env(d) as E:
+            CFG.hybrid_full.PBDIFFUSE_WEIGHTING = 'R0'                  # another weighting owns the map: this unit does not push it
+            rows, _r, _n = E.plan(out)
+            assert 'pbdiffuse' not in {r['kind'] for r in rows}, rows
+            CFG.hybrid_full.PBDIFFUSE_WEIGHTING = 'R075'
+            tp = os.path.join(out, '18h_46MHz', 'R075_tilefill.json')
+            rec = json.load(open(tp))
+            rec.pop('pbdiffuse')
+            json.dump(rec, open(tp, 'w'))
+            try:
+                E.plan(out)
+                raise AssertionError('no refusal')
+            except Refusal as e:
+                assert 'no diffuse PB map recorded' in str(e), e
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_swap_and_copy_failures():
+    d = _tmp('ah_fail_')
+    old_commit, old_copy = K.commit_part, K.verified_copy
+    try:
+        out = _unit(d)
+        with _Env(d) as E:
+            a = E.adir()
+            olds = {k: _fits(os.path.join(a, _names('014')[k]), 1.0, **REPAIR) for k in ('plain', 'pbcorr')}
+            # a copy fails part way (OSError after its .part began): every .part of the push removed, nothing moved
+            n = {'c': 0}
+
+            def bad_copy(src, dst, *x, **kw):
+                n['c'] += 1
+                if n['c'] == 2:
+                    open(dst + '.part', 'w').close()
+                    raise OSError(28, 'No space left on device')
+                return old_copy(src, dst, *x, **kw)
+            K.verified_copy = bad_copy
+            try:
+                E.apply(out, 'F1')
+                raise AssertionError('no failure')
+            except OSError:
+                pass
+            K.verified_copy = old_copy
+            assert not [f for f in os.listdir(a) if f.endswith('.part')], os.listdir(a)
+            assert all(os.path.exists(p) for p in olds.values())
+            # a swap stops part way: the written files recorded, the unswapped .part removed, a refusal naming the state
+            m = {'c': 0}
+
+            def bad_commit(part, dst, replace=False):
+                m['c'] += 1
+                if m['c'] == 2:
+                    raise OSError(5, 'Input/output error')
+                return old_commit(part, dst, replace=replace)
+            K.commit_part = bad_commit
+            try:
+                E.apply(out, 'F2')
+                raise AssertionError('no refusal')
+            except Refusal as e:
+                assert 'the swap stopped' in str(e) and '1 written' in str(e), e
+            K.commit_part = old_commit
+            assert not [f for f in os.listdir(a) if f.endswith('.part')], os.listdir(a)
+            pman = os.path.join(AH.archive_dir(E.ctx), f'MANIFEST_{E.ctx.stamp}.csv')
+            assert len(list(csv.DictReader(open(pman)))) == 1
+            # a rerun (another round) keeps what was written and completes the rest
+            rows, u, _n = E.apply(out, 'F3')
+            acts = [r['action'] for r in rows]
+            assert acts.count('keep') == 1 and 'retire' not in acts, acts
+            assert not [f for f in os.listdir(a) if f.endswith('.part')]
+            assert all(os.path.exists(r['dst']) for r in rows)
+    finally:
+        K.commit_part, K.verified_copy = old_commit, old_copy
         shutil.rmtree(d, ignore_errors=True)
 
 
