@@ -268,6 +268,38 @@ class mosaic_v5(_Section):
     PROTECTED_KEYS = ('VARIANT_OF', 'TAG', 'PROV_FILE')
 
 
+class mosaic_v3(_Section):
+    """`exopipe3 mosaic --generation v3` - the FEATHER3 mosaics (spec plan/specs/hybrid.md 2.9-2.13, 2.15; mosaic/Run_FEATHER3): the
+    24 current Taper masters of a scope (mosaic.INPUT_COADD_RUN, mosaic.MASTER_PATTERNS) co-added by the v2 engine in Jy/sr and
+    Jy/beam, each weighted by the PB map derived from its robust weighting's Taper master (production mosaic_stage_from_lustre.py,
+    STG); the striation-corrected variants of the (variant, band) pairs of hybrid.STRIATION_SELECTION (the selected LSTs take the
+    archived ssub-rst8 master, the others the plain one: step2b_stage_ssub.py, S2B); the cleaned Stokes V maps of every scope from the
+    archived vclean masters (STG MOSAIC_PRODUCTS=Vclean, release1_v_mosaics_20261110.sh). Unit of work: (stage, scope, job), job =
+    product + variant + tag. --out is required (a work run of its own; 24 PB maps of 39 MB per plain job, maps of 200 MB)."""
+    SCOPES = mosaic.SCOPES
+    #   the 19 scopes of Run_FEATHER3 (V3 summary.csv: 47 Jy/sr + 47 Jy/beam rows; summary_vclean.csv: 19 x 2)
+    VARIANTS = ('Taper_R075', 'Taper_R0')
+    #   FEATHER3 is Taper only (step2_stage.sh stages all four, coadd_jobs_plain.txt co-adds the two Taper variants)
+    PRODUCTS = ('I', 'Vclean')
+    VCLEAN_VARIANT = 'Taper_R0'
+    #   the cleaned Stokes V masters are Taper Robust 0 (coadd_jysr._PRODUCT_VARIANT; their weighting map is the Robust 0 one)
+    VCLEAN_PATTERN = '{scope}_V_deep_Taper_Robust+0.0_vclean_*pbcorr_dewarped_aligned_coadd_LST{lst}_*.fits'
+    #   STG 'Vclean' branch: the archived cleaned-V beam-corrected master of the cell, exactly one
+    SSUB_PATTERN = '{scope}_I_deep_{var}_shflux*_pbcorr_dewarped_aligned_coadd_{tag}_LST{lst}_*.fits'
+    #   S2B: the archived striation-corrected beam-corrected master of a selected (LST, band, variant), exactly one; {tag} =
+    #   masters_striation.TAG
+    REQUIRE_N_LSTS = 24
+    #   every LST a tile (mosaic.REQUIRE_N_LSTS; step3_coadd.sh refuses a stage of fewer than 24 LST cells)
+    STRIATION = 'both'
+    #   --striation default: 'without' = the plain Stokes I maps, 'with' = the striation-corrected maps of the selected pairs, 'both'
+    #   = Run_FEATHER3 (both kinds; Gregg 2026-10-22 "Create a version with and without striations")
+    RENDER_SCOPES = mosaic.SCOPES
+    #   Run_FEATHER3 holds Mollweide and RA/Dec renders of every map: 264 = (38 plain + 9 corrected + 19 Stokes V) x 2 domains x 2
+    RULED = {'STRIATION': 'R-GREGG-20261022-STRIATION-RESTORE-AND-MOSAIC-SCOPE-MEM-OPTION-B',
+             'PRODUCTS': 'R-GREGG-20261110-VCLEAN-REBUILD-ALL-456-V-MOSAICS-IN-FEATHER3'}
+    PROTECTED_KEYS = ('VARIANTS', 'VCLEAN_VARIANT', 'VCLEAN_PATTERN', 'SSUB_PATTERN')
+
+
 class mosaic_caveat(_Section):
     """Stage `caveat` of mosaic v5 (NL caveat_map 1759, test_caveat_map 1835; Gregg 2026-10-31 "ok on caveats"): per pixel the
     weighted mean of the hybrid tiles' large-scale level / survey prior (LEVEL) and the weight fraction of Taper-only tiles
