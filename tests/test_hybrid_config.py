@@ -7,7 +7,8 @@ Data-free (CI):
      each other (CAVEAT_SCOPES and STRIATION_SCOPES inside SCOPES; the wideband members are the 15 subbands = hybrid_full.MEMBERS);
      a PROTECTED key cannot be overridden;
   2. the unit plan: stage order, the scopes each stage takes, refusals of an unknown stage, scope, weighting or range;
-  3. the stage gates (HG0 COADD_SB absent, HG6 empty PSF registry, striation selection md5, unfilled inputs) and the --out gate;
+  3. the stage gates (HG0 COADD_SB absent, HG6 empty PSF registry or a PSF whose md5 differs from its entry, striation selection
+     md5, unfilled inputs) and the --out gate; the PSF registry pins every subband x weighting (Q1);
   4. the token-card rule (lib/mosaic/tests.fill_card_problems) on literal headers copied from archived files (read 2026-11-18);
   5. the CLI: `exopipe3 hybrid` refuses every unit of an unported stage with its reason and exits 2; `exopipe3 config --step
      hybrid` lists the sections.
@@ -16,7 +17,8 @@ Cluster only (production's tree and the archive present; else UNTESTED-CLUSTER, 
      mosaic_tpfill.py) and the TPCAVEAT units of the per-tile fill driver;
   7. every FITS name in the archived hybrid runs (H, HQ11, HQ13 with unfilled/), the v3 / v5 mosaic runs and the v5 quarantines
      (MQ11, MQ13 with unfilled/; MQ11 holds the retired tpfill names, which parse with the retired marker) parses and round-trips
-     through core/products (single-directory listings at known depths; no recursive walk of Lustre).
+     through core/products (single-directory listings at known depths; no recursive walk of Lustre);
+  8. every pinned double-size PSF's md5 equals its registry entry and production's .md5 sidecar.
 Run: python tests/test_hybrid_config.py   (or under pytest)
 """
 import ast
@@ -98,6 +100,29 @@ def test_sections_keys_and_consistency():
     assert CFG.hybrid_recon.CASCADE[0][2] == CFG.hybrid_recon.CLEAN_REGION == 'horizon'
 
 
+def test_psf2x_registry():
+    # Q1 (R-GREGG-20261118-HYBRID-Q1-Q3-GO-WITH-RECOMMENDATIONS): every subband x weighting pinned to one production file
+    from exopipe.phase3.config.steps import hybrid as HC
+    R = CFG.hybrid_psf2x.REGISTRY
+    assert sorted(R) == sorted((b, v) for b in SUBBANDS for v in ('R075', 'R0')), sorted(R)
+    for (band, v), (path, md5, ants) in R.items():
+        assert os.path.basename(path) == f'PSF2xF_{band}_{v}-psf.fits' and path.startswith('/lustre/gh/main/phase3/lsrecon/'), path
+        assert len(md5) == 32 and set(md5) <= set('0123456789abcdef'), md5
+        assert ants == (HC.PSF2X_NIGHT_LIST if int(band[:-3]) <= 59 else HC.PSF2X_JULY_LIST), (band, ants)
+    assert len({e[0] for e in R.values()}) == len({e[1] for e in R.values()}) == 30
+
+
+def test_psf2x_files_match_registry():
+    R = CFG.hybrid_psf2x.REGISTRY
+    if not all(os.path.exists(e[0]) for e in R.values()):
+        print('UNTESTED-CLUSTER: the double-size PSFs are absent')
+        return
+    for (band, v), (path, md5, _a) in R.items():
+        assert HS._md5(path) == md5, (band, v, path)
+        side = os.path.join(os.path.dirname(path), os.path.basename(path) + '.md5')
+        assert open(side).read().split()[0] == md5, (band, v, side)           # production's own sidecar
+
+
 def test_protected_keys_refuse_override():
     for key in ('hybrid.STRIATION_SELECTION', 'hybrid.STRIATION_SELECTION_MD5', 'hybrid.ARCHIVE_MASTERS',
                 'hybrid_psf2x.REGISTRY', 'hybrid_tilefill.UNFILLED_INPUTS', 'hybrid_recon.CATALOGS'):
@@ -157,8 +182,18 @@ def test_stage_gates_and_out():
         assert any('UNFILLED_INPUTS' in p for p in HS.stage_gate_problems('tilefill', cfg))
         os.mkdir(cfg.hybrid_stack.COADD_SB)
         assert HS.stage_gate_problems('stack', cfg) == []
-        cfg.hybrid_psf2x.REGISTRY = {('46MHz', 'R075'): ('p', 'm', 'night')}
+        psf = os.path.join(d, 'PSF2xF_46MHz_R075-psf.fits')
+        with open(psf, 'wb') as f:
+            f.write(b'psf')
+        cfg.hybrid_psf2x.REGISTRY = {('46MHz', 'R075'): (psf, hashlib.md5(b'psf').hexdigest(), 'night')}
         assert HS.stage_gate_problems('recon', cfg) == []
+        assert HS.stage_gate_problems('wideband', cfg) == []
+        with open(psf, 'ab') as f:                                    # the PSF changed after it was pinned
+            f.write(b'x')
+        assert any(p.startswith('HG6') and 'not the pinned' in p for p in HS.stage_gate_problems('recon', cfg))
+        assert HS.stage_gate_problems('wideband', cfg) == []          # the wideband stage reads no double-size PSF
+        os.remove(psf)
+        assert any(p.startswith('HG6') and 'md5 None' in p for p in HS.stage_gate_problems('recon', cfg))
         with open(sel, 'a') as f:                                     # the selection changed after it was pinned
             f.write('05h,59MHz,Taper_R0\n')
         assert any('not the pinned' in p for p in HS.stage_gate_problems('hybrid', cfg))
@@ -248,9 +283,12 @@ def test_cli_skeleton_refuses_every_unit():
         lines = [l for l in out.splitlines() if l.strip().startswith('refused ')]
         assert len(lines) == 7, out[-3000:]
         assert any('stack.18h_46MHz_R075' in l and 'HG0' in l for l in lines), lines
-        assert sum('HG6' in l for l in lines) == 2, lines                       # recon + wideband
+        # recon: HG6 where the pinned PSFs are absent (CI: md5 None), else the stage is not ported; wideband reads no PSF
+        rec = [l for l in lines if 'recon.18h_46MHz_R075' in l]
+        assert len(rec) == 1 and (('HG6' in rec[0] and 'md5 None' in rec[0]) or 'PR-3' in rec[0]), rec
+        assert any('wideband.18h_Blue_R075' in l and 'PR-3' in l and 'HG6' not in l for l in lines), lines
         assert sum('UNFILLED_INPUTS' in l for l in lines) == 2, lines           # tilefill x 2
-        assert sum(l.startswith('  refused hybrid.') and 'PR-4' in l or 'not the pinned' in l or 'md5 None' in l
+        assert sum(l.startswith('  refused hybrid.') and ('PR-4' in l or 'not the pinned' in l or 'md5 None' in l)
                    for l in lines) == 2, lines
         assert 'refused 7; exit 2' in out, out[-500:]
         # no --out: refused before any unit (a new work run is always named)
@@ -411,7 +449,8 @@ def test_archive_names_round_trip():
           f'the grammar; {retired} with the retired tpfill)')
 
 
-TESTS = [test_sections_keys_and_consistency, test_protected_keys_refuse_override, test_plan_units, test_stage_gates_and_out,
+TESTS = [test_sections_keys_and_consistency, test_psf2x_registry, test_psf2x_files_match_registry, test_protected_keys_refuse_override,
+         test_plan_units, test_stage_gates_and_out,
          test_fill_card_rule, test_cli_skeleton_refuses_every_unit, test_values_equal_production, test_archive_names_round_trip]
 
 try:                                                      # pytest collects TestHybridConfig, not the plain functions
