@@ -290,9 +290,14 @@ def _copy_funpack(src, dst, retries=3):
     funpacks with -F (overwrite), and retries with a fresh re-copy. Returns the
     funpacked `.fits` path or None. The archive `src` is never mutated.
     funpack runs by path (config.FUNPACK); a missing binary raises instead of skipping every frame (T5 then ends in an
-    escalation error, which the step refuses: G30)."""
+    escalation error, which the step refuses: G30). Deliberate deviation, not behind a config key: production's
+    `conda run` on a node without the binary skips every frame ('no frames in window'); a parity run there records an
+    escalation error instead (counted, unit done) - the binary is present on lwacalim00-10. CANDINV_FUNPACK applies only
+    to a direct call of the package: the step removes inherited CANDINV_* variables (followup/_cfg_adapter.py) and runs
+    the default, which followup_investigate.SNAP_FUNPACK pins."""
     if not os.access(C.FUNPACK, os.X_OK):
-        raise FileNotFoundError(f'funpack not executable: {C.FUNPACK} (followup/config.py FUNPACK, CANDINV_FUNPACK)')
+        raise FileNotFoundError(f'funpack not executable: {C.FUNPACK} (followup/config.py FUNPACK; the step pins it as '
+                                f'followup_investigate.SNAP_FUNPACK)')
     fp = dst[:-3] if dst.endswith('.fz') else dst + '.fits'
     try:
         ssz = os.path.getsize(src)

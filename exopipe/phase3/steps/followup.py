@@ -796,6 +796,15 @@ def _op_investigate(args, run):
     return None
 
 
+# Sub-products the package catches and only prints (gate G30): (line prefix after strip, product), followup/dossier.py
+_SWALLOWED = (('T5 snapshot spectrum error:', 'T5 snapshot spectrum'),           # dossier.py:306-308 (spectrum set to [])
+              ('T5 snapshot morphology error:', 'T5 snapshot morphology'),       # dossier.py:319-320
+              ('[io] WARN conformant FITS write failed:', 'conformant FITS'),    # dossier.py:440-441
+              ('[io] WARN burst all-sky save failed:', 'burst all-sky FITS'),    # dossier.py:463-464
+              ('[io] WARN snapshot png failed:', 'snapshot figure'),             # dossier.py:525-526
+              ('[io] WARN index png failed:', 'index figure'))                   # dossier.py:585-586
+
+
 def _investigate_one(u, run, args, c, R, D, C, env, no_xmatch):
     import contextlib
     from exopipe.phase3.core.record import NoInput
@@ -809,14 +818,23 @@ def _investigate_one(u, run, args, c, R, D, C, env, no_xmatch):
             u.add_input(p)
     _exclusion_report(u, c.lst, c.band, [c.date], tier=c.cadence)
     log = _log_path(run, c.cand_id)
+    off = os.path.getsize(log) if os.path.exists(log) else 0      # the log is appended per run: read only this run's part
     with open(log, 'a') as lf, contextlib.redirect_stdout(lf):
         print(f'===== {time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())} investigate rank{c.rank} {c.cand_id} =====')
         ev = D.investigate(c, escalate=not args.no_escalate, write=not args.no_write, verbose=True,
                            snapshot=not args.no_snapshot)
     u.meta['log'] = log
-    for line in open(log, errors='replace'):
-        if 'WARN' in line:
-            u.note('in-place fallback/warning: ' + line.strip()[:300])
+    with open(log, 'rb') as f:
+        f.seek(off)
+        lines = f.read().decode(errors='replace').splitlines()
+    swallowed = []
+    for line in lines:
+        s = line.strip()
+        what = next((w for pre, w in _SWALLOWED if s.startswith(pre)), None)
+        if what:
+            swallowed.append(f'{what}: {s.split(":", 1)[1].strip()}'[:300])
+        elif 'WARN' in line:
+            u.note('in-place fallback/warning: ' + s[:300])
     if no_xmatch:
         u.note('cross-match empty: none of the catalogues in followup/config.py TARGET_CSVS exists (the CLV path points at '
                'exopipe/phase3, not clv15) - context.xmatch empty and xmatch_stellar 0, as in production (batch C-33/B-41)')
@@ -825,30 +843,31 @@ def _investigate_one(u, run, args, c, R, D, C, env, no_xmatch):
     if 'error' in ev:
         gate = 'G11' if 'not found in bundle' in ev['error'] else 'G12'
         u.refuse(f'{gate}: {ev["error"]}')
-    # G30: an escalation raised. The package (followup/dossier.py:189-194, as production) catches the exception, keeps
-    # 'error: <exception>' in ev['escalation'] and writes the dossier without that escalation's products, and production
-    # records the candidate done. A failed sub-product: B-30 (a), Gregg 2026-10-13 (R-GREGG-20261013-REFACTOR-SHEET-DADMIT-
-    # B01-B02-B03-B05-B30-B32: "a missing/unreadable input or failed sub-product refuses the unit with a recorded reason
-    # (exit 2)"), behind its config key as that ruling's implementation says - site fallbacks.FOLLOWUP_ESCALATION_FALLBACK,
-    # reached after the written outputs are recorded: 'refuse' refuses the unit (a refused unit is never resumed, so a
-    # re-run retries it); 'fallback' (production, parity/production_20261013.cfg) keeps it done, counted in the record.
-    failed = [f'{k}: {v[len("error:"):].strip()}' for k, v in sorted((ev.get('escalation') or {}).items())
-              if isinstance(v, str) and v.startswith('error:')]
-    g30 = (f'G30: escalation failed ({"; ".join(failed)}) - the dossier lacks those products; a re-run retries the '
-           f'unit') if failed else None
+    # G30: a sub-product failed. The package (as production) catches the exception and writes the dossier without that
+    # product, and production records the candidate done: an escalation keeps 'error: <exception>' in ev['escalation']
+    # (followup/dossier.py:189-196); the T5 spectrum and morphology, the conformant FITS, the burst all-sky FITS and the
+    # two figures only print a line (_SWALLOWED), read here from this run's part of the unit's log. A failed sub-product:
+    # B-30 (a), Gregg 2026-10-13 (R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32: "a missing/unreadable
+    # input or failed sub-product refuses the unit with a recorded reason (exit 2)"), behind its config key as that
+    # ruling's implementation says - site fallbacks.FOLLOWUP_ESCALATION_FALLBACK, reached after the written outputs are
+    # recorded: 'refuse' refuses the unit (a refused unit is never resumed, so a re-run retries it); 'fallback'
+    # (production, parity/production_20261013.cfg) keeps it done, counted in the record. The input fallbacks of spec
+    # section 5 (B-41, open) stay notes.
+    failed = [f'escalation {k}: {v[len("error:"):].strip()}' for k, v in sorted((ev.get('escalation') or {}).items())
+              if isinstance(v, str) and v.startswith('error:')] + swallowed
+    if not args.no_write:
+        for key, val in sorted((ev.get('outputs') or {}).items()):
+            cls = _DOSSIER_CLASSES.get(key)
+            if cls is None:
+                continue
+            for p in (val if isinstance(val, (list, tuple)) else [val]):
+                if p:
+                    u.add_output(p, cls)
+    if failed:
+        fallback.site('fallbacks.FOLLOWUP_ESCALATION_FALLBACK',
+                      f'G30: sub-products failed ({"; ".join(failed)}) - the dossier lacks them; a re-run retries the unit')
     if args.no_write:
-        if g30:
-            fallback.site('fallbacks.FOLLOWUP_ESCALATION_FALLBACK', g30)
         raise NoInput(f'--no-write: evidence kept in this record only (P(astro) {pa.get("p_astro")})')
-    for key, val in sorted((ev.get('outputs') or {}).items()):
-        cls = _DOSSIER_CLASSES.get(key)
-        if cls is None:
-            continue
-        for p in (val if isinstance(val, (list, tuple)) else [val]):
-            if p:
-                u.add_output(p, cls)
-    if g30:
-        fallback.site('fallbacks.FOLLOWUP_ESCALATION_FALLBACK', g30)
 
 
 # ---- summary: port of attic/run_all_top50.py (SUMMARY_COLS :27-38, _round :41-42, _snap_peak_vi :45-55, _row :58-108,

@@ -72,7 +72,10 @@ def scratch_root(work=None):
         from exopipe.phase3.core.record import Refusal
         raise Refusal(f'no node-local scratch root for {host}: pass --work /fast/... or set SCRATCH_ROOT in the site '
                       f'file (scratch never defaults to Lustre)')
-    if root.startswith('/lustre'):
+    # absolute, so a caller that changes its working directory (followup investigate: os.chdir(scratch)) keeps the same
+    # directory, and a relative --work under a Lustre working directory is judged where it really is
+    root = os.path.abspath(root)
+    if root.startswith('/lustre') or os.path.realpath(root).startswith('/lustre'):
         from exopipe.phase3.core.record import Refusal
         raise Refusal(f'scratch root {root} is on Lustre - scratch must be node-local (/fast or /dataNN)')
     return root
