@@ -27,6 +27,7 @@ summary on real data under --parity (no write refused: nothing outside --out).
 import calendar
 import contextlib
 import csv
+import glob
 import hashlib
 import io
 import json
@@ -402,6 +403,8 @@ def _nights():
 def main():
     only = set(sys.argv[sys.argv.index('--only') + 1:]) if '--only' in sys.argv else None
     os.makedirs(HUB + '/nights', exist_ok=True); os.makedirs(HUB + '/dates', exist_ok=True)
+    if os.environ.get('FAKE_QA_PAGES_NOOP'):          # a build that writes no page (exit 0)
+        print('QA pages: 0 night pages'); return
     n = 0
     for l, d in _nights():
         if only and l + '_' + d not in only:
@@ -1063,6 +1066,12 @@ def test_exclusion_conformance_tiers():
         check('... the table passes its content test with the tier\'s read, and fails it judged with the default read',
               rc == 0 and not failed('exclusion_conformance', tab) and failed('exclusion_conformance', tab, tier='deep'),
               failed('exclusion_conformance', tab))
+        tnar = tab[:-len('.csv')] + '_1a2b3c4d.csv'      # a narrowed run's table (steps_common.narrowed), no stored context
+        shutil.copy(tab, tnar)
+        check('... and a narrowed table (name suffix _<8 hex>) without a stored tier takes the tier from its name (review of '
+              'PR 105: the old pattern ended at a word boundary and fell back to the default read)',
+              not failed('exclusion_conformance', tnar), failed('exclusion_conformance', tnar))
+        os.remove(tnar)
         XC2.tier_read = lambda tier: EX.load()
         rc, txt, got, _ = snap(f'{TMP}/o_xc6f1')
         XC2.tier_read = saved[0]
@@ -1305,7 +1314,7 @@ def test_served_diff_cell_load():
     neg('served_diff_status', 'served_diff', tab, edit('re-searched cell', 'unchanged'),
         siblings=[tab[:-len('_rows.csv')] + '_summary.json'])
     # 2026-11-17 status parity: deep cand_ids as the deep search writes them (Run_P3S5 'ID_01h_2024-12-21_36MHz_0000') do not
-    # start with the LST; the cell and night come from the catalogue row's lst/date/band (served_change_20261006.py:52)
+    # start with the LST; the cell and night come from the catalog row's lst/date/band (served_change_20261006.py:52)
     from exopipe.phase3.lib.status import steps_common as SK, steps_serveddiff as SD
     d1, d2, d3 = 'ID_05h_2099-01-01_18MHz_0001', 'ID_05h_2099-01-04_Red_0002', 'ID_05h_2099-01-04_Red_0007'
     made, saved = [], SD.cells_of
@@ -1343,7 +1352,7 @@ def test_served_diff_cell_load():
         check('falsifier: with the cand_id parse of before in its place, the same member comes out lost (K1 reduced)',
               k1.get('status') == 'reduced' and k1.get('lost') == '1', (rc, k1, txt[-300:]))
         rc, txt = step(['status', '--served-diff', 'TESTD', 'TESTF', '--out', out, '--cores', 'none'])
-        check('S-G7: a catalogue without lst/date/band refuses (the cell is never parsed from the cand_id)',
+        check('S-G7: a catalog without lst/date/band refuses (the cell is never parsed from the cand_id)',
               rc == 2 and 'S-G7' in txt and 'never parsed from the cand_id' in txt, txt[-400:])
     finally:
         SD.cells_of = saved
@@ -1491,6 +1500,30 @@ def test_conformance_pages_ledger_register():
           'fresh --out); it counts the pages it wrote, and the data-processing unit runs check() on the complete hub',
           'pages.night_pages_written' in tn and not any(n.startswith('qa_night_pages') for n in tn)
           and any(n.startswith('qa_night_pages') for n in td), (tn, td))
+    # review of PR 105: the count is of the pages THIS build wrote; a nights-only build on a hub that already has its
+    # data_processing.html runs the night-page test in the nights unit
+    for o_ in ('o_np', 'o_nd'):
+        shutil.rmtree(f'{TMP}/{o_}', ignore_errors=True)
+        shutil.copytree(os.path.join(out, 'review_hub'), f'{TMP}/{o_}/review_hub')
+        old = time.time() - 3600                      # the pages of an earlier build, an hour old
+        for f in glob.glob(f'{TMP}/{o_}/review_hub/nights/*.html'):
+            os.utime(f, (old, old))
+    os.environ['FAKE_QA_PAGES_NOOP'] = '1'
+    try:
+        rc, txt = step(['status', 'pages', '--stages', 'nights', '--out', f'{TMP}/o_np', '--cores', 'none'])
+    finally:
+        os.environ.pop('FAKE_QA_PAGES_NOOP', None)
+    t = {x['name']: x for x in rec(f'{TMP}/o_np', 'pages_nights_deep').get('tests', [])}.get('pages.night_pages_written', {})
+    check('a nights build that writes no page refuses, though the hub holds the pages of an earlier build '
+          '(pages.night_pages_written counts only this build\'s pages)',
+          rc == 2 and t.get('passed') is False and t.get('value') == 0, (rc, t, txt[-300:]))
+    rc, txt = step(['status', 'pages', '--stages', 'nights', '--out', f'{TMP}/o_nd', '--cores', 'none'])
+    tn2 = [x['name'] for x in rec(f'{TMP}/o_nd', 'pages_nights_deep').get('tests', []) if x.get('passed')]
+    check('a nights-only build on a hub that has its data_processing.html runs the night-page test in the nights unit',
+          rc == 0 and 'pages.night_pages_written' in tn2 and any(n.startswith('qa_night_pages') for n in tn2),
+          (rc, tn2, txt[-300:]))
+    for o_ in ('o_np', 'o_nd'):
+        shutil.rmtree(f'{TMP}/{o_}', ignore_errors=True)
     rc, txt = step(['status', 'pages', '--stages', 'data-processing', '--out', f'{TMP}/o_dp_nofrag', '--cores', 'none'])
     check('S-G17: data-processing without this hub\'s QA overview fragment refuses (the page would lack its section)',
           rc == 2 and 'S-G17' in txt and not os.path.exists(f'{TMP}/o_dp_nofrag/review_hub/data_processing.html'),

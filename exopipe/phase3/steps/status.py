@@ -1093,6 +1093,8 @@ def _stage_nights(ctx):
             hub = hub if os.path.isdir(os.path.join(hub, 'nights')) else K.hub_dir()
             u.add_output(hub, 'qa_night_pages')
             return
+        import time
+        t0 = time.time()
         rc, text, hub = HB.run_nights(out, nights, u, ctx.log(u.name), ctx.allowed)
         if rc != 0:
             raise Refusal(f'build_qa_pages.main rc {rc}: {text[-400:]}')
@@ -1106,13 +1108,20 @@ def _stage_nights(ctx):
         else:
             # build_qa_pages.check() (P1-P4, the qa_night_pages content test) reads data_processing.html for P4, which the
             # data-processing stage writes after this one: the test runs there, on the complete hub (production's order:
-            # build_qa_pages.py, build_qa_release1.py, then build_qa_pages.py --check)
-            n = len([f for f in os.listdir(os.path.join(hub, 'nights')) if f.endswith('.html')]) \
-                if os.path.isdir(os.path.join(hub, 'nights')) else 0
-            u.check('pages.night_pages_written', n > 0, value=n, detail=f'{n} night pages in {hub}/nights')
-            u.add_output(hub, 'qa_night_pages', test=False)
-            u.note('night pages written; their content test (build_qa_pages.check P1-P4 + P5) runs in the data-processing '
-                   'stage, whose page P4 reads (or `status pages --check` on a complete hub)')
+            # build_qa_pages.py, build_qa_release1.py, then build_qa_pages.py --check). A full build rewrites every ledger
+            # night's page (build_qa_pages.main), so the pages written by THIS build are counted (mtime from its start; a
+            # page left from an earlier build does not count).
+            nd = os.path.join(hub, 'nights')
+            pages = [os.path.join(nd, f) for f in os.listdir(nd) if f.endswith('.html')] if os.path.isdir(nd) else []
+            new = sum(1 for p in pages if os.stat(p).st_mtime >= t0 - 1)   # 1 s: file-system time granularity
+            u.check('pages.night_pages_written', new > 0, value=new,
+                    detail=f'{new} of the {len(pages)} night pages in {nd} written by this build')
+            if 'data-processing' not in _stage_list(a) and os.path.exists(os.path.join(hub, 'data_processing.html')):
+                u.add_output(hub, 'qa_night_pages')          # no data-processing stage in this run: test the hub as it is
+            else:
+                u.add_output(hub, 'qa_night_pages', test=False)
+                u.note('night pages written; their content test (build_qa_pages.check P1-P4 + P5) runs in the data-processing '
+                       'stage, whose page P4 reads (or `status pages --check` on a complete hub)')
         print(text.strip().splitlines()[-1] if text.strip() else f'night pages -> {hub}')
 
 

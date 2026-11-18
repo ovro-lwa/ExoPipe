@@ -7,7 +7,7 @@ Served list of a run = the sources of status.SERVED_CATALOG_DIRS[tier] (*_source
 identity_id (else source_id) as served_change_20261006.py:44-48 keys them; members from the matching
 *_source_members.csv; detections from master_catalog_asrun.csv (else master_catalog.csv), each with its cell and night from
 its own row's lst, date and band columns, as served_change_20261006.py:52 takes them (a cand_id does not carry them in every
-tier: deep 'VD_01h_...' / 'ID_01h_...' and sub-LST 'V1_00h_...' ids start with a prefix; a catalogue without the three
+tier: deep 'VD_01h_...' / 'ID_01h_...' and sub-LST 'V1_00h_...' ids start with a prefix; a catalog without the three
 columns refuses).
 Fate of each member detection of a served source of A:
   night_rejected  its night now fails the cell's night-image gate or epoch gate (current cell records; served_change :23-32)
@@ -80,7 +80,7 @@ CELL_FIELDS = ('lst', 'date', 'band')
 
 
 def cells_of(path):
-    """{cand_id: (lst, night, band)} of a catalogue, from each row's own columns (served_change_20261006.py:52)."""
+    """{cand_id: (lst, night, band)} of a catalog, from each row's own columns (served_change_20261006.py:52)."""
     from exopipe.phase3.core.record import Refusal
     if not path:
         return {}
@@ -140,7 +140,7 @@ def served_diff(run_a, run_b, tier):
         fs = collections.Counter()
         for c in cids:
             l, d, b = cell_a.get(c) or cell_b.get(c) or (None, None, None)
-            no_row += l is None             # a member in neither catalogue: no cell, no night (counted in the summary)
+            no_row += l is None             # a member in neither catalog: no cell, no night (counted in the summary)
             cell = f'{l}_{b}' if l else ''
             if l and rejected(cell, d):
                 fs['night_rejected'] += 1
@@ -168,7 +168,7 @@ def served_diff(run_a, run_b, tier):
                              detections=len(cids), kept=0, night_rejected=0, research=0, removed=0, lost=0))
     summary = {'A': run_a, 'B': run_b, 'tier': tier, 'researched_cells': len(researched),
                'gate_records_unread': len(gate_unread), 'gate_records_unread_examples': gate_unread[:20],
-               'members_without_catalogue_row': no_row,
+               'members_without_catalog_row': no_row,
                'counts': {f'{S} {st}': n for (S, st), n in sorted(summ.items())},
                'served_A': {S: sum(1 for (s, _) in A if s == S) for S in ('I', 'V')},
                'served_B': {S: sum(1 for (s, _) in B if s == S) for S in ('I', 'V')}}
@@ -178,8 +178,8 @@ def served_diff(run_a, run_b, tier):
 def summary_text(summary):
     L = [f"served diff {os.path.basename(summary['A'])} -> {os.path.basename(summary['B'])} (tier {summary['tier']}; "
          f"{summary['researched_cells']} cells searched anew; {summary.get('gate_records_unread', 0)} cell gate records "
-         f"unreadable - their nights not judged night_rejected; {summary.get('members_without_catalogue_row', 0)} member "
-         f"detections in neither catalogue - no cell, no night)"]
+         f"unreadable - their nights not judged night_rejected; {summary.get('members_without_catalog_row', 0)} member "
+         f"detections in neither catalog - no cell, no night)"]
     c = summary['counts']
     for S in ('I', 'V'):
         L.append(f"Stokes {S}: {summary['served_A'][S]} served sources in A - unchanged {c.get(f'{S} unchanged', 0)}, "

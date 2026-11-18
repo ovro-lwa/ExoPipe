@@ -300,7 +300,7 @@ def rows_are_excluded(path, **ctx):
     ex = K.exclusions()
     tier = ctx.get('tier')
     if not tier:
-        m = re.search(r'exclusion_conformance_(deep|sublst|snapshot)\b', os.path.basename(path))
+        m = re.search(r'exclusion_conformance_(deep|sublst|snapshot)(?:_[0-9a-f]{8})?\.csv$', os.path.basename(path))
         tier = m.group(1) if m else None
     served_ex = None
     archive_fmt = 'kind' in cols and 'product' in cols
