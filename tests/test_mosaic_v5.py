@@ -17,8 +17,9 @@ cluster parity below):
      the tile list chain (coadd -> caveat / fill -> render: another tiles.json refuses); the caveat refuses other weights than the
      coadd's; a changed weighting map refuses the coadd; a failed content test removes the unit's outputs (v5.run); the md5 cache;
      a tagged map name reads as its scope (coverage threshold);
-  7. tilefill --mosaic-out: no done fill record refuses; a changed map, another tile list, or tiles that are not this run's unfilled
-     masters refuse (HG13); the band field is made from the v5 pair under a file name of its own;
+  7. tilefill --mosaic-out: no done conform record refuses (a done fill record is not enough); the conformed pair is read; a changed
+     map, another tile list, or tiles that are not this run's unfilled masters refuse (HG13); the band field is made from the v5 pair
+     under a file name of its own;
   8. the CLI: --generation v5 needs --out; v5-only flags refuse in v2; v2-only flags refuse in v5.
 With healpy (the cluster): the renderer's beam lookup reads the tagged PSF map (production 14e8dba).
 Cluster parity (not here): Blue Taper R-0.75, all tiles pinned - the unfilled co-add against MQ11, the caveat map against V5, the filled
@@ -163,13 +164,16 @@ def _args(**k):
 
 def test_select_units():
     u = v5.select_units(_args(scopes='Blue,18MHz', weightings='R075'))
-    assert v5.STAGES == ('stage', 'coadd', 'pkcorr', 'caveat', 'fill', 'render', 'content')    # spec 3.1
-    assert u == [(s, 'Blue', 'R075') for s in v5.STAGES] + [(s, '18MHz', 'R075') for s in ('stage', 'coadd', 'pkcorr', 'fill', 'render',
-                                                                                             'content')], u
+    assert v5.STAGES == ('stage', 'coadd', 'pkcorr', 'caveat', 'fill', 'render', 'content', 'conform', 'tables')    # spec 3.1
+    per = [s for s in v5.STAGES if s != 'tables']
+    assert u == [(s, 'Blue', 'R075') for s in per] + [(s, '18MHz', 'R075') for s in per if s != 'caveat'] + [('tables', None, None)], u
+    assert v5.select_units(_args(scopes='Blue', weightings='R075', stages='tables')) == [('tables', None, None)]
+    assert v5.select_units(_args(scopes='Blue', weightings='R0', stages='content,conform')) == [('content', 'Blue', 'R0'),
+                                                                                               ('conform', 'Blue', 'R0')]
     assert v5.select_units(_args(scopes='Full', stages='fill,coadd')) == [('coadd', 'Full', 'R075'), ('fill', 'Full', 'R075'),
                                                                          ('coadd', 'Full', 'R0'), ('fill', 'Full', 'R0')]
     assert [x[0] for x in v5.select_units(_args(scopes='Blue', weightings='R0', from_stage='caveat', until_stage='fill'))] == ['caveat', 'fill']
-    assert 'unknown v5 stage' in _raises(ValueError, v5.select_units, _args(stages='conform'))
+    assert 'unknown v5 stage' in _raises(ValueError, v5.select_units, _args(stages='push'))
     assert 'unknown scope' in _raises(ValueError, v5.select_units, _args(scopes='Purple'))
     assert 'unknown weighting' in _raises(ValueError, v5.select_units, _args(weightings='R05'))
 
@@ -296,7 +300,8 @@ def _fake_engine(calls, skip=()):
         names = ([f'healpix_{stem}{tag}_jybeam_nside{m.NSIDE}.fits', f'healpix_PBeff_{stem}{tag}_nside{m.NSIDE}.fits'] if domain == 'jybeam'
                  else [f'healpix_{stem}{tag}_jysr_nside{m.NSIDE}.fits', f'healpix_PSF_{stem}{tag}_nside{m.NSIDE}.fits'])
         for i, n in enumerate(names):
-            _hpx(os.path.join(out_dir, n), np.arange(12) + i + (10 if domain == 'jybeam' else 0), FREQ=7.0e7)
+            _hpx(os.path.join(out_dir, n), np.arange(12) + i + (10 if domain == 'jybeam' else 0), FREQ=7.0e7,
+                 **({} if i else {'BUNIT': 'Jy/beam' if domain == 'jybeam' else 'Jy/sr'}))     # the engine's BUNIT (coadd_jysr 290)
             print(f'WROTE {os.path.join(out_dir, n)}', flush=True)
         return None, None
     m.coadd_jysr = coadd_jysr
@@ -597,24 +602,30 @@ def test_tilefill_mosaic_out():
     d = _tmp('mo_')
     try:
         mo, w = os.path.join(d, 'mos'), os.path.join(d, 'w')
-        assert 'no done v5 fill unit' in _raises(TF.TilefillRefusal, HS.v5_mosaic_pair, mo, 'Blue', 'R075', w, {})
+        assert 'no done v5 conform unit' in _raises(TF.TilefillRefusal, HS.v5_mosaic_pair, mo, 'Blue', 'R075', w, {})
         P = v5.paths(mo, 'Blue', 'R075')
-        _hpx(P['unfilled_jysr'], np.zeros(12))
-        _hpx(P['filled_jysr'], np.ones(12), TPFILL=True)
+        cj = os.path.join(P['conform'], 'Blue', 'I', 'healpix', ARCH_JYSR)            # the conformed pair (the archived names)
+        cu = os.path.join(P['conform'], 'unfilled', 'Blue', 'I', 'healpix', ARCH_JYSR)
+        _hpx(cu, np.zeros(12))
+        _hpx(cj, np.ones(12), TPFILL=True)
+        _hpx(P['filled_jysr'], np.ones(12), TPFILL=True)                              # the fill stage's work file: not read
         os.makedirs(os.path.dirname(P['tiles']))
         json.dump(dict(tiles=[dict(lst=lst, source='pinned', md5=f'm{lst}') for lst in LSTS]), open(P['tiles'], 'w'))
         run = _run(mo)
-        with run.unit(v5.unit_name('fill', 'Blue', 'R075')) as u:
-            u.meta['md5'] = {'filled_jysr': _md5f(P['filled_jysr']), 'unfilled_jysr': _md5f(P['unfilled_jysr'])}
-            u.meta['tiles_md5'] = _md5f(P['tiles'])
+        with run.unit(v5.unit_name('fill', 'Blue', 'R075')) as u:                     # a done fill unit is not enough
             u.add_output(P['filled_jysr'], 'csv_table', test=False)
+        assert 'no done v5 conform unit' in _raises(TF.TilefillRefusal, HS.v5_mosaic_pair, mo, 'Blue', 'R075', w, {})
+        with run.unit(v5.unit_name('conform', 'Blue', 'R075')) as u:
+            u.meta['products'] = {'jysr': {'path': cj, 'md5': _md5f(cj)}, 'unfilled_jysr': {'path': cu, 'md5': _md5f(cu)}}
+            u.meta['tiles_md5'] = _md5f(P['tiles'])
+            u.add_output(cj, 'csv_table', test=False)
         want = {lst: f'm{lst}' for lst in LSTS}
 
         def src(out_root, lst, scope, w_, rows, mode, plan_only=False, need_pb=True):
             assert plan_only and need_pb is False
             return dict(src={'pbcorr': ('p', 'n', want[lst] if mode == 'pinned' else 'rebuilt')})
         with _patched((HS, 'tilefill_source', src)):
-            assert HS.v5_mosaic_pair(mo, 'Blue', 'R075', w, {})[:2] == (P['filled_jysr'], P['unfilled_jysr'])
+            assert HS.v5_mosaic_pair(mo, 'Blue', 'R075', w, {}) == (cj, cu, _md5f(cj), _md5f(cu))
             want['06h'] = 'other'                                        # the installed master of 06h is not the mosaic's tile
             assert '06h' in _raises(TF.TilefillRefusal, HS.v5_mosaic_pair, mo, 'Blue', 'R075', w, {})
             want['06h'] = 'm06h'
@@ -632,9 +643,9 @@ def test_tilefill_mosaic_out():
         HS._FIELDS.clear()
         with _patched((TF, 'band_increment', bi), (HS, 'tilefill_source', src)):
             r = HS.tilefill_field(w, 'Blue', 'R075', {}, mo)
-        assert r['result'] == 'PASS' and got == [(P['unfilled_jysr'], P['filled_jysr'])], r
+        assert r['result'] == 'PASS' and got == [(cu, cj)], r
         assert os.path.basename(r['out']).startswith('field_Blue_R075_v5-') and r['out'].endswith('.fits'), r['out']   # its own name
-        with open(P['unfilled_jysr'], 'ab') as f:
+        with open(cu, 'ab') as f:
             f.write(b'\0' * 2880)
         with _patched((HS, 'tilefill_source', src)):
             assert 'HG13' in _raises(TF.TilefillRefusal, HS.v5_mosaic_pair, mo, 'Blue', 'R075', w, {})
@@ -936,6 +947,40 @@ def test_curve_map_and_catalog_reader():
         shutil.rmtree(d, ignore_errors=True)
 
 
+def test_audit_mosaic_caveat_table():
+    """The archive audit reads a HEALPix table without a SIGNAL column (the caveat map: LEVEL, TAPERONLY) and still finds an
+    all-NaN map; a SIGNAL map is read from SIGNAL."""
+    from astropy.io import fits
+    from exopipe.phase3.lib.archive.push import audit_mosaic
+    d = _tmp('audcav_')
+    try:
+        name = 'Blue_I_deep_Taper_Robust-0.75_pbcorr_coadd_lsrecon_mosaic_feather_lsfill_caveat_allsky_20241218-20260419_N024.fits'
+        cards = dict(PBCORR=True, NSTACK=24, **{'DATE-OBS': '2024-12-18T00:00:00', 'DATE-END': '2026-04-19T00:00:00'})
+        def write(cols, path):
+            hdu = fits.BinTableHDU.from_columns([fits.Column(name=k, format='E', array=v) for k, v in cols])
+            for k, v in cards.items():
+                hdu.header[k] = v
+            fits.HDUList([fits.PrimaryHDU(), hdu]).writeto(path, overwrite=True)
+        ok = os.path.join(d, 'ok')
+        os.makedirs(ok)
+        write([('LEVEL', np.array([0, 1, 2] * 4, np.float32)), ('TAPERONLY', np.zeros(12, np.float32))], os.path.join(ok, name))
+        assert audit_mosaic(os.path.join(ok, name)) == [], audit_mosaic(os.path.join(ok, name))
+        nan = os.path.join(d, 'nan')
+        os.makedirs(nan)
+        write([('LEVEL', np.full(12, np.nan, np.float32)), ('TAPERONLY', np.zeros(12, np.float32))], os.path.join(nan, name))
+        assert audit_mosaic(os.path.join(nan, name)) == ['no finite pixel'], audit_mosaic(os.path.join(nan, name))
+        sig = os.path.join(d, 'sig')
+        os.makedirs(sig)
+        write([('TAPERONLY', np.full(12, np.nan, np.float32)), ('SIGNAL', np.ones(12, np.float32))], os.path.join(sig, name))
+        assert audit_mosaic(os.path.join(sig, name)) == [], audit_mosaic(os.path.join(sig, name))   # SIGNAL wins over column 1
+        oth = os.path.join(d, 'oth')                                        # any other table: refused, not read vacuously
+        os.makedirs(oth)
+        write([('PIXEL', np.arange(12, dtype=np.float32)), ('VALUE', np.full(12, np.nan, np.float32))], os.path.join(oth, name))
+        assert audit_mosaic(os.path.join(oth, name)) == ["no SIGNAL or LEVEL column ['PIXEL', 'VALUE']"], audit_mosaic(os.path.join(oth, name))
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def test_pkcorr_and_content_file_tests():
     d = _tmp('ft7b_')
     try:
@@ -973,6 +1018,372 @@ def test_pkcorr_and_content_file_tests():
         assert not T5.content_passes(cp, n_tiles=24)[0]
         json.dump({'jysr': dict(_report(), provenance_matches_tiles=True)}, open(cp, 'w'))
         assert not T5.content_passes(cp, n_tiles=24)[0]                  # a domain missing
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+
+# ---- PR-7c: conform and tables ----------------------------------------------------------------------------------------------------
+
+ARCH_JYSR = 'Blue_I_deep_Taper_Robust-0.75_pbcorr_coadd_lsrecon_mosaic_jysr_feather_lsfill_allsky_20241218-20260419_N024.fits'
+ARCH_NAMES = {   # the archived V5 Blue Taper R-0.75 products (mosaic/Run_HYBRID_20241218-20260419/Blue/I/<sub>/), listed 2026-11-18
+    ('healpix', 'Blue_I_deep_Taper_Robust-0.75_coadd_lsrecon_mosaic_feather_lsfill_pbmap_allsky_20241218-20260419_N024.fits'),
+    ('healpix', 'Blue_I_deep_Taper_Robust-0.75_coadd_lsrecon_mosaic_jybeam_feather_lsfill_allsky_20241218-20260419_N024.fits'),
+    ('healpix', 'Blue_I_deep_Taper_Robust-0.75_pbcorr_coadd_lsrecon_mosaic_feather_lsfill_caveat_allsky_20241218-20260419_N024.fits'),
+    ('healpix', 'Blue_I_deep_Taper_Robust-0.75_pbcorr_coadd_lsrecon_mosaic_feather_lsfill_pkcorr_allsky_20241218-20260419_N024.fits'),
+    ('healpix', 'Blue_I_deep_Taper_Robust-0.75_pbcorr_coadd_lsrecon_mosaic_feather_lsfill_psfmap_allsky_20241218-20260419_N024.fits'),
+    ('healpix', 'Blue_I_deep_Taper_Robust-0.75_pbcorr_coadd_lsrecon_mosaic_jysr_feather_lsfill_allsky_20241218-20260419_N024.fits'),
+    ('mollweide', 'Blue_I_deep_Taper_Robust-0.75_coadd_lsrecon_mosaic_jybeam_feather_lsfill_molrender_allsky_20241218-20260419_N024.fits'),
+    ('mollweide', 'Blue_I_deep_Taper_Robust-0.75_pbcorr_coadd_lsrecon_mosaic_jysr_feather_lsfill_molrender_allsky_20241218-20260419_N024.fits'),
+    ('radec', 'Blue_I_deep_Taper_Robust-0.75_coadd_lsrecon_mosaic_jybeam_feather_lsfill_carrender_allsky_20241218-20260419_N024.fits'),
+    ('radec', 'Blue_I_deep_Taper_Robust-0.75_pbcorr_coadd_lsrecon_mosaic_jysr_feather_lsfill_carrender_allsky_20241218-20260419_N024.fits')}
+
+
+def test_conform_names_and_rows():
+    from astropy.time import Time
+    from exopipe.phase3.lib.mosaic import conform_v5 as CF
+    P = v5.paths('/o', 'Blue', 'R075')
+    t0, t1 = Time('2024-12-18T03:04:12.100').mjd, Time('2026-04-19T07:03:34.360').mjd
+    nm = CF.names('Blue', 'R075', P, True, t0, t1, 24)
+    assert {(sub, n) for k, (_s, sub, n, _p) in nm.items() if sub != 'unfilled'} == ARCH_NAMES, sorted(nm)
+    assert (nm['unfilled_jysr'][1:3], nm['unfilled_jybeam'][1:3]) == (('unfilled', nm['jysr'][2]), ('unfilled', nm['jybeam'][2]))
+    assert nm['unfilled_jysr'][0] == P['unfilled_jysr'] and nm['unfilled_jybeam'][0] == P['unfilled_jybeam']
+    assert nm['psfmap'][0] == P['unfilled_psf'] and nm['pbmap'][0] == P['unfilled_pbeff'] and nm['jysr'][0] == P['filled_jysr']
+    assert [k for k, v in nm.items() if v[3]] == ['jysr', 'jysr_mollweide', 'jysr_radec', 'psfmap', 'pkcorr', 'caveat',
+                                                  'unfilled_jysr']   # PBCORR
+    assert 'caveat' not in CF.names('18MHz', 'R0', v5.paths('/o', '18MHz', 'R0'), False, t0, t1, 24)
+    assert CF.names('18MHz', 'R0', v5.paths('/o', '18MHz', 'R0'), False, t0, t1, 24)['jysr'][2] == \
+        '18MHz_I_deep_Taper_Robust+0.0_pbcorr_coadd_lsrecon_mosaic_jysr_feather_lsfill_allsky_20241218-20260419_N024.fits'
+    # the table rows of production's formats (archived V5 tables, Blue Taper R-0.75)
+    fm = {'donor_mhz': 74, 's': 1.0522906851499552, 'test': {'large_scale_rel_filled': 0.0011883698366225858,
+          'large_scale_rel_unfilled': 0.2925097595796858, 'highpass_rel': 0.01025648869260899,
+          'highpass_abs_over_map_rms': 0.06163105975005245, 'result': 'PASS'}}
+    assert ','.join(CF.tpfill_row('X', fm)[1:]) == '74,1.05229,0.0011883698366225858,0.2925097595796858,0.01025648869260899,0.06163105975005245,PASS'
+    d = _tmp('cfrows_')
+    try:
+        mk = lambda dom, med, p05, p95: dict(map=f'/w/healpix_I_deep_Taper_R075_Blue_lsfill_{dom}_nside2048.fits', variant='Taper_R075',  # noqa: E731
+                                              band='Blue', domain=dom, n_tiles=24, n_sources=200, median_ratio=med, p05=p05, p95=p95,
+                                              frac_within_5pct=1.0, result='PASS')
+        cj = os.path.join(d, 'c.json')
+        json.dump({'jysr': mk('jysr', 0.9979303613242603, 0.981671171058413, 1.0156599100788055),
+                   'jybeam': mk('jybeam', 0.9982441914025694, 0.9815171146845747, 1.0160787733402987)}, open(cj, 'w'))
+        assert [','.join(r) for r in CF.summary_rows(cj)] == [
+            'healpix_I_deep_Taper_R075_Blue_lsfill_jybeam_nside2048.fits,Taper_R075,Blue,jybeam,24,200,0.9982441914025694,0.9815171146845747,'
+            '1.0160787733402987,1.0,PASS',
+            'healpix_I_deep_Taper_R075_Blue_lsfill_jysr_nside2048.fits,Taper_R075,Blue,jysr,24,200,0.9979303613242603,0.981671171058413,'
+            '1.0156599100788055,1.0,PASS']
+        keys = [CF.summary_sort(['', v, b, dom]) for v in ('Taper_R0', 'Taper_R075') for b in ('Blue', '82MHz', '18MHz') for dom in ('jysr', 'jybeam')]
+        assert sorted(keys)[:3] == ['Taper_R075_18MHz_lsfill_jybeam.json', 'Taper_R075_18MHz_lsfill_jysr.json',
+                                    'Taper_R075_82MHz_lsfill_jybeam.json']           # R-0.75 first; sub-bands before Blue
+        cv = os.path.join(d, 'caveats_Taper_R075_Blue_lsfill.csv')
+        open(cv, 'w').write('lst,kind,staged,sigma_apparent\n00h,hybrid,/q/T00.fits,0.27\n01h,taper_only,,0.3\n')
+        head, rows = CF.caveat_rows(cv, 'Blue')
+        assert head == ['lst', 'kind', 'staged', 'sigma_apparent'] and rows[0][2] == CF.prov_file('00h', 'Blue', 'T00.fits') and rows[1][2] == ''
+        assert CF.prov_file('00h', 'Blue', 'T00.fits') == os.path.join(CFG.hybrid.ARCHIVE_HYBRID, '00h', 'Blue', 'T00.fits')
+        a = [['Taper_R0', 'Blue', '-30.0'], ['Taper_R075', 'Blue', '-30.0'], ['Taper_R075', 'Blue', '-28.0'], ['Taper_R075', '18MHz', '-30.0']]
+        m = CF.merge(a, [['Taper_R075', 'Blue', '-30.0', 'new']], lambda x: (x[0], x[1]), CF.curve_sort)
+        assert m == [['Taper_R075', '18MHz', '-30.0'], ['Taper_R075', 'Blue', '-30.0', 'new'], ['Taper_R0', 'Blue', '-30.0']], m
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def _time_cards(i):
+    from astropy.time import Time
+    t0 = 60662.0 + 20 * i
+    return {'MJD-OBS': t0, 'MJD-MID': t0 + 5, 'DATE-END': Time(t0 + 10 + i, format='mjd').isot, 'INTTIME': 1000.0 + i,
+            'GITTAG': f'g{i}', 'BMAJ': 0.1 + 0.001 * i, 'BMIN': 0.09 + 0.001 * i}
+
+
+def test_conform_membership():
+    from astropy.time import Time
+    from exopipe.phase3.lib.mosaic import conform_v5 as CF
+    d = _tmp('cfmem_')
+    try:
+        rng = np.random.default_rng(3)
+        tiles, sig = [], []
+        for i, lst in enumerate(('02h', '00h', '01h')):
+            data = rng.normal(0, 1 + i, (12, 12)).astype(np.float32)
+            pb = np.full((12, 12), 0.5, np.float32)
+            p = _img(os.path.join(d, f'T{lst}.fits'), data, **_time_cards(i))
+            tiles.append(dict(lst=lst, path=p, pb=_img(os.path.join(d, f'PB{lst}.fits'), pb), prodname=f'N{lst}.fits'))
+            app = (np.nan_to_num(data) * pb).ravel()
+            sig.append(1.4826 * np.median(np.abs(app - np.median(app))))
+        rows, t0, t1, itt, beam = CF.membership(tiles, 'Blue', 0.1)
+        assert [r['FILE'] for r in rows] == [CF.prov_file(x, 'Blue', f'N{x}.fits') for x in ('00h', '01h', '02h')]   # LST order
+        assert np.allclose([r['WEIGHT'] for r in rows], [1 / sig[1] ** 2, 1 / sig[2] ** 2, 1 / sig[0] ** 2], rtol=1e-6)
+        assert [r['P1RUN'] for r in rows] == ['g1', 'g2', 'g0'] and t0 == 60662.0
+        assert abs(t1 - Time(_time_cards(2)['DATE-END']).mjd) < 1e-9 and itt == 3003.0 and beam == (0.101, 0.091, 0.0)
+        # the build's guards: a flat tile, fewer than 100 pixels above the PB floor, no DATE-END
+        _img(tiles[0]['path'], np.full((12, 12), 2.0, np.float32), **_time_cards(0))
+        assert 'flat or corrupt' in _raises(CF.ConformRefusal, CF.membership, tiles, 'Blue', 0.1)
+        _img(tiles[0]['path'], rng.normal(0, 1, (12, 12)).astype(np.float32), **_time_cards(0))
+        assert 'finite apparent pixels' in _raises(CF.ConformRefusal, CF.membership, tiles, 'Blue', 0.6)
+        c = _time_cards(0)
+        c.pop('DATE-END')
+        _img(tiles[0]['path'], rng.normal(0, 1, (12, 12)).astype(np.float32), **c)
+        assert 'R-07' in _raises(CF.ConformRefusal, CF.membership, tiles, 'Blue', 0.1)
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def _chain(d):
+    """A whole v5 unit (Blue R075, NSIDE 1) through stage .. content with stand-ins whose files the conform can stamp: tiles with noise
+    and time cards, maps with their BUNIT, a realistic PKCORR curve, a caveat table, a fill test of the archived columns."""
+    from exopipe.phase3.lib.mosaic import caveat as CV
+    from exopipe.phase3.lib.mosaic import content as CT
+    from exopipe.phase3.lib.mosaic import pkcorr as PK
+    rng = np.random.default_rng(5)
+    tiles = {}
+    for i, lst in enumerate(LSTS):
+        p = _img(os.path.join(d, 'Q', TILE.format(lst=lst)), rng.normal(0, 1, (12, 12)).astype(np.float32), **_time_cards(i))
+        tiles[lst] = (p, _md5f(p))
+        _img(os.path.join(d, 'M', lst, 'Blue', 'PB_deep_R075_Blue.fits'), np.full((12, 12), 0.5, np.float32))
+    out = os.path.join(d, 'out')
+    assert _stage(d, out, tiles).status == 'done'
+    P = v5.paths(out, 'Blue', 'R075')
+    work = os.path.join(d, 'work')
+    eng = _fake_engine([])
+    with _fake_module('exopipe.phase3.lib.mosaic.coadd_jysr', eng), _no_content_tests():
+        assert _unit(out, 'coadd', v5.coadd_unit, work).status == 'done'
+    for k, unit in (('psf', 'sr'), ('pbeff', '')):          # the engine's cards on its maps (HDU 1)
+        with fits.open(P[f'unfilled_{k}'], mode='update', memmap=False) as h:
+            h[1].header['BUNIT'] = unit
+    co = record.load_record(out, v5.STEP, v5.unit_name('coadd', 'Blue', 'R075'))
+    co['meta']['md5'].update(psf=_md5f(P['unfilled_psf']), pbeff=_md5f(P['unfilled_pbeff']))
+    json.dump(co, open(record.record_path(out, v5.STEP, v5.unit_name('coadd', 'Blue', 'R075')), 'w'))
+
+    def run_band(root, band, variant, outd, lsts, rounds, tag, mos_c, psf, scratch, nside, record_dir=None):
+        nm = PK.names(variant, band, tag, nside)
+        Q = {k: os.path.join(outd, f) for k, f in nm.items()}
+        _hpx(Q['map'], np.full(12, 0.9), NSIDE=nside, ORDERING='RING', BUNIT='', SINJ=50.0, NROUNDS=rounds)
+        with open(Q['curve'], 'w', newline='') as f:
+            f.write('dec,rec_median,rec_mad,n,n_rounds\r\n-30.0,0.8492,0.0768,5,5\r\n-28.0,0.85,0.07,5,5\r\n')
+        open(Q['recovery'], 'w').write('x\n')
+        res = dict(rounds=rounds, rec_median=0.9, rec_min=0.9, rec_max=0.9, ra_scatter_median_mad=0.01, map=os.path.join(record_dir, nm['map']),
+                   test_pkcorr=dict(verdict='pass', nodes=60, missing_or_few_rounds=[], out_of_range=[], max_map_err=0.0))
+        json.dump(res, open(Q['json'], 'w'))
+        return Q, res
+
+    def cav(tl, variant, scope, out_dir, pbeff_mosaic, nside=None):
+        mp, tp = (os.path.join(out_dir, x) for x in CV.names(variant, scope, 128))
+        _hpx(mp, np.zeros(12), NSIDE=128)
+        with open(tp, 'w', newline='') as f:
+            f.write('lst,kind,staged,sigma_apparent\r\n' + ''.join(f'{t["lst"]},hybrid,{t["path"]},0.2\r\n' for t in tl))
+        return dict(map=mp, table=tp, n_hybrid=len(tl), n_taper_only=0, taper_only=[], test={'verdict': 'pass'})
+
+    def fill_file(src, outp):
+        sig = np.asarray(fits.getdata(src, 1)['SIGNAL']) + 1.0
+        c = _cards(src)
+        _hpx(outp, sig, c, FREQ=7.0e7, BUNIT='Jy/sr', FEATHER=True, NSIDE=1, **c)
+        return dict(src=src, src_md5=_md5f(src), out=outp, out_md5=_md5f(outp), donor_mhz=70, s=0.711111,
+                    test={'large_scale_rel_filled': 0.001, 'large_scale_rel_unfilled': 0.3, 'highpass_rel': 0.01,
+                          'highpass_abs_over_map_rms': 0.06, 'result': 'PASS'}, result='PASS')
+
+    def fill_jybeam_file(jb, ju, jf, psf, pbeff, outp):
+        sig = np.asarray(fits.getdata(jb, 1)['SIGNAL']) + 2.0
+        c = dict(_cards(jb), TPJBCONV='jybeam/jysr measured')
+        _hpx(outp, sig, c, FREQ=7.0e7, BUNIT='Jy/beam', NSIDE=1, PSFMAP=os.path.basename(psf), **c)
+        return dict(src=jb, src_md5=_md5f(jb), out=outp, out_md5=_md5f(outp), identity_rel=0.5, k_median=1.0, k_p05=0.98, k_p95=1.02,
+                    n_bright=9, result='PASS')
+    bp = types.ModuleType('fake_band_products')
+
+    def build(variant, hpx_dir, suffix, outd, bands=(), moll_W=0, car_cdelt=0, dec_cut=None):
+        for b in bands:
+            for sfx in ('Mollweide', 'RADec'):
+                _img(os.path.join(outd, f'{b}_{variant}{suffix}_{sfx}.fits'), BUNIT='Jy/sr' if 'jysr' in suffix else 'Jy/beam')
+    bp.build = build
+
+    def ct_run(maps, root, variant, band, parents):
+        listed = json.load(open(P['tiles']))['tiles']
+        read = [dict(lst=r['lst'], file=os.path.realpath(r['path']), pb=os.path.realpath(r['pb']), symlink=True) for r in listed]
+        out_ = {}
+        for dom, map_path in maps.items():
+            r = _report()
+            r.pop('provenance')
+            r.update(map=map_path, domain=dom, n_sources=200, median_ratio=0.998, frac_within_5pct=1.0, read=read)
+            out_[dom] = r
+        return out_
+    par = os.path.join(d, 'parents')
+    os.makedirs(par, exist_ok=True)
+    open(os.path.join(par, 'master_R075_00h_Blue.gaul.csv'), 'w').write('# none\n')
+    with _fake_module('exopipe.phase3.lib.mosaic.coadd_jysr', eng), _no_content_tests(), _fake_module(
+            'exopipe.phase3.lib.mosaic.band_products', bp), _patched(
+            (CV, 'caveat_map', cav), (MF, 'fill_file', fill_file), (MF, 'fill_jybeam_file', fill_jybeam_file), (PK, 'run_band', run_band),
+            (PK, 'read_map', _hpx_read), (CT, 'run', ct_run), (CFG.mosaic_content, 'PARENTS', par)):
+        for st, fn, a in (('pkcorr', v5.pkcorr_unit, (work,)), ('caveat', v5.caveat_unit, ()), ('fill', v5.fill_unit, ()),
+                          ('render', v5.render_unit, (work,)), ('content', v5.content_unit, (work,))):
+            u = _unit(out, st, fn, *a)
+            assert u.status == 'done', (st, u.status, u.reason)
+    return out, tiles
+
+
+def _arch_tables(root, blue_r075=None):
+    """A stand-in archived V5 tables directory: every scope of mosaic_v5.SCOPES in both weightings, all PASS (production's row order)."""
+    from exopipe.phase3.lib.mosaic import conform_v5 as CF
+    td = os.path.join(root, 'tables')
+    os.makedirs(td, exist_ok=True)
+    V5 = CFG.mosaic_v5
+    vb = [(V5.VARIANT_OF[w], sc) for w in V5.WEIGHTINGS for sc in V5.SCOPES]
+    rows = [[f'healpix_I_deep_{v}_{b}_lsfill_{dom}_nside2048.fits', v, b, dom, '24', '200', '0.999', '0.98', '1.02', '1.0', 'PASS']
+            for v, b in vb for dom in ('jybeam', 'jysr')]
+    CF._write(os.path.join(td, 'summary.csv'), CF.SUMMARY_COLS, sorted(rows, key=CF.summary_sort))
+    rows = [[v, b, dec, '0.85', '0.07', '5', '5'] for v, b in vb for dec in ('-30.0', '-28.0')]
+    CF._write(os.path.join(td, 'pkcorr_curves.csv'), CF.CURVE_COLS, sorted(rows, key=CF.curve_sort))
+    for w in V5.WEIGHTINGS:
+        tok = 'Robust-0.75' if w == 'R075' else 'Robust+0.0'
+        rows = [[f'{sc}_I_deep_Taper_{tok}_pbcorr_coadd_lsrecon_mosaic_jysr_feather_lsfill_tpfill_allsky_20241218-20251029_N024.fits', '74',
+                 '1.05', '0.001', '0.29', '0.01', '0.06', 'PASS'] for sc in V5.SCOPES]
+        CF._write(os.path.join(td, f'summary_tpfill_Taper_{w}.csv'), CF.TPFILL_COLS, sorted(rows, key=lambda x: x[0]))
+    for w in V5.WEIGHTINGS:
+        for sc in CFG.hybrid.CAVEAT_SCOPES:
+            CF._write(os.path.join(td, f'caveats_{V5.VARIANT_OF[w]}_{sc}_lsfill.csv'), ('lst', 'kind', 'staged', 'sigma_apparent'),
+                      [['00h', 'hybrid', f'/a/{sc}', '0.1']])
+    CF._write(os.path.join(td, 'taper_only.csv'), CF.TAPER_ONLY_COLS, [])
+    return td
+
+
+def test_conform_and_tables_units():
+    from exopipe.phase3.lib.mosaic import conform_v5 as CF
+    d = _tmp('cf_')
+    try:
+        arun = os.path.join(d, 'ARCH', 'Run_HYBRID_20241218-20260419')
+        with _patched((CFG.mosaic_coadd, 'NSIDE', 1), (CFG.hybrid_tilefill, 'FILLED_MOSAIC_RUN', arun)):
+            out, tiles = _chain(d)
+            P = v5.paths(out, 'Blue', 'R075')
+            eng = _fake_engine([])
+
+            def conform(miss=(), src=None):
+                with _stage_env(d, src or tiles, []), _fake_module('exopipe.phase3.lib.mosaic.coadd_jysr', eng), \
+                        _patched((CF, 'classic_missing', lambda scope: list(miss))):
+                    return _unit(out, 'conform', v5.conform_unit)
+            u = conform()
+            assert u.status == 'done', (u.status, u.reason)
+            assert not [t for t in u.tests if not t['passed']] and sum(t['cls'] == 'mosaic_v5_product' for t in u.tests) >= 12, u.tests
+            staged = {k: x['path'] for k, x in u.meta['products'].items()}
+            assert len(staged) == 12 and all(os.path.dirname(x).startswith(os.path.join(P['conform'], 'Blue', 'I')) for k, x in staged.items()
+                                             if not k.startswith('unfilled'))
+            assert os.path.dirname(staged['unfilled_jysr']) == os.path.join(P['conform'], 'unfilled', 'Blue', 'I', 'healpix')
+            assert os.path.basename(staged['unfilled_jysr']) == os.path.basename(staged['jysr'])
+            with fits.open(staged['unfilled_jybeam'], memmap=False) as h:
+                assert 'TPFILL' not in h[0].header and h[1].header['PSFMAP'] == os.path.basename(staged['psfmap'])
+                assert np.array_equal(h[1].data['SIGNAL'], fits.getdata(P['unfilled_jybeam'], 1)['SIGNAL'])
+            n0 = os.path.basename(staged['jysr'])
+            assert n0.startswith('Blue_I_deep_Taper_Robust-0.75_pbcorr_coadd_lsrecon_mosaic_jysr_feather_lsfill_allsky_') and n0.endswith('_N024.fits')
+            with fits.open(staged['jysr'], memmap=False) as h:
+                h0, h1, pv = h[0].header, h[1].header, h['PROVENANCE'].data
+                assert h0['PRODNAME'] == n0 == h1['PRODNAME'] and h0['NSTACK'] == 24 and 'THERMNOI' not in h0 and h0['BUNIT'] == 'Jy/sr'
+                assert h0['PROVBAS'].startswith('Coadd/') and h0['PROVBAS'].endswith('(Gregg 2026-10-31)') and h0['TPFILL'] is True
+                assert list(pv['FILE']) == [CF.prov_file(x, 'Blue', TILE.format(lst=x)) for x in LSTS]
+                assert ' '.join(h0['HISTORY']).count('Mosaic Run_HYBRID_20241218-20260419: 24 constituent masters') == 1
+                assert np.array_equal(h[1].data['SIGNAL'], fits.getdata(P['filled_jysr'], 1)['SIGNAL'])
+            with fits.open(staged['jybeam'], memmap=False) as h:
+                assert h[1].header['PSFMAP'] == os.path.basename(staged['psfmap']) and h[0].header['PBCORR'] is False
+            for dom in ('jysr', 'jybeam'):                                    # renders carry their filled map's fill cards
+                h1 = fits.getheader(P[f'filled_{dom}'], 1)
+                tp = [k for k in ('TPFILL', 'TPDONOR', 'TPDONMHZ', 'TPSCALE', 'TPLLO', 'TPLHI', 'TPJBCONV') if k in h1]
+                assert 'TPFILL' in tp, tp
+                for r in ('mollweide', 'radec'):
+                    h0 = fits.getheader(staged[f'{dom}_{r}'], 0)
+                    assert all(h0[k] == h1[k] and h0.comments[k] == h1.comments[k] for k in tp), (dom, r, tp)
+            assert u.meta['tables']['tpfill'] == [n0, '70', '0.71111', '0.001', '0.3', '0.01', '0.06', 'PASS']
+            # refusals: a classic Taper map not on Lustre (HG16); the tiles resolved now differ (HG13); a source changed since its stage;
+            # a failed test in an upstream record
+            u = conform(miss=('R0',))
+            assert u.status == 'refused' and 'HG16' in u.reason and not os.path.exists(P['conform']), (u.status, u.reason)
+            u = conform(src=dict(tiles, **{'05h': (tiles['05h'][0], 'f' * 32)}))
+            assert u.status == 'refused' and 'HG13' in u.reason and '05h' in u.reason, (u.status, u.reason)
+            rp = record.record_path(out, v5.STEP, v5.unit_name('pkcorr', 'Blue', 'R075'))
+            keep = open(rp).read()
+            r = json.loads(keep)
+            r['tests'][0]['passed'] = False
+            json.dump(r, open(rp, 'w'))
+            u = conform()
+            assert u.status == 'refused' and 'failed test' in u.reason, (u.status, u.reason)
+            open(rp, 'w').write(keep)
+            with open(P['render_jysr_radec'], 'ab') as f:
+                f.write(b'\0' * 2880)
+            u = conform()
+            assert u.status == 'refused' and 'changed since its stage' in u.reason, (u.status, u.reason)
+            with fits.open(P['render_jysr_radec'], memmap=False) as h:      # back to its recorded bytes
+                h.writeto(P['render_jysr_radec'] + '.x')
+            os.replace(P['render_jysr_radec'] + '.x', P['render_jysr_radec'])
+            rn = record.load_record(out, v5.STEP, v5.unit_name('render', 'Blue', 'R075'))
+            rn['meta']['md5']['jysr_radec'] = _md5f(P['render_jysr_radec'])
+            json.dump(rn, open(record.record_path(out, v5.STEP, v5.unit_name('render', 'Blue', 'R075')), 'w'))
+            assert conform().status == 'done'
+            # tables: the archived rows of the other units unchanged, Blue R075 replaced; a second pass over its own output is a no-op
+            td0 = _arch_tables(arun)
+
+            def tables():
+                run = _run(out)
+                with run.unit(v5.TABLES_UNIT, stage='tables') as u:
+                    v5.tables_unit(u, out)
+                return u
+            u = tables()
+            assert u.status == 'done', (u.status, u.reason)
+            td = v5.tables_dir(out)
+            cav = sorted(f'caveats_{CFG.mosaic_v5.VARIANT_OF[w]}_{sc}_lsfill.csv' for w in CFG.mosaic_v5.WEIGHTINGS
+                         for sc in CFG.hybrid.CAVEAT_SCOPES)
+            assert len(cav) == 14 and sorted(os.listdir(td)) == sorted(cav + ['pkcorr_curves.csv', 'summary.csv', 'summary_tpfill_Taper_R0.csv',
+                                                                             'summary_tpfill_Taper_R075.csv', 'taper_only.csv'])
+            for name in cav:                                                  # the other 13 caveat tables: the archived bytes
+                if name != 'caveats_Taper_R075_Blue_lsfill.csv':
+                    assert open(os.path.join(td, name), 'rb').read() == open(os.path.join(td0, name), 'rb').read(), name
+            for name in ('summary.csv', 'pkcorr_curves.csv', 'summary_tpfill_Taper_R075.csv', 'summary_tpfill_Taper_R0.csv'):
+                a, b = CF._read(os.path.join(td0, name))[1], CF._read(os.path.join(td, name))[1]
+                blue = (lambda x: 'Blue' in x[0] and 'Robust-0.75' in x[0]) if 'tpfill' in name else \
+                    (lambda x: 'Taper_R075' in x and 'Blue' in x)
+                assert [x for x in a if not blue(x)] == [x for x in b if not blue(x)] and len(a) == len(b), name
+                assert [a.index(x) for x in a if blue(x)] == [b.index(x) for x in b if blue(x)], name     # same place in the order
+            assert [x for x in CF._read(os.path.join(td, 'summary_tpfill_Taper_R075.csv'))[1] if x[0].startswith('Blue')][0][0] == n0
+            assert CF._read(os.path.join(td, 'caveats_Taper_R075_Blue_lsfill.csv'))[1][3][2] == CF.prov_file('03h', 'Blue', TILE.format(lst='03h'))
+            assert open(os.path.join(td, 'summary.csv'), 'rb').read().count(b'\r\n') == 77
+            for name in os.listdir(td):
+                shutil.copy2(os.path.join(td, name), os.path.join(td0, name))
+            before = {n: open(os.path.join(td0, n), 'rb').read() for n in os.listdir(td)}
+            assert tables().status == 'done'
+            assert {n: open(os.path.join(td, n), 'rb').read() for n in os.listdir(td)} == before
+            # a missing archived caveat table, of another scope or of the conformed one, refuses
+            for name in ('caveats_Taper_R0_Full_lsfill.csv', 'caveats_Taper_R075_Blue_lsfill.csv'):
+                os.rename(os.path.join(td0, name), os.path.join(td0, name + '.x'))
+                u = tables()
+                assert u.status == 'refused' and name in u.reason and 'is missing' in u.reason and not os.path.exists(td), (u.status, u.reason)
+                os.rename(os.path.join(td0, name + '.x'), os.path.join(td0, name))
+            # completeness and PASS: a scope missing from the archived table, a FAIL row
+            h, rows = CF._read(os.path.join(td0, 'summary.csv'))
+            CF._write(os.path.join(td0, 'summary.csv'), h, [x for x in rows if x[2] != '18MHz' or x[1] != 'Taper_R0'])
+            u = tables()
+            assert u.status == 'refused' and 'no jybeam row of Taper_R0 18MHz' in u.reason and not os.path.exists(td), (u.status, u.reason)
+            CF._write(os.path.join(td0, 'summary.csv'), h, [x[:-1] + (['FAIL'] if x[2] == '23MHz' else [x[-1]]) for x in rows])
+            u = tables()
+            assert u.status == 'refused' and 'FAIL' in u.reason, (u.status, u.reason)
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_classic_missing_skips_quarantine_runs():
+    """HG16: a classic Taper Jy/sr map with a PASS row counts only in a live mosaic run; a quarantine run's copy does not."""
+    from exopipe.phase3.lib.mosaic import conform_v5 as CF
+    d = _tmp('hg16q_')
+    try:
+        arun = os.path.join(d, 'Run_HYBRID_20241218-20260419')
+        os.makedirs(arun)
+
+        def put(run):
+            for w, v in CFG.mosaic_v5.VARIANT_OF.items():
+                tok = f"{v.split('_')[0]}_{'Robust-0.75' if v.endswith('R075') else 'Robust+0.0'}"
+                hp_ = os.path.join(d, run, 'Blue', 'I', 'healpix')
+                os.makedirs(hp_, exist_ok=True)
+                open(os.path.join(hp_, f'Blue_I_deep_{tok}_pbcorr_coadd_lsrecon_mosaic_jysr_feather_allsky_20241218-20251029_N024.fits'),
+                     'w').close()
+            os.makedirs(os.path.join(d, run, 'tables'), exist_ok=True)
+            with open(os.path.join(d, run, 'tables', 'summary.csv'), 'w') as f:
+                f.write('file,variant,band,domain,result\n' + ''.join(f'x,{v},Blue,jysr,PASS\n' for v in CFG.mosaic_v5.VARIANT_OF.values()))
+        with _patched((CFG.hybrid_tilefill, 'FILLED_MOSAIC_RUN', arun)):
+            put('Run_FEATHER3_QUARANTINE_20261109')
+            assert sorted(CF.classic_missing('Blue')) == sorted(CFG.mosaic_v5.VARIANT_OF)
+            put('Run_FEATHER3_20261109')
+            assert CF.classic_missing('Blue') == []
     finally:
         shutil.rmtree(d, ignore_errors=True)
 

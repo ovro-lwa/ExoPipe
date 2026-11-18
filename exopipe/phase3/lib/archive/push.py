@@ -81,8 +81,16 @@ def audit_mosaic(dst):
             for k in ('DATE-OBS', 'DATE-END'):
                 if not hdr_all.get(k):
                     p.append(f'no {k}')
-            arr = dh.section[::stride] if dh is h[0] else dh.data['SIGNAL'][::stride]   # an image reads only the sampled rows
-            if not np.isfinite(np.asarray(arr)).any():
+            col = None
+            if dh is h[0]:
+                arr = dh.section[::stride]                         # an image reads only the sampled rows
+            else:                                                  # a HEALPix map's SIGNAL; the caveat map's LEVEL (it holds
+                cols = dh.columns.names                            # LEVEL and TAPERONLY, as production's); no other column
+                col = next((c for c in ('SIGNAL', 'LEVEL') if c in cols), None)
+                arr = dh.data[col][::stride] if col else None
+            if dh is not h[0] and col is None:
+                p.append(f'no SIGNAL or LEVEL column {list(dh.columns.names)[:4]}')
+            elif not np.isfinite(np.asarray(arr)).any():
                 p.append('no finite pixel')
     except Exception as e:
         p.append(f'unreadable {str(e)[:60]}')

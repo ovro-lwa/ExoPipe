@@ -247,9 +247,25 @@ class mosaic_v5(_Section):
     #   tile; hybrid_unit.RULED_TAPER_ONLY is empty, so a missing tile refuses the unit (no Taper-only stand-in)
     RENDER_SCOPES = mosaic.SCOPES
     #   V5 holds Mollweide and RA/Dec renders for every scope (19 x 2 weightings x 2 domains x 2 projections)
+    SUFFIX_PROC = ('lsrecon', 'lsfill')
+    #   MC SUFFIX_PROC v5 ({'_lsfill': ['lsrecon', 'lsfill']}): the name tokens conform adds to mosaic_conform.BASE_PROC; the
+    #   archived Run_HYBRID names carry them (lsfill = the large scales include the zero spacings, L3427)
+    PROV_FILE = '{archive_hybrid}/{lst}/{scope}/{name}'
+    #   a PROVENANCE row's FILE: the archived hybrid master of the tile's name (MC 242 with MOSAIC_V5_PROV_FILE
+    #   '.../Coadd/Run_NOTAPER_HYBRID_20261028/{lst}/{band}/{real}'): the mosaic is built from the UNFILLED tiles, whose filled
+    #   namesakes the archive holds since 2026-11-11 (L3427); {archive_hybrid} = hybrid.ARCHIVE_HYBRID
+    PROVBAS = ('{archive_hybrid} hybrid NoTaper masters (Taper + reconstructed large scales) before the zero-spacing fill, '
+               'beam-corrected; symlink stage, exopipe3 mosaic --generation v5; weighting map = the full PB')
+    #   MC 127-128 restated for v2 (production's names its staging tool, notaper_largescale stage-mosaic); {archive_hybrid} =
+    #   hybrid.ARCHIVE_HYBRID relative to paths.PHASE3_ARCHIVE_ROOT
+    PROVBAS_CAVEAT = '; 64-82 MHz / Blue / Full: level and small-scale tests recorded caveats - see the caveat map (Gregg 2026-10-31)'
+    #   MC 133-134 for hybrid.CAVEAT_SCOPES, less 'Taper-only units (refused NoTaper stack) = plain Taper master': HG14 admits none
+    BEAMNOTE = 'scalar beam = median constituent master header; per-pixel Omega_eff in the psfmap product'
+    #   = mosaic_conform.BEAMNOTE (MC 257 takes the beams from the master headers; production's v5 text names a repair ledger)
     RULED = {'REQUIRE_N_LSTS': 'R-GREGG-20261108-MIN-HYBRID-EVERY-CELL-BOTH-ROBUSTS',
-             'TAG': 'R-GREGG-20261111-KEEP-LSFILL-NAME-FOR-ZERO-SPACING-MOSAICS'}
-    PROTECTED_KEYS = ('VARIANT_OF', 'TAG')
+             'TAG': 'R-GREGG-20261111-KEEP-LSFILL-NAME-FOR-ZERO-SPACING-MOSAICS',
+             'SUFFIX_PROC': 'R-GREGG-20261111-KEEP-LSFILL-NAME-FOR-ZERO-SPACING-MOSAICS'}
+    PROTECTED_KEYS = ('VARIANT_OF', 'TAG', 'PROV_FILE')
 
 
 class mosaic_caveat(_Section):
