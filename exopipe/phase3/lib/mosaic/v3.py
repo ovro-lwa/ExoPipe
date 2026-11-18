@@ -10,13 +10,16 @@ Stokes V maps; --products). Production: mosaic_v3_20261022/ step2_stage.sh (STG 
           pb_apply.wideband_pb from that weighting's Taper master and written with STG's header -> stage/pb/<LST>/PB_deep[_R075]_<S>.fits
           [mosaic_weight_pb], stage/tiles.json [mosaic_v3_tiles]
           ssub-rst8: the plain job's tiles with, at each LST the selection names for (scope, variant), the archived striation-
-          corrected master (mosaic_v3.SSUB_PATTERN, exactly one; G1 on its own nights, G8); weighting maps = the plain job's (S2B);
-          refuses unless every selected LST was substituted -> stage/tiles.json
+          corrected master (mosaic_v3.SSUB_PATTERN, exactly one; G1 on its own nights, G8; its nights must be the plain master's);
+          weighting maps = the plain job's (S2B); refuses unless every selected LST was substituted -> stage/tiles.json
           Vclean: per LST the archived cleaned Stokes V master (mosaic_v3.VCLEAN_PATTERN, exactly one; G1, G8), weighted by the maps
-          of the plain mosaic_v3.VCLEAN_VARIANT job (the Robust 0 map serves Stokes V: coadd_jysr._paths) -> stage/tiles.json
+          of the plain mosaic_v3.VCLEAN_VARIANT job (the Robust 0 map serves Stokes V: coadd_jysr._paths); LSTs whose V and I
+          masters hold other nights are recorded (meta nights_differ_from_weighting_master). Only the plain masters that stay tiles
+          and the weighting maps are re-verified. A substituted job's stage needs the plain job's stage (refused before any unit).
   coadd   a node-local link tree of the staged tiles under the engine's names (coadd_jysr._paths), then coadd_jysr in process with the
           mosaic_coadd globals, product I or Vclean, tag '' or '_ssub-rst8', Jy/sr and Jy/beam. Engine verdicts: a MISSING tile
-          refuses (mosaic.MISSING_TILE_ACTION); a guard skip follows mosaic.TILE_GUARD_ACTION (recorded); no tile added refuses (G10).
+          refuses (mosaic.MISSING_TILE_ACTION); a tile the engine guard skips refuses (G9: every staged LST a tile); G1 is re-checked
+          against today's data_decisions.csv (also at render).
           -> healpix/healpix_<stem>_<S><tag>_{jysr,jybeam}_nside2048.fits [mosaic_map], healpix_PSF_<stem>_<S><tag>_nside2048.fits
           [mosaic_psfmap], healpix_PBeff_<stem>_<S><tag>_nside2048.fits [mosaic_pbeff]; md5s in the record
   render  lib/mosaic/band_products.build of the two maps with their PSF map (the beam card), mosaic_render's width, pixel and
@@ -189,8 +192,8 @@ def select_stages(args):
     return st
 
 
-def select_units(args, sel=None):
-    """[(stage, scope, job)] in pipeline order: every stage of a job before the next job, the jobs of a scope in jobs_for's order."""
+def choices(args):
+    """(scopes, products, variants, striation) of the command line, defaults from mosaic_v3."""
     C = _cfg().mosaic_v3
     scopes = _list(getattr(args, 'scopes', None), C.SCOPES, '--scopes', C.SCOPES)
     products = _list(getattr(args, 'products', None), C.PRODUCTS, '--products', C.PRODUCTS)
@@ -198,10 +201,37 @@ def select_units(args, sel=None):
     striation = getattr(args, 'striation', None) or C.STRIATION
     if striation not in STRIATION_CHOICES:
         raise ValueError(f'--striation {striation!r} (with, without, both)')
+    return scopes, products, variants, striation
+
+
+def selection_for(products, striation):
+    """The striation selection when striation-corrected jobs are wanted, else {} (never read)."""
+    return striation_selection() if ('I' in products and striation in ('with', 'both')) else {}
+
+
+def select_units(args, sel=None):
+    """[(stage, scope, job)] in pipeline order: every stage of a job before the next job, the jobs of a scope in jobs_for's order."""
+    scopes, products, variants, striation = choices(args)
     if sel is None:
-        sel = striation_selection() if ('I' in products and striation in ('with', 'both')) else {}
+        sel = selection_for(products, striation)
     stages = select_stages(args)
     return [(st, sc, j) for sc in scopes for j in jobs_for(sc, products, striation, variants, sel) for st in stages]
+
+
+def missing_plain_stages(units, out):
+    """A substituted job's stage reads the plain job's weighting maps: the plain stage must be in this run or done in out."""
+    from exopipe.phase3.core.record import load_record
+    made = {(sc, j) for st, sc, j in units if st == 'stage' and j.kind == 'plain'}
+    probs = []
+    for st, sc, j in units:
+        if st != 'stage' or j.kind == 'plain' or (sc, j.pb_job()) in made:
+            continue
+        pj = j.pb_job()
+        r = load_record(out, STEP, unit_name('stage', sc, pj))
+        if not r or r.get('status') != 'done':
+            probs.append(f'{sc} {j.label} needs the done stage of {sc} {pj.label} (its weighting maps): add it to this run '
+                         f'(--products I --variants {pj.variant} --striation without|both) or run it first')
+    return probs
 
 
 # ---- records and tile lists -------------------------------------------------------------------------------------------------------
@@ -217,22 +247,24 @@ def _upstream(u, out, st, scope, job):
     return r
 
 
-def _tiles(u, out, scope, job, verify=True):
-    """The staged tiles of (scope, job) (tiles.json of its done stage unit; t['json_md5'] = its md5). verify: every tile and weighting
-    map must still have the md5 the stage recorded."""
+def _tiles(u, out, scope, job, verify=True, masters=None):
+    """The staged tiles of (scope, job) (tiles.json of its done stage unit; t['json_md5'] = its md5). verify: every weighting map, and
+    the tile master of every LST in masters (default all), must still have the md5 the stage recorded; those are the unit's inputs."""
     _upstream(u, out, 'stage', scope, job)
     p = paths(out, scope, job)['tiles']
     with open(p) as f:
         t = json.load(f)
     t['json_md5'] = _md5(p)
     u.add_input(p, extra={'md5': t['json_md5']})
+    use = (lambda lst: True) if masters is None else (lambda lst: lst in masters)
     if verify:
         bad = [f'{r["lst"]} {k}' for r in t['tiles'] for k, f_, m in (('tile', r['path'], r['md5']), ('PB', r['pb'], r.get('pb_md5')))
-               if not os.path.exists(f_) or _md5(f_) != m]
+               if (k == 'PB' or use(r['lst'])) and (not os.path.exists(f_) or _md5(f_) != m)]
         if bad:
             u.refuse(f'{scope} {job.label}: staged file(s) missing or changed since the stage (md5): {bad} - REFUSED')
     for r in t['tiles']:
-        u.add_input(r['path'], extra={'md5': r['md5']})
+        if use(r['lst']):
+            u.add_input(r['path'], extra={'md5': r['md5']})
         u.add_input(r['pb'], extra={'md5': r.get('pb_md5')})
     return t
 
@@ -284,6 +316,15 @@ def _gate_master(lst, scope, path, ex, pb_cards=True):
     if h.get('freq_hz') is None:
         probs.append(f'G8 {lst}: no frequency above {C.mosaic_coadd.MIN_FREQ_HZ:g} Hz in {os.path.basename(path)}')
     return probs, h
+
+
+def _recheck_exclusions(u, scope, job, t):
+    """G1 again at coadd and render: a tile night that data_decisions.csv excludes NOW refuses, though the stage admitted it (no
+    mosaic re-admits an excluded night)."""
+    from exopipe.phase3.core import exclusions
+    ex = exclusions.load()
+    bad = [f'{r["lst"]} {", ".join(b)}' for r in t['tiles'] for b in [ex.excluded_constituents(r['lst'], scope, r['nights'])] if b]
+    _refuse_list(u, f'G1 {scope} {job.label}: night(s) data_decisions.csv excludes since the stage', bad)
 
 
 def _refuse_list(u, what, probs):
@@ -367,11 +408,11 @@ def stage_substituted(u, scope, job, out, sel):
     C = _cfg()
     P = paths(out, scope, job)
     pj = job.pb_job()
-    pt = _tiles(u, out, scope, pj)
-    ex = exclusions.load()
     want = selected_lsts(sel, scope, job.variant) if job.kind == 'ssub' else list(LSTS)
+    pt = _tiles(u, out, scope, pj, masters=set(LSTS) - set(want))    # the plain masters that stay tiles; every weighting map
+    ex = exclusions.load()
     tok = C.mosaic.VARIANT_TOKENS[job.variant]
-    tiles, probs, n_sub = [], [], 0
+    tiles, probs, n_sub, nd = [], [], 0, {}
     for r in pt['tiles']:
         lst = r['lst']
         row = dict(r, kind='plain')
@@ -387,8 +428,16 @@ def stage_substituted(u, scope, job, out, sel):
             if bad:
                 probs += bad
                 continue
+            if h['dates'] != r['nights']:
+                diff = dict(only_substitute=sorted(set(h['dates']) - set(r['nights'])), only_plain=sorted(set(r['nights']) - set(h['dates'])))
+                if job.kind == 'ssub':     # a corrected copy of the plain master: other nights = made from an older or newer master
+                    probs.append(f'G1 {lst}: {os.path.basename(g[0])} nights differ from the plain master it replaces {diff}')
+                    continue
+                # Stokes V: production weights the cleaned-V tile with the map derived from the Taper R0 Stokes I master's nights
+                # (coadd_jysr._paths); the two masters' nights differ in 26 of the 456 archived (scope, LST) cells (2026-11-18)
+                nd[lst] = diff
             row.update(path=g[0], md5=_md5(g[0]), nights=h['dates'], BMAJ=h.get('BMAJ'), BMIN=h.get('BMIN'), kind=job.kind,
-                       plain_path=r['path'], plain_md5=r['md5'])
+                       plain_path=r['path'], plain_md5=r['md5'], plain_nights=r['nights'])
             n_sub += 1
             u.add_input(g[0], extra={'md5': row['md5']})
         tiles.append(row)
@@ -396,7 +445,10 @@ def stage_substituted(u, scope, job, out, sel):
     if n_sub != len(want) or len(tiles) != len(pt['tiles']):
         u.refuse(f'{scope} {job.label}: {n_sub} of the {len(want)} LSTs substituted - REFUSED')
     u.set_admitted(sorted({f'{r["lst"]}:{d}' for r in tiles for d in r['nights']}))
-    u.meta.update(n_substituted=n_sub, substituted=want, plain_tiles_md5=pt['json_md5'])
+    u.meta.update(n_substituted=n_sub, substituted=want, plain_tiles_md5=pt['json_md5'], nights_differ_from_weighting_master=nd)
+    if nd:
+        u.note(f'{len(nd)} LST(s) whose weighting map comes from a master with other nights (production\'s Stokes V weighting): '
+               f'{sorted(nd)}')
     _write_tiles(u, P['tiles'], scope, job, tiles, plain_job=pj.label, plain_tiles_md5=pt['json_md5'])
 
 
@@ -427,6 +479,7 @@ def coadd_unit(u, scope, job, out, work):
         u.plan(pp, c)
     _clear(own)
     t = _tiles(u, out, scope, job)
+    _recheck_exclusions(u, scope, job, t)
     lsts = [r['lst'] for r in t['tiles']]
     sd = fitsio.scratch_dir(f'mosaic_v3_{scope}_{job.label}', work)
     tmp = os.path.join(unit_dir(out, scope, job), f'.tmp_coadd_{os.getpid()}')
@@ -456,14 +509,12 @@ def coadd_unit(u, scope, job, out, work):
         if missing:
             u.refuse(f'G3/G5 {scope} {job.label}: tiles missing or without a verdict {missing} (mosaic.MISSING_TILE_ACTION '
                      f'{C.mosaic.MISSING_TILE_ACTION}) - REFUSED')
+        # every staged LST a tile (mosaic_v3.REQUIRE_N_LSTS): a tile the engine guard skips refuses, whatever mosaic.TILE_GUARD_ACTION
+        # (v2's) says - as v5's HG14; production's 270 FEATHER3 co-add logs never skip one
         skipped = {dom: sorted((l, x) for l, x in vd.items() if x != 'added') for dom, vd in verdicts.items()}
         skipped = {k: x for k, x in skipped.items() if x}
         if skipped:
-            if C.mosaic.TILE_GUARD_ACTION == 'refuse':
-                u.refuse(f'G9 {scope} {job.label}: tiles the engine skipped {skipped} (mosaic.TILE_GUARD_ACTION refuse) - REFUSED')
-            u.note(f'G9: tiles the engine skipped (recorded; TILE_GUARD_ACTION {C.mosaic.TILE_GUARD_ACTION}): {skipped}')
-        if not all(any(x == 'added' for x in vd.values()) for vd in verdicts.values()):
-            u.refuse(f'G10 {scope} {job.label}: no tile added - REFUSED')
+            u.refuse(f'G9 {scope} {job.label}: tiles the engine did not add {skipped} - REFUSED')
         for k in ('jysr', 'psf', 'jybeam', 'pbeff'):
             if not os.path.exists(os.path.join(tmp, os.path.basename(P[k]))):
                 u.refuse(f'the engine did not write {os.path.basename(P[k])} - REFUSED')
@@ -502,6 +553,8 @@ def render_unit(u, scope, job, out, work):
     cur = _md5(P['tiles'])
     _same_tiles(u, scope, job, cur, co, 'coadd')
     u.add_input(P['tiles'], extra={'md5': cur})
+    with open(P['tiles']) as f:
+        _recheck_exclusions(u, scope, job, json.load(f))
     for k in ('jysr', 'jybeam', 'psf'):
         want = co['meta']['md5'][k]
         if not os.path.exists(P[k]) or _md5(P[k]) != want:
@@ -558,13 +611,15 @@ def run(args, run):
     bad = out_problems(run.out_root)
     if bad:
         raise Refusal('; '.join(bad))
-    products = _list(getattr(args, 'products', None), _cfg().mosaic_v3.PRODUCTS, '--products', _cfg().mosaic_v3.PRODUCTS)
-    striation = getattr(args, 'striation', None) or _cfg().mosaic_v3.STRIATION
-    sel = striation_selection() if ('I' in products and striation in ('with', 'both')) else {}
+    _scopes, products, _variants, striation = choices(args)
+    sel = selection_for(products, striation)
     units = select_units(args, sel)
     run.meta = {'generation': 'v3', 'units': len(units), 'striation': striation, 'products': products}
     if not units:
         raise NoInput('no unit: the selected products, variants and striation choice give no job')
+    need = missing_plain_stages(units, run.out_root)
+    if need:
+        raise Refusal('; '.join(need[:4]) + (f' (+{len(need) - 4} more)' if len(need) > 4 else ''))
     if run.dry_run:
         for st, sc, j in units:
             what = ', '.join(os.path.relpath(p, run.out_root) for p, _c in outputs_of(st, run.out_root, sc, j)[:4])

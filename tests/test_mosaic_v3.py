@@ -144,9 +144,14 @@ class _Ex:
         return sorted(d for d in dates if (lst, d) in self.bad)
 
 
+_REAL_LOAD = exclusions.load
+
+
 def _unit(out, st, fn, scope, job, *a):
+    """One unit; data_decisions is a stand-in excluding nothing unless the caller patched exclusions.load (never the site's)."""
     run = record.Run('mosaic', ['test'], out, CFG)
-    with run.unit(v3.unit_name(st, scope, job), stage=st, scope=scope, job=job.label) as u:
+    ex = (_patched((exclusions, 'load', lambda *a_, **k: _Ex())) if exclusions.load is _REAL_LOAD else contextlib.nullcontext())
+    with ex, run.unit(v3.unit_name(st, scope, job), stage=st, scope=scope, job=job.label) as u:
         fn(u, scope, job, out, *a)
     return u
 
@@ -225,6 +230,18 @@ def test_select_units():
                         ('striation', 'maybe', '--striation'), ('stages', 'caveat', 'unknown v3 stage')):
         assert msg in _raises(ValueError, v3.select_units, _args(**{k: val}), SEL), k
     assert v3.selected_lsts(SEL, 'Blue', 'Taper_R075') == ['04h', '13h'] and v3.selected_lsts(SEL, 'Blue', 'Taper_R0') == []
+    # a substituted job's stage needs its plain job's stage, in this run or done in --out (refused before any unit)
+    d = _tmp('dep_')
+    try:
+        need = v3.missing_plain_stages(v3.select_units(_args(scopes='Blue', products='Vclean'), SEL), d)
+        assert len(need) == 1 and 'Blue Vclean needs the done stage of Blue I_Taper_R0' in need[0], need
+        need = v3.missing_plain_stages(v3.select_units(_args(scopes='Blue', variants='Taper_R075', striation='with'), SEL), d)
+        assert [x.split(' needs')[0] for x in need] == ['Blue I_Taper_R075_ssub-rst8', 'Blue Vclean'], need
+        assert v3.missing_plain_stages(v3.select_units(_args(scopes='Blue'), SEL), d) == []
+        assert v3.missing_plain_stages(v3.select_units(_args(scopes='Blue', products='Vclean', stages='coadd'), SEL), d) == []
+        assert v3.choices(_args(scopes='Blue', products='Vclean')) == (['Blue'], ['Vclean'], list(CFG.mosaic_v3.VARIANTS), 'both')
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
 
 
 # ---- 4. the plain stage -----------------------------------------------------------------------------------------------------------
@@ -337,6 +354,22 @@ def test_substituted_stages():
         with env(_Ex({('13h', '2025-10-29')})):
             u = _unit(out, 'stage', v3.stage_unit, 'Blue', J_SSUB, sel)
         assert u.status == 'refused' and 'G1 13h' in u.reason and '2025-10-29' in u.reason, u.reason
+        _archive(d, 'ssub', ['13h'], nights=('2025-08-09',))        # made from another plain master than the one it replaces
+        with env():
+            u = _unit(out, 'stage', v3.stage_unit, 'Blue', J_SSUB, sel)
+        assert u.status == 'refused' and 'G1 13h' in u.reason and "'only_plain': ['2025-10-29']" in u.reason, u.reason
+        _archive(d, 'ssub', ['13h'])
+        with open(ms['04h'], 'ab') as f:                            # a substituted LST's plain master is neither read nor verified
+            f.write(b'x')
+        with env():
+            u = _unit(out, 'stage', v3.stage_unit, 'Blue', J_SSUB, sel)
+        assert u.status == 'done', (u.status, u.reason)
+        assert os.path.abspath(ms['04h']) not in u.inputs and os.path.abspath(ms['05h']) in u.inputs
+        with open(ms['05h'], 'ab') as f:                            # a plain master that stays a tile is
+            f.write(b'x')
+        with env():
+            u = _unit(out, 'stage', v3.stage_unit, 'Blue', J_SSUB, sel)
+        assert u.status == 'refused' and '05h tile' in u.reason and '04h' not in u.reason, u.reason
         # Stokes V: every LST its cleaned-V master, the Robust 0 weighting maps
         _archive(d, 'vclean', LSTS[:23])
         with env():
@@ -350,7 +383,7 @@ def test_substituted_stages():
         with env():
             u = _unit(out, 'stage', v3.stage_unit, 'Blue', J_V, {})
         assert u.status == 'refused' and 'G8 23h: PBCORR False' in u.reason, u.reason
-        _archive(d, 'vclean', ['23h'])
+        _archive(d, 'vclean', ['23h'], nights=('2025-08-09', '2025-10-29', '2025-11-01'))   # V holds a night the I master lacks
         with env():
             u = _unit(out, 'stage', v3.stage_unit, 'Blue', J_V, {})
         assert u.status == 'done', (u.status, u.reason)
@@ -358,6 +391,17 @@ def test_substituted_stages():
         r0 = json.load(open(v3.paths(out, 'Blue', J_R0)['tiles']))['tiles']
         assert all(r['kind'] == 'vclean' for r in t['tiles']) and t['tiles'][23]['path'] == vv['23h']
         assert all(r['pb'] == p['pb'] and os.path.basename(r['pb']) == 'PB_deep_Blue.fits' for r, p in zip(t['tiles'], r0))
+        assert u.meta['nights_differ_from_weighting_master'] == {'23h': {'only_substitute': ['2025-11-01'], 'only_plain': []}}
+        assert t['tiles'][23]['plain_nights'] == ['2025-08-09', '2025-10-29'] and any('23h' in n for n in u.notes)
+        assert set(u.inputs).isdisjoint(os.path.abspath(r['path']) for r in r0)    # Stokes V reads no Stokes I master
+        with _patched((CFG.mosaic_v3, 'REQUIRE_N_LSTS', 23)):
+            assert [r['passed'] for r in validate.run('mosaic_v3_tiles', v3.paths(out, 'Blue', J_V)['tiles'], scope='Blue',
+                                                      job=J_V.label)] == [True, True]
+        with open(r0[7]['pb'], 'ab') as f:                          # the weighting maps always are verified
+            f.write(b'x')
+        with env():
+            u = _unit(out, 'stage', v3.stage_unit, 'Blue', J_V, {})
+        assert u.status == 'refused' and '07h PB' in u.reason, u.reason
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
@@ -427,14 +471,16 @@ def test_coadd_and_render_units():
             assert os.listdir(work) == [] and u.meta['tiles_md5'] == _md5f(P['tiles'])
             assert {o['ctx']['scope'] for o in u.outputs} == {'Blue'} and u.outputs[0]['ctx']['tag'] == job.tag
         calls = []
-        with _fake_module('exopipe.phase3.lib.mosaic.coadd_jysr', _fake_engine(calls, skip=('13h',))), _no_content_tests():
+        for action in ('skip-and-record', 'refuse'):               # every staged LST a tile, whatever v2's TILE_GUARD_ACTION
+            with _fake_module('exopipe.phase3.lib.mosaic.coadd_jysr', _fake_engine(calls, skip=('13h',))), _no_content_tests(), \
+                    _patched((CFG.mosaic, 'TILE_GUARD_ACTION', action)):
+                u = _unit(out, 'coadd', v3.coadd_unit, 'Blue', J_R075, work)
+            assert u.status == 'refused' and 'G9' in u.reason and '13h' in u.reason, (u.status, u.reason)
+            assert not os.path.exists(v3.paths(out, 'Blue', J_R075)['jysr'])
+        with _fake_module('exopipe.phase3.lib.mosaic.coadd_jysr', _fake_engine(calls)), _no_content_tests(), \
+                _patched((exclusions, 'load', lambda *a, **k: _Ex({('05h', '2025-10-29')}))):
             u = _unit(out, 'coadd', v3.coadd_unit, 'Blue', J_R075, work)
-        assert u.status == 'done' and any('G9' in n and '13h' in n for n in u.notes), (u.status, u.notes)
-        assert u.outputs[0]['ctx']['tiles'][13]['verdict'] == 'CORRUPT-FLAT'
-        with _fake_module('exopipe.phase3.lib.mosaic.coadd_jysr', _fake_engine(calls, skip=('13h',))), _no_content_tests(), \
-                _patched((CFG.mosaic, 'TILE_GUARD_ACTION', 'refuse')):
-            u = _unit(out, 'coadd', v3.coadd_unit, 'Blue', J_R075, work)
-        assert u.status == 'refused' and 'G9' in u.reason and not os.path.exists(v3.paths(out, 'Blue', J_R075)['jysr'])
+        assert u.status == 'refused' and 'G1' in u.reason and '05h 2025-10-29' in u.reason, u.reason
         with _fake_module('exopipe.phase3.lib.mosaic.coadd_jysr', _fake_engine(calls, missing=('02h',))), _no_content_tests():
             u = _unit(out, 'coadd', v3.coadd_unit, 'Blue', J_R075, work)
         assert u.status == 'refused' and 'G3/G5' in u.reason and '02h' in u.reason, u.reason
@@ -452,6 +498,10 @@ def test_coadd_and_render_units():
         for p, _c in v3.outputs_of('render', out, 'Blue', J_SSUB):
             assert os.path.exists(p), p
         assert os.listdir(work) == []
+        with _fake_module('exopipe.phase3.lib.mosaic.band_products', _fake_bp(bc)), _no_content_tests(), \
+                _patched((exclusions, 'load', lambda *a, **k: _Ex({('04h', '2025-08-09')}))):
+            u = _unit(out, 'render', v3.render_unit, 'Blue', J_SSUB, work)
+        assert u.status == 'refused' and 'G1' in u.reason and '04h 2025-08-09' in u.reason, u.reason
         _stage_plain(d, out, J_R075)                              # a new tile list: the R075 coadd must be redone first
         with open(v3.paths(out, 'Blue', J_R075)['tiles'], 'a') as f:
             f.write(' ')

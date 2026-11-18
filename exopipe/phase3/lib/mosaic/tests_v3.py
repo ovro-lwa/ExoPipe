@@ -26,17 +26,17 @@ def _job_kind(t):
 
 @content_test('mosaic_v3_tiles')
 def tiles_complete(path, **ctx):
-    """One tile per LST 00h-23h (mosaic_v3.REQUIRE_N_LSTS), each with its master, md5, weighting map, the weighting map's md5 and
+    """At least mosaic_v3.REQUIRE_N_LSTS tiles, one per LST of 00h-23h, each with its master, md5, weighting map, the weighting map's md5 and
     reference master, and its nights; the tile kinds fit the job (a plain job: plain masters only; a striation-corrected job: at least
     one corrected master; Stokes V: cleaned-V masters only); the scope and job are the unit's."""
     t = _tiles(path)
     rows = t.get('tiles') or []
     n = int(_cfg().mosaic_v3.REQUIRE_N_LSTS)
-    want = [f'{h:02d}h' for h in range(24)][:n]
+    every = {f'{h:02d}h' for h in range(24)}
     lsts = [r.get('lst') for r in rows]
     probs = []
-    if len(rows) < n or len(set(lsts)) != len(lsts) or sorted(lsts) != want:
-        probs.append(f'LSTs {lsts}')
+    if len(rows) < n or len(set(lsts)) != len(lsts) or not set(lsts) <= every:
+        probs.append(f'LSTs {lsts} (at least {n} distinct of 00h-23h)')
     kind = _job_kind(t)
     for r in rows:
         miss = [k for k in ('path', 'md5', 'pb', 'pb_md5', 'pbfor', 'nights', 'kind') if not r.get(k)]
