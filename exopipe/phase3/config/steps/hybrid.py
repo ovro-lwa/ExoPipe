@@ -353,6 +353,10 @@ class hybrid_tilefill(_Section):
                  '1b854d172a2f8b807c18461bc250d08fe82c4d22db3052741c6580ea2faf2c6b'),
         'HQ13': ('/lustre/gh/main/exopipe_ops/hybrid_inputs_20261118/HQ13.manifest.csv',
                  '3e90be485802c2826aeb070cbf992d311c98c10fd64d9c4460509c55783a68e3'),
+        'MQ11': ('/lustre/gh/main/exopipe_ops/hybrid_inputs_20261118/MQ11.manifest.csv',
+                 '367c12f2a90b1585515053db558a3745e26097a2c2316c9245fdc78d08b3086c'),
+        'MQ13': ('/lustre/gh/main/exopipe_ops/hybrid_inputs_20261118/MQ13.manifest.csv',
+                 '035f2e3f2592aed74b382996bf50db157b90c55fa12a4659c33eb30664439c05'),
     }
     #   {root: (checksum manifest, its sha256)} of the pinned unfilled inputs (hybrid Q2, R-GREGG-20261118-HYBRID-Q1-Q3-GO-WITH-
     #   RECOMMENDATIONS; exopipe_ops/hybrid_inputs_manifest_20261118.py): the unfilled hybrid masters of the 11-11 and 11-13
