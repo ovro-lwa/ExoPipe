@@ -245,11 +245,14 @@ def test_p1file_choice():
 def test_screen_lock_and_cache():
     import fcntl
     import subprocess
-    from exopipe.phase2 import cascade_dewarp as CD
+    import exopipe.phase2 as P2
     assert not issubclass(HW.ScreenLockRefusal, RuntimeError)       # the night-drop rule (except RuntimeError) never catches it
     d = _tmp('lock')
-    names = ('find_deep_pb_image', 'find_deep_pb_image_dewarped', 'find_deep_raw_image', 'find_deep_raw_image_dewarped')
-    saved = {k: getattr(CD, k) for k in names}
+    # a stand-in for exopipe.phase2.cascade_dewarp (its PyBDSF import is not in CI): the pair finders only; the cache and lock paths
+    # tested here derive nothing
+    key = 'exopipe.phase2.cascade_dewarp'
+    saved = (sys.modules.get(key), getattr(P2, 'cascade_dewarp', None))
+    CD = types.ModuleType(key)
     old_wait = CFG.hybrid_stack.SCREEN_LOCK_WAIT_S
     holder = None
     try:
@@ -258,6 +261,9 @@ def test_screen_lock_and_cache():
             fits.writeto(p, np.zeros((8, 8), np.float32))
         CD.find_deep_pb_image = CD.find_deep_pb_image_dewarped = lambda *a: None
         CD.find_deep_raw_image, CD.find_deep_raw_image_dewarped = (lambda *a: raw), (lambda *a: dew)
+        CD.apply_warp = None
+        sys.modules[key] = CD
+        P2.cascade_dewarp = CD
         cache = os.path.join(d, 'cache')
         os.makedirs(cache)
         out = os.path.join(cache, '2025-01-01_13h_78MHz_warp_screen_derived.fits')
@@ -288,8 +294,14 @@ def test_screen_lock_and_cache():
         if holder is not None and holder.poll() is None:
             holder.kill()
             holder.wait()
-        for k, v in saved.items():
-            setattr(CD, k, v)
+        if saved[0] is None:
+            sys.modules.pop(key, None)
+        else:
+            sys.modules[key] = saved[0]
+        if saved[1] is None:
+            delattr(P2, 'cascade_dewarp')
+        else:
+            P2.cascade_dewarp = saved[1]
         CFG.hybrid_stack.SCREEN_LOCK_WAIT_S = old_wait
         shutil.rmtree(d, ignore_errors=True)
 
