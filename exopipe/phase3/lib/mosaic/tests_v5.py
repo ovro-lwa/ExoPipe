@@ -50,10 +50,12 @@ def tiles_complete(path, **ctx):
 
 @content_test('mosaic_v5_tiles')
 def tiles_on_disk(path, **ctx):
-    """Every tile and weighting map exists; every tile's md5 is the staged one (the files the co-add reads)."""
-    from exopipe.phase3.lib.install.steps_common import md5
+    """Every tile and weighting map exists with the staged md5 (the files the co-add reads; v5._md5 keeps a file's md5 for the
+    process, so the stage's own hashes are not re-read)."""
+    from exopipe.phase3.lib.mosaic.v5 import _md5
     rows = _tiles(path).get('tiles') or []
-    bad = [r['lst'] for r in rows if not (os.path.exists(r['path']) and os.path.exists(r['pb'])) or md5(r['path']) != r['md5']]
+    bad = [r['lst'] for r in rows if not (os.path.exists(r['path']) and os.path.exists(r['pb']))
+           or _md5(r['path']) != r['md5'] or _md5(r['pb']) != r.get('pb_md5')]
     return not bad, len(bad), f'tiles missing or changed: {bad}' if bad else f'{len(rows)} tiles at their staged md5'
 
 

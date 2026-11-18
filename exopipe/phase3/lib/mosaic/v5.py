@@ -20,8 +20,10 @@ scope, weighting); records <out>/_records/mosaic/v5-<stage>.<scope>_<w>.json; fi
   render  lib/mosaic/band_products.build of the FILLED maps with their PSF map (the beam card), mosaic_render's width, pixel and
           southern edge. -> renders/<S>_<V>_lsfill_{jysr,jybeam}_{Mollweide,RADec}.fits [mosaic_render]
 
-A stage reads its predecessors' unit records (status done), never a glob. A unit removes its own earlier outputs first; nothing is
-renamed into place unless its test passed. Content tests (TEST 1/1R/2), PKCORR, conformance v5 and the tables are PR-7b.
+A stage reads its predecessors' unit records (status done), never a glob, and refuses unless they were made from the tile list now
+in stage/tiles.json (its md5 in the coadd and fill records). A unit removes its own earlier outputs first; the fill renames a map
+into place only when its inline test passed; a unit that does not end done (a refusal, an error, a failed content test) removes the
+outputs it placed, and its record keeps the reason. Content tests (TEST 1/1R/2), PKCORR, conformance v5 and the tables are PR-7b.
 """
 import json
 import os
@@ -97,9 +99,27 @@ def stages_for(scope, stages):
             and not (s == 'render' and scope not in C.mosaic_v5.RENDER_SCOPES)]
 
 
+_MD5 = {}
+
+
+def _key(p):
+    st = os.stat(p)
+    return (os.path.realpath(p), st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
+
+
 def _md5(p):
+    """md5 of a file, kept for the process by (real path, device, inode, size, mtime): the units of one run hash a staged tile (on
+    Lustre) once; a later process, or a file changed since, hashes again."""
     from exopipe.phase3.lib.install.steps_common import md5
-    return md5(p)
+    k = _key(p)
+    if k not in _MD5:
+        _MD5[k] = md5(p)
+    return _MD5[k]
+
+
+def _seed(p, m):
+    """The md5 a writer computed for the file now at p (renamed into place: same inode and mtime)."""
+    _MD5[_key(p)] = m
 
 
 def _clear(paths_):
@@ -122,20 +142,43 @@ def _upstream(u, out, st, scope, w):
 
 
 def _tiles(u, out, scope, w, verify=True):
-    """The staged tiles (tiles.json of the done stage unit), each tile's md5 re-computed (verify) against the stage's."""
+    """The staged tiles (tiles.json of the done stage unit; t['json_md5'] = its md5). verify (the units that read the tiles: coadd,
+    caveat): every tile and weighting map must still have the md5 the stage recorded."""
     _upstream(u, out, 'stage', scope, w)
     p = paths(out, scope, w)['tiles']
     with open(p) as f:
         t = json.load(f)
-    u.add_input(p)
+    t['json_md5'] = _md5(p)
+    u.add_input(p, extra={'md5': t['json_md5']})
     if verify:
-        bad = [r['lst'] for r in t['tiles'] if _md5(r['path']) != r['md5']]
+        bad = [f'{r["lst"]} {k}' for r in t['tiles'] for k, f_, m in (('tile', r['path'], r['md5']), ('PB', r['pb'], r.get('pb_md5')))
+               if not os.path.exists(f_) or _md5(f_) != m]
         if bad:
-            u.refuse(f'{scope} {w}: staged tile(s) changed since the stage (md5): {bad} - REFUSED')
+            u.refuse(f'{scope} {w}: staged file(s) missing or changed since the stage (md5): {bad} - REFUSED')
     for r in t['tiles']:
         u.add_input(r['path'], extra={'md5': r['md5']})
-        u.add_input(r['pb'])
+        u.add_input(r['pb'], extra={'md5': r.get('pb_md5')})
     return t
+
+
+def _same_tiles(u, scope, w, cur, rec, st):
+    """Refuse unless the done record rec (of stage st) was made from the tile list whose md5 is cur."""
+    if rec['meta'].get('tiles_md5') != cur:
+        u.refuse(f'{scope} {w}: the {st} unit was made from another tile list (stage/tiles.json md5 {rec["meta"].get("tiles_md5")}, '
+                 f'now {cur}): rerun --stages {st} - REFUSED')
+
+
+def _bind_engine():
+    """Set coadd_jysr's module globals from mosaic_coadd (steps_common.engine_globals) and clear the retired July override tables
+    (spec 3); returns the globals. The coadd and the caveat (its weights) both run under them."""
+    from exopipe.phase3.lib.mosaic import coadd_jysr as mcj
+    from exopipe.phase3.lib.mosaic import steps_common as SC
+    g = SC.engine_globals()
+    for k, val in g.items():
+        setattr(mcj, k, val)
+    mcj.BEAM_OVERRIDE.clear()
+    mcj.SKIP_CELLS.clear()
+    return g
 
 
 # ---- stage ------------------------------------------------------------------------------------------------------------------------
@@ -155,7 +198,7 @@ def resolve_tiles(scope, w, hybrid_out, plan_only=False):
     for lst in LSTS:
         mode = 'work' if hybrid_out and os.path.exists(os.path.join(hybrid_out, f'{lst}_{scope}', f'{w}_hybrid.json')) else 'pinned'
         try:
-            s = HS.tilefill_source(root, lst, scope, w, rows, mode, plan_only=True)
+            s = HS.tilefill_source(root, lst, scope, w, rows, mode, plan_only=True, need_pb=False)   # the mosaic reads no diffuse PB
         except (TilefillRefusal, Refusal, NoInput, OSError, KeyError, ValueError) as e:
             probs.append(f'{lst} ({mode}): {type(e).__name__}: {e}')
             continue
@@ -217,7 +260,6 @@ def coadd_unit(u, scope, w, out, work):
     from exopipe.phase3.core import fitsio
     from exopipe.phase3.lib.masters.pb_apply import deep_pb_name
     from exopipe.phase3.lib.mosaic import coadd_jysr as mcj
-    from exopipe.phase3.lib.mosaic import steps_common as SC
     from exopipe.phase3.lib.mosaic.steps_worker import _VERDICT, _Tee
     C = _cfg()
     P = paths(out, scope, w)
@@ -235,12 +277,7 @@ def coadd_unit(u, scope, w, out, work):
             os.makedirs(d, exist_ok=True)
             os.symlink(r['path'], os.path.join(d, f'I_deep_{v}_pbcorr_{scope}.fits'))
             os.symlink(r['pb'], os.path.join(d, deep_pb_name(scope, w)))
-        g = SC.engine_globals()
-        for k, val in g.items():
-            setattr(mcj, k, val)
-        mcj.BEAM_OVERRIDE.clear()             # July repair-ledger modes are never used by v2 (retired keys, spec 3)
-        mcj.SKIP_CELLS.clear()
-        u.meta['engine_globals'] = g
+        u.meta['engine_globals'] = _bind_engine()
         os.makedirs(tmp, exist_ok=True)
         lsts = [r['lst'] for r in t['tiles']]
         verdicts = {}
@@ -274,6 +311,7 @@ def coadd_unit(u, scope, w, out, work):
             import shutil
             shutil.rmtree(tmp, ignore_errors=True)
     u.meta['md5'] = {k: _md5(P[f'unfilled_{k}']) for k in ('jysr', 'psf', 'jybeam', 'pbeff')}
+    u.meta['tiles_md5'] = t['json_md5']
     ctx = _map_ctx(t, scope, P['unfilled_psf'], P['unfilled_jysr'], P['unfilled_jybeam'])
     for pp, c in outputs_of('coadd', out, scope, w):
         dom = 'jybeam' if pp in (P['unfilled_jybeam'], P['unfilled_pbeff']) else 'jysr'
@@ -300,6 +338,11 @@ def caveat_unit(u, scope, w, out):
         u.refuse(f'{P["unfilled_pbeff"]} changed since the coadd (md5) - REFUSED')
     u.add_input(P['unfilled_pbeff'], extra={'md5': co['meta']['md5']['pbeff']})
     t = _tiles(u, out, scope, w)
+    _same_tiles(u, scope, w, t['json_md5'], co, 'coadd')
+    g = json.loads(json.dumps(_bind_engine()))
+    if g != co['meta'].get('engine_globals'):
+        u.refuse(f'{scope} {w}: the mosaic_coadd weights now {g} are not the coadd\'s {co["meta"].get("engine_globals")} - REFUSED')
+    u.meta['engine_globals'] = g
     try:
         rec = CV.caveat_map(t['tiles'], variant_of(w), scope, os.path.dirname(P['caveat_map']), P['unfilled_pbeff'])
     except CV.CaveatRefusal as e:
@@ -323,6 +366,7 @@ def fill_unit(u, scope, w, out):
     _clear([P['filled_jysr'], P['filled_jybeam']])
     co = _upstream(u, out, 'coadd', scope, w)
     t = _tiles(u, out, scope, w, verify=False)
+    _same_tiles(u, scope, w, t['json_md5'], co, 'coadd')
     for k in ('jysr', 'psf', 'jybeam', 'pbeff'):
         want = co['meta']['md5'][k]
         if _md5(P[f'unfilled_{k}']) != want:
@@ -349,13 +393,16 @@ def fill_unit(u, scope, w, out):
         if rb['result'] != 'PASS':
             u.refuse(f'HG19: the Jy/beam fill test failed {rb} - REFUSED')
         os.replace(tj, P['filled_jysr'])
+        _seed(P['filled_jysr'], rj['out_md5'])
         os.replace(tb, P['filled_jybeam'])
+        _seed(P['filled_jybeam'], rb['out_md5'])
     finally:
         _clear([tj, tb])
     u.meta['fill'] = {'jysr': {k: rj[k] for k in ('donor_mhz', 's', 'test', 'src_md5')},
                       'jybeam': {k: rb[k] for k in ('identity_rel', 'k_median', 'k_p05', 'k_p95', 'n_bright', 'src_md5')}}
     u.meta['md5'] = {'unfilled_jysr': co['meta']['md5']['jysr'], 'unfilled_jybeam': co['meta']['md5']['jybeam'],
                      'filled_jysr': _md5(P['filled_jysr']), 'filled_jybeam': _md5(P['filled_jybeam'])}
+    u.meta['tiles_md5'] = t['json_md5']
     ctx = _map_ctx(t, scope, P['unfilled_psf'], P['filled_jysr'], P['filled_jybeam'])
     u.add_output(P['filled_jysr'], 'mosaic_filled_map', domain='jysr', unfilled=P['unfilled_jysr'], **ctx)
     u.add_output(P['filled_jybeam'], 'mosaic_filled_map', domain='jybeam', unfilled=P['unfilled_jybeam'],
@@ -377,6 +424,12 @@ def render_unit(u, scope, w, out, work):
     _clear(own)
     fi = _upstream(u, out, 'fill', scope, w)
     co = _upstream(u, out, 'coadd', scope, w)
+    if not os.path.exists(P['tiles']):
+        u.refuse(f'{P["tiles"]} is missing - REFUSED')
+    cur = _md5(P['tiles'])
+    _same_tiles(u, scope, w, cur, co, 'coadd')
+    _same_tiles(u, scope, w, cur, fi, 'fill')
+    u.add_input(P['tiles'], extra={'md5': cur})
     srcs = {'jysr': (P['filled_jysr'], fi['meta']['md5']['filled_jysr']), 'jybeam': (P['filled_jybeam'], fi['meta']['md5']['filled_jybeam']),
             'psf': (P['unfilled_psf'], co['meta']['md5']['psf'])}
     for k, (pp, want) in srcs.items():
@@ -493,15 +546,23 @@ def run(args, run):
         return 0
     work = getattr(args, 'work', None)
     for st, sc, w in units:
+        own = [p for p, _c in outputs_of(st, run.out_root, sc, w)]
         with run.unit(unit_name(st, sc, w), stage=st, scope=sc, weighting=w, generation='v5') as u:
-            if st == 'stage':
-                stage_unit(u, sc, w, run.out_root, hybrid_out)
-            elif st == 'coadd':
-                coadd_unit(u, sc, w, run.out_root, work)
-            elif st == 'caveat':
-                caveat_unit(u, sc, w, run.out_root)
-            elif st == 'fill':
-                fill_unit(u, sc, w, run.out_root)
-            else:
-                render_unit(u, sc, w, run.out_root, work)
+            try:
+                if st == 'stage':
+                    stage_unit(u, sc, w, run.out_root, hybrid_out)
+                elif st == 'coadd':
+                    coadd_unit(u, sc, w, run.out_root, work)
+                elif st == 'caveat':
+                    caveat_unit(u, sc, w, run.out_root)
+                elif st == 'fill':
+                    fill_unit(u, sc, w, run.out_root)
+                else:
+                    render_unit(u, sc, w, run.out_root, work)
+            except BaseException:
+                _clear(own)                   # nothing of a unit that did not end done stays in place
+                raise
+            if u.failed_tests():
+                _clear(own)
+                u.note(f'a content test failed: the {len(own)} outputs were removed (the record keeps the results)')
     return run.exit_code()

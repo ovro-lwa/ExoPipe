@@ -13,9 +13,13 @@ cluster parity below):
      a tile the engine did not add refuses and nothing is placed;
   5. the fill: outputs placed only when both fill tests pass, md5s recorded; a FAIL leaves no file; fill_cards and footprint_kept on
      synthetic maps (each broken card fails);
-  6. caveat and render units place their outputs from the stand-ins; caveat_rows; domain_cards accepts the tagged run's PSFMAP;
-  7. tilefill --mosaic-out: no done fill record refuses; a changed map refuses (HG13); the band field is made from the v5 pair;
-  8. the CLI: --generation v5 needs --out; v5-only flags refuse in v2.
+  6. caveat and render units place their outputs from the stand-ins; caveat_rows; domain_cards wants the tagged run's own PSFMAP;
+     the tile list chain (coadd -> caveat / fill -> render: another tiles.json refuses); the caveat refuses other weights than the
+     coadd's; a changed weighting map refuses the coadd; a failed content test removes the unit's outputs (v5.run); the md5 cache;
+     a tagged map name reads as its scope (coverage threshold);
+  7. tilefill --mosaic-out: no done fill record refuses; a changed map, another tile list, or tiles that are not this run's unfilled
+     masters refuse (HG13); the band field is made from the v5 pair under a file name of its own;
+  8. the CLI: --generation v5 needs --out; v5-only flags refuse in v2; v2-only flags refuse in v5.
 With healpy (the cluster): the renderer's beam lookup reads the tagged PSF map (production 14e8dba).
 Cluster parity (not here): Blue Taper R-0.75, all tiles pinned - the unfilled co-add against MQ11, the caveat map against V5, the filled
 maps and renders against V5 (data md5).
@@ -172,8 +176,8 @@ def _tree(d, n=24, filled=()):
 
 
 def _fake_source(tiles, calls, refuse=()):
-    def src(out_root, lst, scope, w, rows, mode, plan_only=False):
-        calls.append((lst, mode, plan_only))
+    def src(out_root, lst, scope, w, rows, mode, plan_only=False, need_pb=True):
+        calls.append((lst, mode, plan_only, need_pb))
         if lst in refuse:
             raise TF.TilefillRefusal(f'{lst}: refused by the source')
         if lst not in tiles:
@@ -201,7 +205,7 @@ def test_resolve_tiles():
         with _stage_env(d, tiles, calls):
             t, probs = v5.resolve_tiles('Blue', 'R075', ho)
             assert not probs and len(t) == 24, probs
-            assert {x['lst'] for x in t if x['source'] == 'work'} == {'03h', '17h'} and all(c[2] for c in calls)
+            assert {x['lst'] for x in t if x['source'] == 'work'} == {'03h', '17h'} and all(c[2] and c[3] is False for c in calls)
             assert t[0]['pb'] == os.path.join(d, 'M', '00h', 'Blue', 'PB_deep_R075_Blue.fits') and t[0]['pb_md5'] and t[0]['BMAJ'] == 0.1
             t, probs = v5.resolve_tiles('Blue', 'R075', None)            # no hybrid work run: all pinned
             assert not probs and all(x['source'] == 'pinned' for x in t)
@@ -323,6 +327,14 @@ def test_coadd_unit():
             assert os.path.exists(P[f'unfilled_{k}']) and u.meta['md5'][k] == _md5f(P[f'unfilled_{k}']), k
         assert os.path.basename(P['unfilled_jysr']) == 'healpix_I_deep_Taper_R075_Blue_lsfill_jysr_nside2048.fits'
         assert os.listdir(work) == [] and not [f for f in os.listdir(v5.unit_dir(out, 'Blue', 'R075')) if f.startswith('.tmp')]
+        assert u.meta['tiles_md5'] == _md5f(P['tiles'])
+        pb = json.load(open(P['tiles']))['tiles'][4]['pb']
+        with open(pb, 'ab') as f:                                        # a weighting map changed since the stage
+            f.write(b'\0' * 2880)
+        with _fake_module('exopipe.phase3.lib.mosaic.coadd_jysr', _fake_engine(calls)), _no_content_tests():
+            u = _unit(out, 'coadd', v5.coadd_unit, work)
+        assert u.status == 'refused' and '04h PB' in u.reason, (u.status, u.reason)
+        _staged(d)                                                       # stage again (the new PB md5)
         calls.clear()
         with _fake_module('exopipe.phase3.lib.mosaic.coadd_jysr', _fake_engine(calls, skip=('13h',))), _no_content_tests():
             u = _unit(out, 'coadd', v5.coadd_unit, work)
@@ -352,7 +364,7 @@ def _fake_fill(result='PASS', jb_result='PASS'):
             sig = np.asarray(h[1].data['SIGNAL']) + 2.0
         c = dict(_cards(jb), TPJBCONV='jybeam/jysr measured')
         _hpx(out, sig, c, FREQ=7.0e7, **c)
-        return dict(src=jb, src_md5=_md5f(jb), out=out, identity_rel=0.5, k_median=1.0, k_p05=0.98, k_p95=1.02, n_bright=9, result=jb_result)
+        return dict(src=jb, src_md5=_md5f(jb), out=out, out_md5=_md5f(out), identity_rel=0.5, k_median=1.0, k_p05=0.98, k_p95=1.02, n_bright=9, result=jb_result)
     return fill_file, fill_jybeam_file
 
 
@@ -438,7 +450,8 @@ def test_caveat_and_render_units():
             with open(tp, 'w') as f:
                 f.write('lst,kind\n')
             return dict(map=mp, table=tp, n_hybrid=len(tiles), n_taper_only=0, taper_only=[], test={'verdict': 'pass'})
-        with _patched((CV, 'caveat_map', cav)), _no_content_tests():
+        with _patched((CV, 'caveat_map', cav)), _no_content_tests(), \
+                _fake_module('exopipe.phase3.lib.mosaic.coadd_jysr', _fake_engine([])):
             u = _unit(out, 'caveat', v5.caveat_unit)
         assert u.status == 'done' and seen == dict(n=24, variant='Taper_R075', pbeff=P['unfilled_pbeff'], kinds={'hybrid'}), (u.reason, seen)
         assert os.path.exists(P['caveat_map']) and os.path.basename(P['caveat_table']) == 'caveats_Taper_R075_Blue_lsfill.csv'
@@ -479,12 +492,91 @@ def test_caveat_rows_and_domain_cards():
         cards = dict(BUNIT='Jy/beam', PBCORR=False, ALIGNED=False, FEATHER=f'PB {cc.PB_FEATHER_START}->{cc.PB_FLOOR} cosine weight taper',
                      WEIGHTS='PB^2/sigma_beam^2 (per-beam, point-source-optimal)', PSFMAP='healpix_PSF_I_deep_Taper_R075_Blue_nside2048.fits')
         jb = _hpx(os.path.join(d, 'healpix_I_deep_Taper_R075_Blue_lsfill_jybeam_nside2048.fits'), np.zeros(12), **cards)
-        assert MT.domain_cards(jb, domain='jybeam', tag='_lsfill')[0]     # the tagged run: the engine names the untagged psfmap
-        assert not MT.domain_cards(jb, domain='jybeam')[0]
+        assert not MT.domain_cards(jb, domain='jybeam', tag='_lsfill')[0]  # a tagged map naming the v2 Taper mosaic's psfmap fails
+        jb = _hpx(jb, np.zeros(12), **dict(cards, PSFMAP='healpix_PSF_I_deep_Taper_R075_Blue_lsfill_nside2048.fits'))
+        assert MT.domain_cards(jb, domain='jybeam', tag='_lsfill')[0]      # its own psfmap passes
         jb0 = _hpx(os.path.join(d, 'healpix_I_deep_Taper_R075_Blue_jybeam_nside2048.fits'), np.zeros(12), **cards)
         assert MT.domain_cards(jb0, domain='jybeam')[0]                    # the untagged v2 maps unchanged
     finally:
         shutil.rmtree(d, ignore_errors=True)
+
+
+def test_tile_list_chain_and_caveat_weights():
+    from exopipe.phase3.lib.mosaic import caveat as CV
+    d = _tmp('ch_')
+    try:
+        out = _coadded(d)
+        P = v5.paths(out, 'Blue', 'R075')
+
+        def cav(tiles, variant, scope, out_dir, pbeff_mosaic, nside=None):
+            mp, tp = (os.path.join(out_dir, x) for x in CV.names(variant, scope, 128))
+            _hpx(mp, np.zeros(12))
+            open(tp, 'w').write('lst,kind\n')
+            return dict(map=mp, table=tp, n_hybrid=24, n_taper_only=0, taper_only=[], test={'verdict': 'pass'})
+        eng = _fake_engine([])
+        with _patched((CV, 'caveat_map', cav), (CFG.mosaic_coadd, 'PB_FLOOR', 0.2)), _no_content_tests(), \
+                _fake_module('exopipe.phase3.lib.mosaic.coadd_jysr', eng):
+            u = _unit(out, 'caveat', v5.caveat_unit)
+        assert u.status == 'refused' and 'weights' in u.reason and not os.path.exists(P['caveat_map']), (u.status, u.reason)
+        ff, fj = _fake_fill()
+        with _patched((MF, 'fill_file', ff), (MF, 'fill_jybeam_file', fj)), _no_content_tests():
+            u = _unit(out, 'fill', v5.fill_unit)
+        assert u.status == 'done' and u.meta['tiles_md5'] == _md5f(P['tiles']), (u.status, u.reason)
+        t = json.load(open(P['tiles']))                                  # the stage run again with another hybrid work run
+        t['hybrid_out'] = '/elsewhere'
+        json.dump(t, open(P['tiles'], 'w'), indent=1)
+        with _patched((CV, 'caveat_map', cav)), _no_content_tests(), _fake_module('exopipe.phase3.lib.mosaic.coadd_jysr', eng):
+            u = _unit(out, 'caveat', v5.caveat_unit)
+        assert u.status == 'refused' and 'another tile list' in u.reason, (u.status, u.reason)
+        bp = types.ModuleType('fake_band_products')
+        bp.build = lambda *a, **k: None
+        with _fake_module('exopipe.phase3.lib.mosaic.band_products', bp), _no_content_tests():
+            u = _unit(out, 'render', v5.render_unit, os.path.join(d, 'work'))
+        assert u.status == 'refused' and 'another tile list' in u.reason, (u.status, u.reason)
+        with _patched((MF, 'fill_file', ff), (MF, 'fill_jybeam_file', fj)), _no_content_tests():
+            u = _unit(out, 'fill', v5.fill_unit)
+        assert u.status == 'refused' and 'another tile list' in u.reason, (u.status, u.reason)
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_failed_content_test_removes_outputs():
+    d = _tmp('ft_')
+    try:
+        out = _staged(d)
+        P = v5.paths(out, 'Blue', 'R075')
+        failing = lambda cls, path, **ctx: [{'name': f'{cls}.x', 'passed': cls != 'mosaic_pbeff', 'value': 0, 'detail': ''}]  # noqa: E731
+        run = _run(out)
+        with _fake_module('exopipe.phase3.lib.mosaic.coadd_jysr', _fake_engine([])), _patched((validate, 'run', failing)):
+            v5.run(_args(stages='coadd', scopes='Blue', weightings='R075', work=os.path.join(d, 'work')), run)
+        r = record.load_record(out, v5.STEP, v5.unit_name('coadd', 'Blue', 'R075'))
+        assert r['status'] == 'refused' and 'mosaic_pbeff.x' in r['reason'], (r['status'], r['reason'])
+        assert not any(os.path.exists(P[f'unfilled_{k}']) for k in ('jysr', 'psf', 'jybeam', 'pbeff'))
+        run = _run(out)
+        with _fake_module('exopipe.phase3.lib.mosaic.coadd_jysr', _fake_engine([])), _no_content_tests():
+            v5.run(_args(stages='coadd', scopes='Blue', weightings='R075', work=os.path.join(d, 'work')), run)
+        assert all(os.path.exists(P[f'unfilled_{k}']) for k in ('jysr', 'psf', 'jybeam', 'pbeff'))
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_md5_cache_and_scope_of():
+    from exopipe.phase3.lib.install import steps_common as ISC
+    d = _tmp('m5_')
+    try:
+        p = _img(os.path.join(d, 'a.fits'))
+        n = []
+        real = ISC.md5
+        with _patched((ISC, 'md5', lambda q: n.append(q) or real(q))):
+            assert v5._md5(p) == v5._md5(p) == _md5f(p) and len(n) == 1   # hashed once in the process
+            with open(p, 'ab') as f:
+                f.write(b'\0' * 2880)
+            assert v5._md5(p) == _md5f(p) and len(n) == 2                 # a changed file is hashed again
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+    for b in ('healpix_I_deep_Taper_R075_Blue_lsfill_jysr_nside2048.fits', 'healpix_PSF_I_deep_Taper_R0_18MHz_lsfill_nside2048.fits',
+              'healpix_I_deep_Taper_R075_Blue_jysr_nside2048.fits'):
+        assert MT._scope_of(f'/x/{b}') in ('Blue', '18MHz'), (b, MT._scope_of(f'/x/{b}'))
 
 
 # ---- 7. tilefill --mosaic-out -----------------------------------------------------------------------------------------------------
@@ -492,16 +584,32 @@ def test_caveat_rows_and_domain_cards():
 def test_tilefill_mosaic_out():
     d = _tmp('mo_')
     try:
-        mo = os.path.join(d, 'mos')
-        assert 'no done v5 fill unit' in _raises(TF.TilefillRefusal, HS.v5_mosaic_pair, mo, 'Blue', 'R075')
+        mo, w = os.path.join(d, 'mos'), os.path.join(d, 'w')
+        assert 'no done v5 fill unit' in _raises(TF.TilefillRefusal, HS.v5_mosaic_pair, mo, 'Blue', 'R075', w, {})
         P = v5.paths(mo, 'Blue', 'R075')
         _hpx(P['unfilled_jysr'], np.zeros(12))
         _hpx(P['filled_jysr'], np.ones(12), TPFILL=True)
+        os.makedirs(os.path.dirname(P['tiles']))
+        json.dump(dict(tiles=[dict(lst=lst, source='pinned', md5=f'm{lst}') for lst in LSTS]), open(P['tiles'], 'w'))
         run = _run(mo)
         with run.unit(v5.unit_name('fill', 'Blue', 'R075')) as u:
             u.meta['md5'] = {'filled_jysr': _md5f(P['filled_jysr']), 'unfilled_jysr': _md5f(P['unfilled_jysr'])}
+            u.meta['tiles_md5'] = _md5f(P['tiles'])
             u.add_output(P['filled_jysr'], 'csv_table', test=False)
-        assert HS.v5_mosaic_pair(mo, 'Blue', 'R075')[:2] == (P['filled_jysr'], P['unfilled_jysr'])
+        want = {lst: f'm{lst}' for lst in LSTS}
+
+        def src(out_root, lst, scope, w_, rows, mode, plan_only=False, need_pb=True):
+            assert plan_only and need_pb is False
+            return dict(src={'pbcorr': ('p', 'n', want[lst] if mode == 'pinned' else 'rebuilt')})
+        with _patched((HS, 'tilefill_source', src)):
+            assert HS.v5_mosaic_pair(mo, 'Blue', 'R075', w, {})[:2] == (P['filled_jysr'], P['unfilled_jysr'])
+            want['06h'] = 'other'                                        # the installed master of 06h is not the mosaic's tile
+            assert '06h' in _raises(TF.TilefillRefusal, HS.v5_mosaic_pair, mo, 'Blue', 'R075', w, {})
+            want['06h'] = 'm06h'
+            os.makedirs(os.path.join(w, '09h_Blue'))                     # this run rebuilt 09h; the mosaic used the pinned tile
+            open(os.path.join(w, '09h_Blue', 'R075_hybrid.json'), 'w').write('{}')
+            assert '09h' in _raises(TF.TilefillRefusal, HS.v5_mosaic_pair, mo, 'Blue', 'R075', w, {})
+            shutil.rmtree(os.path.join(w, '09h_Blue'))
         got = []
 
         def bi(unf, fil, out):
@@ -510,15 +618,17 @@ def test_tilefill_mosaic_out():
             return dict(out=out, out_md5=_md5f(out), filled=fil, filled_md5=_md5f(fil), unfilled=unf, unfilled_md5=_md5f(unf), s=1.0,
                         donor_mhz=70, result='PASS')
         HS._FIELDS.clear()
-        with _patched((TF, 'band_increment', bi)):
-            r = HS.tilefill_field(os.path.join(d, 'w'), 'Blue', 'R075', {}, mo)
+        with _patched((TF, 'band_increment', bi), (HS, 'tilefill_source', src)):
+            r = HS.tilefill_field(w, 'Blue', 'R075', {}, mo)
         assert r['result'] == 'PASS' and got == [(P['unfilled_jysr'], P['filled_jysr'])], r
+        assert os.path.basename(r['out']).startswith('field_Blue_R075_v5-') and r['out'].endswith('.fits'), r['out']   # its own name
         with open(P['unfilled_jysr'], 'ab') as f:
             f.write(b'\0' * 2880)
-        assert 'HG13' in _raises(TF.TilefillRefusal, HS.v5_mosaic_pair, mo, 'Blue', 'R075')
+        with _patched((HS, 'tilefill_source', src)):
+            assert 'HG13' in _raises(TF.TilefillRefusal, HS.v5_mosaic_pair, mo, 'Blue', 'R075', w, {})
         HS._FIELDS.clear()
-        with _patched((TF, 'band_increment', bi)):
-            r = HS.tilefill_field(os.path.join(d, 'w'), 'Blue', 'R075', {}, mo)
+        with _patched((TF, 'band_increment', bi), (HS, 'tilefill_source', src)):
+            r = HS.tilefill_field(w, 'Blue', 'R075', {}, mo)
         assert r['result'] == 'FAIL' and 'HG13' in r['error'] and len(got) == 1, r
     finally:
         HS._FIELDS.clear()
@@ -536,6 +646,9 @@ def test_cli_dispatch():
     seen = []
     with _patched((v5, 'run', lambda args, run: seen.append(args.generation) or 0), (SM, '_start_gates', lambda run: None)):
         assert SM.run(_args(generation='v5'), types.SimpleNamespace(out_root='/nonexistent')) == 0 and seen == ['v5']
+        for k, val in (('list_jobs', True), ('lsts', '04h'), ('variants', 'NoTaper_R0'), ('jobs', 'x'), ('keep_stage', True)):
+            e = _raises(ValueError, SM.run, _args(generation='v5', **{k: val}), types.SimpleNamespace(out_root='/nonexistent'))
+            assert '--' + k.replace('_', '-') in e and seen == ['v5'], (k, e)
     import argparse
     p = argparse.ArgumentParser()
     SM.add_arguments(p)

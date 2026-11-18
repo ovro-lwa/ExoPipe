@@ -271,7 +271,8 @@ def coadd_jysr(lsts, variant, band, root=MASTER_ROOT_DEFAULT, workroot=None, las
                                          'unresolved sources.'),
                              ('COMMENT', 'intrinsic apparent flux = SIGNAL / PB_eff '
                                          '(companion PBeff map).'),
-                             ('PSFMAP', f"healpix_PSF_{stem}_nside{NSIDE}.fits",
+                             ('PSFMAP', f"healpix_PSF_{stem}{tag}_nside{NSIDE}.fits",   # the run's own psfmap (production omits
+                              # the tag: its v5 Jy/beam maps name the v2 Taper mosaic's psfmap; spec hybrid.md 4, PR-7a)
                               'Omega_eff identical to jysr pair (same weights)')]),
                 (psf, f"healpix_PBeff_{stem}{tag}_nside{NSIDE}.fits",
                  '', [('COMMENT', 'PB_eff = sum(w*PB)/sum(w); intrinsic = '

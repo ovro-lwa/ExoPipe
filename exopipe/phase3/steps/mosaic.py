@@ -268,6 +268,10 @@ def run(args, run):
 
     if getattr(args, 'generation', 'v2') == 'v5':
         from exopipe.phase3.lib.mosaic import v5
+        v2only = [f for f in ('jobs', 'variants', 'domains', 'products', 'lsts', 'list_jobs', 'keep_stage') if getattr(args, f, None)]
+        if v2only:                            # never ignored: v5 selects by --scopes, --weightings, --stages (--dry-run plans)
+            raise ValueError(f'--generation v5 refuses the v2 option(s) {", ".join("--" + f.replace("_", "-") for f in v2only)} '
+                             f'(v5 selects by --scopes, --weightings and --stages; --dry-run prints the plan)')
         _start_gates(run)
         return v5.run(args, run)
     for flag in ('weightings', 'hybrid_out'):
