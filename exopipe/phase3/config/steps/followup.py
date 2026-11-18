@@ -214,7 +214,6 @@ class followup_investigate(_Section):
     SNAP_FUNPACK = '/opt/devel/pipeline/envs/development/bin/funpack'   # FC:48, called by path; production runs
                                      #   `conda run -n development funpack` (snapshots.py:31, :246-247), resolving to it
     SNAP_PHASE1_ROOT = '/lustre/pipeline/exopipe/phase1'   # snapshots.py:45 (duplicate of paths.PHASE1_ROOT)
-    SNAP_SCRATCH_PARENT = '/fast/gh/main'   # node-local scratch parent of the T5 arm; snapshots.py:135, :183, :298, :382
     # P(astrophysical) log-odds (score.py:63-118; Gregg 2026-06-28 'rank by P(astrophysical) ONLY'); the sum is the logit
     SCORE_LOGODDS = {'morph_extended': -2.5, 'morph_point': 1.2, 'snap_morph_extended': -3.0, 'snap_morph_point': 1.8,
                      'unphysical_vi': -3.0, 'iv_coincident_max': 1.6, 'iv_coincident_vi_scale': 0.5,
@@ -233,7 +232,7 @@ class followup_investigate(_Section):
                       'PERSISTENT_MIN_EPOCHS', 'PERSISTENT_MIN_FRAC', 'CONTEXT_ELEV_MASK_DEG', 'CONTEXT_PEAK_SIGMA',
                       'XMATCH_RADIUS_74MHZ_ARCMIN', 'SNAP_NOMINAL_BEAM_PX', 'SNAP_DEFAULT_CDELT_DEG',
                       'SNAP_RADIUS_74MHZ_ARCMIN', 'SNAP_FUNPACK_RETRIES', 'SNAP_FUNPACK_TIMEOUT_S', 'SNAP_FUNPACK',
-                      'SNAP_PHASE1_ROOT', 'SNAP_SCRATCH_PARENT', 'SCORE_LOGODDS')
+                      'SNAP_PHASE1_ROOT', 'SCORE_LOGODDS')
     pinned_inputs = ('TOP50_CSV', 'BUNDLE_DIR')
     # The forced fitter's own values (box 1.5 beams floor, 40 px cap, 6.0 px fallback beam, 3 x rms upper limit;
     # followup/photometry.py:48, 85-90, 160) belong to the `fitting` section (core owner; MOVE_PLAN row 14).

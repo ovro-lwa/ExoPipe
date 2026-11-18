@@ -584,9 +584,11 @@ def test_funpack():
 
 
 def test_g30():
-    """G30: an escalation that raised refuses the investigate unit after its written outputs are recorded; the package
-    (followup/dossier.py:189-194, as production) keeps 'error: ...' in the evidence and writes the dossier without the
-    escalation's products, and production records the candidate done. The real package on the pinned rank-0 bundle
+    """G30: an escalation that raised refuses the investigate unit after its written outputs are recorded (B-30 site
+    fallbacks.FOLLOWUP_ESCALATION_FALLBACK, ruled 'refuse'); under production's value 'fallback' the unit is done and the
+    failure counted. The package (followup/dossier.py:189-194, as production) keeps 'error: ...' in the evidence and
+    writes the dossier without the escalation's products, and production records the candidate done. The real package
+    on the pinned rank-0 bundle
     (read only), one child process per run (the package reads its paths once, G13), T5 (_run_snapshot) replaced after
     the package import."""
     import subprocess
@@ -619,10 +621,12 @@ def test_g30():
         recs = _records(out) if os.path.isdir(os.path.join(out, '_records', 'followup')) else {}
         assert len(recs) == 1, (name, p.returncode, sorted(recs), p.stderr[-2000:])
         return p.returncode, list(recs.values())[0]
+    key = 'fallbacks.FOLLOWUP_ESCALATION_FALLBACK'
     rc, r = run('raise', 'raise')
     assert rc == 2 and r['status'] == 'refused', (rc, r['status'], r['reason'])
-    assert r['reason'].startswith('G30: escalation failed (snapshot: synthetic T5 failure (test_g30)) - the dossier '
-                                  'lacks those products') and r['reason'].endswith('(production records it done)'), r
+    assert (f'B-30 fallback site {key}: G30: escalation failed (snapshot: synthetic T5 failure (test_g30)) - the dossier '
+            'lacks those products; a re-run retries the unit - REFUSED') in r['reason'], r['reason']
+    assert [x['key'] for x in r.get('fallback_refusals') or []] == [key], r.get('fallback_refusals')
     classes = sorted({o['class'] for o in r['outputs']})
     assert {'followup_dossier', 'followup_table', 'followup_region'} <= set(classes), classes
     assert all(os.path.isfile(o['path']) for o in r['outputs']) and all(t['passed'] for t in r['tests']), r
@@ -630,11 +634,17 @@ def test_g30():
     assert tables == [r['unit'] + '_spectrum.csv'], tables      # no T5 tables (_snapshot_lc.csv, _snapshot_spectrum.csv)
     evp = [o['path'] for o in r['outputs'] if o['class'] == 'followup_dossier']
     assert json.load(open(evp[0]))['escalation']['snapshot'] == 'error: synthetic T5 failure (test_g30)', evp
+    n_ruled = len(r['outputs'])
     rc, r = run('raise', 'no_write', '--no-write')
-    assert rc == 2 and r['status'] == 'refused' and r['reason'].startswith('G30:') and not r['outputs'], (rc, r)
+    assert rc == 2 and r['status'] == 'refused' and f'{key}: G30:' in r['reason'] and not r['outputs'], (rc, r)
+    # production's value (parity/production_20261013.cfg): the same failure keeps the unit done, counted in its record
+    rc, r = run('raise', 'production', '--set', f'{key}=fallback')
+    assert rc == 0 and r['status'] == 'done' and r.get('fallbacks') == {key: 1}, (rc, r['status'], r['reason'],
+                                                                                 r.get('fallbacks'))
+    assert len(r['outputs']) == n_ruled and all(t['passed'] for t in r['tests']), r
     rc, r = run('return', 'done')
     assert rc == 0 and r['status'] == 'done' and r['outputs'], (rc, r['status'], r['reason'])
-    assert r['reason'] == '' and all(t['passed'] for t in r['tests']), r
+    assert r['reason'] == '' and all(t['passed'] for t in r['tests']) and not r.get('fallbacks'), r
 
 
 def test_summary():

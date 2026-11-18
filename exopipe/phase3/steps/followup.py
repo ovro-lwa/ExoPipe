@@ -82,9 +82,10 @@ Failure modes (exit 2 = refused, the gate named; 3 = nothing to do; 1 = error):
   tess: G9 star not resolved by SIMBAD (refused); G10 no TESS sector observed the star in the epoch (exit 3, summary kept).
   investigate: G11 discovery V residual not in the bundle, G12 discovery fit failed (refused); G13 the package config was
   imported before its paths were set (refused); G30 an escalation raised (the package keeps 'error: ...' in the
-  evidence and writes the dossier without its products): refused after the written outputs are recorded, and under
-  --no-write (production records the candidate done); no node-local scratch (pass --work); --no-write ends no-input
-  (exit 3).
+  evidence and writes the dossier without its products; production records the candidate done): a failed sub-product,
+  B-30 site fallbacks.FOLLOWUP_ESCALATION_FALLBACK - 'refuse' (ruled) refuses after the written outputs are recorded,
+  and under --no-write; 'fallback' (production, the parity file) records the unit done, counted; no node-local scratch
+  (pass --work); --no-write ends no-input (exit 3).
   hone: G16 reproduction gate failed (refused, per candidate); G17 no frames / no box (exit 3 per candidate).
   periodicity: G26 no frames for (LST, band, S), G27 no light curves for (band, S) (exit 3); G28 a light curve or table not
   recorded by a done unit of the previous stage (nor in the pinned pass-5 roots), fewer than 24 cells' light curves, or
@@ -110,6 +111,7 @@ import re
 import sys
 import time
 
+from exopipe.phase3.core import fallback
 from exopipe.phase3.core.validate import content_test
 
 SUMMARY = ('follow-up: EP WXT plan archive, TESS curve, candidate dossiers + summary, honing, 10-min periodicity, fold, '
@@ -825,15 +827,18 @@ def _investigate_one(u, run, args, c, R, D, C, env, no_xmatch):
         u.refuse(f'{gate}: {ev["error"]}')
     # G30: an escalation raised. The package (followup/dossier.py:189-194, as production) catches the exception, keeps
     # 'error: <exception>' in ev['escalation'] and writes the dossier without that escalation's products, and production
-    # records the candidate done. Here the unit refuses after its written outputs are recorded, so a re-run retries it
-    # (standing rules "Gates refuse; they do not warn" and "no done marker for zero output").
+    # records the candidate done. A failed sub-product: B-30 (a), Gregg 2026-10-13 (R-GREGG-20261013-REFACTOR-SHEET-DADMIT-
+    # B01-B02-B03-B05-B30-B32: "a missing/unreadable input or failed sub-product refuses the unit with a recorded reason
+    # (exit 2)"), behind its config key as that ruling's implementation says - site fallbacks.FOLLOWUP_ESCALATION_FALLBACK,
+    # reached after the written outputs are recorded: 'refuse' refuses the unit (a refused unit is never resumed, so a
+    # re-run retries it); 'fallback' (production, parity/production_20261013.cfg) keeps it done, counted in the record.
     failed = [f'{k}: {v[len("error:"):].strip()}' for k, v in sorted((ev.get('escalation') or {}).items())
               if isinstance(v, str) and v.startswith('error:')]
     g30 = (f'G30: escalation failed ({"; ".join(failed)}) - the dossier lacks those products; a re-run retries the '
-           f'unit (production records it done)') if failed else None
+           f'unit') if failed else None
     if args.no_write:
         if g30:
-            u.refuse(g30)
+            fallback.site('fallbacks.FOLLOWUP_ESCALATION_FALLBACK', g30)
         raise NoInput(f'--no-write: evidence kept in this record only (P(astro) {pa.get("p_astro")})')
     for key, val in sorted((ev.get('outputs') or {}).items()):
         cls = _DOSSIER_CLASSES.get(key)
@@ -843,7 +848,7 @@ def _investigate_one(u, run, args, c, R, D, C, env, no_xmatch):
             if p:
                 u.add_output(p, cls)
     if g30:
-        u.refuse(g30)
+        fallback.site('fallbacks.FOLLOWUP_ESCALATION_FALLBACK', g30)
 
 
 # ---- summary: port of attic/run_all_top50.py (SUMMARY_COLS :27-38, _round :41-42, _snap_peak_vi :45-55, _row :58-108,
