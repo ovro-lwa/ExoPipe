@@ -86,8 +86,8 @@ Failure modes (exit 2 = refused, with the gate named; 3 = nothing to do; 1 = err
   A content test failing on any output refuses its unit. A later stage without a done record of its predecessor refuses.
 
 Generation v5 (--generation v5; the hybrid mosaics of mosaic/Run_HYBRID, plan/specs/hybrid.md 2.8, 2.10-2.14): units (stage, scope,
-weighting) of the stages stage, coadd, caveat (hybrid.CAVEAT_SCOPES), fill, render - see lib/mosaic/v5.py. --scopes (default
-mosaic_v5.SCOPES), --weightings, --hybrid-out (the rebuilt tiles), --out (required), --work (node-local link trees):
+weighting) of the stages stage, coadd, pkcorr, caveat (hybrid.CAVEAT_SCOPES), fill, render, content - see lib/mosaic/v5.py.
+--scopes (default mosaic_v5.SCOPES), --weightings, --hybrid-out (the rebuilt tiles), --out (required), --work (node-local link trees):
     exopipe3 mosaic --generation v5 --scopes Blue --weightings R075 --out /fast/gh/v5run --work /fast/gh/scratch
     exopipe3 mosaic --generation v5 --hybrid-out /fast/gh/hybrid_q1 --scopes 18MHz,Red --out /fast/gh/v5run --dry-run
 """
@@ -98,6 +98,7 @@ SUMMARY = 'all-sky HEALPix mosaics of the deep masters: co-add, renders, QA, arc
 TIERS = ('deep',)
 SELECTORS = ('tier', 'scopes', 'lsts')
 CONFIG = ('mosaic', 'mosaic_coadd', 'mosaic_render', 'mosaic_qa', 'mosaic_conform', 'mosaic_v5', 'mosaic_caveat', 'mosaic_fill',
+          'mosaic_content', 'mosaic_pkcorr',
           'hybrid', 'hybrid_recon', 'hybrid_tilefill', 'paths', 'exclusions', 'instrument', 'runner', 'site')
 WRITES = True
 STAGES = ('inputs', 'coadd', 'render', 'qa', 'conform')
@@ -123,7 +124,7 @@ def add_arguments(p):
     g = p.add_argument_group('generation v5 (the hybrid mosaics, lib/mosaic/v5.py)')
     g.add_argument('--generation', choices=('v2', 'v5'), default='v2',
                    help='v2 (default): the mosaics of the deep masters, stages inputs..conform; v5: the hybrid mosaics of the unfilled '
-                        'hybrid masters, stages stage,coadd,caveat,fill,render (--out required)')
+                        'hybrid masters, stages stage,coadd,pkcorr,caveat,fill,render,content (--out required)')
     g.add_argument('--weightings', metavar='LIST', help='v5: R075, R0 or both (default mosaic_v5.WEIGHTINGS)')
     g.add_argument('--hybrid-out', metavar='DIR',
                    help='v5 stage: the `exopipe3 hybrid` work run whose done hybrid records give the rebuilt tiles (work); every other '

@@ -1,4 +1,4 @@
-"""`exopipe3 mosaic --generation v5`: the hybrid mosaics (spec plan/specs/hybrid.md 2.8, 2.10-2.14; PR-7a). Unit of work: (stage,
+"""`exopipe3 mosaic --generation v5`: the hybrid mosaics (spec plan/specs/hybrid.md 2.8, 2.10-2.14; PR-7a, PR-7b). Unit of work: (stage,
 scope, weighting); records <out>/_records/mosaic/v5-<stage>.<scope>_<w>.json; files under <out>/<scope>_<w>/.
 
   stage   the 24 UNFILLED beam-corrected hybrid masters of the scope and weighting (HG14: every LST, no Taper-only stand-in), one per LST
@@ -11,6 +11,11 @@ scope, weighting); records <out>/_records/mosaic/v5-<stage>.<scope>_<w>.json; fi
           coadd_jysr in process with the mosaic_coadd globals, tag mosaic_v5.TAG, in Jy/sr and Jy/beam; every tile must be 'added'
           (HG14). -> unfilled/healpix_I_deep_<V>_<S>_lsfill_{jysr,jybeam}_nside2048.fits [mosaic_map], healpix_PSF_..._lsfill_
           nside2048.fits [mosaic_psfmap], healpix_PBeff_..._lsfill_nside2048.fits [mosaic_pbeff]; md5s in the record
+  pkcorr  lib/mosaic/pkcorr (MP): mosaic_pkcorr.ROUNDS rounds of injected 50 Jy sources in node-local copies of the staged tiles, each
+          co-added by the engine and differenced against the UNFILLED Jy/sr map (production's --clean-map), Omega_eff from the PSF
+          map; test_pkcorr inline. -> pkcorr/healpix_PKCORR_I_deep_<V>_<S>_lsfill_nside2048.fits [mosaic_pkcorr_map],
+          peak_corr_curve_<V>_<S>_lsfill.csv [mosaic_pkcorr_curve], peak_recovery_... .csv [mosaic_pkcorr_recovery], pkcorr_... .json
+          [mosaic_pkcorr_report]
   caveat  hybrid.CAVEAT_SCOPES only: lib/mosaic/caveat.caveat_map with the mosaic's tile weights; test_caveat_map against the unfilled
           PB_eff map. -> caveat/healpix_CAVEAT_I_deep_<V>_<S>_lsfill_nside128.fits [mosaic_caveat_map], caveats_<V>_<S>_lsfill.csv
           [mosaic_caveat_table]
@@ -19,17 +24,23 @@ scope, weighting); records <out>/_records/mosaic/v5-<stage>.<scope>_<w>.json; fi
           field of `exopipe3 hybrid --stages tilefill --mosaic-out <out>` reads them)
   render  lib/mosaic/band_products.build of the FILLED maps with their PSF map (the beam card), mosaic_render's width, pixel and
           southern edge. -> renders/<S>_<V>_lsfill_{jysr,jybeam}_{Mollweide,RADec}.fits [mosaic_render]
+  content lib/mosaic/content (MT): TEST 1 of the UNFILLED Jy/sr and Jy/beam maps against their own staged tiles, and TEST 2 (the
+          links and the md5 of each tile's first 64 MB), on the link tree of the coadd. -> content/content_I_deep_<V>_<S>_lsfill.json
+          [mosaic_content_report]. Production's V5 tables/summary.csv rows are the unfilled maps' values; TEST 1R is the Stokes V
+          test (the hybrid mosaics are Stokes I only)
 
 A stage reads its predecessors' unit records (status done), never a glob, and refuses unless they were made from the tile list now
 in stage/tiles.json (its md5 in the coadd and fill records). A unit removes its own earlier outputs first; the fill renames a map
 into place only when its inline test passed; a unit that does not end done (a refusal, an error, a failed content test) removes the
-outputs it placed, and its record keeps the reason. Content tests (TEST 1/1R/2), PKCORR, conformance v5 and the tables are PR-7b.
+outputs it placed, and its record keeps the reason. The stages that read the tiles (coadd, pkcorr, caveat, content) bind the
+mosaic_coadd globals and refuse unless they equal the coadd record's. Conformance v5, the tables and the push class are PR-7c.
 """
 import json
 import os
 
 LSTS = tuple(f'{h:02d}h' for h in range(24))
-STAGES = ('stage', 'coadd', 'caveat', 'fill', 'render')
+STAGES = ('stage', 'coadd', 'pkcorr', 'caveat', 'fill', 'render', 'content')
+#   spec 3.1 (exopipe3 mosaic --generation v5 --stages stage,coadd,pkcorr,caveat,fill,render,content,conform,tables)
 STEP = 'mosaic'
 
 
@@ -62,6 +73,7 @@ def coadd_names(scope, w, nside=None):
 def paths(out, scope, w):
     """Every file path of the unit, by key."""
     from exopipe.phase3.lib.mosaic import caveat as CV
+    from exopipe.phase3.lib.mosaic import pkcorr as PK
     C = _cfg()
     d = unit_dir(out, scope, w)
     n = coadd_names(scope, w)
@@ -70,7 +82,10 @@ def paths(out, scope, w):
     p = {'tiles': os.path.join(d, 'stage', 'tiles.json'),
          **{f'unfilled_{k}': os.path.join(d, 'unfilled', f) for k, f in n.items()},
          'filled_jysr': os.path.join(d, 'healpix', n['jysr']), 'filled_jybeam': os.path.join(d, 'healpix', n['jybeam']),
-         'caveat_map': os.path.join(d, 'caveat', cm), 'caveat_table': os.path.join(d, 'caveat', ct)}
+         'caveat_map': os.path.join(d, 'caveat', cm), 'caveat_table': os.path.join(d, 'caveat', ct),
+         'content': os.path.join(d, 'content', f'content_I_deep_{v}_{scope}{tag}.json')}
+    for k, f in PK.names(v, scope, tag, int(C.mosaic_coadd.NSIDE)).items():
+        p[f'pkcorr_{k}'] = os.path.join(d, 'pkcorr', f)
     for dom in ('jysr', 'jybeam'):
         for k, suf in (('mollweide', 'Mollweide'), ('radec', 'RADec')):
             p[f'render_{dom}_{k}'] = os.path.join(d, 'renders', f'{scope}_{v}{tag}_{dom}_{suf}.fits')
@@ -89,7 +104,14 @@ def outputs_of(st, out, scope, w):
         return [(p['caveat_map'], 'mosaic_caveat_map'), (p['caveat_table'], 'mosaic_caveat_table')]
     if st == 'fill':
         return [(p['filled_jysr'], 'mosaic_filled_map'), (p['filled_jybeam'], 'mosaic_filled_map')]
-    return [(p[f'render_{d}_{k}'], 'mosaic_render') for d in ('jysr', 'jybeam') for k in ('mollweide', 'radec')]
+    if st == 'render':
+        return [(p[f'render_{d}_{k}'], 'mosaic_render') for d in ('jysr', 'jybeam') for k in ('mollweide', 'radec')]
+    if st == 'pkcorr':
+        return [(p['pkcorr_map'], 'mosaic_pkcorr_map'), (p['pkcorr_curve'], 'mosaic_pkcorr_curve'),
+                (p['pkcorr_recovery'], 'mosaic_pkcorr_recovery'), (p['pkcorr_json'], 'mosaic_pkcorr_report')]
+    if st == 'content':
+        return [(p['content'], 'mosaic_content_report')]
+    raise ValueError(f'unknown v5 stage {st!r}')
 
 
 def stages_for(scope, stages):
@@ -181,6 +203,37 @@ def _bind_engine():
     return g
 
 
+def _engine_as_coadd(u, scope, w, co):
+    """Bind the engine globals and refuse unless they equal the coadd record's (the weights the unfilled maps were made with)."""
+    g = json.loads(json.dumps(_bind_engine()))
+    if g != co['meta'].get('engine_globals'):
+        u.refuse(f'{scope} {w}: the mosaic_coadd weights now {g} are not the coadd\'s {co["meta"].get("engine_globals")} - REFUSED')
+    u.meta['engine_globals'] = g
+    return g
+
+
+def _link_tree(t, scope, w, sd):
+    """The staged tiles and their weighting maps linked under the engine's names (coadd_jysr._paths) in the scratch dir sd."""
+    from exopipe.phase3.lib.masters.pb_apply import deep_pb_name
+    v = variant_of(w)
+    for r in t['tiles']:
+        d = os.path.join(sd, r['lst'])
+        os.makedirs(d, exist_ok=True)
+        os.symlink(r['path'], os.path.join(d, f'I_deep_{v}_pbcorr_{scope}.fits'))
+        os.symlink(r['pb'], os.path.join(d, deep_pb_name(scope, w)))
+    return [r['lst'] for r in t['tiles']]
+
+
+def _coadd_maps(u, out, scope, w, co, keys):
+    """The coadd's unfilled maps (keys of coadd_names) at their recorded md5s, recorded as inputs; else refuse."""
+    P = paths(out, scope, w)
+    for k in keys:
+        pp, want = P[f'unfilled_{k}'], co['meta']['md5'][k]
+        if not os.path.exists(pp) or _md5(pp) != want:
+            u.refuse(f'{pp} missing or changed since the coadd (md5) - REFUSED')
+        u.add_input(pp, extra={'md5': want})
+
+
 # ---- stage ------------------------------------------------------------------------------------------------------------------------
 
 def resolve_tiles(scope, w, hybrid_out, plan_only=False):
@@ -258,7 +311,6 @@ def stage_unit(u, scope, w, out, hybrid_out):
 def coadd_unit(u, scope, w, out, work):
     import sys
     from exopipe.phase3.core import fitsio
-    from exopipe.phase3.lib.masters.pb_apply import deep_pb_name
     from exopipe.phase3.lib.mosaic import coadd_jysr as mcj
     from exopipe.phase3.lib.mosaic.steps_worker import _VERDICT, _Tee
     C = _cfg()
@@ -272,14 +324,9 @@ def coadd_unit(u, scope, w, out, work):
     sd = fitsio.scratch_dir(f'mosaic_v5_{scope}_{w}', work)
     tmp = os.path.join(unit_dir(out, scope, w), f'.tmp_coadd_{os.getpid()}')
     try:
-        for r in t['tiles']:
-            d = os.path.join(sd, r['lst'])
-            os.makedirs(d, exist_ok=True)
-            os.symlink(r['path'], os.path.join(d, f'I_deep_{v}_pbcorr_{scope}.fits'))
-            os.symlink(r['pb'], os.path.join(d, deep_pb_name(scope, w)))
+        lsts = _link_tree(t, scope, w, sd)
         u.meta['engine_globals'] = _bind_engine()
         os.makedirs(tmp, exist_ok=True)
-        lsts = [r['lst'] for r in t['tiles']]
         verdicts = {}
         for dom in ('jysr', 'jybeam'):
             tee = _Tee(sys.stdout)
@@ -339,10 +386,7 @@ def caveat_unit(u, scope, w, out):
     u.add_input(P['unfilled_pbeff'], extra={'md5': co['meta']['md5']['pbeff']})
     t = _tiles(u, out, scope, w)
     _same_tiles(u, scope, w, t['json_md5'], co, 'coadd')
-    g = json.loads(json.dumps(_bind_engine()))
-    if g != co['meta'].get('engine_globals'):
-        u.refuse(f'{scope} {w}: the mosaic_coadd weights now {g} are not the coadd\'s {co["meta"].get("engine_globals")} - REFUSED')
-    u.meta['engine_globals'] = g
+    _engine_as_coadd(u, scope, w, co)
     try:
         rec = CV.caveat_map(t['tiles'], variant_of(w), scope, os.path.dirname(P['caveat_map']), P['unfilled_pbeff'])
     except CV.CaveatRefusal as e:
@@ -462,6 +506,109 @@ def render_unit(u, scope, w, out, work):
                          scope=scope, dec_cut=R.RENDER_DEC_CUT_DEG)
 
 
+# ---- pkcorr -----------------------------------------------------------------------------------------------------------------------
+
+def pkcorr_unit(u, scope, w, out, work):
+    import shutil
+    from exopipe.phase3.core import fitsio
+    from exopipe.phase3.lib.mosaic import coadd_jysr as mcj
+    from exopipe.phase3.lib.mosaic import pkcorr as PK
+    from exopipe.phase3.lib.mosaic import tests_v5  # noqa: F401
+    C = _cfg()
+    P = paths(out, scope, w)
+    own = [pp for pp, _c in outputs_of('pkcorr', out, scope, w)]
+    for pp, c in outputs_of('pkcorr', out, scope, w):
+        u.plan(pp, c)
+    _clear(own)
+    co = _upstream(u, out, 'coadd', scope, w)
+    t = _tiles(u, out, scope, w)
+    _same_tiles(u, scope, w, t['json_md5'], co, 'coadd')
+    _coadd_maps(u, out, scope, w, co, ('jysr', 'psf'))
+    _engine_as_coadd(u, scope, w, co)
+    nside, rounds, v, tag = int(mcj.NSIDE), int(C.mosaic_pkcorr.ROUNDS), variant_of(w), C.mosaic_v5.TAG
+    mos_c, psf = PK.read_map(P['unfilled_jysr']), PK.read_map(P['unfilled_psf'])
+    if len(mos_c) != 12 * nside ** 2 or len(psf) != 12 * nside ** 2:
+        u.refuse(f'{scope} {w}: the unfilled maps hold {len(mos_c)} / {len(psf)} pixels, not NSIDE {nside} - REFUSED')
+    sd = fitsio.scratch_dir(f'mosaic_v5_pkcorr_{scope}_{w}', work)
+    inj = fitsio.scratch_dir(f'mosaic_v5_pkcorr_inj_{scope}_{w}', work)
+    tmp = os.path.join(unit_dir(out, scope, w), f'.tmp_pkcorr_{os.getpid()}')
+    try:
+        lsts = _link_tree(t, scope, w, sd)
+        os.makedirs(tmp, exist_ok=True)
+        try:
+            _T, res = PK.run_band(sd, scope, v, tmp, lsts, rounds, tag, mos_c, psf, inj, nside,
+                                  record_dir=os.path.dirname(P['pkcorr_map']))
+        except PK.InjectionRefusal as e:
+            u.refuse(f'{scope} {w}: {e} - REFUSED')
+        os.makedirs(os.path.dirname(P['pkcorr_map']), exist_ok=True)
+        for k in ('map', 'curve', 'recovery', 'json'):
+            os.replace(os.path.join(tmp, os.path.basename(P[f'pkcorr_{k}'])), P[f'pkcorr_{k}'])
+    finally:
+        fitsio.cleanup(sd)
+        fitsio.cleanup(inj)
+        shutil.rmtree(tmp, ignore_errors=True)
+    tp = res['test_pkcorr']
+    u.meta['pkcorr'] = {k: res[k] for k in ('rounds', 'rec_median', 'rec_min', 'rec_max', 'ra_scatter_median_mad')}
+    u.meta['md5'] = {k: _md5(P[f'pkcorr_{k}']) for k in ('map', 'curve', 'recovery', 'json')}
+    u.meta['tiles_md5'] = t['json_md5']
+    u.check('test_pkcorr', tp.get('verdict') == 'pass', value=tp, path=P['pkcorr_map'], cls='mosaic_pkcorr_map',
+            detail=f'nodes {tp["nodes"]}, few rounds {tp["missing_or_few_rounds"][:5]}, out of range {tp["out_of_range"][:5]}, '
+                   f'map vs curve {tp["max_map_err"]:.2e}')
+    ctx = dict(rounds=rounds, scope=scope, variant=v)
+    u.add_output(P['pkcorr_map'], 'mosaic_pkcorr_map', curve=P['pkcorr_curve'], **ctx)
+    u.add_output(P['pkcorr_curve'], 'mosaic_pkcorr_curve', **ctx)
+    u.add_output(P['pkcorr_recovery'], 'mosaic_pkcorr_recovery', **ctx)
+    u.add_output(P['pkcorr_json'], 'mosaic_pkcorr_report', map_path=P['pkcorr_map'], **ctx)
+
+
+# ---- content ----------------------------------------------------------------------------------------------------------------------
+
+def content_unit(u, scope, w, out, work):
+    import glob
+    from exopipe.phase3.core import fitsio
+    from exopipe.phase3.lib.mosaic import content as CT
+    from exopipe.phase3.lib.mosaic import tests_v5  # noqa: F401
+    C = _cfg()
+    P = paths(out, scope, w)
+    for pp, c in outputs_of('content', out, scope, w):
+        u.plan(pp, c)
+    _clear([P['content']])
+    co = _upstream(u, out, 'coadd', scope, w)
+    t = _tiles(u, out, scope, w)
+    _same_tiles(u, scope, w, t['json_md5'], co, 'coadd')
+    _coadd_maps(u, out, scope, w, co, ('jysr', 'jybeam'))
+    _engine_as_coadd(u, scope, w, co)
+    parents = C.mosaic_content.PARENTS
+    cats = sorted(os.path.basename(x) for x in glob.glob(os.path.join(glob.escape(parents), f'master_R075_*_{scope}.gaul.csv')))
+    if not cats:
+        u.refuse(f'{scope} {w}: no parent catalog master_R075_*_{scope}.gaul.csv in mosaic_content.PARENTS {parents} - REFUSED')
+    u.meta['parents'] = {'dir': parents, 'n_catalogs': len(cats)}
+    v = variant_of(w)
+    sd = fitsio.scratch_dir(f'mosaic_v5_content_{scope}_{w}', work)
+    try:
+        _link_tree(t, scope, w, sd)
+        rep = {dom: CT.run(P[f'unfilled_{dom}'], sd, v, scope, dom, parents) for dom in ('jysr', 'jybeam')}
+    finally:
+        fitsio.cleanup(sd)
+    want = sorted(os.path.realpath(r['path']) for r in t['tiles'])
+    for dom, r in rep.items():
+        r['provenance_matches_tiles'] = sorted(x['file'] for x in r['provenance']) == want
+    os.makedirs(os.path.dirname(P['content']), exist_ok=True)
+    tmp = f'{P["content"]}.tmp.{os.getpid()}'
+    with open(tmp, 'w') as f:
+        json.dump(rep, f, indent=1)
+    os.replace(tmp, P['content'])
+    for dom, r in rep.items():
+        u.check(f'TEST1.{dom}', r['result'] == 'PASS', value={k: r[k] for k in ('n_tiles', 'n_sources', 'median_ratio', 'p05', 'p95',
+                                                                              'frac_within_5pct', 'result')},
+                path=P['content'], cls='mosaic_content_report',
+                detail=f'{r["n_sources"]} sources, median map / tiles {r["median_ratio"]:.5f}, within 5 % {r["frac_within_5pct"]:.3f}')
+        u.check(f'TEST2.{dom}', r['provenance_matches_tiles'] and all(x['symlink'] for x in r['provenance']),
+                value=len(r['provenance']), path=P['content'], cls='mosaic_content_report',
+                detail='every input a link to the staged tile' if r['provenance_matches_tiles'] else 'the links are not the staged tiles')
+    u.add_output(P['content'], 'mosaic_content_report', n_tiles=len(t['tiles']), scope=scope, variant=v)
+
+
 # ---- the step ---------------------------------------------------------------------------------------------------------------------
 
 def select_stages(args):
@@ -557,8 +704,12 @@ def run(args, run):
                     caveat_unit(u, sc, w, run.out_root)
                 elif st == 'fill':
                     fill_unit(u, sc, w, run.out_root)
-                else:
+                elif st == 'render':
                     render_unit(u, sc, w, run.out_root, work)
+                elif st == 'pkcorr':
+                    pkcorr_unit(u, sc, w, run.out_root, work)
+                else:
+                    content_unit(u, sc, w, run.out_root, work)
             except BaseException:
                 _clear(own)                   # nothing of a unit that did not end done stays in place
                 raise
