@@ -900,20 +900,26 @@ def test_content_unit():
 
 
 def test_curve_map_and_catalog_reader():
-    import healpy as hp
+    try:
+        import healpy as hp
+    except ImportError:                                                          # CI has no healpy: the catalog reader only
+        hp = None
     from exopipe.phase3.lib.mosaic import content as CT
     from exopipe.phase3.lib.mosaic import pkcorr as PK
     cd, cm = [-30.0, 0.0, 40.0, 88.0], [0.80, 0.85, 0.90, 0.95]
-    for nside in (4, 16):
+    for nside in (4, 16) if hp else ():
         th, _ = hp.pix2ang(nside, np.arange(hp.nside2npix(nside)))
         assert np.array_equal(PK.curve_map(cd, cm, nside), np.interp(90.0 - np.degrees(th), cd, cm))   # MP 129-130
     d = _tmp('cmap_')
     try:
         mp = os.path.join(d, 'pk.fits')
-        with _patched((CFG.mosaic_coadd, 'NSIDE', 1)):
-            _hpx(mp, PK.curve_map(cd, cm, 1).astype(np.float32), NSIDE=1, ORDERING='RING', BUNIT='', SINJ=50.0, NROUNDS=5)
-            ok, err, msg = T5.pkcorr_map_is_curve(mp, rounds=5)                    # no curve: no comparison, no TypeError
-            assert ok and err is None and 'no curve' in msg, (ok, err, msg)
+        if hp is None:
+            print('  (healpy absent: curve_map and the map-without-curve test not run)')
+        else:
+            with _patched((CFG.mosaic_coadd, 'NSIDE', 1)):
+                _hpx(mp, PK.curve_map(cd, cm, 1).astype(np.float32), NSIDE=1, ORDERING='RING', BUNIT='', SINJ=50.0, NROUNDS=5)
+                ok, err, msg = T5.pkcorr_map_is_curve(mp, rounds=5)                # no curve: no comparison, no TypeError
+                assert ok and err is None and 'no curve' in msg, (ok, err, msg)
         par = os.path.join(d, 'cats[1]')                                         # a '[' in the directory name
         os.makedirs(par)
         open(os.path.join(par, 'master_R075_00h_Blue.gaul.csv'), 'w').write('# header only\n\n')
