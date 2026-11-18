@@ -23,10 +23,23 @@ the step's policies. A child started by core.legacy.run (EXOPIPE3_FALLBACK_OUT s
 (core/parity_sitecustomize/sitecustomize.py; one file per process, so its own descendants' dumps never overwrite it); a
 forked worker or a descendant started any other way writes each event to the owner's spool at once.
 Design: exopipe_ops/refactor_20261012/plan/wave2/B30_DESIGN.md.
+
+A MEMORY MAP OF A LUSTRE FILE refused in a child (R-GREGG-20261117-NO-MMAP-OF-LUSTRE-FILES-READ-OR-WRITE; the gate is in
+core/parity_sitecustomize/sitecustomize.py) is a refusal of this same state, under the key MAP_KEY, so it is sticky in the
+same way: the unit that was running refuses even when the child caught the refusal and exited 0. The gate writes one line
+per refused map to the file $EXOPIPE3_MAP_REFUSAL_LOG names; two collectors read those lines into this state:
+- one child call (core.legacy.run, serve's run_shell): map_log_new() gives the call its own file, map_collect() reads it
+  and the gate's lines in the call's own output (a descendant that dropped the variable, or an append that failed, still
+  wrote its line to stderr), removes the file and records each line once;
+- the step itself (export_env, cli.main): its own file for every other descendant (plain subprocesses), read at each
+  mark / since / take / outside / dump - attributed to the thread that reads it, as a forked worker's spooled event.
+A long-lived server (serve's procs.start, jupiter serve) is never a unit: its environment drops the variable, and its
+refusals are in its own log (stderr) - the request that asked for the map fails.
 """
 import collections
 import json
 import os
+import re
 import tempfile
 import threading
 
@@ -53,6 +66,14 @@ _LOCK = threading.Lock()
 _OUT = os.environ.get('EXOPIPE3_FALLBACK_OUT')
 _OWNER = os.getpid() if _OUT else int(os.environ.get('EXOPIPE3_FALLBACK_SPOOL_OWNER') or os.getpid())
 _ENV = None
+# NO-LUSTRE-MAP (module docstring). MAP_RULING_ID is the gate's own (core/parity_sitecustomize/sitecustomize.py
+# _LUSTRE_RULING_ID; tests/test_no_mmap.py checks the two are equal): a gate line is 'NO-LUSTRE-MAP: <file> pid <pid> <id>'.
+MAP_KEY = 'gates.NO_LUSTRE_MAP'
+MAP_ENV = 'EXOPIPE3_MAP_REFUSAL_LOG'
+MAP_RULING_ID = 'R-GREGG-20261117-NO-MMAP-OF-LUSTRE-FILES-READ-OR-WRITE'
+_MAP_LINE = re.compile(r'NO-LUSTRE-MAP: .+ pid \d+ ' + re.escape(MAP_RULING_ID))
+_MAP_STEP = {}                  # this step's own collector: {'pid', 'path', 'off'} (export_env)
+_MAP_LOCK = threading.Lock()
 
 
 class FallbackRefused(Refusal):
@@ -108,7 +129,9 @@ def _record(kind, key, n, detail, tid=None, spool=True):
 
 
 def _drain():
-    """Absorb the spooled events of this process's forked workers (owner only); attributed to the draining thread."""
+    """Absorb the spooled events of this process's forked workers (owner only) and the new lines of this step's own map
+    refusal file; attributed to the draining thread."""
+    _drain_map_step()
     if os.getpid() != _OWNER:
         return
     d = _spool_dir()
@@ -198,6 +221,93 @@ def absorb(counts, refusals):
         _record('refuse', r[0], 1, r[1], spool=False)
 
 
+def refusal_text(key, detail):
+    """How a unit or a child call names one refusal of this state: the gate's own line for a refused map (MAP_KEY), else
+    'B-30 fallback site <key>: <detail>'."""
+    return str(detail) if key == MAP_KEY else f'B-30 fallback site {key}: {detail}'
+
+
+def map_lines(lines):
+    """The gate's own lines among ``lines`` (text), each stripped of its line end."""
+    return [ln.rstrip('\r\n') for ln in lines if _MAP_LINE.fullmatch(ln.rstrip('\r\n'))]
+
+
+def map_log_new(prefix='exopipe3_maprefusal_'):
+    """A new empty file for the map refusal lines of one child call (the caller puts it in the child's MAP_ENV). The gate
+    appends only to a file that exists, so a descendant that outlives the call never recreates it once collected."""
+    fd, path = tempfile.mkstemp(prefix=prefix, suffix='.log')
+    os.close(fd)
+    return path
+
+
+def map_collect(path, output=(), seen=()):
+    """The map refusals of one child call: the lines in its file ``path`` (removed here) and the gate's lines in the call's
+    own ``output`` (lines of text), each refused map once (a line in both counts once; a line only in the output counts,
+    unless it is among ``seen``: lines recorded another way - the child's own nested calls', from its fallback dump - that
+    the child may have printed); each is recorded in this process's state under MAP_KEY - sticky: the running unit refuses
+    (a forked worker spools it to the owner) - and the list is returned in order."""
+    try:
+        with open(path, 'rb') as f:
+            data = f.read()
+    except OSError:
+        data = b''
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    got = [ln for ln in data.decode('utf-8', 'replace').splitlines() if ln.strip()]
+    left = collections.Counter(got) + collections.Counter(seen)
+    extra = []
+    for ln in map_lines(output or ()):
+        if left[ln] > 0:
+            left[ln] -= 1
+        else:
+            extra.append(ln)
+    got += extra
+    for ln in got:
+        _record('refuse', MAP_KEY, 1, ln)
+    return got
+
+
+def _map_step_open():
+    """This step's own map refusal file (export_env): every descendant not started through a collector writes there."""
+    if _MAP_STEP.get('pid') == os.getpid():
+        return
+    import atexit
+    path = map_log_new(prefix=f'exopipe3_maprefusal_step_{os.getpid()}_')
+    with _MAP_LOCK:
+        _MAP_STEP.update(pid=os.getpid(), path=path, off=0)
+    os.environ[MAP_ENV] = path
+    atexit.register(_map_step_close, os.getpid(), path)
+
+
+def _map_step_close(pid, path):
+    if os.getpid() == pid:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
+def _drain_map_step():
+    """Record the complete lines this step's map refusal file got since the last read (the step process only)."""
+    with _MAP_LOCK:
+        if _MAP_STEP.get('pid') != os.getpid():
+            return
+        try:
+            with open(_MAP_STEP['path'], 'rb') as f:
+                f.seek(_MAP_STEP['off'])
+                data = f.read()
+        except OSError:
+            return
+        end = data.rfind(b'\n') + 1                 # complete lines only: a line being written is read next time
+        _MAP_STEP['off'] += end
+    for ln in data[:end].decode('utf-8', 'replace').splitlines():
+        if ln.strip():
+            _record('refuse', MAP_KEY, 1, ln, spool=False)
+
+
 def all_keys(cfg=None):
     """{'fallbacks.KEY': value} of every fallback key (the keys of the config section ``fallbacks``)."""
     if cfg is None:
@@ -207,10 +317,12 @@ def all_keys(cfg=None):
 
 def export_env():
     """A step process (cli.main, after its overrides): every descendant - legacy.run children, forked workers, plain
-    subprocesses - uses this process's policies, and a descendant that does not dump its own state spools it here."""
+    subprocesses - uses this process's policies, and a descendant that does not dump its own state spools it here; a
+    descendant's refused map of a Lustre file lands in this step's own map refusal file (MAP_ENV), read into this state."""
     os.environ['EXOPIPE3_FALLBACK_POLICY'] = json.dumps(all_keys(), sort_keys=True)
     os.environ['EXOPIPE3_FALLBACK_POLICY_PID'] = str(os.getpid())
     os.environ['EXOPIPE3_FALLBACK_SPOOL_OWNER'] = str(os.getpid())
+    _map_step_open()
 
 
 def child_env():

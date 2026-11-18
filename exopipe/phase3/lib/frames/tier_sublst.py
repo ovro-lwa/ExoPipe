@@ -243,12 +243,12 @@ def judge_own_lines(res, lines, script, refusal_codes, refusal_text=None):
     """legacy.run judges a call that failed outside its refusal codes (refused or error) by the last lines of the WHOLE log,
     and these logs are appended across calls: an earlier call's refusal line would make this call's crash a refusal. Re-judge
     it by THIS call's own last lines - legacy.run's rule, texts and window (its refusal_text and tail_lines defaults, read from
-    its signature) - and the reason as legacy.run words it. Exit 0, an exit in refusal_codes and a B-30 fallback refusal
-    (sticky) are left as legacy.run judged them. (The fix in core would be legacy.run reading its tail from after its own
-    header line; then this is a no-op.)"""
+    its signature) - and the reason as legacy.run words it. Exit 0, an exit in refusal_codes, a B-30 fallback refusal and a
+    refused memory map of a Lustre file (both sticky) are left as legacy.run judged them. (The fix in core would be
+    legacy.run reading its tail from after its own header line; then this is a no-op.)"""
     import inspect
     from exopipe.phase3.core import legacy
-    if res.rc == 0 or res.rc in tuple(refusal_codes) or res.fallback_refusals:
+    if res.rc == 0 or res.rc in tuple(refusal_codes) or res.fallback_refusals or getattr(res, 'map_refusals', None):
         return
     par = inspect.signature(legacy.run).parameters
     texts = tuple(refusal_text) if refusal_text is not None else tuple(par['refusal_text'].default)

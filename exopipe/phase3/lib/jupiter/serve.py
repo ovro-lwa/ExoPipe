@@ -156,6 +156,8 @@ def start(spec, roots):
     env = {k: v for k, v in os.environ.items() if not k.startswith(clear)}
     env.update(_C().jupiter.ENV)
     env.pop('PYTHONPATH', None)
+    from exopipe.phase3.core import fallback
+    env.pop(fallback.MAP_ENV, None)    # a server is never a unit: its refused maps of Lustre files stay in its log (stderr)
     if roots.guard:
         from exopipe.phase3.core import guard
         env['PYTHONPATH'] = guard.SITECUSTOMIZE_DIR

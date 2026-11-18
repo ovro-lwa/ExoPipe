@@ -11,6 +11,9 @@ does not do, each documented where it is used:
                 (EXOPIPE3_WRAPS) in every Python child; with neither variable set it installs nothing)
   server_env()  the environment of a long-lived server (procs.start): the same rules, without the exit-time fingerprint
                 file (a server never exits normally); its code identity is recorded by the App probe child instead
+A memory map of a Lustre file refused in a child (core/parity_sitecustomize/sitecustomize.py; core/fallback.py): run_shell
+collects the refusal lines of its call as core.legacy.run does - the running unit refuses, whatever the script's exit
+code; a server is never a unit, so server_env drops the collector's variable and the server's refusals stay in its log.
 The scripts move into lib/serve/ at absorption (MOVE_PLAN 2.11), when the owning chats stop editing them.
 """
 import os
@@ -107,21 +110,33 @@ def _base_env(extra=None, with_parity=True):
 
 
 def server_env(extra):
-    return _base_env(extra)
+    from exopipe.phase3.core import fallback
+    env = _base_env(extra)
+    env.pop(fallback.MAP_ENV, None)     # a server is never a unit: its refused maps stay in its own log (module docstring)
+    return env
 
 
 def run_shell(name, args, env=None, cwd=None, timeout=None, log=None, unit=None):
-    """bash <ops>/<script> args (see the module docstring). Returns (rc, combined output)."""
+    """bash <ops>/<script> args (see the module docstring). Returns (rc, combined output). A map of a Lustre file refused
+    in any of its children is recorded as a sticky refusal (core/fallback.py): the running unit refuses."""
     from exopipe.phase3.config import CFG
+    from exopipe.phase3.core import fallback
     argv = ['bash', path(name)] + [str(a) for a in args]
     to = timeout or CFG.serve.LEGACY_TIMEOUT_S
     t0 = time.time()
+    child = _base_env(env)
+    out = ''
+    mr_path = fallback.map_log_new()
+    child[fallback.MAP_ENV] = mr_path
     try:
-        p = subprocess.run(argv, cwd=cwd or ops_root(), env=_base_env(env), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                           stdin=subprocess.DEVNULL, timeout=to)
-        out, rc = p.stdout.decode('utf-8', 'replace'), p.returncode
-    except subprocess.TimeoutExpired as e:
-        out, rc = (e.stdout or b'').decode('utf-8', 'replace') + f'\nTIMEOUT after {to} s', 124
+        try:
+            p = subprocess.run(argv, cwd=cwd or ops_root(), env=child, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                               stdin=subprocess.DEVNULL, timeout=to)
+            out, rc = p.stdout.decode('utf-8', 'replace'), p.returncode
+        except subprocess.TimeoutExpired as e:
+            out, rc = (e.stdout or b'').decode('utf-8', 'replace') + f'\nTIMEOUT after {to} s', 124
+    finally:
+        fallback.map_collect(mr_path, out.splitlines())   # the call's file + the gate's lines in its output; removed
     if log:
         with open(log, 'a') as f:
             f.write(out if out.endswith('\n') or not out else out + '\n')

@@ -521,7 +521,7 @@ class Run:
         st = [u.status for u in self.units]
         if 'error' in st:
             return EXIT_ERROR
-        if 'refused' in st or self.fallback_outside()[0]:   # B-30: a site refused outside every unit refuses the run
+        if 'refused' in st or self.fallback_outside()[0]:   # B-30 / a refused map: one outside every unit refuses the run
             return EXIT_REFUSED
         if not st:
             return EXIT_NO_INPUT
@@ -540,12 +540,15 @@ class Run:
         if self.dry_run or getattr(self, 'no_records', False):
             return None
         p = os.path.join(self.out_root, '_records', self.step, '_runs', f'{self.run_id}.json')
+        from exopipe.phase3.core.fallback import MAP_KEY
         refs, counts = self.fallback_outside()
         extra = {}
         if counts:
             extra['fallbacks_outside_units'] = dict(sorted(counts.items()))
-        if refs:
-            extra['fallback_refusals_outside_units'] = [{'key': k, 'detail': d} for k, d in refs]
+        if any(k != MAP_KEY for k, _ in refs):
+            extra['fallback_refusals_outside_units'] = [{'key': k, 'detail': d} for k, d in refs if k != MAP_KEY]
+        if any(k == MAP_KEY for k, _ in refs):
+            extra['map_refusals_outside_units'] = [d for k, d in refs if k == MAP_KEY]
         atomic_write_json(p, dict(self.header(), finished=utcnow(), started=self.started, summary=self.summary(),
                                   reason=getattr(self, 'run_reason', None), **extra,
                                   units=[{'unit': u.name, 'status': u.status, 'reason': u.reason,
@@ -708,14 +711,15 @@ class UnitRecord:
         self._fallback_taken = fallback.take(self._fallback_mark)
         refs = self._fallback_taken[0]
         if refs and (etype is None or (issubclass(etype, Exception) and not issubclass(etype, Refusal))):
-            # STICKY (B-30): a fallback site refused inside the unit, and code between the site and the unit caught it
-            # (or the unit went on and failed later) - the unit refuses with the site named. KeyboardInterrupt / SystemExit
-            # keep their own outcome (below).
+            # STICKY (B-30, and a refused memory map of a Lustre file - core/fallback.py MAP_KEY): a fallback site or the
+            # map gate refused inside the unit, and code between it and the unit caught it (or the unit went on and failed
+            # later) - the unit refuses with the first refusal named. KeyboardInterrupt / SystemExit keep their own
+            # outcome (below).
             if etype is not None:
-                self.notes.append('after a refused fallback site: '
+                self.notes.append('after a refusal inside the unit (a fallback site or a memory map of a Lustre file): '
                                   + ''.join(traceback.format_exception(etype, exc, tb))[-4000:])
             key, detail = refs[0]
-            self.status, self.reason = 'refused', (f'B-30 fallback site {key}: {detail} - REFUSED (caught before the '
+            self.status, self.reason = 'refused', (f'{fallback.refusal_text(key, detail)} - REFUSED (caught before the '
                                                    f'unit; {len(refs)} refusal(s) in the unit)')
             self.write()
             return etype is not None
@@ -748,12 +752,15 @@ class UnitRecord:
         return d
 
     def _fallback_fields(self):
+        from exopipe.phase3.core.fallback import MAP_KEY
         refs, counts = self._fallback_state()
         out = {}
         if counts:
             out['fallbacks'] = dict(sorted(counts.items()))
-        if refs:
-            out['fallback_refusals'] = [{'key': k, 'detail': d} for k, d in refs]
+        if any(k != MAP_KEY for k, _ in refs):
+            out['fallback_refusals'] = [{'key': k, 'detail': d} for k, d in refs if k != MAP_KEY]
+        if any(k == MAP_KEY for k, _ in refs):     # the gate's lines (core/fallback.py): refused maps of Lustre files
+            out['map_refusals'] = [d for k, d in refs if k == MAP_KEY]
         return out
 
     def write(self):
