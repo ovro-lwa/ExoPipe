@@ -62,7 +62,8 @@ SPEC_KEYS = {
                     'RULED_TAPER_ONLY', 'JUMP10'),
     'hybrid_full': ('MEMBERS', 'REGRID'),
     'hybrid_tilefill': ('TILE_RT_NSIDE', 'TILE_RT_MAX', 'COMPACT_K', 'COMPACT_MED_MAX', 'COMPACT_MAX', 'COMPACT_SIG',
-                        'TPCAVEAT_UNITS', 'UNFILLED_INPUTS'),
+                        'TPCAVEAT_UNITS', 'UNFILLED_INPUTS', 'LFSS_MHZ', 'LMAX', 'APOD_DEG', 'L_LO', 'L_HI', 'TPCAVEAT_TEXT',
+                        'REPAIR_KEYS', 'FILLED_MOSAIC_RUN', 'FILLED_MOSAIC_GLOB', 'UNFILLED_MOSAIC_RUNS'),
 }
 
 
@@ -173,13 +174,26 @@ def test_stage_gates_and_out():
             hybrid=types.SimpleNamespace(STRIATION_SELECTION=sel, STRIATION_SELECTION_MD5=md5,
                                          LSRECON_RUNS={'R1': os.path.join(d, 'lsrecon', 'R1')}, ARCHIVE_HYBRID=os.path.join(d, 'H'),
                                          ARCHIVE_MASTERS=os.path.join(d, 'M'), WORK_ROOT=os.path.join(d, 'lsrecon')),
-            hybrid_tilefill=types.SimpleNamespace(UNFILLED_INPUTS=None))
+            hybrid_tilefill=types.SimpleNamespace(UNFILLED_INPUTS=None, FILLED_MOSAIC_RUN=os.path.join(d, 'MOS'),
+                                                  UNFILLED_MOSAIC_RUNS=(os.path.join(d, 'MQ'),)))
         assert any(p.startswith('HG0') for p in HS.stage_gate_problems('stack', cfg))
         assert any(p.startswith('HG6') for p in HS.stage_gate_problems('recon', cfg))
         assert any(p.startswith('HG6') for p in HS.stage_gate_problems('wideband', cfg))
         for st in ('hybrid', 'full'):                                 # selection md5 equal: only HG0 (they read COADD_SB too)
             assert [p[:3] for p in HS.stage_gate_problems(st, cfg)] == ['HG0'], st
-        assert any('UNFILLED_INPUTS' in p for p in HS.stage_gate_problems('tilefill', cfg))
+        tf = HS.stage_gate_problems('tilefill', cfg)                 # HG13: nothing pinned, no mosaic runs
+        assert any('UNFILLED_INPUTS' in p for p in tf) and sum('mosaic run' in p for p in tf) == 2, tf
+        os.mkdir(cfg.hybrid_tilefill.FILLED_MOSAIC_RUN); os.mkdir(cfg.hybrid_tilefill.UNFILLED_MOSAIC_RUNS[0])
+        man = os.path.join(d, 'HQ.manifest.csv')
+        with open(man, 'w') as f:
+            f.write('path,size,mtime_ns,sha256,md5,link_target\n/x.fits,1,1,aa,bb,\n')
+        sha = hashlib.sha256(open(man, 'rb').read()).hexdigest()
+        cfg.hybrid_tilefill.UNFILLED_INPUTS = {'HQ': (man, sha)}
+        HS._ROWS.clear()
+        assert HS.stage_gate_problems('tilefill', cfg) == []
+        cfg.hybrid_tilefill.UNFILLED_INPUTS = {'HQ': (man, '0' * 64)}  # the manifest changed after it was pinned
+        HS._ROWS.clear()
+        assert any('HG13' in p and 'sha256' in p for p in HS.stage_gate_problems('tilefill', cfg))
         os.mkdir(cfg.hybrid_stack.COADD_SB)
         for st in ('stack', 'hybrid', 'full'):
             assert HS.stage_gate_problems(st, cfg) == [], st
@@ -291,10 +305,13 @@ def test_cli_skeleton_refuses_every_unit():
         # hybrid (ported, PR-4): HG0 refuses it with the stack (COADD_SB points nowhere); in CI the striation-selection gate as well
         hyb = [l for l in lines if l.startswith('  refused hybrid.')]
         assert len(hyb) == 2 and all('HG0' in l for l in hyb), (hyb, out[-3000:])
-        nref, nno = 6 + hg6, int(not hg6)
+        # tilefill (ported, PR-5): HG13 where the pinned manifests are absent (CI), else no input (no hybrid record in --out)
+        tf = [l for l in lines if l.startswith('  refused tilefill.')]
+        hg13 = len(tf) == 2 and all('HG13' in l and 'UNFILLED_INPUTS' in l for l in tf)
+        assert hg13 or not tf, (tf, out[-3000:])
+        nref, nno = 4 + hg6 + 2 * hg13, int(not hg6) + 2 * int(not hg13)
         assert len(lines) == nref, out[-3000:]
         assert any('wideband.18h_Blue_R075' in l and '64MHz holds no passed reconstruction' in l for l in lines), lines
-        assert sum('UNFILLED_INPUTS' in l for l in lines) == 2, lines           # tilefill x 2
         assert f'refused {nref}' in out and 'exit 2' in out, out[-500:]
         assert nno == 0 or f'no-input {nno}' in out, out[-800:]
         # no --out: refused before any unit (a new work run is always named)
@@ -381,6 +398,9 @@ def test_values_equal_production():
         (C.hybrid_tilefill.TILE_RT_NSIDE, MF['TILE_RT_NSIDE']), (C.hybrid_tilefill.TILE_RT_MAX, MF['TILE_RT_MAX']),
         (C.hybrid_tilefill.COMPACT_K, MF['COMPACT_K']), (C.hybrid_tilefill.COMPACT_MED_MAX, MF['COMPACT_MED_MAX']),
         (C.hybrid_tilefill.COMPACT_MAX, MF['COMPACT_MAX']), (C.hybrid_tilefill.COMPACT_SIG, MF['COMPACT_SIG']),
+        (C.hybrid_tilefill.LFSS_MHZ, MF['LFSS_MHZ']), (C.hybrid_tilefill.LMAX, MF['LMAX']), (C.hybrid_tilefill.APOD_DEG, MF['APOD']),
+        (C.hybrid_tilefill.L_LO, MF['L_LO']), (C.hybrid_tilefill.L_HI, MF['L_HI']),
+        (os.path.join(C.hybrid_recon.LFSS_DIR, 'healpix'), MF['LFSS_DIR']),
     ]
     bad = [(i, a, b) for i, (a, b) in enumerate(pairs) if a != b or type(a) is not type(b) and not (
         isinstance(a, (int, float)) and isinstance(b, (int, float)))]
@@ -390,6 +410,8 @@ def test_values_equal_production():
     # the TPCAVEAT units of the per-tile fill driver (literal set CAVEAT)
     drv = _module_constants(open(FILL_DRIVER).read())
     assert set(C.hybrid_tilefill.TPCAVEAT_UNITS) == set(drv['CAVEAT']), (C.hybrid_tilefill.TPCAVEAT_UNITS, drv['CAVEAT'])
+    assert C.hybrid_tilefill.TPCAVEAT_TEXT == drv['CAVEAT_TXT'], drv.get('CAVEAT_TXT')
+    assert (C.hybrid_tilefill.FILLED_MOSAIC_RUN, C.hybrid_tilefill.UNFILLED_MOSAIC_RUNS[-1]) == (drv['MOS'], drv['MQ'])
     # the recon cascade: the tries of fleet-recon (NL 2209: budget x1, x3, then x3 at elev10)
     src = _git_show('exopipe/phase3/notaper_largescale.py')
     assert "(3 * NITER, 3 * MAXCYC, 'elev10')" in src and '(3 * NITER, 3 * MAXCYC, a.clean_region)' in src
