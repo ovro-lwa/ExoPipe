@@ -404,3 +404,133 @@ def wideband_large_scale_level(path, scope=None, **ctx):
         ok = 'test_large_scale_level' not in rec
         return ok, None, 'no wideband level outside the caveat scopes (production records it only there)' if ok else 'unexpected level'
     return _level(rec, scope)
+
+
+# ------------------------------------------------------------------------------------------- pull request PR-4: hybrid, full
+# Classes:
+#   hybrid_master_product  a hybrid product (the hybrid, its beam-corrected sibling, its CLEAN residual): a phase3 name with
+#                          lsrecon + lsfill naming the unit's scope, Taper and robust, the kind's token (none / pbcorr / cleanres),
+#                          the Taper master's grid, finite non-zero pixels, the caveat cards in the caveat scopes (the hybrid)
+#   hybrid_pbdiffuse       the Full cell's diffuse PB (an intermediate): the grid, not a product, finite positive values
+#   hybrid_record          <w>_hybrid.json: the unit; test_hybrid re-evaluated against the config limits (identity, NaN mask,
+#                          large scales, small scales or a caveat only in the caveat scopes, compact sources); the beam-corrected
+#                          identity; the CLEAN residual read back or a recorded reason; every product's md5 equal to the file's
+
+def _hybrid_rules():
+    from exopipe.phase3.lib.hybrid import master as M
+    return M.bind()
+
+
+@content_test('hybrid_master_product')
+def hybrid_name(path, scope=None, weighting=None, kind='hybrid', **ctx):
+    from exopipe.phase3.core.products import parse_name
+    from exopipe.phase3.lib.hybrid.common import VARIANT
+    _d, h = _read(path)
+    pn = parse_name(str(h.get('PRODNAME', '')))
+    if pn.get('grammar') != 'phase3':
+        return False, h.get('PRODNAME'), f'PRODNAME {h.get("PRODNAME")!r} is not a phase3 name'
+    proc = set(pn['proc'])
+    want = {'pbcorr': {'pbcorr'}, 'cleanres': {'cleanres'}}.get(kind, set())
+    bad = [f'{k} {pn.get(k)!r} != {w!r}' for k, w in (('scope', scope), ('taper', 'Taper'),
+                                                       ('robust', VARIANT[weighting][2] if weighting else None)) if w is not None and pn.get(k) != w]
+    if not {'lsrecon', 'lsfill'} <= proc or (proc & {'pbcorr', 'cleanres'}) != want:
+        bad.append(f'proc {sorted(proc)} for a {kind}')
+    return not bad, h.get('PRODNAME'), '; '.join(bad) if bad else f'phase3 name, lsrecon + lsfill, {kind}'
+
+
+@content_test('hybrid_master_product')
+def hybrid_grid(path, taper=None, **ctx):
+    if not taper:
+        return False, None, 'no Taper master in the context'
+    return _grid(path, taper)
+
+
+@content_test('hybrid_master_product')
+def hybrid_finite(path, **ctx):
+    return finite_nonzero(path)
+
+
+@content_test('hybrid_master_product')
+def hybrid_caveat_cards(path, scope=None, kind='hybrid', **ctx):
+    g = _hybrid_rules()
+    _d, h = _read(path)
+    if kind != 'hybrid' or scope not in g['CAVEAT_SCOPES']:
+        return True, None, 'no caveat cards owed'
+    ok = 'LSCAVEAT' in h and isinstance(h.get('LSSMALL'), float)
+    return ok, h.get('LSSMALL'), f'LSCAVEAT {h.get("LSCAVEAT")!r}, LSSMALL {h.get("LSSMALL")!r}'
+
+
+@content_test('hybrid_pbdiffuse')
+def pbdiffuse_grid(path, taper=None, **ctx):
+    if not taper:
+        return False, None, 'no Taper master in the context'
+    return _grid(path, taper)
+
+
+@content_test('hybrid_pbdiffuse')
+def pbdiffuse_values(path, **ctx):
+    d, _h = _read(path)
+    f = np.isfinite(d)
+    ok = f.any() and float(np.nanmin(d)) >= 0 and float(np.nanmax(d)) > 0
+    return ok, float(np.nanmax(d)) if f.any() else None, f'finite fraction {f.mean():.4f}, range {np.nanmin(d) if f.any() else None} .. {np.nanmax(d) if f.any() else None}'
+
+
+@content_test('hybrid_pbdiffuse')
+def pbdiffuse_not_product(path, **ctx):
+    return _not_product(path)
+
+
+@content_test('hybrid_record')
+def hybrid_record_unit(path, lst=None, scope=None, weighting=None, **ctx):
+    rec = _load(path)
+    bad = [f'{k} {rec.get(k)!r} != {w!r}' for k, w in (('lst', lst), ('scope', scope), ('weighting', weighting)) if rec.get(k) != w]
+    return not bad, None, '; '.join(bad) if bad else f'{lst} {scope} {weighting}'
+
+
+@content_test('hybrid_record')
+def hybrid_test(path, scope=None, **ctx):
+    g = _hybrid_rules()
+    t = _load(path).get('test_hybrid') or {}
+    small_ok = isinstance(t.get('small_scale_rel'), float) and t['small_scale_rel'] < g['HYB_SMALL_LIMIT']
+    bad = []
+    if not (isinstance(t.get('max_rel_err'), float) and t['max_rel_err'] < g['IDENTITY']):
+        bad.append(f"identity {t.get('max_rel_err')} (rule < {g['IDENTITY']})")
+    if t.get('nan_mask_ok') is not True:
+        bad.append('NaN mask')
+    if not (isinstance(t.get('large_scale_rel'), float) and t['large_scale_rel'] < g['LARGE_REL']):
+        bad.append(f"large scales {t.get('large_scale_rel')} (rule < {g['LARGE_REL']})")
+    if not small_ok and scope not in g['CAVEAT_SCOPES']:
+        bad.append(f"small scales {t.get('small_scale_rel')} (rule < {g['HYB_SMALL_LIMIT']} outside the caveat scopes)")
+    if t.get('verdict') != ('pass' if small_ok else 'caveat'):
+        bad.append(f"verdict {t.get('verdict')!r}")
+    c = t.get('test_compact_sources') or {}
+    tol = g['COMPACT_TOL_LOW'] if scope in g['COMPACT_LOW_SCOPES'] else g['COMPACT_TOL']
+    if not (isinstance(c.get('n'), int) and c['n'] >= g['COMPACT_N_MIN'] and isinstance(c.get('median'), float) and abs(c['median'] - 1) < tol):
+        bad.append(f'compact sources {c}')
+    return not bad, t.get('verdict'), '; '.join(bad) if bad else (f"identity {t['max_rel_err']:.2g}, large {t['large_scale_rel']:.2g}, "
+                                                                 f"small {t['small_scale_rel']:.3g} ({t['verdict']}), compact {c['median']:.4f}")
+
+
+@content_test('hybrid_record')
+def hybrid_products(path, **ctx):
+    """Every product the record names exists with the recorded md5; the beam-corrected identity passed; the CLEAN residual was
+    read back, or the record says why there is none."""
+    g = _hybrid_rules()
+    from exopipe.phase3.lib.install.steps_common import md5
+    rec = _load(path)
+    bad = []
+    for k in ('product', 'product_pbcorr', 'product_cleanres'):
+        p = rec.get(k)
+        if p is None:
+            if k != 'product_cleanres' or not rec.get('cleanres_skipped'):
+                bad.append(f'no {k}' + (' and no recorded reason' if k == 'product_cleanres' else ''))
+            continue
+        if not os.path.exists(p['path']) or md5(p['path']) != p.get('md5'):
+            bad.append(f'{k} {os.path.basename(p["path"])} md5 differs from the record')
+    t = (rec.get('product_pbcorr') or {}).get('test_hybrid_pbcorr') or {}
+    if not (t.get('verdict') == 'pass' and isinstance(t.get('max_rel_err'), float) and t['max_rel_err'] < g['IDENTITY']):
+        bad.append(f'test_hybrid_pbcorr {t}')
+    r = (rec.get('product_cleanres') or {}).get('test_readback')
+    if rec.get('product_cleanres') and not (r and r.get('verdict') == 'pass'):
+        bad.append(f'cleanres read-back {r}')
+    return not bad, None, '; '.join(bad) if bad else 'products as recorded; pbcorr identity and read-backs pass'
