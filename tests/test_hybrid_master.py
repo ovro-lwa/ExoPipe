@@ -51,7 +51,8 @@ def test_bind_equals_production():
                 STRIATION_SELECTION='/lustre/pipeline/exopipe/phase3/mosaic/Run_FEATHER3_20241218-20251029/tables/selection_20261022.csv',
                 STRIATION_RESTORED='/lustre/gh/main/phase3/lsrecon/striation_restored_20261022',
                 STRIATION_SCOPES=('59MHz', '64MHz', '69MHz', '73MHz', '78MHz', '82MHz', 'Blue'),
-                COADD_SB='/data07/gh/phase3/coadd_sb', HYB_SMALL_LIMIT=5e-3, RECON_GEN='lsrecon-v3-horizon-grad')
+                COADD_SB='/data07/gh/phase3/coadd_sb', HYB_SMALL_LIMIT=5e-3, RECON_GEN='lsrecon-v3-horizon-grad',
+                PBDIFFUSE_WEIGHTING='R0')
     bad = {k: (g[k], v) for k, v in want.items() if g[k] != v}
     assert not bad, bad
     assert {k: tuple(v) for k, v in g['WIDEBANDS'].items()} == dict(Red=RED, Green=GREEN, Blue=BLUE, Full=RED + GREEN + BLUE)
@@ -157,6 +158,16 @@ def test_stack_refused_from_v2_record():
         json.dump(dict(status='done', refused_items=[item]), f)
     assert M.stack_refused(run_dir, '18h', '46MHz', 'T075') == item['reason']
     assert M.stack_refused(run_dir, '18h', '46MHz', 'T0') is None                           # the R0 unit has no record
+    rp = os.path.join(run_dir, '_records', 'hybrid', 'stack.18h_46MHz_R075.json')
+    for rec, want in ((dict(status='done', refused_items=[dict(item, gate='HG1')]), 'refused by HG1'),   # the hybrid's own base
+                      (dict(status='error', reason='Traceback ...', refused_items=[]), 'its stack unit ended error')):
+        with open(rp, 'w') as f:
+            json.dump(rec, f)
+        try:
+            M.stack_refused(run_dir, '18h', '46MHz', 'T075')
+            raise AssertionError(f'no refusal: {rec}')
+        except REC.ReconRefusal as e:
+            assert want in str(e), e
     open(os.path.join(run_dir, '18h_46MHz', 'T075_stack.json'), 'w').close()
     assert M.stack_refused(run_dir, '18h', '46MHz', 'T075') is None                         # a stack record: passed
 
@@ -186,6 +197,11 @@ def test_hybrid_unit_outcomes():
     an_input = os.path.join(wd, 'R075_lsrecon_model.fits')
     open(an_input, 'w').close()
     real = M.hybrid_unit
+    from exopipe.phase3.lib.hybrid.stack import StackRefusal
+
+    def stack_refusing(lst, scope, v, run_dir):
+        open(plan[1][0], 'w').close()
+        raise StackRefusal('18h 46MHz T075: the installed master holds nights excluded in data_decisions.csv - REFUSING', 'HG1')
 
     def refusing(lst, scope, v, run_dir):
         open(plan[0][0], 'w').close()                                   # a partial write the refusal must remove
@@ -207,6 +223,18 @@ def test_hybrid_unit_outcomes():
         u = run()
         assert u.status == 'refused' and 'test_hybrid FAILED' in u.reason, (u.status, u.reason)
         assert not any(os.path.exists(p) for p, _c in plan)
+        M.hybrid_unit = stack_refusing                  # a refusal of the stack library inside the span: refused, not an error
+        u = run()
+        assert u.status == 'refused' and 'excluded in data_decisions.csv' in u.reason, (u.status, u.reason)
+        assert not any(os.path.exists(p) for p, _c in plan)
+        os.makedirs(os.path.join(out, '_records', 'hybrid'), exist_ok=True)       # a stack unit that did not end done
+        sr = os.path.join(out, '_records', 'hybrid', 'stack.18h_46MHz_R075.json')
+        with open(sr, 'w') as f:
+            json.dump(dict(status='error', reason='Traceback ...'), f)
+        M.hybrid_unit = passing
+        u = run()
+        assert u.status == 'refused' and 'the stacks of 46MHz may not be used' in u.reason, (u.status, u.reason)
+        os.remove(sr)
         M.hybrid_unit = passing
         u = run()
         assert u.status == 'done', (u.status, u.reason, [t for t in u.tests if not t['passed']])
@@ -227,6 +255,8 @@ def test_hybrid_unit_outcomes():
     assert [os.path.basename(p) for p, _c in HS.hybrid_plan(out, '18h', 'Full', 'R0')] == [
         'I_deep_Taper_R0_lsrecon_lsfill_Full.fits', 'I_deep_Taper_R0_lsrecon_lsfill_pbcorr_Full.fits', 'PBdiffuse_deep_Full.fits',
         'R0_hybrid.json']
+    assert [os.path.basename(p) for p, _c in HS.hybrid_plan(out, '18h', 'Full', 'R075')] == [   # the map has one writer: R0
+        'I_deep_Taper_R075_lsrecon_lsfill_Full.fits', 'I_deep_Taper_R075_lsrecon_lsfill_pbcorr_Full.fits', 'R075_hybrid.json']
 
 
 class TestHybridMaster(unittest.TestCase):

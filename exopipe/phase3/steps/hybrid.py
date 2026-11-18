@@ -179,9 +179,10 @@ def _md5(path):
 def stage_gate_problems(stage, cfg):
     """The configuration gates a stage refuses on before any unit's own gates (spec 3.4). [] = none."""
     out = []
-    if stage == 'stack' and not os.path.isdir(cfg.hybrid_stack.COADD_SB):
+    if stage in ('stack', 'hybrid', 'full') and not os.path.isdir(cfg.hybrid_stack.COADD_SB):
         out.append(f'HG0: the co-add build directories hybrid_stack.COADD_SB = {cfg.hybrid_stack.COADD_SB} are not on this node '
-                   f'(node-local; the stack rebuild test reads weights.csv and the flows there)')
+                   f'(node-local; the stack rebuild test reads weights.csv and the flows there; the hybrid span reads a refused Taper '
+                   f'stack\'s membership and a wideband master\'s weights.csv there)')
     if stage in ('recon', 'wideband') and not cfg.hybrid_psf2x.REGISTRY:
         out.append('HG6: the double-size PSF registry hybrid_psf2x.REGISTRY is empty (question Q1 with Gregg: which antenna list '
                    'each band\'s PSF was made with)')
@@ -363,12 +364,10 @@ def _clear(paths):
 def _upstream_problem(out_root, unit, paths):
     """Why an upstream unit's files on disk may not be used, else None: its v2 unit record (when there is one; inputs staged from
     production have none) must be done and must not list any of `paths` as a refused item."""
-    import json
-    rp = os.path.join(out_root, '_records', 'hybrid', f'{unit}.json')
-    if not os.path.exists(rp):
+    from exopipe.phase3.lib.hybrid.common import unit_record
+    r = unit_record(out_root, unit)
+    if r is None:
         return None
-    with open(rp) as f:
-        r = json.load(f)
     if r.get('status') != 'done':
         return f"unit {unit} ended {r.get('status')}: {str(r.get('reason'))[:200]}"
     want = {os.path.abspath(p) for p in paths}
@@ -552,12 +551,15 @@ def wideband_unit(u, lst, scope, w, out_root):
 
 def hybrid_plan(out_root, lst, scope, w):
     """[(path, product class)] a hybrid unit owes (NL 1274-1389): the hybrid, its beam-corrected sibling, its CLEAN residual, the
-    record; Full (NL 1404-1504): no CLEAN residual (its subbands sit on three grids), and the cell's diffuse PB map."""
+    record; Full (NL 1404-1504): no CLEAN residual (its subbands sit on three grids), and the cell's diffuse PB map from the unit of
+    weighting hybrid_full.PBDIFFUSE_WEIGHTING only (one file for both weightings)."""
+    from exopipe.phase3.config import CFG
     wd = os.path.join(out_root, f'{lst}_{scope}')
     out = [(os.path.join(wd, f'I_deep_Taper_{w}_lsrecon_lsfill_{scope}.fits'), 'hybrid_master_product'),
            (os.path.join(wd, f'I_deep_Taper_{w}_lsrecon_lsfill_pbcorr_{scope}.fits'), 'hybrid_master_product')]
     if scope == 'Full':
-        out.append((os.path.join(wd, f'PBdiffuse_deep_{scope}.fits'), 'hybrid_pbdiffuse'))
+        if w == CFG.hybrid_full.PBDIFFUSE_WEIGHTING:
+            out.append((os.path.join(wd, f'PBdiffuse_deep_{scope}.fits'), 'hybrid_pbdiffuse'))
     else:
         out.append((os.path.join(wd, f'I_deep_Taper_{w}_lsrecon_lsfill_cleanres_{scope}.fits'), 'hybrid_master_product'))
     return out + [(os.path.join(wd, f'{w}_hybrid.json'), 'hybrid_record')]
@@ -578,6 +580,7 @@ def hybrid_master_unit(u, lst, scope, w, out_root):
     from exopipe.phase3.core.record import NoInput
     from exopipe.phase3.lib.hybrid import master as M
     from exopipe.phase3.lib.hybrid import recon as REC
+    from exopipe.phase3.lib.hybrid.stack import StackRefusal
     wd = os.path.join(out_root, f'{lst}_{scope}')
     members = tuple(CFG.hybrid_full.MEMBERS) if scope == 'Full' else tuple(CFG.hybrid.WIDEBAND_MEMBERS.get(scope, ()))
     hyb = lambda b: os.path.join(out_root, f'{lst}_{b}', f'{w}_hybrid.json')
@@ -597,16 +600,19 @@ def hybrid_master_unit(u, lst, scope, w, out_root):
         why = _upstream_problem(out_root, f'hybrid.{lst}_{b}_{w}', [hyb(b)])
         if why:
             u.refuse(f'member {b} may not be used: {why} - REFUSED')
+    for b in members or (scope,):                 # the span reads each subband's stack records and its Taper residual stack
+        why = _upstream_problem(out_root, f'stack.{lst}_{b}_{w}', [])
+        if why:
+            u.refuse(f'the stacks of {b} may not be used: {why} - REFUSED')
     plan = hybrid_plan(out_root, lst, scope, w)
     for p, c in plan:
         u.plan(p, c)
-    # the Full cell's diffuse PB map is one file for both weightings (the same weights and maps, NL 1404): never removed by a unit
-    own = [p for p, c in plan if c != 'hybrid_pbdiffuse']
+    own = [p for p, _c in plan]
     _clear(own)
     M.READS.clear()
     try:
         rec = M.hybrid_unit(lst, scope, w, out_root)
-    except REC.ReconRefusal as e:
+    except (REC.ReconRefusal, StackRefusal) as e:
         _clear(own)
         u.refuse(f'{e}')
     except BaseException:

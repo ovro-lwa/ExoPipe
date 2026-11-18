@@ -3,7 +3,7 @@
 residual, the PB maps; the Full hybrid from the 15 subband hybrids. A close port of production exopipe/phase3/notaper_largescale.py
 (NL) at exopipe main 4c7098c: taper_base 1114, hybrid_span 1140, elevation_jump 1186, test_hybrid 1198, small_scale_rel 1232,
 test_hybrid_pbcorr 1241, test_readback 1253, _write_product 1265, hybrid_unit 1274, _subband_thermnoi 1390, hybrid_full 1404,
-stack_refused 1505, diffuse_pb_map 1517, full_pb_map 1530. The differences are those of lib/hybrid/recon.py (config constants
+stack_refused 1505, diffuse_pb_map 1517. The differences are those of lib/hybrid/recon.py (config constants
 through bind(), ReconRefusal, memmap=False, records through a temporary name).
 """
 import csv
@@ -20,12 +20,12 @@ from scipy import fft as sfft
 
 from exopipe.phase3.core.products import build_name, parse_name, write_standard_header
 from exopipe.phase3.lib.hybrid import recon as REC
-from exopipe.phase3.lib.hybrid.common import TAPER_OF, VARIANT, diag_header, log, lowpass
+from exopipe.phase3.lib.hybrid.common import TAPER_OF, VARIANT, diag_header, log, lowpass, unit_record
 from exopipe.phase3.lib.hybrid.common import rd as _rd
 from exopipe.phase3.lib.hybrid.common import sky_interior as _sky_interior
 from exopipe.phase3.lib.hybrid.recon import (ReconRefusal, _dump, _level_verdict, beam_image, conv_kernel, installed_master,
                                              lscaveat_cards, smooth, test_compact_sources)
-from exopipe.phase3.lib.hybrid.stack import cell_paths, constituent_span, members_of
+from exopipe.phase3.lib.hybrid.stack import constituent_span, members_of
 from exopipe.phase3.lib.hybrid.wideband import WCS_KEYS
 from exopipe.phase3.lib.install.steps_common import md5
 from exopipe.phase3.lib.masters import coadd as CFP
@@ -52,9 +52,11 @@ def _json(path):
         return json.load(f)
 
 
-def _open(path):
+def _rows(path):
+    """The rows of a CSV file (read whole, closed)."""
     READS.add(path)
-    return open(path)
+    with open(path, newline='') as f:
+        return list(csv.DictReader(f))
 
 
 def bind():
@@ -68,7 +70,7 @@ def bind():
              WIDEBANDS=dict(H.WIDEBAND_MEMBERS, Full=tuple(CFG.hybrid_full.MEMBERS)), COADD_SB=CFG.hybrid_stack.COADD_SB,
              RAW_NIGHT_CAVEAT=dict(CFG.hybrid_unit.RAW_NIGHT_CAVEAT), OWN_BEAM_MAX=float(CFG.hybrid_unit.OWN_BEAM_MAX),
              IDENTITY=float(CFG.hybrid_unit.IDENTITY), LARGE_REL=float(CFG.hybrid_unit.LARGE_REL),
-             STRIATION_IDENTITY=float(CFG.hybrid_unit.STRIATION_IDENTITY))
+             STRIATION_IDENTITY=float(CFG.hybrid_unit.STRIATION_IDENTITY), PBDIFFUSE_WEIGHTING=CFG.hybrid_full.PBDIFFUSE_WEIGHTING)
     globals().update(g)
     return g
 
@@ -79,7 +81,7 @@ def taper_base(lst, scope, v):
     (max |restored + model - installed| < 1e-6 of the installed peak: made from THIS master), else REFUSE."""
     tpath, tppath = installed_master(lst, scope, v, True)
     if scope not in STRIATION_SCOPES or (lst, scope, f'Taper_{v}') not in {
-            (r['lst'], r['band'], r['variant']) for r in csv.DictReader(_open(STRIATION_SELECTION))}:
+            (r['lst'], r['band'], r['variant']) for r in _rows(STRIATION_SELECTION)}:
         return tpath, tppath, None
     d = f'{STRIATION_RESTORED}/{lst}_{scope}'; tok = 'Robust-0.75' if v == 'R075' else 'Robust+0.0'
     g = glob.glob(f'{d}/{scope}_I_deep_Taper_{tok}_*ssub-rst8_LST{lst}_*.fits')
@@ -119,8 +121,7 @@ def hybrid_span(run_dir, lst, scope, v):
         if os.path.exists(f'{run_dir}/{lst}_{b}/{tv}_stack.json'):
             tn = _json(f'{run_dir}/{lst}_{b}/{tv}_stack.json')['span_master']['nights']
         elif stack_refused(run_dir, lst, b, tv):  # its rebuild test refused (only the CLEAN residual is lost, 2026-10-31): the Taper master's
-            tn = constituent_span(lst, b, members_of(COADD_SB, lst, b, tv)[0], VARIANT[tv][0], read=READS)['nights']
-            READS.update(cell_paths(COADD_SB, lst, b, tv)[2:3] + (f'{cell_paths(COADD_SB, lst, b, tv)[1]}/weights.csv',))   # members_of's reads   # span from the records the stack reads
+            tn = constituent_span(lst, b, members_of(COADD_SB, lst, b, tv, read=READS)[0], VARIANT[tv][0], read=READS)['nights']
         else:
             raise ReconRefusal(f'{lst} {b} {tv}: no Taper stack record and no recorded refusal - REFUSING')
         for n in tn:
@@ -128,7 +129,7 @@ def hybrid_span(run_dir, lst, scope, v):
     want = CFP._constituent_dates(_getheader(installed_master(lst, scope, v, True)[0]))
     miss = [d for d in want if d not in have]; from_wb = []
     if miss and scope in WIDEBANDS:               # nights the wideband master holds but no subband master does (04h Red 2024-12-19,
-        wrows = {r['date']: r for r in csv.DictReader(_open(f'{COADD_SB}/{lst}_{scope}/coadd_final/weights.csv'))}   # 14h Red 2025-04-05,
+        wrows = {r['date']: r for r in _rows(f'{COADD_SB}/{lst}_{scope}/coadd_final/weights.csv')}   # 14h Red 2025-04-05,
         for d in list(miss):                      # 11h Green 2025-04-22; 2026-10-30): the span of the wideband night image itself
             p = CFP.find_wideband_deep_images(wrows[d]['sci_dir'], scope, 'I', VARIANT[tv][0]) if d in wrows else None
             h = _getheader(p) if p else {}
@@ -196,10 +197,10 @@ def small_scale_rel(H, T, ok, hdr):
     return float(np.std(hp[inner]) / np.std((H - T)[inner]))
 
 
-def test_hybrid_pbcorr(path, F, pbd, tp_path):
+def test_hybrid_pbcorr(path, F, pbd, Tp):
     """The beam-corrected hybrid read back, minus the added large scales / the diffuse beam, must equal the archived Taper beam-corrected
     master to 1e-5 of its largest value, NaN exactly where that master is NaN (the same full beam and floor)."""
-    P = rd(path); Tp = rd(tp_path); both = np.isfinite(P) & np.isfinite(Tp)
+    P = rd(path); both = np.isfinite(P) & np.isfinite(Tp)
     res = dict(max_rel_err=float(np.max(np.abs(P[both] - F[both] / pbd[both] - Tp[both])) / float(np.max(np.abs(Tp[both])))),
                nan_masks_equal=bool(np.array_equal(np.isfinite(P), np.isfinite(Tp))), valid_px=int(both.sum()))
     if not (res['max_rel_err'] < IDENTITY and res['nan_masks_equal']):
@@ -287,28 +288,28 @@ def hybrid_unit(lst, scope, v, run_dir):
     h['HISTORY'] = f'hybrid {time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}: Taper master {os.path.basename(tpath)}'
     h['HISTORY'] = f'hybrid large scales from {rrec["product"]["prodname"]}'
     beam = (float(th['BMAJ']), float(th['BMIN']), float(th.get('BPA', 0.0))); gen = 'hybrid-' + RECON_GEN
-    path = f'{wd}/I_deep_Taper_{v}_lsrecon_lsfill_{scope}.fits'; _write_product(path, H, h, name, scope, span, beam, False, gen)
+    path = f'{wd}/I_deep_Taper_{v}_lsrecon_lsfill_{scope}.fits'; _write_product(path, H, h, name, scope, span, beam, False, gen); ph = _getheader(path)
     nt = installed_master(lst, scope, v, False)[0]
     rec = dict(lst=lst, scope=scope, weighting=v, taper_master=tpath, striation_model=smodel, reconstruction=rrec['product']['path'], span=span, filter_wavelengths=[HYB_U_IN, HYB_U_OUT],
                stacks_admitted_at_hybrid_scales=adm_b, raw_night_caveat={b: RAW_NIGHT_CAVEAT[(lst, b)] for b in raw_b},
                reconstruction_restoring=dict(method='final residual + model (x) Taper master beam', own_beam_identity_rel_err=rerr))
     rec['test_hybrid'] = test_hybrid(path, A, T, F, ok, th, lst, scope, rd(nt))
-    if cards and f"{float(_getheader(path).get('LSSMALL', float('nan'))):.4g}" != f"{rec['test_hybrid']['small_scale_rel']:.4g}":   # at the
+    if cards and f"{float(ph.get('LSSMALL', float('nan'))):.4g}" != f"{rec['test_hybrid']['small_scale_rel']:.4g}":   # at the
         # card's 4 significant digits (a FITS card's float comes back e.g. as 0.000993699999999999 for 0.0009937: exact equality refused 3 units)
-        raise ReconRefusal(f'{path}: LSSMALL {_getheader(path).get("LSSMALL")} is not the tested {rec["test_hybrid"]["small_scale_rel"]} - REFUSING')
+        raise ReconRefusal(f'{path}: LSSMALL {ph.get("LSSMALL")} is not the tested {rec["test_hybrid"]["small_scale_rel"]} - REFUSING')
     rec['caveats'] = dict(level=rrec['test_large_scale_level'], small_scale_rel=rec['test_hybrid']['small_scale_rel'],
                           small_scale_caveat=rec['test_hybrid']['small_scale_caveat']) if cards else None
     rec['product'] = dict(path=path, prodname=name, md5=md5(path))
     pbf = rd(f'{ARCHIVE_MASTERS}/{lst}/{scope}/{PBA.deep_pb_name(scope, v)}'); pbd = diffuse_pb_map(run_dir, lst, scope, v)[0]
     # blanking = the archived Taper beam-corrected master's: production set the PB floor in float64 before the PB map was stored as
     # float32, so the stored map cannot reproduce it at the floor (00h 36 MHz Robust -0.75: one pixel at float32 0.1, 2026-10-28)
-    valid = ok & np.isfinite(rd(tppath)) & np.isfinite(pbf) & (pbf > 0) & np.isfinite(pbd) & (pbd > 0)
+    TP = rd(tppath); valid = ok & np.isfinite(TP) & np.isfinite(pbf) & (pbf > 0) & np.isfinite(pbd) & (pbd > 0)
     P = np.full(H.shape, np.nan); P[valid] = T[valid] / pbf[valid] + F[valid] / pbd[valid]
     pp = parse_name(name); pp['proc'] = list(pp['proc']) + ['pbcorr']; pname = build_name(**pp); ppath = f'{wd}/I_deep_Taper_{v}_lsrecon_lsfill_pbcorr_{scope}.fits'
-    hp = _getheader(path).copy(); hp['PBFLOOR'] = (PBA.PB_FLOOR, 'PB floor below which pixels set NaN')
+    hp = ph.copy(); hp['PBFLOOR'] = (PBA.PB_FLOOR, 'PB floor below which pixels set NaN')
     hp['PBMETHOD'] = ('hybrid-split', 'Taper part / full PB; added large scales / diffuse PB'); hp['PBMAP'] = (PBA.deep_pb_name(scope, v), 'full PB map (archive)')
     _write_product(ppath, P, hp, pname, scope, span, beam, True, gen)
-    rec['product_pbcorr'] = dict(path=ppath, prodname=pname, md5=md5(ppath), test_hybrid_pbcorr=test_hybrid_pbcorr(ppath, F, pbd, tppath))
+    rec['product_pbcorr'] = dict(path=ppath, prodname=pname, md5=md5(ppath), test_hybrid_pbcorr=test_hybrid_pbcorr(ppath, F, pbd, TP))
     # a REFUSED Taper residual stack (its rebuild test; recorded by the stack fleet) costs only the CLEAN residual product (Gregg
     # 2026-10-31, "ok on caveats"): no cleanres, recorded; a wideband has one only when all its subbands have theirs
     R = None; rec['cleanres_skipped'] = None
@@ -339,7 +340,7 @@ def hybrid_unit(lst, scope, v, run_dir):
         rec['product_cleanres'] = None; log(lst, scope, v, 'no CLEAN residual product:', rec['cleanres_skipped'])
     else:
         pr = parse_name(name); pr['proc'] = list(pr['proc']) + ['cleanres']; rname = build_name(**pr); rpath = f'{wd}/I_deep_Taper_{v}_lsrecon_lsfill_cleanres_{scope}.fits'
-        hr = _getheader(path).copy(); hr['CLEANRES'] = (True, 'CLEAN residual of the hybrid'); hr['HISTORY'] = f'cleanres: {how}'
+        hr = ph.copy(); hr['CLEANRES'] = (True, 'CLEAN residual of the hybrid'); hr['HISTORY'] = f'cleanres: {how}'
         _write_product(rpath, R, hr, rname, scope, span, beam, False, gen)
         rec['product_cleanres'] = dict(path=rpath, prodname=rname, md5=md5(rpath), method=how, test_readback=test_readback(rpath, R, rname))
     _dump(rec, f'{wd}/{v}_hybrid.json')
@@ -430,7 +431,7 @@ def hybrid_full(lst, v, run_dir):
     for s in subs:
         h['HISTORY'] = f'Full hybrid large scales from {s["name"]}'
     beam = (float(th['BMAJ']), float(th['BMIN']), float(th.get('BPA', 0.0))); gen = 'hybrid-' + RECON_GEN
-    path = f'{wd}/I_deep_Taper_{v}_lsrecon_lsfill_{scope}.fits'; _write_product(path, H, h, name, scope, span, beam, False, gen)
+    path = f'{wd}/I_deep_Taper_{v}_lsrecon_lsfill_{scope}.fits'; _write_product(path, H, h, name, scope, span, beam, False, gen); ph = _getheader(path)
     nt = installed_master(lst, scope, v, False)[0]
     rec = dict(lst=lst, scope=scope, weighting=v, taper_master=tpath, striation_model=smodel, reconstruction=None,
                subband_hybrids=[dict(band=s['band'], product=s['name'], weight=float(wn), thermnoi=s['thermnoi'], thermnoi_source=s['thermnoi_source'])
@@ -439,24 +440,29 @@ def hybrid_full(lst, v, run_dir):
                span=span, filter_wavelengths=[HYB_U_IN, HYB_U_OUT], stacks_admitted_at_hybrid_scales=adm_b,
                raw_night_caveat={b: RAW_NIGHT_CAVEAT[(lst, b)] for b in raw_b})
     rec['test_hybrid'] = test_hybrid(path, A, T, F, ok, th, lst, scope, rd(nt))
-    if f"{float(_getheader(path).get('LSSMALL', float('nan'))):.4g}" != f"{rec['test_hybrid']['small_scale_rel']:.4g}":
-        raise ReconRefusal(f'{path}: LSSMALL {_getheader(path).get("LSSMALL")} is not the tested {rec["test_hybrid"]["small_scale_rel"]} - REFUSING')
+    if f"{float(ph.get('LSSMALL', float('nan'))):.4g}" != f"{rec['test_hybrid']['small_scale_rel']:.4g}":
+        raise ReconRefusal(f'{path}: LSSMALL {ph.get("LSSMALL")} is not the tested {rec["test_hybrid"]["small_scale_rel"]} - REFUSING')
     rec['caveats'] = dict(level=level, small_scale_rel=rec['test_hybrid']['small_scale_rel'], small_scale_caveat=rec['test_hybrid']['small_scale_caveat'])
     rec['product'] = dict(path=path, prodname=name, md5=md5(path))
     pbf = rd(f'{ARCHIVE_MASTERS}/{lst}/{scope}/{PBA.deep_pb_name(scope, v)}')
     pbd = sum(wn * s['pbd'] for wn, s in zip(Wn, subs))
     pbdf = f'{wd}/PBdiffuse_deep_{scope}.fits'
-    hd_ = diag_header(_getheader(path), 'diffuse primary beam'); hd_['BUNIT'] = ''; hd_['PBMODEL'] = ('w mean of the 15 subband diffuse PBs, regridded', 'diffuse PB')
-    # per-process .part: both weightings of a cell write this (weighting-independent) map; a shared .part raced at 01h (2026-11-09)
-    part = f'{pbdf}.{os.getpid()}.part'
-    fits.writeto(part, pbd.astype(np.float32), hd_, overwrite=True); os.replace(part, pbdf); pbd = rd(pbdf)
-    valid = ok & np.isfinite(rd(tppath)) & np.isfinite(pbf) & (pbf > 0) & np.isfinite(pbd) & (pbd > 0)
+    hd_ = diag_header(ph, 'diffuse primary beam'); hd_['BUNIT'] = ''; hd_['PBMODEL'] = ('w mean of the 15 subband diffuse PBs, regridded', 'diffuse PB')
+    # the map is weighting-independent (the same subband maps and weights) but its header is the weighting's product's: v2 writes it
+    # from one weighting only, hybrid_full.PBDIFFUSE_WEIGHTING (the archive's: R0's header); the other divides by the same float32
+    # values (production: both wrote it, last writer kept; a shared .part raced at 01h, 2026-11-09)
+    if v == PBDIFFUSE_WEIGHTING:
+        part = f'{pbdf}.{os.getpid()}.part'
+        fits.writeto(part, pbd.astype(np.float32), hd_, overwrite=True); os.replace(part, pbdf); pbd = rd(pbdf)
+    else:
+        pbd = pbd.astype(np.float32).astype(np.float64)
+    TP = rd(tppath); valid = ok & np.isfinite(TP) & np.isfinite(pbf) & (pbf > 0) & np.isfinite(pbd) & (pbd > 0)
     P = np.full(H.shape, np.nan); P[valid] = T[valid] / pbf[valid] + F[valid] / pbd[valid]
     pp = parse_name(name); pp['proc'] = list(pp['proc']) + ['pbcorr']; pname = build_name(**pp); ppath = f'{wd}/I_deep_Taper_{v}_lsrecon_lsfill_pbcorr_{scope}.fits'
-    hp = _getheader(path).copy(); hp['PBFLOOR'] = (PBA.PB_FLOOR, 'PB floor below which pixels set NaN')
+    hp = ph.copy(); hp['PBFLOOR'] = (PBA.PB_FLOOR, 'PB floor below which pixels set NaN')
     hp['PBMETHOD'] = ('hybrid-split', 'Taper part / full PB; added large scales / diffuse PB'); hp['PBMAP'] = (PBA.deep_pb_name(scope, v), 'full PB map (archive)')
     _write_product(ppath, P, hp, pname, scope, span, beam, True, gen)
-    rec['product_pbcorr'] = dict(path=ppath, prodname=pname, md5=md5(ppath), test_hybrid_pbcorr=test_hybrid_pbcorr(ppath, F, pbd, tppath))
+    rec['product_pbcorr'] = dict(path=ppath, prodname=pname, md5=md5(ppath), test_hybrid_pbcorr=test_hybrid_pbcorr(ppath, F, pbd, TP))
     rec['product_cleanres'] = None; rec['cleanres_skipped'] = 'Full: no CLEAN residual product (its subbands sit on three grids)'
     _dump(rec, f'{wd}/{v}_hybrid.json')
     return rec
@@ -464,19 +470,24 @@ def hybrid_full(lst, v, run_dir):
 
 def stack_refused(run_dir, lst, band, v):
     """The recorded refusal of a Taper residual stack (v = T075 / T0) with no stack record: the reason the stack unit of its NoTaper
-    weighting recorded for the refused item (v2: <run_dir>/_records/hybrid/stack.<LST>_<band>_<w>.json, refused_items; production
-    NL 1505 read the stack fleet's CSV rows), else None (not run, or passed)."""
+    weighting recorded for the refused item (v2: its unit record's refused_items; production NL 1505 read the stack fleet's CSV
+    rows), else None (not run, or passed). Only a refusal that costs the residual stack alone (HG4 night drops, HG5 rebuild, a failed
+    content test) leaves the hybrid its CLEAN residual to skip; a stack unit that did not end done, or an HG1 refusal (the Taper
+    master's membership or an excluded constituent: the hybrid's own base) refuses."""
     if os.path.exists(f'{run_dir}/{lst}_{band}/{v}_stack.json'):
         return None
     w = {t: n for n, t in TAPER_OF.items()}[v]
-    rp = f'{run_dir}/_records/hybrid/stack.{lst}_{band}_{w}.json'
-    if not os.path.exists(rp):
+    r = unit_record(run_dir, f'stack.{lst}_{band}_{w}')
+    if r is None:
         return None
-    with open(rp) as f:
-        r = json.load(f)
+    READS.add(os.path.join(run_dir, '_records', 'hybrid', f'stack.{lst}_{band}_{w}.json'))
+    if r.get('status') != 'done':
+        raise ReconRefusal(f'{lst} {band} {v}: its stack unit ended {r.get("status")}: {str(r.get("reason"))[:200]} - REFUSING')
     want = os.path.abspath(f'{run_dir}/{lst}_{band}/{v}_residual_stack.fits')
-    why = [i['reason'] for i in r.get('refused_items') or [] if i.get('path') == want]
-    return why[-1] if why else None
+    hit = [i for i in r.get('refused_items') or [] if i.get('path') == want]
+    if hit and hit[-1].get('gate') == 'HG1':
+        raise ReconRefusal(f'{lst} {band} {v}: the Taper master the hybrid is built on was refused by HG1: {hit[-1]["reason"][:300]} - REFUSING')
+    return hit[-1]['reason'] if hit else None
 
 
 def diffuse_pb_map(run_dir, lst, scope, v='R075'):
@@ -490,16 +501,3 @@ def diffuse_pb_map(run_dir, lst, scope, v='R075'):
     pbf = f'{run_dir}/{lst}_{scope}/inputs/PB_deep_R075_{scope}.fits'; ph = _getheader(pbf); pb = rd(pbf)
     ch, _ = PBA.chromatic_gain(ph, pb.shape, float(PBA.cfg.SUBBAND_FREQ_HZ[scope]['center']), float(ph['PBBMAJ']))
     return pb / ch, os.path.basename(pbf) + ' / bandwidth-smearing term'
-
-
-def full_pb_map(run_dir, lst, scope, v):
-    """The weighting's full primary beam (model x bandwidth smearing x residual), the map whose PB=0.1 contour blanks the beam-corrected
-    product: a subband's installed PB map (inputs copy); Red / Green the weighted mean of the subbands' maps with the combination's
-    weights (the same PBF the split correction divided by)."""
-    name = PBA.deep_pb_name(scope, v)
-    if scope in WIDEBANDS:
-        r = _json(f'{run_dir}/{lst}_{scope}/{v}_lsrecon_wb.json')
-        return sum(s['weight'] * full_pb_map(run_dir, lst, s['band'], v) for s in r['subbands'])
-    return rd(f'{run_dir}/{lst}_{scope}/inputs/{PBA.deep_pb_name(scope, v)}')
-
-

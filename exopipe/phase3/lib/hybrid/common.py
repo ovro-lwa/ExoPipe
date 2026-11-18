@@ -33,6 +33,17 @@ def rd(path):
     return np.squeeze(fits.getdata(path, memmap=False)).astype(np.float64)
 
 
+def unit_record(run_dir, unit):
+    """The v2 unit record <run_dir>/_records/hybrid/<unit>.json as a dict, or None when the unit has none (not run, or inputs staged
+    from production)."""
+    import json
+    rp = os.path.join(run_dir, '_records', 'hybrid', f'{unit}.json')
+    if not os.path.exists(rp):
+        return None
+    with open(rp) as f:
+        return json.load(f)
+
+
 def diag_header(mh, what):
     """Header for an intermediate or diagnostic file: the master's WCS and beam without its product identity."""
     h = mh.copy()
