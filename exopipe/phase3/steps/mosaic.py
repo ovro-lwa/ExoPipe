@@ -92,9 +92,10 @@ weighting) of the stages stage, coadd, pkcorr, caveat (hybrid.CAVEAT_SCOPES), fi
     exopipe3 mosaic --generation v5 --hybrid-out /fast/gh/hybrid_q1 --scopes 18MHz,Red --out /fast/gh/v5run --dry-run
 
 Generation v3 (--generation v3; the FEATHER3 mosaics of mosaic/Run_FEATHER3, plan/specs/hybrid.md 2.9-2.13): units (stage, scope, job)
-of the stages stage, coadd, render - see lib/mosaic/v3.py. Jobs: the plain Stokes I maps of mosaic_v3.VARIANTS, the striation-corrected
-maps of the pairs of hybrid.STRIATION_SELECTION (--striation with|without|both, default mosaic_v3.STRIATION), the cleaned Stokes V maps
-(--products I,Vclean). --scopes, --variants, --out (required), --work (node-local link trees):
+of the stages stage, coadd, pkcorr (Stokes I), render, content - see lib/mosaic/v3.py. Jobs: the plain Stokes I maps of
+mosaic_v3.VARIANTS, the striation-corrected maps of the pairs of hybrid.STRIATION_SELECTION (--striation with|without|both, default
+mosaic_v3.STRIATION), the cleaned Stokes V maps (--products I,Vclean). --scopes, --variants, --out (required), --work (node-local link
+trees):
     exopipe3 mosaic --generation v3 --scopes Blue --out /fast/gh/v3run --work /fast/gh/scratch
     exopipe3 mosaic --generation v3 --scopes 78MHz --striation with --stages stage --out /fast/gh/v3run --dry-run
 """
@@ -132,7 +133,7 @@ def add_arguments(p):
     g = p.add_argument_group('generations v3 and v5 (the FEATHER3 mosaics, lib/mosaic/v3.py; the hybrid mosaics, lib/mosaic/v5.py)')
     g.add_argument('--generation', choices=('v2', 'v3', 'v5'), default='v2',
                    help='v2 (default): the mosaics of the deep masters, stages inputs..conform; v3: the FEATHER3 mosaics (plain, '
-                        'striation-corrected, Stokes V), stages stage,coadd,render (--out required); v5: the hybrid mosaics of the '
+                        'striation-corrected, Stokes V), stages stage,coadd,pkcorr,render,content (--out required); v5: the hybrid mosaics of the '
                         'unfilled hybrid masters, stages stage,coadd,pkcorr,caveat,fill,render,content (--out required)')
     g.add_argument('--striation', choices=('with', 'without', 'both'),
                    help='v3: the striation-corrected maps of the selected pairs (with), the plain maps (without) or both (default '

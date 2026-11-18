@@ -1,5 +1,6 @@
 """Content tests of the mosaic v3 tile list (lib/mosaic/v3.py; spec plan/specs/hybrid.md 2.9-2.13). Context keys as the stage unit
-passes them (exopipe3 verify re-runs them from the record's ctx): mosaic_v3_tiles  scope, job."""
+passes them (exopipe3 verify re-runs them from the record's ctx): mosaic_v3_tiles  scope, job; mosaic_content_random_report
+n_tiles, scope, variant, job (the Stokes I content report and the PKCORR files use tests_v5's classes)."""
 import json
 import os
 
@@ -58,3 +59,33 @@ def tiles_on_disk(path, **ctx):
     bad = [r['lst'] for r in rows if not (os.path.exists(r['path']) and os.path.exists(r['pb']))
            or _md5(r['path']) != r['md5'] or _md5(r['pb']) != r.get('pb_md5')]
     return not bad, len(bad), f'tiles missing or changed: {bad}' if bad else f'{len(rows)} tiles at their staged md5'
+
+
+# ---- mosaic_content_random_report (content/content_V_deep_Taper_R0_clean_<S>.json) --------------------------------------------------
+
+@content_test('mosaic_content_random_report')
+def content_random_passes(path, n_tiles=None, **ctx):
+    """TEST 1R and TEST 2 of both domains (MT run_random 157, provenance 95), re-judged from the numbers with mosaic_content's limits:
+    >= RAND_MIN_POSITIONS positions, median |map - tiles| / scale <= RAND_MED_MAX, 90th percentile <= RAND_P90_MAX; one link per
+    tile, every input a link to a staged tile."""
+    C = _cfg().mosaic_content
+    with open(path) as f:
+        rep = json.load(f)
+    probs = []
+    for dom in ('jysr', 'jybeam'):
+        r = rep.get(dom)
+        if not r:
+            probs.append(f'{dom}: missing')
+            continue
+        n, med, p90 = r.get('n_positions') or 0, r.get('median_absdiff_over_scale'), r.get('p90_absdiff_over_scale')
+        ok = (n >= int(C.RAND_MIN_POSITIONS) and med is not None and med <= float(C.RAND_MED_MAX) and p90 is not None
+              and p90 <= float(C.RAND_P90_MAX))
+        if not ok or r.get('result') != 'PASS':
+            probs.append(f'{dom} TEST 1R: {n} positions, median {med}, 90th percentile {p90}, result {r.get("result")}')
+        pv = r.get('provenance') or []
+        if (n_tiles is not None and len(pv) != int(n_tiles)) or not all(x.get('symlink') for x in pv) \
+                or not r.get('provenance_matches_tiles'):
+            probs.append(f'{dom} TEST 2: {len(pv)} links, all links {all(x.get("symlink") for x in pv)}, '
+                         f'the staged tiles {r.get("provenance_matches_tiles")}')
+    return not probs, {d: (rep.get(d) or {}).get('median_absdiff_over_scale') for d in ('jysr', 'jybeam')}, \
+        '; '.join(probs) or 'TEST 1R and TEST 2 pass in Jy/sr and Jy/beam'

@@ -351,7 +351,8 @@ class mosaic_fill(_Section):
 
 
 class mosaic_content(_Section):
-    """Stage `test` of mosaic v5 (MT = production mosaic_content_test.py: TEST 1 run 108, TEST 2 provenance 95; lib/mosaic/content.py):
+    """Stage `content` of mosaic v5 and v3 (MT = production mosaic_content_test.py: TEST 1 run 108, TEST 1R run_random 157 for the v3
+    Stokes V maps, TEST 2 provenance 95; lib/mosaic/content.py):
     the unfilled co-add, in Jy/sr and Jy/beam, against the same apertures recomputed from its staged tiles with the co-add's weights
     (production's V5 tables/summary.csv rows are the unfilled maps' values)."""
     PARENTS = '/lustre/gh/main/phase3/deep_parent_catalogs_union_20261118T0130'
@@ -373,9 +374,20 @@ class mosaic_content(_Section):
     #   limits are production's literals (exopipe 93a0d02), not stated in a ruling: protected, not RULED
     #   TEST 2 (MT 103 hashed each tile's first 64 MB and compared it with nothing): the unit checks that TEST 1 read exactly its
     #   tile list's files, each at the full md5 it verified (lib/mosaic/content.py); no size to configure
+    RAND_N = 200
+    RAND_SEED = 20261110
+    RAND_TRIES_PER_POSITION = 50
+    RAND_MIN_POSITIONS = 150
+    RAND_MED_MAX = 0.05
+    RAND_P90_MAX = 0.15
+    #   TEST 1R, the Stokes V maps of mosaic v3 (MT run_random 157-185: n 200, seed 20261110, at most 50 x n draws, PASS at >= 150
+    #   positions with median |map - recomputation| / scale <= 0.05 and 90th percentile <= 0.15). The limits were fixed before any V
+    #   map was tested, from FEATHER3 Stokes I maps that pass TEST 1 (median 0.0053-0.0210, 90th percentile 0.0252-0.0885; ledger
+    #   IMPL-20261110-VCLEAN-REFRESH-AND-V-MOSAICS-LAUNCHED, under R-GREGG-20261110-VCLEAN-REBUILD-ALL-456-V-MOSAICS-IN-FEATHER3)
     RULED = {'DEC_MIN': 'R-GREGG-20261016-MOSAIC-DEC-MIN-30'}
     #   Gregg 2026-10-16: "Use declination >= -30" (the products' southern limit)
-    PROTECTED_KEYS = ('PARENTS', 'N_SOURCES', 'DEC_MIN', 'ISOLATION_BEAMS', 'APERTURE_BEAMS', 'MIN_SOURCES', 'MED_TOL', 'FRAC5_MIN')
+    PROTECTED_KEYS = ('PARENTS', 'N_SOURCES', 'DEC_MIN', 'ISOLATION_BEAMS', 'APERTURE_BEAMS', 'MIN_SOURCES', 'MED_TOL', 'FRAC5_MIN',
+                      'RAND_N', 'RAND_SEED', 'RAND_TRIES_PER_POSITION', 'RAND_MIN_POSITIONS', 'RAND_MED_MAX', 'RAND_P90_MAX')
 
 
 class mosaic_pkcorr(_Section):

@@ -3,7 +3,8 @@ Unit of work: (stage, scope, job); records <out>/_records/mosaic/v3-<stage>.<sco
 Jobs of a scope (config mosaic_v3): I_<variant> for each of mosaic_v3.VARIANTS (the plain Stokes I maps; --striation without|both),
 I_<variant>_ssub-rst8 for each (variant, scope) pair of hybrid.STRIATION_SELECTION (--striation with|both), and Vclean (the cleaned
 Stokes V maps; --products). Production: mosaic_v3_20261022/ step2_stage.sh (STG = mosaic_stage_from_lustre.py), step2b_stage_ssub.py
-(S2B), step3_coadd.sh, step4_renders.sh; vclean_refresh_20261110/release1_v_mosaics_20261110.sh (the Stokes V maps).
+(S2B), step3_coadd.sh, step4_renders.sh, mosaic_pkcorr.py (MP), mosaic_content_test.py (MT); vclean_refresh_20261110/
+release1_v_mosaics_20261110.sh (the Stokes V maps, TEST 1R).
 
   stage   plain: the 24 current masters of mosaic.INPUT_COADD_RUN (steps_common.plan_job: G1 every constituent night admitted, G3 one
           master per LST, G4 every LST, G8 header cards) and, per LST, the weighting PB map of the job's robust weighting derived with
@@ -22,12 +23,23 @@ Stokes V maps; --products). Production: mosaic_v3_20261022/ step2_stage.sh (STG 
           against today's data_decisions.csv (also at render).
           -> healpix/healpix_<stem>_<S><tag>_{jysr,jybeam}_nside2048.fits [mosaic_map], healpix_PSF_<stem>_<S><tag>_nside2048.fits
           [mosaic_psfmap], healpix_PBeff_<stem>_<S><tag>_nside2048.fits [mosaic_pbeff]; md5s in the record
+  pkcorr  Stokes I jobs only (production ran none for Stokes V): lib/mosaic/pkcorr.run_band (MP) on the co-added Jy/sr map and its PSF
+          map, mosaic_pkcorr.ROUNDS injection rounds through the real engine on the staged tiles; test_pkcorr. -> pkcorr/
+          healpix_PKCORR_I_deep_<V>_<S><tag>_nside2048.fits [mosaic_pkcorr_map], peak_corr_curve_*.csv, peak_recovery_*.csv,
+          pkcorr_*.json
   render  lib/mosaic/band_products.build of the two maps with their PSF map (the beam card), mosaic_render's width, pixel and
           southern edge. -> renders/<S>_<label><tag>_{jysr,jybeam}_{Mollweide,RADec}.fits [mosaic_render]
+  content Stokes I: TEST 1 (lib/mosaic/content.run, MT run) at the bright isolated cataloged sources; Stokes V: TEST 1R
+          (content.run_random, MT run_random) at mosaic_content.RAND_N seeded random positions; both domains; TEST 2: the files the
+          test read are the tile list's, at the md5s verified in the unit. -> content/content_<stem>_<S><tag>.json
+          [mosaic_content_report | mosaic_content_random_report]
+  pkcorr and content read the coadd's record and maps (at its md5s), refuse when the engine weights now differ from the coadd's, and
+  re-check G1.
 
 The frame is v5's: a stage reads its predecessor's done record (never a glob) and refuses unless it was made from the tile list now in
-stage/tiles.json (its md5); a unit removes its own earlier outputs first and, when it does not end done, everything it placed. PKCORR and
-the content tests TEST 1/1R are PR-6c, conformance v3 and the tables PR-6d, the archive push PR-6e.
+stage/tiles.json (its md5); a unit removes its own earlier outputs first and, when it does not end done, everything it placed. A failed
+content test or test_pkcorr removes the unit's outputs (the record keeps the results). Conformance v3 and the tables are PR-6d, the
+archive push PR-6e.
 """
 import glob
 import json
@@ -35,7 +47,8 @@ import os
 
 from exopipe.phase3.lib.mosaic.v5 import LSTS, _bind_engine, _clear, _md5   # one md5 cache per process for v3 and v5
 
-STAGES = ('stage', 'coadd', 'render')
+STAGES = ('stage', 'coadd', 'pkcorr', 'render', 'content')
+I_ONLY = ('pkcorr',)                  # stages a Stokes V job does not have (production ran no PKCORR for Vclean)
 STEP = 'mosaic'
 STRIATION_CHOICES = ('with', 'without', 'both')
 _STG_GRID = ('NAXIS1', 'NAXIS2', 'CTYPE1', 'CTYPE2', 'CRVAL1', 'CRVAL2', 'CRPIX1', 'CRPIX2', 'CDELT1', 'CDELT2', 'EQUINOX', 'RADESYS')
@@ -126,6 +139,11 @@ def paths(out, scope, job):
     for dom in ('jysr', 'jybeam'):
         for k, suf in (('mollweide', 'Mollweide'), ('radec', 'RADec')):
             p[f'render_{dom}_{k}'] = os.path.join(d, 'renders', f'{scope}_{job.render_label}{job.tag}_{dom}_{suf}.fits')
+    if job.product == 'I':
+        from exopipe.phase3.lib.mosaic import pkcorr as PK
+        for k, f in PK.names(job.variant, scope, job.tag, n).items():
+            p[f'pkcorr_{k}'] = os.path.join(d, 'pkcorr', f)
+    p['content'] = os.path.join(d, 'content', f'content_{job.stem}_{scope}{job.tag}.json')
     return p
 
 
@@ -136,7 +154,16 @@ def outputs_of(st, out, scope, job):
         return [(p['tiles'], 'mosaic_v3_tiles')] + [(p['pb'][lst], 'mosaic_weight_pb') for lst in sorted(p['pb'])]
     if st == 'coadd':
         return [(p['jysr'], 'mosaic_map'), (p['psf'], 'mosaic_psfmap'), (p['jybeam'], 'mosaic_map'), (p['pbeff'], 'mosaic_pbeff')]
-    return [(p[f'render_{d}_{k}'], 'mosaic_render') for d in ('jysr', 'jybeam') for k in ('mollweide', 'radec')]
+    if st == 'pkcorr':
+        if job.product != 'I':
+            raise ValueError(f'v3 stage pkcorr: no PKCORR for {job.label}')
+        return [(p['pkcorr_map'], 'mosaic_pkcorr_map'), (p['pkcorr_curve'], 'mosaic_pkcorr_curve'),
+                (p['pkcorr_recovery'], 'mosaic_pkcorr_recovery'), (p['pkcorr_json'], 'mosaic_pkcorr_report')]
+    if st == 'content':
+        return [(p['content'], 'mosaic_content_report' if job.product == 'I' else 'mosaic_content_random_report')]
+    if st == 'render':
+        return [(p[f'render_{d}_{k}'], 'mosaic_render') for d in ('jysr', 'jybeam') for k in ('mollweide', 'radec')]
+    raise ValueError(f'unknown v3 stage {st!r}')
 
 
 # ---- job selection ----------------------------------------------------------------------------------------------------------------
@@ -215,7 +242,8 @@ def select_units(args, sel=None):
     if sel is None:
         sel = selection_for(products, striation)
     stages = select_stages(args)
-    return [(st, sc, j) for sc in scopes for j in jobs_for(sc, products, striation, variants, sel) for st in stages]
+    return [(st, sc, j) for sc in scopes for j in jobs_for(sc, products, striation, variants, sel) for st in stages
+            if not (st in I_ONLY and j.product != 'I')]
 
 
 def missing_plain_stages(units, out):
@@ -273,6 +301,49 @@ def _same_tiles(u, scope, job, cur, rec, st):
     if rec['meta'].get('tiles_md5') != cur:
         u.refuse(f'{scope} {job.label}: the {st} unit was made from another tile list (stage/tiles.json md5 {rec["meta"].get("tiles_md5")}, '
                  f'now {cur}): rerun --stages {st} - REFUSED')
+
+
+def _engine_as_coadd(u, scope, job, co):
+    """Bind the engine globals and refuse unless they equal the coadd record's (the weights the maps were made with)."""
+    g = json.loads(json.dumps(_bind_engine()))
+    if g != co['meta'].get('engine_globals'):
+        u.refuse(f'{scope} {job.label}: the mosaic_coadd weights now {g} are not the coadd\'s {co["meta"].get("engine_globals")} - REFUSED')
+    u.meta['engine_globals'] = g
+    return g
+
+
+def _link_tree(t, scope, job, sd):
+    """The staged tiles and their weighting maps linked under the engine's names (coadd_jysr._paths) in the scratch dir sd."""
+    from exopipe.phase3.lib.masters.pb_apply import deep_pb_name
+    for r in t['tiles']:
+        d = os.path.join(sd, r['lst'])
+        os.makedirs(d, exist_ok=True)
+        os.symlink(r['path'], os.path.join(d, job.engine_name(scope)))
+        os.symlink(r['pb'], os.path.join(d, deep_pb_name(scope, job.robust)))
+    return [r['lst'] for r in t['tiles']]
+
+
+def _coadd_maps(u, out, scope, job, co, keys):
+    """The coadd's maps (keys of paths) at their recorded md5s, recorded as inputs; else refuse."""
+    P = paths(out, scope, job)
+    for k in keys:
+        want = co['meta']['md5'][k]
+        if not os.path.exists(P[k]) or _md5(P[k]) != want:
+            u.refuse(f'{P[k]} missing or changed since the coadd (md5) - REFUSED')
+        u.add_input(P[k], extra={'md5': want})
+
+
+def _from_coadd(u, out, scope, job, keys):
+    """(tiles, coadd record) for a stage after the coadd: the coadd done and made from the tile list now staged (every tile and
+    weighting map at its staged md5), no tile night excluded since, the coadd's maps of keys at their md5s, the engine weights the
+    coadd's."""
+    co = _upstream(u, out, 'coadd', scope, job)
+    t = _tiles(u, out, scope, job)
+    _same_tiles(u, scope, job, t['json_md5'], co, 'coadd')
+    _recheck_exclusions(u, scope, job, t)
+    _coadd_maps(u, out, scope, job, co, keys)
+    _engine_as_coadd(u, scope, job, co)
+    return t, co
 
 
 def _write_tiles(u, p, scope, job, tiles, **extra):
@@ -469,7 +540,6 @@ def coadd_unit(u, scope, job, out, work):
     import shutil
     import sys
     from exopipe.phase3.core import fitsio
-    from exopipe.phase3.lib.masters.pb_apply import deep_pb_name
     from exopipe.phase3.lib.mosaic import coadd_jysr as mcj
     from exopipe.phase3.lib.mosaic.steps_worker import _VERDICT, _Tee
     C = _cfg()
@@ -484,11 +554,7 @@ def coadd_unit(u, scope, job, out, work):
     sd = fitsio.scratch_dir(f'mosaic_v3_{scope}_{job.label}', work)
     tmp = os.path.join(unit_dir(out, scope, job), f'.tmp_coadd_{os.getpid()}')
     try:
-        for r in t['tiles']:
-            d = os.path.join(sd, r['lst'])
-            os.makedirs(d, exist_ok=True)
-            os.symlink(r['path'], os.path.join(d, job.engine_name(scope)))
-            os.symlink(r['pb'], os.path.join(d, deep_pb_name(scope, job.robust)))
+        _link_tree(t, scope, job, sd)
         u.meta['engine_globals'] = _bind_engine()
         os.makedirs(tmp, exist_ok=True)
         verdicts = {}
@@ -555,11 +621,7 @@ def render_unit(u, scope, job, out, work):
     u.add_input(P['tiles'], extra={'md5': cur})
     with open(P['tiles']) as f:
         _recheck_exclusions(u, scope, job, json.load(f))
-    for k in ('jysr', 'jybeam', 'psf'):
-        want = co['meta']['md5'][k]
-        if not os.path.exists(P[k]) or _md5(P[k]) != want:
-            u.refuse(f'{P[k]} missing or changed since the coadd (md5) - REFUSED')
-        u.add_input(P[k], extra={'md5': want})
+    _coadd_maps(u, out, scope, job, co, ('jysr', 'jybeam', 'psf'))
     ld = fitsio.scratch_dir(f'mosaic_v3_render_{scope}_{job.label}', work)
     tmp = os.path.join(unit_dir(out, scope, job), f'.tmp_render_{os.getpid()}')
     try:
@@ -584,6 +646,122 @@ def render_unit(u, scope, job, out, work):
         for k in ('mollweide', 'radec'):
             u.add_output(P[f'render_{dom}_{k}'], 'mosaic_render', source=P[dom], psfmap=P['psf'], kind=k, scope=scope,
                          dec_cut=R.RENDER_DEC_CUT_DEG)
+
+
+# ---- pkcorr -----------------------------------------------------------------------------------------------------------------------
+
+def pkcorr_unit(u, scope, job, out, work):
+    """MP run_band on the co-added Jy/sr map and its PSF map (production FEATHER3: healpix/healpix_PKCORR_*, ROUNDS 5, the plain and
+    the striation-corrected Stokes I maps; no Stokes V map)."""
+    import shutil
+    from exopipe.phase3.core import fitsio
+    from exopipe.phase3.lib.mosaic import coadd_jysr as mcj
+    from exopipe.phase3.lib.mosaic import pkcorr as PK
+    from exopipe.phase3.lib.mosaic import tests_v5  # noqa: F401
+    C = _cfg()
+    P = paths(out, scope, job)
+    own = [pp for pp, _c in outputs_of('pkcorr', out, scope, job)]
+    for pp, c in outputs_of('pkcorr', out, scope, job):
+        u.plan(pp, c)
+    _clear(own)
+    t, _co = _from_coadd(u, out, scope, job, ('jysr', 'psf'))
+    nside, rounds = int(mcj.NSIDE), int(C.mosaic_pkcorr.ROUNDS)
+    mos_c, psf = PK.read_map(P['jysr']), PK.read_map(P['psf'])
+    if len(mos_c) != 12 * nside ** 2 or len(psf) != 12 * nside ** 2:
+        u.refuse(f'{scope} {job.label}: the maps hold {len(mos_c)} / {len(psf)} pixels, not NSIDE {nside} - REFUSED')
+    sd = fitsio.scratch_dir(f'mosaic_v3_pkcorr_{scope}_{job.label}', work)
+    inj = fitsio.scratch_dir(f'mosaic_v3_pkcorr_inj_{scope}_{job.label}', work)
+    tmp = os.path.join(unit_dir(out, scope, job), f'.tmp_pkcorr_{os.getpid()}')
+    try:
+        lsts = _link_tree(t, scope, job, sd)
+        os.makedirs(tmp, exist_ok=True)
+        try:
+            _T, res = PK.run_band(sd, scope, job.variant, tmp, lsts, rounds, job.tag, mos_c, psf, inj, nside,
+                                  record_dir=os.path.dirname(P['pkcorr_map']))
+        except PK.InjectionRefusal as e:
+            u.refuse(f'{scope} {job.label}: {e} - REFUSED')
+        os.makedirs(os.path.dirname(P['pkcorr_map']), exist_ok=True)
+        for k in ('map', 'curve', 'recovery', 'json'):
+            os.replace(os.path.join(tmp, os.path.basename(P[f'pkcorr_{k}'])), P[f'pkcorr_{k}'])
+    finally:
+        fitsio.cleanup(sd)
+        fitsio.cleanup(inj)
+        shutil.rmtree(tmp, ignore_errors=True)
+    tp = res['test_pkcorr']
+    u.meta['pkcorr'] = {k: res[k] for k in ('rounds', 'rec_median', 'rec_min', 'rec_max', 'ra_scatter_median_mad')}
+    u.meta['md5'] = {k: _md5(P[f'pkcorr_{k}']) for k in ('map', 'curve', 'recovery', 'json')}
+    u.meta['tiles_md5'] = t['json_md5']
+    u.check('test_pkcorr', tp.get('verdict') == 'pass', value=tp, path=P['pkcorr_map'], cls='mosaic_pkcorr_map',
+            detail=f'nodes {tp["nodes"]}, few rounds {tp["missing_or_few_rounds"][:5]}, out of range {tp["out_of_range"][:5]}, '
+                   f'map vs curve {tp["max_map_err"]:.2e}')
+    ctx = dict(rounds=rounds, scope=scope, variant=job.variant)
+    u.add_output(P['pkcorr_map'], 'mosaic_pkcorr_map', curve=P['pkcorr_curve'], **ctx)
+    u.add_output(P['pkcorr_curve'], 'mosaic_pkcorr_curve', **ctx)
+    u.add_output(P['pkcorr_recovery'], 'mosaic_pkcorr_recovery', **ctx)
+    u.add_output(P['pkcorr_json'], 'mosaic_pkcorr_report', map_path=P['pkcorr_map'], **ctx)
+
+
+# ---- content ----------------------------------------------------------------------------------------------------------------------
+
+def content_unit(u, scope, job, out, work):
+    """Stokes I: TEST 1 at the bright cataloged sources (content.run); Stokes V: TEST 1R at random positions (content.run_random); both
+    domains, then TEST 2 (the files read = the tile list's, at the md5s verified in this unit)."""
+    import glob
+    from exopipe.phase3.core import fitsio
+    from exopipe.phase3.lib.mosaic import content as CT
+    from exopipe.phase3.lib.mosaic import tests_v3, tests_v5  # noqa: F401
+    C = _cfg()
+    P = paths(out, scope, job)
+    for pp, c in outputs_of('content', out, scope, job):
+        u.plan(pp, c)
+    _clear([P['content']])
+    t, _co = _from_coadd(u, out, scope, job, ('jysr', 'jybeam'))
+    maps = {dom: P[dom] for dom in ('jysr', 'jybeam')}
+    sd = fitsio.scratch_dir(f'mosaic_v3_content_{scope}_{job.label}', work)
+    try:
+        _link_tree(t, scope, job, sd)
+        if job.product == 'I':
+            parents = C.mosaic_content.PARENTS
+            pat = f'master_R075_*_{scope}.gaul.csv'
+            cats = sorted(os.path.basename(x) for x in glob.glob(os.path.join(glob.escape(parents), pat)))
+            if not cats:
+                u.refuse(f'{scope} {job.label}: no parent catalog {pat} in mosaic_content.PARENTS {parents} - REFUSED')
+            u.meta['parents'] = {'dir': parents, 'n_catalogs': len(cats)}
+            rep = CT.run(maps, sd, job.variant, scope, parents)
+        else:
+            rep = CT.run_random(maps, sd, job.variant, scope, product=job.product)
+    finally:
+        fitsio.cleanup(sd)
+    listed = {r['lst']: (os.path.realpath(r['path']), os.path.realpath(r['pb']), r['md5']) for r in t['tiles']}
+    for dom, r in rep.items():
+        read = r.pop('read')
+        r['provenance'] = [dict(x, md5=listed[x['lst']][2] if x['lst'] in listed else None) for x in read]
+        r['provenance_matches_tiles'] = (len(read) == len(listed)
+                                         and all(listed.get(x['lst'], ())[:2] == (x['file'], x['pb']) for x in read))
+    os.makedirs(os.path.dirname(P['content']), exist_ok=True)
+    tmp = f'{P["content"]}.tmp.{os.getpid()}'
+    with open(tmp, 'w') as f:
+        json.dump(rep, f, indent=1)
+    os.replace(tmp, P['content'])
+    cls = outputs_of('content', out, scope, job)[0][1]
+    for dom, r in rep.items():
+        if job.product == 'I':
+            u.check(f'TEST1.{dom}', r['result'] == 'PASS', path=P['content'], cls=cls,
+                    value={k: r[k] for k in ('n_tiles', 'n_sources', 'median_ratio', 'p05', 'p95', 'frac_within_5pct', 'result')},
+                    detail=f'{r["n_sources"]} sources, median map / tiles {r["median_ratio"]:.5f}, within 5 % {r["frac_within_5pct"]:.3f}')
+        else:
+            u.check(f'TEST1R.{dom}', r['result'] == 'PASS', path=P['content'], cls=cls,
+                    value={k: r[k] for k in ('n_tiles', 'n_positions', 'scale', 'median_absdiff_over_scale', 'p90_absdiff_over_scale',
+                                             'result')},
+                    detail=f'{r["n_positions"]} positions, median |map - tiles| / scale {r["median_absdiff_over_scale"]:.4f}, '
+                           f'90th percentile {r["p90_absdiff_over_scale"]:.4f}')
+        u.check(f'TEST2.{dom}', r['provenance_matches_tiles'] and all(x['symlink'] for x in r['provenance']),
+                value=len(r['provenance']), path=P['content'], cls=cls,
+                detail=(f'the test read the {len(r["provenance"])} listed tiles and PB maps, each at its verified md5'
+                        if r['provenance_matches_tiles'] else
+                        f'the test read {len(r["provenance"])} files, not the {len(t["tiles"])} listed tiles and PB maps'))
+    u.meta['tiles_md5'] = t['json_md5']
+    u.add_output(P['content'], cls, n_tiles=len(t['tiles']), scope=scope, variant=job.variant, job=job.label)
 
 
 # ---- the step ---------------------------------------------------------------------------------------------------------------------
@@ -641,8 +819,12 @@ def run(args, run):
                     stage_unit(u, sc, j, run.out_root, sel)
                 elif st == 'coadd':
                     coadd_unit(u, sc, j, run.out_root, work)
-                else:
+                elif st == 'pkcorr':
+                    pkcorr_unit(u, sc, j, run.out_root, work)
+                elif st == 'render':
                     render_unit(u, sc, j, run.out_root, work)
+                else:
+                    content_unit(u, sc, j, run.out_root, work)
             except BaseException:
                 _clear(own)                   # nothing of a unit that did not end done stays in place
                 raise
