@@ -87,6 +87,10 @@ def add_arguments(p):
                    help='tilefill: fill the hybrid stage\'s unfilled masters in --out (work, the default; no hybrid record = no '
                         'input), or re-fill the installed filled masters from the pinned unfilled sources their TPSRCMD5 names '
                         '(pinned: a unit not rebuilt whose band field changed)')
+    g.add_argument('--mosaic-out', metavar='DIR',
+                   help='tilefill: take the band fields from the hybrid mosaics of the `exopipe3 mosaic --generation v5` work run DIR (its '
+                        'done fill records: the unfilled and filled Jy/sr maps at their recorded md5s) instead of the archived ones '
+                        '(hybrid_tilefill.FILLED_MOSAIC_RUN with the pinned unfilled twins)')
 
 
 def default_out(args):
@@ -277,7 +281,7 @@ def run(args, run):
                 hybrid_master_unit(u, lst, sc, w, run.out_root)
                 continue
             if st == 'tilefill':
-                tilefill_unit(u, lst, sc, w, run.out_root, args.tilefill_source)
+                tilefill_unit(u, lst, sc, w, run.out_root, args.tilefill_source, getattr(args, 'mosaic_out', None))
                 continue
             u.refuse(f'stage {st} is not ported yet ({PORTED_BY[st]} of plan/specs/hybrid.md) - REFUSED')
     return run.exit_code()
@@ -749,16 +753,35 @@ def mosaic_pair(scope, w, T):
     return filled, unfilled
 
 
-def tilefill_field(out_root, scope, w, rows):
-    """The band fill field of (scope, w) in <out>/_tilefill_fields/ (MF band_increment; HG13: the unfilled mosaic is a pinned input;
-    the field reproduces the filled mosaic), recorded beside it. Made once per --out: a field whose record passed, whose md5 equals
+def v5_mosaic_pair(mosaic_out, scope, w):
+    """(filled, unfilled, filled md5, unfilled md5): the Jy/sr maps of the done v5 fill unit of (scope, w) in the mosaic work run
+    mosaic_out (lib/mosaic/v5.py); refuses (HG13) unless the record is done and both files have its md5s now."""
+    from exopipe.phase3.core.record import load_record
+    from exopipe.phase3.lib.hybrid.tilefill import TilefillRefusal
+    from exopipe.phase3.lib.mosaic import v5
+    r = load_record(mosaic_out, v5.STEP, v5.unit_name('fill', scope, w))
+    if r is None or r.get('status') != 'done':
+        raise TilefillRefusal(f'{scope} {w}: no done v5 fill unit in --mosaic-out {mosaic_out} '
+                              f'({"no record" if r is None else r.get("status")}) - REFUSING')
+    P = v5.paths(mosaic_out, scope, w)
+    m = r['meta']['md5']
+    for k in ('filled_jysr', 'unfilled_jysr'):
+        if not os.path.exists(P[k]) or _md5(P[k]) != m[k]:
+            raise TilefillRefusal(f'HG13: {P[k]} is missing or its md5 is not the v5 fill record\'s {m[k]} - REFUSING')
+    return P['filled_jysr'], P['unfilled_jysr'], m['filled_jysr'], m['unfilled_jysr']
+
+
+def tilefill_field(out_root, scope, w, rows, mosaic_out=None):
+    """The band fill field of (scope, w) in <out>/_tilefill_fields/ (MF band_increment; HG13: the unfilled mosaic is a pinned input,
+    or with mosaic_out (--mosaic-out) the v5 work run's unfilled map at its fill record's md5; the field reproduces the filled mosaic),
+    recorded beside it. Made once per --out: a field whose record passed, whose md5 equals
     the record's and whose mosaics still have the recorded md5s is reused (another process or an earlier run made it); otherwise it
     is made under a name of this process and renamed into place, so no process deletes a field another one reads. A refusal is
     recorded (result FAIL) and refuses every unit of the scope and weighting."""
     import json
     from exopipe.phase3.config import CFG
     from exopipe.phase3.lib.hybrid import tilefill as TF
-    key = (os.path.abspath(out_root), scope, w)
+    key = (os.path.abspath(out_root), scope, w, os.path.abspath(mosaic_out) if mosaic_out else None)
     if key in _FIELDS:
         return _FIELDS[key]
     fd = os.path.join(out_root, '_tilefill_fields')
@@ -768,8 +791,11 @@ def tilefill_field(out_root, scope, w, rows):
     TF.bind()
     old = None
     try:
-        filled, unfilled = mosaic_pair(scope, w, CFG.hybrid_tilefill)
-        um = _pinned(unfilled, rows)
+        if mosaic_out:
+            filled, unfilled, _fm, um = v5_mosaic_pair(mosaic_out, scope, w)
+        else:
+            filled, unfilled = mosaic_pair(scope, w, CFG.hybrid_tilefill)
+            um = _pinned(unfilled, rows)
         if os.path.exists(rj) and os.path.exists(out):
             with open(rj) as f:
                 old = json.load(f)
@@ -1009,7 +1035,7 @@ def tilefill_plan(out_root, lst, scope, w, s):
     return out + [(os.path.join(wd, f'{w}_tilefill.json'), 'hybrid_tilefill_record')]
 
 
-def tilefill_unit(u, lst, scope, w, out_root, mode='work'):
+def tilefill_unit(u, lst, scope, w, out_root, mode='work', mosaic_out=None):
     """Stage tilefill (spec 2.14) of one unit: production's band field + fill_master_unit + rename_cleanres (MF 211, 306, 374) and
     the ruled caveat (HMF 124-143). The band field of the scope and weighting is made once per --out; the unfilled masters come from
     tilefill_source. A gate, a failed test or an unreadable input refuses the unit (the run goes on) and removes what it wrote. The
@@ -1033,7 +1059,7 @@ def tilefill_unit(u, lst, scope, w, out_root, mode='work'):
         u.refuse(f'{e}' if isinstance(e, (TF.TilefillRefusal, REC.ReconRefusal)) else f'{type(e).__name__}: {e} - REFUSED')
     for p in s['reads'] + [taper]:
         u.add_input(p)
-    field = tilefill_field(out_root, scope, w, rows)
+    field = tilefill_field(out_root, scope, w, rows, mosaic_out)
     if field.get('result') != 'PASS':
         u.refuse(f'the band field of {scope} {w} refused: {field.get("error")}')
     for p in (field['out'], field['filled'], field['unfilled']):

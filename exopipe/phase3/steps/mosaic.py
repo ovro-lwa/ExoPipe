@@ -84,6 +84,12 @@ Failure modes (exit 2 = refused, with the gate named; 3 = nothing to do; 1 = err
   G16  VLSSr median offset above mosaic_qa.VLSSR_GATE_MAX_MEDIAN_OFFSET_ARCMIN (None = measure only, today)
   G15  --out under a production root while paths.PRODUCTION_WRITES is False (cli); no node-local scratch root (core.fitsio)
   A content test failing on any output refuses its unit. A later stage without a done record of its predecessor refuses.
+
+Generation v5 (--generation v5; the hybrid mosaics of mosaic/Run_HYBRID, plan/specs/hybrid.md 2.8, 2.10-2.14): units (stage, scope,
+weighting) of the stages stage, coadd, caveat (hybrid.CAVEAT_SCOPES), fill, render - see lib/mosaic/v5.py. --scopes (default
+mosaic_v5.SCOPES), --weightings, --hybrid-out (the rebuilt tiles), --out (required), --work (node-local link trees):
+    exopipe3 mosaic --generation v5 --scopes Blue --weightings R075 --out /fast/gh/v5run --work /fast/gh/scratch
+    exopipe3 mosaic --generation v5 --hybrid-out /fast/gh/hybrid_q1 --scopes 18MHz,Red --out /fast/gh/v5run --dry-run
 """
 import os
 import sys
@@ -91,8 +97,8 @@ import sys
 SUMMARY = 'all-sky HEALPix mosaics of the deep masters: co-add, renders, QA, archive staging'
 TIERS = ('deep',)
 SELECTORS = ('tier', 'scopes', 'lsts')
-CONFIG = ('mosaic', 'mosaic_coadd', 'mosaic_render', 'mosaic_qa', 'mosaic_conform', 'paths', 'exclusions', 'instrument',
-          'runner', 'site')
+CONFIG = ('mosaic', 'mosaic_coadd', 'mosaic_render', 'mosaic_qa', 'mosaic_conform', 'mosaic_v5', 'mosaic_caveat', 'mosaic_fill',
+          'hybrid', 'hybrid_recon', 'hybrid_tilefill', 'paths', 'exclusions', 'instrument', 'runner', 'site')
 WRITES = True
 STAGES = ('inputs', 'coadd', 'render', 'qa', 'conform')
 
@@ -114,9 +120,21 @@ def add_arguments(p):
     p.add_argument('--until', dest='until_stage', metavar='STAGE', help='last stage to run')
     p.add_argument('--list-jobs', action='store_true', help='print the selected job items, one per line, and exit')
     p.add_argument('--keep-stage', action='store_true', help='keep the node-local stage (symlinks + weighting PB maps)')
+    g = p.add_argument_group('generation v5 (the hybrid mosaics, lib/mosaic/v5.py)')
+    g.add_argument('--generation', choices=('v2', 'v5'), default='v2',
+                   help='v2 (default): the mosaics of the deep masters, stages inputs..conform; v5: the hybrid mosaics of the unfilled '
+                        'hybrid masters, stages stage,coadd,caveat,fill,render (--out required)')
+    g.add_argument('--weightings', metavar='LIST', help='v5: R075, R0 or both (default mosaic_v5.WEIGHTINGS)')
+    g.add_argument('--hybrid-out', metavar='DIR',
+                   help='v5 stage: the `exopipe3 hybrid` work run whose done hybrid records give the rebuilt tiles (work); every other '
+                        'LST takes the pinned unfilled source of its installed master (default: all pinned)')
 
 
 def default_out(args):
+    if getattr(args, 'generation', 'v2') == 'v5':
+        from exopipe.phase3.config import ConfigRefusal
+        raise ConfigRefusal('exopipe3 mosaic --generation v5 needs --out: a work run of its own (node-local; ~2.4 GB per scope and '
+                            'weighting), never an archive run or the hybrid work run')
     if getattr(args, 'list_jobs', False):
         return '/tmp/exopipe3_mosaic_list_jobs'
     from exopipe.phase3.config import CFG
@@ -248,6 +266,13 @@ def run(args, run):
     from exopipe.phase3.core.record import EXIT_NO_INPUT
     from exopipe.phase3.lib.mosaic import steps_common as SC
 
+    if getattr(args, 'generation', 'v2') == 'v5':
+        from exopipe.phase3.lib.mosaic import v5
+        _start_gates(run)
+        return v5.run(args, run)
+    for flag in ('weightings', 'hybrid_out'):
+        if getattr(args, flag, None):
+            raise ValueError(f'--{flag.replace("_", "-")} is a --generation v5 option')
     jobs = SC.select_jobs(args)
     if args.list_jobs:
         run.no_records = True

@@ -112,9 +112,13 @@ def domain_cards(path, **ctx):
         psf = str(h1.get('PSFMAP', ''))
         b = os.path.basename(path)
         m = re.match(r'^healpix_(I_deep_.+)_jybeam_nside(\d+)\.fits$', b)
+        stem = m.group(1) if m else None
+        tag = ctx.get('tag') or ''
+        if stem and tag and stem.endswith(tag):        # a tagged run (v5 '_lsfill'): the engine names the untagged psfmap (CJ:274)
+            stem = stem[:-len(tag)]
         if not psf:
             probs.append('jybeam map without the PSFMAP card')
-        elif m and psf != f'healpix_PSF_{m.group(1)}_nside{m.group(2)}.fits':
+        elif m and psf != f'healpix_PSF_{stem}_nside{m.group(2)}.fits':
             probs.append(f'PSFMAP {psf!r} does not name the jysr pair psfmap')
     if h1.get('ALIGNED') is not False:
         probs.append(f'ALIGNED {h1.get("ALIGNED")!r} (no mosaic-stage flow, M-01)')

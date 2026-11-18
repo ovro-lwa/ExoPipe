@@ -222,3 +222,81 @@ class mosaic_conform(_Section):
              'BASE_PROC': ('DOC', 'R-JYBEAM-TOKEN-AND-MOSAIC-V2-PUSH-TAPER-ONLY'),
              'APPARENT_DROP_PROC': 'R-JYBEAM-TOKEN-AND-MOSAIC-V2-PUSH-TAPER-ONLY',
              'LST_TOKEN': 'DOC'}
+
+
+class mosaic_v5(_Section):
+    """`exopipe3 mosaic --generation v5` - the hybrid mosaics (spec plan/specs/hybrid.md 2.8, 2.10-2.14; mosaic/Run_HYBRID): the
+    24 UNFILLED hybrid masters of a scope and weighting, staged under their Taper names (NL stage_mosaic 1704, kind 'hybrid'), are
+    co-added by the v2 engine (lib/mosaic/coadd_jysr, tag _lsfill) in Jy/sr and Jy/beam, then zero-spacing filled (MF fill_file,
+    fill_jybeam_file) and rendered from the filled maps; the high-band scopes also get a caveat map. Unit of work: (stage, scope,
+    weighting). Tiles come from the hybrid step's work run (--hybrid-out, its tilefill-source 'work' records) or, for a unit not
+    rebuilt, from the pinned unfilled sources the installed filled masters' TPSRCMD5 names (pinned). Each tile's weighting map is the
+    archived full PB of its weighting in hybrid.ARCHIVE_MASTERS (NL 1704-1709: its PB = 0.1 contour is the master's blanking edge; the
+    hybrid archive's copies are byte-identical, PR-5b). --out is required (a work run of its own; the maps are 200 MB each)."""
+    WEIGHTINGS = ('R075', 'R0')
+    VARIANT_OF = {'R075': 'Taper_R075', 'R0': 'Taper_R0'}
+    #   NL 1704: the hybrid masters are staged under their own Taper names (I_deep_Taper_<v>_pbcorr_<scope>.fits), so the mosaics
+    #   carry the masters' identity
+    SCOPES = mosaic.SCOPES
+    #   the 19 scopes of Run_HYBRID (V5 tables/summary.csv: 38 Jy/sr + 38 Jy/beam rows)
+    TAG = '_lsfill'
+    #   release1_hybrid_mosaics_20261109.sh:72 (mosaic_coadd_jysr --tag _lsfill); the unfilled co-add carries it too: lsfill proves
+    #   the zero spacings only with card TPFILL (PR-1 token-card rule)
+    REQUIRE_N_LSTS = 24
+    #   HG14 (L3308, Gregg: "a Stokes I Hybrid for all subbands and widebands for all LSTs for both R0 and R-0.75"): every LST a hybrid
+    #   tile; hybrid_unit.RULED_TAPER_ONLY is empty, so a missing tile refuses the unit (no Taper-only stand-in)
+    RENDER_SCOPES = mosaic.SCOPES
+    #   V5 holds Mollweide and RA/Dec renders for every scope (19 x 2 weightings x 2 domains x 2 projections)
+    RULED = {'REQUIRE_N_LSTS': 'R-GREGG-20261108-MIN-HYBRID-EVERY-CELL-BOTH-ROBUSTS',
+             'TAG': 'R-GREGG-20261111-KEEP-LSFILL-NAME-FOR-ZERO-SPACING-MOSAICS'}
+    PROTECTED_KEYS = ('VARIANT_OF', 'TAG')
+
+
+class mosaic_caveat(_Section):
+    """Stage `caveat` of mosaic v5 (NL caveat_map 1759, test_caveat_map 1835; Gregg 2026-10-31 "ok on caveats"): per pixel the
+    weighted mean of the hybrid tiles' large-scale level / survey prior (LEVEL) and the weight fraction of Taper-only tiles
+    (TAPERONLY, 0 while HG14 admits none), with the mosaic's own tile weights. Scopes: hybrid.CAVEAT_SCOPES (D4: one list).
+    Declination bands: hybrid_recon.DEC_BANDS."""
+    NSIDE = 128
+    #   NL 1759 (nside=128)
+    PBEFF_MIN = 0.2
+    PBEFF_MED_MAX = 0.01
+    PBEFF_P99_MAX = 0.05
+    PBEFF_MIN_PIXELS = 1000
+    #   NL 1852-1857 (test_caveat_map (4)): the caveat weights' effective PB against the mosaic's PB_eff (NSIDE 2048 averaged to
+    #   NSIDE 128), where both exceed 0.2: median |difference| < 0.01, 99th percentile < 0.05, over more than 1000 pixels
+    RULED = {'PBEFF_MED_MAX': 'R-GREGG-20261031-HIGH-BAND-CAVEATS-APPROVED-GO-ON-EVERYTHING',
+             'PBEFF_P99_MAX': 'R-GREGG-20261031-HIGH-BAND-CAVEATS-APPROVED-GO-ON-EVERYTHING'}
+    PROTECTED_KEYS = ('NSIDE',)
+
+
+class mosaic_fill(_Section):
+    """Stage `fill` of mosaic v5 (MF fill_file 106, test_arrays 85, fill_jybeam_file 141): the zero-spacing fill of the unfilled
+    Jy/sr co-add from the LWA1 LFSS (the donor, l-blend and harmonic limits are hybrid_tilefill's keys: one copy for the mosaic and
+    the per-tile fill) and its Jy/beam companion through the map's own conversion. Content tests on the written files."""
+    TEST_NSIDE = 256
+    LS_SMOOTH_DEG = 30.0
+    HP_SMOOTH_DEG = 5.0
+    INNER_APOD_MIN = 0.9
+    LS_MAX = 0.02
+    HP_MAX = 0.03
+    HP_ABS_FRAC = 0.5
+    #   MF 28-34, 85-103 (test_tpfill): at 30-deg FWHM inside the footprint interior (apodization weight > 0.9, NSIDE 256) median
+    #   |filled - s LFSS| / median(s LFSS) <= 0.02; the change d = filled - unfilled is smooth: rms(d - smooth_5deg(d)) / rms(d)
+    #   <= 0.03 and max |d - smooth_5deg(d)| <= 0.5 x the unfilled map's robust rms. Limits fixed on the July filled maps before
+    #   any hybrid map was filled
+    JB_SMOOTH_DEG = 5.0
+    JB_BRIGHT_PERCENTILE = 70.0
+    JB_PBEFF_MIN = 0.2
+    JB_MED_TOL = 0.01
+    JB_SPREAD = 0.06
+    #   MF 137-197: the Jy/beam conversion K = Omega_eff x PB_eff x r, r = jybeam / (jysr x Omega_eff x PB_eff) at the bright pixels
+    #   (|jysr| above its 70th percentile, PB_eff > 0.2) smoothed to 5 deg; test: identity to float32 precision, median
+    #   jybeam / (jysr x K) within 0.01 of 1, 5-95 percentile spread <= 0.06
+    RULED = {'LS_MAX': 'R-GREGG-20261110-TOTAL-POWER-FILL-HYBRID-MOSAICS-R075-THEN-R0',
+             'HP_MAX': 'R-GREGG-20261110-TOTAL-POWER-FILL-HYBRID-MOSAICS-R075-THEN-R0',
+             'HP_ABS_FRAC': 'R-GREGG-20261110-TOTAL-POWER-FILL-HYBRID-MOSAICS-R075-THEN-R0',
+             'JB_MED_TOL': 'R-GREGG-20261111-KEEP-LSFILL-NAME-FOR-ZERO-SPACING-MOSAICS',
+             'JB_SPREAD': 'R-GREGG-20261111-KEEP-LSFILL-NAME-FOR-ZERO-SPACING-MOSAICS'}
+    PROTECTED_KEYS = ('TEST_NSIDE', 'LS_SMOOTH_DEG', 'HP_SMOOTH_DEG', 'INNER_APOD_MIN', 'JB_SMOOTH_DEG', 'JB_BRIGHT_PERCENTILE',
+                      'JB_PBEFF_MIN')
