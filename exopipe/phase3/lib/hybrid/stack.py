@@ -54,18 +54,20 @@ def cell_paths(coadd_sb, lst, band, v):
     return wd, cf, f'{cf}/I_deep_{VARIANT[v][0]}_{band}.fits'
 
 
-def members_of(coadd_sb, lst, band, v, excl=None):
+def members_of(coadd_sb, lst, band, v, excl=None, read=None):
     """Constituent nights of the installed variant master: weights.csv in_master rows minus the nights the per-variant divergence
     gate refused ('VARIANT-GATE refused <date>' HISTORY) and minus nights with no Phase 2 image of this variant (the co-add finds none
     and leaves the night out without a record: 08h and 09h 18 MHz Robust 0, 2026-10-26); must equal the master's constituent dates
     and its NCOADD (HG1), and none may be excluded by data_decisions.csv (`excl`: an exclusion read, default the deep read made NOW).
-    Returns (rows, refused + no-image dates)."""
+    Returns (rows, refused + no-image dates). `read` (a set) gains the files read: weights.csv, the master, the exclusion file."""
     from astropy.io import fits
     CFP = _CFP()
     wd, cf, mfile = cell_paths(coadd_sb, lst, band, v)
+    read = set() if read is None else read
     for need in (f'{cf}/weights.csv', mfile):
         if not os.path.isfile(need):
             raise StackRefusal(f'{lst} {band} {v}: {need} does not exist (no built co-add cell) - REFUSING', 'HG1')
+    read.update({f'{cf}/weights.csv', mfile})
     with open(f'{cf}/weights.csv', newline='') as fh:
         rows = [r for r in csv.DictReader(fh) if str(r.get('in_master', '')).strip() in ('1', 'True', 'true')]
     mh = fits.getheader(mfile)
@@ -81,6 +83,8 @@ def members_of(coadd_sb, lst, band, v, excl=None):
     if excl is None:
         from exopipe.phase3.core import exclusions
         excl = exclusions.for_tier('deep', fresh=True)
+    if getattr(excl, 'path', None):
+        read.add(excl.path)
     bad = excl.excluded_constituents(lst, band, const)
     if bad:
         raise StackRefusal(f'{lst} {band} {v}: the installed master holds nights excluded in data_decisions.csv {bad} - rebuild the '

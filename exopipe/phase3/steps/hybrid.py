@@ -18,6 +18,14 @@ Stages, in order (--stages a,b or --from / --until; default all), and the scopes
 
 PULL REQUEST PR-1: the selection, the unit list and the gates that need no stage code. Every unit of a stage not yet ported REFUSES
 (exit 2) with the pull request that ports it; nothing is written but the unit records.
+PULL REQUEST PR-4: the hybrid and full stages (lib/hybrid/master.py). A unit hybrid.<LST>_<scope>_<w> reads the scope's
+reconstruction in --out (no <w>_lsrecon(_wb).json = no input; a recon or wideband record that did not end done refuses it), the
+installed Taper master of weighting w and, at a striation scope, the striation-restored base; it writes, in <--out>/<LST>_<scope>/,
+the hybrid I_deep_Taper_<w>_lsrecon_lsfill_<scope>.fits, its beam-corrected sibling (..._lsfill_pbcorr_...), the CLEAN-residual
+hybrid (..._lsfill_cleanres_...) and the record <w>_hybrid.json. The CLEAN residual needs the Taper residual stack: when the stack
+stage refused it, that file is a refused item and the unit is done. A unit full.<LST>_Full_<w> combines the 15 subband hybrids in
+--out (none = no input; a member without a passed hybrid refuses it) and writes PBdiffuse_deep_Full.fits in place of a CLEAN
+residual.
 PULL REQUEST PR-3: the recon and wideband stages (lib/hybrid/recon.py, wideband.py). A unit recon.<LST>_<band>_<w> reads its
 stack (stage stack, same --out; no stack record = no input) and writes, in <--out>/<LST>_<band>/, the reconstruction
 I_deep_NoTaper_<w>_lsrecon_<band>.fits and its split beam-corrected sibling (..._lsrecon_pbcorr_...), the work files
@@ -171,9 +179,10 @@ def _md5(path):
 def stage_gate_problems(stage, cfg):
     """The configuration gates a stage refuses on before any unit's own gates (spec 3.4). [] = none."""
     out = []
-    if stage == 'stack' and not os.path.isdir(cfg.hybrid_stack.COADD_SB):
+    if stage in ('stack', 'hybrid', 'full') and not os.path.isdir(cfg.hybrid_stack.COADD_SB):
         out.append(f'HG0: the co-add build directories hybrid_stack.COADD_SB = {cfg.hybrid_stack.COADD_SB} are not on this node '
-                   f'(node-local; the stack rebuild test reads weights.csv and the flows there)')
+                   f'(node-local; the stack rebuild test reads weights.csv and the flows there; the hybrid span reads a refused Taper '
+                   f'stack\'s membership and a wideband master\'s weights.csv there)')
     if stage in ('recon', 'wideband') and not cfg.hybrid_psf2x.REGISTRY:
         out.append('HG6: the double-size PSF registry hybrid_psf2x.REGISTRY is empty (question Q1 with Gregg: which antenna list '
                    'each band\'s PSF was made with)')
@@ -205,7 +214,7 @@ def run(args, run):
         raise NoInput('no unit: the selected stages take none of the selected scopes')
     gates = {st: stage_gate_problems(st, CFG) for st in run.meta['stages']}
     if run.dry_run:
-        plans = {'stack': stack_plan, 'recon': recon_plan, 'wideband': wideband_plan}
+        plans = {'stack': stack_plan, 'recon': recon_plan, 'wideband': wideband_plan, 'hybrid': hybrid_plan, 'full': hybrid_plan}
         for st, lst, sc, w in units:
             what = (f'refused: {"; ".join(gates[st])}' if gates[st] else
                     ', '.join(os.path.relpath(p, run.out_root) for p, _c in plans[st](run.out_root, lst, sc, w)) if st in plans else
@@ -225,6 +234,9 @@ def run(args, run):
                 continue
             if st == 'wideband':
                 wideband_unit(u, lst, sc, w, run.out_root)
+                continue
+            if st in ('hybrid', 'full'):
+                hybrid_master_unit(u, lst, sc, w, run.out_root)
                 continue
             u.refuse(f'stage {st} is not ported yet ({PORTED_BY[st]} of plan/specs/hybrid.md) - REFUSED')
     return run.exit_code()
@@ -352,12 +364,10 @@ def _clear(paths):
 def _upstream_problem(out_root, unit, paths):
     """Why an upstream unit's files on disk may not be used, else None: its v2 unit record (when there is one; inputs staged from
     production have none) must be done and must not list any of `paths` as a refused item."""
-    import json
-    rp = os.path.join(out_root, '_records', 'hybrid', f'{unit}.json')
-    if not os.path.exists(rp):
+    from exopipe.phase3.lib.hybrid.common import unit_record
+    r = unit_record(out_root, unit)
+    if r is None:
         return None
-    with open(rp) as f:
-        r = json.load(f)
     if r.get('status') != 'done':
         return f"unit {unit} ended {r.get('status')}: {str(r.get('reason'))[:200]}"
     want = {os.path.abspath(p) for p in paths}
@@ -537,3 +547,99 @@ def wideband_unit(u, lst, scope, w, out_root):
             s = json.load(f)
         nights |= set(n['date'] for n in s['nights']) - set(s.get('dirty_nights_dropped') or ())
     u.set_admitted(sorted(nights))
+
+
+def hybrid_plan(out_root, lst, scope, w):
+    """[(path, product class)] a hybrid unit owes (NL 1274-1389): the hybrid, its beam-corrected sibling, its CLEAN residual, the
+    record; Full (NL 1404-1504): no CLEAN residual (its subbands sit on three grids), and the cell's diffuse PB map from the unit of
+    weighting hybrid_full.PBDIFFUSE_WEIGHTING only (one file for both weightings)."""
+    from exopipe.phase3.config import CFG
+    wd = os.path.join(out_root, f'{lst}_{scope}')
+    out = [(os.path.join(wd, f'I_deep_Taper_{w}_lsrecon_lsfill_{scope}.fits'), 'hybrid_master_product'),
+           (os.path.join(wd, f'I_deep_Taper_{w}_lsrecon_lsfill_pbcorr_{scope}.fits'), 'hybrid_master_product')]
+    if scope == 'Full':
+        if w == CFG.hybrid_full.PBDIFFUSE_WEIGHTING:
+            out.append((os.path.join(wd, f'PBdiffuse_deep_{scope}.fits'), 'hybrid_pbdiffuse'))
+    else:
+        out.append((os.path.join(wd, f'I_deep_Taper_{w}_lsrecon_lsfill_cleanres_{scope}.fits'), 'hybrid_master_product'))
+    return out + [(os.path.join(wd, f'{w}_hybrid.json'), 'hybrid_record')]
+
+
+def _hybrid_kind(path):
+    return 'pbcorr' if '_lsfill_pbcorr_' in path else 'cleanres' if '_lsfill_cleanres_' in path else 'hybrid'
+
+
+def hybrid_master_unit(u, lst, scope, w, out_root):
+    """Stage hybrid (spec 2.5) or full (2.6) of one unit: production's hybrid_unit / hybrid_full over the unit's reconstruction
+    (stages recon / wideband) or the cell's 15 subband hybrids (full), in --out. No reconstruction record (no subband hybrid, for
+    Full) = no input; a wideband or Full unit whose member holds no passed hybrid refuses. The CLEAN residual that a refused Taper
+    residual stack costs is a refused item with the recorded reason (Gregg 2026-10-31, "ok on caveats"). Any other refusal, or a
+    failed content test, refuses the unit and removes what it wrote. The unit's inputs are every file the stage read
+    (master.READS) except its own outputs; its admitted nights are the hybrid's span (the union of its inputs' nights)."""
+    from exopipe.phase3.config import CFG
+    from exopipe.phase3.core.record import NoInput
+    from exopipe.phase3.lib.hybrid import master as M
+    from exopipe.phase3.lib.hybrid import recon as REC
+    from exopipe.phase3.lib.hybrid.stack import StackRefusal
+    wd = os.path.join(out_root, f'{lst}_{scope}')
+    members = tuple(CFG.hybrid_full.MEMBERS) if scope == 'Full' else tuple(CFG.hybrid.WIDEBAND_MEMBERS.get(scope, ()))
+    hyb = lambda b: os.path.join(out_root, f'{lst}_{b}', f'{w}_hybrid.json')
+    if scope == 'Full':
+        if not any(os.path.exists(hyb(b)) for b in members):
+            raise NoInput(f'no subband hybrid of {lst} {w} (stage hybrid refused or was not run)')
+    else:
+        rj = os.path.join(wd, f'{w}_lsrecon_wb.json' if members else f'{w}_lsrecon.json')
+        if not os.path.exists(rj):
+            raise NoInput(f'no reconstruction record {rj} (its stage refused or was not run)')
+        why = _upstream_problem(out_root, f'{"wideband" if members else "recon"}.{lst}_{scope}_{w}', [rj])
+        if why:
+            u.refuse(f'its reconstruction may not be used: {why} - REFUSED')
+    for b in members:
+        if not os.path.exists(hyb(b)):
+            u.refuse(f'{lst} {scope} {w}: {b} holds no passed hybrid ({hyb(b)}) - REFUSED')
+        why = _upstream_problem(out_root, f'hybrid.{lst}_{b}_{w}', [hyb(b)])
+        if why:
+            u.refuse(f'member {b} may not be used: {why} - REFUSED')
+    for b in members or (scope,):                 # the span reads each subband's stack records and its Taper residual stack
+        why = _upstream_problem(out_root, f'stack.{lst}_{b}_{w}', [])
+        if why:
+            u.refuse(f'the stacks of {b} may not be used: {why} - REFUSED')
+    plan = hybrid_plan(out_root, lst, scope, w)
+    for p, c in plan:
+        u.plan(p, c)
+    own = [p for p, _c in plan]
+    _clear(own)
+    M.READS.clear()
+    try:
+        rec = M.hybrid_unit(lst, scope, w, out_root)
+    except (REC.ReconRefusal, StackRefusal) as e:
+        _clear(own)
+        u.refuse(f'{e}')
+    except BaseException:
+        _clear(own)
+        raise
+    finally:
+        outs = {os.path.abspath(p) for p, _c in plan}
+        for p in sorted(M.READS):
+            if os.path.abspath(p) not in outs and os.path.exists(p):
+                u.add_input(p)
+    n0 = len(u.failed_tests())
+    for p, c in plan:
+        if c == 'hybrid_master_product':
+            kind = _hybrid_kind(p)
+            if kind == 'cleanres' and rec.get('product_cleanres') is None:
+                u.refuse_item(p, f"no CLEAN residual product: {rec.get('cleanres_skipped')}", gate='taper-residual-stack')
+                continue
+            u.add_output(p, c, scope=scope, weighting=w, kind=kind, taper=rec['taper_master'])
+        elif c == 'hybrid_pbdiffuse':
+            u.add_output(p, c, taper=rec['taper_master'])
+        else:
+            u.add_output(p, c, lst=lst, scope=scope, weighting=w)
+    bad = u.failed_tests()[n0:]
+    if bad:
+        _clear(own)
+        u.refuse('content test(s) FAILED: ' + '; '.join(f"{t['name']} {t.get('detail', '')}"[:200] for t in bad))
+    if rec.get('caveats'):
+        u.note(f"recorded caveats: small scales {rec['caveats']['small_scale_rel']:.3g}"
+               f"{' (caveat)' if rec['caveats']['small_scale_caveat'] else ''}, level {(rec['caveats']['level'] or {}).get('verdict')}")
+    u.set_admitted(sorted(n['date'] for n in rec['span']['nights']))

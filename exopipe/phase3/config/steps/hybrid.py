@@ -306,6 +306,10 @@ class hybrid_full(_Section):
     #   NL 947: Full = all 15 subbands; fewer than 15 passed subband hybrids refuses (gate HG11)
     REGRID = 'bilinear'
     #   NL 1409: the subband hybrids sit on three grids and are regridded bilinearly (only scales above ~2 deg are kept)
+    PBDIFFUSE_WEIGHTING = 'R0'
+    #   the cell's diffuse PB map PBdiffuse_deep_Full.fits is the same for both weightings (the same subband maps and 1/THERMNOI^2
+    #   weights; 18h checked 2026-11-18: weights equal) but carries its writer's header: only this weighting's unit writes it. R0 =
+    #   the archived maps' writer (Run_NOTAPER_HYBRID_20261028 18h Full: BMAJ = the R0 product's; production wrote it from both)
     RULED = {'MEMBERS': 'R-GREGG-20261108-MIN-HYBRID-EVERY-CELL-BOTH-ROBUSTS'}
     PROTECTED_KEYS = ()
 

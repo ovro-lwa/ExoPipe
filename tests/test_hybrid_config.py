@@ -177,11 +177,12 @@ def test_stage_gates_and_out():
         assert any(p.startswith('HG0') for p in HS.stage_gate_problems('stack', cfg))
         assert any(p.startswith('HG6') for p in HS.stage_gate_problems('recon', cfg))
         assert any(p.startswith('HG6') for p in HS.stage_gate_problems('wideband', cfg))
-        assert HS.stage_gate_problems('hybrid', cfg) == []            # md5 equal
-        assert HS.stage_gate_problems('full', cfg) == []
+        for st in ('hybrid', 'full'):                                 # selection md5 equal: only HG0 (they read COADD_SB too)
+            assert [p[:3] for p in HS.stage_gate_problems(st, cfg)] == ['HG0'], st
         assert any('UNFILLED_INPUTS' in p for p in HS.stage_gate_problems('tilefill', cfg))
         os.mkdir(cfg.hybrid_stack.COADD_SB)
-        assert HS.stage_gate_problems('stack', cfg) == []
+        for st in ('stack', 'hybrid', 'full'):
+            assert HS.stage_gate_problems(st, cfg) == [], st
         psf = os.path.join(d, 'PSF2xF_46MHz_R075-psf.fits')
         with open(psf, 'wb') as f:
             f.write(b'psf')
@@ -286,13 +287,16 @@ def test_cli_skeleton_refuses_every_unit():
         # stack record); wideband reads no PSF and refuses: its first member holds no passed reconstruction
         rec = [l for l in lines if 'recon.18h_46MHz_R075' in l]
         hg6 = len(rec) == 1 and 'HG6' in rec[0] and 'md5 None' in rec[0]
-        assert hg6 or (not rec and 'no-input 1' in out), (rec, out[-3000:])
-        assert len(lines) == (7 if hg6 else 6), out[-3000:]
+        assert hg6 or not rec, (rec, out[-3000:])
+        # hybrid (ported, PR-4): HG0 refuses it with the stack (COADD_SB points nowhere); in CI the striation-selection gate as well
+        hyb = [l for l in lines if l.startswith('  refused hybrid.')]
+        assert len(hyb) == 2 and all('HG0' in l for l in hyb), (hyb, out[-3000:])
+        nref, nno = 6 + hg6, int(not hg6)
+        assert len(lines) == nref, out[-3000:]
         assert any('wideband.18h_Blue_R075' in l and '64MHz holds no passed reconstruction' in l for l in lines), lines
         assert sum('UNFILLED_INPUTS' in l for l in lines) == 2, lines           # tilefill x 2
-        assert sum(l.startswith('  refused hybrid.') and ('PR-4' in l or 'not the pinned' in l or 'md5 None' in l)
-                   for l in lines) == 2, lines
-        assert f'refused {7 if hg6 else 6}' in out and 'exit 2' in out, out[-500:]
+        assert f'refused {nref}' in out and 'exit 2' in out, out[-500:]
+        assert nno == 0 or f'no-input {nno}' in out, out[-800:]
         # no --out: refused before any unit (a new work run is always named)
         rc, out = _cli(['hybrid', '--lsts', '18h', '--scopes', '46MHz'])
         assert rc == 2 and 'needs --out' in out, (rc, out[-800:])
