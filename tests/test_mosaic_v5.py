@@ -649,6 +649,9 @@ def test_cli_dispatch():
         for k, val in (('list_jobs', True), ('lsts', '04h'), ('variants', 'NoTaper_R0'), ('jobs', 'x'), ('keep_stage', True)):
             e = _raises(ValueError, SM.run, _args(generation='v5', **{k: val}), types.SimpleNamespace(out_root='/nonexistent'))
             assert '--' + k.replace('_', '-') in e and seen == ['v5'], (k, e)
+        e = _raises(ValueError, SM.run, _args(generation='v5', workers=4), types.SimpleNamespace(out_root='/nonexistent'))
+        assert '--workers 4' in e and 'disjoint --scopes' in e and seen == ['v5'], e       # refused, never silently serial
+        assert SM.run(_args(generation='v5', workers=1), types.SimpleNamespace(out_root='/nonexistent')) == 0 and seen == ['v5'] * 2
     import argparse
     p = argparse.ArgumentParser()
     SM.add_arguments(p)
