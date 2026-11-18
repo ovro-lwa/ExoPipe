@@ -1068,7 +1068,7 @@ def tilefill_unit(u, lst, scope, w, out_root, mode='work'):
             pbd = M.write_diffuse_pb(out_root, lst, scope, w)
             if scope != 'Full':
                 own.insert(0, pbd)                                   # own[-1] stays the record
-            rec['pbdiffuse'] = dict(path=pbd, md5=_md5(pbd))
+            rec['pbdiffuse_map'] = dict(path=pbd, md5=_md5(pbd))       # ('pbdiffuse' is the fill's PB-source description)
         rp = own[-1]
         with open(rp + '.part', 'w') as f:
             json.dump(rec, f, indent=1, default=str)
@@ -1102,8 +1102,8 @@ def tilefill_unit(u, lst, scope, w, out_root, mode='work'):
     if bad:
         _clear(own)
         u.refuse('content test(s) FAILED: ' + '; '.join(f"{t['name']} {t.get('detail', '')}"[:200] for t in bad))
-    if rec.get('pbdiffuse'):
-        pbd = rec['pbdiffuse']['path']
+    if rec.get('pbdiffuse_map'):
+        pbd = rec['pbdiffuse_map']['path']
         n1 = len(u.failed_tests())
         u.add_output(pbd, 'hybrid_pbdiffuse', taper=taper)
         bad = u.failed_tests()[n1:]

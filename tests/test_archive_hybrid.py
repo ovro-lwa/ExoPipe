@@ -128,7 +128,8 @@ def _unit(d, source='work', cleanres=True, value=2.0, nights=NIGHTS, admitted=No
         with open(os.path.join(wd, 'R075_lsrecon.json'), 'w') as f:
             json.dump(rr, f)
         pbd = _fits(os.path.join(wd, 'PBdiffuse_deep_46MHz.fits'), 0.5, prodname=False, BUNIT='', PBMODEL='m')
-        rec['pbdiffuse'] = dict(path=pbd, md5=_md5(pbd))
+        rec['pbdiffuse'] = 'in memory: the fill\'s PB-source description'        # the fill's own key (not the map's record)
+        rec['pbdiffuse_map'] = dict(path=pbd, md5=_md5(pbd))
     with open(os.path.join(wd, 'R075_tilefill.json'), 'w') as f:
         json.dump(rec, f)
     os.makedirs(os.path.join(out, '_records', 'hybrid'), exist_ok=True)
@@ -374,7 +375,7 @@ def test_pbdiffuse_owner():
             CFG.hybrid_full.PBDIFFUSE_WEIGHTING = 'R075'
             tp = os.path.join(out, '18h_46MHz', 'R075_tilefill.json')
             rec = json.load(open(tp))
-            rec.pop('pbdiffuse')
+            rec.pop('pbdiffuse_map')
             json.dump(rec, open(tp, 'w'))
             try:
                 E.plan(out)

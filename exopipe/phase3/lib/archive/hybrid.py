@@ -151,7 +151,7 @@ def unit_items(staging, lst, scope, w):
             for k, key in (('recon', 'product'), ('recon_pbcorr', 'product_pbcorr')):
                 items.append(dict(kind=k, src=rr[key]['path'], name=rr[key]['prodname'], md5=rr[key].get('md5')))
         if w == CFG.hybrid_full.PBDIFFUSE_WEIGHTING:     # the cell's diffuse map: written and pushed by this weighting's unit only
-            pd = tf.get('pbdiffuse')
+            pd = tf.get('pbdiffuse_map')
             if not pd:
                 raise Refusal(f'{tp}: no diffuse PB map recorded (made before the map was written by the '
                               f'hybrid_full.PBDIFFUSE_WEIGHTING unit only); run --stages tilefill again')
