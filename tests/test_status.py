@@ -272,14 +272,15 @@ def build_world():
           for c in (c1, c2, c3, c5)])
     wcsv(f'{A}/source_catalogs/pages_input_I_sb.csv', ['stokes', 'lst', 'date', 'band'],
          [dict(stokes='I', lst='05h', date='2099-01-01', band='18MHz')])
-    wcsv(f'{A}/master_catalog.csv', ['cand_id'], [dict(cand_id=c) for c in (c1, c2, c3, c5)])
+    cat = lambda c: dict(cand_id=c, lst=c.split('_')[0], date=c.split('_')[1], band=c.split('_')[2])  # noqa: E731
+    wcsv(f'{A}/master_catalog.csv', ['cand_id', 'lst', 'date', 'band'], [cat(c) for c in (c1, c2, c3, c5)])
     wcsv(f'{A}/source_catalogs_I/t_sources_survivors.csv', ['source_id', 'identity_id'],
          [dict(source_id='s1', identity_id='J1'), dict(source_id='s2', identity_id='J2')])
     wcsv(f'{A}/source_catalogs_I/t_source_members.csv', ['source_id', 'cand_id'],
          [dict(source_id='s1', cand_id=c1), dict(source_id='s1', cand_id=c2), dict(source_id='s2', cand_id=c3)])
     wtxt(f'{A}/judgements_I/judgements.jsonl', json.dumps({'action': 'classify', 'source_id': 'J1', 'label': 'real'}) + '\n')
     wcsv(f'{A}/judgements/skipped.csv', ['cand_id'], [dict(cand_id=c5)])          # judgements/ is never audited
-    wcsv(f'{B}/master_catalog.csv', ['cand_id'], [dict(cand_id=c) for c in (c1, c2, c4)])
+    wcsv(f'{B}/master_catalog.csv', ['cand_id', 'lst', 'date', 'band'], [cat(c) for c in (c1, c2, c4)])
     wcsv(f'{B}/source_catalogs_I/t_sources_survivors.csv', ['source_id', 'identity_id'],
          [dict(source_id='s1b', identity_id='J1'), dict(source_id='s3', identity_id='J3')])
     wcsv(f'{B}/source_catalogs_I/t_source_members.csv', ['source_id', 'cand_id'],
@@ -413,7 +414,8 @@ def main():
     print('QA pages: %d night pages' % n)
 def check():
     miss = ['%s_%s' % k for k in _nights() if not os.path.exists('%s/nights/%s_%s.html' % (HUB, k[0], k[1]))]
-    print('CHECK: %d ledger nights, %d without a page' % (len(_nights()), len(miss)))
+    dp = open(HUB + '/data_processing.html').read()          # P4 reads the data-processing page (build_qa_pages.py:468)
+    print('CHECK: %d ledger nights, %d without a page; data page %d bytes' % (len(_nights()), len(miss), len(dp)))
     print('CHECK PASS' if not miss else 'CHECK FAIL')
     return 0 if not miss else 1
 ''',
@@ -535,14 +537,16 @@ with open(OUT, 'w', newline='') as f:
     'build_qa_table.py': '''
 import csv, os, sys
 COLS = ['lst', 'date', 'subband', 'verdict'] + ['p3g_in_record', 'p3g_in_master', 'p3g_nightgate', 'p3g_epochgate',
-                                               'p3s_searched_V', 'p3s_searched_I', 'p3s_refused_V', 'p3s_refused_I', 'p3_status']
+                                               'p3s_searched_V', 'p3s_searched_I', 'p3s_refused_V', 'p3s_refused_I', 'p3_status',
+                                               'p1_provenance']
 OUT = sys.argv[1]
 if (os.environ.get('P3_ARCHIVE_RUN'), os.environ.get('P3_QA_SEARCH_LABEL')) != ('Run_TESTARCH', 'P3S5'):
     sys.exit('env not set from config: %r' % ((os.environ.get('P3_ARCHIVE_RUN'), os.environ.get('P3_QA_SEARCH_LABEL')),))
 base = dict(verdict='', p3g_in_record='1', p3g_in_master='1', p3g_nightgate='PASS', p3g_epochgate='PASS', p3s_searched_V='1',
             p3s_searched_I='1', p3s_refused_V='', p3s_refused_I='')
 rows = [dict(base, lst='05h', date='2099-01-01', subband='18MHz', p3_status='in master; searched V+I'),
-        dict(base, lst='05h', date='2099-01-03', subband='18MHz', verdict='exclude', p3_status='excluded (data_decisions)')]
+        dict(base, lst='05h', date='2099-01-03', subband='18MHz', verdict='exclude', p3_status='excluded (data_decisions)'),
+        dict(lst='05h', date='2099-01-04', subband='', p1_provenance='False')]   # a night without calibration provenance
 with open(OUT, 'w', newline='') as f:
     w = csv.DictWriter(f, fieldnames=COLS); w.writeheader(); w.writerows(rows)
 ''',
@@ -1016,6 +1020,86 @@ def test_exclusion_conformance():
         edit('2099-01-03', '2099-01-01'))
 
 
+def test_exclusion_conformance_tiers():
+    """2026-11-17 status parity part B: the served-run part judges each row with the read of its tier's serve-time gate
+    (snapshot flat 'snapshot-gpu' as snapshot_serve_exclusion_gate.py:62; sub-LST per night; deep the default), scans a
+    snapshot run's files as that gate does (cell_load_review.csv skipped, :69-76), and takes each key's date as its night (a
+    sub-LST date '2099-01-03T02' names its 10-minute window; the exact compare never matched it)."""
+    from exopipe.phase3.core import exclusions as EX
+    from exopipe.phase3.lib.serve import exclusion_gate as XG
+    from exopipe.phase3.lib.status import steps_common as SC, steps_exclconf as XC2
+    dd = CFG.paths.DATA_DECISIONS
+    st = os.stat(dd)
+    dd0 = open(dd, 'rb').read()
+    reg = SC.expand(CFG.status.REGISTRY_FILE)
+    reg0 = open(reg).read()
+    S = os.path.join(CFG.paths.SNAPSHOT_REVIEW_ROOT, 'Run_SNAPXC')
+    extra = f'{W}/transients/Run_SLSTB/windows_xc.csv'
+    saved = (XC2.tier_read, XG.SNAPSHOT_SKIP_FILES, XC2.row_keys)
+    want = [('detections.csv', '07h_2099-02-01_23MHz_V_1min_1')]
+
+    def snap(o):
+        rc, txt = step(['status', '--exclusion-conformance', '--tier', 'snapshot', '--out', o, '--cores', 'none'])
+        t = os.path.join(o, 'QA', 'exclusion_conformance_snapshot.csv')
+        return rc, txt, ([(x['file'], x['row_id']) for x in rows(t)] if os.path.exists(t) else None), t
+    try:
+        with open(dd, 'a', newline='') as f:
+            w = csv.writer(f)
+            w.writerow(['07h', '23MHz', '2099-02-01', 'exclude', f'{CFG.exclusions.SNAPSHOT_ONLY_TAG}] test row', '', '', ''])
+            w.writerow(['07h', '27MHz', '2099-02-02', 'exclude', f'{CFG.exclusions.GPU_READMIT_TAG}] test row', '', '', ''])
+        J = json.loads(reg0)
+        J['V']['1-min'] = {'run': 'Run_SNAPXC', 'port': 18986}
+        wtxt(reg, json.dumps(J))
+        wcsv(f'{S}/detections.csv', ['cand_id'],
+             [dict(cand_id='07h_2099-02-01_23MHz_V_1min_1'),     # snapshot-tiers-only row: excluded for this tier
+              dict(cand_id='07h_2099-02-02_27MHz_V_1min_2'),     # re-admitted on the GPU frames: not excluded ('snapshot-gpu')
+              dict(cand_id='07h_2099-02-03_23MHz_V_1min_3')])    # no row
+        wcsv(f'{S}/cell_load_review.csv', ['lst', 'date', 'band', 'stokes', 'tier', 'detections'],   # 'band' = band class
+             [dict(lst='07h', date='2099-02-01', band='Red', stokes='V', tier='1min', detections=1)])
+        rc, txt, got, tab = snap(f'{TMP}/o_xc6')
+        check('snapshot tier: judged with the snapshot serve gate\'s read (\'snapshot-gpu\': the snapshot-tiers-only row '
+              'excludes, the GPU-readmitted row does not) on the gate\'s files (cell_load_review.csv skipped)',
+              rc == 0 and got == want, (rc, got, txt[-600:]))
+        check('... the table passes its content test with the tier\'s read, and fails it judged with the default read',
+              rc == 0 and not failed('exclusion_conformance', tab) and failed('exclusion_conformance', tab, tier='deep'),
+              failed('exclusion_conformance', tab))
+        XC2.tier_read = lambda tier: EX.load()
+        rc, txt, got, _ = snap(f'{TMP}/o_xc6f1')
+        XC2.tier_read = saved[0]
+        check('falsifier: with the default read of before, the GPU-readmitted row is reported and the snapshot-only one '
+              'missed (and the content test, judging with the tier\'s read, refuses that table: exit 2)',
+              got == [('detections.csv', '07h_2099-02-02_27MHz_V_1min_2')] and rc == 2, (rc, got))
+        XG.SNAPSHOT_SKIP_FILES = ('serve_exclusion_refusals.csv',)
+        rc, txt, got, _ = snap(f'{TMP}/o_xc6f2')
+        XG.SNAPSHOT_SKIP_FILES = saved[1]
+        check('falsifier: without the cell_load_review.csv skip its band-class row is reported too',
+              rc == 0 and got is not None and sorted(got) == sorted(want + [('cell_load_review.csv', '')]), (rc, got))
+        check('the serve gate (G17) skips cell_load_review.csv as the in-place gate does',
+              os.path.join(S, 'cell_load_review.csv') not in XG.snapshot_run_files(S)
+              and os.path.join(S, 'detections.csv') in XG.snapshot_run_files(S))
+        wtxt(extra, 'cand_id,lst,date,band\nI1_05h_2099-01-03T02_Full_0002,05h,2099-01-03T02,Full\n')
+        rc, txt = step(['status', '--exclusion-conformance', '--tier', 'sublst', '--out', f'{TMP}/o_xc7', '--cores', 'none'])
+        t = rows(os.path.join(TMP, 'o_xc7', 'QA', 'exclusion_conformance_sublst.csv')) if rc == 0 else []
+        check('sub-LST: a row whose date carries its 10-minute window (2099-01-03T02) is judged on its night',
+              [(x['file'], x['date']) for x in t if x['file'] == 'windows_xc.csv'] == [('windows_xc.csv', '2099-01-03')],
+              (rc, t, txt[-400:]))
+        XC2.row_keys = lambda row: XC2.keys_of_fn()(row)
+        rc, txt = step(['status', '--exclusion-conformance', '--tier', 'sublst', '--out', f'{TMP}/o_xc7f', '--cores', 'none'])
+        XC2.row_keys = saved[2]
+        t = rows(os.path.join(TMP, 'o_xc7f', 'QA', 'exclusion_conformance_sublst.csv')) if rc == 0 else None
+        check('falsifier: with the full date as before, that row is not found', t is not None and
+              not any(x['file'] == 'windows_xc.csv' for x in t), (rc, t))
+    finally:
+        XC2.tier_read, XG.SNAPSHOT_SKIP_FILES, XC2.row_keys = saved
+        with open(dd, 'wb') as f:
+            f.write(dd0)
+        os.utime(dd, ns=(st.st_atime_ns, st.st_mtime_ns))
+        wtxt(reg, reg0)
+        shutil.rmtree(S, ignore_errors=True)
+        if os.path.exists(extra):
+            os.remove(extra)
+
+
 def test_ledger_every_exclude_row():
     """2026-11-17 status parity: the ledger's dd_excl_subbands counts EVERY exclude row of data_decisions.csv
     (_build_ledger.py:8-11), a [SNAPSHOT-TIERS-ONLY] row too, which the default core.exclusions read skips; the ledger and
@@ -1220,6 +1304,51 @@ def test_served_diff_cell_load():
     check('S-G7: a run without served catalogues = no input (exit 3)', rc == 3, txt[-300:])
     neg('served_diff_status', 'served_diff', tab, edit('re-searched cell', 'unchanged'),
         siblings=[tab[:-len('_rows.csv')] + '_summary.json'])
+    # 2026-11-17 status parity: deep cand_ids as the deep search writes them (Run_P3S5 'ID_01h_2024-12-21_36MHz_0000') do not
+    # start with the LST; the cell and night come from the catalogue row's lst/date/band (served_change_20261006.py:52)
+    from exopipe.phase3.lib.status import steps_common as SK, steps_serveddiff as SD
+    d1, d2, d3 = 'ID_05h_2099-01-01_18MHz_0001', 'ID_05h_2099-01-04_Red_0002', 'ID_05h_2099-01-04_Red_0007'
+    made, saved = [], SD.cells_of
+    for run, cids, cols in (('TESTD', (d1, d2), True), ('TESTE', (d1, d3), True), ('TESTF', (d1,), False)):
+        R = f'{W}/transients/Run_{run}'
+        made.append(R)
+        wcsv(f'{R}/master_catalog_asrun.csv', ['cand_id', 'lst', 'date', 'band'] if cols else ['cand_id'],
+             [dict(cand_id=c, **(dict(lst=c.split('_')[1], date=c.split('_')[2], band=c.split('_')[3]) if cols else {}))
+              for c in cids])
+        wcsv(f'{R}/source_catalogs_I/t_sources_survivors.csv', ['source_id', 'identity_id'],
+             [dict(source_id='k', identity_id='K1')])
+        wcsv(f'{R}/source_catalogs_I/t_source_members.csv', ['source_id', 'cand_id'],
+             [dict(source_id='k', cand_id=c) for c in cids])
+
+    def k1_of():
+        rc, txt = step(['status', '--served-diff', 'TESTD', 'TESTE', '--out', out, '--cores', 'none'])
+        t = os.path.join(out, 'status', 'served_diff_Run_TESTD_Run_TESTE_rows.csv')
+        return rc, txt, ({(x['side'], x['source']): x for x in rows(t)}.get(('A', 'K1'), {}) if rc == 0 else {})
+
+    def parse_of_before(path):        # steps_serveddiff.cell_of_cand (v2 ba524fa), in place of cells_of
+        out_ = {}
+        for r in (SK.read_csv(path) if path else []):
+            q = r['cand_id'].split('_')
+            out_[r['cand_id']] = (q[0], q[1], q[2]) if len(q) >= 3 and q[0].endswith('h') else (None, None, None)
+        return out_
+    try:
+        rc, txt, k1 = k1_of()
+        check('served-diff of deep cand_ids (ID_<lst>_...): the cell from the row - K1\'s member in the re-searched 05h Red '
+              'cell is research, not lost (parity 2026-11-17: 11,317 Run_P3S3 member detections came out lost)',
+              k1.get('status') == 're-searched cell' and (k1.get('kept'), k1.get('research'), k1.get('lost')) == ('1', '1', '0'),
+              (rc, k1, txt[-500:]))
+        SD.cells_of = parse_of_before
+        rc, txt, k1 = k1_of()
+        SD.cells_of = saved
+        check('falsifier: with the cand_id parse of before in its place, the same member comes out lost (K1 reduced)',
+              k1.get('status') == 'reduced' and k1.get('lost') == '1', (rc, k1, txt[-300:]))
+        rc, txt = step(['status', '--served-diff', 'TESTD', 'TESTF', '--out', out, '--cores', 'none'])
+        check('S-G7: a catalogue without lst/date/band refuses (the cell is never parsed from the cand_id)',
+              rc == 2 and 'S-G7' in txt and 'never parsed from the cand_id' in txt, txt[-400:])
+    finally:
+        SD.cells_of = saved
+        for R in made:
+            shutil.rmtree(R, ignore_errors=True)
     rc, txt = step(['status', '--cell-load', '--run', 'TESTA', '--out', out, '--cores', 'none'])
     cl = os.path.join(out, 'status', 'cell_load_review_TESTA.csv')
     t = rows(cl)
@@ -1267,6 +1396,21 @@ def test_qa():
     cand = [os.path.join(Q, f) for f in os.listdir(Q) if f.startswith('solar_contamination_audit.candidate_') and
             not f.endswith('.diff.csv')][0]
     neg('qa_table_p3_status', 'qa_table', os.path.join(Q, 'qa_all_phases.csv'), edit('searched V+I', 'searched V'))
+
+    def marker(**upd):                  # the night without calibration provenance (subband '', p1_provenance False)
+        def m(p):
+            rs = rows(p)
+            for r in rs:
+                if r['subband'] == '':
+                    r.update(upd)
+            wcsv(p, list(rs[0].keys()), rs)
+        return m
+    check('2026-11-17 parity: the QA table\'s row of a night without calibration provenance (subband \'\', p1_provenance '
+          'False, every other column empty - production writes 63) passes qa_table',
+          any(x['subband'] == '' and x['p1_provenance'] == 'False' for x in rows(os.path.join(Q, 'qa_all_phases.csv')))
+          and not failed('qa_table', os.path.join(Q, 'qa_all_phases.csv')))
+    neg('qa_table_marker_with_measure', 'qa_table', os.path.join(Q, 'qa_all_phases.csv'), marker(p3g_in_master='1'))
+    neg('qa_table_marker_provenance', 'qa_table', os.path.join(Q, 'qa_all_phases.csv'), marker(p1_provenance='True'))
     neg('solar_verdict', 'solar_audit', cand, edit('suspect', 'ok'))
     neg('beam_ratio', 'beam_audit', os.path.join(Q, 'beam_audit', 'beam_audit_all.csv'), edit(',8100.0,1.012,', ',8100.0,1.112,'),
         siblings=[os.path.join(Q, 'beam_audit', 'beam_audit_flagged.csv')])
@@ -1336,9 +1480,17 @@ def test_conformance_pages_ledger_register():
           and not os.path.exists(f'{W}/hub/coverage.json') and not os.path.exists(f'{W}/release1_default'),
           (nled, sorted(os.listdir(site)) if os.path.isdir(site) else None))
     outs = {os.path.basename(o['path']): o['class'] for o in rd.get('outputs', [])}
-    check('data-processing record: page status_page, coverage.json qa_coverage, summary and inventory tested',
+    check('data-processing record: page status_page, coverage.json qa_coverage, summary and inventory tested, and the hub\'s '
+          'night pages (qa_night_pages: build_qa_pages.check P4 reads the page this stage installs)',
           outs == {'data_processing.html': 'status_page', 'coverage.json': 'qa_coverage',
-                   'coverage_summary.json': 'qa_coverage_summary', 'per_night_qa_inventory.csv': 'csv_table'}, outs)
+                   'coverage_summary.json': 'qa_coverage_summary', 'per_night_qa_inventory.csv': 'csv_table',
+                   'review_hub': 'qa_night_pages'}, outs)
+    tn = [t['name'] for t in rn.get('tests', [])]
+    td = [t['name'] for t in rd.get('tests', []) if t.get('passed')]
+    check('2026-11-17 parity: the nights unit no longer runs check() before data_processing.html exists (it refused every '
+          'fresh --out); it counts the pages it wrote, and the data-processing unit runs check() on the complete hub',
+          'pages.night_pages_written' in tn and not any(n.startswith('qa_night_pages') for n in tn)
+          and any(n.startswith('qa_night_pages') for n in td), (tn, td))
     rc, txt = step(['status', 'pages', '--stages', 'data-processing', '--out', f'{TMP}/o_dp_nofrag', '--cores', 'none'])
     check('S-G17: data-processing without this hub\'s QA overview fragment refuses (the page would lack its section)',
           rc == 2 and 'S-G17' in txt and not os.path.exists(f'{TMP}/o_dp_nofrag/review_hub/data_processing.html'),
@@ -1627,6 +1779,7 @@ def test_drift_lines():
 def main():
     with world():
         for t in (test_config_and_help, test_summary, test_coverage_gaps, test_rebuild_due, test_exclusion_conformance,
+                  test_exclusion_conformance_tiers,
                   test_fleet_claim_done, test_violations_stale, test_served_diff_cell_load, test_qa, test_conformance_pages_ledger_register,
                   test_snapshot, test_gates_and_dry_run_world, test_patched, test_ledger_every_exclude_row):
             t0 = time.time()

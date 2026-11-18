@@ -20,7 +20,8 @@ it the hits are reported (unit notes, dry-run plan). Gregg 2026-10-14 approved e
 and the snapshot forced pages too (R-GREGG-20261014-REFACTOR-DECISIONS-LIST-RECOMMENDATIONS); production ('snapshot' only)
 is the parity file's value.
 
-What is scanned. Snapshot (and the forced pages): every CSV of the run, as the in-place gate scans it (snapshot_run_files).
+What is scanned. Snapshot (and the forced pages): every CSV of the run, as the in-place gate scans it (snapshot_run_files:
+judgements/, its own refusal list and cell_load_review.csv excepted, as the gate's :69-76).
 Deep / sub-LST, PER PAGE: exactly what the page's review server reads (scan_page) - its queue's page ids, and for its
 --catalog-dir each band's <band>_sources_survivors.csv and <band>_source_members.csv, each survivor's page folder
 <run>/<review_dir>: detections.csv and its panel images (classify_transients.load_sources, non-blind); with its multiples
@@ -167,12 +168,19 @@ def scan_queue(path, base, ex=None, scan=None):
     return scan
 
 
+# Files of a snapshot run the in-place gate does not read (snapshot_serve_exclusion_gate.py:69-76): its own refusal list,
+# and cell_load_review.csv (exopipe_ops b53be50, 2026-10-15, Run_SNAPB3C_20261015) - served detections counted per lst, date,
+# BAND CLASS, Stokes and tier: its 'band' is the class of subband detections, not an image, so the member rule cannot be
+# applied to it; every detection it counts is checked through its own cand_id in detections.csv.
+SNAPSHOT_SKIP_FILES = ('serve_exclusion_refusals.csv', 'cell_load_review.csv')
+
+
 def snapshot_run_files(run):
-    """Every CSV of a snapshot run that the in-place gate reads (judgements and its own refusal list excepted)."""
+    """Every CSV of a snapshot run that the in-place gate reads: judgements/ (top level) and SNAPSHOT_SKIP_FILES excepted."""
     out = []
     for p in sorted(glob.glob(os.path.join(run, '**', '*.csv'), recursive=True)):
         rel = os.path.relpath(p, run)
-        if rel.startswith('judgements' + os.sep) or os.path.basename(p) == 'serve_exclusion_refusals.csv':
+        if rel.startswith('judgements' + os.sep) or os.path.basename(p) in SNAPSHOT_SKIP_FILES:
             continue
         out.append(p)
     return out

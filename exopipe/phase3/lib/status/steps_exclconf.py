@@ -14,9 +14,12 @@ Three parts (deep; sub-LST and snapshot have the served part only):
                    is excluded by its member subbands), as the production script does since exopipe_ops c1e4a5d (its
                    excluded_at looked the BAND name up among the backup's subband rows, so a band-master constituent
                    excluded before the build read STALE, never BREACH - refactor finding, fixed 2026-10-14).
-  served-run       every CSV of each run the hub registry serves for the tier (judgements/ skipped): each row keyed by
+  served-run       every CSV of each run the hub registry serves for the tier (judgements/ skipped; a snapshot run: the
+                   files the snapshot serve gate scans, lib/serve/exclusion_gate.snapshot_run_files): each row keyed by
                    snapshot_serve_exclusion_gate.keys_of (in place; its main() is NOT called - it writes into the run dir),
-                   plus lst/date/scope rows (search image tables); each key judged with core.exclusions now.
+                   plus lst/date/scope rows (search image tables), each key's date taken as its night (the first 10
+                   characters: a sub-LST row's date carries its 10-minute window, '2025-09-13T02'); each key judged now
+                   with the read of the tier's serve-time gate (tier_read).
 """
 import collections
 import glob
@@ -167,6 +170,23 @@ def archive_audit(out_table, archive_root, unit=None, log=None):
 # ---------------------------------------------------------------------------------------------------------------------
 
 _KEYS_OF = None
+_READS = {}
+
+
+def tier_read(tier):
+    """The exclusion read a served row of the tier is judged with: the read of the tier's serve-time gate
+    (lib/serve/exclusion_gate.fresh_exclusions) - a snapshot run flat 'snapshot-gpu', as snapshot_serve_exclusion_gate.py:62;
+    a sub-LST run per night (core.exclusions.for_tier: 'snapshot-gpu' on a GPU-frame cell, else 'snapshot'); a deep run the
+    default. Read once per audit (served_runs_audit clears it first), inherited by the forked workers."""
+    if tier not in _READS:
+        from exopipe.phase3.lib.serve import exclusion_gate as XG
+        _READS[tier] = XG.fresh_exclusions(tier)
+    return _READS[tier]
+
+
+READ_NOTE = {'snapshot': "excluded now (core.exclusions 'snapshot-gpu', the snapshot serve gate's read)",
+             'sublst': "excluded now (core.exclusions per night: 'snapshot-gpu' on a GPU-frame cell, else 'snapshot')",
+             'deep': 'excluded now (core.exclusions)'}
 
 
 def keys_of_fn():
@@ -180,9 +200,11 @@ def keys_of_fn():
 
 
 def row_keys(row):
+    """(lst, night, band) keys of a served row: keys_of's, each date cut to its night (a sub-LST date '2025-09-13T02' names
+    its 10-minute window; core.exclusions compares the night exactly, so the full date never matched), else lst/date/scope."""
     ks = keys_of_fn()(row)
     if ks:
-        return ks
+        return [(l, d[:10], b) for l, d, b in ks]
     lst, date, scope = (row.get('lst') or '').strip(), (row.get('date') or '').strip()[:10], (row.get('scope') or '').strip()
     if lst and date and scope:
         return [(lst, date, scope)]
@@ -190,11 +212,10 @@ def row_keys(row):
 
 
 def scan_csv(args):
-    """(hits, n_rows, n_keyed, error) of one CSV of a served run."""
+    """(hits, n_rows, n_keyed, error) of one CSV of a served run of the tier."""
     import csv
-    path, run, rel = args
-    from exopipe.phase3.core import exclusions as E
-    ex = E.load()
+    path, run, rel, tier = args
+    ex = tier_read(tier)
     hits, n, nk, cache = [], 0, 0, {}
     try:
         with open(path, newline='', encoding='utf-8') as fh:     # undecodable = unreadable (the gate's rule, :67-85)
@@ -216,13 +237,19 @@ def scan_csv(args):
                         hits.append(dict(part='served-run', run=run, file=rel,
                                          row_id=row.get('cand_id') or row.get('cell') or row.get('source_id') or '',
                                          lst=k[0], date=k[1], band=k[2], verdict='EXCLUDED-ROW',
-                                         note='excluded now (core.exclusions)'))
+                                         note=READ_NOTE.get(tier, 'excluded now (core.exclusions)')))
     except (OSError, csv.Error, UnicodeDecodeError) as e:
         return hits, n, nk, f'{rel}: {e}'
     return hits, n, nk, ''
 
 
-def served_run_files(run_dir):
+def served_run_files(run_dir, tier=None):
+    """[(path, relative path)] of the CSVs audited in a served run: a snapshot run's are the snapshot serve gate's own
+    (exclusion_gate.snapshot_run_files: also skips cell_load_review.csv, whose 'band' is a band class); the others every CSV
+    but status_conformance.EXCLCONF_SKIP_DIRS / EXCLCONF_SKIP_FILES."""
+    if tier == 'snapshot':
+        from exopipe.phase3.lib.serve import exclusion_gate as XG
+        return [(p, os.path.relpath(p, run_dir)) for p in XG.snapshot_run_files(run_dir)]
     C = K.cfg().status_conformance
     out = []
     for p in sorted(glob.glob(os.path.join(run_dir, '**', '*.csv'), recursive=True)):
@@ -239,11 +266,13 @@ def served_runs_audit(tier, run_dirs, workers=None, note=print):
     """(rows, counts) of the served-run part for the given run directories."""
     from concurrent.futures import ProcessPoolExecutor
     keys_of_fn()                          # import once in the parent (children inherit it under fork)
+    _READS.clear()
+    tier_read(tier)                       # read now, once, in the parent (children inherit it under fork)
     rows, counts, errors = [], collections.Counter(), []
     for rd in run_dirs:
         run = os.path.basename(rd)
-        files = served_run_files(rd)
-        jobs = [(p, run, rel) for p, rel in files]
+        files = served_run_files(rd, tier)
+        jobs = [(p, run, rel, tier) for p, rel in files]
         n = max(1, min(workers or K.cfg().status.WORKERS, len(jobs) or 1))
         if n > 1 and len(jobs) > 1:
             with ProcessPoolExecutor(max_workers=n) as ex:

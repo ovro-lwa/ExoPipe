@@ -290,12 +290,19 @@ def rebuild_due_rule(path, **ctx):
 
 @content_test('exclusion_conformance')
 def rows_are_excluded(path, **ctx):
-    """Every row's (LST, date, band) is excluded now (core.exclusions); a master row's BREACH / STALE / UNKNOWN-EPOCH is
-    re-derived from the data_decisions backups at the product's write date (coadd_exclusion_conformance.py:47-80)."""
+    """Every row's (LST, date, band) is excluded now (core.exclusions; a served-run row with the read of its tier's
+    serve-time gate, as the audit judged it: steps_exclconf.tier_read - the tier from the unit's context, else from the
+    table's name); a master row's BREACH / STALE / UNKNOWN-EPOCH is re-derived from the data_decisions backups at the
+    product's write date (coadd_exclusion_conformance.py:47-80)."""
     from exopipe.phase3.lib.status import steps_exclconf as XC
     cols = _cols(path)
     rows = _rows(path)
     ex = K.exclusions()
+    tier = ctx.get('tier')
+    if not tier:
+        m = re.search(r'exclusion_conformance_(deep|sublst|snapshot)\b', os.path.basename(path))
+        tier = m.group(1) if m else None
+    served_ex = None
     archive_fmt = 'kind' in cols and 'product' in cols
     need = XC.ARCHIVE_COLUMNS if archive_fmt else XC.COLUMNS
     miss = [c for c in need if c not in cols]
@@ -307,7 +314,13 @@ def rows_are_excluded(path, **ctx):
         n_v[v] += 1
         if v == 'UNREADABLE':
             continue
-        if not ex.is_excluded(r['lst'], r['band'], r['date']):
+        judge = ex
+        if r.get('part') == 'served-run' and tier:
+            if served_ex is None:
+                from exopipe.phase3.lib.serve import exclusion_gate as XG
+                served_ex = XG.fresh_exclusions(tier)
+            judge = served_ex
+        if not judge.is_excluded(r['lst'], r['band'], r['date']):
             return False, (r['lst'], r['band'], r['date']), f'row {v} but not excluded now'
         if v in ('BREACH', 'STALE', 'UNKNOWN-EPOCH') and not archive_fmt:
             m = re.search(r'written (\d{8})', r.get('note', ''))
@@ -563,6 +576,18 @@ def p3_status_of(row):
                       if row[f'p3s_refused_{st}'] and row[f'p3s_searched_{st}'] != '1'))
 
 
+# A night whose calibration provenance is not available: calibration_provenance.csv holds one row without a subband for the
+# (LST, night) (provenance_available False; 63 rows, nights 2024-12-18 to 12-23, on 2026-11-17), which build_qa_table.py:47-52
+# carries as a row with subband '' and p1_provenance 'False', every other column empty (the night's subband rows are there
+# too). The only row allowed without a subband.
+QA_MARKER_COLUMNS = ('lst', 'date', 'subband', 'p1_provenance')
+
+
+def qa_provenance_marker(r):
+    return (r['subband'] == '' and r.get('p1_provenance') == 'False' and r['lst'] and r['date']
+            and all(v in ('', None) for c, v in r.items() if c not in QA_MARKER_COLUMNS))
+
+
 @content_test('qa_table')
 def qa_columns(path, **ctx):
     want = qa_table_columns()
@@ -576,8 +601,8 @@ def qa_columns(path, **ctx):
         if k in seen:
             return False, k, 'duplicate (lst, date, subband)'
         seen.add(k)
-        if r['subband'] in ('all', ''):
-            return False, k, "row with subband 'all' or ''"
+        if r['subband'] == 'all' or (r['subband'] == '' and not qa_provenance_marker(r)):
+            return False, k, "row with subband 'all', or '' that is not a calibration-provenance marker"
         if p3_status_of(r) != r['p3_status']:
             return False, k, f"p3_status {r['p3_status']!r} != re-derived {p3_status_of(r)!r}"
     return True, len(rows), f'{len(rows)} rows; header and p3_status re-derived'

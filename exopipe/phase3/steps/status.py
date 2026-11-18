@@ -813,7 +813,7 @@ def _stage_exclusion_conformance(ctx):
                 detail=('; '.join(errors[:3]) if errors else 'every served CSV read'))
         table = K.place(out, 'QA', K.narrowed(name, C.status_conformance.EXCLCONF_TABLE.format(tier=tier)))
         K.write_csv(table, XC.COLUMNS, rows)
-        u.add_output(table, 'exclusion_conformance')
+        u.add_output(table, 'exclusion_conformance', tier=tier)
         kind = ctx.emit_kind()
         items = [_item(kind, r) for r in rows if r['verdict'] in ('BREACH', 'STALE', 'UNKNOWN-EPOCH', 'EXCLUDED-ROW')]
         ctx.emit(u, 'exclusion-conformance', kind, items, table, 'verdict=BREACH|STALE|UNKNOWN-EPOCH|EXCLUDED-ROW')
@@ -1104,7 +1104,15 @@ def _stage_nights(ctx):
             u.note('narrowed run (--only): the full-hub content test P1-P4 applies to a full build; run '
                    '`status pages --check` on the complete hub')
         else:
-            u.add_output(hub, 'qa_night_pages')
+            # build_qa_pages.check() (P1-P4, the qa_night_pages content test) reads data_processing.html for P4, which the
+            # data-processing stage writes after this one: the test runs there, on the complete hub (production's order:
+            # build_qa_pages.py, build_qa_release1.py, then build_qa_pages.py --check)
+            n = len([f for f in os.listdir(os.path.join(hub, 'nights')) if f.endswith('.html')]) \
+                if os.path.isdir(os.path.join(hub, 'nights')) else 0
+            u.check('pages.night_pages_written', n > 0, value=n, detail=f'{n} night pages in {hub}/nights')
+            u.add_output(hub, 'qa_night_pages', test=False)
+            u.note('night pages written; their content test (build_qa_pages.check P1-P4 + P5) runs in the data-processing '
+                   'stage, whose page P4 reads (or `status pages --check` on a complete hub)')
         print(text.strip().splitlines()[-1] if text.strip() else f'night pages -> {hub}')
 
 
@@ -1136,6 +1144,8 @@ def _stage_data_processing(ctx):
             u.add_output(os.path.join(site, n), cls, **extra)
         for d, cls in dests.items():
             u.add_output(d, cls)
+        # the night pages' content test, now that the page its P4 reads is installed (nights stage, above)
+        u.add_output(K.place(out, 'review_hub', '').rstrip('/'), 'qa_night_pages')
         print(text.strip().splitlines()[-1] if text.strip() else site)
 
 
