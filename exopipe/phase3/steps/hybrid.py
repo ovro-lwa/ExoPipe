@@ -27,9 +27,9 @@ scratch: --work or the site SCRATCH_ROOT (the derived warp screens are cached th
 
 Gates here (each refuses; spec 3.4): HG0 the node-local co-add build directories (hybrid_stack.COADD_SB) are present on this node
 (stack); HG6 the double-size PSF registry is pinned (recon, wideband) and every file's md5 equals its entry (recon); the striation
-selection's md5 equals the pinned one (hybrid); the unfilled inputs are pinned (tilefill); HG20 every refused unit is listed and makes the exit non-zero (core/record.Run.exit_code);
-a scope or weighting outside the route refuses before any unit runs; --out never is, lies in or contains a production work run or
-an archive run, and is never the work root itself.
+selection's md5 equals the pinned one (hybrid); the unfilled inputs are pinned (tilefill); HG20 every refused unit is listed and
+makes the exit non-zero (core/record.Run.exit_code); a scope or weighting outside the route refuses before any unit runs; --out
+never is, lies in or contains a production work run or an archive run, and is never the work root itself.
 """
 import os
 
