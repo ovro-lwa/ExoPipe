@@ -169,7 +169,8 @@ class hybrid_recon(_Section):
     #   within 10% of 1, 20% at 18 MHz and Red (Red holds 18 MHz)
     LEVEL_LIMITS = (0.5, 1.6)
     DEC_BANDS = ((40, 90), (10, 40), (-10, 10), (-20, -10), (-30, -20))
-    #   NL 829-830: the large-scale level test per declination band (a recorded caveat in hybrid.CAVEAT_SCOPES)
+    #   NL 829-830: the large-scale level test per declination band: a refusal stays a gap, never forced (2026-10-27 (2));
+    #   a recorded caveat in hybrid.CAVEAT_SCOPES (2026-10-31)
     CLEAN_REGION = 'horizon'
     #   NL 870: CLEAN, step and prior to the true horizon ('elev10' = the 10-degree cut of the earlier generation)
     LFSS_DIR = '/lustre/gh/main/catalogs/lwa1_lfss'
@@ -183,7 +184,8 @@ class hybrid_recon(_Section):
              'COMPACT_TOL_LOW': 'R-GREGG-20261026-LSRECON-18-59MHZ-FLEET-APPROVED-KEEP-MASTERS-WIDEBAND-HIGH-PRIORITY-SPLIT-PB-COADD-ARCHIVE',
              'CLEAN_REGION': 'R-GREGG-20261028-HYBRID-NOTAPER-RERUN-APPROVED-CLEAN-TO-TRUE-HORIZON-HYBRID-RESIDUAL',
              'CASCADE': 'R-GREGG-20261028-HYBRID-NOTAPER-RERUN-APPROVED-CLEAN-TO-TRUE-HORIZON-HYBRID-RESIDUAL',
-             'LEVEL_LIMITS': 'R-GREGG-20261031-HIGH-BAND-CAVEATS-APPROVED-GO-ON-EVERYTHING'}
+             'LEVEL_LIMITS': ('R-GREGG-20261027-LSRECON-SCALE-BOUND-0P5-2P0-LEVEL-REFUSALS-STAY-GAPS-55MHZ-06H-R0-N-MINUS-1',
+                              'R-GREGG-20261031-HIGH-BAND-CAVEATS-APPROVED-GO-ON-EVERYTHING')}
     PROTECTED_KEYS = ('LFSS_DIR', 'CATALOGS')
 
 
