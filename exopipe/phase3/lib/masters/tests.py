@@ -1075,9 +1075,9 @@ def dewarp_consistent(path, **ctx):
 # ---------------------------------------------------------------------------------------------------------------------------------
 
 def _striation_read(p):
-    from astropy.io import fits
-    with fits.open(p, memmap=False) as h:
-        return np.squeeze(np.array(h[0].data)).astype(np.float64), h[0].header.copy()
+    from exopipe.phase3.lib.masters.striation import _read
+    d, h = _read(p, header=True)
+    return np.squeeze(d).astype(np.float64), h
 
 
 def _striation_header(path, kind):

@@ -37,6 +37,7 @@ reference ceiling; the off-plane mean and the catalogued-source flux within 1 pe
 import glob
 import hashlib
 import os
+import socket
 
 import numpy as np
 
@@ -50,6 +51,27 @@ class StriationRefusal(RuntimeError):
 
 def rr(a):
     return 1.4826 * np.median(np.abs(a - np.median(a)))
+
+
+with open(__file__, 'rb') as _f:                  # the pass-1 cache key carries the code that computed the cached arrays
+    CODE_SHA = hashlib.sha256(_f.read()).hexdigest()[:16]
+
+
+def nb(lst, k):
+    """The LST k hours from lst ('23h' + 2 -> '01h')."""
+    i = (int(lst[:2]) + k) % 24; return f'{i:02d}h'
+
+
+def stamp(root, lst, band, variant):
+    """size and mtime of the master and its PB map (no pixels read); refuses a missing input."""
+    out = []
+    for p in (master_path(root, lst, band, variant), pb_path(root, lst, band, variant)):
+        try:
+            st = os.stat(p)
+        except FileNotFoundError:
+            raise StriationRefusal(f'{lst} {band} {variant}: input {p} is missing') from None
+        out.append((st.st_size, st.st_mtime_ns))
+    return tuple(out)
 
 
 def _params():
@@ -78,7 +100,7 @@ class Cell:
     """One LST master of a (band, variant): apparent pixels, PB map, sky coordinates of every pixel."""
     def __init__(self, root, lst, band, variant):
         from astropy.wcs import WCS
-        self.lst, self.band, self.variant = lst, band, variant
+        self.root, self.lst, self.band, self.variant = root, lst, band, variant
         self.path = master_path(root, lst, band, variant); self.pb_path = pb_path(root, lst, band, variant)
         for p in (self.path, self.pb_path):
             if not os.path.isfile(p):
@@ -99,7 +121,7 @@ class Cell:
 
     def stamp(self):
         """size and mtime of the master and its PB map (the pass-1 cache key part this cell contributes)."""
-        return tuple((os.stat(p).st_size, os.stat(p).st_mtime_ns) for p in (self.path, self.pb_path))
+        return stamp(self.root, self.lst, self.band, self.variant)
 
 
 def operator(c, img, mask, win_beams):
@@ -140,9 +162,17 @@ class Band:
             self.cells[lst] = Cell(self.root, lst, self.band, self.variant)
         return self.cells[lst]
 
-    @staticmethod
-    def nb(lst, k):
-        i = (int(lst[:2]) + k) % 24; return f'{i:02d}h'
+    nb = staticmethod(nb)
+
+    def trim(self, keep):
+        """Drop the cells, pass-1 arrays and coordinate pairs of LSTs outside keep (memory stays bounded by the window of the
+        current target; a dropped LST reloads on demand, its pass 1 from the cache)."""
+        keep = set(keep)
+        for d in (self.cells, self.p1):
+            for k in [k for k in d if k not in keep]:
+                del d[k]
+        for k in [k for k in self._coord if not set(k) <= keep]:
+            del self._coord[k]
 
     def coords(self, src, dst):
         key = (src, dst)
@@ -185,8 +215,9 @@ class Band:
         return m, cov, fm
 
     def _p1_key(self, n):
-        h = hashlib.sha256(repr((self.band, self.variant, n, self.pass1_win,
-                                 [self.cell(k).stamp() for k in (self.nb(n, -1), n, self.nb(n, 1))])).encode()).hexdigest()[:24]
+        h = hashlib.sha256(repr((self.band, self.variant, n, self.pass1_win, CODE_SHA,
+                                 [stamp(self.root, k, self.band, self.variant) for k in (nb(n, -1), n, nb(n, 1))])
+                                ).encode()).hexdigest()[:24]
         return os.path.join(self.cache_dir, f'p1_{self.band}_{self.variant}_{n}_{h}.npy') if self.cache_dir else None
 
     def pass1(self, n):
@@ -202,7 +233,8 @@ class Band:
                 self.p1[n] = raw[n] - m
                 if key:
                     os.makedirs(self.cache_dir, exist_ok=True)
-                    np.save(key + '.part.npy', self.p1[n], allow_pickle=False); os.replace(key + '.part.npy', key)
+                    tmp = f'{key}.{socket.gethostname()}.{os.getpid()}.part.npy'     # one writer per temporary name
+                    np.save(tmp, self.p1[n], allow_pickle=False); os.replace(tmp, key)
         return self.p1[n]
 
     def correct(self, t):
@@ -221,6 +253,8 @@ def _geo(c):
     import astropy.units as u
     key = (c.d.shape, round(float(c.h['CRVAL1']), 4), round(float(c.h['CDELT2']), 6))
     if key not in _GEO:
+        if len(_GEO) >= 4:                        # one grid per target cell; keep the last few (an 82 MHz grid is ~0.2 GB)
+            del _GEO[next(iter(_GEO))]
         f = c.ok; gb = np.full(c.d.shape, np.nan)
         gb[f] = SkyCoord(c.ra[f].astype(np.float64) * u.deg, c.de[f].astype(np.float64) * u.deg).galactic.b.deg
         yy, xx = np.indices(c.d.shape); rad = np.hypot(yy - c.H / 2, xx - c.Wd / 2) < 0.5 * min(c.H, c.Wd) / 2
@@ -265,7 +299,7 @@ def measures(c, corrected, model, cov, parents):
     gb, rad = _geo(c); off = c.ok & (np.abs(gb) > 10)
     cm = census_mask(c, c.d)
     info = dict(index_before=striation_index(c, c.d), index_after=striation_index(c, corrected), coverage=float(cov[c.ok].mean()),
-                offplane_ratio=float(np.mean(corrected[off]) / np.mean(c.d[off])) if off.sum() > 1000 else 1.0,
+                offplane_ratio=float(np.mean(corrected[off]) / np.mean(c.d[off])) if off.sum() > 1000 else None,   # None fails
                 noise_ratio=float(rr(corrected[c.ok & ~cm]) / rr(c.d[c.ok & ~cm])),
                 model_rms_mjy=float(1e3 * np.std(model[c.ok])))
     if not os.path.isfile(parents):
@@ -308,7 +342,7 @@ def product_names(c, archive_run, tag):
     return names
 
 
-def write_products(c, corrected, model, out_dir, info, archive_run, tol, tag):
+def write_products(c, corrected, model, out_dir, info, archive_run, tol, tag, win=8, pass1_win=4):
     """Write the corrected apparent master, its PB-corrected sibling and the model; standard header, validated. Refuses when the
     working master / PB differs from the archived PB-corrected master by tol x its rms or more, or a product exists."""
     from astropy.io import fits
@@ -325,28 +359,36 @@ def write_products(c, corrected, model, out_dir, info, archive_run, tol, tag):
     if ex:                                        # all three checked before any is written (no partial set)
         raise StriationRefusal(f'{out_dir}: {ex} exist (no silent overwrite)')
     os.makedirs(out_dir, exist_ok=True); written = {}
-    for kind, arr in (('apparent', corrected),
-                      ('pbcorr', np.where(c.pb > 0.1, corrected / np.where(c.pb > 0, c.pb, np.nan), np.nan)),
-                      ('model', model)):
-        name = names[kind]; path = f'{out_dir}/{name}'
-        fits.writeto(path, arr.reshape(c.raw_shape).astype(np.float32), c.h.copy())
-        beam = (float(c.h['BMAJ']), float(c.h['BMIN']), float(c.h.get('BPA', 0.0)))
-        extra = {'PRODNAME': (name, 'Phase 3 product name (grammar; CONTINUE cards)'),
-                 'STRMETH': ('restore-v1', 'striations fit on master - sky from other LSTs'),
-                 'STRWIN': (8, 'RA running-median window [beams], 1-px Dec strips'),
-                 'STRZONE': ('5rms+1beam', 'fit excluded around bright pixels (model 0)'),
-                 'STRNBR': ('+-1..3h p1', 'sky estimate LSTs (pass-1 destriped, W=4)'),
-                 'STRIDXB': (round(info['index_before'], 4), 'striation index before'),
-                 'STRIDXA': (round(info['index_after'], 4), 'striation index after'),
-                 'STRCOV': (round(info['coverage'], 4), 'fraction of valid pixels with a model'),
-                 'STRSRC': (os.path.basename(c.path), 'uncorrected working master'),
-                 'STRKIND': (kind, 'apparent / pbcorr / model')}
-        P.write_standard_header(path, scope=c.band, stokes='I', start=c.h.get('DATE-OBS'), end=c.h.get('DATE-END'),
-                                inttime_s=c.h.get('INTTIME'), time_basis='coadd-span', beam=beam,
-                                thermnoi=c.h.get('THERMNOI'), imgrms=float(rr(arr[c.ok])) if kind != 'pbcorr' else None,
-                                pbcorr=(kind == 'pbcorr'), dewarped=True, aligned=True, msub=False, ssub=(kind != 'model'),
-                                extra=extra, validate=True)
-        written[kind] = path
+    started = []
+    try:
+        for kind, arr in (('apparent', corrected),
+                          ('pbcorr', np.where(c.pb > 0.1, corrected / np.where(c.pb > 0, c.pb, np.nan), np.nan)),
+                          ('model', model)):
+            name = names[kind]; path = f'{out_dir}/{name}'
+            started.append(path)
+            fits.writeto(path, arr.reshape(c.raw_shape).astype(np.float32), c.h.copy())
+            beam = (float(c.h['BMAJ']), float(c.h['BMIN']), float(c.h.get('BPA', 0.0)))
+            extra = {'PRODNAME': (name, 'Phase 3 product name (grammar; CONTINUE cards)'),
+                     'STRMETH': ('restore-v1', 'striations fit on master - sky from other LSTs'),
+                     'STRWIN': (win, 'RA running-median window [beams], 1-px Dec strips'),
+                     'STRZONE': ('5rms+1beam', 'fit excluded around bright pixels (model 0)'),
+                     'STRNBR': ('+-1..3h p1', f'sky estimate LSTs (pass-1 destriped, W={pass1_win})'),
+                     'STRIDXB': (round(info['index_before'], 4), 'striation index before'),
+                     'STRIDXA': (round(info['index_after'], 4), 'striation index after'),
+                     'STRCOV': (round(info['coverage'], 4), 'fraction of valid pixels with a model'),
+                     'STRSRC': (os.path.basename(c.path), 'uncorrected working master'),
+                     'STRKIND': (kind, 'apparent / pbcorr / model')}
+            P.write_standard_header(path, scope=c.band, stokes='I', start=c.h.get('DATE-OBS'), end=c.h.get('DATE-END'),
+                                    inttime_s=c.h.get('INTTIME'), time_basis='coadd-span', beam=beam,
+                                    thermnoi=c.h.get('THERMNOI'), imgrms=float(rr(arr[c.ok])) if kind != 'pbcorr' else None,
+                                    pbcorr=(kind == 'pbcorr'), dewarped=True, aligned=True, msub=False, ssub=(kind != 'model'),
+                                    extra=extra, validate=True)
+            written[kind] = path
+    except BaseException:                         # a partial set never stays under the real names (a rerun would refuse)
+        for p in started:
+            if os.path.exists(p):
+                os.replace(p, p + '.FAILED')
+        raise
     return written
 
 
@@ -364,9 +406,13 @@ def content_test(c, written, info, ref_ceiling):
     if not e2 < 1e-5:
         fails.append(f'pbcorr != apparent / PB (max relative {e2:.3g})')
     ceil = ref_ceiling.get(c.variant)
-    if ceil is not None and not info['index_after'] <= ceil:
+    if ceil is None:                              # a gate refuses rather than passes by default (production skipped it)
+        fails.append(f'no pinned striation-index ceiling for {c.variant} (masters_striation.REF_CEILING)')
+    elif not info['index_after'] <= ceil:
         fails.append(f'index after {info["index_after"]:.3f} > ceiling {ceil}')
-    if not abs(info['offplane_ratio'] - 1) <= 0.01:
+    if info['offplane_ratio'] is None:            # production passed 1.0 with 1000 or fewer off-plane pixels
+        fails.append('off-plane level not measurable (1000 or fewer valid pixels at |b| > 10 deg)')
+    elif not abs(info['offplane_ratio'] - 1) <= 0.01:
         fails.append(f'off-plane mean ratio {info["offplane_ratio"]:.4f}')
     if not abs(info['src_flux_ratio'] - 1) <= 0.01:
         fails.append(f'catalogued-source flux ratio {info["src_flux_ratio"]:.4f}')

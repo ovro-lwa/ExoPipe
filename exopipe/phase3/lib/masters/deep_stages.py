@@ -1208,14 +1208,16 @@ def striation(cell, args, run, out, ran_now):
                 B = _striation_band(installed, sc, v, cache, s)
                 try:
                     corr, model, cov = B.correct(lst)
+                    B.trim(SR.nb(lst, k) for k in range(-4, 5))      # memory: the window this target read
                     c = B.cell(lst)
                     info = SR.measures(c, corr, model, cov, SR.parents_csv(s.PARENTS, lst, sc))
-                    written = SR.write_products(c, corr, model, dest, info, archive_run, s.ARCHIVE_PBCORR_TOL, s.TAG)
+                    written = SR.write_products(c, corr, model, dest, info, archive_run, s.ARCHIVE_PBCORR_TOL, s.TAG,
+                                                win=B.win, pass1_win=B.pass1_win)
                 except SR.StriationRefusal as e:
                     u.refuse(f'{v}: {e}')
                 mine += list(written.values())
                 for k in range(-4, 5):                    # what the target read (pass 1 of L+-1..3 reads L+-4), cached or not
-                    n = _lst_offset(lst, k)
+                    n = SR.nb(lst, k)
                     u.add_input(SR.master_path(installed, n, sc, v)); u.add_input(SR.pb_path(installed, n, sc, v))
                 u.add_input(SR.parents_csv(s.PARENTS, lst, sc))
                 fails = SR.content_test(c, written, info, s.REF_CEILING)
@@ -1224,9 +1226,14 @@ def striation(cell, args, run, out, ran_now):
                 if fails:
                     u.refuse(f'{v}: content test FAILED ({"; ".join(fails)}); products renamed *.FAILED')
                 ctx = dict(cell=cell, master=c.path, pb=c.pb_path)
+                n0 = len(u.failed_tests())
                 u.add_output(written['model'], 'striation_model', **ctx)
                 u.add_output(written['apparent'], 'striation_apparent', model=written['model'], **ctx)
                 u.add_output(written['pbcorr'], 'striation_pbcorr', apparent=written['apparent'], **ctx)
+                bad = u.failed_tests()[n0:]
+                if bad:                                   # refused here so the products are renamed (below), not left in place
+                    u.refuse(f'{v}: content test(s) FAILED: ' + '; '.join(f'{t["name"]}: {t["detail"]}' for t in bad)
+                             + '; products renamed *.FAILED')
         except BaseException:
             for p in mine:
                 if os.path.exists(p):
@@ -1235,13 +1242,12 @@ def striation(cell, args, run, out, ran_now):
 
 
 def _striation_band(installed, band, variant, cache, s):
-    """The striation.Band of (installed, band, variant), kept for the invocation's next cells; another band evicts the kept
-    ones (both variants of one band stay: ~13 GB each at 82 MHz with all 24 LSTs loaded)."""
+    """The striation.Band of (installed, band, variant), kept for the invocation's next cells: cells run LST-major (every band
+    of an LST, then the next LST), so each kept Band slides by one LST per target; the stage trims it to the target's L-4..L+4
+    after each correction, so memory stays at ~9 LSTs per (band, variant) whatever the number of targets."""
     from exopipe.phase3.lib.masters import striation as SR
     key = (installed, band, variant, cache)
     if key not in _STRIATION_BANDS:
-        for k in [k for k in _STRIATION_BANDS if k[:2] != (installed, band)]:
-            del _STRIATION_BANDS[k]
         _STRIATION_BANDS[key] = SR.Band(installed, band, variant, cache_dir=cache, pass1_win=s.PASS1_WIN, win=s.WIN)
     return _STRIATION_BANDS[key]
 
@@ -1518,10 +1524,6 @@ def _plan_build(cell, args, out, planned):
     return lines, gates
 
 
-def _lst_offset(lst, k):
-    return f'{(int(lst[:2]) + k) % 24:02d}h'
-
-
 def _plan_cell(lst, band, variant):
     """The (lst, band, variant) stand-in striation.product_names reads (no pixels loaded in a dry run)."""
     import types
@@ -1609,7 +1611,7 @@ def _plan_simple(stage):
                 if r and not s.paths.PRODUCTION_WRITES:
                     gates.append(f'{dest} is under the production root {r} (--out elsewhere)')
                 for k in range(-4, 5):
-                    n = _lst_offset(lst, k)
+                    n = SR.nb(lst, k)
                     for p in (SR.master_path(installed, n, sc, v), SR.pb_path(installed, n, sc, v)):
                         if not os.path.isfile(p):
                             gates.append(f'{v}: input {p} missing')

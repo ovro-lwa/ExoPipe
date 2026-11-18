@@ -98,6 +98,16 @@ def _make_band(root):
     return truth
 
 
+def _written_stub(d, c, corr, model):
+    """The three products as plain FITS (no header) for content_test calls."""
+    out = {}
+    for kind, arr in (('apparent', corr), ('pbcorr', np.where(c.pb > 0.1, corr / np.where(c.pb > 0, c.pb, np.nan), np.nan)),
+                      ('model', model)):
+        out[kind] = os.path.join(d, f'stub_{kind}.fits')
+        fits.writeto(out[kind], arr.astype(np.float32), overwrite=True)
+    return out
+
+
 def _raises(exc, fn, *a, **kw):
     try:
         fn(*a, **kw)
@@ -146,6 +156,26 @@ def test_synthetic_band():
         os.utime(SR.master_path(d, '03h', BAND, VAR), ns=(1, 1))     # an input changed: the cached result is not reused
         B5 = SR.Band(d, BAND, VAR, cache_dir=cache, pass1_win=4, win=8); B5.pass1('02h')
         assert B5.pass1_from_cache == 0
+        B6 = SR.Band(d, BAND, VAR, cache_dir=cache, pass1_win=4, win=8)
+        k6 = B6._p1_key('02h')                                         # the key reads no pixels and names the code
+        assert B6.cells == {} and SR.CODE_SHA, B6.cells
+        real_sha = SR.CODE_SHA
+        try:
+            SR.CODE_SHA = 'other'
+            assert B6._p1_key('02h') != k6, 'a code change must change the pass-1 cache key'
+        finally:
+            SR.CODE_SHA = real_sha
+        assert not [f for f in os.listdir(cache) if '.part' in f], os.listdir(cache)
+        # trim keeps memory to the window: cells, pass-1 arrays and coordinate pairs outside it are dropped
+        keep = {SR.nb(TARGET, k) for k in range(-4, 5)}
+        B.trim(keep)
+        assert set(B.cells) <= keep and set(B.p1) <= keep and all(set(k) <= keep for k in B._coord)
+        B.trim({TARGET})
+        assert set(B.cells) == {TARGET} and not B.p1 and not B._coord
+        # gates that cannot measure refuse: no pinned ceiling for the variant, off-plane level not measurable
+        info = dict(index_before=1.5, index_after=0.9, coverage=1.0, offplane_ratio=None, src_flux_ratio=1.0)
+        fails = SR.content_test(c, {k: v for k, v in _written_stub(d, c, corr, model).items()}, info, {})
+        assert any('no pinned' in f for f in fails) and any('off-plane level not measurable' in f for f in fails), fails
         # a missing parents catalog refuses (production passed it as 1.0 over 0 sources)
         _raises(SR.StriationRefusal, SR.measures, c, corr, model, cov, os.path.join(d, 'absent.gaul.csv'))
     finally:
@@ -246,6 +276,10 @@ def test_production_parity():
 
 
 # ------------------------------------------------------------------------------------------------------------- 6 the stage
+def _forced_fail(path, **ctx):
+    return False, None, 'forced failure (test of the stage)'
+
+
 class _Cfg:
     """The real CFG with some sections replaced (the stage reads _cfg().masters_striation / hybrid / paths)."""
     def __init__(self, real, **over):
@@ -297,7 +331,7 @@ def test_stage():
             a = argparse.Namespace(deep_installed_root=None, work=os.path.join(d, 'work'))
             try:
                 DS.striation(cell, a, run, out, {})
-            except (Refusal, R.NoInput):
+            except Exception:                              # noqa: BLE001 - the unit records it; the test reads the record
                 pass
             return run.units[-1]
 
@@ -330,6 +364,35 @@ def test_stage():
         u = unit(cell, out2, REF_CEILING={VAR: 0.0})
         assert u.status == 'refused' and 'content test FAILED' in u.reason, (u.status, u.reason)
         assert sorted(os.listdir(os.path.join(out2, cell))) == sorted(f + '.FAILED' for f in files)
+        out4 = os.path.join(d, 'out4')                         # a REGISTERED content test fails: refused, renamed *.FAILED
+        validate.content_test('striation_model')(_forced_fail)
+        try:
+            u = unit(cell, out4)
+        finally:
+            validate._TESTS['striation_model'] = [t for t in validate._TESTS['striation_model'] if t[1] is not _forced_fail]
+        assert u.status == 'refused' and 'content test(s) FAILED' in u.reason and '_forced_fail' in u.reason, (u.status, u.reason)
+        assert sorted(os.listdir(os.path.join(out4, cell))) == sorted(f + '.FAILED' for f in files)
+        out5 = os.path.join(d, 'out5')                         # a write fails after the first product: renamed, not left
+        from exopipe.phase3.core import products as P
+        real_wsh, calls = P.write_standard_header, []
+
+        def wsh(path, **kw):
+            calls.append(path)
+            if len(calls) == 2:
+                raise OSError('simulated write failure')
+            return real_wsh(path, **kw)
+        P.write_standard_header = wsh
+        try:
+            u = unit(cell, out5)
+        finally:
+            P.write_standard_header = real_wsh
+        assert u.status == 'error' and 'simulated write failure' in u.reason, (u.status, u.reason)
+        assert sorted(os.listdir(os.path.join(out5, cell))) == sorted(os.path.basename(p) + '.FAILED' for p in calls), \
+            os.listdir(os.path.join(out5, cell))
+        u = unit(cell, os.path.join(d, 'out6'), REF_CEILING={})   # no pinned ceiling for the variant: refused
+        assert u.status == 'refused' and 'no pinned striation-index ceiling' in u.reason, (u.status, u.reason)
+        Bk = [b for k, b in DS._STRIATION_BANDS.items() if k[1:3] == (BAND, VAR)]
+        assert len(Bk) == 1 and set(Bk[0].cells) <= {SR.nb(TARGET, k) for k in range(-4, 5)}, sorted(Bk[0].cells)
         u = unit(f'05h_{BAND}', os.path.join(d, 'out3'))       # not in the selection: no input
         assert u.status == 'no-input' and 'not in the striation selection' in u.reason, (u.status, u.reason)
         print(f'  stage: done ({info["index_before"]:.3f} -> {info["index_after"]:.3f}), rerun refused, failed test renamed, '
