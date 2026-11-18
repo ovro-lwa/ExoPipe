@@ -445,6 +445,55 @@ def test_stack_unit_items_and_content_tests():
         shutil.rmtree(d, ignore_errors=True)
 
 
+
+def test_copy_inputs_from_archive():
+    """copy_inputs: the inputs/ copies come from the archived masters and PB maps (their headers: the repair cards, no SH card), each
+    refused unless its pixels equal the co-add build file's; a current copy is kept; a missing or ambiguous archived master refuses."""
+    d = _tmp('cpin')
+    try:
+        sb = os.path.join(d, 'coadd_sb')
+        _fake_cell(sb)
+        cf = os.path.join(sb, '18h_46MHz', 'coadd_final')
+        am = os.path.join(d, 'masters')
+        a = os.path.join(am, '18h', '46MHz')
+        os.makedirs(a)
+        for rob in ('Robust-0.75', 'Robust+0.0'):
+            for pb in ('', 'pbcorr_'):
+                n = f'46MHz_I_deep_NoTaper_{rob}_shflux_mdewarp_{pb}dewarped_aligned_coadd_LST18h_20250405-20251014_N015.fits'
+                fits.writeto(os.path.join(a, n), np.zeros((64, 64), np.float32) + (1 if pb else 0),
+                             fits.Header({'PRODNAME': n, 'P1RUN': 'r1', 'CALBP': 'bp'}))
+        for p in ('PB_deep_R075_46MHz.fits', 'PB_deep_46MHz.fits'):
+            fits.writeto(os.path.join(a, p), np.ones((64, 64), np.float32), fits.Header({'P1RUN': 'r1'}))
+        ind, read = os.path.join(d, 'w', 'inputs'), set()
+        got = HST.copy_inputs(ind, sb, '18h', '46MHz', 'R0', read, archive_masters=am)
+        assert sorted(got) == ['I_deep_NoTaper_R075_46MHz.fits', 'I_deep_NoTaper_R0_46MHz.fits', 'PB_deep_46MHz.fits',
+                               'PB_deep_R075_46MHz.fits'], got
+        for n, rec in got.items():
+            assert rec['installed'].startswith(a) and fits.getheader(os.path.join(ind, n))['P1RUN'] == 'r1', (n, rec)
+            assert rec['md5'] == SC.md5(rec['installed'])
+        assert got['I_deep_NoTaper_R0_46MHz.fits']['installed'].endswith('_Robust+0.0_shflux_mdewarp_dewarped_aligned_coadd_'
+                                                                          'LST18h_20250405-20251014_N015.fits')
+        assert len(read) == 8, read
+        ino = os.stat(os.path.join(ind, 'PB_deep_46MHz.fits')).st_ino
+        HST.copy_inputs(ind, sb, '18h', '46MHz', 'R075', set(), archive_masters=am)
+        assert os.stat(os.path.join(ind, 'PB_deep_46MHz.fits')).st_ino == ino                          # current copy kept
+        fits.writeto(os.path.join(cf, 'PB_deep_46MHz.fits'), np.full((64, 64), 0.9, np.float32), overwrite=True)
+        for want, prep in (('pixels differ', None),
+                           ('archived masters', lambda: os.remove(os.path.join(a, '46MHz_I_deep_NoTaper_Robust-0.75_shflux_mdewarp_'
+                                                                                 'dewarped_aligned_coadd_LST18h_20250405-20251014_N015.fits')))):
+            if prep:
+                fits.writeto(os.path.join(cf, 'PB_deep_46MHz.fits'), np.ones((64, 64), np.float32), overwrite=True)
+                prep()
+            try:
+                HST.copy_inputs(os.path.join(d, 'w2', 'inputs'), sb, '18h', '46MHz', 'R075', set(), archive_masters=am)
+                raise AssertionError(f'no refusal ({want})')
+            except HST.StackRefusal as e:
+                assert want in str(e), (want, e)
+        assert not [f for f in os.listdir(ind) if f.endswith('.part')]
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 if __name__ == '__main__':
     fails = 0
     for name, fn in sorted((k, v) for k, v in dict(globals()).items() if k.startswith('test_') and callable(v)):

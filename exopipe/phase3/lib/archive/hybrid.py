@@ -11,8 +11,9 @@ root>/<LST>/<scope>/ (production notaper_largescale.archive_hybrid_unit 1637, th
                             weighting's full PB map of the masters archive (hybrid.ARCHIVE_MASTERS).
 A pinned unit (filled from the installed masters' own unfilled sources) pushes only the tilefill outputs.
 
-Per file: keep (the installed file of the kind has the same name and the same checksum, or the same pixels: a header-only difference
-is not worth an archive churn), publish (none installed), replace (D2: the installed file of the kind - same name or another night
+Per file: keep (the installed file of the kind has the same name and the same checksum: byte-identical; a file with the same pixels
+and another header is replaced - its beam, noise and stack cards are part of the product, and the 11-13 lost-sky swap replaced five
+such files whose restoring beam and NSTACK had changed), publish (none installed), replace (D2: the installed file of the kind - same name or another night
 span - is renamed into <root>/<archive_push.HYBRID_QUARANTINE_PREFIX><round>/<LST>/<scope>/ with a row in that Run's
 MANIFEST_HYBRID_QUARANTINE.csv, then the new file is renamed in, back to back), retire (source work: an installed product kind the
 rebuild no longer makes is quarantined the same way, without a successor).
@@ -50,15 +51,6 @@ def _json(path):
 def header(path):
     from astropy.io import fits
     return fits.getheader(path, memmap=False)
-
-
-def data_md5(path):
-    import hashlib
-
-    import numpy as np
-    from astropy.io import fits
-    with fits.open(path, memmap=False) as h:
-        return hashlib.md5(np.ascontiguousarray(h[0].data).tobytes()).hexdigest()
 
 
 def kind_of(path):
@@ -213,12 +205,9 @@ def hybrid_plan(ctx, staging, lst, scope, w, checksum=True):
             act = 'replace'                                              # another night span: the new file supersedes it
         elif not checksum:
             act = 'keep-or-replace'
-        elif old == dst and K.checksum(dst, ctx.algo) == m:
-            act = 'keep'
-        elif old == dst and data_md5(dst) == data_md5(src):
-            act = 'keep'
-            notes.append(f'{kind} {name}: same pixels as the installed file, header differs - kept')
-        else:
+        elif K.checksum(dst, ctx.algo) == m:
+            act = 'keep'                                                 # byte-identical
+        else:                                                            # same name, other bytes (pixels or header)
             act = 'replace'
         if act in ('replace', 'keep-or-replace'):
             miss = missing_keys(h, header(old), kind)

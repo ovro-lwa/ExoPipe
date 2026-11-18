@@ -222,7 +222,7 @@ def test_publish_keep():
         shutil.rmtree(d, ignore_errors=True)
 
 
-def test_replace_keep_same_pixels_retire():
+def test_replace_same_pixels_retire():
     d = _tmp('ah_rep_')
     try:
         out = _unit(d, cleanres=False)
@@ -230,24 +230,25 @@ def test_replace_keep_same_pixels_retire():
             a = E.adir()
             old = _names('014')
             olds = {k: _fits(os.path.join(a, old[k]), 1.0, **REPAIR) for k in ('plain', 'pbcorr', 'cleanres', 'recon', 'recon_pbcorr')}
-            # the diffuse map installed with the same pixels and an older header (a retired master card): kept
+            # the diffuse map installed with the same pixels and an older header: replaced (only a byte-identical file is kept)
             _fits(os.path.join(a, 'PBdiffuse_deep_46MHz.fits'), 0.5, prodname=False, BUNIT='', PBMODEL='old', HISTORY='h')
             # the full PB map installed with other pixels and the SH cards it lost since: replaced (retired keys)
             _fits(os.path.join(a, 'PB_deep_R075_46MHz.fits'), 0.8, prodname=False, BUNIT='', **SH)
             rows, u, notes = E.apply(out, 'T2')
             acts = {r['kind']: r['action'] for r in rows}
-            assert acts == dict(plain='replace', pbcorr='replace', recon='replace', recon_pbcorr='replace', pbdiffuse='keep',
+            assert acts == dict(plain='replace', pbcorr='replace', recon='replace', recon_pbcorr='replace', pbdiffuse='replace',
                                 pb='replace', cleanres='retire'), acts
             q = AH.quarantine_dir(E.ctx, 'T2')
             for k, p in olds.items():
                 assert not os.path.exists(p), p
                 assert os.path.exists(os.path.join(q, '18h', '46MHz', os.path.basename(p))), (k, p)
-            assert os.path.exists(os.path.join(q, '18h', '46MHz', 'PB_deep_R075_46MHz.fits'))
+            for n in ('PB_deep_R075_46MHz.fits', 'PBdiffuse_deep_46MHz.fits'):
+                assert os.path.exists(os.path.join(q, '18h', '46MHz', n)), n
             qman = os.path.join(q, AH.QUARANTINE_MANIFEST)
             ok, _v, why = AT.rows_quarantined(qman)
             assert ok, why
-            assert _audit(u) == 5
-            assert any('same pixels' in n for n in notes) and any('no cleanres' in n for n in notes), notes
+            assert _audit(u) == 6
+            assert any('no cleanres' in n for n in notes), notes
             new = _names()
             for k in ('plain', 'pbcorr', 'recon', 'recon_pbcorr'):
                 assert os.path.exists(os.path.join(a, new[k])), k

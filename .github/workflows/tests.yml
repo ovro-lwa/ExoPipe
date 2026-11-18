@@ -58,6 +58,8 @@ jobs:
         run: python tests/test_hybrid_master.py
       - name: hybrid route PR-5 (tilefill - config constants, identity and compact checks, record and card content tests, sources and plan)
         run: python tests/test_hybrid_tilefill.py
+      - name: hybrid route PR-5b (archive push --class hybrid - keep, publish, replace, retire via the round quarantine; gates; diffuse PB writer)
+        run: python tests/test_archive_hybrid.py
       - name: search engine speed-ups change no product
         run: python tests/test_search_speedups.py
       - name: Phase 2 speed-ups change no product
