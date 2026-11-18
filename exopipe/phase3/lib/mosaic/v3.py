@@ -54,6 +54,9 @@ class Job:
     def __eq__(self, o):
         return isinstance(o, Job) and (self.product, self.variant, self.ssub) == (o.product, o.variant, o.ssub)
 
+    def __hash__(self):
+        return hash((self.product, self.variant, self.ssub))
+
     def __repr__(self):
         return f'Job({self.label})'
 
