@@ -38,11 +38,12 @@ def test_bind_equals_production():
     g = REC.bind()
     want = dict(SCALES=(0, 12, 24, 47), NITER=500000, GAIN=0.1, MGAIN=0.6, BIAS=0.6, AUTOMASK=3.0, AUTOTHRESH=0.5, PATCH=256,
                 MAXACT=100000, MAXLOOP=20000, MAXCYC=400, TAU=0.15, STEP_FWHM_DEG=1.0, CG_TOL=1e-6, CG_MAX=3000,
-                LFSS_DIR='/lustre/gh/main/catalogs/lwa1_lfss', CATALOGS='/lustre/gh/main/phase3/deep_parent_catalogs_union_20261014T0203',
+                LFSS_DIR='/lustre/gh/main/catalogs/lwa1_lfss', CATALOGS='/lustre/gh/main/phase3/deep_parent_catalogs_union_20261118T0130',
                 LEVEL_LIMITS=(0.5, 1.6), DEC_BANDS=((40, 90), (10, 40), (-10, 10), (-20, -10), (-30, -20)), HYB_SMALL_LIMIT=5e-3,
                 CAVEAT_SCOPES=('64MHz', '69MHz', '73MHz', '78MHz', '82MHz', 'Blue', 'Full'), RECON_GEN='lsrecon-v3-horizon-grad',
                 ARCHIVE_MASTERS='/lustre/pipeline/exopipe/phase3/Coadd/Run_20260909_000000', PRIOR_SCALE_RANGE=(0.5, 2.0),
                 PRIOR_RMS_FRAC=0.6, COMPACT_TOL=0.10, COMPACT_TOL_LOW=0.20, COMPACT_N_MIN=50, COMPACT_N_SOURCES=200)
+    # CATALOGS: production's value, except the parent-catalog union rebuilt on the current Masters (2026-11-18, spec section 7)
     bad = {k: (g[k], v) for k, v in want.items() if g[k] != v}
     assert not bad, bad
     assert REC.NITER == 500000 and REC.SCALES == (0, 12, 24, 47)          # bound as module globals for the ported functions

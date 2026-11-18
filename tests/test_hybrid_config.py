@@ -396,7 +396,6 @@ def test_values_equal_production():
         (C.hybrid_recon.STEP_FWHM_DEG, NL['STEP_FWHM_DEG']), (C.hybrid_recon.CG_TOL, NL['CG_TOL']),
         (C.hybrid_recon.CG_MAX, NL['CG_MAX']), (C.hybrid_recon.LEVEL_LIMITS, NL['LEVEL_LIMITS']),
         (C.hybrid_recon.DEC_BANDS, NL['DEC_BANDS']), (C.hybrid_recon.LFSS_DIR, NL['LFSS_DIR']),
-        (C.hybrid_recon.CATALOGS, NL['CATALOGS']),
         (C.hybrid_unit.SMALL_LIMIT, NL['HYB_SMALL_LIMIT']), (C.hybrid_unit.RAW_NIGHT_CAVEAT, NL['RAW_NIGHT_CAVEAT']),
         (C.hybrid_unit.RULED_TAPER_ONLY, NL['RULED_TAPER_ONLY']),
         (C.hybrid_tilefill.TILE_RT_NSIDE, MF['TILE_RT_NSIDE']), (C.hybrid_tilefill.TILE_RT_MAX, MF['TILE_RT_MAX']),
@@ -409,6 +408,9 @@ def test_values_equal_production():
     bad = [(i, a, b) for i, (a, b) in enumerate(pairs) if a != b or type(a) is not type(b) and not (
         isinstance(a, (int, float)) and isinstance(b, (int, float)))]
     assert not bad, bad
+    # the one value changed on purpose (spec section 7, 2026-11-18): the parent-catalog union rebuilt on the current Masters
+    assert NL['CATALOGS'] == '/lustre/gh/main/phase3/deep_parent_catalogs_union_20261014T0203', NL['CATALOGS']
+    assert C.hybrid_recon.CATALOGS == '/lustre/gh/main/phase3/deep_parent_catalogs_union_20261118T0130', C.hybrid_recon.CATALOGS
     assert tuple(NL['WIDEBANDS'].get('Full', ())) in ((), SUBBANDS)       # Full is assigned after the literal (NL 947)
     assert C.hybrid_full.MEMBERS == SUBBANDS
     # the TPCAVEAT units of the per-tile fill driver (literal set CAVEAT)
