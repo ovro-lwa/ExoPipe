@@ -180,6 +180,13 @@ class archive_push(_Section):
         # notaper_largescale.archive_hybrid_unit 1637 and the 11-13 lost-sky tile swap). An installed file of the same kind is
         # replaced through the round quarantine (D2); standing-approved (INSTALLED-PRUNED-CLAUDE-MD-AND-MEMORY-INDEX).
         'hybrid': {'enabled': True, 'tiers': ('deep',), 'existing': 'replace-quarantine'},
+        # hybrid mosaics (PR-7d; spec plan/specs/hybrid.md 2.15, D2, D7): per conform unit of an `exopipe3 mosaic --generation v5`
+        # run's --out, its products (not the unfilled twins: spec Q2) -> <root>/<hybrid_tilefill.FILLED_MOSAIC_RUN relative to the
+        # archive root>/<scope>/I/<sub>/<name>, then the V5 tables -> <run>/tables/ (production push_mosaic_v5_hybrid_20261028.py and
+        # the Release 1 / 11-11 / 11-13 in-place updates, L3365). An installed file of the same kind is replaced through the round
+        # quarantine (D2); standing-approved (INSTALLED-PRUNED-CLAUDE-MD-AND-MEMORY-INDEX). Gate HG20: the masters filled from the
+        # mosaic are installed first.
+        'mosaic_v5': {'enabled': True, 'tiers': ('deep',), 'existing': 'replace-quarantine'},
         # QA: ARCHIVED-PHASE3-QA-TO-LUSTRE-AND-INDEXED-THE-PER-NIGHT-PHASE2-QA (1494) - one manual copy, no standing push.
         'qa': {'enabled': False, 'dest_root': '{root}/QA'},
         # run catalogues / pages / verdict journals: B17 gap, nothing pushes them today (ops-deep-serve-archive 9.5); no ruled destination.
@@ -194,6 +201,13 @@ class archive_push(_Section):
     # MANIFEST_HYBRID_QUARANTINE.csv sits at the Run's root.
     HYBRID_QUARANTINE_PREFIX = 'Coadd/Run_NOTAPER_HYBRID_QUARANTINE_'
     HYBRID_QUARANTINE_COLUMNS = ('unit', 'kind', 'path', 'dest', 'bytes', 'md5', 'replaced_by', 'moved_at')
+    # Quarantine Run of files a push --class mosaic_v5 replaces, relative to the archive root; the round is --round, default the UTC
+    # date (production's rounds mosaic/Run_HYBRID_QUARANTINE_20261031, _20261109, _20261111, _20261113). Its checksum manifest
+    # MANIFEST_MOSAIC_V5_QUARANTINE.csv (the columns above) sits at the Run's root; the applied push manifest is <run>/MANIFEST_<stamp>.csv
+    # (HYBRID_PUSH_COLUMNS).
+    MOSAIC_V5_QUARANTINE_PREFIX = 'mosaic/Run_HYBRID_QUARANTINE_'
+    # D7 at the mosaic push: card keys a replacement may lack of the file it replaces (none ruled)
+    MOSAIC_V5_RETIRED_KEYS = ()
     # The applied push manifest <hybrid run>/MANIFEST_<stamp>.csv (production's place and src/dst/bytes/md5 columns, NL 1637); md5 and
     # bytes are the file at dst after the push (a kept file: the archive's own).
     HYBRID_PUSH_COLUMNS = ('unit', 'kind', 'src', 'dst', 'bytes', 'md5', 'action', 'replaces', 'written_at')

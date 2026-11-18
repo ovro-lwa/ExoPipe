@@ -114,7 +114,8 @@ def add_arguments(p):
     p.add_argument('action', choices=ACTIONS, help='what to do (see the list above)')
     g = p.add_argument_group('archive')
     g.add_argument('--class', dest='push_class', metavar='C',
-                   help='push: mosaic, epoch, hybrid, qa, run-tables (--epochs alone = epoch); audit: mosaic, epoch, hybrid, '
+                   help='push: mosaic, epoch, hybrid, mosaic_v5, qa, run-tables (--epochs alone = epoch); audit: mosaic, epoch, '
+                        'hybrid, mosaic_v5, '
                         'quarantine, sync, retire, rollback, rows, supersede')
     g.add_argument('--apply', action='store_true',
                    help='perform copies and moves; without it every action stops after its manifest stage (the plan, '
