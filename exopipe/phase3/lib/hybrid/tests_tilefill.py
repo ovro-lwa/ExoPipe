@@ -158,8 +158,10 @@ def tilefill_compact(path, **ctx):
     g = _rules()
 
     def one(r, k, t):
-        c = t.get('compact') or {}
-        n = c.get('n') or 0
+        c = t.get('compact')
+        if not isinstance(c, dict) or not isinstance(c.get('n'), int) or 'ok' not in c:
+            return False, None, f'no compact-source block (n, ok) in the record: {c!r}'
+        n = c['n']
         ok_c = n == 0 or (c.get('median') is not None and c['median'] <= g['COMPACT_MED_MAX'] and c['max'] <= g['COMPACT_MAX'])
         ruled = (r.get('lst'), r.get('scope'), r.get('weighting'), k) in g['TPCAVEAT_UNITS']
         if ok_c:

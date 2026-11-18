@@ -27,7 +27,10 @@ sibling - from the hybrid stage's products in --out (--tilefill-source work, the
 the unfilled sources the installed filled masters' TPSRCMD5 names in the pinned manifests (pinned; a unit rebuilt in --out refuses
 it) - and writes <--out>/<LST>_<scope>/tilefill/<the masters' product names> and <w>_tilefill.json; in work mode also the CLEAN
 residual under its name without 'lsfill'. Production's tests refuse (identity, blanking, compact sources, the beam-corrected round
-trip); the ruled caveat units (hybrid_tilefill.TPCAVEAT_UNITS) are decided before the write. The repair cards of the installed Taper
+trip); the ruled caveat units (hybrid_tilefill.TPCAVEAT_UNITS) are decided before the write. A unit whose data hold a night now
+excluded for the subband holding it refuses (wideband and Full per member stack; pinned: the nights of the production record whose
+products are the TPSRCMD5 sources); every unfilled input must still have its pinned or recorded md5 when read; a band field already
+in --out is reused while its record passed and its file and mosaics are unchanged. The repair cards of the installed Taper
 master are carried (D7), TPMOSAIC and TPFILLED are full names (D8), GITTAG is the writer's with a HISTORY line naming the build (D9).
 The archive copy of the products is a separate class (PR-5b).
 PULL REQUEST PR-4: the hybrid and full stages (lib/hybrid/master.py). A unit hybrid.<LST>_<scope>_<w> reads the scope's
@@ -240,6 +243,8 @@ def run(args, run):
         raise NoInput('no unit: the selected stages take none of the selected scopes')
     gates = {st: stage_gate_problems(st, CFG) for st in run.meta['stages']}
     if run.dry_run:
+        from exopipe.phase3.lib.hybrid.recon import ReconRefusal
+        from exopipe.phase3.lib.hybrid.tilefill import TilefillRefusal
         plans = {'stack': stack_plan, 'recon': recon_plan, 'wideband': wideband_plan, 'hybrid': hybrid_plan, 'full': hybrid_plan,
                  'tilefill': _tilefill_dry_plan(args.tilefill_source)}
         for st, lst, sc, w in units:
@@ -248,8 +253,10 @@ def run(args, run):
             else:
                 try:
                     what = ', '.join(os.path.relpath(p, run.out_root) for p, _c in plans[st](run.out_root, lst, sc, w))
-                except Exception as e:                 # a unit whose inputs refuse (tilefill: no installed or pinned source)
-                    what = f'refused: {type(e).__name__}: {e}'
+                except NoInput as e:                   # e.g. tilefill work: the hybrid stage of this run makes its input
+                    what = f'no input (yet): {e}'
+                except (Refusal, TilefillRefusal, ReconRefusal) as e:      # a unit whose inputs refuse (tilefill: its source)
+                    what = f'refused: {e}'
             print(f'  plan {st}.{lst}_{sc}_{w}: {what}', flush=True)
         print(f'exopipe3 hybrid: DRY RUN, {len(units)} units, nothing written', flush=True)
         return 0
@@ -743,9 +750,11 @@ def mosaic_pair(scope, w, T):
 
 
 def tilefill_field(out_root, scope, w, rows):
-    """The band fill field of (scope, w) in <out>/_tilefill_fields/, made once per run from the mosaic pair (MF band_increment;
-    HG13: the unfilled mosaic is a pinned input; the field reproduces the filled mosaic) and recorded beside it. A refusal is
-    recorded and refuses every unit of the scope and weighting."""
+    """The band fill field of (scope, w) in <out>/_tilefill_fields/ (MF band_increment; HG13: the unfilled mosaic is a pinned input;
+    the field reproduces the filled mosaic), recorded beside it. Made once per --out: a field whose record passed, whose md5 equals
+    the record's and whose mosaics still have the recorded md5s is reused (another process or an earlier run made it); otherwise it
+    is made under a name of this process and renamed into place, so no process deletes a field another one reads. A refusal is
+    recorded (result FAIL) and refuses every unit of the scope and weighting."""
     import json
     from exopipe.phase3.config import CFG
     from exopipe.phase3.lib.hybrid import tilefill as TF
@@ -755,43 +764,111 @@ def tilefill_field(out_root, scope, w, rows):
     fd = os.path.join(out_root, '_tilefill_fields')
     os.makedirs(fd, exist_ok=True)
     out = os.path.join(fd, f'field_{scope}_{w}.fits')
-    _clear([out, out[:-5] + '.json'])
+    rj = out[:-5] + '.json'
     TF.bind()
+    old = None
     try:
         filled, unfilled = mosaic_pair(scope, w, CFG.hybrid_tilefill)
         um = _pinned(unfilled, rows)
-        rec = TF.band_increment(unfilled, filled, out)
-        if rec['unfilled_md5'] != um:
-            raise TF.TilefillRefusal(f'HG13: {unfilled} changed while it was read - REFUSING')
-    except TF.TilefillRefusal as e:
-        _clear([out])
-        rec = dict(scope=scope, weighting=w, result='FAIL', error=str(e))
-    with open(out[:-5] + '.json.part', 'w') as f:
-        json.dump(rec, f, indent=1, default=str)
-    os.replace(out[:-5] + '.json.part', out[:-5] + '.json')
+        if os.path.exists(rj) and os.path.exists(out):
+            with open(rj) as f:
+                old = json.load(f)
+        if (old and old.get('result') == 'PASS' and (old.get('out'), old.get('filled'), old.get('unfilled')) == (out, filled, unfilled)
+                and old.get('unfilled_md5') == um and old.get('out_md5') == _md5(out) and old.get('filled_md5') == _md5(filled)):
+            rec = old
+        else:
+            old = None
+            tmp = os.path.join(fd, f'.field_{scope}_{w}.{os.getpid()}.fits')
+            _clear([tmp])
+            rec = TF.band_increment(unfilled, filled, tmp)
+            if rec['unfilled_md5'] != um:
+                _clear([tmp])
+                raise TF.TilefillRefusal(f'HG13: {unfilled} changed while it was read - REFUSING')
+            os.replace(tmp, out)
+            rec['out'] = out
+    except (TF.TilefillRefusal, OSError, KeyError, ValueError) as e:
+        old = None
+        rec = dict(scope=scope, weighting=w, result='FAIL', error=f'{type(e).__name__}: {e}')
+    if rec is not old:
+        part = f'{rj}.{os.getpid()}.part'
+        with open(part, 'w') as f:
+            json.dump(rec, f, indent=1, default=str)
+        os.replace(part, rj)
     _FIELDS[key] = rec
     return rec
 
 
-def tilefill_source(out_root, lst, scope, w, rows, mode='work'):
-    """The unfilled masters a tilefill unit fills. 'work' (spec D1): the hybrid stage's products in --out (record <w>_hybrid.json;
-    its v2 unit record must be done; each file's md5 must equal the recorded one); the diffuse PB of a subband or wideband computed
-    as production's archive step wrote it (lib/hybrid/master.diffuse_pb_map, rounded through float32), Full's read from the file of
-    the hybrid_full.PBDIFFUSE_WEIGHTING unit. 'pinned' (a unit this run did not rebuild, whose band field changed): the installed
-    filled masters in hybrid.ARCHIVE_HYBRID, whose TPSRCMD5 names their unfilled sources in the pinned manifests (HG13), and the
-    installed diffuse PB map; the CLEAN residual is not re-made. mode = --tilefill-source. Raises TilefillRefusal,
-    core.record.Refusal, or core.record.NoInput (work: no hybrid record in --out)."""
+def _installed(lst, scope, w):
+    """{'plain', 'pbcorr', 'cleanres': [paths]}: the installed hybrid masters of the cell and weighting in hybrid.ARCHIVE_HYBRID (filled
+    master, filled beam-corrected sibling, CLEAN residual) whatever their night span - the files a new product of the kind replaces."""
     import glob
+    from exopipe.phase3.config import CFG
+    from exopipe.phase3.core.products import parse_name
+    a = os.path.join(CFG.hybrid.ARCHIVE_HYBRID, lst, scope)
+    found = {'plain': [], 'pbcorr': [], 'cleanres': []}
+    for p in sorted(glob.glob(os.path.join(a, f'{scope}_I_deep_Taper_{ROBUST_TOKEN[w]}_*_LST{lst}_*.fits'))):
+        proc = set(parse_name(os.path.basename(p)).get('proc') or ())
+        if 'lsrecon' in proc and 'cleanres' in proc:
+            found['cleanres'].append(p)
+        elif 'lsfill' in proc:
+            found['pbcorr' if 'pbcorr' in proc else 'plain'].append(p)
+    return found
+
+
+def _production_record(lst, scope, w, tpsrc):
+    """(path, record): the production hybrid record (<run>/<LST>_<scope>/<w>_hybrid.json of hybrid.LSRECON_RUNS) whose products' md5s
+    are the installed filled masters' TPSRCMD5 (plain and beam-corrected) - the record of their unfilled sources, with their nights.
+    Several records naming the same product file and nights are one (the first in run-key order is returned); none, or records
+    that disagree, refuse."""
+    import json
+    from exopipe.phase3.config import CFG
+    from exopipe.phase3.lib.hybrid.tilefill import TilefillRefusal
+    hits = []
+    for _k, run in sorted(CFG.hybrid.LSRECON_RUNS.items()):
+        p = os.path.join(run, f'{lst}_{scope}', f'{w}_hybrid.json')
+        if not os.path.exists(p):
+            continue
+        with open(p) as f:
+            r = json.load(f)
+        if ((r.get('product') or {}).get('md5'), (r.get('product_pbcorr') or {}).get('md5')) == (tpsrc['plain'], tpsrc['pbcorr']):
+            hits.append((p, r))
+    same = {(r['product'].get('path'), tuple(sorted(n['date'] for n in r['span']['nights']))) for _p, r in hits}
+    if len(same) != 1:       # a run that carries another run's record (Run_FULL holds R1's) names the same product and nights
+        raise TilefillRefusal(f'{lst} {scope} {w}: {len(hits)} production hybrid records in hybrid.LSRECON_RUNS name the unfilled sources '
+                              f'{tpsrc} ({len(same)} distinct products and night lists): the installed masters\' nights are unknown - '
+                              f'REFUSING')
+    return hits[0]
+
+
+def tilefill_source(out_root, lst, scope, w, rows, mode='work', plan_only=False):
+    """The unfilled masters a tilefill unit fills: dict(source, src = {kind: (path, product name, md5 it must have)}, pb, pb_how,
+    nights, reads, replaces = {kind: the installed file a product of the kind replaces, or None}).
+    'work' (spec D1): the hybrid stage's products in --out (record <w>_hybrid.json; its v2 unit record must be done; each file's md5
+    must equal the recorded one); the diffuse PB of a subband or wideband computed as production's archive step wrote it
+    (lib/hybrid/master.diffuse_pb_map, rounded through float32), Full's read from the file of the hybrid_full.PBDIFFUSE_WEIGHTING unit.
+    'pinned' (a unit this run did not rebuild, whose band field changed): the installed filled masters in hybrid.ARCHIVE_HYBRID, whose
+    TPSRCMD5 names their unfilled sources in the pinned manifests (HG13), the installed diffuse PB map, and the nights of the
+    production hybrid record of those sources; the CLEAN residual is not re-made.
+    Both: a night now excluded in data_decisions.csv (deep read, made now) for the subband that holds it refuses (excluded_in_unit;
+    no fill re-admits an excluded night).
+    plan_only (the dry run): no md5 is re-computed and no PB map is read. mode = --tilefill-source. Raises TilefillRefusal,
+    core.record.Refusal, or core.record.NoInput (work: no hybrid record in --out)."""
     import json
     import numpy as np
     from astropy.io import fits
     from exopipe.phase3.config import CFG
-    from exopipe.phase3.core.products import parse_name
+    from exopipe.phase3.core import exclusions
     from exopipe.phase3.core.record import NoInput, Refusal
     from exopipe.phase3.lib.hybrid import master as M
     from exopipe.phase3.lib.hybrid.tilefill import TilefillRefusal
     wd = os.path.join(out_root, f'{lst}_{scope}')
     hj = os.path.join(wd, f'{w}_hybrid.json')
+    inst = _installed(lst, scope, w)
+    many = {k: v for k, v in inst.items() if len(v) > 1}
+    if many:
+        raise TilefillRefusal(f'{lst} {scope} {w}: more than one installed hybrid master of a kind {many} - REFUSING')
+    replaces = {k: (v[0] if v else None) for k, v in inst.items()}
+    pb = None
     if mode == 'work':
         if not os.path.exists(hj):
             raise NoInput(f'no hybrid record {hj} (its stage refused or was not run; --tilefill-source pinned re-fills the installed '
@@ -801,102 +878,154 @@ def tilefill_source(out_root, lst, scope, w, rows, mode='work'):
             raise Refusal(f'its hybrid may not be used: {why} - REFUSED')
         with open(hj) as f:
             rec = json.load(f)
-        src = {}
+        reads, src = [hj], {}
         for kind, k in (('plain', 'product'), ('pbcorr', 'product_pbcorr'), ('cleanres', 'product_cleanres')):
             p = rec.get(k)
             if not p:
                 continue
-            if _md5(p['path']) != p['md5']:
+            if not plan_only and _md5(p['path']) != p['md5']:
                 raise TilefillRefusal(f'{p["path"]}: md5 differs from the hybrid record {hj} - REFUSING')
-            src[kind] = (p['path'], p['prodname'])
+            src[kind] = (p['path'], p['prodname'], p['md5'])
         if 'plain' not in src or 'pbcorr' not in src:
             raise TilefillRefusal(f'{hj}: no hybrid master or beam-corrected sibling - REFUSING')
+        nights = sorted(n['date'] for n in rec['span']['nights'])
         if scope == 'Full':
             pbf = os.path.join(wd, f'PBdiffuse_deep_{scope}.fits')
             why = _upstream_problem(out_root, f'full.{lst}_{scope}_{CFG.hybrid_full.PBDIFFUSE_WEIGHTING}', [pbf])
             if why or not os.path.exists(pbf):
                 raise Refusal(f'the diffuse PB map {pbf} may not be used: {why or "missing"} - REFUSED')
+            reads.append(pbf)
+            how = pbf
+            if not plan_only:
+                with fits.open(pbf, memmap=False) as h:
+                    pb = np.squeeze(h[0].data).astype(np.float64)
+        else:
+            how = 'in memory (lib/hybrid/master.diffuse_pb_map, rounded through float32)'
+            if not plan_only:
+                M.bind()
+                a, how0 = M.diffuse_pb_map(out_root, lst, scope, w)
+                pb = np.asarray(a).astype(np.float32).astype(np.float64)   # as the archived float32 map that production's fill read
+                how = f'in memory: {how0} (rounded through float32)'
+        source = 'work'
+    else:
+        if os.path.exists(hj):
+            raise Refusal(f'{lst} {scope} {w} was rebuilt in --out ({hj}): its fill is --tilefill-source work - REFUSED')
+        if not inst['plain'] or not inst['pbcorr']:
+            raise TilefillRefusal(f'{lst} {scope} {w}: installed filled masters {inst} - not one each; REFUSING')
+        src, tpsrc, reads = {}, {}, []
+        for kind in ('plain', 'pbcorr'):
+            p = inst[kind][0]
+            with fits.open(p, memmap=False) as h:
+                hh = h[0].header
+            reads.append(p)
+            if hh.get('PRODNAME') != os.path.basename(p) or not hh.get('TPFILL') or not hh.get('TPSRCMD5'):
+                raise TilefillRefusal(f'{p}: PRODNAME, TPFILL or TPSRCMD5 missing or wrong - REFUSING')
+            hit = [q for q, m in rows.items() if m == hh['TPSRCMD5']]
+            if len(hit) != 1:
+                raise TilefillRefusal(f'HG13: {p}: TPSRCMD5 {hh["TPSRCMD5"]} names {len(hit)} pinned inputs - REFUSING')
+            if not plan_only:
+                _pinned(hit[0], rows)
+            src[kind] = (hit[0], os.path.basename(p), rows[hit[0]])
+            tpsrc[kind] = hh['TPSRCMD5']
+        rp, prec = _production_record(lst, scope, w, tpsrc)
+        reads.append(rp)
+        nights = sorted(n['date'] for n in prec['span']['nights'])
+        pbf = os.path.join(CFG.hybrid.ARCHIVE_HYBRID, lst, scope, f'PBdiffuse_deep_{scope}.fits')
+        if not os.path.exists(pbf):
+            raise TilefillRefusal(f'{pbf}: the installed diffuse PB map is missing - REFUSING')
+        reads.append(pbf)
+        how = pbf
+        if not plan_only:
             with fits.open(pbf, memmap=False) as h:
                 pb = np.squeeze(h[0].data).astype(np.float64)
-            how = pbf
-        else:
-            M.bind()
-            a, how0 = M.diffuse_pb_map(out_root, lst, scope, w)
-            pb = np.asarray(a).astype(np.float32).astype(np.float64)       # as the archived float32 map that production's fill read
-            how = f'in memory: {how0} (rounded through float32)'
-        return dict(source='work', src=src, pb=pb, pb_how=how, nights=sorted(n['date'] for n in rec['span']['nights']))
-    if os.path.exists(hj):
-        raise Refusal(f'{lst} {scope} {w} was rebuilt in --out ({hj}): its fill is --tilefill-source work - REFUSED')
-    a = os.path.join(CFG.hybrid.ARCHIVE_HYBRID, lst, scope)
-    found = {'plain': [], 'pbcorr': []}
-    for p in sorted(glob.glob(os.path.join(a, f'{scope}_I_deep_Taper_{ROBUST_TOKEN[w]}_*_LST{lst}_*.fits'))):
-        proc = set(parse_name(os.path.basename(p)).get('proc') or ())
-        if 'lsfill' in proc and 'cleanres' not in proc:
-            found['pbcorr' if 'pbcorr' in proc else 'plain'].append(p)
-    if any(len(v) != 1 for v in found.values()):
-        raise TilefillRefusal(f'{lst} {scope} {w}: installed filled masters {found} - not one each; REFUSING')
-    src = {}
-    for kind, (p,) in found.items():
-        with fits.open(p, memmap=False) as h:
-            hh = h[0].header
-        if hh.get('PRODNAME') != os.path.basename(p) or not hh.get('TPFILL') or not hh.get('TPSRCMD5'):
-            raise TilefillRefusal(f'{p}: PRODNAME, TPFILL or TPSRCMD5 missing or wrong - REFUSING')
-        hit = [q for q, m in rows.items() if m == hh['TPSRCMD5']]
-        if len(hit) != 1:
-            raise TilefillRefusal(f'HG13: {p}: TPSRCMD5 {hh["TPSRCMD5"]} names {len(hit)} pinned inputs - REFUSING')
-        _pinned(hit[0], rows)
-        src[kind] = (hit[0], os.path.basename(p))
-    pbf = os.path.join(a, f'PBdiffuse_deep_{scope}.fits')
-    with fits.open(pbf, memmap=False) as h:
-        pb = np.squeeze(h[0].data).astype(np.float64)
-    return dict(source='pinned', src=src, pb=pb, pb_how=pbf, nights=None)
+        source = 'pinned'
+    excl = exclusions.for_tier('deep', fresh=True)
+    if getattr(excl, 'path', None):
+        reads.append(excl.path)
+    bad, sreads = excluded_in_unit(excl, out_root if mode == 'work' else os.path.dirname(os.path.dirname(rp)), lst, scope, w, nights)
+    reads += sreads
+    if bad:
+        raise TilefillRefusal(f'{lst} {scope} {w}: the unfilled masters hold nights now excluded in data_decisions.csv {bad} - rebuild '
+                              f'the hybrid first - REFUSING')
+    return dict(source=source, src=src, pb=pb, pb_how=how, nights=nights, reads=reads, replaces=replaces)
+
+
+def excluded_in_unit(excl, rundir, lst, scope, w, nights):
+    """({subband: [dates]}, [records read]): the nights a hybrid unit's data hold that the exclusions (excl) now exclude for the
+    subband that holds them. A subband unit: its nights (the hybrid record's), under the subband's rule. A wideband or Full unit
+    combines its members' reconstructions, each made from its own subband's admitted nights (a night excluded in one member is
+    absent from that member only; production 11-13 lost-sky update): each member's NoTaper stack record <rundir>/<LST>_<member>/
+    <w>_stack.json (its nights less the dirty nights dropped, as the stack unit admits them) under the member's rule; a member
+    without one refuses (its nights are unknown). The Taper master is the master builder's (its own exclusion gate)."""
+    import json
+    from exopipe.phase3.config import CFG
+    from exopipe.phase3.lib.hybrid.tilefill import TilefillRefusal
+    WB = CFG.hybrid.WIDEBAND_MEMBERS
+    if scope not in WB and scope != 'Full':
+        e = excl.excluded_constituents(lst, scope, nights)
+        return ({scope: e} if e else {}), []
+    members = sorted({b for k in WB for b in WB[k]}) if scope == 'Full' else list(WB[scope])
+    bad, reads = {}, []
+    for b in members:
+        sp = os.path.join(rundir, f'{lst}_{b}', f'{w}_stack.json')
+        if not os.path.exists(sp):
+            raise TilefillRefusal(f'{sp}: no stack record of the member {b} - its nights are unknown; REFUSING')
+        with open(sp) as f:
+            sr = json.load(f)
+        reads.append(sp)
+        e = excl.excluded_constituents(lst, b, sorted(set(n['date'] for n in sr['nights']) - set(sr.get('dirty_nights_dropped') or ())))
+        if e:
+            bad[b] = e
+    return bad, reads
 
 
 def _tilefill_dry_plan(mode):
     def plan(out_root, lst, scope, w):
-        """The dry run's plan of a tilefill unit (reads the pinned manifests, the hybrid record or the installed filled masters)."""
+        """The dry run's plan of a tilefill unit (reads the pinned manifests, the hybrid record or the installed filled masters'
+        headers; no md5 and no PB map)."""
         from exopipe.phase3.config import CFG
-        s = tilefill_source(out_root, lst, scope, w, _manifest_rows(CFG.hybrid_tilefill), mode)
+        s = tilefill_source(out_root, lst, scope, w, _manifest_rows(CFG.hybrid_tilefill), mode, plan_only=True)
         return tilefill_plan(out_root, lst, scope, w, s)
     return plan
-
-
-def _renamed_cleanres(prodname):
-    from exopipe.phase3.core.products import build_name, parse_name
-    pn = parse_name(prodname)
-    pn['proc'] = [p for p in pn['proc'] if p != 'lsfill']
-    return build_name(**pn)
 
 
 def tilefill_plan(out_root, lst, scope, w, s):
     """[(path, product class)] a tilefill unit owes for source s (tilefill_source): in <--out>/<LST>_<scope>/tilefill/, the filled
     master and beam-corrected sibling under their product names, the renamed CLEAN residual (work source, where the hybrid stage made
     one), and the record <w>_tilefill.json beside the hybrid record."""
+    from exopipe.phase3.lib.hybrid.tilefill import cleanres_name
     wd = os.path.join(out_root, f'{lst}_{scope}')
     td = os.path.join(wd, 'tilefill')
     out = [(os.path.join(td, s['src'][k][1]), 'hybrid_filled_master') for k in ('plain', 'pbcorr')]
     if s['source'] == 'work' and 'cleanres' in s['src']:
-        out.append((os.path.join(td, _renamed_cleanres(s['src']['cleanres'][1])), 'hybrid_cleanres_renamed'))
+        out.append((os.path.join(td, cleanres_name(s['src']['cleanres'][1])), 'hybrid_cleanres_renamed'))
     return out + [(os.path.join(wd, f'{w}_tilefill.json'), 'hybrid_tilefill_record')]
 
 
 def tilefill_unit(u, lst, scope, w, out_root, mode='work'):
     """Stage tilefill (spec 2.14) of one unit: production's band field + fill_master_unit + rename_cleanres (MF 211, 306, 374) and
-    the ruled caveat (HMF 124-143). The band field of the scope and weighting is made once per run; the unfilled masters come from
-    tilefill_source. A gate or failed test refuses the unit and removes what it wrote. The unit's inputs are every file read."""
+    the ruled caveat (HMF 124-143). The band field of the scope and weighting is made once per --out; the unfilled masters come from
+    tilefill_source. A gate, a failed test or an unreadable input refuses the unit (the run goes on) and removes what it wrote. The
+    unit's inputs are every file read; its admitted nights are the unfilled masters' (checked against the exclusions now)."""
     import json
     from exopipe.phase3.config import CFG
-    from exopipe.phase3.core.record import Refusal
     from exopipe.phase3.lib.hybrid import master as M
     from exopipe.phase3.lib.hybrid import recon as REC
     from exopipe.phase3.lib.hybrid import tilefill as TF
     T = CFG.hybrid_tilefill
     TF.READS.clear(); M.READS.clear()
+    expected = (TF.TilefillRefusal, REC.ReconRefusal, OSError, KeyError, ValueError)
+    for _k, (path, _sha) in sorted(T.UNFILLED_INPUTS.items()):
+        u.add_input(path)
     rows = _manifest_rows(T)
     try:
         s = tilefill_source(out_root, lst, scope, w, rows, mode)
-    except TF.TilefillRefusal as e:
-        u.refuse(f'{e}')
+        REC.bind()
+        taper = REC.installed_master(lst, scope, w, taper=True)[0]
+    except expected as e:
+        u.refuse(f'{e}' if isinstance(e, (TF.TilefillRefusal, REC.ReconRefusal)) else f'{type(e).__name__}: {e} - REFUSED')
+    for p in s['reads'] + [taper]:
+        u.add_input(p)
     field = tilefill_field(out_root, scope, w, rows)
     if field.get('result') != 'PASS':
         u.refuse(f'the band field of {scope} {w} refused: {field.get("error")}')
@@ -908,23 +1037,27 @@ def tilefill_unit(u, lst, scope, w, out_root, mode='work'):
     own = [p for p, _c in plan]
     _clear(own)
     os.makedirs(os.path.dirname(own[0]), exist_ok=True)
-    REC.bind(); TF.bind()
-    taper = REC.installed_master(lst, scope, w, taper=True)[0]
+    TF.bind()
     outs = {k: p for k, (p, c) in zip(('plain', 'pbcorr'), plan) if c == 'hybrid_filled_master'}
     cres = [p for p, c in plan if c == 'hybrid_cleanres_renamed']
     try:
         rec = TF.fill_master_unit(s['src']['plain'][0], s['src']['pbcorr'][0], s['pb'], s['pb_how'], field['out'], outs, lst, scope, w,
-                                  taper_master=taper)
+                                  taper_master=taper, expect_md5={k: s['src'][k][2] for k in ('plain', 'pbcorr')})
+        if rec['increment_md5'] != field['out_md5']:
+            raise TF.TilefillRefusal(f'the band field {field["out"]} changed while this unit read it (md5 {rec["increment_md5"]}, '
+                                     f'recorded {field["out_md5"]}) - REFUSING')
         rec['source'] = s['source']; rec['field'] = field
         if cres:
             rec['cleanres'] = TF.rename_cleanres(s['src']['cleanres'][0], cres[0], taper_master=taper)
+            if rec['cleanres']['src_md5'] != s['src']['cleanres'][2]:
+                raise TF.TilefillRefusal(f'{s["src"]["cleanres"][0]}: md5 differs from the hybrid record when read - REFUSING')
         rp = own[-1]
         with open(rp + '.part', 'w') as f:
             json.dump(rec, f, indent=1, default=str)
         os.replace(rp + '.part', rp)
-    except (TF.TilefillRefusal, REC.ReconRefusal) as e:
+    except expected as e:
         _clear(own)
-        u.refuse(f'{e}')
+        u.refuse(f'{e}' if isinstance(e, (TF.TilefillRefusal, REC.ReconRefusal)) else f'{type(e).__name__}: {e} - REFUSED')
     except BaseException:
         _clear(own)
         raise
@@ -936,20 +1069,17 @@ def tilefill_unit(u, lst, scope, w, out_root, mode='work'):
     bad_kinds = [k for k in ('pbcorr', 'plain', 'cleanres') if k in rec and rec[k].get('result') != 'PASS']
     if bad_kinds:
         _clear(own)
-        u.refuse('HG13: ' + '; '.join(f'{k}: ' + json.dumps({x: rec[k].get(x) for x in ('identity_rel', 'blanking_unchanged', 'header_valid',
-                                                                                          'header_errors', 'compact', 'roundtrip', 'caveat',
-                                                                                          'data_identical', 'prodname_ok')
-                                                                if x in rec[k]}, default=str)[:400] for k in bad_kinds) + ' - REFUSED')
+        u.refuse('production test(s) FAILED: ' + '; '.join(
+            f'{k}: ' + json.dumps({x: rec[k].get(x) for x in ('identity_rel', 'blanking_unchanged', 'header_valid', 'header_errors', 'compact',
+                                                             'roundtrip', 'caveat', 'data_identical', 'prodname_ok') if x in rec[k]},
+                                  default=str)[:400] for k in bad_kinds) + ' - REFUSED')
     n0 = len(u.failed_tests())
-    a = os.path.join(CFG.hybrid.ARCHIVE_HYBRID, lst, scope)
     for p, c in plan:
         if c == 'hybrid_tilefill_record':
             u.add_output(p, c, lst=lst, scope=scope, weighting=w)
             continue
-        rp_ = os.path.join(a, os.path.basename(p))
         kind = 'cleanres' if c == 'hybrid_cleanres_renamed' else 'pbcorr' if p == outs['pbcorr'] else 'plain'
-        src = s['src'][kind][0]
-        u.add_output(p, c, scope=scope, weighting=w, kind=kind, src=src, replaces=rp_ if os.path.exists(rp_) else None)
+        u.add_output(p, c, scope=scope, weighting=w, kind=kind, src=s['src'][kind][0], replaces=s['replaces'].get(kind))
     bad = u.failed_tests()[n0:]
     if bad:
         _clear(own)
@@ -958,5 +1088,4 @@ def tilefill_unit(u, lst, scope, w, out_root, mode='work'):
     if cav:
         u.note(f'ruled caveat (TPCAVEAT) on {cav}: {TF.TPCAVEAT_TEXT}')
     u.note(f"source {s['source']}; field s {field['s']:.5f}, donor {field['donor_mhz']} MHz")
-    if s['nights'] is not None:
-        u.set_admitted(s['nights'])
+    u.set_admitted(s['nights'])

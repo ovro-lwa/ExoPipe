@@ -10,8 +10,13 @@ Data-free (CI):
      failing passes only on a ruled caveat unit that recorded the ruled text;
   4. card_superset (D7): a file lacking a card key of the file it replaces fails;
   5. the sources: work without a hybrid record = no input; pinned refuses a unit rebuilt in --out; pinned finds the unfilled source
-     its installed master's TPSRCMD5 names in a pinned manifest, and refuses (HG13) when that file changed; the mosaic pair takes the
+     its installed master's TPSRCMD5 names in a pinned manifest, takes the nights from the production record of those sources (none =
+     refused), refuses (HG13) when the source changed, refuses a night now excluded and two installed files of a kind; the file a
+     product replaces is found by kind, not by name; the dry run's plan reads no md5 and no PB map; the mosaic pair takes the
      first unfilled run holding the twin and refuses 0 or 2 filled maps;
+  5a. exclusion per member for wideband and Full units (a night excluded in one member only is no refusal), per night for subbands;
+  5b. the band field is made once per --out and reused while unchanged; a changed filled mosaic remakes it, a changed unfilled
+     mosaic records FAIL (HG13); a record without a compact-source block fails tilefill_compact;
   6. the plan: the filled names are the masters' product names, the CLEAN residual loses 'lsfill'; pinned re-makes no CLEAN residual.
 Cluster parity (not here): 18h 46 MHz Robust -0.75, band field and fill from the pinned 11-11 sources and from the PR-4 work outputs,
 against the archived filled masters (data md5), run by hand on lwacalim07.
@@ -126,6 +131,8 @@ def test_record_content_tests():
         assert not TT.tilefill_compact(_record(p, pbcorr__compact=failc, **ruled))[0]           # the caveat was not recorded
         assert not TT.tilefill_compact(_record(p, plain__compact=failc, plain__caveat=txt, **ruled))[0]   # ruled for pbcorr only
         assert not TT.tilefill_compact(_record(p, pbcorr__caveat=txt, **ruled))[0]             # a caveat on a passing check
+        assert not TT.tilefill_compact(_record(p, plain__compact=None))[0]                      # no compact block is no pass
+        assert not TT.tilefill_compact(_record(p, plain__compact=dict(median=0.0, max=0.0)))[0]    # nor one without n and ok
         assert not TT.tilefill_product_md5(_record(p))[0]                                       # the products are not there
     finally:
         shutil.rmtree(d, ignore_errors=True)
@@ -156,51 +163,166 @@ def test_sources_and_plan():
     try:
         out = os.path.join(d, 'w')
         os.makedirs(os.path.join(out, '18h_46MHz'))
-        assert 'no hybrid record' in _raises(NoInput, HS.tilefill_source, out, '18h', '46MHz', 'R075', {}, 'work')
-        # pinned: installed filled masters naming their unfilled sources by md5
+        assert 'no hybrid record' in _raises(NoInput, _source, d, out, {}, 'work')
+        # pinned: installed filled masters naming their unfilled sources by md5; the production record of those sources lists the nights
         arch, q = os.path.join(d, 'H', '18h', '46MHz'), os.path.join(d, 'Q')
         os.makedirs(arch); os.makedirs(q)
-        rows = {}
-        for pb in ('', '_pbcorr'):
+        rows, md = {}, {}
+        for kind, pb in (('plain', ''), ('pbcorr', '_pbcorr')):
             n = NAME.format(pb=pb, cr='')
             src = _fits(os.path.join(q, n), PRODNAME=n)
-            m = hashlib.md5(open(src, 'rb').read()).hexdigest()
-            rows[src] = m
-            _fits(os.path.join(arch, n), PRODNAME=n, TPFILL=True, TPSRCMD5=m)
+            md[kind] = rows[src] = hashlib.md5(open(src, 'rb').read()).hexdigest()
+            _fits(os.path.join(arch, n), PRODNAME=n, TPFILL=True, TPSRCMD5=md[kind])
+        cr = _fits(os.path.join(arch, NAME.format(pb='', cr='_cleanres').replace('_lsfill_cleanres_', '_cleanres_')))
         _fits(os.path.join(arch, 'PBdiffuse_deep_46MHz.fits'), data=np.ones((4, 4), np.float32))
-        old = CFG.hybrid.ARCHIVE_HYBRID
-        s = _pinned_source(out, rows, os.path.join(d, 'H'))
+        assert 'nights are unknown' in _raises(TF.TilefillRefusal, _source, d, out, rows, 'pinned')     # no production record
+        rj = os.path.join(d, 'R1', '18h_46MHz', 'R075_hybrid.json')
+        os.makedirs(os.path.dirname(rj))
+        with open(rj, 'w') as f:
+            json.dump(dict(product=dict(md5=md['plain']), product_pbcorr=dict(md5=md['pbcorr']),
+                           span=dict(nights=[dict(date='2025-04-08'), dict(date='2025-04-05')])), f)
+        old = (CFG.hybrid.ARCHIVE_HYBRID, CFG.hybrid.LSRECON_RUNS)
+        rj2 = os.path.join(d, 'R2', '18h_46MHz', 'R075_hybrid.json')        # a second run carrying the same record: one product
+        os.makedirs(os.path.dirname(rj2))
+        shutil.copy(rj, rj2)
+        assert _source(d, out, rows, 'pinned', runs=('R1', 'R2'))['nights'] == ['2025-04-05', '2025-04-08']
+        with open(rj2, 'w') as f:                                             # ... but one that disagrees on the nights refuses
+            json.dump(dict(product=dict(md5=md['plain']), product_pbcorr=dict(md5=md['pbcorr']), span=dict(nights=[dict(date='2025-04-08')])), f)
+        assert '2 distinct' in _raises(TF.TilefillRefusal, _source, d, out, rows, 'pinned', runs=('R1', 'R2'))
+        s = _source(d, out, rows, 'pinned')
         assert s['source'] == 'pinned' and set(s['src']) == {'plain', 'pbcorr'}, s
-        assert all(s['src'][k][0] in rows for k in s['src']) and s['pb'].shape == (4, 4)
+        assert all(s['src'][k][0] in rows and s['src'][k][2] == md[k] for k in s['src']) and s['pb'].shape == (4, 4)
+        assert s['nights'] == ['2025-04-05', '2025-04-08'] and rj in s['reads'], s
+        assert s['replaces']['plain'] == os.path.join(arch, NAME.format(pb='', cr='')) and s['replaces']['cleanres'] == cr, s['replaces']
+        assert '2025-04-08' in _raises(TF.TilefillRefusal, _source, d, out, rows, 'pinned', excluded=('2025-04-08',))
         plan = HS.tilefill_plan(out, '18h', '46MHz', 'R075', s)
         assert [c for _p, c in plan] == ['hybrid_filled_master', 'hybrid_filled_master', 'hybrid_tilefill_record'], plan
         assert os.path.basename(plan[1][0]) == NAME.format(pb='_pbcorr', cr='') and '/tilefill/' in plan[0][0]
         with open(s['src']['plain'][0], 'ab') as f:                         # the pinned source changed
             f.write(b'\0' * 2880)
-        assert 'HG13' in _raises(TF.TilefillRefusal, _pinned_source, out, rows, os.path.join(d, 'H'))
+        assert 'HG13' in _raises(TF.TilefillRefusal, _source, d, out, rows, 'pinned')
+        sp = _source(d, out, rows, 'pinned', plan_only=True)                # the dry run computes no md5 and reads no PB map
+        assert sp['pb'] is None and sp['source'] == 'pinned'
+        _fits(os.path.join(arch, NAME.format(pb='', cr='').replace('N015', 'N016')), PRODNAME='x')     # two installed of a kind
+        assert 'more than one' in _raises(TF.TilefillRefusal, _source, d, out, rows, 'pinned')
         # a unit rebuilt in --out is filled from the work run, never pinned
+        os.remove(os.path.join(arch, NAME.format(pb='', cr='').replace('N015', 'N016')))
         with open(os.path.join(out, '18h_46MHz', 'R075_hybrid.json'), 'w') as f:
             f.write('{}')
-        assert 'rebuilt in --out' in _raises(Refusal, HS.tilefill_source, out, '18h', '46MHz', 'R075', rows, 'pinned')
+        assert 'rebuilt in --out' in _raises(Refusal, _source, d, out, rows, 'pinned')
         # the work plan: the CLEAN residual renamed without lsfill
         sw = dict(source='work', src={'plain': ('/a', NAME.format(pb='', cr='')), 'pbcorr': ('/b', NAME.format(pb='_pbcorr', cr='')),
                                       'cleanres': ('/c', NAME.format(pb='', cr='_cleanres'))})
         plan = HS.tilefill_plan(out, '18h', '46MHz', 'R075', sw)
         assert [c for _p, c in plan][2] == 'hybrid_cleanres_renamed'
         assert os.path.basename(plan[2][0]) == NAME.format(pb='', cr='_cleanres').replace('_lsfill_cleanres_', '_cleanres_')
-        assert CFG.hybrid.ARCHIVE_HYBRID == old
+        assert (CFG.hybrid.ARCHIVE_HYBRID, CFG.hybrid.LSRECON_RUNS) == old
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
 
-def _pinned_source(out, rows, arch_root):
-    """tilefill_source in pinned mode with hybrid.ARCHIVE_HYBRID pointed at a test tree for the call (restored after it)."""
-    old = CFG.hybrid.ARCHIVE_HYBRID
-    setattr(CFG.hybrid, 'ARCHIVE_HYBRID', arch_root)
+class _Excl:
+    path = None
+
+    def __init__(self, bad):
+        self.bad = set(bad)
+
+    def excluded_constituents(self, lst, scope, dates):
+        return sorted(x for x in dates if x in self.bad)
+
+
+def _source(d, out, rows, mode, excluded=(), plan_only=False, runs=('R1',)):
+    """tilefill_source with hybrid.ARCHIVE_HYBRID and hybrid.LSRECON_RUNS pointed at the test tree d and a stub exclusion read
+    (`excluded` = the dates it excludes), all restored after the call."""
+    from exopipe.phase3.core import exclusions
+    old = (CFG.hybrid.ARCHIVE_HYBRID, CFG.hybrid.LSRECON_RUNS, exclusions.for_tier)
+    setattr(CFG.hybrid, 'ARCHIVE_HYBRID', os.path.join(d, 'H'))
+    setattr(CFG.hybrid, 'LSRECON_RUNS', {k: os.path.join(d, k) for k in runs})
+    exclusions.for_tier = lambda tier, fresh=False: _Excl(excluded)
     try:
-        return HS.tilefill_source(out, '18h', '46MHz', 'R075', rows, 'pinned')
+        return HS.tilefill_source(out, '18h', '46MHz', 'R075', rows, mode, plan_only=plan_only)
     finally:
-        setattr(CFG.hybrid, 'ARCHIVE_HYBRID', old)
+        setattr(CFG.hybrid, 'ARCHIVE_HYBRID', old[0]); setattr(CFG.hybrid, 'LSRECON_RUNS', old[1]); exclusions.for_tier = old[2]
+
+
+def test_field_reuse():
+    """The band field is made once per --out and reused while its record passed and its inputs and file are unchanged; a changed
+    filled mosaic remakes it; a changed unfilled mosaic refuses (HG13) and records FAIL; no temporary file is left."""
+    d = _tmp('tf_fld_')
+    calls = []
+
+    def fake(unf, fil, out):
+        calls.append(out)
+        _fits(out, data=np.full((4, 4), len(calls), np.float32))
+        return dict(out=out, out_md5=_md5f(out), filled=fil, filled_md5=_md5f(fil), unfilled=unf, unfilled_md5=_md5f(unf), s=1.0,
+                    donor_mhz=50, result='PASS')
+    old = (HS.mosaic_pair, TF.band_increment)
+    try:
+        fil, unf = _fits(os.path.join(d, 'F.fits')), _fits(os.path.join(d, 'U.fits'))
+        rows = {unf: _md5f(unf)}
+        HS.mosaic_pair = lambda scope, w, T: (fil, unf)
+        TF.band_increment = fake
+        out = os.path.join(d, 'w')
+        HS._FIELDS.clear()
+        r1 = HS.tilefill_field(out, '46MHz', 'R075', rows)
+        fd = os.path.join(out, '_tilefill_fields')
+        assert r1['result'] == 'PASS' and r1['out'] == os.path.join(fd, 'field_46MHz_R075.fits') and len(calls) == 1, r1
+        assert sorted(os.listdir(fd)) == ['field_46MHz_R075.fits', 'field_46MHz_R075.json'], os.listdir(fd)
+        HS._FIELDS.clear()
+        assert HS.tilefill_field(out, '46MHz', 'R075', rows)['out_md5'] == r1['out_md5'] and len(calls) == 1      # reused
+        with open(fil, 'ab') as f:
+            f.write(b'\0' * 2880)
+        HS._FIELDS.clear()
+        assert HS.tilefill_field(out, '46MHz', 'R075', rows)['result'] == 'PASS' and len(calls) == 2              # remade
+        with open(unf, 'ab') as f:
+            f.write(b'\0' * 2880)
+        HS._FIELDS.clear()
+        r4 = HS.tilefill_field(out, '46MHz', 'R075', rows)
+        assert r4['result'] == 'FAIL' and 'HG13' in r4['error'] and len(calls) == 2, r4
+        with open(os.path.join(fd, 'field_46MHz_R075.json')) as f:
+            assert json.load(f)['result'] == 'FAIL'
+        assert sorted(os.listdir(fd)) == ['field_46MHz_R075.fits', 'field_46MHz_R075.json'], os.listdir(fd)
+    finally:
+        HS.mosaic_pair, TF.band_increment = old
+        HS._FIELDS.clear()
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_excluded_in_unit():
+    """Exclusion of a hybrid unit: a subband unit by its nights; a wideband or Full unit per member, from the member stack records
+    (a night excluded in one member is absent from that member only); a member without a stack record refuses."""
+    d = _tmp('tf_exc_')
+    try:
+        def stack(b, dates, dirty=()):
+            p = os.path.join(d, f'13h_{b}', 'R075_stack.json')
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            with open(p, 'w') as f:
+                json.dump(dict(nights=[dict(date=x) for x in dates], dirty_nights_dropped=list(dirty)), f)
+        ex = _Excl(('2025-05-07',))
+        bad, reads = HS.excluded_in_unit(ex, d, '13h', '50MHz', 'R075', ['2025-05-06', '2025-05-07'])
+        assert bad == {'50MHz': ['2025-05-07']} and reads == [], bad
+        for b in CFG.hybrid.WIDEBAND_MEMBERS['Green']:
+            stack(b, ['2025-05-06'] if b == '50MHz' else ['2025-05-06', '2025-05-07'])
+        ex = _ExclBy({('50MHz', '2025-05-07')})
+        bad, reads = HS.excluded_in_unit(ex, d, '13h', 'Green', 'R075', ['2025-05-06', '2025-05-07'])
+        assert bad == {} and len(reads) == 5, (bad, reads)              # the night held only by members that admit it
+        stack('50MHz', ['2025-05-06', '2025-05-07'])
+        assert HS.excluded_in_unit(ex, d, '13h', 'Green', 'R075', [])[0] == {'50MHz': ['2025-05-07']}
+        stack('50MHz', ['2025-05-06', '2025-05-07'], dirty=['2025-05-07'])  # dropped as dirty by the stack: not admitted
+        assert HS.excluded_in_unit(ex, d, '13h', 'Green', 'R075', [])[0] == {}
+        assert 'no stack record' in _raises(TF.TilefillRefusal, HS.excluded_in_unit, ex, d, '13h', 'Full', 'R075', [])   # Red, Blue
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+class _ExclBy(_Excl):
+    """Excludes the (subband, date) pairs given."""
+    def excluded_constituents(self, lst, scope, dates):
+        return sorted(x for x in dates if (scope, x) in self.bad)
+
+
+def _md5f(path):
+    return hashlib.md5(open(path, 'rb').read()).hexdigest()
 
 
 def _mosaic(path, tpfill):

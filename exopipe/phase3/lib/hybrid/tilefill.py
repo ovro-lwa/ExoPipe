@@ -253,12 +253,13 @@ def _carry(h, add, taper_master):
                         f'{os.path.basename(taper_master)} (spec D7)')
 
 
-def fill_master_unit(plain, pbcorr, pb, pb_how, field, outs, lst, scope, w, taper_master=None):
+def fill_master_unit(plain, pbcorr, pb, pb_how, field, outs, lst, scope, w, taper_master=None, expect_md5=None):
     """Write the filled plain and beam-corrected masters of one hybrid unit to outs = {'plain': path, 'pbcorr': path} (their 'lsfill'
     token now holds) and test the WRITTEN files: identity (written - unfilled = the increment at every pixel, float32 precision),
     blanking unchanged, the round trip through the mosaic's tile conversion (beam-corrected), bright compact sources unchanged (or the
     ruled caveat), header valid (MF 306; HMF 124-143). pb = the diffuse PB array on the master grid (float64 of the float32 map),
-    pb_how = its source for the record. Returns the record; result PASS or FAIL."""
+    pb_how = its source for the record. expect_md5 = {'plain': md5, 'pbcorr': md5}: the md5 each unfilled master must still have when it
+    is read (HG13 pinned row or the hybrid record); a different one refuses. Returns the record; result PASS or FAIL."""
     from exopipe.common import phase2_config as pcfg
     from exopipe.phase3.lib.masters.coadd import get_uniform_rms
     from exopipe.phase3.lib.mosaic import coadd_jysr as mcj
@@ -292,6 +293,8 @@ def fill_master_unit(plain, pbcorr, pb, pb_how, field, outs, lst, scope, w, tape
         if os.path.exists(out):
             raise TilefillRefusal(f'{out} exists - REFUSING')
         smd5 = md5(src); READS.add(src)
+        if expect_md5 and smd5 != expect_md5[kind]:
+            raise TilefillRefusal(f'HG13: {src} has md5 {smd5}, not {expect_md5[kind]} (pinned or recorded) when read - REFUSING')
         with fits.open(src, memmap=False) as hl:
             shp = hl[0].data.shape; old = np.squeeze(hl[0].data).astype(np.float64)
             fin = np.isfinite(old); offsky = int((fin & ~np.isfinite(inc)).sum())
@@ -304,7 +307,7 @@ def fill_master_unit(plain, pbcorr, pb, pb_how, field, outs, lst, scope, w, tape
             h = hl[0].header
             add = repair_cards(h, taper_master)
             build = h.get('GITTAG')
-            for k, v in (('TPFILL', (True, 'zero-spacing fill: LWA1 LFSS replaces l<8, blend to 12')),
+            for k, v in (('TPFILL', (True, f'zero-spacing fill: LWA1 LFSS replaces l<{L_LO}, blend to {L_HI}')),
                          ('TPDONOR', ('LWA1 LFSS (Dowell+2017), LEDA zero level', 'donor')), ('TPDONMHZ', (int(hi['TPDONMHZ']), 'donor map frequency [MHz]')),
                          ('TPSCALE', (float(hi['TPSCALE']), 's = sqrt(Cl map / Cl LFSS), l 10-30')), ('TPLLO', (L_LO, 'l below: survey')),
                          ('TPLHI', (L_HI, 'l above: map')), ('TPMOSAIC', (mosaic, 'filled mosaic: the field (D8: full name)')),
@@ -321,7 +324,7 @@ def fill_master_unit(plain, pbcorr, pb, pb_how, field, outs, lst, scope, w, tape
                 h['IMGRMS'] = (get_uniform_rms(n2, ~np.isfinite(n2) | (n2 == 0)), h.comments['IMGRMS'])
                 h['HISTORY'] = f'IMGRMS before the zero-spacing fill: {old_rms}'
             h['HISTORY'] = (f'lsfill (zero-spacing) {time.strftime("%Y-%m-%d", time.gmtime())}: the band fill field (LFSS {hi["TPDONMHZ"]} MHz x '
-                            f'{hi["TPSCALE"]}, l<8 blend to 12) x Omega_zen / n' + (' x PBdiffuse' if kind == 'plain' else '')
+                            f'{hi["TPSCALE"]}, l<{L_LO} blend to {L_HI}) x Omega_zen / n' + (' x PBdiffuse' if kind == 'plain' else '')
                             + ' added (Gregg 2026-11-11 "Approved")')
             h['HISTORY'] = f'zero-spacing fill written by exopipe {pcfg.PIPELINE_GITTAG}; the hybrid master was built by {build} (spec D9)'
             hl.writeto(out + '.part', overwrite=True, output_verify='exception')
@@ -347,6 +350,13 @@ def _data_md5(hdu):
     return hashlib.md5(np.ascontiguousarray(hdu.data).tobytes()).hexdigest()
 
 
+def cleanres_name(prodname):
+    """The CLEAN residual's product name without the 'lsfill' token (MF 374): the one naming rule of the plan and the writer."""
+    pn = parse_name(prodname)
+    pn['proc'] = [p for p in pn['proc'] if p != 'lsfill']; pn.pop('grammar', None)
+    return build_name(**pn)
+
+
 def rename_cleanres(src, out, taper_master=None):
     """The hybrid CLEAN residual without the 'lsfill' token (it gets no fill), written to out (its new name) with PRODNAME updated and
     a HISTORY line (MF 374); the repair cards carried (D7). Test: data section identical (md5 of the array), PRODNAME = file name and
@@ -355,12 +365,13 @@ def rename_cleanres(src, out, taper_master=None):
     pn = parse_name(str(h0.get('PRODNAME', '')))
     if not {'lsfill', 'cleanres'} <= set(pn.get('proc') or ()):
         raise TilefillRefusal(f'{src}: PRODNAME {h0.get("PRODNAME")!r} is not an lsfill CLEAN residual - REFUSING')
-    pn['proc'] = [p for p in pn['proc'] if p != 'lsfill']; pn.pop('grammar', None); name = build_name(**pn)
+    name = cleanres_name(h0['PRODNAME'])
     if os.path.basename(out) != name:
         raise TilefillRefusal(f'{out}: not the renamed CLEAN residual {name} - REFUSING')
     if os.path.exists(out):
         raise TilefillRefusal(f'{out} exists - REFUSING')
     READS.add(src)
+    smd5 = md5(src)
     with fits.open(src, memmap=False) as hl:
         d0 = _data_md5(hl[0])
         add = repair_cards(hl[0].header, taper_master)
@@ -376,5 +387,5 @@ def rename_cleanres(src, out, taper_master=None):
     rt = parse_name(pr) if pr else {}
     rt.pop('grammar', None)
     ok = d0 == d1 and pr == name and bool(rt) and build_name(**rt) == name and hok
-    return dict(src=src, out=out, name=name, out_md5=md5(out), data_md5=d1, data_identical=d0 == d1, prodname_ok=pr == name,
+    return dict(src=src, src_md5=smd5, out=out, name=name, out_md5=md5(out), data_md5=d1, data_identical=d0 == d1, prodname_ok=pr == name,
                 header_valid=hok, header_errors=herr, repair_cards_carried=[k for k, _v, _c in add], result='PASS' if ok else 'FAIL')
