@@ -587,12 +587,16 @@ def content_unit(u, scope, w, out, work):
     sd = fitsio.scratch_dir(f'mosaic_v5_content_{scope}_{w}', work)
     try:
         _link_tree(t, scope, w, sd)
-        rep = {dom: CT.run(P[f'unfilled_{dom}'], sd, v, scope, dom, parents) for dom in ('jysr', 'jybeam')}
+        rep = CT.run({dom: P[f'unfilled_{dom}'] for dom in ('jysr', 'jybeam')}, sd, v, scope, parents)
     finally:
         fitsio.cleanup(sd)
-    want = sorted(os.path.realpath(r['path']) for r in t['tiles'])
+    # TEST 2: the tile and PB files TEST 1 read are exactly the tile list's, each at the md5 _tiles verified in this unit
+    listed = {r['lst']: (os.path.realpath(r['path']), os.path.realpath(r['pb']), r['md5']) for r in t['tiles']}
     for dom, r in rep.items():
-        r['provenance_matches_tiles'] = sorted(x['file'] for x in r['provenance']) == want
+        read = r.pop('read')
+        r['provenance'] = [dict(x, md5=listed[x['lst']][2] if x['lst'] in listed else None) for x in read]
+        r['provenance_matches_tiles'] = (len(read) == len(listed)
+                                         and all(listed.get(x['lst'], ())[:2] == (x['file'], x['pb']) for x in read))
     os.makedirs(os.path.dirname(P['content']), exist_ok=True)
     tmp = f'{P["content"]}.tmp.{os.getpid()}'
     with open(tmp, 'w') as f:
@@ -605,7 +609,9 @@ def content_unit(u, scope, w, out, work):
                 detail=f'{r["n_sources"]} sources, median map / tiles {r["median_ratio"]:.5f}, within 5 % {r["frac_within_5pct"]:.3f}')
         u.check(f'TEST2.{dom}', r['provenance_matches_tiles'] and all(x['symlink'] for x in r['provenance']),
                 value=len(r['provenance']), path=P['content'], cls='mosaic_content_report',
-                detail='every input a link to the staged tile' if r['provenance_matches_tiles'] else 'the links are not the staged tiles')
+                detail=(f'TEST 1 read the {len(r["provenance"])} listed tiles and PB maps, each at its verified md5'
+                        if r['provenance_matches_tiles'] else
+                        f'TEST 1 read {len(r["provenance"])} files, not the {len(t["tiles"])} listed tiles and PB maps'))
     u.add_output(P['content'], 'mosaic_content_report', n_tiles=len(t['tiles']), scope=scope, variant=v)
 
 

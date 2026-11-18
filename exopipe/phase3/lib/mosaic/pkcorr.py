@@ -19,8 +19,11 @@ the map read back equals the curve within MAP_TOL.
 
 Changes from MP (spec section 7 B1 and the v2 rules): every FITS read uses memmap=False (MP read the Lustre tiles memory-mapped); the
 injected co-add must add every tile (the coadd unit's HG14 check); the test returns its verdict instead of raising (the unit records it
-and removes the outputs of a failed test); NSIDE is the bound engine's.
+and removes the outputs of a failed test); NSIDE is the bound engine's. Each staged tile, its header and its PB map are read once per
+unit and copied for each round (MP re-read them from Lustre in every round; the injected data are the same). The Dec interpolation of
+the curve onto the HEALPix pixels is one function (curve_map), shared by the map, test_pkcorr and the content test of the map file.
 """
+import functools
 import json
 import os
 import shutil
@@ -70,31 +73,62 @@ def _gauss_add(data, hdr, x0, y0, peak):
     return True
 
 
-def inject_round(root, band, variant, lsts, dst_root, ra_off):
-    """MP 56-83: copies of the staged tiles with S_INJ Gaussians at (RA_BASE + ra_off, DECS); PB maps linked (weights only).
-    memmap=False on every read."""
+def pixel_dec(nside):
+    """Dec (deg) of every RING pixel (MP 129); one array per process for the last NSIDE asked."""
+    return _pixel_dec(int(nside))
+
+
+@functools.lru_cache(maxsize=1)
+def _pixel_dec(nside):
+    import healpy as hp
+    th, _ = hp.pix2ang(nside, np.arange(hp.nside2npix(nside)))
+    d = 90.0 - np.degrees(th)
+    d.flags.writeable = False
+    return d
+
+
+def curve_map(cd, cm, nside):
+    """MP 129-130: the curve (node Decs cd, medians cm) interpolated linearly in Dec onto every pixel, constant beyond the ends
+    (float64; the map file holds it as float32)."""
+    return np.interp(pixel_dec(nside), cd, cm)
+
+
+def load_tiles(root, band, variant, lsts):
+    """The staged tiles of MP 56-83, read once (memmap=False): {lst: (tile path, PB path, header, data as read, PB, celestial WCS)}
+    for every LST whose tile and PB exist."""
     from astropy.io import fits
     from astropy.wcs import WCS
     from exopipe.phase3.lib.mosaic import coadd_jysr as M
-    C = _cfg()
-    decs, ra_base = nodes()
-    s_inj, pb_min = float(C.S_INJ), float(C.INJ_PB_MIN)
-    n_added = np.zeros(len(decs), int)
+    out = {}
     for lst in lsts:
         mp, pbp = M._paths(root, lst, variant, band)
         if not (os.path.exists(mp) and os.path.exists(pbp)):
             continue
+        with fits.open(mp, memmap=False) as h:
+            hdr = h[0].header.copy()
+            data = h[0].data
+        data.flags.writeable = False
+        out[lst] = (mp, pbp, hdr, data, np.squeeze(fits.getdata(pbp, memmap=False)), WCS(hdr).celestial)
+    return out
+
+
+def inject_round(tiles, dst_root, ra_off):
+    """MP 56-83: copies of the staged tiles (load_tiles) with S_INJ Gaussians at (RA_BASE + ra_off, DECS); PB maps linked (weights
+    only)."""
+    from astropy.io import fits
+    C = _cfg()
+    decs, ra_base = nodes()
+    s_inj, pb_min = float(C.S_INJ), float(C.INJ_PB_MIN)
+    n_added = np.zeros(len(decs), int)
+    for lst, (mp, pbp, hdr0, data0, pb, w) in tiles.items():
         dd = os.path.join(dst_root, lst)
         os.makedirs(dd, exist_ok=True)
         lnk = os.path.join(dd, os.path.basename(pbp))
         if not os.path.exists(lnk):
             os.symlink(os.path.realpath(pbp), lnk)
-        with fits.open(mp, memmap=False) as h:
-            hdr = h[0].header
-            data = h[0].data
+        hdr = hdr0.copy()
+        data = data0.copy()
         sq = np.squeeze(data)
-        w = WCS(hdr).celestial
-        pb = np.squeeze(fits.getdata(pbp, memmap=False))
         for i, dec in enumerate(decs):
             ra = (ra_base[i] + ra_off) % 360.0
             try:
@@ -162,11 +196,12 @@ def measure(root, band, variant, lsts, rounds, mos_c, psf, scratch, nside):
     roff = float(C.ROUND_OFF)
     tagv = f'{variant}_{band}'
     rows = []
+    tiles = load_tiles(root, band, variant, lsts)
     for r in range(rounds):
         inj_root = os.path.join(scratch, f'inj_{tagv}_r{r}')
         print(f'----- {tagv} round {r}: inject (RA offset {r * roff:.0f} deg) -----', flush=True)
         try:
-            n_added = inject_round(root, band, variant, lsts, inj_root, r * roff)
+            n_added = inject_round(tiles, inj_root, r * roff)
             mos_i = _coadd_injected(M, lsts, variant, band, inj_root)
         finally:
             shutil.rmtree(inj_root, ignore_errors=True)
@@ -187,7 +222,6 @@ def measure(root, band, variant, lsts, rounds, mos_c, psf, scratch, nside):
 
 def write(out, variant, band, tag, rounds, rows, curve, nside):
     """MP 116-142: the recovery and curve CSVs, the PKCORR map and the JSON (without the test); returns (paths, res)."""
-    import healpy as hp
     from astropy.io import fits
     C = _cfg()
     nm = names(variant, band, tag, nside)
@@ -202,8 +236,7 @@ def write(out, variant, band, tag, rounds, rows, curve, nside):
             fh.write(f'{c[0]:.1f},{c[1]:.4f},{c[2]:.4f},{c[3]},{c[4]}\n')
     cd = np.array([c[0] for c in curve])
     cm = np.array([c[1] for c in curve])
-    th, _ = hp.pix2ang(nside, np.arange(hp.nside2npix(nside)))
-    corr = np.interp(90.0 - np.degrees(th), cd, cm).astype(np.float32)
+    corr = curve_map(cd, cm, nside).astype(np.float32)
     hdu = fits.BinTableHDU.from_columns([fits.Column(name='SIGNAL', format='E', array=corr)])
     for k, v in (('PIXTYPE', 'HEALPIX'), ('ORDERING', 'RING'), ('NSIDE', nside), ('COORDSYS', 'C'), ('INDXSCHM', 'IMPLICIT'),
                  ('BUNIT', ''), ('SINJ', float(C.S_INJ)), ('NROUNDS', rounds)):
@@ -219,7 +252,6 @@ def write(out, variant, band, tag, rounds, rows, curve, nside):
 def test_pkcorr(path, curve, rounds, nside):
     """MP 148-161: every node from DEC_START holds samples from at least min(MIN_ROUNDS, rounds) rounds, every node's median is in
     REC_MIN..REC_MAX, and the map read back equals the curve at the pixel Decs (MAP_TOL). Returns the result, verdict pass / fail."""
-    import healpy as hp
     from astropy.io import fits
     C = _cfg()
     decs, _ra = nodes()
@@ -230,10 +262,8 @@ def test_pkcorr(path, curve, rounds, nside):
     with fits.open(path, memmap=False) as h:
         m = np.asarray(h[1].data['SIGNAL'], dtype=np.float64).ravel()
     err = float('inf')
-    if curve:
-        th, _ = hp.pix2ang(nside, np.arange(len(m)))
-        ref = np.interp(90.0 - np.degrees(th), [c[0] for c in curve], [c[1] for c in curve])
-        err = float(np.max(np.abs(m - ref)))
+    if curve and len(m) == 12 * nside ** 2:
+        err = float(np.max(np.abs(m - curve_map([c[0] for c in curve], [c[1] for c in curve], nside))))
     res = dict(nodes=len(curve), missing_or_few_rounds=missing, out_of_range=out_of_range, max_map_err=err)
     res['verdict'] = 'fail' if (missing or out_of_range or not err < float(C.MAP_TOL)) else 'pass'
     return res

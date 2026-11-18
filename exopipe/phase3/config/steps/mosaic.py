@@ -321,12 +321,11 @@ class mosaic_content(_Section):
     #   MT 137: PASS when >= 20 sources, |median ratio - 1| <= 0.01 and >= 90 % of the sources within 5 % (MT 8-13). The content
     #   tests belong to the run plan Gregg approved 2026-10-22 (R-GREGG-20261022-MOSAIC-RUN-GO-52-WIDEBAND-AS-IS-LWACALIM09); the
     #   limits are production's literals (exopipe 93a0d02), not stated in a ruling: protected, not RULED
-    PROV_BYTES = 64 * 2 ** 20
-    #   MT 103: TEST 2 provenance md5 of the first 64 MB of each tile
+    #   TEST 2 (MT 103 hashed each tile's first 64 MB and compared it with nothing): the unit checks that TEST 1 read exactly its
+    #   tile list's files, each at the full md5 it verified (lib/mosaic/content.py); no size to configure
     RULED = {'DEC_MIN': 'R-GREGG-20261016-MOSAIC-DEC-MIN-30'}
     #   Gregg 2026-10-16: "Use declination >= -30" (the products' southern limit)
-    PROTECTED_KEYS = ('PARENTS', 'N_SOURCES', 'DEC_MIN', 'ISOLATION_BEAMS', 'APERTURE_BEAMS', 'MIN_SOURCES', 'MED_TOL', 'FRAC5_MIN',
-                      'PROV_BYTES')
+    PROTECTED_KEYS = ('PARENTS', 'N_SOURCES', 'DEC_MIN', 'ISOLATION_BEAMS', 'APERTURE_BEAMS', 'MIN_SOURCES', 'MED_TOL', 'FRAC5_MIN')
 
 
 class mosaic_pkcorr(_Section):

@@ -252,9 +252,9 @@ def pkcorr_map_is_curve(path, curve=None, rounds=None, **ctx):
     """RING HEALPix at mosaic_coadd.NSIDE, column SIGNAL, BUNIT '', SINJ = mosaic_pkcorr.S_INJ, NROUNDS = the unit's rounds; the map
     equals the curve file interpolated in Dec within the CSV's 4-decimal rounding (5e-5) + MAP_TOL (the unit's inline test_pkcorr
     compares it with the unrounded curve at MAP_TOL)."""
-    import healpy as hp
     import numpy as np
     from astropy.io import fits
+    from exopipe.phase3.lib.mosaic.pkcorr import curve_map
     C = _cfg()
     n = int(C.mosaic_coadd.NSIDE)
     with fits.open(path, memmap=False) as h:
@@ -271,14 +271,13 @@ def pkcorr_map_is_curve(path, curve=None, rounds=None, **ctx):
     err = None
     if curve and not probs:
         rows = _curve_rows(curve)
-        th, _ = hp.pix2ang(n, np.arange(m.size))
-        ref = np.interp(90.0 - np.degrees(th), [float(r['dec']) for r in rows], [float(r['rec_median']) for r in rows])
-        err = float(np.max(np.abs(m - ref)))
+        err = float(np.max(np.abs(m - curve_map([float(r['dec']) for r in rows], [float(r['rec_median']) for r in rows], n))))
         if not err <= 5e-5 + float(C.mosaic_pkcorr.MAP_TOL):
             probs.append(f'map vs curve file {err:.2e}')
     if not np.all(np.isfinite(m)):
         probs.append(f'{int((~np.isfinite(m)).sum())} non-finite pixels')
-    return not probs, err, '; '.join(probs) or f'NSIDE {n}, map = curve (max {err:.1e})'
+    return not probs, err, '; '.join(probs) or (f'NSIDE {n}, map = curve (max {err:.1e})' if err is not None
+                                                else f'NSIDE {n}, finite (no curve given: map vs curve not compared)')
 
 
 @content_test('mosaic_pkcorr_recovery')

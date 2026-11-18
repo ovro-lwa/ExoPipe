@@ -26,10 +26,11 @@ maps and renders against V5 (data md5).
 PR-7b (lib/mosaic/pkcorr.py, content.py; stages pkcorr and content):
   9. config: mosaic_content and mosaic_pkcorr equal MT / MP literals; the Dec nodes, RA bases and file names are MP's;
  10. inject_round on a synthetic tile: one source at its node, peak and integral of the restoring beam, the tile itself unchanged, no
-     source where PB <= 0.12 or the pixel is blank;
+     source where PB <= 0.12 or the pixel is blank; a second round from the same tile cache holds only its own source; curve_map is
+     MP's interpolation; the map test without a curve; the catalog reader on header-only catalogs and a path with '[';
  11. the pkcorr and content units: inputs at the coadd's md5s, the coadd's engine weights, the tile list chain; outputs placed from
-     the stand-ins; an injection refusal, a failed test_pkcorr, a failed TEST 1 and links that are not the staged tiles (TEST 2) each
-     leave the unit not done; no parent catalog refuses;
+     the stand-ins; an injection refusal, a failed test_pkcorr, a failed TEST 1, and TEST 1 reading a file that is not the tile
+     list's or skipping a tile (TEST 2) each leave the unit not done; no parent catalog refuses;
  12. the file tests of the curve, the recovery rows, the PKCORR JSON and the content report (each broken file fails).
 Cluster parity (not here): TEST 1 values = V5 tables/summary.csv rows; the PKCORR map = the archived V5 map (SIGNAL bit-identical).
 Run: python tests/test_mosaic_v5.py   (or under pytest)
@@ -698,7 +699,7 @@ def test_config_pkcorr_content_equal_production():
     assert (K.PEAK_RADIUS_FWHM, K.PEAK_RADIUS_MIN_DEG, K.OMEGA_RADIUS_DEG) == (0.5, 0.05, 0.2)                  # MP 89-93
     assert (K.ROUNDS, K.MIN_ROUNDS, K.REC_MIN, K.REC_MAX, K.MAP_TOL) == (5, 3, 0.5, 1.2, 1e-6)                 # MP 148-158, 167
     assert (T.N_SOURCES, T.DEC_MIN, T.ISOLATION_BEAMS, T.APERTURE_BEAMS) == (200, -30.0, 5.0, 2.0)             # MT 24, 27-48, 114, 202
-    assert (T.MIN_SOURCES, T.MED_TOL, T.FRAC5_MIN, T.PROV_BYTES) == (20, 0.01, 0.90, 64 * 2 ** 20)            # MT 103, 137
+    assert (T.MIN_SOURCES, T.MED_TOL, T.FRAC5_MIN) == (20, 0.01, 0.90) and not hasattr(T, 'PROV_BYTES')        # MT 137; TEST 2: v5
     assert T.PARENTS == '/lustre/gh/main/phase3/deep_parent_catalogs_union_20261014T0203'                     # MT 201
     assert T.RULED == {'DEC_MIN': 'R-GREGG-20261016-MOSAIC-DEC-MIN-30'} and K.RULED == {'DEC_START': 'R-GREGG-20261016-MOSAIC-DEC-MIN-30'}
     decs, ra = PK.nodes()
@@ -740,7 +741,10 @@ def test_inject_round():
             _img(os.path.join(root, lst, 'PB_deep_R075_Blue.fits'), pbs[lst])
         before = _md5f(os.path.join(root, '00h', 'I_deep_Taper_R075_pbcorr_Blue.fits'))
         with _fake_module('exopipe.phase3.lib.mosaic.coadd_jysr', _paths_module()):
-            n = PK.inject_round(root, 'Blue', 'Taper_R075', lsts, dst, 0.0)
+            tiles = PK.load_tiles(root, 'Blue', 'Taper_R075', lsts)
+            n = PK.inject_round(tiles, dst, 0.0)
+            n2 = PK.inject_round(tiles, os.path.join(d, 'dst2'), 3.0)      # round 1 from the same cache
+        assert sorted(tiles) == lsts and not tiles['00h'][3].flags.writeable and float(np.nansum(tiles['00h'][3])) == 0.0
         i30 = 30                                                         # node 30: Dec +30, RA 30 x 47 mod 360 = 330 (the tile center)
         assert n[i30] == 1 and n.sum() == 1, (np.nonzero(n), n.sum())    # 01h: PB <= 0.12; 02h: blank; other nodes off the 16-deg tile
         assert _md5f(os.path.join(root, '00h', 'I_deep_Taper_R075_pbcorr_Blue.fits')) == before
@@ -754,6 +758,9 @@ def test_inject_round():
         assert os.path.islink(os.path.join(dst, '00h', 'PB_deep_R075_Blue.fits'))
         assert os.readlink(os.path.join(dst, '00h', 'PB_deep_R075_Blue.fits')) == os.path.realpath(
             os.path.join(root, '00h', 'PB_deep_R075_Blue.fits'))
+        out2 = fits.getdata(os.path.join(d, 'dst2', '00h', 'I_deep_Taper_R075_pbcorr_Blue.fits'))
+        assert n2[i30] == 1 and abs(out2.sum() / integral - 1) < 1e-3 and out2.max() < 50.0 + 1e-3, (n2[i30], out2.sum())  # one source
+        assert out2[31, 31] < out[31, 31] - 1                            # moved 3 deg in RA: not the round-0 source
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
@@ -836,7 +843,7 @@ def test_pkcorr_unit():
 
 
 def _report(n=24, med=1.002, fr=0.95, nsrc=150, links=True, files=None):
-    pv = [dict(lst=x, file=(files or {}).get(x, f'/x/{x}.fits'), md5_first64MB='0' * 32, symlink=links) for x in LSTS[:n]]
+    pv = [dict(lst=x, file=(files or {}).get(x, f'/x/{x}.fits'), pb=f'/x/pb_{x}.fits', md5='0' * 32, symlink=links) for x in LSTS[:n]]
     r = dict(map='m', variant='Taper_R075', band='Blue', n_tiles=n, n_sources=nsrc, median_ratio=med, p05=0.97, p95=1.03,
              frac_within_5pct=fr, provenance=pv, result='PASS' if abs(med - 1) <= 0.01 and fr >= 0.9 and nsrc >= 20 and links else 'FAIL')
     return r
@@ -853,23 +860,32 @@ def test_content_unit():
             out = _coadded(d)
             work = os.path.join(d, 'work')
             P = v5.paths(out, 'Blue', 'R075')
-            tiles = {r['lst']: os.path.realpath(r['path']) for r in json.load(open(P['tiles']))['tiles']}
+            listed = json.load(open(P['tiles']))['tiles']
+            good = [dict(lst=r['lst'], file=os.path.realpath(r['path']), pb=os.path.realpath(r['pb']), symlink=True) for r in listed]
             calls = []
 
-            def fake_run(map_path, root, variant, band, domain, parents, med=1.002, files=tiles):
-                calls.append((os.path.basename(map_path), variant, band, domain, parents, sorted(os.listdir(root))))
-                return _report(med=med, files=files)
+            def fake_run(maps, root, variant, band, parents, med=1.002, read=good):
+                calls.append(([os.path.basename(m) for m in maps.values()], variant, band, list(maps), parents, sorted(os.listdir(root))))
+                out = {}
+                for dom in maps:
+                    r = _report(med=med if dom == 'jybeam' else 1.002)
+                    r.pop('provenance')
+                    out[dom] = dict(r, domain=dom, read=[dict(x) for x in read])
+                return out
             eng = _fake_engine([])
             with _fake_module('exopipe.phase3.lib.mosaic.coadd_jysr', eng), _patched((CT, 'run', fake_run)):
                 u = _unit(out, 'content', v5.content_unit, work)
             assert u.status == 'done', (u.status, u.reason)
-            assert [c[3] for c in calls] == ['jysr', 'jybeam'] and calls[0][0] == os.path.basename(P['unfilled_jysr'])
+            assert len(calls) == 1 and calls[0][3] == ['jysr', 'jybeam']                     # one reading of the tiles, both domains
+            assert calls[0][0] == [os.path.basename(P['unfilled_jysr']), os.path.basename(P['unfilled_jybeam'])]
             assert calls[0][1:3] == ('Taper_R075', 'Blue') and calls[0][4] == par and calls[0][5] == LSTS
             rep = json.load(open(P['content']))
             assert rep['jysr']['provenance_matches_tiles'] and os.path.basename(P['content']) == 'content_I_deep_Taper_R075_Blue_lsfill.json'
+            assert [x['md5'] for x in rep['jybeam']['provenance']] == [r['md5'] for r in listed] and 'read' not in rep['jysr']
             assert os.listdir(work) == []
-            # TEST 1 fails in Jy/beam; the links are not the staged tiles (TEST 2)
-            for kw, name in ((dict(med=1.03), 'TEST1'), (dict(files={}), 'TEST2')):
+            # TEST 1 fails in Jy/beam; TEST 2: a PB that is not the listed one, a tile TEST 1 skipped
+            wrong_pb = [dict(x, pb='/elsewhere/pb.fits') if x['lst'] == '05h' else x for x in good]
+            for kw, name in ((dict(med=1.03), 'TEST1'), (dict(read=wrong_pb), 'TEST2'), (dict(read=good[1:]), 'TEST2')):
                 bad = (lambda kw: lambda *a: fake_run(*a, **kw))(kw)
                 with _fake_module('exopipe.phase3.lib.mosaic.coadd_jysr', eng), _patched((CT, 'run', bad)):
                     v5.run(_args(stages='content', scopes='Blue', weightings='R075', work=work), _run(out))
@@ -879,6 +895,34 @@ def test_content_unit():
                     _fake_module('exopipe.phase3.lib.mosaic.coadd_jysr', eng), _patched((CT, 'run', fake_run)):
                 u = _unit(out, 'content', v5.content_unit, work)
             assert u.status == 'refused' and 'no parent catalog' in u.reason, (u.status, u.reason)
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_curve_map_and_catalog_reader():
+    import healpy as hp
+    from exopipe.phase3.lib.mosaic import content as CT
+    from exopipe.phase3.lib.mosaic import pkcorr as PK
+    cd, cm = [-30.0, 0.0, 40.0, 88.0], [0.80, 0.85, 0.90, 0.95]
+    for nside in (4, 16):
+        th, _ = hp.pix2ang(nside, np.arange(hp.nside2npix(nside)))
+        assert np.array_equal(PK.curve_map(cd, cm, nside), np.interp(90.0 - np.degrees(th), cd, cm))   # MP 129-130
+    d = _tmp('cmap_')
+    try:
+        mp = os.path.join(d, 'pk.fits')
+        with _patched((CFG.mosaic_coadd, 'NSIDE', 1)):
+            _hpx(mp, PK.curve_map(cd, cm, 1).astype(np.float32), NSIDE=1, ORDERING='RING', BUNIT='', SINJ=50.0, NROUNDS=5)
+            ok, err, msg = T5.pkcorr_map_is_curve(mp, rounds=5)                    # no curve: no comparison, no TypeError
+            assert ok and err is None and 'no curve' in msg, (ok, err, msg)
+        par = os.path.join(d, 'cats[1]')                                         # a '[' in the directory name
+        os.makedirs(par)
+        open(os.path.join(par, 'master_R075_00h_Blue.gaul.csv'), 'w').write('# header only\n\n')
+        assert CT._sources(par, 'Blue', 200, 0.3).shape == (0, 3)                  # no row: empty, not an IndexError
+        row = lambda ra, dec, pk: ','.join(['x'] * 4 + [str(ra), 'x', str(dec)] + ['x'] * 3 + [str(pk)]) + '\n'  # noqa: E731
+        open(os.path.join(par, 'master_R075_01h_Blue.gaul.csv'), 'w').write(
+            row(10.0, 20.0, 5.0) + row(10.5, 20.0, 4.0) + row(30.0, 20.0, 3.0) + row(30.0, -40.0, 9.0))
+        S = CT._sources(par, 'Blue', 200, 0.3)                                     # 0.5 deg < 5 beams: the fainter neighbor dropped
+        assert S.tolist() == [[10.0, 20.0, 5.0], [30.0, 20.0, 3.0]], S.tolist()   # Dec -40 < DEC_MIN + 3 beams
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
