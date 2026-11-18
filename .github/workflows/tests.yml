@@ -60,6 +60,8 @@ jobs:
         run: python tests/test_hybrid_tilefill.py
       - name: hybrid route PR-5b (archive push --class hybrid - keep, publish, replace, retire via the round quarantine; gates; diffuse PB writer)
         run: python tests/test_archive_hybrid.py
+      - name: hybrid route PR-7a (mosaic --generation v5 - stage, coadd, caveat, fill, render units; tile and fill content tests; tilefill --mosaic-out)
+        run: python tests/test_mosaic_v5.py
       - name: search engine speed-ups change no product
         run: python tests/test_search_speedups.py
       - name: Phase 2 speed-ups change no product

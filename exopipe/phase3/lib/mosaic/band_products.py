@@ -5,7 +5,7 @@ For each band: Mollweide (Galactic, l=0) and RA/Dec (equatorial CAR/plate-carree
 real Jy/beam, NaN off-footprint, sampled >=3 px/beam.
 The HEALPix FITS themselves are the native product (healpix_aligned*/...).
 """
-import os, argparse
+import os, re, argparse
 from astropy.io import fits as _fits_nommap   # noqa: E402
 _fits_nommap.conf.use_memmap = False   # never memory-map a Lustre file, also when run by path (R-GREGG-20261117-NO-MMAP-OF-LUSTRE-FILES-READ-OR-WRITE)
 import numpy as np, healpy as hp
@@ -34,10 +34,13 @@ def _sample(m, w, shape, frame, dec_cut=None):
     return img.astype(np.float32)
 
 
-def _beam_arcmin(hpx_dir, variant, b):
+def _beam_arcmin(hpx_dir, variant, b, suffix=''):
     """Scalar beam for the render header. v2 (2026-09-29): the equivalent circular FWHM of the median per-pixel Omega_eff
-    of the mosaic's own PSF map, which exists for every band including the subbands; else the July fixed table."""
-    p = f"{hpx_dir}/healpix_PSF_I_deep_{variant}_{b}_nside2048.fits"
+    of the mosaic's own PSF map, which exists for every band including the subbands; else the July fixed table. A tagged run
+    (suffix '<tag>_<domain>', v5 '_lsfill_jysr') reads its own PSF map healpix_PSF_..._<band><tag>_nside2048.fits (production
+    make_band_products 14e8dba, 2026-10-26)."""
+    tag = re.sub(r'_(jysr|jybeam)$', '', suffix or '')      # '' for the untagged maps (suffix '_jysr' / '_jybeam')
+    p = f"{hpx_dir}/healpix_PSF_I_deep_{variant}_{b}{tag}_nside2048.fits"
     if os.path.exists(p):
         om = hp.read_map(p, verbose=False); om = om[np.isfinite(om) & (om > 0) & (om != hp.UNSEEN)]
         if om.size:
@@ -67,7 +70,7 @@ def build(variant, hpx_dir, suffix, out, bands=('Red', 'Green', 'Blue', 'Full'),
         src = f"{hpx_dir}/healpix_I_deep_{variant}_{b}{suffix}_nside2048.fits"
         m = hp.read_map(src, verbose=False)
         bunit = fits.getheader(src, 1).get('BUNIT', 'JY/BEAM')   # v2 jysr maps are Jy/sr - was hardcoded JY/BEAM
-        bm = _beam_arcmin(hpx_dir, variant, b)
+        bm = _beam_arcmin(hpx_dir, variant, b, suffix)
         pxbm = bm / (360./moll_W*60)
         # Mollweide (galactic)
         w, sh = moll_wcs(moll_W)

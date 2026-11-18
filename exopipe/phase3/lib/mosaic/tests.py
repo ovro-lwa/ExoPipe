@@ -112,9 +112,10 @@ def domain_cards(path, **ctx):
         psf = str(h1.get('PSFMAP', ''))
         b = os.path.basename(path)
         m = re.match(r'^healpix_(I_deep_.+)_jybeam_nside(\d+)\.fits$', b)
+        stem = m.group(1) if m else None
         if not psf:
             probs.append('jybeam map without the PSFMAP card')
-        elif m and psf != f'healpix_PSF_{m.group(1)}_nside{m.group(2)}.fits':
+        elif m and psf != f'healpix_PSF_{stem}_nside{m.group(2)}.fits':
             probs.append(f'PSFMAP {psf!r} does not name the jysr pair psfmap')
     if h1.get('ALIGNED') is not False:
         probs.append(f'ALIGNED {h1.get("ALIGNED")!r} (no mosaic-stage flow, M-01)')
@@ -156,8 +157,10 @@ def coverage(path, **ctx):
 
 
 def _scope_of(path):
+    """The scope of an engine map name, with or without the tag of a tagged run (v5 mosaic_v5.TAG '_lsfill')."""
     b = os.path.basename(path)
-    m = re.match(r'^healpix_(?:PSF_|PBeff_)?I_deep_(?:No)?Taper_R0(?:75)?_(\w+?)_(?:jysr_|jybeam_)?nside\d+\.fits$', b)
+    tag = re.escape(_cfg().mosaic_v5.TAG)
+    m = re.match(rf'^healpix_(?:PSF_|PBeff_)?I_deep_(?:No)?Taper_R0(?:75)?_(\w+?)(?:{tag})?_(?:jysr_|jybeam_)?nside\d+\.fits$', b)
     if m:
         return m.group(1)
     return b.split('_', 1)[0]

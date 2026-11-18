@@ -87,6 +87,10 @@ def add_arguments(p):
                    help='tilefill: fill the hybrid stage\'s unfilled masters in --out (work, the default; no hybrid record = no '
                         'input), or re-fill the installed filled masters from the pinned unfilled sources their TPSRCMD5 names '
                         '(pinned: a unit not rebuilt whose band field changed)')
+    g.add_argument('--mosaic-out', metavar='DIR',
+                   help='tilefill: take the band fields from the hybrid mosaics of the `exopipe3 mosaic --generation v5` work run DIR (its '
+                        'done fill records: the unfilled and filled Jy/sr maps at their recorded md5s) instead of the archived ones '
+                        '(hybrid_tilefill.FILLED_MOSAIC_RUN with the pinned unfilled twins)')
 
 
 def default_out(args):
@@ -277,7 +281,7 @@ def run(args, run):
                 hybrid_master_unit(u, lst, sc, w, run.out_root)
                 continue
             if st == 'tilefill':
-                tilefill_unit(u, lst, sc, w, run.out_root, args.tilefill_source)
+                tilefill_unit(u, lst, sc, w, run.out_root, args.tilefill_source, getattr(args, 'mosaic_out', None))
                 continue
             u.refuse(f'stage {st} is not ported yet ({PORTED_BY[st]} of plan/specs/hybrid.md) - REFUSED')
     return run.exit_code()
@@ -749,27 +753,72 @@ def mosaic_pair(scope, w, T):
     return filled, unfilled
 
 
-def tilefill_field(out_root, scope, w, rows):
-    """The band fill field of (scope, w) in <out>/_tilefill_fields/ (MF band_increment; HG13: the unfilled mosaic is a pinned input;
-    the field reproduces the filled mosaic), recorded beside it. Made once per --out: a field whose record passed, whose md5 equals
+def v5_mosaic_pair(mosaic_out, scope, w, out_root, rows):
+    """(filled, unfilled, filled md5, unfilled md5): the Jy/sr maps of the done v5 fill unit of (scope, w) in the mosaic work run
+    mosaic_out (lib/mosaic/v5.py); refuses (HG13) unless the record is done, both files and the tile list (stage/tiles.json) have its
+    md5s now, and the mosaic was made from the unfilled masters this tilefill run fills: per LST, the source ('work' where this run
+    holds the cell's hybrid record <out_root>/<LST>_<scope>/<w>_hybrid.json, else 'pinned') and the md5 of the beam-corrected master
+    that tilefill_source gives now, as the v5 stage resolved them (rows: the pinned manifests)."""
+    import json
+    from exopipe.phase3.core.record import Refusal, NoInput, load_record
+    from exopipe.phase3.lib.hybrid.tilefill import TilefillRefusal
+    from exopipe.phase3.lib.mosaic import v5
+    r = load_record(mosaic_out, v5.STEP, v5.unit_name('fill', scope, w))
+    if r is None or r.get('status') != 'done':
+        raise TilefillRefusal(f'{scope} {w}: no done v5 fill unit in --mosaic-out {mosaic_out} '
+                              f'({"no record" if r is None else r.get("status")}) - REFUSING')
+    P = v5.paths(mosaic_out, scope, w)
+    m = r['meta']['md5']
+    for k in ('filled_jysr', 'unfilled_jysr'):
+        if not os.path.exists(P[k]) or _md5(P[k]) != m[k]:
+            raise TilefillRefusal(f'HG13: {P[k]} is missing or its md5 is not the v5 fill record\'s {m[k]} - REFUSING')
+    if r['meta'].get('tiles_md5') is None or not os.path.exists(P['tiles']) or _md5(P['tiles']) != r['meta']['tiles_md5']:
+        raise TilefillRefusal(f'HG13: {P["tiles"]} is not the tile list the v5 fill was made from - REFUSING')
+    with open(P['tiles']) as f:
+        tiles = {t['lst']: t for t in json.load(f)['tiles']}
+    bad = [f'{lst} (no tile)' for lst in v5.LSTS if lst not in tiles]
+    for lst, t in sorted(tiles.items()):
+        mode = 'work' if os.path.exists(os.path.join(out_root, f'{lst}_{scope}', f'{w}_hybrid.json')) else 'pinned'
+        try:
+            want = tilefill_source(out_root, lst, scope, w, rows, mode, plan_only=True, need_pb=False)['src']['pbcorr'][2]
+        except (TilefillRefusal, Refusal, NoInput) as e:
+            bad.append(f'{lst} ({mode}: {e})')
+            continue
+        if t['source'] != mode or t['md5'] != want:
+            bad.append(f'{lst} (this run: {mode} md5 {want}; the mosaic used {t["source"]} {t["md5"]})')
+    if bad:
+        raise TilefillRefusal(f'HG13: the v5 mosaic of {scope} {w} in {mosaic_out} was not made from this run\'s unfilled masters: '
+                              f'{bad[:4]} - REFUSING')
+    return P['filled_jysr'], P['unfilled_jysr'], m['filled_jysr'], m['unfilled_jysr']
+
+
+def tilefill_field(out_root, scope, w, rows, mosaic_out=None):
+    """The band fill field of (scope, w) in <out>/_tilefill_fields/ (MF band_increment; HG13: the unfilled mosaic is a pinned input,
+    or with mosaic_out (--mosaic-out) the v5 work run's unfilled map at its fill record's md5; the field reproduces the filled mosaic),
+    recorded beside it. Made once per --out: a field whose record passed, whose md5 equals
     the record's and whose mosaics still have the recorded md5s is reused (another process or an earlier run made it); otherwise it
     is made under a name of this process and renamed into place, so no process deletes a field another one reads. A refusal is
     recorded (result FAIL) and refuses every unit of the scope and weighting."""
     import json
     from exopipe.phase3.config import CFG
     from exopipe.phase3.lib.hybrid import tilefill as TF
-    key = (os.path.abspath(out_root), scope, w)
+    key = (os.path.abspath(out_root), scope, w, os.path.abspath(mosaic_out) if mosaic_out else None)
     if key in _FIELDS:
         return _FIELDS[key]
     fd = os.path.join(out_root, '_tilefill_fields')
     os.makedirs(fd, exist_ok=True)
-    out = os.path.join(fd, f'field_{scope}_{w}.fits')
+    import hashlib
+    sfx = f'_v5-{hashlib.md5(os.path.realpath(mosaic_out).encode()).hexdigest()[:8]}' if mosaic_out else ''   # one file per field source
+    out = os.path.join(fd, f'field_{scope}_{w}{sfx}.fits')
     rj = out[:-5] + '.json'
     TF.bind()
     old = None
     try:
-        filled, unfilled = mosaic_pair(scope, w, CFG.hybrid_tilefill)
-        um = _pinned(unfilled, rows)
+        if mosaic_out:
+            filled, unfilled, _fm, um = v5_mosaic_pair(mosaic_out, scope, w, out_root, rows)
+        else:
+            filled, unfilled = mosaic_pair(scope, w, CFG.hybrid_tilefill)
+            um = _pinned(unfilled, rows)
         if os.path.exists(rj) and os.path.exists(out):
             with open(rj) as f:
                 old = json.load(f)
@@ -778,7 +827,7 @@ def tilefill_field(out_root, scope, w, rows):
             rec = old
         else:
             old = None
-            tmp = os.path.join(fd, f'.field_{scope}_{w}.{os.getpid()}.fits')
+            tmp = os.path.join(fd, f'.field_{scope}_{w}{sfx}.{os.getpid()}.fits')
             _clear([tmp])
             rec = TF.band_increment(unfilled, filled, tmp)
             if rec['unfilled_md5'] != um:
@@ -846,7 +895,7 @@ def _production_record(lst, scope, w, tpsrc):
     return hits[0]
 
 
-def tilefill_source(out_root, lst, scope, w, rows, mode='work', plan_only=False):
+def tilefill_source(out_root, lst, scope, w, rows, mode='work', plan_only=False, need_pb=True):
     """The unfilled masters a tilefill unit fills: dict(source, src = {kind: (path, product name, md5 it must have)}, pb, pb_how,
     nights, reads, replaces = {kind: the installed file a product of the kind replaces, or None}).
     'work' (spec D1): the hybrid stage's products in --out (record <w>_hybrid.json; its v2 unit record must be done; each file's md5
@@ -857,7 +906,8 @@ def tilefill_source(out_root, lst, scope, w, rows, mode='work', plan_only=False)
     production hybrid record of those sources; the CLEAN residual is not re-made.
     Both: a night now excluded in data_decisions.csv (deep read, made now) for the subband that holds it refuses (excluded_in_unit;
     no fill re-admits an excluded night).
-    plan_only (the dry run): no md5 is re-computed and no PB map is read. mode = --tilefill-source. Raises TilefillRefusal,
+    plan_only (the dry run): no md5 is re-computed and no PB map is read. need_pb=False (the v5 mosaic stage, which reads only the
+    beam-corrected master): the diffuse PB map is neither looked up nor read (pb, pb_how None). mode = --tilefill-source. Raises TilefillRefusal,
     core.record.Refusal, or core.record.NoInput (work: no hybrid record in --out)."""
     import json
     import numpy as np
@@ -895,7 +945,9 @@ def tilefill_source(out_root, lst, scope, w, rows, mode='work', plan_only=False)
         if 'plain' not in src or 'pbcorr' not in src:
             raise TilefillRefusal(f'{hj}: no hybrid master or beam-corrected sibling - REFUSING')
         nights = sorted(n['date'] for n in rec['span']['nights'])
-        if scope == 'Full':
+        if not need_pb:
+            how = None
+        elif scope == 'Full':
             pbf = os.path.join(wd, f'PBdiffuse_deep_{scope}.fits')
             why = _upstream_problem(out_root, f'full.{lst}_{scope}_{CFG.hybrid_full.PBDIFFUSE_WEIGHTING}', [pbf])
             if why or not os.path.exists(pbf):
@@ -937,11 +989,12 @@ def tilefill_source(out_root, lst, scope, w, rows, mode='work', plan_only=False)
         reads.append(rp)
         nights = sorted(n['date'] for n in prec['span']['nights'])
         pbf = os.path.join(CFG.hybrid.ARCHIVE_HYBRID, lst, scope, f'PBdiffuse_deep_{scope}.fits')
-        if not os.path.exists(pbf):
+        if need_pb and not os.path.exists(pbf):
             raise TilefillRefusal(f'{pbf}: the installed diffuse PB map is missing - REFUSING')
-        reads.append(pbf)
-        how = pbf
-        if not plan_only:
+        if need_pb:
+            reads.append(pbf)
+        how = pbf if need_pb else None
+        if need_pb and not plan_only:
             with fits.open(pbf, memmap=False) as h:
                 pb = np.squeeze(h[0].data).astype(np.float64)
         source = 'pinned'
@@ -1009,7 +1062,7 @@ def tilefill_plan(out_root, lst, scope, w, s):
     return out + [(os.path.join(wd, f'{w}_tilefill.json'), 'hybrid_tilefill_record')]
 
 
-def tilefill_unit(u, lst, scope, w, out_root, mode='work'):
+def tilefill_unit(u, lst, scope, w, out_root, mode='work', mosaic_out=None):
     """Stage tilefill (spec 2.14) of one unit: production's band field + fill_master_unit + rename_cleanres (MF 211, 306, 374) and
     the ruled caveat (HMF 124-143). The band field of the scope and weighting is made once per --out; the unfilled masters come from
     tilefill_source. A gate, a failed test or an unreadable input refuses the unit (the run goes on) and removes what it wrote. The
@@ -1033,7 +1086,7 @@ def tilefill_unit(u, lst, scope, w, out_root, mode='work'):
         u.refuse(f'{e}' if isinstance(e, (TF.TilefillRefusal, REC.ReconRefusal)) else f'{type(e).__name__}: {e} - REFUSED')
     for p in s['reads'] + [taper]:
         u.add_input(p)
-    field = tilefill_field(out_root, scope, w, rows)
+    field = tilefill_field(out_root, scope, w, rows, mosaic_out)
     if field.get('result') != 'PASS':
         u.refuse(f'the band field of {scope} {w} refused: {field.get("error")}')
     for p in (field['out'], field['filled'], field['unfilled']):
