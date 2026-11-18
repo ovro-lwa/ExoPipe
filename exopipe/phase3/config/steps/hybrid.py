@@ -63,6 +63,8 @@ class hybrid(_Section):
     #   the production work runs the archived Release 1 hybrids were made from (spec "Paths and terms"): R1 18-59 MHz, Red, Green;
     #   R2 64-82 MHz, Blue; RF Full; RS the NoTaper stacks and double-size PSFs; RT the Taper residual stacks. Read only: the
     #   parity references of PR-2 to PR-5; their md5 manifests come with the pull request that reads each run
+    FFT_WORKERS = 12
+    #   scipy.fft threads of the route's FFTs (NL 80: env FFT_WORKERS, default 12); the results do not depend on it
     RULED = {'SCOPES': 'R-GREGG-20261108-MIN-HYBRID-EVERY-CELL-BOTH-ROBUSTS',
              'WEIGHTINGS': 'R-GREGG-20261108-MIN-HYBRID-EVERY-CELL-BOTH-ROBUSTS',
              'RECON_GEN': 'R-GREGG-20261028-HYBRID-NOTAPER-RERUN-APPROVED-CLEAN-TO-TRUE-HORIZON-HYBRID-RESIDUAL',
@@ -113,6 +115,12 @@ class hybrid_stack(_Section):
     #   NL 391-393, 483-492 and recon_variant NL 887: a high-band (CAVEAT_SCOPES) NoTaper stack of a flow-recovered cell that
     #   misses the limits above is admitted when the rms of G (x) (stack - master) over the sky interior is below the unit's
     #   half-stack noise at 1 deg (recorded as LSSTKADM; checked in the recon stage). 'none' = no admission (refuse)
+    SCREEN_CACHE_SUBDIR = 'hybrid_stack_screens'
+    #   the derived warp screens (warp.derive_warp_screen) are cached per night and subband in <--work or the site SCRATCH_ROOT>/
+    #   <this> (node-local; production: <--scratch>/derived_screens, NL 344, 410), shared by the cell's stacks; a cached screen is
+    #   reused only while the raw / dewarped pair it was derived from is unchanged
+    SCREEN_LOCK_WAIT_S = 7200
+    #   s, how long a stack waits for another process deriving the same night's screen (NL 237-241), then refuses
     RULED = {'FLOW_RECOVERED_AGE_S': 'R-GREGG-20261026-FLOW-RECOVERED-CELLS-BUILT-ON-CURRENT-RECORD-ACCEPTED-FOR-PRODUCTION',
              'FLOW_RECOVERED_RATIO_TOL': 'R-GREGG-20261026-FLOW-RECOVERED-CELLS-BUILT-ON-CURRENT-RECORD-ACCEPTED-FOR-PRODUCTION',
              'ADMISSION': 'R-GREGG-20261031-ADMIT-HB-FLOW-RECOVERED-NOTAPER-STACKS-AS-HYBRIDS',
