@@ -41,7 +41,6 @@ sys.path.insert(0, REPO)
 from exopipe.phase3.config import CFG  # noqa: E402
 from exopipe.phase3.core import exclusions, record, validate  # noqa: E402
 from exopipe.phase3.lib.masters import pb_apply  # noqa: E402
-from exopipe.phase3.lib.mosaic import band_products as BP  # noqa: E402
 from exopipe.phase3.lib.mosaic import tests_v3 as T3  # noqa: E402
 from exopipe.phase3.lib.mosaic import v3  # noqa: E402
 
@@ -388,6 +387,13 @@ def _fake_engine(calls, skip=(), missing=()):
     return m
 
 
+def _fake_bp(calls):
+    """A stand-in band_products module (healpy is absent in CI): build records its call and writes the outputs."""
+    bp = types.ModuleType('fake_band_products')
+    bp.build = _fake_build(calls)
+    return bp
+
+
 def _fake_build(calls):
     def build(variant, hpx_dir, suffix, out, bands=(), moll_W=0, car_cdelt=0, dec_cut=None, product='I'):
         calls.append(dict(variant=variant, suffix=suffix, bands=list(bands), product=product, dec_cut=dec_cut,
@@ -436,7 +442,7 @@ def test_coadd_and_render_units():
             assert _unit(out, 'coadd', v3.coadd_unit, 'Blue', J_R075, work).status == 'done'
         # render
         bc = []
-        with _patched((BP, 'build', _fake_build(bc))), _no_content_tests():
+        with _fake_module('exopipe.phase3.lib.mosaic.band_products', _fake_bp(bc)), _no_content_tests():
             u = _unit(out, 'render', v3.render_unit, 'Blue', J_SSUB, work)
         assert u.status == 'done', (u.status, u.reason)
         assert [(c['suffix'], c['product'], c['bands']) for c in bc] == [('_ssub-rst8_jysr', 'I', ['Blue']),
@@ -449,7 +455,7 @@ def test_coadd_and_render_units():
         _stage_plain(d, out, J_R075)                              # a new tile list: the R075 coadd must be redone first
         with open(v3.paths(out, 'Blue', J_R075)['tiles'], 'a') as f:
             f.write(' ')
-        with _patched((BP, 'build', _fake_build(bc))), _no_content_tests():
+        with _fake_module('exopipe.phase3.lib.mosaic.band_products', _fake_bp(bc)), _no_content_tests():
             u = _unit(out, 'render', v3.render_unit, 'Blue', J_R075, work)
         assert u.status == 'refused' and 'another tile list' in u.reason, (u.status, u.reason)
     finally:
@@ -494,6 +500,7 @@ def test_render_vclean_names():
     except ImportError:
         print('  (healpy absent: render of a Stokes V map not run)')
         return
+    from exopipe.phase3.lib.mosaic import band_products as BP
     d = _tmp('bp_')
     try:
         n = 16
