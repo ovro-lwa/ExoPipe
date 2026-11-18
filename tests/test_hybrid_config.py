@@ -107,9 +107,11 @@ def test_psf2x_registry():
     R = CFG.hybrid_psf2x.REGISTRY
     assert sorted(R) == sorted((b, v) for b in SUBBANDS for v in ('R075', 'R0')), sorted(R)
     for (band, v), (path, md5, ants) in R.items():
-        assert os.path.basename(path) == f'PSF2xF_{band}_{v}-psf.fits' and path.startswith('/lustre/gh/main/phase3/lsrecon/'), path
+        low = int(band[:-3]) <= 59                                   # 18-59 MHz: the 11-18 July-record re-image (PSF2xJ)
+        assert os.path.basename(path) == f'PSF2x{"J" if low else "F"}_{band}_{v}-psf.fits', path
+        assert path.startswith('/lustre/gh/main/phase3/lsrecon/Run_PSF2X_JULY_20261118/' if low else '/lustre/gh/main/phase3/lsrecon/'), path
         assert len(md5) == 32 and set(md5) <= set('0123456789abcdef'), md5
-        assert ants == (HC.PSF2X_NIGHT_LIST if int(band[:-3]) <= 59 else HC.PSF2X_JULY_LIST), (band, ants)
+        assert ants == HC.PSF2X_JULY_LIST, (band, ants)
     assert len({e[0] for e in R.values()}) == len({e[1] for e in R.values()}) == 30
 
 
