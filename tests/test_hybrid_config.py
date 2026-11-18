@@ -107,9 +107,11 @@ def test_psf2x_registry():
     R = CFG.hybrid_psf2x.REGISTRY
     assert sorted(R) == sorted((b, v) for b in SUBBANDS for v in ('R075', 'R0')), sorted(R)
     for (band, v), (path, md5, ants) in R.items():
-        assert os.path.basename(path) == f'PSF2xF_{band}_{v}-psf.fits' and path.startswith('/lustre/gh/main/phase3/lsrecon/'), path
+        low = int(band[:-3]) <= 59                                   # 18-59 MHz: the 11-18 July-record re-image (PSF2xJ)
+        assert os.path.basename(path) == f'PSF2x{"J" if low else "F"}_{band}_{v}-psf.fits', path
+        assert path.startswith('/lustre/gh/main/phase3/lsrecon/Run_PSF2X_JULY_20261118/' if low else '/lustre/gh/main/phase3/lsrecon/'), path
         assert len(md5) == 32 and set(md5) <= set('0123456789abcdef'), md5
-        assert ants == (HC.PSF2X_NIGHT_LIST if int(band[:-3]) <= 59 else HC.PSF2X_JULY_LIST), (band, ants)
+        assert ants == HC.PSF2X_JULY_LIST, (band, ants)
     assert len({e[0] for e in R.values()}) == len({e[1] for e in R.values()}) == 30
 
 
@@ -396,7 +398,6 @@ def test_values_equal_production():
         (C.hybrid_recon.STEP_FWHM_DEG, NL['STEP_FWHM_DEG']), (C.hybrid_recon.CG_TOL, NL['CG_TOL']),
         (C.hybrid_recon.CG_MAX, NL['CG_MAX']), (C.hybrid_recon.LEVEL_LIMITS, NL['LEVEL_LIMITS']),
         (C.hybrid_recon.DEC_BANDS, NL['DEC_BANDS']), (C.hybrid_recon.LFSS_DIR, NL['LFSS_DIR']),
-        (C.hybrid_recon.CATALOGS, NL['CATALOGS']),
         (C.hybrid_unit.SMALL_LIMIT, NL['HYB_SMALL_LIMIT']), (C.hybrid_unit.RAW_NIGHT_CAVEAT, NL['RAW_NIGHT_CAVEAT']),
         (C.hybrid_unit.RULED_TAPER_ONLY, NL['RULED_TAPER_ONLY']),
         (C.hybrid_tilefill.TILE_RT_NSIDE, MF['TILE_RT_NSIDE']), (C.hybrid_tilefill.TILE_RT_MAX, MF['TILE_RT_MAX']),
@@ -409,6 +410,9 @@ def test_values_equal_production():
     bad = [(i, a, b) for i, (a, b) in enumerate(pairs) if a != b or type(a) is not type(b) and not (
         isinstance(a, (int, float)) and isinstance(b, (int, float)))]
     assert not bad, bad
+    # the one value changed on purpose (spec section 7, 2026-11-18): the parent-catalog union rebuilt on the current Masters
+    assert NL['CATALOGS'] == '/lustre/gh/main/phase3/deep_parent_catalogs_union_20261014T0203', NL['CATALOGS']
+    assert C.hybrid_recon.CATALOGS == '/lustre/gh/main/phase3/deep_parent_catalogs_union_20261118T0130', C.hybrid_recon.CATALOGS
     assert tuple(NL['WIDEBANDS'].get('Full', ())) in ((), SUBBANDS)       # Full is assigned after the literal (NL 947)
     assert C.hybrid_full.MEMBERS == SUBBANDS
     # the TPCAVEAT units of the per-tile fill driver (literal set CAVEAT)

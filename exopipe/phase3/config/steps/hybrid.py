@@ -61,7 +61,9 @@ class hybrid(_Section):
                     'RS': '/lustre/gh/main/phase3/lsrecon/Run_20261026_190545',
                     'RT': '/lustre/gh/main/phase3/lsrecon/Run_20261028_043135'}
     #   the production work runs the archived Release 1 hybrids were made from (spec "Paths and terms"): R1 18-59 MHz, Red, Green;
-    #   R2 64-82 MHz, Blue; RF Full; RS the NoTaper stacks and double-size PSFs; RT the Taper residual stacks. Read only: the
+    #   R2 64-82 MHz, Blue; RF Full; RS the NoTaper stacks and double-size PSFs (the 18-59 MHz night-record PSFs of the archived hybrids;
+    #   hybrid_psf2x.REGISTRY now names the July-record PSFs of the pinned input run Run_PSF2X_JULY_20261118 for 18-59 MHz, so a parity
+    #   against R1 needs the RS PSFs); RT the Taper residual stacks. Read only: the
     #   parity references of PR-2 to PR-5; their md5 manifests come with the pull request that reads each run
     FFT_WORKERS = 12
     #   scipy.fft threads of the route's FFTs (NL 80: env FFT_WORKERS, default 12); the results do not depend on it
@@ -130,11 +132,11 @@ class hybrid_stack(_Section):
     PROTECTED_KEYS = ('MDEWARP', 'PHASE1_ROOT')
 
 
-PSF2X_NIGHT_LIST = 'night record (MNC MJD 60770.25, 25 bad antennas)'
-#   18-59 MHz (10-26): the observation night's own antenna-health record; the night images used the July list (Q1: the effect is
-#   measured on one low band before any remake is decided)
 PSF2X_JULY_LIST = 'July record (MNC_MJD 61232.04, matched 61040.25, 46 bad antennas)'
-#   64-82 MHz (10-31): the list the Phase 1 images of that night were made with (Gregg 10-31, "exact July antenna lists")
+#   every band: the list the Phase 1 images of that night were made with (Gregg 10-31, "exact July antenna lists"). 64-82 MHz since
+#   10-31; 18-59 MHz re-imaged 2026-11-18 (Run_PSF2X_JULY_20261118, ledger PREAMBLE-20261118-HYBRID-Q1-LOW-BAND-PSF2X-REIMAGE): the
+#   10-26 set used the night's own record (25 bad antennas), which changed the 18h 46 MHz R-0.75 hybrid by 2.5x the thermal rms
+#   (RESULT-20261118-HYBRID-Q1-LOW-BAND-PSF2X-ANTENNA-LIST-MATTERS)
 
 
 class hybrid_psf2x(_Section):
@@ -142,46 +144,46 @@ class hybrid_psf2x(_Section):
     your recommendations", R-GREGG-20261118-HYBRID-Q1-Q3-GO-WITH-RECOMMENDATIONS). v2 does not re-image visibilities; the recon
     stage refuses when a file's md5 differs from its entry (gate HG6)."""
     REGISTRY = {
-        ('18MHz', 'R075'): ('/lustre/gh/main/phase3/lsrecon/Run_20261026_190545/psf2x/PSF2xF_18MHz_R075-psf.fits',
-                          '760f65798816c497a77471d2f03b255f', PSF2X_NIGHT_LIST),
-        ('18MHz', 'R0'): ('/lustre/gh/main/phase3/lsrecon/Run_20261026_190545/psf2x/PSF2xF_18MHz_R0-psf.fits',
-                          'b3bb0336fbf820ed181a29e94e160f00', PSF2X_NIGHT_LIST),
-        ('23MHz', 'R075'): ('/lustre/gh/main/phase3/lsrecon/Run_20261026_190545/psf2x/PSF2xF_23MHz_R075-psf.fits',
-                          '9f034fc835dde35ec8c1af2e67a32a90', PSF2X_NIGHT_LIST),
-        ('23MHz', 'R0'): ('/lustre/gh/main/phase3/lsrecon/Run_20261026_190545/psf2x/PSF2xF_23MHz_R0-psf.fits',
-                          'b4a77f3613592884ea1037198b698f8f', PSF2X_NIGHT_LIST),
-        ('27MHz', 'R075'): ('/lustre/gh/main/phase3/lsrecon/Run_20261026_190545/psf2x/PSF2xF_27MHz_R075-psf.fits',
-                          '655d5e51bb50e2fa14cbef24480f1601', PSF2X_NIGHT_LIST),
-        ('27MHz', 'R0'): ('/lustre/gh/main/phase3/lsrecon/Run_20261026_190545/psf2x/PSF2xF_27MHz_R0-psf.fits',
-                          'bcdde3b577a577b254ee56ace948b18c', PSF2X_NIGHT_LIST),
-        ('32MHz', 'R075'): ('/lustre/gh/main/phase3/lsrecon/Run_20261026_190545/psf2x/PSF2xF_32MHz_R075-psf.fits',
-                          '7ed5c52c334fc674f568634963d58ed4', PSF2X_NIGHT_LIST),
-        ('32MHz', 'R0'): ('/lustre/gh/main/phase3/lsrecon/Run_20261026_190545/psf2x/PSF2xF_32MHz_R0-psf.fits',
-                          '819c7897052a39100d251a6f88092a58', PSF2X_NIGHT_LIST),
-        ('36MHz', 'R075'): ('/lustre/gh/main/phase3/lsrecon/Run_20261026_190545/psf2x/PSF2xF_36MHz_R075-psf.fits',
-                          '245f32a0eca93c01b361692e08b92d87', PSF2X_NIGHT_LIST),
-        ('36MHz', 'R0'): ('/lustre/gh/main/phase3/lsrecon/Run_20261026_190545/psf2x/PSF2xF_36MHz_R0-psf.fits',
-                          '398aea30eb522a787c020173a303b0b2', PSF2X_NIGHT_LIST),
-        ('41MHz', 'R075'): ('/lustre/gh/main/phase3/lsrecon/Run_20261026_190545/psf2x/PSF2xF_41MHz_R075-psf.fits',
-                          'f31bd1a8f9f663d115b0a7a89864b587', PSF2X_NIGHT_LIST),
-        ('41MHz', 'R0'): ('/lustre/gh/main/phase3/lsrecon/Run_20261026_190545/psf2x/PSF2xF_41MHz_R0-psf.fits',
-                          '91868c7717ed7c602a09e0e0438cb1b4', PSF2X_NIGHT_LIST),
-        ('46MHz', 'R075'): ('/lustre/gh/main/phase3/lsrecon/Run_20261026_190545/psf2x/PSF2xF_46MHz_R075-psf.fits',
-                          '2bf5cf37f19d7090883c4151b947cf80', PSF2X_NIGHT_LIST),
-        ('46MHz', 'R0'): ('/lustre/gh/main/phase3/lsrecon/Run_20261026_190545/psf2x/PSF2xF_46MHz_R0-psf.fits',
-                          '8ddbf066f8d7bded1d8e15f3270fd290', PSF2X_NIGHT_LIST),
-        ('50MHz', 'R075'): ('/lustre/gh/main/phase3/lsrecon/Run_20261026_190545/psf2x/PSF2xF_50MHz_R075-psf.fits',
-                          '88ef61e9244149549611119f7803aaba', PSF2X_NIGHT_LIST),
-        ('50MHz', 'R0'): ('/lustre/gh/main/phase3/lsrecon/Run_20261026_190545/psf2x/PSF2xF_50MHz_R0-psf.fits',
-                          'b88cd11b6aa6491e5767ed5431bd286c', PSF2X_NIGHT_LIST),
-        ('55MHz', 'R075'): ('/lustre/gh/main/phase3/lsrecon/Run_20261026_190545/psf2x/PSF2xF_55MHz_R075-psf.fits',
-                          'f63fb91bd85f6d474bfbd2fa7217e08d', PSF2X_NIGHT_LIST),
-        ('55MHz', 'R0'): ('/lustre/gh/main/phase3/lsrecon/Run_20261026_190545/psf2x/PSF2xF_55MHz_R0-psf.fits',
-                          'de840eb0cb7e4dc296833584ba82996e', PSF2X_NIGHT_LIST),
-        ('59MHz', 'R075'): ('/lustre/gh/main/phase3/lsrecon/Run_20261026_190545/psf2x/PSF2xF_59MHz_R075-psf.fits',
-                          '447c9da3314ddce86453cdd5aea1b9a5', PSF2X_NIGHT_LIST),
-        ('59MHz', 'R0'): ('/lustre/gh/main/phase3/lsrecon/Run_20261026_190545/psf2x/PSF2xF_59MHz_R0-psf.fits',
-                          '1e0e709170aded2d73d948e985f77d3f', PSF2X_NIGHT_LIST),
+        ('18MHz', 'R075'): ('/lustre/gh/main/phase3/lsrecon/Run_PSF2X_JULY_20261118/psf2x/PSF2xJ_18MHz_R075-psf.fits',
+                          '1a38bafdb6efa21417c38d1b9869ade6', PSF2X_JULY_LIST),
+        ('18MHz', 'R0'): ('/lustre/gh/main/phase3/lsrecon/Run_PSF2X_JULY_20261118/psf2x/PSF2xJ_18MHz_R0-psf.fits',
+                          '8d703d394a111bd28a7c3b6d4d12018c', PSF2X_JULY_LIST),
+        ('23MHz', 'R075'): ('/lustre/gh/main/phase3/lsrecon/Run_PSF2X_JULY_20261118/psf2x/PSF2xJ_23MHz_R075-psf.fits',
+                          '47f2008dce908a60dff53ee8479b0c32', PSF2X_JULY_LIST),
+        ('23MHz', 'R0'): ('/lustre/gh/main/phase3/lsrecon/Run_PSF2X_JULY_20261118/psf2x/PSF2xJ_23MHz_R0-psf.fits',
+                          '862242996714bcbaaa1b1704f634edd0', PSF2X_JULY_LIST),
+        ('27MHz', 'R075'): ('/lustre/gh/main/phase3/lsrecon/Run_PSF2X_JULY_20261118/psf2x/PSF2xJ_27MHz_R075-psf.fits',
+                          'fbd3e1e9707b7c449e2c47169d3a2607', PSF2X_JULY_LIST),
+        ('27MHz', 'R0'): ('/lustre/gh/main/phase3/lsrecon/Run_PSF2X_JULY_20261118/psf2x/PSF2xJ_27MHz_R0-psf.fits',
+                          'fc05b078905bfdf1a17163dc146e6328', PSF2X_JULY_LIST),
+        ('32MHz', 'R075'): ('/lustre/gh/main/phase3/lsrecon/Run_PSF2X_JULY_20261118/psf2x/PSF2xJ_32MHz_R075-psf.fits',
+                          'fd1e6a747cab34fae39bf43fe87aeb47', PSF2X_JULY_LIST),
+        ('32MHz', 'R0'): ('/lustre/gh/main/phase3/lsrecon/Run_PSF2X_JULY_20261118/psf2x/PSF2xJ_32MHz_R0-psf.fits',
+                          'ec688de65816450aa39378cb43ecca86', PSF2X_JULY_LIST),
+        ('36MHz', 'R075'): ('/lustre/gh/main/phase3/lsrecon/Run_PSF2X_JULY_20261118/psf2x/PSF2xJ_36MHz_R075-psf.fits',
+                          '98b6f3a0d84b00528d15d07664b3d67e', PSF2X_JULY_LIST),
+        ('36MHz', 'R0'): ('/lustre/gh/main/phase3/lsrecon/Run_PSF2X_JULY_20261118/psf2x/PSF2xJ_36MHz_R0-psf.fits',
+                          'a5a775dd94cd5dd6eec5b2bd3750fbd6', PSF2X_JULY_LIST),
+        ('41MHz', 'R075'): ('/lustre/gh/main/phase3/lsrecon/Run_PSF2X_JULY_20261118/psf2x/PSF2xJ_41MHz_R075-psf.fits',
+                          '68887d9077e77a088b22d8941ed82681', PSF2X_JULY_LIST),
+        ('41MHz', 'R0'): ('/lustre/gh/main/phase3/lsrecon/Run_PSF2X_JULY_20261118/psf2x/PSF2xJ_41MHz_R0-psf.fits',
+                          'f9cbd6d00cbcce6181672f2416bc6fe6', PSF2X_JULY_LIST),
+        ('46MHz', 'R075'): ('/lustre/gh/main/phase3/lsrecon/Run_PSF2X_JULY_20261118/psf2x/PSF2xJ_46MHz_R075-psf.fits',
+                          '31269f1758530dfa2a005677f7c2e175', PSF2X_JULY_LIST),
+        ('46MHz', 'R0'): ('/lustre/gh/main/phase3/lsrecon/Run_PSF2X_JULY_20261118/psf2x/PSF2xJ_46MHz_R0-psf.fits',
+                          '83b82c2b0d6b14cbf7ae8bb01186d2c6', PSF2X_JULY_LIST),
+        ('50MHz', 'R075'): ('/lustre/gh/main/phase3/lsrecon/Run_PSF2X_JULY_20261118/psf2x/PSF2xJ_50MHz_R075-psf.fits',
+                          '9dbfe1a0b262b936ffddcc2ff0a7bd8b', PSF2X_JULY_LIST),
+        ('50MHz', 'R0'): ('/lustre/gh/main/phase3/lsrecon/Run_PSF2X_JULY_20261118/psf2x/PSF2xJ_50MHz_R0-psf.fits',
+                          '2f9e55acde328769c01a2472600c686c', PSF2X_JULY_LIST),
+        ('55MHz', 'R075'): ('/lustre/gh/main/phase3/lsrecon/Run_PSF2X_JULY_20261118/psf2x/PSF2xJ_55MHz_R075-psf.fits',
+                          '40c5c7d4a458956ce97f7d02ab46c31d', PSF2X_JULY_LIST),
+        ('55MHz', 'R0'): ('/lustre/gh/main/phase3/lsrecon/Run_PSF2X_JULY_20261118/psf2x/PSF2xJ_55MHz_R0-psf.fits',
+                          'a6b8800a9fc5dca29c196a0758c8c598', PSF2X_JULY_LIST),
+        ('59MHz', 'R075'): ('/lustre/gh/main/phase3/lsrecon/Run_PSF2X_JULY_20261118/psf2x/PSF2xJ_59MHz_R075-psf.fits',
+                          '9e18148505e78979e03e6f5d96824ebc', PSF2X_JULY_LIST),
+        ('59MHz', 'R0'): ('/lustre/gh/main/phase3/lsrecon/Run_PSF2X_JULY_20261118/psf2x/PSF2xJ_59MHz_R0-psf.fits',
+                          'f8b5bfb552bec5c167363c9ffc3a1580', PSF2X_JULY_LIST),
         ('64MHz', 'R075'): ('/lustre/gh/main/phase3/lsrecon/Run_20261031_094930/psf2x/PSF2xF_64MHz_R075-psf.fits',
                           '2af27ad658e2a1f9858aead06c43e47f', PSF2X_JULY_LIST),
         ('64MHz', 'R0'): ('/lustre/gh/main/phase3/lsrecon/Run_20261031_094930/psf2x/PSF2xF_64MHz_R0-psf.fits',
@@ -253,11 +255,13 @@ class hybrid_recon(_Section):
     #   NL 870: CLEAN, step and prior to the true horizon ('elev10' = the 10-degree cut of the earlier generation)
     LFSS_DIR = '/lustre/gh/main/catalogs/lwa1_lfss'
     #   NL 64: the LWA1 Low Frequency Sky Survey maps (the prior)
-    CATALOGS = '/lustre/gh/main/phase3/deep_parent_catalogs_union_20261014T0203'
+    CATALOGS = '/lustre/gh/main/phase3/deep_parent_catalogs_union_20261118T0130'
     #   NL 65: the parent catalogs test_compact_sources reads (positions and peaks of the brightest sources only; no digest
-    #   check). PINNED to production's value for parity. NOTE 2026-11-18: this union is stale on 47 of 456 cells after the
-    #   Release 1 master rebuilds (RESULT-20261118-DEEP-PARENT-UNION-REFRESH); the current union is
-    #   deep_parent_catalogs_union_20261118T0130 - which one a v2 rebuild reads is the deep chat's call, recorded there
+    #   check). CHANGE FROM PRODUCTION (2026-11-18, spec section 7 B15): production reads deep_parent_catalogs_union_20261014T0203,
+    #   which predates the Release 1 master rebuilds and is stale on 47 of 456 cells (RESULT-20261118-DEEP-PARENT-UNION-REFRESH).
+    #   v2 reads the union rebuilt on the current Robust -0.75 Masters (456/456 cells: each catalog's .gen.json sidecar names the
+    #   Master md5 it was made from, checked against the Masters; the directory has no MANIFEST.md5, spec section 7 B15), as
+    #   production's gate_inputs.PARENT_DIR does since 2026-11-18 02:07 UTC (DONE-20261118-NEAREST-MASTER-FIX-INSTALLED)
     RULED = {'PRIOR_SCALE_RANGE': 'R-GREGG-20261027-LSRECON-SCALE-BOUND-0P5-2P0-LEVEL-REFUSALS-STAY-GAPS-55MHZ-06H-R0-N-MINUS-1',
              'COMPACT_TOL_LOW': 'R-GREGG-20261026-LSRECON-18-59MHZ-FLEET-APPROVED-KEEP-MASTERS-WIDEBAND-HIGH-PRIORITY-SPLIT-PB-COADD-ARCHIVE',
              'CLEAN_REGION': 'R-GREGG-20261028-HYBRID-NOTAPER-RERUN-APPROVED-CLEAN-TO-TRUE-HORIZON-HYBRID-RESIDUAL',
