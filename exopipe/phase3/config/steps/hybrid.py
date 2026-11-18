@@ -315,8 +315,16 @@ class hybrid_full(_Section):
 
 
 class hybrid_tilefill(_Section):
-    """Stage `tilefill` (spec 2.14; MF fill_master_unit 306): the per-tile zero-spacing fill of the hybrid masters from the band
-    fill field of the filled mosaic."""
+    """Stage `tilefill` (spec 2.14; MF band_increment 211, fill_master_unit 306, rename_cleanres 374): the per-tile zero-spacing
+    fill of the hybrid masters from the band fill field of the filled mosaic."""
+    LFSS_MHZ = (35, 38, 40, 45, 50, 60, 70, 74, 80)
+    LMAX = 256
+    APOD_DEG = 3.0
+    L_LO = 8
+    L_HI = 12
+    #   MF 26-27: the LFSS donor frequencies (the donor = the one nearest the mosaic's frequency), the harmonic limit, the footprint
+    #   apodization (deg), and the blend: the survey below l 8, cosine to the map at l 12 (Gregg 2026-11-10, his July design). The
+    #   LFSS maps are read from hybrid_recon.LFSS_DIR/healpix (one copy of the path). The mosaic fill stage (PR-7) reads these keys
     TILE_RT_NSIDE = 256
     TILE_RT_MAX = 0.02
     #   MF 192: round trip through the mosaic's tile conversion, median |back - field| / median |field| at NSIDE 256
@@ -327,11 +335,38 @@ class hybrid_tilefill(_Section):
     #   MF 193, 199: the 30 brightest compact maxima of at least 10 x the robust rms: |change of peak - annulus median| / that
     #   contrast, median <= 0.005 and max <= 0.02
     TPCAVEAT_UNITS = (('03h', '55MHz', 'R0', 'pbcorr'), ('03h', '59MHz', 'R0', 'pbcorr'))
-    #   HMF 41-44, 124-143: the two beam-corrected files on the ruled caveat (Cygnus X at the 03h rim; card TPCAVEAT)
-    UNFILLED_INPUTS = None
-    #   the manifest of the unfilled hybrid masters the archived fill was made from (HQ11 and HQ13/unfilled, keyed by TPSRCMD5);
-    #   None until Q2 (spec section 8: where the kept intermediates live) is answered - the stage refuses without it
+    TPCAVEAT_TEXT = 'compact check exceeded at 03h rim, Cygnus X (Gregg 11-11)'
+    #   HMF 41-45, 124-143: the two beam-corrected files on the ruled caveat (Cygnus X at the 03h rim, elevation ~15 deg); such a
+    #   file passes when the compact check is its only failing check, and carries card TPCAVEAT with this text
+    REPAIR_KEYS = ('P2RUN', 'SCALE_A', 'FLUXREF', 'ASTREF', 'P1RUN', 'CALBP', 'MDWSTAT')
+    #   spec D7: the Release 1 header-repair cards (exopipe_ops/header_repair_release1.py, R-GREGG-20261107-HEADER-REPAIR-GO) carried
+    #   from the installed Taper master into a filled master or renamed CLEAN residual that lacks them
+    FILLED_MOSAIC_RUN = '/lustre/pipeline/exopipe/phase3/mosaic/Run_HYBRID_20241218-20260419'
+    FILLED_MOSAIC_GLOB = '{scope}/I/healpix/{scope}_I_deep_Taper_{robust}_pbcorr_coadd_lsrecon_mosaic_jysr_feather_lsfill_allsky_*.fits'
+    UNFILLED_MOSAIC_RUNS = ('/lustre/pipeline/exopipe/phase3/mosaic/Run_HYBRID_QUARANTINE_20261113/unfilled',
+                            '/lustre/pipeline/exopipe/phase3/mosaic/Run_HYBRID_QUARANTINE_20261111')
+    #   HMF 32-33, job_inc: the band field is made from the archived filled Jy/sr mosaic and its unfilled twin (the same relative
+    #   path in the first of these runs that holds it: the 11-13 lost-sky twins of Green and Full, then the 11-11 quarantine).
+    #   Until the mosaic v5 stages are ported (PR-7) these are the field's only source
+    UNFILLED_INPUTS = {
+        'HQ11': ('/lustre/gh/main/exopipe_ops/hybrid_inputs_20261118/HQ11.manifest.csv',
+                 '1b854d172a2f8b807c18461bc250d08fe82c4d22db3052741c6580ea2faf2c6b'),
+        'HQ13': ('/lustre/gh/main/exopipe_ops/hybrid_inputs_20261118/HQ13.manifest.csv',
+                 '3e90be485802c2826aeb070cbf992d311c98c10fd64d9c4460509c55783a68e3'),
+        'MQ11': ('/lustre/gh/main/exopipe_ops/hybrid_inputs_20261118/MQ11.manifest.csv',
+                 '367c12f2a90b1585515053db558a3745e26097a2c2316c9245fdc78d08b3086c'),
+        'MQ13': ('/lustre/gh/main/exopipe_ops/hybrid_inputs_20261118/MQ13.manifest.csv',
+                 '035f2e3f2592aed74b382996bf50db157b90c55fa12a4659c33eb30664439c05'),
+    }
+    #   {root: (checksum manifest, its sha256)} of the pinned unfilled inputs (hybrid Q2, R-GREGG-20261118-HYBRID-Q1-Q3-GO-WITH-
+    #   RECOMMENDATIONS; exopipe_ops/hybrid_inputs_manifest_20261118.py): the unfilled hybrid masters of the 11-11 and 11-13
+    #   quarantines (Coadd/Run_NOTAPER_HYBRID_QUARANTINE_2026111{1,3}) and the unfilled mosaics (mosaic/Run_HYBRID_QUARANTINE_
+    #   2026111{1,3}). A unit not rebuilt in --out fills the source its installed master's TPSRCMD5 names; the band field's unfilled
+    #   mosaic must be listed with its md5 (gate HG13)
     RULED = {'TILE_RT_MAX': 'R-GREGG-20261111-HYBRID-MASTERS-ZERO-SPACING-FILL-PER-TILE',
              'COMPACT_SIG': 'DONE-20261111-HYBRID-MASTERS-ZERO-SPACING-FILL-INSTALLED',
-             'TPCAVEAT_UNITS': 'DONE-20261111-HYBRID-MASTERS-ZERO-SPACING-FILL-INSTALLED'}
-    PROTECTED_KEYS = ('TPCAVEAT_UNITS', 'UNFILLED_INPUTS')
+             'TPCAVEAT_UNITS': 'DONE-20261111-HYBRID-MASTERS-ZERO-SPACING-FILL-INSTALLED',
+             'TPCAVEAT_TEXT': 'DONE-20261111-HYBRID-MASTERS-ZERO-SPACING-FILL-INSTALLED',
+             'UNFILLED_INPUTS': 'R-GREGG-20261118-HYBRID-Q1-Q3-GO-WITH-RECOMMENDATIONS'}
+    PROTECTED_KEYS = ('TPCAVEAT_UNITS', 'TPCAVEAT_TEXT', 'UNFILLED_INPUTS', 'FILLED_MOSAIC_RUN', 'UNFILLED_MOSAIC_RUNS', 'LFSS_MHZ',
+                      'LMAX', 'APOD_DEG', 'L_LO', 'L_HI')

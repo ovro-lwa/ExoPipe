@@ -56,6 +56,8 @@ jobs:
         run: python tests/test_hybrid_recon.py
       - name: hybrid route PR-4 (hybrid + full - config constants, record and product content tests, the unit's refusals and refused items)
         run: python tests/test_hybrid_master.py
+      - name: hybrid route PR-5 (tilefill - config constants, identity and compact checks, record and card content tests, sources and plan)
+        run: python tests/test_hybrid_tilefill.py
       - name: search engine speed-ups change no product
         run: python tests/test_search_speedups.py
       - name: Phase 2 speed-ups change no product
