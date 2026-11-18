@@ -22,7 +22,8 @@ ported REFUSES (exit 2) with the pull request that ports it; nothing is written 
 Gates here (each refuses; spec 3.4): HG0 the node-local co-add build directories (hybrid_stack.COADD_SB) are present on this node
 (stack); HG6 the double-size PSF registry is pinned (recon, wideband); the striation selection's md5 equals the pinned one (hybrid); the
 unfilled inputs are pinned (tilefill); HG20 every refused unit is listed and makes the exit non-zero (core/record.Run.exit_code);
-a scope or weighting outside the route refuses before any unit runs.
+a scope or weighting outside the route refuses before any unit runs; --out never is, lies in or contains a production work run or
+an archive run, and is never the work root itself.
 """
 import os
 
@@ -49,15 +50,38 @@ def add_arguments(p):
 
 def default_out(args):
     from exopipe.phase3.config import ConfigRefusal
-    raise ConfigRefusal('exopipe3 hybrid needs --out: a NEW work run under hybrid.WORK_ROOT (never one of hybrid.LSRECON_RUNS)')
+    raise ConfigRefusal('exopipe3 hybrid needs --out: a work run of its own, e.g. a new directory under hybrid.WORK_ROOT (never '
+                        'a production work run of hybrid.LSRECON_RUNS, an archive run, or a directory that contains one)')
+
+
+def config_overrides(args):
+    """Step flags that set config keys: the CLI applies them with --set's checks before the run record is made."""
+    return [('hybrid_recon.CLEAN_REGION', args.clean_region, '--clean-region')] if args.clean_region else []
+
+
+def _within(path, root):
+    """path (a real path) is root or lies inside it."""
+    return path == root or path.startswith(root.rstrip(os.sep) + os.sep)
 
 
 def out_problems(out, cfg):
-    """--out must not be (or lie inside) a production work run the archived hybrids were made from, nor an archive run."""
+    """--out is a work run of its own: never a production work run the archived hybrids were made from (hybrid.LSRECON_RUNS)
+    or an archive run, never inside one or above one (a directory that contains it), and never the work root hybrid.WORK_ROOT
+    itself or a directory above it (the parent of the production work runs). An earlier v2 work run may be named again
+    (--resume)."""
     o = os.path.realpath(out)
     held = dict(cfg.hybrid.LSRECON_RUNS, ARCHIVE_HYBRID=cfg.hybrid.ARCHIVE_HYBRID, ARCHIVE_MASTERS=cfg.hybrid.ARCHIVE_MASTERS)
-    return [f'--out {out} is inside {k} = {v} (read only)' for k, v in sorted(held.items())
-            if o == os.path.realpath(v) or o.startswith(os.path.realpath(v) + os.sep)]
+    bad = []
+    for k, v in sorted(held.items()):
+        r = os.path.realpath(v)
+        if _within(o, r):
+            bad.append(f'--out {out} is inside {k} = {v} (read only)')
+        elif _within(r, o):
+            bad.append(f'--out {out} contains {k} = {v} (read only)')
+    w = os.path.realpath(cfg.hybrid.WORK_ROOT)
+    if _within(w, o):
+        bad.append(f'--out {out} is the work root hybrid.WORK_ROOT = {cfg.hybrid.WORK_ROOT} or contains it: name a new run under it')
+    return bad
 
 
 def _csv(s):
@@ -75,10 +99,11 @@ def select_stages(args):
         if bad:
             raise Refusal(f'unknown stage(s) {bad}; the stages are {list(STAGES)}')
         return [s for s in STAGES if s in want]
+    for flag, s in (('--from', args.stage_from), ('--until', args.stage_until)):
+        if s and s not in STAGES:
+            raise Refusal(f'{flag} {s}: not a stage; the stages are {list(STAGES)}')
     i = STAGES.index(args.stage_from) if args.stage_from else 0
     j = STAGES.index(args.stage_until) if args.stage_until else len(STAGES) - 1
-    if args.stage_from and args.stage_from not in STAGES or args.stage_until and args.stage_until not in STAGES:
-        raise Refusal(f'--from / --until name a stage of {list(STAGES)}')
     if i > j:
         raise Refusal(f'--from {args.stage_from} comes after --until {args.stage_until}')
     return list(STAGES[i:j + 1])
@@ -156,8 +181,6 @@ def stage_gate_problems(stage, cfg):
 
 def run(args, run):
     from exopipe.phase3.config import CFG
-    if args.clean_region:
-        CFG.set('hybrid_recon.CLEAN_REGION', args.clean_region, source='--clean-region')
     from exopipe.phase3.core.record import NoInput, Refusal
     bad = out_problems(run.out_root, CFG)
     if bad:

@@ -125,6 +125,8 @@ def test_plan_units():
     assert 'not in the hybrid route' in _raises(Refusal, HS.plan_units, _args(scopes='Gold'), CFG)
     assert 'hybrid.WEIGHTINGS' in _raises(Refusal, HS.plan_units, _args(weightings='R05'), CFG)
     assert 'exclusive' in _raises(Refusal, HS.plan_units, _args(stages='stack', stage_from='stack'), CFG)
+    assert 'not a stage' in _raises(Refusal, HS.plan_units, _args(stage_from='stak'), CFG)      # a Refusal, not a ValueError
+    assert 'not a stage' in _raises(Refusal, HS.plan_units, _args(stage_until='ful'), CFG)
     assert 'comes after' in _raises(Refusal, HS.plan_units, _args(stage_from='full', stage_until='stack'), CFG)
     assert 'are not of' in _raises(Refusal, HS.plan_units, _args(lsts='25h'), CFG)
     # a scope a stage does not take is skipped for that stage: Full alone with stack -> no unit
@@ -144,8 +146,8 @@ def test_stage_gates_and_out():
             hybrid_stack=types.SimpleNamespace(COADD_SB=os.path.join(d, 'absent')),
             hybrid_psf2x=types.SimpleNamespace(REGISTRY={}),
             hybrid=types.SimpleNamespace(STRIATION_SELECTION=sel, STRIATION_SELECTION_MD5=md5,
-                                         LSRECON_RUNS={'R1': os.path.join(d, 'R1')}, ARCHIVE_HYBRID=os.path.join(d, 'H'),
-                                         ARCHIVE_MASTERS=os.path.join(d, 'M')),
+                                         LSRECON_RUNS={'R1': os.path.join(d, 'lsrecon', 'R1')}, ARCHIVE_HYBRID=os.path.join(d, 'H'),
+                                         ARCHIVE_MASTERS=os.path.join(d, 'M'), WORK_ROOT=os.path.join(d, 'lsrecon')),
             hybrid_tilefill=types.SimpleNamespace(UNFILLED_INPUTS=None))
         assert any(p.startswith('HG0') for p in HS.stage_gate_problems('stack', cfg))
         assert any(p.startswith('HG6') for p in HS.stage_gate_problems('recon', cfg))
@@ -162,11 +164,17 @@ def test_stage_gates_and_out():
         assert any('not the pinned' in p for p in HS.stage_gate_problems('hybrid', cfg))
         os.remove(sel)                                                # missing
         assert any('md5 None' in p for p in HS.stage_gate_problems('hybrid', cfg))
-        # --out: never inside a production work run or an archive run
-        assert HS.out_problems(os.path.join(d, 'R1'), cfg) and HS.out_problems(os.path.join(d, 'R1', 'x'), cfg)
+        # --out: never a production work run or an archive run, inside one or above one; never the work root or above it
+        L = os.path.join(d, 'lsrecon')
+        assert HS.out_problems(os.path.join(L, 'R1'), cfg) and HS.out_problems(os.path.join(L, 'R1', 'x'), cfg)
         assert HS.out_problems(os.path.join(d, 'H'), cfg)
-        assert HS.out_problems(os.path.join(d, 'R10'), cfg) == []      # a sibling with the same prefix is not inside
-        assert HS.out_problems(os.path.join(d, 'new_run'), cfg) == []
+        assert any('contains R1' in p for p in HS.out_problems(d, cfg))            # above the held runs
+        assert any('contains ARCHIVE_HYBRID' in p for p in HS.out_problems(d, cfg))
+        assert any('work root' in p for p in HS.out_problems(L, cfg))
+        assert any('work root' in p for p in HS.out_problems('/', cfg))
+        assert HS.out_problems(os.path.join(L, 'R10'), cfg) == []      # a sibling with the same prefix is not inside
+        assert HS.out_problems(os.path.join(L, 'new_run'), cfg) == []
+        assert HS.out_problems(os.path.join(d, 'elsewhere', 'new_run'), cfg) == []
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
@@ -194,8 +202,9 @@ CARD_CASES = [
     ('TPFILL without the name', ['pbcorr', 'coadd', 'lsrecon', 'mosaic', 'jysr', 'feather'], {'TPFILL': True}, True),
     ('psfmap with TPFILL', ['pbcorr', 'coadd', 'lsrecon', 'mosaic', 'feather', 'lsfill', 'psfmap'], {'TPFILL': True}, True),
     ('cleanres with TPFILL', ['coadd', 'lsrecon', 'cleanres'], {'LSFILL': True, 'TPFILL': True}, True),
-    # the retired token (parse-only names before 2026-11-11) follows the same rule
-    ('retired tpfill Jy/sr', ['pbcorr', 'coadd', 'lsrecon', 'mosaic', 'jysr', 'feather', 'tpfill'], {'TPFILL': True}, False),
+    # the retired token (parse-only names before 2026-11-11) is a problem whatever the cards
+    ('retired tpfill Jy/sr', ['pbcorr', 'coadd', 'lsrecon', 'mosaic', 'jysr', 'feather', 'lsfill', 'tpfill'], {'TPFILL': True},
+     True),
     ('retired tpfill without TPFILL', ['pbcorr', 'coadd', 'mosaic', 'jysr', 'feather', 'tpfill'], {}, True),
 ]
 
@@ -207,12 +216,23 @@ def test_fill_card_rule():
         if bool(got) != expect:
             bad.append(f'{what}: {got}')
     assert not bad, bad
+    # a NEW name derived from a parsed archived tpfill name (the sibling-lookup pattern parse -> change proc -> build_name(**pn))
+    # still carries the token, since 'retired' rides along in the dict; the content test refuses it, naming the ruling
+    from exopipe.phase3.core.products import build_name, parse_name
+    pn = parse_name('Green_I_deep_Taper_Robust+0.0_pbcorr_coadd_lsrecon_mosaic_jysr_feather_lsfill_tpfill_molrender_allsky_'
+                    '20241218-20260419_N024.fits')
+    pn['proc'] = [t for t in pn['proc'] if t not in ('pbcorr', 'jysr')] + ['jybeam']
+    new = parse_name(build_name(**pn))
+    got = fill_card_problems(new['proc'], {'TPFILL': True})
+    assert got and 'R-GREGG-20261111-KEEP-LSFILL' in got[0], got
 
 
 # ---------------------------------------------------------------------------------------------------------------- 5 CLI
 def _cli(argv, env_extra=None):
     env = dict(os.environ)
     env.update(env_extra or {})
+    if argv and argv[0] == 'hybrid':
+        argv = argv + ['--cores', 'none']           # no recorder-free core lookup (runner.FREE_CORES_CMD) off the cluster
     p = subprocess.run([sys.executable, '-m', 'exopipe.phase3.cli'] + argv, cwd=REPO, env=env, stdout=subprocess.PIPE,
                        stderr=subprocess.STDOUT, universal_newlines=True, timeout=600)
     return p.returncode, p.stdout
@@ -238,6 +258,15 @@ def test_cli_skeleton_refuses_every_unit():
         rc, out = _cli(['hybrid', '--lsts', '18h', '--scopes', '46MHz', '--out', os.path.join(d, 'w2'),
                         '--set', 'hybrid.STRIATION_SELECTION=/tmp/x.csv'])
         assert rc == 2 and 'REFUSED' in out, (rc, out[-800:])
+        # --clean-region goes through --set's checks before the run record exists (config_overrides): the record carries it
+        rc, out = _cli(['hybrid', '--lsts', '18h', '--scopes', '46MHz', '--weightings', 'R075', '--stages', 'recon',
+                        '--clean-region', 'elev10', '--out', os.path.join(d, 'w3')])
+        assert rc == 2, (rc, out[-800:])
+        import json
+        rec = out.rsplit('; record ', 1)[-1].strip()
+        ov = [o for o in json.load(open(rec))['config_overrides'] if o[0] == 'hybrid_recon.CLEAN_REGION']
+        assert ov and ov[0][2] == repr('elev10') and ov[0][3] == '--clean-region', ov
+        assert HS.config_overrides(types.SimpleNamespace(clean_region=None)) == []
         # the config listing builds and loads every section
         rc, out = _cli(['config', '--step', 'hybrid'])
         assert rc == 0, (rc, out[-800:])

@@ -364,6 +364,12 @@ def main(argv=None):
         if args.config:
             CFG.apply_override_file(args.config)
         CFG.apply_override_strings(args.set)
+        # a step's own flags that set config keys (e.g. hybrid --clean-region; the step's config_overrides(args)): applied
+        # here with --set's checks (protected and ruled keys), so a refusal exits 2 before any record is made and the
+        # run's configuration carries the value from the start
+        _step_set = getattr(mod, 'config_overrides', None)
+        for _k, _v, _src in (_step_set(args) if _step_set else ()):
+            CFG.set(_k, _v, source=_src)
         out = args.out or mod.default_out(args)
         CFG.check_out(out)
         from exopipe.phase3.core import fallback as _fb, wrap as _wr

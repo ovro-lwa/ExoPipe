@@ -589,17 +589,24 @@ def fill_card_problems(proc, hdr):
     """The token-card rule of the zero-spacing fill: TPFILL proves lsfill (spec plan/specs/hybrid.md section 6 item 9; the token
     since 2026-11-11, R-GREGG-20261111-KEEP-LSFILL-NAME-FOR-ZERO-SPACING-MOSAICS and R-GREGG-20261111-HYBRID-MASTERS-ZERO-SPACING-
     FILL-PER-TILE). On a map that carries sky signal (a mosaic in Jy/sr or Jy/beam and its renders, a master) the name carries
-    lsfill (or the retired tpfill) exactly when the header carries TPFILL = T. A map without sky signal at large scales (psfmap,
-    pbmap, pkcorr, caveat) keeps the lsfill name of its mosaic and carries no TPFILL. LSFILL documents the hybrid composition
+    lsfill exactly when the header carries TPFILL = T. A map without sky signal at large scales (psfmap,
+    pbmap, pkcorr, caveat) keeps the lsfill name of its mosaic and carries no TPFILL. A name with a retired token
+    (core/products.RETIRED_TOKENS: tpfill) is a problem whatever the cards: build_name accepts it only when a parsed archived
+    name passes it back, so a product written now and named from such a name fails here (the quarantined mosaics of before
+    2026-11-11 keep it). LSFILL documents the hybrid composition
     (Taper master + G (x) (reconstruction - Taper)) and proves nothing about the fill: the hybrid CLEAN residuals carry LSFILL = T
     and neither the token nor TPFILL. Archived examples (read 2026-11-18): V5 Blue jysr/jybeam lsfill TPFILL T, psfmap/pbmap/pkcorr/
     caveat lsfill no TPFILL; H 18h 46 MHz R075 master lsfill TPFILL T, its cleanres LSFILL T and no TPFILL. Returns the problems."""
-    named = 'lsfill' in proc or 'tpfill' in proc
+    from exopipe.phase3.core.products import RETIRED_TOKENS
+    retired = [t for t in proc if t.split('-')[0] in RETIRED_TOKENS]
+    if retired:
+        return [f'name carries the retired token(s) {retired} ({"; ".join(RETIRED_TOKENS[t.split("-")[0]] for t in retired)})']
+    named = 'lsfill' in proc
     card = hdr.get('TPFILL')
     if any(t in proc for t in _NO_SKY_SIGNAL):
         return ['TPFILL on a map without sky signal at large scales'] if card is not None else []
     if named and card is not True:
-        return [f'name carries {"lsfill" if "lsfill" in proc else "tpfill"} but TPFILL is {card!r} (no zero-spacing fill recorded)']
+        return [f'name carries lsfill but TPFILL is {card!r} (no zero-spacing fill recorded)']
     if card is True and not named:
         return ['TPFILL = T but the name carries no lsfill']
     return []
