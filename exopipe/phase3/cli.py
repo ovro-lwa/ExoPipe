@@ -41,6 +41,8 @@ STEPS = [
     ('dewarp', 'master dewarp per LST: RBF screen on the rebuilt masters, cubic apply, content test D1-D6', 'survey'),
     ('install', 'gated install of rebuilt products into the working tree; quarantine round; re-run list', 'survey'),
     ('calibrate', 'versioned reference tables: derive, diff, install, verify', 'survey'),
+    ('hybrid', 'hybrid NoTaper route: stacks, large-scale reconstruction, wideband, hybrid masters, Full, per-tile zero-spacing '
+               'fill', 'survey'),
     ('mosaic', 'mosaicked products', 'survey'),
     ('photometry', 'photometry of input samples (Hot/Warm Jupiters, flare/UCD, 10/25/50 pc)', 'survey'),
     ('followup', 'follow-up of high-interest candidates (honing, dynamic spectra, periodicity, folding, dedispersion)', 'survey'),
@@ -362,6 +364,12 @@ def main(argv=None):
         if args.config:
             CFG.apply_override_file(args.config)
         CFG.apply_override_strings(args.set)
+        # a step's own flags that set config keys (e.g. hybrid --clean-region; the step's config_overrides(args)): applied
+        # here with --set's checks (protected and ruled keys), so a refusal exits 2 before any record is made and the
+        # run's configuration carries the value from the start
+        _step_set = getattr(mod, 'config_overrides', None)
+        for _k, _v, _src in (_step_set(args) if _step_set else ()):
+            CFG.set(_k, _v, source=_src)
         out = args.out or mod.default_out(args)
         CFG.check_out(out)
         from exopipe.phase3.core import fallback as _fb, wrap as _wr

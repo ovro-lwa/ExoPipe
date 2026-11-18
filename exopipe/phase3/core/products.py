@@ -83,7 +83,11 @@ PROC_ORDER = ['vclean', 'mstruct', 'loo', 'shflux', 'mdewarp', 'pbcorr', 'dewarp
 # 'tpfill' (TOTAL-POWER fill of a mosaic: the LWA1 LFSS (Dowell+2017, zero level from LEDA total power) replaces multipoles l < 8,
 # cosine blend to l 12, scaled to the map by s = sqrt(Cl_map / Cl_LFSS) at l 10-30 - the July 2026 design (Gregg 2026-07-15,
 # LARGE-SCALE RECOVERY v2) restored on the hybrid NoTaper mosaics; exopipe.phase3.mosaic_tpfill) added 2026-11-10 (Gregg 2026-11-10).
-# NOTE: on the hybrid products 'lsfill' means the RECONSTRUCTED large scales of the hybrid master, NOT a survey fill.
+# NOTE (Gregg 2026-11-11, R-GREGG-20261111-KEEP-LSFILL-NAME-FOR-ZERO-SPACING-MOSAICS and R-GREGG-20261111-HYBRID-MASTERS-ZERO-SPACING-
+# FILL-PER-TILE): 'lsfill' means the large scales INCLUDE the zero spacings (the LWA1 LFSS total-power fill) - on the hybrid mosaics
+# and the hybrid masters alike; the hybrid CLEAN residuals get no fill and do not carry it (production common/phase3_products.py
+# 86-88). Until 2026-11-11 'lsfill' on hybrids meant the reconstructed large scales only. 'tpfill' is RETIRED (RETIRED_TOKENS):
+# archived and quarantined names keep it and still parse and round-trip, but build_name refuses it in a new name.
 # 'caveat' (the caveat map of a high-band hybrid mosaic, exopipe.phase3.notaper_largescale.caveat_map: per pixel the weighted mean
 # large-scale level / LWA1 survey prior and the weight fraction of Taper-only tiles) added 2026-10-31 (R-GREGG-20261031-HIGH-BAND-
 # CAVEATS-APPROVED-GO-ON-EVERYTHING); reported to the refactor chat.
@@ -104,6 +108,11 @@ PROC_ORDER = ['vclean', 'mstruct', 'loo', 'shflux', 'mdewarp', 'pbcorr', 'dewarp
 # psfmatch = symmetric cross-convolution subtraction (D = G_m(x)epoch −
 # G_e(x)master, per-pair dilution renorm) — ratified into the production
 # Stokes-I chain 2026-07-05 (§5.14e); sits between alignment and msub.
+
+# Tokens a ruling retired: parse_name still reads them (archived and quarantined names keep them) and marks the name with the key
+# 'retired' (only when it carries one, so every other name parses as before); build_name refuses them in a NEW name and accepts
+# exactly the retired tokens passed back in 'retired', so build_name(**parse_name(n)) == n holds for every archived name.
+RETIRED_TOKENS = {'tpfill': 'R-GREGG-20261111-KEEP-LSFILL-NAME-FOR-ZERO-SPACING-MOSAICS (the zero-spacing fill is named lsfill)'}
 
 # New-grammar robust REQUIRES a decimal point ('Robust+0.0'), which
 # makes it impossible to confuse with the legacy 'Robust-0' (where the
@@ -171,7 +180,7 @@ def _epoch_token(start):
 def build_name(scope, stokes, cadence, taper, robust, proc=(),
                lst=None, lst_bin=None, epoch=None,
                date_start=None, date_end=None, n_epochs=None,
-               target=None, cutout=False, ext='.fits', **_ignored):
+               target=None, cutout=False, ext='.fits', retired=(), **_ignored):
     """Build a Phase 3 product filename.
 
     Parameters
@@ -197,6 +206,9 @@ def build_name(scope, stokes, cadence, taper, robust, proc=(),
     n_epochs : int     Number of constituent epochs in a co-add.
     target : str       Cutout target name prefix (sanitized: no '_').
     cutout : bool      Append '_cutout' before the extension.
+    retired : sequence Retired tokens (RETIRED_TOKENS) this name may carry: only the
+                       ones parse_name read from an existing name. Any other
+                       retired token in proc is refused.
 
     Extra keys (e.g. 'grammar' from parse_name output) are ignored so
     that ``build_name(**parse_name(n)) == n`` round-trips directly.
@@ -219,6 +231,9 @@ def build_name(scope, stokes, cadence, taper, robust, proc=(),
             raise ValueError(f"Only msub/nmsub may carry a tag, got '{tok}'")
         return PROC_ORDER.index(base)
     proc_sorted = sorted(proc, key=_proc_key)
+    for tok in proc_sorted:
+        if tok.split('-')[0] in RETIRED_TOKENS and tok not in retired:
+            raise ValueError(f"Retired proc token '{tok}' in a new name ({RETIRED_TOKENS[tok.split('-')[0]]})")
 
     # TIMEID
     if lst is None:
@@ -402,6 +417,9 @@ def parse_name(filename):
         raise ValueError(f"Bad time token '{rest[i]}' in '{base}'")
     if i != len(rest):
         raise ValueError(f"Trailing tokens {rest[i:]} in '{base}'")
+    _ret = [t for t in proc if t.split('-')[0] in RETIRED_TOKENS]
+    if _ret:
+        out['retired'] = _ret
     return out
 
 

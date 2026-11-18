@@ -48,6 +48,8 @@ jobs:
         run: python tests/test_cli_sigterm_children.py
       - name: grammar sync with production
         run: python tests/test_products_grammar_sync.py
+      - name: hybrid route PR-1 (config sections, unit plan, stage gates, token-card rule, CLI skeleton refusals)
+        run: python tests/test_hybrid_config.py
       - name: search engine speed-ups change no product
         run: python tests/test_search_speedups.py
       - name: Phase 2 speed-ups change no product
