@@ -241,11 +241,13 @@ def _cli(argv, env_extra=None):
 def test_cli_skeleton_refuses_every_unit():
     d = tempfile.mkdtemp(prefix='hy1_cli_', dir=os.environ.get('TMPDIR') or None)
     try:
-        rc, out = _cli(['hybrid', '--lsts', '18h', '--scopes', '46MHz,Blue', '--weightings', 'R075', '--out', os.path.join(d, 'w')])
+        # the stack stage is ported (PR-2): COADD_SB points nowhere, so its unit refuses at HG0 on every host (never a real stack)
+        rc, out = _cli(['hybrid', '--lsts', '18h', '--scopes', '46MHz,Blue', '--weightings', 'R075', '--out', os.path.join(d, 'w'),
+                        '--set', f'hybrid_stack.COADD_SB={os.path.join(d, "no_coadd_sb")}'])
         assert rc == 2, (rc, out[-2000:])
         lines = [l for l in out.splitlines() if l.strip().startswith('refused ')]
         assert len(lines) == 7, out[-3000:]
-        assert any('stack.18h_46MHz_R075' in l and ('PR-2' in l or 'HG0' in l) for l in lines), lines
+        assert any('stack.18h_46MHz_R075' in l and 'HG0' in l for l in lines), lines
         assert sum('HG6' in l for l in lines) == 2, lines                       # recon + wideband
         assert sum('UNFILLED_INPUTS' in l for l in lines) == 2, lines           # tilefill x 2
         assert sum(l.startswith('  refused hybrid.') and 'PR-4' in l or 'not the pinned' in l or 'md5 None' in l

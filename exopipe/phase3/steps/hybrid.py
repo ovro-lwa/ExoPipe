@@ -16,8 +16,14 @@ Stages, in order (--stages a,b or --from / --until; default all), and the scopes
   full       Full                   the Full hybrid from the 15 subband hybrids (PR-4)
   tilefill   every scope            the per-tile zero-spacing fill of the hybrid masters (PR-5; needs the unfilled inputs, Q2)
 
-PULL REQUEST PR-1 (this module): the selection, the unit list and the gates that need no stage code. Every unit of a stage not yet
-ported REFUSES (exit 2) with the pull request that ports it; nothing is written but the unit records.
+PULL REQUEST PR-1: the selection, the unit list and the gates that need no stage code. Every unit of a stage not yet ported REFUSES
+(exit 2) with the pull request that ports it; nothing is written but the unit records.
+PULL REQUEST PR-2: the stack stage (lib/hybrid/stack.py, warp.py). A unit stack.<LST>_<band>_<w> writes, in <--out>/<LST>_<band>/,
+the NoTaper stacks of weighting w (<w>_dirty_stack, _dirty_halfA, _dirty_halfB, _psf_stack, <w>_stack.json, inputs/ copies) and
+the Taper residual stack of its Taper weighting (T075 for R075, T0 for R0: <t>_residual_stack, <t>_stack.json), as production's
+`stack` action did for the four weightings. A variant a gate refuses (HG1 membership / exclusion, HG4 night drops, HG5 rebuild) is
+a refused item of the unit - its files, with the gate - and the other variant goes on; both refused = the unit refused. Node-local
+scratch: --work or the site SCRATCH_ROOT (the derived warp screens are cached there, hybrid_stack.SCREEN_CACHE_SUBDIR).
 
 Gates here (each refuses; spec 3.4): HG0 the node-local co-add build directories (hybrid_stack.COADD_SB) are present on this node
 (stack); HG6 the double-size PSF registry is pinned (recon, wideband); the striation selection's md5 equals the pinned one (hybrid); the
@@ -190,9 +196,94 @@ def run(args, run):
     if not units:
         raise NoInput('no unit: the selected stages take none of the selected scopes')
     gates = {st: stage_gate_problems(st, CFG) for st in run.meta['stages']}
+    if run.dry_run:
+        for st, lst, sc, w in units:
+            what = (f'refused: {"; ".join(gates[st])}' if gates[st] else
+                    ', '.join(os.path.relpath(p, run.out_root) for p, _c in stack_plan(run.out_root, lst, sc, w)) if st == 'stack' else
+                    f'not ported ({PORTED_BY[st]})')
+            print(f'  plan {st}.{lst}_{sc}_{w}: {what}', flush=True)
+        print(f'exopipe3 hybrid: DRY RUN, {len(units)} units, nothing written', flush=True)
+        return 0
     for st, lst, sc, w in units:
         with run.unit(f'{st}.{lst}_{sc}_{w}', stage=st, lst=lst, scope=sc, weighting=w) as u:
             if gates[st]:
                 u.refuse('; '.join(gates[st]) + ' - REFUSED')
+            if st == 'stack':
+                stack_unit(u, lst, sc, w, run.out_root, getattr(args, 'work', None))
+                continue
             u.refuse(f'stage {st} is not ported yet ({PORTED_BY[st]} of plan/specs/hybrid.md) - REFUSED')
     return run.exit_code()
+
+
+def _stack_class(path):
+    b = os.path.basename(path)
+    if os.path.basename(os.path.dirname(path)) == 'inputs':
+        return 'hybrid_stack_input'
+    return 'hybrid_stack_record' if b.endswith('_stack.json') else 'hybrid_psf_stack' if b.endswith('_psf_stack.fits') else 'hybrid_stack_image'
+
+
+def stack_plan(out_root, lst, band, w):
+    """[(path, product class)] a stack unit owes, NoTaper weighting w first, then its Taper weighting."""
+    from exopipe.phase3.config import CFG
+    from exopipe.phase3.lib.hybrid import stack as HST
+    from exopipe.phase3.lib.hybrid.common import TAPER_OF, inputs_dir
+    workdir = os.path.join(out_root, f'{lst}_{band}')
+    out = []
+    for v in (w, TAPER_OF[w]):
+        files = [os.path.join(workdir, f) for f in HST.outputs_of(v)]
+        if v in TAPER_OF:
+            files += [os.path.join(inputs_dir(workdir), os.path.basename(p))
+                      for p in HST.input_copies(CFG.hybrid_stack.COADD_SB, lst, band, v)]
+        out += [(p, _stack_class(p)) for p in files]
+    return out
+
+
+def stack_unit(u, lst, band, w, out_root, work):
+    """Stage stack of one unit (spec 2.1): the NoTaper stacks of weighting w, then the Taper residual stack of its Taper weighting.
+    A variant a gate refuses is a refused item (its files, with the gate); the other goes on. Each variant runs in a fresh node-local
+    scratch directory, removed afterwards; its own earlier outputs in the work directory are removed first (no stale file stands
+    beside a refusal)."""
+    from exopipe.phase3.config import CFG
+    from exopipe.phase3.core import fitsio
+    from exopipe.phase3.lib.hybrid import stack as HST
+    from exopipe.phase3.lib.hybrid.common import TAPER_OF
+    workdir = os.path.join(out_root, f'{lst}_{band}')
+    os.makedirs(workdir, exist_ok=True)
+    screens = os.path.join(fitsio.scratch_root(work), CFG.hybrid_stack.SCREEN_CACHE_SUBDIR)
+    plan = stack_plan(out_root, lst, band, w)
+    nights = set()
+    for v in (w, TAPER_OF[w]):
+        own = [os.path.join(workdir, f) for f in HST.outputs_of(v)]
+        files = [(p, c) for p, c in plan if p in own or (v in TAPER_OF and c == 'hybrid_stack_input')]
+        for p, c in files:
+            u.plan(p, c)
+        for p in own:
+            if os.path.lexists(p):
+                os.remove(p)
+        prep = fitsio.scratch_dir(f'hybrid_stack_{lst}_{band}_{v}', work)
+        read = set()
+        try:
+            rec = HST.stack_variant(lst, band, v, workdir, prep, screens, read)
+        except HST.StackRefusal as e:
+            for p, _c in files:
+                u.refuse_item(p, f'{e.gate}: {e}', gate=e.gate)
+            continue
+        finally:
+            fitsio.cleanup(prep)
+            for p in sorted(read):
+                u.add_input(p)
+        t = rec['test_stack_rebuild']
+        u.check(f'hybrid_stack.rebuild_{v}', True, value=t['verdict'],
+                detail=f"max |diff| {t['max_abs_diff']:.3g} Jy/beam, rms {t['rms_diff']:.3g} Jy/beam vs master peak "
+                       f"{t['master_peak']:.4g} Jy/beam, rms {t['master_rms']:.4g} Jy/beam")
+        nights.update(n['date'] for n in rec['nights'])
+        master = HST.cell_paths(CFG.hybrid_stack.COADD_SB, lst, band, v)[2]
+        for p, c in files:
+            if c == 'hybrid_stack_input':
+                i = rec['inputs'][os.path.basename(p)]
+                u.add_output(p, c, md5=i['md5'], installed=i['installed'])
+            elif c == 'hybrid_stack_record':
+                u.add_output(p, c, lst=lst, band=band, weighting=v)
+            else:
+                u.add_output(p, c, master=master)
+    u.set_admitted(sorted(nights))
