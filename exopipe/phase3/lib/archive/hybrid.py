@@ -229,21 +229,17 @@ def hybrid_plan(ctx, staging, lst, scope, w, checksum=True):
     return rows, reads, notes
 
 
-def _qpath(ctx, rnd, old):
-    return os.path.join(quarantine_dir(ctx, rnd), os.path.relpath(old, archive_dir(ctx)))
-
-
-def apply_unit(ctx, u, rows, rnd, cls='hybrid', adir=None, qdir=None, qman_name=QUARANTINE_MANIFEST, qpath=None,
+def apply_unit(ctx, u, rows, rnd, cls='hybrid', adir=None, qdir=None, qman_name=QUARANTINE_MANIFEST,
                copy_class='hybrid_archive_copy'):
     """D2 swap of one planned unit: verified copies first, then per file the installed one into the round quarantine (manifest
     row) and the new one renamed in, back to back; the applied push manifest; the content audit. The class hybrid's places by
-    default; push --class mosaic_v5 passes its run (adir), its round quarantine (qdir, qman_name, qpath: installed path -> its
-    quarantine path) and its copy class."""
+    default; push --class mosaic_v5 passes its run (adir), its round quarantine (qdir, qman_name) and its copy class. An
+    installed file's quarantine path is qdir + its path under adir."""
     unit = rows[0]['unit']
     todo = [r for r in rows if r['action'] in ('publish', 'replace', 'retire')]
     adir = adir or archive_dir(ctx)
     qdir = qdir or quarantine_dir(ctx, rnd)
-    qpath = qpath or (lambda old: _qpath(ctx, rnd, old))
+    qpath = lambda old: os.path.join(qdir, os.path.relpath(old, adir))     # noqa: E731  (the installed file's place in the round)
     qman = os.path.join(qdir, qman_name)
     pman = os.path.join(adir, f'MANIFEST_{ctx.stamp}.csv')
     ctx.guard_writes([adir, qdir, qman, pman], f'push --class {cls} {unit}', allow=f'archive:{cls}')

@@ -138,12 +138,12 @@ def _guard_out(out, key=None):
     """The refusal text when --out is a production root during the refactor window, else None (exit 2, not 1). ``key``: the
     step's name in the narrow cutover allowance (paths.PRODUCTION_WRITES_ALLOWED: 'hybrid', 'mosaic:v5', ...)."""
     from exopipe.phase3.config import CFG
-    if CFG.writes_allowed(key):
+    if CFG.writes_allowed(key, out):
         return None
     root = CFG.production_root_of(out)
     if root is not None:
         return (f'--out {out} is under the production root {root}, paths.PRODUCTION_WRITES is False (refactor window) and '
-                f'{key!r} is not in paths.PRODUCTION_WRITES_ALLOWED. Write parity/scratch output to your own root.')
+                f'paths.PRODUCTION_WRITES_ALLOWED does not open it to {key!r}. Write parity/scratch output to your own root.')
     return None
 
 

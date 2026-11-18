@@ -69,7 +69,11 @@ version), `injected` (the injected-run guard).
 7. **Scratch is node-local** (`core.fitsio.scratch_dir`); Lustre holds only bulk products.
 8. **`--dry-run`** prints the plan (inputs found, outputs, gates) and writes nothing.
 9. **Rulings that waive a test are arguments**: `--waive TEST --ruling "<Gregg's words, UTC, ledger ID>"`.
-10. **While `paths.PRODUCTION_WRITES` is False** (the refactor window) no step writes under a production root; parity
+10. **While `paths.PRODUCTION_WRITES` is False** (the refactor window) no step writes under a production root, except the
+    RULED narrow cutover allowance `paths.PRODUCTION_WRITES_ALLOWED` (R-GREGG-20261118-CUTOVER-ALLOWANCE-HYBRID-MOSAIC-V5,
+    PROTECTED): each named step or push class (`hybrid`, `mosaic:v5`, `archive:hybrid`; `archive:mosaic_v5` after its check)
+    writes only under the roots it maps to there, never under `paths.OPS_ROOT` or `paths.CLV15_ROOT`, and never in an injected
+    run; parity
     runs pass `--out` to their own root and `--parity`, which refuses (PermissionError) every write outside `--out`,
     `--work`, /tmp and /dev/null in the step and in every Python subprocess it starts (`core/guard.py`,
     `core/parity_sitecustomize/`; /dev/shm and the host's site SCRATCH_ROOT are also allowed).

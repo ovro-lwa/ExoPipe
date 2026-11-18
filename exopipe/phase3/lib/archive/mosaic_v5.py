@@ -141,9 +141,9 @@ def _done(rec, path):
         raise NoInput(f'{path}: no record')
     if rec.get('status') != 'done':
         raise Refusal(f'{path}: the unit is {rec.get("status")!r}, not done - nothing of it is pushed')
-    bad = [t.get('name') for t in rec.get('tests') or [] if not t.get('passed') and not t.get('waived')]
+    bad = [t.get('name') for t in rec.get('tests') or [] if not t.get('passed')]
     if bad:
-        raise Refusal(f'{path}: failed content test(s) {bad[:4]} - nothing of it is pushed')
+        raise Refusal(f'{path}: failed content test(s) {bad[:4]} (a waived failure is never pushed) - nothing of it is pushed')
 
 
 def _row(ctx, unit, kind, src, dst, md5, checksum, d7=True):
@@ -230,6 +230,10 @@ def scope_plan(ctx, staging, scope, w, checksum=True):
     prods = {k: e for k, e in (meta.get('products') or {}).items() if not k.startswith('unfilled_')}
     if 'jysr' not in prods:
         raise Refusal(f'{rp}: no Jy/sr product recorded - REFUSING')
+    mp = masters_problems(ctx, tiles, meta.get('prov_files') or [], os.path.basename(prods['jysr']['path']), prods['jysr']['md5'])
+    if mp:                                                    # header reads only: before any product is hashed
+        raise Refusal(f'HG20: the installed masters were not filled from this mosaic ({len(mp)}): {mp[:4]} - push the masters filled '
+                      f'from it first (hybrid --stages tilefill --mosaic-out {staging}, then archive push --class hybrid)')
     rd = run_dir(ctx)
     rows = []
     for kind, e in sorted(prods.items()):
@@ -246,10 +250,6 @@ def scope_plan(ctx, staging, scope, w, checksum=True):
         if rel.startswith('..') or rel.split(os.sep)[0] != scope:
             raise Refusal(f'{unit} {kind}: {src} is not under {P["conform"]}/{scope}')
         rows.append(_row(ctx, unit, kind, src, os.path.join(rd, rel), m, checksum))
-    mp = masters_problems(ctx, tiles, meta.get('prov_files') or [], os.path.basename(prods['jysr']['path']), prods['jysr']['md5'])
-    if mp:
-        raise Refusal(f'HG20: the installed masters were not filled from this mosaic ({len(mp)}): {mp[:4]} - push the masters filled '
-                      f'from it first (hybrid --stages tilefill --mosaic-out {staging}, then archive push --class hybrid)')
     return rows, reads
 
 
@@ -272,27 +272,36 @@ def tables_plan(ctx, staging, checksum=True):
     rec = load_record(staging, v5.STEP, v5.TABLES_UNIT)
     _done(rec, rp)
     meta = rec.get('meta') or {}
+    ins = rec.get('inputs') or {}
     rd = run_dir(ctx)
-    bad = []
+    bad, stale = [], []
     for sw in meta.get('units') or []:
         scope, w = sw.rsplit('_', 1)
         cr = load_record(staging, v5.STEP, v5.unit_name('conform', scope, w))
         if cr is None or cr.get('status') != 'done':
             bad.append(f'{sw}: {"no conform record" if cr is None else cr.get("status")}')
             continue
+        ct = (cr.get('meta') or {}).get('tables') or {}
+        for k in ('content', 'curve', 'caveat_table'):                                # made from THIS conform's files
+            if ct.get(k) and (ins.get(os.path.abspath(ct[k][0])) or {}).get('md5') != ct[k][1]:
+                stale.append(f'{sw} {k} {ct[k][0]}')
         P = v5.paths(staging, scope, w)
         for kind, e in ((cr.get('meta') or {}).get('products') or {}).items():
             if kind.startswith('unfilled_'):
                 continue
             dst = os.path.join(rd, os.path.relpath(e['path'], P['conform']))
-            if not os.path.exists(dst) or K.checksum(dst, 'md5') != e['md5']:
+            if not os.path.exists(dst) or (checksum and K.checksum(dst, 'md5') != e['md5']):   # a dry run: existence only
                 bad.append(f'{sw} {kind}: {dst} is not installed at the record\'s md5')
+    if stale:
+        raise Refusal(f'the tables were made from an earlier conform ({len(stale)}): {stale[:4]} - run --stages tables again')
     if not meta.get('units'):
         bad.append('the tables record lists no conform unit')
     if bad:
         raise Refusal(f'the tables describe products not installed ({len(bad)}): {bad[:4]} - push the scopes first')
     rows = []
     md5s = meta.get('md5') or {}
+    arch_t = os.path.realpath(os.path.join(K.cfg().hybrid_tilefill.FILLED_MOSAIC_RUN, 'tables'))
+    merged = {os.path.basename(p): (fp or {}).get('md5') for p, fp in ins.items() if os.path.dirname(os.path.realpath(p)) == arch_t}
     for o in rec.get('outputs') or []:
         src = o['path']
         name = os.path.basename(src)
@@ -301,6 +310,10 @@ def tables_plan(ctx, staging, checksum=True):
         if not os.path.exists(src):
             raise Refusal(f'tables: {src} does not exist - REFUSING')
         m = _checked(ctx, src, md5s[name], checksum, f'tables {name}', 'the tables stage')
+        dst = os.path.join(rd, 'tables', name)
+        if os.path.exists(dst) and K.checksum(dst, 'md5') not in (merged.get(name), md5s[name]):   # no lost update between pushes
+            raise Refusal(f'tables {name}: the installed {dst} is not the table the tables stage merged from '
+                          f'(md5 {merged.get(name)}) - another push changed it; run --stages tables again')
         rows.append(_row(ctx, TABLES_UNIT, 'table', src, os.path.join(rd, 'tables', name), m, checksum, d7=False))
     if not rows:
         raise Refusal(f'{rp}: no table recorded - REFUSING')
@@ -323,8 +336,6 @@ def run_mosaic_v5(ctx, args, run, unit_fn):
     rd = run_dir(ctx)
     qd = quarantine_dir(ctx, rnd)
 
-    def qpath(old):
-        return os.path.join(qd, os.path.relpath(old, rd))
     for scope, w in items:
         name = 'push_mosaic_v5_tables' if scope == TABLES_UNIT else f'push_mosaic_v5_{scope}_{w}'
 
@@ -346,7 +357,7 @@ def run_mosaic_v5(ctx, args, run, unit_fn):
                 u.add_output(man, 'csv_table', required_columns=('unit', 'kind', 'src', 'dst', 'action', 'replaces'))
                 return rows
             if any(r['action'] in ('publish', 'replace') for r in rows):
-                AH.apply_unit(ctx, u, rows, rnd, cls='mosaic_v5', adir=rd, qdir=qd, qman_name=QUARANTINE_MANIFEST, qpath=qpath,
+                AH.apply_unit(ctx, u, rows, rnd, cls='mosaic_v5', adir=rd, qdir=qd, qman_name=QUARANTINE_MANIFEST,
                               copy_class='mosaic_v5_archive_copy')
             return rows
         unit_fn(name, body, describe=lambda rows: ', '.join(

@@ -133,12 +133,11 @@ class Ctx:
         (core/injected.py) never writes the archive tree, whatever either says: refused first, by name."""
         from exopipe.phase3.core import injected
         injected.check_all(paths, f'archive {what}')
-        if cfg().writes_allowed(allow if str(allow or '').startswith('archive:') else None):   # a step name never opens the archive
-            return
+        key = allow if str(allow or '').startswith('archive:') else None          # a step name never opens the archive
         for p in paths:
-            if p and production_like(p):
+            if p and production_like(p) and not cfg().writes_allowed(key, p):
                 raise Refusal(f'G2: {what} would write under the production tree {production_like(p)} ({p}) and '
-                              f'paths.PRODUCTION_WRITES is False and {allow!r} is not in paths.PRODUCTION_WRITES_ALLOWED '
+                              f'paths.PRODUCTION_WRITES is False and paths.PRODUCTION_WRITES_ALLOWED does not open it to {allow!r} '
                               f'(refactor window: archive is plan-only; an apply runs only against a mirror, --archive-root '
                               f'DIR outside every production tree)')
 

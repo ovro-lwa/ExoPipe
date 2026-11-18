@@ -75,6 +75,12 @@ _META = ('RULED', 'PROTECTED_KEYS', 'NULLABLE_KEYS')   # UPPER_CASE section attr
 # them to None; every other key refuses an override of another type than its value's
 
 
+
+def _under(path, root):
+    """Is ``path`` ``root`` or below it (both resolved)?"""
+    real, r = os.path.realpath(path), os.path.realpath(root)
+    return real == r or real.startswith(r.rstrip('/') + '/')
+
 class _Section:
     """Base class of a config section: UPPER_CASE class attributes are the tunables. ``RULED`` (optional) maps a key to
     the ledger ID(s) of the ruling that set it."""
@@ -259,13 +265,17 @@ class _Config:
             return None
         return tuple(r) if isinstance(r, (list, tuple)) else (r,)
 
-    def writes_allowed(self, key=None):
-        """May a step write under a production root? True after the cutover (paths.PRODUCTION_WRITES), or when ``key`` - the step
-        name ('hybrid'), 'mosaic:<generation>' or 'archive:<push class>' - is in the RULED narrow allowance
-        paths.PRODUCTION_WRITES_ALLOWED. None (a caller that names nothing) gets the flag alone."""
+    def writes_allowed(self, key=None, path=None):
+        """May a step write ``path`` although it lies under a production root? True after the cutover (paths.PRODUCTION_WRITES);
+        before it, only when ``key`` - the step name ('hybrid'), 'mosaic:<generation>' or 'archive:<push class>' - is in the RULED
+        narrow allowance paths.PRODUCTION_WRITES_ALLOWED and ``path`` lies under one of the roots it maps to there, never under
+        paths.OPS_ROOT or paths.CLV15_ROOT. None (a caller that names nothing) gets the flag alone."""
         if self.paths.PRODUCTION_WRITES:
             return True
-        return key is not None and key in tuple(self.paths.PRODUCTION_WRITES_ALLOWED or ())
+        roots = dict(self.paths.PRODUCTION_WRITES_ALLOWED or {}).get(key) if key is not None else None
+        if not roots or path is None or any(_under(path, r) for r in (self.paths.OPS_ROOT, self.paths.CLV15_ROOT)):
+            return False
+        return any(_under(path, r) for r in roots)
 
     def production_root_of(self, path):
         """The production root (paths.PRODUCTION_ROOTS) that holds ``path``, or None."""

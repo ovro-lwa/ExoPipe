@@ -102,11 +102,11 @@ class _U:
         self.notes.append(s)
 
 
-def _record(out, unit, status='done', meta=None, tests=(), outputs=()):
+def _record(out, unit, status='done', meta=None, tests=(), outputs=(), inputs=None):
     p = os.path.join(out, '_records', v5.STEP, f'{unit}.json')
     os.makedirs(os.path.dirname(p), exist_ok=True)
     with open(p, 'w') as f:
-        json.dump(dict(status=status, meta=meta or {}, tests=list(tests), outputs=list(outputs)), f)
+        json.dump(dict(status=status, meta=meta or {}, tests=list(tests), outputs=list(outputs), inputs=dict(inputs or {})), f)
     return p
 
 
@@ -178,7 +178,12 @@ class _Env:
                       [['x', 'Taper_R075', 'Blue', 'jysr'] + [''] * (len(CF.SUMMARY_COLS) - 5) + ['PASS']] if n == 'summary.csv' else [])
             outs.append(dict(path=p, **{'class': 'mosaic_v5_table'}))
             m[n] = _md5(p)
-        return _record(self.out, v5.TABLES_UNIT, 'done', dict(units=list(units), **(dict(md5=m) if md5 else {})), (), outs)
+        ins = {}                                     # the installed tables the stage merged from (v5.tables_unit archived())
+        for n in names:
+            dst = os.path.join(AM.run_dir(self.ctx), 'tables', n)
+            if os.path.exists(dst):
+                ins[os.path.join(CFG.hybrid_tilefill.FILLED_MOSAIC_RUN, 'tables', n)] = {'md5': _md5(dst)}
+        return _record(self.out, v5.TABLES_UNIT, 'done', dict(units=list(units), **(dict(md5=m) if md5 else {})), (), outs, ins)
 
     def __enter__(self):
         self.E.for_tier = lambda tier, fresh=False: _Excl()
@@ -196,7 +201,7 @@ class _Env:
         rd, qd = AM.run_dir(self.ctx), AM.quarantine_dir(self.ctx, rnd)
         u = _U()
         AH.apply_unit(self.ctx, u, rows, rnd, cls='mosaic_v5', adir=rd, qdir=qd, qman_name=AM.QUARANTINE_MANIFEST,
-                      qpath=lambda old: os.path.join(qd, os.path.relpath(old, rd)), copy_class='mosaic_v5_archive_copy')
+                      copy_class="mosaic_v5_archive_copy")
         return u
 
     def dst(self, kind):
@@ -350,8 +355,10 @@ def test_tables():
             u = E.apply(rows)
             assert _audit(u) == 2
             assert {r['action'] for r in AM.tables_plan(E.ctx, E.out)[0]} == {'keep'}
-            with open(os.path.join(rd, 'tables', 'taper_only.csv'), 'a') as f:      # the installed table differs: replaced
-                f.write('a,b,c\r\n')
+            with open(os.path.join(rd, 'tables', 'taper_only.csv'), 'a') as f:      # another push changed the installed table:
+                f.write('a,b,c\r\n')                                                # refused until the stage merges again
+            assert 'another push changed it' in _raises(Refusal, AM.tables_plan, E.ctx, E.out)
+            E.tables()                                                               # merged from the installed table: replaced
             rows = AM.tables_plan(E.ctx, E.out)[0]
             assert {r['dst'].split('/')[-1]: r['action'] for r in rows} == {'summary.csv': 'keep', 'taper_only.csv': 'replace'}
             E.apply(rows, rnd='T2')
@@ -359,6 +366,16 @@ def test_tables():
             with open(os.path.join(v5.tables_dir(E.out), 'summary.csv'), 'a') as f:
                 f.write('\r\n')
             assert 'changed since the tables stage' in _raises(Refusal, AM.tables_plan, E.ctx, E.out)
+            E.tables()
+            cp = os.path.join(E.out, '_records', v5.STEP, v5.unit_name('conform', 'Blue', 'R075') + '.json')
+            old = open(cp).read()
+            cr = json.loads(old)
+            cr['meta']['tables'] = {'content': [os.path.join(E.out, 'content_new.json'), 'f' * 32]}     # conform ran again since
+            open(cp, 'w').write(json.dumps(cr))
+            assert 'earlier conform' in _raises(Refusal, AM.tables_plan, E.ctx, E.out)
+            open(cp, 'w').write(old)
+            assert 'waived failure is never pushed' in _raises(Refusal, AM._done, dict(status='done', tests=[
+                dict(name='TEST 1', passed=False, waived='R-X')]), cp)
             E.tables(md5=False)
             assert 'no md5 recorded' in _raises(Refusal, AM.tables_plan, E.ctx, E.out)
             E.tables(units=())
