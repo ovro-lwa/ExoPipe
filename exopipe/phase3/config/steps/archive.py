@@ -173,6 +173,13 @@ class archive_push(_Section):
         # -> <root>/<same relative path>. NEW (no production twin: today search writes its archive copies itself,
         # phase3_deep._archive_frame_publish :850-873, with copy2 + os.replace after the fleet's pre-search quarantine).
         'epoch': {'enabled': True, 'tiers': ('deep',), 'existing': 'replace-quarantine'},
+        # hybrid products (PR-5b; spec plan/specs/hybrid.md 2.7, D2, D6, D7, HG12): per unit of a hybrid run's --out (its tilefill
+        # record): the filled master, its beam-corrected sibling, the renamed CLEAN residual and, for a unit filled from its own
+        # rebuild, the NoTaper reconstruction and its beam-corrected split, the diffuse PB map and the weighting's installed full PB
+        # map -> <root>/<hybrid.ARCHIVE_HYBRID relative to the archive root>/<LST>/<scope>/<name> (production
+        # notaper_largescale.archive_hybrid_unit 1637 and the 11-13 lost-sky tile swap). An installed file of the same kind is
+        # replaced through the round quarantine (D2); standing-approved (INSTALLED-PRUNED-CLAUDE-MD-AND-MEMORY-INDEX).
+        'hybrid': {'enabled': True, 'tiers': ('deep',), 'existing': 'replace-quarantine'},
         # QA: ARCHIVED-PHASE3-QA-TO-LUSTRE-AND-INDEXED-THE-PER-NIGHT-PHASE2-QA (1494) - one manual copy, no standing push.
         'qa': {'enabled': False, 'dest_root': '{root}/QA'},
         # run catalogues / pages / verdict journals: B17 gap, nothing pushes them today (ops-deep-serve-archive 9.5); no ruled destination.
@@ -182,6 +189,23 @@ class archive_push(_Section):
     # Quarantine Run prefix of files a push --class epoch replaces (the search round's quarantine, like the fleet's
     # pre-search quarantine: p3s5_quarantine_frames.py:17); the round is --round (archive_quarantine.ROUND_DEFAULT).
     EPOCH_REPLACE_QUARANTINE_PREFIX = 'Run_SEARCH_QUARANTINE_'
+    # Quarantine Run of files a push --class hybrid replaces, relative to the archive root; the round is --round, default the UTC
+    # date (production's 11-11 and 11-13 rounds: Coadd/Run_NOTAPER_HYBRID_QUARANTINE_20261111, _20261113). Its checksum manifest
+    # MANIFEST_HYBRID_QUARANTINE.csv sits at the Run's root.
+    HYBRID_QUARANTINE_PREFIX = 'Coadd/Run_NOTAPER_HYBRID_QUARANTINE_'
+    HYBRID_QUARANTINE_COLUMNS = ('unit', 'kind', 'path', 'dest', 'bytes', 'md5', 'replaced_by', 'moved_at')
+    # The applied push manifest <hybrid run>/MANIFEST_<stamp>.csv (production's place and src/dst/bytes/md5 columns, NL 1637); md5 and
+    # bytes are the file at dst after the push (a kept file: the archive's own).
+    HYBRID_PUSH_COLUMNS = ('unit', 'kind', 'src', 'dst', 'bytes', 'md5', 'action', 'replaces', 'written_at')
+    # D7 at the push: a replacement holds every card key of the file it replaces (commentary cards aside) except the keys a ruling
+    # retired from that kind of file (spec hybrid.md, design corrections: D7 against D6). Every other missing key refuses.
+    HYBRID_RETIRED_KEYS = {
+        # R-GREGG-20261116-PB-MAPS-SH-CARDS-REMOVE-BUNIT-BLANK-GO (= pb_apply.PB_MAP_SH_CARDS)
+        'pb': ('SHSCALE', 'SHERR', 'SHNSRC', 'SHSRCS', 'SHMETHOD', 'SHFREQ', 'SHFRQSRC', 'SHDATE'),
+        # the same + R-GREGG-20261118-HYBRID-Q1-Q3-GO-WITH-RECOMMENDATIONS, Q3 (= pb_apply.PBDIFFUSE_MASTER_CARDS)
+        'pbdiffuse': ('SHSCALE', 'SHERR', 'SHNSRC', 'SHSRCS', 'SHMETHOD', 'SHFREQ', 'SHFRQSRC', 'SHDATE',
+                      'FLUXFIT', 'FLUXBND', 'FLUXABS', 'FLUXCORR', 'FLUXVER', 'FLUXBAKE', 'FLUXREF', 'IMGRMS', 'THERMNOI'),
+    }
     # Product class of an archived per-epoch file, by name tokens, first match wins: (token that must be present, second
     # token or None, class). The archived copy is content-tested with the producing step's class test. A search frame and
     # its pbcorr sibling are ONE class, search_frame (lib/frames/tests.py: pbcorr_matches_plain tests the sibling); every
@@ -193,7 +217,9 @@ class archive_push(_Section):
     AUDIT_BUNIT = {'jysr': 'Jy/sr', 'jybeam': 'Jy/beam', 'psfmap': 'sr', 'pbmap': ''}   # push_mosaic_v2:77
     AUDIT_PIXEL_STRIDE = 97              # every 97th row probed for a finite value; push_mosaic_v2:103
     RULED = {'CLASSES': ('R-MOSAIC-V2-PUSH-APPROVED-WHEN-DONE', 'R-JYBEAM-TOKEN-AND-MOSAIC-V2-PUSH-TAPER-ONLY',
-                         'INSTALLED-PRUNED-CLAUDE-MD-AND-MEMORY-INDEX')}
+                         'INSTALLED-PRUNED-CLAUDE-MD-AND-MEMORY-INDEX'),
+             'HYBRID_RETIRED_KEYS': ('R-GREGG-20261116-PB-MAPS-SH-CARDS-REMOVE-BUNIT-BLANK-GO',
+                                     'R-GREGG-20261118-HYBRID-Q1-Q3-GO-WITH-RECOMMENDATIONS')}
 
 
 class archive_snapshot(_Section):

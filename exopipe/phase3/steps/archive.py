@@ -114,8 +114,8 @@ def add_arguments(p):
     p.add_argument('action', choices=ACTIONS, help='what to do (see the list above)')
     g = p.add_argument_group('archive')
     g.add_argument('--class', dest='push_class', metavar='C',
-                   help='push: mosaic, epoch, qa, run-tables (--epochs alone = epoch); audit: mosaic, epoch, quarantine, '
-                        'sync, retire, rollback, rows, supersede')
+                   help='push: mosaic, epoch, hybrid, qa, run-tables (--epochs alone = epoch); audit: mosaic, epoch, hybrid, '
+                        'quarantine, sync, retire, rollback, rows, supersede')
     g.add_argument('--apply', action='store_true',
                    help='perform copies and moves; without it every action stops after its manifest stage (the plan, '
                         'written under --out). Refused under a production tree while paths.PRODUCTION_WRITES is False')
@@ -135,7 +135,8 @@ def add_arguments(p):
                         'production tree lets an apply run in the refactor window (parity, tests)')
     g.add_argument('--generation-run', metavar='RUN', help='archive generation Run (default paths.ARCHIVE_RUN)')
     g.add_argument('--round', help='quarantine round: Run_SEARCH_QUARANTINE_<round> (default archive_quarantine.ROUND_DEFAULT; '
-                                   'production launches pass it, e.g. 20261012)')
+                                   'production launches pass it, e.g. 20261012); push --class hybrid: '
+                                   'Coadd/Run_NOTAPER_HYBRID_QUARANTINE_<round> (default the UTC date)')
     g.add_argument('--launch-epoch', metavar='UTC_S',
                    help='quarantine: frames last modified before this are earlier frames (default: the content of '
                         'archive_quarantine.LAUNCH_EPOCH_FILE)')
@@ -151,7 +152,8 @@ def add_arguments(p):
     g.add_argument('--cadences', help='retire-excluded: cadence directories scanned (default archive_retire.CADENCES)')
     g.add_argument('--staging-root', metavar='DIR',
                    help='push --class epoch: tree mirroring the archive layout that holds the hour\'s products (default '
-                        'archive_push.EPOCH_STAGING_ROOT; none = audit the archive\'s own files of the hour)')
+                        'archive_push.EPOCH_STAGING_ROOT; none = audit the archive\'s own files of the hour); push --class '
+                        'hybrid: the hybrid step\'s --out (its tilefill records)')
     g.add_argument('--workdir', help='supersede: the frame-time work directory W (W/out, W/cutouts; {cell} expanded)')
     g.add_argument('--ship-root', help='supersede: live per-cell tree (default paths.SNAPSHOT_FLEET_OUT)')
     g.add_argument('--phot-root', help='supersede: photometry cutout root (default photometry.CUTOUT_ROOT, the served '
