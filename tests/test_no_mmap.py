@@ -35,11 +35,24 @@ Lustre file, for reading OR writing"; the 11-09 and 11-16 lwacalim07 Lustre clie
    real Lustre file only the gate's decision is asked (refused, by its path and by its device; no refusal line) and the
    default and memmap=False reads read it with no /lustre mapping. FALSIFIER: the stand-in child with the gate taken out
    (mmap.mmap back to the builtin type) maps every stand-in file, writes no refusal line and fails the stand-in check.
+   The gate appends only to a log that exists (its collector made it): a collected (removed) log is never recreated, and
+   the refusal then adds a 'NO-LUSTRE-MAP-LOG:' line. A descriptor that cannot be judged (neither its path nor its mount
+   readable in /proc) is refused; one judged by either test alone is decided by it.
    Through core.legacy.run the child writes its lines to a file of that call: any line refuses the unit even when the child
-   caught every refusal and exited 0 (res.refused, res.map_refusals, the reason naming the first refused map), and the
-   lines are appended to the file the parent's own EXOPIPE3_MAP_REFUSAL_LOG names. On the cluster the children run through
-   core.legacy.run under py38 and py36 with and without --parity, and directly under flow (3.10) and the TESS interpreters
-   (3.12); elsewhere (CI) with this interpreter, stand-in only.
+   caught every refusal and exited 0 (res.refused, res.map_refusals - exactly the child's lines, in order - the reason naming
+   the first refused map). On the cluster the children run through core.legacy.run under py38 and py36 with and without
+   --parity, and directly under flow (3.10) and the TESS interpreters (3.12); elsewhere (CI) with this interpreter,
+   stand-in only.
+6. A REFUSED MAP IS STICKY (core/fallback.py MAP_KEY): every collector records each line as a refusal of the process's
+   fallback state, so the unit that was running refuses whatever the caller does with the result - core.legacy.run (its
+   call's file, and the gate's lines in the call's own output: a descendant that dropped the variable still wrote one to
+   stderr; with and without a log), serve's run_shell, and the step's own collector for plain subprocesses (export_env);
+   a refusal outside every unit refuses the run. The unit record lists the lines in 'map_refusals', the run summary in
+   'map_refusals_outside_units'. core.legacy.run leaves no file of its call behind, also when the call raises; an earlier
+   refusal reason is kept. Long-lived servers (serve's server_env, jupiter serve) get no collector. The callers that judge a
+   result themselves (sub-LST judge_own_lines, the curves classifier) keep a refused map refused. FALSIFIERS in the test:
+   without the output scan a dropped variable's refusal is lost; a plain subprocess without the step's collector leaves
+   the unit done; without map_refusals the two callers turn the call into an error / a done table.
 
 Run standalone: python tests/test_no_mmap.py    Under pytest: pytest tests/test_no_mmap.py
 """
@@ -611,6 +624,7 @@ def _gate_args(sc, mode, on='1'):
 def _gate_direct(py, sc, mode, on='1', pythonpath=(BOOT,), **extra):
     res = sc.result_path()
     env = {'XDG_CONFIG_HOME': sc.xdg, 'EXOPIPE3_MAP_REFUSAL_LOG': res + '.refusals'}
+    open(res + '.refusals', 'w').close()                 # the collector makes the log; the gate never creates it
     env.update(extra)
     p = subprocess.run([py, sc.gate_child, res] + _gate_args(sc, mode, on), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                        stdin=subprocess.DEVNULL, env=_env(pythonpath, **env), timeout=600)
@@ -727,6 +741,10 @@ def test_lustre_map_gate_standin():
         bad = os.path.join(sc.d, 'no_such_dir', 'refusals.log')
         _check_gate_standin(_gate_direct(sys.executable, sc, 'standin', EXOPIPE3_MAP_REFUSAL_LOG=bad), sc,
                             'gate, unwritable refusal log', logged=False)
+        gone = os.path.join(sc.d, 'collected.log')       # a log its collector already read and removed
+        _check_gate_standin(_gate_direct(sys.executable, sc, 'standin', EXOPIPE3_MAP_REFUSAL_LOG=gone), sc,
+                            'gate, collected refusal log', logged=False)
+        assert not os.path.exists(gone), ('the gate recreated a collected refusal log', gone)
         f = _check_gate_falsifier(_gate_direct(sys.executable, sc, 'standin', on='0'), sc, 'no gate')
         print('no-Lustre-map gate, Python %s: on the stand-in %d map calls refused (NoLustreMapError, errno 13, '
               'NO-LUSTRE-MAP text) and none mapped, the same calls outside it mapped, %s; header read with a map asked for '
@@ -735,8 +753,9 @@ def test_lustre_map_gate_standin():
                  '/dev/shm on another device)', f))
         print('no-Lustre-map gate, Python %s: %d refusal lines on stderr and in EXOPIPE3_MAP_REFUSAL_LOG, one per refused map '
               'in order, including the refusal a reader swallowed (it returned None, no map); none for the maps made '
-              'outside the stand-in, none without the gate; unwritable log path: the same refusals and lines plus one '
-              'NO-LUSTRE-MAP-LOG line each; first line: %s' % (r['python'], len(lines), lines[0]))
+              'outside the stand-in, none without the gate; unwritable log path, and a log already collected (removed; '
+              'not recreated): the same refusals and lines plus one NO-LUSTRE-MAP-LOG line each; first line: %s'
+              % (r['python'], len(lines), lines[0]))
     finally:
         sc.close()
 
@@ -750,7 +769,7 @@ def test_lustre_map_gate_children():
         print('      (skipped: no site file %s on this node - the gate children run on the cluster)' % site)
         return
     assert os.path.isfile(LUSTRE_FITS), ('the small Lustre FITS of this test is gone - name another', LUSTRE_FITS)
-    from exopipe.phase3.core import legacy
+    from exopipe.phase3.core import fallback, legacy
     saved = {k: os.environ.pop(k) for k in list(os.environ)
              if k == 'PYTHONPATH' or (k.startswith('EXOPIPE3_') and k != 'EXOPIPE3_SITE') or k.startswith('SUBLST_')}
     site_set = 'EXOPIPE3_SITE' in os.environ
@@ -765,18 +784,18 @@ def test_lustre_map_gate_children():
                     os.makedirs(kw['parity_root'])
                 for mode in ('standin', 'real'):
                     res = sc.result_path()
-                    os.environ['EXOPIPE3_MAP_REFUSAL_LOG'] = res + '.refusals'    # the child inherits it from this process
-                    try:
-                        lr = legacy.run(sc.gate_child, [res] + _gate_args(sc, mode), python=key,
-                                        env={'XDG_CONFIG_HOME': sc.xdg}, log=res + '.log', **kw)
-                    finally:
-                        os.environ.pop('EXOPIPE3_MAP_REFUSAL_LOG', None)
+                    m0 = fallback.mark()
+                    lr = legacy.run(sc.gate_child, [res] + _gate_args(sc, mode), python=key,
+                                    env={'XDG_CONFIG_HOME': sc.xdg}, log=res + '.log', **kw)
+                    taken = fallback.take(m0)[0]                  # what this process's running unit would take
                     assert lr.rc == 0 and os.path.isfile(res), (key, what, mode, lr.rc, lr.reason, lr.tail[-2000:])
                     with open(res + '.log') as f:
-                        r = _gate_result(res, f.read(), res + '.refusals')
+                        r = _gate_result(res, f.read(), res + '.no_such_log')
+                    r['_refusal_log'] = list(lr.map_refusals)    # the lines core.legacy.run collected
                     assert r['python'].startswith('3.6' if key == 'py36' else '3.8'), (key, r['python'])
+                    assert taken == [(fallback.MAP_KEY, x) for x in lr.map_refusals], (key, what, mode, 'state', taken)
                     if mode == 'standin':
-                        nlines = len(_check_gate_standin(r, sc, (key, what)))   # the parent's file got every line
+                        nlines = len(_check_gate_standin(r, sc, (key, what)))   # the call collected every line, in order
                         # the child caught every refusal and exited 0: core.legacy.run refuses the unit all the same
                         assert (lr.refused and not lr.ok and len(lr.map_refusals) == nlines
                                 and all(m.startswith('NO-LUSTRE-MAP: ') for m in lr.map_refusals)
@@ -797,8 +816,9 @@ def test_lustre_map_gate_children():
                                                      SUBLST_CODE_ROOT=froot), sc, (key, 'frozen-code guard', order))
                 frozen = 'the gate in place with it first or second on the path'
             print('no-Lustre-map gate, core.legacy.run %s (Python %s), with and without --parity: stand-in maps refused, '
-                  'outside mapped, %d refusal lines in the child log and in the parent\'s EXOPIPE3_MAP_REFUSAL_LOG, the '
-                  'swallowed refusal included, the unit refused at exit 0; %s refused by path and by device without a map, read with the defaults and '
+                  'outside mapped, %d refusal lines in the child log and collected by the call (res.map_refusals and this '
+                  'process\'s state, in order), the swallowed refusal included, the unit refused at exit 0; %s refused by '
+                  'path and by device without a map, read with the defaults and '
                   'memmap=False, no /lustre mapping, no refusal line; frozen-code guard: %s; falsifier: %s'
                   % (key, r['python'], nlines, LUSTRE_FITS, frozen, f[:120]))
         pys = [('flow', legacy.interpreter('flow')), ('tess', legacy.interpreter('tess')), ('tess /fast', TESS_FAST)]
@@ -822,6 +842,447 @@ def test_lustre_map_gate_children():
         os.environ.update(saved)
 
 
+# ---- 6. a refused map is sticky ------------------------------------------------------------------------------------------
+# The mini child (Python 3.6+; neither numpy nor astropy): argv = stand-in dir, action. It points the gate's prefix at the
+# stand-in and maps raw.bin there once, swallowing the refusal ('one'); or a grandchild does that with the collector's
+# variable dropped ('drop') or naming a path that cannot be written ('badlog'); or one refused map, then the script refuses
+# on its own (a REFUSED line, exit 2: 'refused2') or fails (exit 1: 'error1').
+MINI_CHILD = r'''
+import mmap, os, subprocess, sys
+standin, action = sys.argv[1], sys.argv[2]
+if hasattr(mmap.mmap, 'lustre_refusal'):
+    mmap.mmap.lustre_prefixes, mmap.mmap.lustre_devices = (os.path.realpath(standin) + os.sep,), frozenset()
+
+
+def refuse_one():
+    with open(os.path.join(standin, 'raw.bin'), 'rb') as f:
+        try:
+            mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ).close()
+        except Exception:
+            pass                                         # swallowed: the production pattern
+
+
+def grandchild(log):
+    env = dict(os.environ)
+    if log is None:
+        env.pop('EXOPIPE3_MAP_REFUSAL_LOG', None)
+    else:
+        env['EXOPIPE3_MAP_REFUSAL_LOG'] = log
+    subprocess.check_call([sys.executable, os.path.abspath(__file__), standin, 'one'], env=env)
+
+
+if action == 'one':
+    refuse_one()
+elif action == 'drop':
+    grandchild(None)
+elif action == 'badlog':
+    grandchild(os.path.join(standin, 'no_such_dir', 'refusals.log'))
+elif action == 'refused2':
+    refuse_one()
+    print('REFUSED: the script refuses on its own')
+    sys.exit(2)
+elif action == 'error1':
+    refuse_one()
+    sys.exit(1)
+print('mini child done')
+'''
+
+# A step process (fresh interpreter): argv = repo, run dir, mini child, stand-in, BOOT, 'step' (export_env first, as
+# cli.main) or 'plain' (the falsifier: no step collector), result file. A plain subprocess refuses one map inside a unit and
+# one outside every unit, each swallowed (exit 0).
+STEP_CHILD = r'''
+import json, os, subprocess, sys
+repo, d, mini, standin, boot, mode, res = sys.argv[1:8]
+sys.path.insert(0, repo)
+from exopipe.phase3.config import CFG
+from exopipe.phase3.core import fallback, record
+if mode == 'step':
+    fallback.export_env()
+CFG.authorize([], out=d)
+out = os.path.join(d, 'a.csv')
+with open(out, 'w') as f:
+    f.write('a\n1\n')
+run = record.Run('t6s', ['x'], d, CFG, config_sections=())
+env = dict(os.environ, PYTHONPATH=boot)
+quiet = dict(env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+with run.unit('plain') as u:
+    subprocess.check_call([sys.executable, mini, standin, 'one'], **quiet)
+    u.add_output(out, 'csv_table')
+rec = record.load_record(d, 't6s', 'plain')
+subprocess.check_call([sys.executable, mini, standin, 'one'], **quiet)
+code = run.exit_code()
+with open(run.write_summary()) as f:
+    summ = json.load(f)
+with open(res, 'w') as f:
+    json.dump({'status': u.status, 'reason': u.reason, 'map_refusals': rec.get('map_refusals'),
+               'fallback_refusals': rec.get('fallback_refusals'), 'exit_code': code,
+               'outside': summ.get('map_refusals_outside_units'), 'step_file': fallback._MAP_STEP.get('path'),
+               'env': os.environ.get(fallback.MAP_ENV)}, f)
+'''
+
+# The gate's decision when /proc cannot answer (argv = result file, local file, refusal log): os.readlink (the path) and the
+# gate's _lustre_mount (the mounts; None = unreadable) replaced in turn; a map of the local file each time.
+UNDECIDED_CHILD = r'''
+import json, mmap, os, sys
+res, local = sys.argv[1], sys.argv[2]
+mods = [m for m in list(sys.modules.values()) if getattr(m, '_NoLustreMap', None) is mmap.mmap]
+out = {'gate': len(mods) == 1}
+if out['gate']:
+    S = mods[0]
+    real_readlink, real_mount = os.readlink, S._lustre_mount
+
+    def no_readlink(*a, **k):
+        raise OSError(13, 'Permission denied')
+
+    for name, rl, lm in (('neither', no_readlink, lambda dev: None), ('mount_only', no_readlink, real_mount),
+                         ('path_only', real_readlink, lambda dev: None), ('both', real_readlink, real_mount)):
+        os.readlink, S._lustre_mount = rl, lm
+        try:
+            with open(local, 'rb') as f:
+                try:
+                    mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ).close()
+                    out[name] = None
+                except Exception as e:
+                    out[name] = {'type': type(e).__name__, 'errno': getattr(e, 'errno', None), 'text': str(e),
+                                 'fd': f.fileno(), 'pid': os.getpid()}
+        finally:
+            os.readlink, S._lustre_mount = real_readlink, real_mount
+with open(res, 'w') as f:
+    json.dump(out, f)
+'''
+
+
+class _Section6(object):
+    """Section 6 in this process: os.environ without PYTHONPATH and the exopipe3 child variables (EXOPIPE3_SITE kept), as
+    _env; core.legacy.run's interpreter = this one (CI has no site file); tempfile's directory = a private one, where each
+    call makes its own files (no_leftovers counts them); CFG authorized for the scratch; all undone at the end."""
+
+    def __enter__(self):
+        from exopipe.phase3.config import CFG
+        from exopipe.phase3.core import legacy
+        self.saved = {k: os.environ.pop(k) for k in list(os.environ)
+                      if k == 'PYTHONPATH' or (k.startswith('EXOPIPE3_') and k != 'EXOPIPE3_SITE') or k.startswith('SUBLST_')}
+        self.legacy, self.interpreter, self.tempdir = legacy, legacy.interpreter, tempfile.tempdir
+        self.cfg, self.auth = CFG, dict(CFG._auth)
+        self.sc = _Scratch()
+        self.d = self.sc.d
+        self.tmp, self.standin = os.path.join(self.d, 'calls_tmp'), os.path.join(self.d, 'standin6')
+        for x in (self.tmp, self.standin):
+            os.makedirs(x)
+        self.raw = os.path.realpath(os.path.join(self.standin, 'raw.bin'))
+        with open(self.raw, 'wb') as f:
+            f.write(bytes(bytearray(range(256))))
+        self.mini = os.path.join(self.d, 'mini_child.py')
+        with open(self.mini, 'w') as f:
+            f.write(MINI_CHILD)
+        self.out = os.path.join(self.d, 'a.csv')
+        with open(self.out, 'w') as f:
+            f.write('a\n1\n')
+        legacy.interpreter = lambda name='default': sys.executable
+        tempfile.tempdir = self.tmp
+        CFG.authorize([], out=self.d)
+        self.want = 'NO-LUSTRE-MAP: %s pid ' % self.raw            # the start of the gate's line for raw.bin
+        return self
+
+    def line_ok(self, ln):
+        return ln.startswith(self.want) and ln.endswith(' ' + RULING)
+
+    def no_leftovers(self, what):
+        left = [x for x in os.listdir(self.tmp) if x.startswith(('exopipe3_maprefusal_', 'exopipe3_fp_', 'exopipe3_fb_'))]
+        assert left == [], (what, 'files of a call left behind', left)
+
+    def __exit__(self, *exc):
+        self.legacy.interpreter, tempfile.tempdir = self.interpreter, self.tempdir
+        self.cfg.reset()
+        self.cfg._auth = self.auth
+        os.environ.update(self.saved)
+        self.sc.close()
+
+
+def _collect_quiet(path):
+    """map_collect without the sticky record (the code before PR 103's review: the lines came back in the result only)."""
+    try:
+        with open(path) as f:
+            return [ln for ln in f.read().splitlines() if ln.strip()]
+    finally:
+        os.remove(path)
+
+
+def test_map_collect_counts_each_refusal_once():
+    """fallback.map_collect: the call file's lines, then the gate's lines found only in the call's output and not among
+    `seen`, each refused map once; recorded under MAP_KEY in this thread's state; the file removed; other text ignored."""
+    from exopipe.phase3.core import fallback
+    sc = _Scratch()
+    try:
+        a, b, c = ('NO-LUSTRE-MAP: /x/%s pid 7 %s' % (n, RULING) for n in ('a.fits', 'b.fits', 'c.fits'))
+        p = os.path.join(sc.d, 'call.log')
+        with open(p, 'w') as f:
+            f.write(a + '\n' + a + '\n')                 # one process refused the same file twice: two refusals
+        output = ['other output', a, 'NO-LUSTRE-MAP-LOG: not appended', b, a, a + ' trailing', c + '\r\n',
+                  'NO-LUSTRE-MAP: /x/d.fits pid x ' + RULING]
+        m = fallback.mark()
+        got = fallback.map_collect(p, output, seen=[c])
+        assert got == [a, a, b], got
+        assert fallback.since(m)[0] == [(fallback.MAP_KEY, x) for x in (a, a, b)], fallback.since(m)
+        assert not os.path.exists(p), 'the call file was not removed'
+        m = fallback.mark()
+        assert fallback.map_collect(os.path.join(sc.d, 'never_made.log'), [b]) == [b], 'output only'
+        assert fallback.since(m)[0] == [(fallback.MAP_KEY, b)], fallback.since(m)
+        assert fallback.refusal_text(fallback.MAP_KEY, a) == a
+        assert fallback.refusal_text('fallbacks.X', 'y') == 'B-30 fallback site fallbacks.X: y'
+        print('map_collect: file lines + output-only gate lines, each refused map once (a line in both once, a seen line '
+              'not again, non-gate text ignored), recorded under %s, file removed' % fallback.MAP_KEY)
+    finally:
+        sc.close()
+
+
+def test_refused_map_is_sticky_through_core_legacy_run():
+    """Section 6 through core.legacy.run (data-free; CI): the unit refuses when the caller drops the result; a descendant
+    that dropped the variable or could not write the log is still counted (output scan); the reasons; no file of a call left
+    behind (also when the call raises); a refusal outside every unit refuses the run. FALSIFIERS: no sticky record -> the
+    unit is done; no output scan -> the dropped variable's refusal is lost."""
+    from exopipe.phase3.core import fallback, legacy, record
+    with _Section6() as s6:
+        base = os.path.basename(s6.mini)
+        run = record.Run('t6', ['x'], s6.d, s6.cfg, config_sections=())
+        with run.unit('dropped') as u:                   # the caller drops the result (no unit=, no check)
+            legacy.run(s6.mini, [s6.standin, 'one'], log=os.path.join(s6.d, 'c1.log'))
+            u.add_output(s6.out, 'csv_table')
+        rec = record.load_record(s6.d, 't6', 'dropped')
+        assert u.status == 'refused' and s6.line_ok(u.reason.split(' - REFUSED')[0]), (u.status, u.reason)
+        assert u.reason.endswith(' - REFUSED (caught before the unit; 1 refusal(s) in the unit)'), u.reason
+        assert len(rec.get('map_refusals') or []) == 1 and s6.line_ok(rec['map_refusals'][0]), rec
+        assert 'fallback_refusals' not in rec, rec
+        s6.no_leftovers('dropped')
+        real = fallback.map_collect
+        fallback.map_collect = lambda path, output=(), seen=(): _collect_quiet(path)
+        try:
+            with run.unit('dropped_unrecorded') as u0:
+                lr0 = legacy.run(s6.mini, [s6.standin, 'one'], log=os.path.join(s6.d, 'c0.log'))
+                u0.add_output(s6.out, 'csv_table')
+        finally:
+            fallback.map_collect = real
+        assert lr0.refused and u0.status == 'done', ('falsifier void: the unit refused without the sticky record',
+                                                     lr0.refused, u0.status)
+        for action, log in (('drop', 'c2.log'), ('badlog', 'c3.log'), ('drop', None)):
+            with run.unit('%s_%s' % (action, log)) as u:
+                lr = legacy.run(s6.mini, [s6.standin, action], log=os.path.join(s6.d, log) if log else None)
+                u.add_output(s6.out, 'csv_table')
+            assert lr.rc == 0 and lr.refused and len(lr.map_refusals) == 1 and s6.line_ok(lr.map_refusals[0]), (
+                action, log, lr.rc, lr.refused, lr.map_refusals, lr.tail[-1500:])
+            assert u.status == 'refused', (action, log, u.status, u.reason)
+        s6.no_leftovers('drop / badlog')
+        real_scan = legacy._map_lines_from
+        legacy._map_lines_from = lambda src, start: []
+        try:
+            lrf = legacy.run(s6.mini, [s6.standin, 'drop'], log=os.path.join(s6.d, 'c4.log'))
+        finally:
+            legacy._map_lines_from = real_scan
+        assert lrf.ok and not lrf.refused and lrf.map_refusals == [], ('falsifier void: counted without the output scan',
+                                                                      lrf.reason)
+        lr = legacy.run(s6.mini, [s6.standin, 'one'])
+        assert lr.rc == 0 and lr.reason == '%s: %s - REFUSED' % (base, lr.map_refusals[0]), lr.reason
+        lr = legacy.run(s6.mini, [s6.standin, 'refused2'])
+        assert (lr.rc == 2 and lr.refused and lr.reason.startswith('%s exit 2 (REFUSED: ' % base)
+                and lr.reason.endswith('; %s: %s - REFUSED' % (base, lr.map_refusals[0]))), (lr.rc, lr.reason)
+        lr = legacy.run(s6.mini, [s6.standin, 'error1'])
+        assert lr.rc == 1 and lr.refused and lr.reason == '%s exit 1; %s: %s - REFUSED' % (
+            base, base, lr.map_refusals[0]), (lr.rc, lr.reason)
+        s6.no_leftovers('reasons')
+        try:
+            legacy.run(s6.mini, [s6.standin, 'one'], cwd=os.path.join(s6.d, 'no_such_dir'))
+        except OSError:
+            pass
+        else:
+            raise AssertionError('a call with a working directory that does not exist did not raise')
+        s6.no_leftovers('a call that raised')
+        run_o = record.Run('t6o', ['x'], s6.d, s6.cfg, config_sections=())
+        assert run_o.exit_code() != 2, run_o.fallback_outside()
+        legacy.run(s6.mini, [s6.standin, 'one'])                     # outside every unit
+        assert run_o.exit_code() == 2, ('a refused map outside every unit does not refuse the run', run_o.fallback_outside())
+        with open(run_o.write_summary()) as f:
+            summ = json.load(f)
+        assert (len(summ.get('map_refusals_outside_units') or []) == 1 and s6.line_ok(summ['map_refusals_outside_units'][0])
+                and 'fallback_refusals_outside_units' not in summ), summ
+        print('core.legacy.run: a refused map refuses the unit when the caller drops the result (record map_refusals); a '
+              'descendant without the variable or with an unwritable log still counted (with and without a log file); '
+              'reasons at exit 0 / exit 2 + REFUSED / exit 1 name the map; no call file left (also when the call raises); '
+              'outside every unit: the run refused, map_refusals_outside_units; falsifiers: unit done without the sticky '
+              'record, refusal lost without the output scan')
+
+
+def test_refused_map_is_sticky_in_a_step():
+    """Section 6, the step's own collector (export_env, as cli.main): a plain subprocess's refused map refuses the unit, and
+    one outside every unit refuses the run; the step's file is removed at exit. FALSIFIER: the same step without export_env
+    leaves the unit done and the run unrefused."""
+    sc = _Scratch()
+    try:
+        standin = os.path.join(sc.d, 'standin6')
+        os.makedirs(standin)
+        with open(os.path.join(standin, 'raw.bin'), 'wb') as f:
+            f.write(bytes(bytearray(range(256))))
+        mini, child = os.path.join(sc.d, 'mini_child.py'), os.path.join(sc.d, 'step_child.py')
+        for p, text in ((mini, MINI_CHILD), (child, STEP_CHILD)):
+            with open(p, 'w') as f:
+                f.write(text)
+        want = 'NO-LUSTRE-MAP: %s pid ' % os.path.realpath(os.path.join(standin, 'raw.bin'))
+        got = {}
+        for mode in ('step', 'plain'):
+            res, d = sc.result_path(), os.path.join(sc.d, 'run_' + mode)
+            os.makedirs(d)
+            p = subprocess.run([sys.executable, child, REPO, d, mini, standin, BOOT, mode, res], stdout=subprocess.PIPE,
+                               stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, env=_env(XDG_CONFIG_HOME=sc.xdg),
+                               timeout=600)
+            assert p.returncode == 0 and os.path.isfile(res), (mode, p.returncode, p.stdout.decode('utf-8', 'replace')[-3000:])
+            with open(res) as f:
+                got[mode] = json.load(f)
+        r = got['step']
+        assert r['status'] == 'refused' and r['reason'].startswith(want), r
+        assert len(r['map_refusals'] or []) == 1 and r['map_refusals'][0].startswith(want) and not r['fallback_refusals'], r
+        assert r['exit_code'] == 2 and len(r['outside'] or []) == 1 and r['outside'][0].startswith(want), r
+        assert r['env'] == r['step_file'] and r['step_file'] and not os.path.exists(r['step_file']), (
+            'the step file is not this process\'s variable, or was left behind', r)
+        f = got['plain']
+        assert f['status'] == 'done' and not f['map_refusals'] and f['exit_code'] == 0 and not f['outside'], (
+            'falsifier void: refused without the step collector', f)
+        print('step collector (export_env): a plain subprocess\'s refused map refuses the unit and, outside every unit, the '
+              'run (exit 2); the step file removed at exit; falsifier (no export_env): unit done, run exit 0')
+    finally:
+        sc.close()
+
+
+def test_refused_map_is_sticky_through_run_shell_and_servers_get_no_collector():
+    """Section 6, serve: run_shell refuses the running unit when a script's Python child refused a map (result dropped), its
+    call file removed; server_env and jupiter serve's start() give a long-lived server no collector variable. FALSIFIERS:
+    run_shell without the sticky record leaves the unit done; the probe child reads the variable when it is passed."""
+    import types
+    from exopipe.phase3.core import fallback, record
+    from exopipe.phase3.lib.serve import scripts
+    from exopipe.phase3.lib.jupiter import serve as jserve
+    with _Section6() as s6:
+        sh = os.path.join(s6.d, 'mini.sh')
+        with open(sh, 'w') as f:
+            f.write('#!/bin/bash\n"$1" "$2" "$3" one\necho "shell done"\n')
+        saved = scripts.path, scripts.ops_root
+        scripts.path, scripts.ops_root = (lambda name: sh), (lambda: s6.d)
+        try:
+            run = record.Run('t6r', ['x'], s6.d, s6.cfg, config_sections=())
+            with run.unit('shell') as u:
+                rc, out = scripts.run_shell('snapshot_localize', [sys.executable, s6.mini, s6.standin])   # result dropped
+                u.add_output(s6.out, 'csv_table')
+            assert rc == 0 and 'shell done' in out and any(s6.line_ok(x) for x in out.splitlines()), (rc, out[-1500:])
+            rec = record.load_record(s6.d, 't6r', 'shell')
+            assert u.status == 'refused' and len(rec.get('map_refusals') or []) == 1, (u.status, u.reason, rec)
+            s6.no_leftovers('run_shell')
+            real = fallback.map_collect
+            fallback.map_collect = lambda path, output=(), seen=(): _collect_quiet(path)
+            try:
+                with run.unit('shell_unrecorded') as u0:
+                    scripts.run_shell('snapshot_localize', [sys.executable, s6.mini, s6.standin])
+                    u0.add_output(s6.out, 'csv_table')
+            finally:
+                fallback.map_collect = real
+            assert u0.status == 'done', ('falsifier void: run_shell refused the unit without the sticky record', u0.reason)
+        finally:
+            scripts.path, scripts.ops_root = saved
+        outer = os.path.join(s6.d, 'outer.log')
+        os.environ[fallback.MAP_ENV] = outer
+        try:
+            assert fallback.MAP_ENV not in scripts.server_env({}), 'server_env hands the collector variable to a server'
+            probe = ('import os, sys\nwith open(sys.argv[1], "w") as f:\n    f.write(os.environ.get(sys.argv[2], "<unset>"))\n')
+            seen = os.path.join(s6.d, 'probe_server.txt')
+            spec = {'argv': [sys.executable, '-c', probe, seen, fallback.MAP_ENV], 'cwd': s6.d,
+                    'log': os.path.join(s6.d, 'jupiter_logs', 'probe.log')}
+            p = jserve.start(spec, types.SimpleNamespace(guard=()))
+            assert p.wait(timeout=120) == 0, 'the probe server did not exit 0'
+            with open(seen) as f:
+                assert f.read() == '<unset>', 'jupiter serve start() hands the collector variable to a server'
+            seen2 = os.path.join(s6.d, 'probe_plain.txt')
+            subprocess.check_call([sys.executable, '-c', probe, seen2, fallback.MAP_ENV], env=dict(os.environ))
+            with open(seen2) as f:
+                assert f.read() == outer, 'falsifier void: the probe does not see the variable when it is passed'
+        finally:
+            os.environ.pop(fallback.MAP_ENV, None)
+        print('run_shell: a refused map in the script\'s Python child refuses the unit (result dropped), call file removed; '
+              'falsifier: unit done without the sticky record. server_env and jupiter serve start(): no collector variable '
+              '(a probe started by start() reads it unset; the same probe run plainly reads it)')
+
+
+def test_callers_keep_a_refused_map_refused():
+    """The callers that judge a result themselves: sub-LST judge_own_lines leaves a refused map refused (FALSIFIER: without
+    map_refusals it re-judges the call an error); the curves classifier makes it 'refused' (gate NO-LUSTRE-MAP) although the
+    table exists at exit 0 (FALSIFIER: without map_refusals it is 'done')."""
+    import types
+    from exopipe.phase3.lib.frames import tier_sublst
+    from exopipe.phase3.lib.curves import workers
+    line = 'NO-LUSTRE-MAP: /x/a.fits pid 7 ' + RULING
+
+    def res(maps, rc):
+        return types.SimpleNamespace(rc=rc, refused=bool(maps) or rc == 2, reason='x.py exit %d; x.py: %s - REFUSED' % (rc, line),
+                                     map_refusals=list(maps), fallback_refusals=[], tail='', wall_s=0.1, log=None)
+    own = ['===== 2026-11-18T00:00:00Z py x.py', 'some output']
+    r = res([line], 1)
+    tier_sublst.judge_own_lines(r, own, 'x.py', (2,))
+    assert r.refused is True and r.reason.endswith(line + ' - REFUSED'), (r.refused, r.reason)
+    f = res([], 1)
+    f.refused = True
+    tier_sublst.judge_own_lines(f, own, 'x.py', (2,))
+    assert f.refused is False and f.reason == 'x.py exit 1 - error', ('falsifier void', f.refused, f.reason)
+    sc = _Scratch()
+    try:
+        table = os.path.join(sc.d, 'curve.csv')
+        with open(table, 'w') as fh:
+            fh.write('a\n1\n')
+        c = workers.classify(res([line], 0), table, 'cell', 'sb', 'I')
+        assert c['status'] == 'refused' and c['gate'] == 'NO-LUSTRE-MAP' and line in c['reason'], c
+        c0 = workers.classify(res([], 0), table, 'cell', 'sb', 'I')
+        assert c0['status'] == 'done', ('falsifier void', c0)
+    finally:
+        sc.close()
+    print('callers: judge_own_lines keeps a refused map refused (without map_refusals: re-judged "exit 1 - error"); curves '
+          'classify -> refused, gate NO-LUSTRE-MAP, at exit 0 with the table written (without: done)')
+
+
+def test_undecidable_descriptor_is_refused():
+    """The gate when /proc cannot answer: neither the path nor the mounts readable -> refused (a line naming the
+    descriptor); either one readable -> decided by it (a local file maps)."""
+    sc = _Scratch()
+    try:
+        child, res, log = os.path.join(sc.d, 'undecided_child.py'), sc.result_path(), os.path.join(sc.d, 'undecided.log')
+        with open(child, 'w') as f:
+            f.write(UNDECIDED_CHILD)
+        open(log, 'w').close()
+        p = subprocess.run([sys.executable, child, res, sc.local], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                           stdin=subprocess.DEVNULL, env=_env((BOOT,), XDG_CONFIG_HOME=sc.xdg, EXOPIPE3_MAP_REFUSAL_LOG=log),
+                           timeout=600)
+        assert p.returncode == 0 and os.path.isfile(res), (p.returncode, p.stdout.decode('utf-8', 'replace')[-2000:])
+        with open(res) as f:
+            r = json.load(f)
+        assert r['gate'] is True, r
+        n = r['neither']
+        assert n and n['type'] == 'NoLustreMapError' and n['errno'] == 13 and 'cannot be judged' in n['text'], r
+        want = 'NO-LUSTRE-MAP: descriptor %d pid %d %s' % (n['fd'], n['pid'], RULING)
+        with open(log) as f:
+            assert f.read().splitlines() == [want], ('the refusal line', want)
+        assert r['mount_only'] is None and r['path_only'] is None and r['both'] is None, r
+        from exopipe.phase3.core import fallback
+        assert fallback.map_lines([want]) == [want], 'the collectors do not recognize the line of an undecidable descriptor'
+        print('undecidable descriptor (no path, no mounts): refused, line "%s"; path or mounts readable: decided by it (a '
+              'local file maps)' % want[:60])
+    finally:
+        sc.close()
+
+
+def test_map_ruling_ids_agree():
+    """The collectors' ruling ID (core/fallback.py MAP_RULING_ID) is the gate's (sitecustomize _LUSTRE_RULING_ID)."""
+    from exopipe.phase3.core import fallback
+    with open(SITECUSTOMIZE) as f:
+        tree = ast.parse(f.read())
+    ids = [ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign)
+           and any(getattr(t, 'id', None) == '_LUSTRE_RULING_ID' for t in n.targets)]
+    assert ids == [fallback.MAP_RULING_ID] == [RULING], (ids, fallback.MAP_RULING_ID)
+
+
 if __name__ == '__main__':
     test_pattern_catches_the_forms()
     test_import_turns_memmap_off()
@@ -831,4 +1292,11 @@ if __name__ == '__main__':
     test_inplace_children_through_core_legacy_run()
     test_lustre_map_gate_standin()
     test_lustre_map_gate_children()
+    test_map_collect_counts_each_refusal_once()
+    test_refused_map_is_sticky_through_core_legacy_run()
+    test_refused_map_is_sticky_in_a_step()
+    test_refused_map_is_sticky_through_run_shell_and_servers_get_no_collector()
+    test_callers_keep_a_refused_map_refused()
+    test_undecidable_descriptor_is_refused()
+    test_map_ruling_ids_agree()
     print('PASS: no memory maps')

@@ -406,13 +406,20 @@ if _FITS_MOD in sys.modules:
 # which astropy answers with a second map) whose text starts 'NO-LUSTRE-MAP:' and names the file and the ruling; it is also
 # mmap.NoLustreMapError, so a pool worker's refusal unpickles in its parent. The decision reads /proc, never Lustre.
 # Before it raises, each refusal writes one line, 'NO-LUSTRE-MAP: <real path> pid <pid> <ruling>', to stderr (descriptor 2:
-# a redirect of sys.stderr does not hide it) and appends it to the file $EXOPIPE3_MAP_REFUSAL_LOG names, when set (a failed
-# append adds a 'NO-LUSTRE-MAP-LOG:' line on stderr): a caller that swallows the exception (`except Exception: return None`
-# around a FITS read) cannot hide the refusal.
-# Unchanged: anonymous maps (fileno -1), maps of node-local files (/fast, /dataNN, /dev/shm, /tmp), a FITS header read with
-# a map asked for (it maps nothing). astropy and numpy are not imported here. NOT covered: a map made in C (casacore maps
-# tables only when its tsm option says so; its default reads them - py36, py38 and flow, 2026-11-17), a process that does
-# not load this file (a program not in Python, python -I or -S, a PYTHONPATH without this directory).
+# a redirect of sys.stderr does not hide it) and appends it to the file $EXOPIPE3_MAP_REFUSAL_LOG names, when set and only
+# when that file exists (its collector made it; a descendant that outlives the collection never recreates it) - a failed
+# append adds a 'NO-LUSTRE-MAP-LOG:' line on stderr: a caller that swallows the exception (`except Exception: return None`
+# around a FITS read) cannot hide the refusal. The collectors (core.legacy.run, serve's run_shell, the step itself:
+# core/fallback.py) record each line as a sticky refusal: the unit that was running refuses.
+# A descriptor that cannot be judged - neither its path nor its mount readable in /proc - is refused too (never assumed
+# local). Unchanged: anonymous maps (fileno -1), maps of node-local files (/fast, /dataNN, /dev/shm, /tmp), a FITS header
+# read with a map asked for (it maps nothing). astropy and numpy are not imported here. NOT covered: a map made in C
+# (casacore maps tables only when its tsm option says so; its default reads them - py36, py38 and flow, 2026-11-17), a
+# process that does not load this file (a program not in Python, python -I or -S, a PYTHONPATH without this directory).
+# KNOWN FALSE REFUSAL: a library that TRIES a map and reads without one when it fails still gets the line, and its unit
+# refuses although the data was read without a map - PIL's ImageFile.load on a raw single-tile image opened by file name
+# (BMP, PPM, uncompressed TIFF) on Lustre; PNG (the pipeline's image format) never tries a map. Open such an image through
+# a file object (Image.open(open(path, 'rb'))), which PIL never maps.
 import errno as _errno
 import mmap as _mmap
 
@@ -429,14 +436,14 @@ class NoLustreMapError(PermissionError):
 
 
 def _lustre_mount(dev, _seen={}):              # _seen: the answer per device, kept for the life of the process
-    """Is device ``dev`` a mount of type lustre in /proc/self/mountinfo?"""
+    """Is device ``dev`` a mount of type lustre in /proc/self/mountinfo? None when that cannot be read."""
     hit = _seen.get(dev)
     if hit is None:
         try:
             with open('/proc/self/mountinfo') as f:
                 rows = [line.partition(' - ') for line in f]
         except OSError:
-            return False                        # not kept: asked again at the next map
+            return None                         # not kept: asked again at the next map
         hit = False
         for head, sep, tail in rows:
             fields = head.split()
@@ -467,7 +474,7 @@ def _report_refusal(where):
     log = os.environ.get('EXOPIPE3_MAP_REFUSAL_LOG')
     if log:
         try:
-            fd = os.open(log, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o664)
+            fd = os.open(log, os.O_WRONLY | os.O_APPEND)    # never O_CREAT: the collector made it, and may have read it
             try:
                 os.write(fd, data)
             finally:
@@ -504,18 +511,22 @@ class _NoLustreMap(_MMAP):
         except OSError:
             path = None
         hit = path is not None and path.startswith(tuple(gate.lustre_prefixes))
+        undecided = False
         if not hit:
             try:
                 dev = os.fstat(fd).st_dev
             except OSError:
-                return None
+                return None                     # not an open descriptor: the builtin type refuses it (EBADF)
             hit = dev in gate.lustre_devices if gate.lustre_devices is not None else _lustre_mount(dev)
+            if hit is None:                     # the mounts cannot be read: judged by the path alone, refused without one
+                hit = undecided = path is None
         if not hit:
             return None
         where = path or 'descriptor %d' % fd
-        return NoLustreMapError(_errno.EACCES, 'NO-LUSTRE-MAP: a memory map of the Lustre file %s is refused (%s); read it '
-                                'without a map (astropy memmap=False, numpy without mmap_mode)' % (where, _LUSTRE_RULING),
-                                where)
+        what = ('a memory map of %s, which cannot be judged (neither its path nor its mount can be read in /proc),' % where
+                if undecided else 'a memory map of the Lustre file %s' % where)
+        return NoLustreMapError(_errno.EACCES, 'NO-LUSTRE-MAP: %s is refused (%s); read it without a map (astropy '
+                                'memmap=False, numpy without mmap_mode)' % (what, _LUSTRE_RULING), where)
 
     def __new__(cls, *args, **kwargs):
         refused = _NoLustreMap.lustre_refusal(args[0] if args else kwargs.get('fileno', -1))

@@ -75,6 +75,11 @@ def classify(res, table, cell, sb, st):
     line of its output."""
     tail = res.tail or ''
     out = {'rc': res.rc, 'wall_s': res.wall_s, 'log': res.log}
+    if getattr(res, 'map_refusals', None) or getattr(res, 'fallback_refusals', None):
+        # sticky (core.legacy.run): a memory map of a Lustre file or a B-30 fallback site was refused in the child, whatever
+        # it did next - a table it still wrote lacks that data. Checked here: this pool's threads are not the unit's.
+        out.update(status='refused', gate='NO-LUSTRE-MAP' if getattr(res, 'map_refusals', None) else 'B-30', reason=res.reason)
+        return out
     if res.rc == 0 and os.path.exists(table):
         out.update(status='done', path=table)
         return out

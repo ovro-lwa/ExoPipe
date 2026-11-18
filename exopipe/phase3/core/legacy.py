@@ -18,9 +18,11 @@ What the child gets:
   ``res.fallbacks`` / ``res.fallback_refusals`` and into this process's fallback state, so the running unit records
   them (a refusal makes ``refused`` True even at exit 0, and the unit refuses - core/fallback.py);
 - the refusal of a memory map of a Lustre file (core/parity_sitecustomize/sitecustomize.py): EXOPIPE3_MAP_REFUSAL_LOG names
-  a file of this call, where the child and its descendants write one line per refused map; any line makes ``refused``
-  True even at exit 0 (a child that caught the refusal carried on without that file's data), the lines come back in
-  ``res.map_refusals``, and a file the parent's own environment named gets them too;
+  a file of this call, where the child and its descendants write one line per refused map (and to stderr: the gate's
+  lines in this call's own output count too); any line makes ``refused`` True even at exit 0 (a child that caught the
+  refusal carried on without that file's data), the lines come back in ``res.map_refusals`` and go into this process's
+  fallback state under fallback.MAP_KEY, so the running unit refuses whatever the caller does with ``res`` (sticky, as a
+  B-30 refusal; core/fallback.py). A child's own nested core.legacy.run calls report theirs through its fallback dump;
 - in an INJECTED run (core/injected.py) EXOPIPE3_INJECTED and P3_SNAP_INJECTED=1, set after ``env`` so no caller drops them;
   the write guard reaches the child through EXOPIPE3_PARITY_ROOT, as for a parity run. P3_SNAP_INJECTED binds only an engine
   that honors it: phase3_snapshot_search.run_search resets it from its own --inject argument and regen_cutouts removes it,
@@ -35,7 +37,6 @@ import json
 import os
 import re
 import subprocess
-import sys
 import tempfile
 import time
 
@@ -152,39 +153,80 @@ def run(target, args=(), python='default', module=False, env=None, cwd=None, log
     proot = parity_root or os.environ.get('EXOPIPE3_PARITY_ROOT')
     if proot:
         child['EXOPIPE3_PARITY_ROOT'] = proot
-    fp_fd, fp_path = tempfile.mkstemp(prefix='exopipe3_fp_', suffix='.json')
-    os.close(fp_fd)
-    child['EXOPIPE3_FINGERPRINT_OUT'] = fp_path
-    child['EXOPIPE3_FINGERPRINT_ROOTS'] = os.pathsep.join(cfg.site.LEGACY_CODE_ROOTS)
     from exopipe.phase3.core import fallback, wrap
     child.update(fallback.child_env())
     child.pop('EXOPIPE3_WRAPS', None)          # the wraps of THIS config only (core/wrap.py; B-32)
     child.update(wrap.child_env())
-    fb_fd, fb_path = tempfile.mkstemp(prefix='exopipe3_fb_', suffix='.json')
-    os.close(fb_fd)
-    os.remove(fb_path)                  # written by the child only when it imported core/fallback
-    child['EXOPIPE3_FALLBACK_OUT'] = fb_path
-    outer_mr = child.get('EXOPIPE3_MAP_REFUSAL_LOG')    # a collector of this process's caller: it gets the lines too
-    mr_fd, mr_path = tempfile.mkstemp(prefix='exopipe3_maprefusal_', suffix='.log')
-    os.close(mr_fd)
-    child['EXOPIPE3_MAP_REFUSAL_LOG'] = mr_path
+    child['EXOPIPE3_FINGERPRINT_ROOTS'] = os.pathsep.join(cfg.site.LEGACY_CODE_ROOTS)
+    # this call's own files - fingerprints, fallback state, refused maps - are read and removed in `finally` (an exception
+    # or an interrupt never leaves one behind, and a refused map is recorded whatever ends the call)
+    fp_path = fb_path = mr_path = lf = None
+    fp, fb_counts, fb_refs, map_refusals, own = {}, {}, [], [], []
     t0 = time.time()
-    lf = open(log, 'a') if log else tempfile.TemporaryFile(mode='w+')
     try:
+        fp_fd, fp_path = tempfile.mkstemp(prefix='exopipe3_fp_', suffix='.json')
+        os.close(fp_fd)
+        child['EXOPIPE3_FINGERPRINT_OUT'] = fp_path
+        fb_fd, fb_path = tempfile.mkstemp(prefix='exopipe3_fb_', suffix='.json')
+        os.close(fb_fd)
+        os.remove(fb_path)              # written by the child only when it imported core/fallback
+        child['EXOPIPE3_FALLBACK_OUT'] = fb_path
+        mr_path = fallback.map_log_new()
+        child[fallback.MAP_ENV] = mr_path
+        lf = open(log, 'a') if log else tempfile.TemporaryFile(mode='w+')
+        start = 0                       # where this call's own output starts in ``lf``
         if log:
             lf.write(f'\n===== {time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())} {" ".join(argv)}\n')
             lf.flush()
-        p = subprocess.run(argv, stdout=lf, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, cwd=cwd, env=child,
-                           timeout=timeout)
-        rc = p.returncode
-    except subprocess.TimeoutExpired:
-        rc = -9
-    finally:
+            start = os.lseek(lf.fileno(), 0, os.SEEK_CUR)
+        try:
+            p = subprocess.run(argv, stdout=lf, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, cwd=cwd, env=child,
+                               timeout=timeout)
+            rc = p.returncode
+        except subprocess.TimeoutExpired:
+            rc = -9
         lf.flush()
-    tail = _tail(log, tail_lines) if log else _tail_file(lf, tail_lines)
-    lf.close()
+        tail = _tail(log, tail_lines) if log else _tail_file(lf, tail_lines)
+        own = _map_lines_from(log if log else lf, start)
+    finally:
+        if lf is not None:
+            lf.close()
+        if fp_path:
+            fp = _fingerprints(fp_path)
+        if fb_path:
+            fb_counts, fb_refs = fallback.load(fb_path)   # the child's and its descendants' (<fb_path>.<pid>), removed
+            fallback.absorb(fb_counts, fb_refs)          # into this process's state: the running unit takes them
+        if mr_path:     # this call's file + the gate's lines in its own output not already reported by the child's
+                        # nested calls (fb_refs), recorded in this process's state (sticky); the file removed
+            map_refusals = fallback.map_collect(mr_path, own, seen=[d for k, d in fb_refs if k == fallback.MAP_KEY])
+    hit = next((t for t in refusal_text if t in tail), None)
+    refused = rc in refusal_codes or (hit is not None and rc != 0)
+    map_refusals = map_refusals + [d for k, d in fb_refs if k == fallback.MAP_KEY]   # + the child's nested calls'
+    sticky = bool(fb_refs or map_refusals)      # refused in the child, whatever the child did next
+    reason = '' if rc == 0 and not refused else (
+        f"{os.path.basename(target)} exit {rc}" + (f" ({hit}: {_line_with(tail, hit)})" if hit else '')
+        + ('' if refused or sticky else ' - error'))
+    if fb_refs:                         # B-30: sticky - refused in the child even if the child carried on
+        reason = (f'{os.path.basename(target)}: {fallback.refusal_text(*fb_refs[0])} - REFUSED'
+                  + (f' (exit {rc})' if rc else ''))
+    if map_refusals and not (fb_refs and fb_refs[0][0] == fallback.MAP_KEY):
+        # a refused map, sticky as B-30 (the child may have caught the refusal and carried on): added to any reason above
+        mr = (f'{os.path.basename(target)}: {map_refusals[0][:300]}'
+              + (f' (+{len(map_refusals) - 1} more refused maps)' if len(map_refusals) > 1 else '') + ' - REFUSED')
+        reason = f'{reason}; {mr}' if reason else mr + (f' (exit {rc})' if rc else '')
+    refused = refused or sticky
+    res = LegacyResult(rc, log, tail, fp, refused, reason, round(time.time() - t0, 1), argv, fb_counts, fb_refs,
+                       map_refusals)
+    if unit is not None:
+        unit.meta.setdefault('legacy_calls', []).append({'argv': argv, 'rc': rc, 'wall_s': res.wall_s, 'log': log})
+        merge_fingerprint(unit.meta.setdefault('legacy_code', {}), fp)
+    return res
+
+
+def _fingerprints(fp_path):
+    """The child's code fingerprints: one file per process of the child (sitecustomize), merged; the files removed."""
     fp = {}
-    for p in [fp_path] + sorted(glob.glob(glob.escape(fp_path) + '.*')):   # one file per process of the child (sitecustomize)
+    for p in [fp_path] + sorted(glob.glob(glob.escape(fp_path) + '.*')):
         try:
             with open(p) as f:
                 merge_fingerprint(fp, json.load(f))
@@ -195,53 +237,22 @@ def run(target, args=(), python='default', module=False, env=None, cwd=None, log
                 os.remove(p)
             except OSError:
                 pass
-    fb_counts, fb_refs = fallback.load(fb_path)        # the child's and its descendants' (<fb_path>.<pid>), removed
-    hit = next((t for t in refusal_text if t in tail), None)
-    refused = rc in refusal_codes or (hit is not None and rc != 0)
-    reason = '' if rc == 0 and not refused else (
-        f"{os.path.basename(target)} exit {rc}" + (f" ({hit}: {_line_with(tail, hit)})" if hit else '')
-        + ('' if refused else ' - error'))
-    fallback.absorb(fb_counts, fb_refs)    # into this process's state: the running unit takes them (with or without unit=)
-    if fb_refs:                         # B-30: sticky - refused in the child even if the child carried on
-        refused = True
-        reason = (f'{os.path.basename(target)}: B-30 fallback site {fb_refs[0][0]}: {fb_refs[0][1]} - REFUSED'
-                  + (f' (exit {rc})' if rc else ''))
-    map_refusals = _map_refusals(mr_path, outer_mr)
-    if map_refusals:                    # sticky, as B-30: the child may have caught the refusal and carried on
-        mr = (f'{os.path.basename(target)}: {map_refusals[0][:300]}'
-              + (f' (+{len(map_refusals) - 1} more refused maps)' if len(map_refusals) > 1 else '') + ' - REFUSED'
-              + (f' (exit {rc})' if rc and not fb_refs else ''))
-        reason = f'{reason}; {mr}' if fb_refs else mr
-        refused = True
-    res = LegacyResult(rc, log, tail, fp, refused, reason, round(time.time() - t0, 1), argv, fb_counts, fb_refs,
-                       map_refusals)
-    if unit is not None:
-        unit.meta.setdefault('legacy_calls', []).append({'argv': argv, 'rc': rc, 'wall_s': res.wall_s, 'log': log})
-        merge_fingerprint(unit.meta.setdefault('legacy_code', {}), fp)
-    return res
+    return fp
 
 
-def _map_refusals(path, outer):
-    """The lines the child and its descendants wrote to their EXOPIPE3_MAP_REFUSAL_LOG ``path`` (removed here), also
-    appended to ``outer`` (the file the caller's environment named) when set."""
+def _map_lines_from(src, start):
+    """The map gate's lines (core/fallback.map_lines) in this call's own output: the log ``src`` (a path) from byte
+    ``start`` on - its header line - or the call's temporary file (an open file) from its start; read line by line."""
+    from exopipe.phase3.core import fallback
     try:
-        with open(path, 'rb') as f:
-            data = f.read()
-    except OSError:
-        data = b''
-    finally:
-        try:
-            os.remove(path)
-        except OSError:
-            pass
-    if data and outer:
-        try:
-            with open(outer, 'ab') as f:
-                f.write(data)
-        except OSError as e:
-            print(f'NO-LUSTRE-MAP-LOG: {len(data.splitlines())} refusal lines of a child not appended to {outer}: {e}',
-                  file=sys.stderr)
-    return [ln for ln in data.decode('utf-8', 'replace').splitlines() if ln.strip()]
+        if isinstance(src, str):
+            with open(src, 'rb') as f:
+                f.seek(start)
+                return fallback.map_lines(ln.decode('utf-8', 'replace') for ln in f if ln.startswith(b'NO-LUSTRE-MAP: '))
+        src.seek(start)
+        return fallback.map_lines(ln for ln in src if ln.startswith('NO-LUSTRE-MAP: '))
+    except (OSError, ValueError):
+        return []
 
 
 def _tail(path, n):
