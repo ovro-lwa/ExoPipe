@@ -41,8 +41,9 @@ class masters(_Section):
     # record of a cell built without one, read from the installed cell
     # deep 'admit-prep' (D-ADMIT slice 2): on demand after build-stats - the flow inputs of the nights an installed cell admits
     # deep 'admit' (D-ADMIT slice 4): on demand after the flow step's admit stage - the prepared nights into the installed master
+    # deep 'striation' (hybrid spec PR-6a): on demand - the selected masters with the earth-fixed striations removed
     STAGES = {'deep': ('stage-in', 'build', 'pbmaps', 'vclean', 'fluxscale', 'verify', 'sources', 'variants', 'build-stats',
-                       'admit-prep', 'admit'),
+                       'admit-prep', 'admit', 'striation'),
               'sublst': ('prep', 'admit', 'stack', 'loo', 'sources'),
               'snapshot': ('verify-frozen', 'freeze', 'sources')}   # sources: snapshot parent catalogues (M21; review 2026-10-13)
     # deep default = the build part of the chain 'deep-build-cell' (masters --stages stage-in -> flow -> masters (default)):
@@ -341,6 +342,23 @@ class masters_verify(_Section):
     RULED = {'DEWARP_SCREEN_RECORD': 'CORRECTION-11-ACCEPTED-CELLS-NOT-DEWARPED-WAS-WRONG',
              'DEWARP_INTERP': 'R-MDEWARP-CUBIC-REAPPLY',
              'INTEGRITY': 'LANDED-VERIFIER-ALL-VARIANTS-AND-VCLEAN'}
+
+
+class masters_striation(_Section):
+    """deep striation: the earth-fixed striations removed from the selected deep Stokes I masters, sky restored from other LSTs
+    (lib/masters/striation.py, port of production striation_restore.py at exopipe 3bda09e). Which (LST, band, variant) are
+    corrected is hybrid.STRIATION_SELECTION (md5-pinned); the uncorrected master is kept."""
+    WIN = 8                                   # pass-2 RA running-median window [beams] (striation_restore.py correct(): 8)
+    PASS1_WIN = 4                             # pass-1 window [beams] (striation_restore.py pass1(): 4)
+    REF_CEILING = {'Taper_R075': 1.126, 'Taper_R0': 1.224}   # striation_restore.py:47: census 2026-10-22, max over the 23-55 MHz masters
+    PARENTS = '/lustre/gh/main/phase3/deep_parent_catalogs_union_20261014T0203'   # master_R075_<LST>_<band>.gaul.csv (production
+    #   default /fast/gh/main/phase3/p3s5_parents_union_20261014T0203 is the node-local copy of the same catalogs)
+    TAG = 'ssub-rst8'                         # striation_restore.py:48: the grammar token after the master's own tokens
+    ARCHIVE_PBCORR_TOL = 1e-3                 # working master / PB vs the archived PB-corrected master, x its rms (striation_restore.py:211)
+    CACHE_SUBDIR = 'striation_pass1'          # node-local pass-1 cache under --work / the site SCRATCH_ROOT (keyed by input size + mtime)
+    RULED = {'WIN': 'R-STRIATION-WINDOW-APPROVED-8BEAMS',
+             'REF_CEILING': 'R-GREGG-20261022-STRIATION-RESTORE-AND-MOSAIC-SCOPE-MEM-OPTION-B',
+             'TAG': 'R-GREGG-20261022-STRIATION-RESTORE-AND-MOSAIC-SCOPE-MEM-OPTION-B'}
 
 
 class masters_admit(_Section):

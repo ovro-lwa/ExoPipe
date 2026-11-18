@@ -240,8 +240,10 @@ def test_stage():
     """`masters --stages build-stats` on a copy of an installed cell: the record beside the copy's records, equal to
     build_stats.compute; refusals and no input."""
     from exopipe.phase3.lib.masters import deep_stages as DS
-    check('build-stats, admit-prep, admit: the last deep stages, in no default; the module\'s order is the config\'s',
-          DS.STAGE_ORDER == tuple(CFG.masters.STAGES['deep']) and DS.STAGE_ORDER[-3:] == ('build-stats', 'admit-prep', 'admit')
+    check('build-stats, admit-prep, admit: the last deep stages before striation, in no default; the module\'s order is the '
+          'config\'s',
+          DS.STAGE_ORDER == tuple(CFG.masters.STAGES['deep'])
+          and DS.STAGE_ORDER[-4:] == ('build-stats', 'admit-prep', 'admit', 'striation')
           and not {'build-stats', 'admit-prep', 'admit'} & set(CFG.masters.DEFAULT_STAGES['deep']), DS.STAGE_ORDER)
     # the first installed cell whose build population holds no night excluded now (a later exclusion refuses the stage on
     # its population before anything else - 23h_23MHz holds 2025-10-15 since that night's exclusion)
