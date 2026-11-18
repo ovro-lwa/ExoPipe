@@ -411,7 +411,8 @@ def wideband_large_scale_level(path, scope=None, **ctx):
 #   hybrid_master_product  a hybrid product (the hybrid, its beam-corrected sibling, its CLEAN residual): a phase3 name with
 #                          lsrecon + lsfill naming the unit's scope, Taper and robust, the kind's token (none / pbcorr / cleanres),
 #                          the Taper master's grid, finite non-zero pixels, the caveat cards in the caveat scopes (the hybrid)
-#   hybrid_pbdiffuse       the Full cell's diffuse PB (an intermediate): the grid, not a product, finite positive values
+#   hybrid_pbdiffuse       a cell's diffuse PB (Full: the full stage; others: tilefill, work source): the grid, not a product,
+#                          finite positive values, a clean PB-map header (D6)
 #   hybrid_record          <w>_hybrid.json: the unit; test_hybrid re-evaluated against the config limits (identity, NaN mask,
 #                          large scales, small scales or a caveat only in the caveat scopes, compact sources); the beam-corrected
 #                          identity; the CLEAN residual read back or a recorded reason; every product's md5 equal to the file's
@@ -480,6 +481,16 @@ def pbdiffuse_values(path, **ctx):
 @content_test('hybrid_pbdiffuse')
 def pbdiffuse_not_product(path, **ctx):
     return _not_product(path)
+
+
+@content_test('hybrid_pbdiffuse')
+def pbdiffuse_header(path, **ctx):
+    """Spec D6: no SH* card, no master flux or noise card, BUNIT blank (pb_apply.pbdiffuse_header_problems; rulings
+    R-GREGG-20261116-PB-MAPS-SH-CARDS-REMOVE-BUNIT-BLANK-GO, R-GREGG-20261118-HYBRID-Q1-Q3-GO-WITH-RECOMMENDATIONS)."""
+    from exopipe.phase3.lib.masters import pb_apply as PBA
+    _d, h = _read(path)
+    bad = PBA.pbdiffuse_header_problems(h)
+    return not bad, len(bad), '; '.join(bad) or 'no SH* or master card, BUNIT blank'
 
 
 @content_test('hybrid_record')

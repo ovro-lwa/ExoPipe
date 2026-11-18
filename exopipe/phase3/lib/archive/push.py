@@ -18,6 +18,8 @@ push --class epoch    per hour (DESIGN 12.1): one EPOCH item <LST>_<date> = ever
                       is a refused item, never pushed. Without a staging tree (archive_push.EPOCH_STAGING_ROOT None and no
                       --staging-root) the unit audits the hour's archive files (keep rows, each content-tested by its class).
                       Bulk (intermittent, DESIGN 12.2): --epochs @list, or --lsts/--nights over the staging tree.
+push --class hybrid  the hybrid masters of a hybrid run's --out (--staging-root) into the hybrid archive run, per unit, replacing
+                      file by file through the round quarantine (lib/archive/hybrid.py; PR-5b).
 push --class qa | run-tables   disabled (archive_push.CLASSES[...]['enabled'] False): refused with the reason.
 """
 import glob
@@ -365,12 +367,15 @@ def run_action(ctx, args, run, unit_fn):
     if not cls:
         cls = 'epoch' if getattr(args, 'epochs', None) else None
     if not cls:
-        raise ValueError('push needs --class (mosaic, epoch, qa, run-tables); --epochs alone means --class epoch')
+        raise ValueError('push needs --class (mosaic, epoch, hybrid, qa, run-tables); --epochs alone means --class epoch')
     class_cfg(cls)
     if cls == 'mosaic':
         return run_mosaic(ctx, args, run, unit_fn)
     if cls == 'epoch':
         return run_epoch(ctx, args, run, unit_fn)
+    if cls == 'hybrid':
+        from exopipe.phase3.lib.archive.hybrid import run_hybrid
+        return run_hybrid(ctx, args, run, unit_fn)
     raise Refusal(f'push --class {cls}: enabled in config but not implemented')
 
 
@@ -378,7 +383,7 @@ def run_action(ctx, args, run, unit_fn):
 # audit of earlier manifests
 # ---------------------------------------------------------------------------------------------------------------------
 
-AUDIT_CLASSES = {'mosaic': 'archive_manifest', 'epoch': 'archive_manifest', 'quarantine': 'quarantine_manifest',
+AUDIT_CLASSES = {'mosaic': 'archive_manifest', 'epoch': 'archive_manifest', 'hybrid': 'archive_manifest', 'quarantine': 'quarantine_manifest',
                  'sync': 'archive_sync_record', 'retire': None, 'rollback': 'restore_manifest',
                  'rows': 'row_quarantine_manifest', 'supersede': 'quarantine_manifest'}
 

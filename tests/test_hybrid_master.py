@@ -140,9 +140,13 @@ def test_product_content_tests():
     p = _write(os.path.join(d, 'b.fits'), np.ones((16, 16)), PRODNAME=blue)['path']
     got = {r['name'].split('.', 1)[1]: r['passed'] for r in validate.run('hybrid_master_product', p, kind='hybrid', **dict(ctx, scope='82MHz'))}
     assert [k for k, v in got.items() if not v] == ['hybrid_caveat_cards'], got                          # caveat scope: cards owed
-    pbd = _write(os.path.join(d, 'PBdiffuse_deep_Full.fits'), np.full((16, 16), 0.5), LSDIAG='diffuse primary beam')['path']
+    pbd = _write(os.path.join(d, 'PBdiffuse_deep_Full.fits'), np.full((16, 16), 0.5), LSDIAG='diffuse primary beam', BUNIT='')['path']
     got = {r['name'].split('.', 1)[1]: r['passed'] for r in validate.run('hybrid_pbdiffuse', pbd, taper=taper)}
-    assert all(got.values()) and len(got) == 3, got
+    assert all(got.values()) and len(got) == 4, got
+    pbd = _write(os.path.join(d, 'PBdiffuse_deep_Full.fits'), np.full((16, 16), 0.5), LSDIAG='diffuse primary beam', BUNIT='',
+                 THERMNOI=1.0)['path']                                                       # a master card (Q3 ruling 2026-11-18)
+    got = {r['name'].split('.', 1)[1]: r['passed'] for r in validate.run('hybrid_pbdiffuse', pbd, taper=taper)}
+    assert [k for k, v in got.items() if not v] == ['pbdiffuse_header'], got
 
 
 def test_stack_refused_from_v2_record():

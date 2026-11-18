@@ -20,6 +20,11 @@ optional, so `exopipe3 verify <class> <file>` runs them alone.
   archive_plan             plan_current            a plan of an in-place script (supersede, quarantine-rows): structure, and every
                                                    recorded input unchanged since (else STALE)
   archive_mosaic_copy      class_audit             push_mosaic_v2_20260929.py:79-107 rules on one archived mosaic file
+  hybrid_archive_copy      copy_checksum           a file push --class hybrid wrote: its checksum = the pushed source's (ctx md5)
+                           copy_header             a product's PRODNAME = its file name, a phase3 name; a PB map's header conformant
+                                                   (HG12; a diffuse map: no master card either, D6)
+                           copy_card_superset      D7: every card key of the file it replaced (ctx replaces: the quarantined copy),
+                                                   less archive_push.HYBRID_RETIRED_KEYS[kind]
 """
 import os
 
@@ -408,6 +413,33 @@ def plan_current(path, **ctx):
     if changed:
         return False, len(changed), f'STALE: {len(changed)} input(s) changed since the plan, e.g. {changed[0]}'
     return True, len(rec.get('inputs') or {}), f"{rec['action']} plan; {len(rec.get('inputs') or {})} input(s) unchanged"
+
+
+@content_test('hybrid_archive_copy')
+def copy_checksum(path, md5=None, algo='md5', **ctx):
+    if not md5:
+        return False, None, 'no source checksum in the context'
+    got = _K().checksum(path, algo)
+    return got == md5, got, f'{algo} {"equals" if got == md5 else "differs from"} the pushed source\'s {md5}'
+
+
+@content_test('hybrid_archive_copy')
+def copy_header(path, kind=None, **ctx):
+    from exopipe.phase3.lib.archive import hybrid as AH
+    k = kind or AH.kind_of(path)
+    bad = AH.header_problems(AH.header(path), os.path.basename(path), k)
+    return not bad, len(bad), '; '.join(bad) or (f'{k}: PRODNAME is the file name, a phase3 name' if k in AH.PRODUCT_KINDS + ('product',)
+                                                 else f'{k}: PB-map header conformant')
+
+
+@content_test('hybrid_archive_copy')
+def copy_card_superset(path, kind=None, replaces=None, **ctx):
+    from exopipe.phase3.lib.archive import hybrid as AH
+    if not replaces:
+        return True, None, 'replaced no installed file'
+    miss = AH.missing_keys(AH.header(path), AH.header(replaces), kind or AH.kind_of(path))
+    return not miss, len(miss), (f'missing {miss[:8]} of {os.path.basename(replaces)}' if miss else
+                                 f'holds every card key of {os.path.basename(replaces)} (less the retired keys)')
 
 
 @content_test('archive_mosaic_copy')

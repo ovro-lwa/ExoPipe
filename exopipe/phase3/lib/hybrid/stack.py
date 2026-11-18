@@ -357,24 +357,81 @@ def stack_variant(lst, band, v, workdir, prep, screen_cache, read=None):
     P /= wsum
     P /= P.max()
     write_atomic(f'{workdir}/{v}_psf_stack.fits', P.astype(np.float32), diag_header(mh, 'weighted mean Phase 1 PSF, peak 1'))
-    ind = inputs_dir(workdir)
-    os.makedirs(ind, exist_ok=True)
-    rec['inputs'] = {}
-    for src in input_copies(S.COADD_SB, lst, band, v):
-        dst = f'{ind}/{os.path.basename(src)}'
-        want = md5(src)                               # the cell's two weightings share inputs/: temp copy + atomic rename
-        read.add(src)
-        if not (os.path.exists(dst) and md5(dst) == want):
-            tmp = f'{dst}.{v}.part'
-            shutil.copy2(src, tmp)
-            if md5(tmp) != want:
-                raise StackRefusal(f'{tmp}: copy differs from {src} - REFUSING', 'HG5')
-            os.replace(tmp, dst)
-        rec['inputs'][os.path.basename(src)] = dict(installed=src, md5=want)
+    rec['inputs'] = copy_inputs(inputs_dir(workdir), S.COADD_SB, lst, band, v, read)
     rec['derived_screens'] = derived
     atomic_write_json(f'{workdir}/{v}_stack.json', rec)
     return rec
 
+
+
+def archived_input(src, lst, band, archive_masters=None):
+    """The installed (archived) file of an inputs/ copy's co-add build file `src`: a master -> the one archived master of its cell,
+    taper and weighting (PRODNAME = file name, no reconstruction token); a PB map -> the same name in the cell's archive directory.
+    The copies come from the archive because its headers are the installed products' (Release 1 repair cards P1RUN P2RUN CALBP
+    ASTREF FLUXREF MDWSTAT SCALE_A; PB maps without SH cards, spec D6); the build tree's predate the repair, and a reconstruction
+    built from them lacked those cards (D7 refused its archive push, 2026-11-18)."""
+    from astropy.io import fits
+    from exopipe.phase3.config import CFG
+    from exopipe.phase3.core.products import parse_name
+    a = os.path.join(archive_masters or CFG.hybrid.ARCHIVE_MASTERS, lst, band)
+    name = os.path.basename(src)
+    if name.startswith('PB_deep_'):
+        return os.path.join(a, name)
+    hit = [vv for vv in VARIANT if name == f'I_deep_{VARIANT[vv][0]}_{band}.fits']
+    if len(hit) != 1:
+        raise StackRefusal(f'{src}: not a master or PB map of {lst} {band} - REFUSING', 'HG5')
+    tp, rob = ('Taper' if hit[0] in TAPER_OF.values() else 'NoTaper'), VARIANT[hit[0]][2]
+    m = []
+    for f in sorted(glob.glob(os.path.join(a, f'{band}_I_deep_{tp}_*coadd_LST{lst}_*.fits'))):
+        try:
+            pn = parse_name(os.path.basename(f))
+        except (ValueError, KeyError) as e:
+            raise StackRefusal(f'{f}: matches the archived master pattern but its name does not parse ({e}) - REFUSING', 'HG5')
+        if (pn.get('grammar') == 'phase3' and pn.get('taper') == tp and pn.get('robust') == rob and 'pbcorr' not in pn['proc']
+                and not {'lsrecon', 'lsfill'} & set(pn['proc'])):
+            m.append(f)
+    if len(m) != 1 or fits.getheader(m[0], memmap=False).get('PRODNAME') != os.path.basename(m[0]):
+        raise StackRefusal(f'{lst} {band} {tp} {rob}: {len(m)} archived masters {m} (one, PRODNAME = file name, wanted) - REFUSING', 'HG5')
+    return m[0]
+
+
+def copy_inputs(ind, coadd_sb, lst, band, v, read, archive_masters=None):
+    """Copy a NoTaper stack's inputs (input_copies: masters and PB maps, the co-add build files' names) into `ind` from the archived
+    files (archived_input), each refused unless its pixels equal the build file's (the file HG5 rebuilds; a master rebuilt or
+    re-archived since refuses). The cell's two weightings share ind: temp copy of this weighting + atomic rename; a current copy is
+    kept. Each archived file (on Lustre) is read once: its checksum, its pixels and the copy come from that read.
+    Returns {name: {installed: archived path, md5}}; `read` gains the files read."""
+    import hashlib
+    import io
+
+    from astropy.io import fits
+    os.makedirs(ind, exist_ok=True)
+    out = {}
+    for src in input_copies(coadd_sb, lst, band, v):
+        arc = archived_input(src, lst, band, archive_masters)
+        read.update((src, arc))
+        if not os.path.exists(arc):
+            raise StackRefusal(f'{arc}: the archived file of {src} is missing - REFUSING', 'HG5')
+        with open(arc, 'rb') as f:
+            raw = f.read()
+        want = hashlib.md5(raw).hexdigest()
+        with fits.open(io.BytesIO(raw)) as h:
+            pa = np.ascontiguousarray(h[0].data)
+        with fits.open(src, memmap=False) as h:
+            pb = np.ascontiguousarray(h[0].data)
+        if pa.dtype != pb.dtype or pa.shape != pb.shape or pa.tobytes() != pb.tobytes():
+            raise StackRefusal(f'{arc}: pixels differ from the co-add build file {src} - REFUSING', 'HG5')
+        dst = os.path.join(ind, os.path.basename(src))
+        if not (os.path.exists(dst) and md5(dst) == want):
+            tmp = f'{dst}.{v}.part'
+            with open(tmp, 'wb') as f:
+                f.write(raw)
+            shutil.copystat(arc, tmp)
+            if md5(tmp) != want:
+                raise StackRefusal(f'{tmp}: copy differs from {arc} - REFUSING', 'HG5')
+            os.replace(tmp, dst)
+        out[os.path.basename(src)] = dict(installed=arc, md5=want)
+    return out
 
 def test_stack_rebuild(stack_img, master, wd, cf, rows, admit_hdr=None):
     """HG5. The production chain on the nights' Phase 2 images must rebuild the installed master to floating-point level: max |diff|

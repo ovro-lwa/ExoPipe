@@ -447,7 +447,8 @@ def hybrid_full(lst, v, run_dir):
     pbf = rd(f'{ARCHIVE_MASTERS}/{lst}/{scope}/{PBA.deep_pb_name(scope, v)}')
     pbd = sum(wn * s['pbd'] for wn, s in zip(Wn, subs))
     pbdf = f'{wd}/PBdiffuse_deep_{scope}.fits'
-    hd_ = diag_header(ph, 'diffuse primary beam'); hd_['BUNIT'] = ''; hd_['PBMODEL'] = ('w mean of the 15 subband diffuse PBs, regridded', 'diffuse PB')
+    hd_ = PBA.pbdiffuse_header(diag_header(ph, 'diffuse primary beam'))      # spec D6: no SH* or master card, BUNIT blank (production
+    hd_['PBMODEL'] = ('w mean of the 15 subband diffuse PBs, regridded', 'diffuse PB')   # kept them; the archive's were passed 11-18)
     # the map is weighting-independent (the same subband maps and weights) but its header is the weighting's product's: v2 writes it
     # from one weighting only, hybrid_full.PBDIFFUSE_WEIGHTING (the archive's: R0's header); the other divides by the same float32
     # values (production: both wrote it, last writer kept; a shared .part raced at 01h, 2026-11-09)
@@ -488,6 +489,37 @@ def stack_refused(run_dir, lst, band, v):
     if hit and hit[-1].get('gate') == 'HG1':
         raise ReconRefusal(f'{lst} {band} {v}: the Taper master the hybrid is built on was refused by HG1: {hit[-1]["reason"][:300]} - REFUSING')
     return hit[-1]['reason'] if hit else None
+
+
+def write_diffuse_pb(run_dir, lst, scope, v):
+    """The diffuse PB map <run_dir>/<LST>_<scope>/PBdiffuse_deep_<scope>.fits of a subband or wideband cell, as production's archive
+    step wrote it (NL archive_hybrid_unit 1644-1649): diffuse_pb_map as float32 under the weighting's reconstruction header made a PB
+    map's (diag_header: no PRODNAME; pbdiffuse_header: no SH* or master flux / noise card, BUNIT blank - spec D6) with PBMODEL. Called
+    by the hybrid_full.PBDIFFUSE_WEIGHTING unit only (the header is that weighting's). An existing map with these values and these
+    cards is kept (a rerun changes no byte), any other is rewritten, through a temporary name of this process. Full's map is the full
+    stage's (returned as is). Returns the path."""
+    wd = f'{run_dir}/{lst}_{scope}'
+    pbd = f'{wd}/PBdiffuse_deep_{scope}.fits'
+    if scope == 'Full':
+        return pbd
+    a, how = diffuse_pb_map(run_dir, lst, scope, v)
+    a = np.asarray(a).astype(np.float32)
+    rr = _json(f'{wd}/{v}_lsrecon_wb.json' if scope in WIDEBANDS else f'{wd}/{v}_lsrecon.json')
+    h = diag_header(_getheader(rr['product']['path']), 'diffuse primary beam')
+    PBA.pbdiffuse_header(h)
+    h['PBMODEL'] = (how[:68], 'diffuse PB = model x residual (no smearing term)')
+
+    def cards(hh):
+        return [(c.keyword, str(c.value)) for c in hh.cards if c.keyword not in ('SIMPLE', 'BITPIX', 'EXTEND')
+                and not c.keyword.startswith('NAXIS')]
+    if os.path.exists(pbd):
+        with fits.open(pbd, memmap=False) as f:
+            if np.array_equal(f[0].data, a, equal_nan=True) and cards(f[0].header) == cards(h):
+                return pbd
+    part = f'{pbd}.{os.getpid()}.part'
+    fits.writeto(part, a, h, overwrite=True)
+    os.replace(part, pbd)
+    return pbd
 
 
 def diffuse_pb_map(run_dir, lst, scope, v='R075'):
