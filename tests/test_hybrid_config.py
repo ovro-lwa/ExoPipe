@@ -317,6 +317,10 @@ def test_cli_skeleton_refuses_every_unit():
         # no --out: refused before any unit (a new work run is always named)
         rc, out = _cli(['hybrid', '--lsts', '18h', '--scopes', '46MHz'])
         assert rc == 2 and 'needs --out' in out, (rc, out[-800:])
+        # --workers > 1 is refused before any unit: the step runs its units one after another (never silently ignored)
+        rc, out = _cli(['hybrid', '--lsts', '18h', '--scopes', '46MHz', '--workers', '2', '--out', os.path.join(d, 'w4')])
+        assert rc == 2 and '--workers 2' in out and 'disjoint --lsts' in out, (rc, out[-800:])
+        assert not os.path.exists(os.path.join(d, 'w4', '_records', 'hybrid', 'stack.18h_46MHz_R075.json')), out[-800:]
         # a protected key cannot be set
         rc, out = _cli(['hybrid', '--lsts', '18h', '--scopes', '46MHz', '--out', os.path.join(d, 'w2'),
                         '--set', 'hybrid.STRIATION_SELECTION=/tmp/x.csv'])
