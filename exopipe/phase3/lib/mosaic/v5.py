@@ -39,7 +39,8 @@ scope, weighting); records <out>/_records/mosaic/v5-<stage>.<scope>_<w>.json; fi
           TPMOSMD5 name the archived mosaic)
   tables  one unit per run (v5-tables): the V5 tables of hybrid_tilefill.FILLED_MOSAIC_RUN with the rows of every done conform unit
           of --out replaced; refuses unless every scope of mosaic_v5.SCOPES in both weightings has its rows and every result is PASS.
-          -> tables/{summary.csv, pkcorr_curves.csv, summary_tpfill_Taper_<w>.csv, caveats_<V>_<S>_lsfill.csv, taper_only.csv}
+          -> tables/{summary.csv, pkcorr_curves.csv, summary_tpfill_Taper_<w>.csv, caveats_<V>_<S>_lsfill.csv, taper_only.csv};
+          their md5s in the record (`exopipe3 archive push --class mosaic_v5` checks them)
           [mosaic_v5_table]
 
 A stage reads its predecessors' unit records (status done), never a glob, and refuses unless they were made from the tile list now
@@ -844,6 +845,7 @@ def tables_unit(u, out):
         CF._write(os.path.join(td, name), head, rows)
     u.meta['units'] = sorted(f'{sc}_{w}' for sc, w in T)
     u.meta['archived_tables'] = arch
+    u.meta['md5'] = {name: _md5(os.path.join(td, name)) for name in sorted(tables)}     # the push (archive --class mosaic_v5) checks them
     for name, (head, rows) in sorted(tables.items()):
         u.add_output(os.path.join(td, name), 'mosaic_v5_table', columns=list(head), n_rows=len(rows))
 

@@ -54,6 +54,22 @@ class paths(_Section):
                         '/lustre/gh/main/exopipe_ops/snapshot_batch', '/lustre/gh/main/exopipe_ops/sublst_search_state_A',
                         '/lustre/gh/main/exopipe_ops/sublst_search_state_B')
     PRODUCTION_WRITES = False
+    # NARROW CUTOVER ALLOWANCE (RULED: R-GREGG-20261118-CUTOVER-ALLOWANCE-HYBRID-MOSAIC-V5; Gregg 2026-11-18 "Approved on both -
+    # go with your recommendations"): the steps and archive push classes that may write under a production root while
+    # PRODUCTION_WRITES is False, each mapped to the only roots it may write under (CFG.writes_allowed: never paths.OPS_ROOT or
+    # paths.CLV15_ROOT, whatever this says). A name enters only after its parity with production has passed (the pull request
+    # that adds it cites the parity). The ruling covers exactly 'hybrid', 'mosaic:v5', 'archive:hybrid' and 'archive:mosaic_v5'; any other
+    # name needs a new ruling. An injected run empties it (core/injected).
+    #   'hybrid'          exopipe3 hybrid                          parity PR-1..PR-5 (plan/specs/hybrid.md 4)
+    #   'archive:hybrid'  exopipe3 archive push --class hybrid     parity PR-5b (mirror push of the 11-11 event, 11-13 replay)
+    #   'mosaic:v5'       exopipe3 mosaic --generation v5          parity PR-7a (stage, coadd), PR-7b (pkcorr, content), PR-7c
+    #                                                              (caveat, render, content, conform, tables): Blue Taper R-0.75
+    #   'archive:mosaic_v5' waits for its own check (a push into a scratch archive root, PR-7d notes); until then it refuses.
+    PRODUCTION_WRITES_ALLOWED = {
+        'hybrid': ('/lustre/gh/main/phase3/lsrecon',),                                      # hybrid.WORK_ROOT
+        'mosaic:v5': ('/lustre/gh/main/phase3/lsrecon',),                                   # beside the hybrid work runs
+        'archive:hybrid': ('/lustre/pipeline/exopipe/phase3', '/lustre/gh/main/phase3/archive_ops'),   # the archive; archive.RECORDS_ROOT
+    }
     # Config keys ('section.KEY') whose values are PINNED inputs - frozen, checksummed inputs a ruling names (e.g. a
     # frozen master tree, a tier-rule pin). They are protected like the keys in PROTECTED (DESIGN 11.4, 11.6).
     PINNED_INPUTS = ()
@@ -74,7 +90,8 @@ class paths(_Section):
 # Keys no --set / --config can change (DESIGN 11.4; critique_rulings 4.1): the exclusion file and every exclusion rule
 # parameter, the ruling ledger, the production-root guard, the list of pinned inputs (and, through it, each pinned
 # input) and the Phase-1 run-pin file. 'section.*' protects a whole section. Change them in this file, by a commit.
-PROTECTED = ('paths.DATA_DECISIONS', 'paths.FIX_LEDGER', 'paths.PRODUCTION_WRITES', 'paths.PRODUCTION_ROOTS',
+PROTECTED = ('paths.DATA_DECISIONS', 'paths.FIX_LEDGER', 'paths.PRODUCTION_WRITES', 'paths.PRODUCTION_WRITES_ALLOWED',
+             'paths.PRODUCTION_ROOTS',
              'paths.PINNED_INPUTS', 'paths.PHASE1_RUN_PINS', 'paths.SNAPSHOT_GPU_FRAME_CELLS',
              'paths.SNAPSHOT_GPU_FRAME_ROOT', 'exclusions.*')
 

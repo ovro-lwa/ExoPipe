@@ -229,22 +229,23 @@ def hybrid_plan(ctx, staging, lst, scope, w, checksum=True):
     return rows, reads, notes
 
 
-def _qpath(ctx, rnd, old):
-    return os.path.join(quarantine_dir(ctx, rnd), os.path.relpath(old, archive_dir(ctx)))
-
-
-def apply_unit(ctx, u, rows, rnd):
+def apply_unit(ctx, u, rows, rnd, cls='hybrid', adir=None, qdir=None, qman_name=QUARANTINE_MANIFEST,
+               copy_class='hybrid_archive_copy'):
     """D2 swap of one planned unit: verified copies first, then per file the installed one into the round quarantine (manifest
-    row) and the new one renamed in, back to back; the applied push manifest; the content audit."""
+    row) and the new one renamed in, back to back; the applied push manifest; the content audit. The class hybrid's places by
+    default; push --class mosaic_v5 passes its run (adir), its round quarantine (qdir, qman_name) and its copy class. An
+    installed file's quarantine path is qdir + its path under adir."""
     unit = rows[0]['unit']
     todo = [r for r in rows if r['action'] in ('publish', 'replace', 'retire')]
-    qdir = quarantine_dir(ctx, rnd)
-    qman = os.path.join(qdir, QUARANTINE_MANIFEST)
-    pman = os.path.join(archive_dir(ctx), f'MANIFEST_{ctx.stamp}.csv')
-    ctx.guard_writes([archive_dir(ctx), qdir, qman, pman], f'push --class hybrid {unit}')
+    adir = adir or archive_dir(ctx)
+    qdir = qdir or quarantine_dir(ctx, rnd)
+    qpath = lambda old: os.path.join(qdir, os.path.relpath(old, adir))     # noqa: E731  (the installed file's place in the round)
+    qman = os.path.join(qdir, qman_name)
+    pman = os.path.join(adir, f'MANIFEST_{ctx.stamp}.csv')
+    ctx.guard_writes([adir, qdir, qman, pman], f'push --class {cls} {unit}', allow=f'archive:{cls}')
     for r in todo:
-        if r['action'] in ('replace', 'retire') and os.path.lexists(_qpath(ctx, rnd, r['replaces'])):
-            raise Refusal(f'G4: quarantine destination exists: {_qpath(ctx, rnd, r["replaces"])} (choose another --round)')
+        if r['action'] in ('replace', 'retire') and os.path.lexists(qpath(r['replaces'])):
+            raise Refusal(f'G4: quarantine destination exists: {qpath(r["replaces"])} (choose another --round)')
     ok, free = K.free_space_ok(ctx.archive_root, K.sec().FREE_SPACE_FLOOR_GB)
     if not ok:
         raise Refusal(f'G19: {free} GB free < archive.FREE_SPACE_FLOOR_GB')
@@ -266,9 +267,9 @@ def apply_unit(ctx, u, rows, rnd):
     try:
         for r in todo:
             if r['action'] in ('replace', 'retire'):
-                q = _qpath(ctx, rnd, r['replaces'])
+                q = qpath(r['replaces'])
                 with K.CsvAppender(qman, _p().HYBRID_QUARANTINE_COLUMNS) as wq:
-                    b, m, t = K.quarantine_move(r['replaces'], q, ctx.algo, what=f'push hybrid {unit} {r["action"]}')
+                    b, m, t = K.quarantine_move(r['replaces'], q, ctx.algo, what=f'push {cls} {unit} {r["action"]}')
                     wq.write(dict(unit=unit, kind=r['kind'], path=r['replaces'], dest=q, bytes=b, md5=m,
                                   replaced_by=r['dst'] if r['action'] == 'replace' else '', moved_at=t))
                 moved.append((r, q))
@@ -301,7 +302,7 @@ def apply_unit(ctx, u, rows, rnd):
     u.add_output(pman, 'archive_manifest', paths=[r['dst'] for r in rows if r['action'] != 'retire'])
     qof = {r['dst']: q for r, q in moved if r['action'] == 'replace'}
     for r in written:
-        u.add_output(r['dst'], 'hybrid_archive_copy', kind=r['kind'], md5=r['md5'], replaces=qof.get(r['dst']), algo=ctx.algo)
+        u.add_output(r['dst'], copy_class, kind=r['kind'], md5=r['md5'], replaces=qof.get(r['dst']), algo=ctx.algo)
     return moved, written
 
 

@@ -133,6 +133,7 @@ def force_no_production_writes(cfg=None):
         return False
     C = cfg or _cfg()
     C.paths.PRODUCTION_WRITES = False
+    C.paths.PRODUCTION_WRITES_ALLOWED = {}                   # the narrow cutover allowance does not reach an injected run
     return True
 
 
@@ -174,7 +175,7 @@ def refused_roots(cfg=None, extra=()):
     C = cfg or _cfg()
     out = []
     for k, v in C.paths.items():
-        if k in ('PRODUCTION_WRITES', 'PINNED_INPUTS', 'ARCHIVE_RUN'):
+        if k in ('PRODUCTION_WRITES', 'PRODUCTION_WRITES_ALLOWED', 'PINNED_INPUTS', 'ARCHIVE_RUN'):
             continue
         out.extend(_paths_in(v))
         if k in RULING_FILES and isinstance(v, str):
@@ -421,6 +422,7 @@ def begin(why, out, explicit_out=True, work=None, default_out=None, writes=True)
     why = mark(why)
     C = _cfg()
     C.paths.PRODUCTION_WRITES = False
+    C.paths.PRODUCTION_WRITES_ALLOWED = {}
     if writes and not explicit_out:
         raise _refusal(f'{LABEL}: an injected run ({why}) needs an explicit --out on scratch (a step\'s default --out is '
                        f'where it writes its production products: {default_out})')
