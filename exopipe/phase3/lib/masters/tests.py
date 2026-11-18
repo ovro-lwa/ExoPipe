@@ -1067,3 +1067,79 @@ def dewarp_consistent(path, **ctx):
     mp = catalog_master_path(path, **ctx)
     has = bool(mp and os.path.exists(mp) and _hdr(mp).get('MDWARP'))
     return has, 1, f'screen applied; master MDWARP {"present" if has else "MISSING"} ({mp})'
+
+
+# ---------------------------------------------------------------------------------------------------------------------------------
+# deep striation stage (hybrid spec PR-6a; lib/masters/striation.py): ctx master, pb (+ model for the apparent, apparent for the
+# PB-corrected sibling). The index ceiling and the flux tests run in the stage (they need the sky estimate).
+# ---------------------------------------------------------------------------------------------------------------------------------
+
+def _striation_read(p):
+    from astropy.io import fits
+    with fits.open(p, memmap=False) as h:
+        return np.squeeze(np.array(h[0].data)).astype(np.float64), h[0].header.copy()
+
+
+def _striation_header(path, kind):
+    from exopipe.phase3.core import products as P
+    _d, h = _striation_read(path)
+    b = os.path.basename(path)
+    name = b.replace('_striationmodel.fits', '.fits') if kind == 'model' else b
+    tag = _cfg().masters_striation.TAG
+    pn = P.parse_name(name)
+    probs = []
+    if h.get('PRODNAME') != b:
+        probs.append(f'PRODNAME {h.get("PRODNAME")!r}')
+    if h.get('STRKIND') != kind:
+        probs.append(f'STRKIND {h.get("STRKIND")!r}')
+    if tag not in pn['proc']:
+        probs.append(f'{tag} not in the name tokens {pn["proc"]}')
+    if ('pbcorr' in pn['proc']) != (kind == 'pbcorr'):
+        probs.append(f'pbcorr token {"missing" if kind == "pbcorr" else "present"}')
+    return not probs, len(probs), '; '.join(probs) or f'{kind}: PRODNAME, STRKIND and the {tag} token as written'
+
+
+@content_test('striation_apparent')
+def striation_apparent_header(path, **ctx):
+    return _striation_header(path, 'apparent')
+
+
+@content_test('striation_apparent')
+def striation_apparent_arithmetic(path, **ctx):
+    """apparent = master - model on the master's valid pixels, within 1e-5 x max(|master|, 1) (float32 output)."""
+    a, _ = _striation_read(path); m, _ = _striation_read(ctx['model']); d, _ = _striation_read(ctx['master'])
+    f = np.isfinite(d) & (d != 0)
+    e = float(np.nanmax(np.abs(d[f] - m[f] - a[f]))); tol = 1e-5 * max(float(np.nanmax(np.abs(d[f]))), 1.0)
+    return e <= tol, e, f'max |master - model - apparent| {e:.3g} Jy/beam (tol {tol:.3g}) over {int(f.sum())} pixels'
+
+
+@content_test('striation_pbcorr')
+def striation_pbcorr_header(path, **ctx):
+    return _striation_header(path, 'pbcorr')
+
+
+@content_test('striation_pbcorr')
+def striation_pbcorr_sibling(path, **ctx):
+    """PB-corrected = apparent / PB where PB > 0.1 (relative 1e-5 on the scale max(|p|, robust rms)), NaN elsewhere."""
+    from exopipe.phase3.lib.masters.striation import rr
+    p, _ = _striation_read(path); a, _ = _striation_read(ctx['apparent']); pb, _ = _striation_read(ctx['pb'])
+    d, _ = _striation_read(ctx['master'])
+    g = np.isfinite(d) & (d != 0) & (pb > 0.1)
+    e = float(np.nanmax(np.abs(a[g] / pb[g] - p[g]) / np.maximum(np.abs(p[g]), rr(p[g]))))
+    out = ~(pb > 0.1)
+    nan_ok = bool(np.all(~np.isfinite(p[out])))
+    return e < 1e-5 and nan_ok and g.sum() > 0, e, (f'max relative |apparent / PB - pbcorr| {e:.3g} over {int(g.sum())} pixels; '
+                                                   f'NaN where PB <= 0.1: {nan_ok}')
+
+
+@content_test('striation_model')
+def striation_model_header(path, **ctx):
+    return _striation_header(path, 'model')
+
+
+@content_test('striation_model')
+def striation_model_finite(path, **ctx):
+    """The model is finite everywhere and not all zero (a zero model means nothing was fitted)."""
+    m, _ = _striation_read(path)
+    nz = int(np.count_nonzero(m))
+    return bool(np.all(np.isfinite(m))) and nz > 0, nz, f'{nz} non-zero model pixels, all finite: {bool(np.all(np.isfinite(m)))}'

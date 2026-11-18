@@ -32,7 +32,7 @@ from exopipe.phase3.lib.masters import constituents
 from exopipe.phase3.lib.masters.pb_qa import pb_qa_gate, pb_qa_inputs, pb_qa_missing   # noqa: F401 (B-30; also the dewarp apply)
 
 STAGE_ORDER = ('stage-in', 'build', 'pbmaps', 'vclean', 'fluxscale', 'verify', 'sources', 'variants', 'build-stats',
-               'admit-prep', 'admit')
+               'admit-prep', 'admit', 'striation')
 ADMIT_STAGES = ('admit-prep', 'admit')   # D-ADMIT: on demand, per night (--epochs allowed); lib/masters/admit_stages.py
 # the stage whose done record a stage requires (spec 1.2); sources requires the install step's record instead
 REQUIRES = {'build': 'stage-in', 'pbmaps': 'build', 'vclean': 'pbmaps', 'fluxscale': 'vclean', 'verify': 'fluxscale',
@@ -1149,6 +1149,104 @@ def variants(cell, args, run, out, ran_now):
 
 
 # =====================================================================================================================
+# stage: striation (on demand; hybrid spec PR-6a; lib/masters/striation.py)
+# =====================================================================================================================
+
+_STRIATION_BANDS = {}   # (installed root, band, variant, cache dir) -> striation.Band: one per invocation, shared by its cells
+
+
+def striation_selection():
+    """{(lst, band): [variant, ...]} of hybrid.STRIATION_SELECTION; refuses unless its md5 equals hybrid.STRIATION_SELECTION_MD5."""
+    from exopipe.phase3.lib.install.steps_common import md5
+    H = _cfg().hybrid
+    try:
+        got = md5(H.STRIATION_SELECTION)
+    except OSError:
+        got = None
+    if got != H.STRIATION_SELECTION_MD5:
+        raise Refusal(f'the striation selection {H.STRIATION_SELECTION} has md5 {got}, not the pinned hybrid.STRIATION_SELECTION_MD5 '
+                      f'{H.STRIATION_SELECTION_MD5}')
+    sel = {}
+    with open(H.STRIATION_SELECTION, newline='') as f:
+        for r in csv.DictReader(f):
+            sel.setdefault((r['lst'], r['band']), []).append(r['variant'])
+    return sel
+
+
+def striation_paths(args, out, cell):
+    """(installed root, archive run, out dir, pass-1 cache dir or None) of a striation unit."""
+    from exopipe.phase3.core import fitsio
+    c = _cfg()
+    installed = args.deep_installed_root or c.paths.COADD_SB_ROOT
+    archive_run = os.path.join(c.paths.PHASE3_ARCHIVE_ROOT, 'Coadd', c.paths.ARCHIVE_RUN)
+    try:
+        cache = os.path.join(fitsio.scratch_root(getattr(args, 'work', None)), c.masters_striation.CACHE_SUBDIR)
+    except Refusal:
+        cache = None
+    return installed, archive_run, os.path.join(out, cell), cache
+
+
+def striation(cell, args, run, out, ran_now):
+    """The selected variants of the cell's deep Stokes I master with the earth-fixed striations removed (sky restored from
+    LSTs L+-1..3); products in <out>/<cell>/ named with masters_striation.TAG (production layout {out}/{lst}_{band}/).
+    A refusal of any variant renames the products this unit already wrote to *.FAILED (no partial set is left to block a
+    rerun; products of an earlier run are never touched)."""
+    from exopipe.phase3.lib.masters import deep_inplace as IP, striation as SR
+    lst, sc = cell.split('_', 1)
+    s = _cfg().masters_striation
+    with run.unit(f'striation_{cell}', tier='deep', stage='striation', cell=cell) as u:
+        variants = striation_selection().get((lst, sc))
+        if not variants:
+            raise NoInput(f'{cell} is not in the striation selection {_cfg().hybrid.STRIATION_SELECTION} (its uncorrected master '
+                          f'is the product)')
+        installed, archive_run, dest, cache = striation_paths(args, out, cell)
+        IP.refuse_production_write(dest, 'striation')
+        info_all, mine = {}, []
+        try:
+            for v in variants:
+                not_here(SR.master_path(installed, lst, sc, v), 'the installed master', 'striation')
+                B = _striation_band(installed, sc, v, cache, s)
+                try:
+                    corr, model, cov = B.correct(lst)
+                    c = B.cell(lst)
+                    info = SR.measures(c, corr, model, cov, SR.parents_csv(s.PARENTS, lst, sc))
+                    written = SR.write_products(c, corr, model, dest, info, archive_run, s.ARCHIVE_PBCORR_TOL, s.TAG)
+                except SR.StriationRefusal as e:
+                    u.refuse(f'{v}: {e}')
+                mine += list(written.values())
+                for k in range(-4, 5):                    # what the target read (pass 1 of L+-1..3 reads L+-4), cached or not
+                    n = _lst_offset(lst, k)
+                    u.add_input(SR.master_path(installed, n, sc, v)); u.add_input(SR.pb_path(installed, n, sc, v))
+                u.add_input(SR.parents_csv(s.PARENTS, lst, sc))
+                fails = SR.content_test(c, written, info, s.REF_CEILING)
+                info_all[v] = dict(info, pass1_from_cache=B.pass1_from_cache, content_test='FAIL' if fails else 'PASS')
+                u.meta['striation'] = info_all
+                if fails:
+                    u.refuse(f'{v}: content test FAILED ({"; ".join(fails)}); products renamed *.FAILED')
+                ctx = dict(cell=cell, master=c.path, pb=c.pb_path)
+                u.add_output(written['model'], 'striation_model', **ctx)
+                u.add_output(written['apparent'], 'striation_apparent', model=written['model'], **ctx)
+                u.add_output(written['pbcorr'], 'striation_pbcorr', apparent=written['apparent'], **ctx)
+        except BaseException:
+            for p in mine:
+                if os.path.exists(p):
+                    os.replace(p, p + '.FAILED')
+            raise
+
+
+def _striation_band(installed, band, variant, cache, s):
+    """The striation.Band of (installed, band, variant), kept for the invocation's next cells; another band evicts the kept
+    ones (both variants of one band stay: ~13 GB each at 82 MHz with all 24 LSTs loaded)."""
+    from exopipe.phase3.lib.masters import striation as SR
+    key = (installed, band, variant, cache)
+    if key not in _STRIATION_BANDS:
+        for k in [k for k in _STRIATION_BANDS if k[:2] != (installed, band)]:
+            del _STRIATION_BANDS[k]
+        _STRIATION_BANDS[key] = SR.Band(installed, band, variant, cache_dir=cache, pass1_win=s.PASS1_WIN, win=s.WIN)
+    return _STRIATION_BANDS[key]
+
+
+# =====================================================================================================================
 # stage: build-stats (on demand; D-ADMIT slice 1)
 # =====================================================================================================================
 
@@ -1263,7 +1361,8 @@ def build_stats_stage(cell, args, run, out, ran_now):
 STAGES = {'stage-in': stage_in, 'build': build, 'pbmaps': pbmaps, 'vclean': vclean, 'fluxscale': fluxscale,
           'verify': verify, 'sources': sources, 'variants': variants, 'build-stats': build_stats_stage,
           'admit-prep': lambda cell, args, run, out, ran_now: _admit_stages().admit_prep(cell, args, run, out, ran_now),
-          'admit': lambda cell, args, run, out, ran_now: _admit_stages().admit_stage(cell, args, run, out, ran_now)}
+          'admit': lambda cell, args, run, out, ran_now: _admit_stages().admit_stage(cell, args, run, out, ran_now),
+          'striation': striation}
 
 
 def _build_stats_held_18():
@@ -1419,6 +1518,16 @@ def _plan_build(cell, args, out, planned):
     return lines, gates
 
 
+def _lst_offset(lst, k):
+    return f'{(int(lst[:2]) + k) % 24:02d}h'
+
+
+def _plan_cell(lst, band, variant):
+    """The (lst, band, variant) stand-in striation.product_names reads (no pixels loaded in a dry run)."""
+    import types
+    return types.SimpleNamespace(lst=lst, band=band, variant=variant)
+
+
 def _plan_simple(stage):
     def f(cell, args, out, planned):
         lst, sc = cell.split('_', 1)
@@ -1482,6 +1591,37 @@ def _plan_simple(stage):
             if unknown:
                 gates.append(f'--deep-variants {unknown}: not a variant this stage rebuilds (one of {VARIANT_NAMES})')
             lines.append(f'in place: coadd.rebuild_variants_from_record(variants={vks})')
+        elif stage == 'striation':
+            from exopipe.phase3.lib.masters import deep_inplace as IP, striation as SR
+            ms = s.masters_striation
+            try:
+                variants = striation_selection().get((lst, sc))
+            except Refusal as e:
+                gates.append(str(e)); variants = None
+            if variants is None and not gates:
+                lines.append(f'no input: {cell} is not in the striation selection (its uncorrected master is the product)')
+            for v in variants or ():
+                installed, archive_run, dest, cache = striation_paths(args, out, cell)
+                lines.append(f'{v}: pass 2 (window {ms.WIN} beams) on {SR.master_path(installed, lst, sc, v)}, sky from pass 1 '
+                             f'(window {ms.PASS1_WIN}) of LSTs +-1..3 (reads +-4); pass-1 cache {cache}; products -> {dest}/ '
+                             f'[striation_apparent, striation_pbcorr, striation_model]')
+                r = IP.is_production_path(dest)
+                if r and not s.paths.PRODUCTION_WRITES:
+                    gates.append(f'{dest} is under the production root {r} (--out elsewhere)')
+                for k in range(-4, 5):
+                    n = _lst_offset(lst, k)
+                    for p in (SR.master_path(installed, n, sc, v), SR.pb_path(installed, n, sc, v)):
+                        if not os.path.isfile(p):
+                            gates.append(f'{v}: input {p} missing')
+                if not os.path.isfile(SR.parents_csv(ms.PARENTS, lst, sc)):
+                    gates.append(f'{v}: parents catalog {SR.parents_csv(ms.PARENTS, lst, sc)} missing')
+                try:
+                    names = SR.product_names(_plan_cell(lst, sc, v), archive_run, ms.TAG)
+                    ex = [n for n in names.values() if os.path.exists(os.path.join(dest, n))]
+                    if ex:
+                        gates.append(f'{v}: product(s) exist in {dest}: {ex} (no silent overwrite)')
+                except SR.StriationRefusal as e:
+                    gates.append(f'{v}: {e}')
         elif stage == 'build-stats':
             from exopipe.phase3.lib.masters import build_stats as BS, deep_inplace as IP
             src = args.deep_installed_root or s.paths.COADD_SB_ROOT

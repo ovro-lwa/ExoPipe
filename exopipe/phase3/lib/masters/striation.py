@@ -321,13 +321,14 @@ def write_products(c, corrected, model, out_dir, info, archive_run, tol, tag):
         raise StriationRefusal(f'{c.lst} {c.band} {c.variant}: working master / PB differs from the archived master '
                                f'{os.path.basename(arch)} (max {dev:.2e} x rms)')
     names = product_names(c, archive_run, tag)
+    ex = [n for n in names.values() if os.path.exists(f'{out_dir}/{n}')]
+    if ex:                                        # all three checked before any is written (no partial set)
+        raise StriationRefusal(f'{out_dir}: {ex} exist (no silent overwrite)')
     os.makedirs(out_dir, exist_ok=True); written = {}
     for kind, arr in (('apparent', corrected),
                       ('pbcorr', np.where(c.pb > 0.1, corrected / np.where(c.pb > 0, c.pb, np.nan), np.nan)),
                       ('model', model)):
         name = names[kind]; path = f'{out_dir}/{name}'
-        if os.path.exists(path):
-            raise StriationRefusal(f'{path} exists (no silent overwrite)')
         fits.writeto(path, arr.reshape(c.raw_shape).astype(np.float32), c.h.copy())
         beam = (float(c.h['BMAJ']), float(c.h['BMIN']), float(c.h.get('BPA', 0.0)))
         extra = {'PRODNAME': (name, 'Phase 3 product name (grammar; CONTINUE cards)'),
