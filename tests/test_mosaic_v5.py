@@ -23,6 +23,16 @@ cluster parity below):
 With healpy (the cluster): the renderer's beam lookup reads the tagged PSF map (production 14e8dba).
 Cluster parity (not here): Blue Taper R-0.75, all tiles pinned - the unfilled co-add against MQ11, the caveat map against V5, the filled
 maps and renders against V5 (data md5).
+PR-7b (lib/mosaic/pkcorr.py, content.py; stages pkcorr and content):
+  9. config: mosaic_content and mosaic_pkcorr equal MT / MP literals; the Dec nodes, RA bases and file names are MP's;
+ 10. inject_round on a synthetic tile: one source at its node, peak and integral of the restoring beam, the tile itself unchanged, no
+     source where PB <= 0.12 or the pixel is blank; a second round from the same tile cache holds only its own source; curve_map is
+     MP's interpolation; the map test without a curve; the catalog reader on header-only catalogs and a path with '[';
+ 11. the pkcorr and content units: inputs at the coadd's md5s, the coadd's engine weights, the tile list chain; outputs placed from
+     the stand-ins; an injection refusal, a failed test_pkcorr, a failed TEST 1, and TEST 1 reading a file that is not the tile
+     list's or skipping a tile (TEST 2) each leave the unit not done; no parent catalog refuses;
+ 12. the file tests of the curve, the recovery rows, the PKCORR JSON and the content report (each broken file fails).
+Cluster parity (not here): TEST 1 values = V5 tables/summary.csv rows; the PKCORR map = the archived V5 map (SIGNAL bit-identical).
 Run: python tests/test_mosaic_v5.py   (or under pytest)
 """
 import contextlib
@@ -153,7 +163,9 @@ def _args(**k):
 
 def test_select_units():
     u = v5.select_units(_args(scopes='Blue,18MHz', weightings='R075'))
-    assert u == [(s, 'Blue', 'R075') for s in v5.STAGES] + [(s, '18MHz', 'R075') for s in ('stage', 'coadd', 'fill', 'render')], u
+    assert v5.STAGES == ('stage', 'coadd', 'pkcorr', 'caveat', 'fill', 'render', 'content')    # spec 3.1
+    assert u == [(s, 'Blue', 'R075') for s in v5.STAGES] + [(s, '18MHz', 'R075') for s in ('stage', 'coadd', 'pkcorr', 'fill', 'render',
+                                                                                             'content')], u
     assert v5.select_units(_args(scopes='Full', stages='fill,coadd')) == [('coadd', 'Full', 'R075'), ('fill', 'Full', 'R075'),
                                                                          ('coadd', 'Full', 'R0'), ('fill', 'Full', 'R0')]
     assert [x[0] for x in v5.select_units(_args(scopes='Blue', weightings='R0', from_stage='caveat', until_stage='fill'))] == ['caveat', 'fill']
@@ -676,6 +688,291 @@ def test_beam_lookup_tagged():
              ORDERING='RING', PIXTYPE='HEALPIX', INDXSCHM='IMPLICIT')
         assert abs(BP._beam_arcmin(d, 'Taper_R075', 'Blue', '_lsfill_jysr') - 6.0) < 1e-6
         assert BP._beam_arcmin(d, 'Taper_R075', 'Blue', '_jysr') == BP.BEAMS['Blue']      # untagged: no such PSF map, the table
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+# ---- 9-12. PR-7b: pkcorr and content -----------------------------------------------------------------------------------------------
+
+def test_config_pkcorr_content_equal_production():
+    from exopipe.phase3.lib.mosaic import pkcorr as PK
+    K, T = CFG.mosaic_pkcorr, CFG.mosaic_content
+    assert (K.S_INJ, K.DEC_START, K.DEC_STOP, K.DEC_STEP, K.RA_STEP, K.ROUND_OFF, K.INJ_PB_MIN) == (50.0, -30.0, 89.0, 2.0, 47.0, 3.0,
+                                                                                                     0.12)     # MP 32-35, 78
+    assert (K.PEAK_RADIUS_FWHM, K.PEAK_RADIUS_MIN_DEG, K.OMEGA_RADIUS_DEG) == (0.5, 0.05, 0.2)                  # MP 89-93
+    assert (K.ROUNDS, K.MIN_ROUNDS, K.REC_MIN, K.REC_MAX, K.MAP_TOL) == (5, 3, 0.5, 1.2, 1e-6)                 # MP 148-158, 167
+    assert (T.N_SOURCES, T.DEC_MIN, T.ISOLATION_BEAMS, T.APERTURE_BEAMS) == (200, -30.0, 5.0, 2.0)             # MT 24, 27-48, 114, 202
+    assert (T.MIN_SOURCES, T.MED_TOL, T.FRAC5_MIN) == (20, 0.01, 0.90) and not hasattr(T, 'PROV_BYTES')        # MT 137; TEST 2: v5
+    assert T.PARENTS == '/lustre/gh/main/phase3/deep_parent_catalogs_union_20261014T0203'                     # MT 201
+    assert T.RULED == {'DEC_MIN': 'R-GREGG-20261016-MOSAIC-DEC-MIN-30'} and K.RULED == {'DEC_START': 'R-GREGG-20261016-MOSAIC-DEC-MIN-30'}
+    decs, ra = PK.nodes()
+    assert np.array_equal(decs, np.arange(-30.0, 89.0, 2.0)) and len(decs) == 60
+    assert np.array_equal(ra, np.array([(i * 47.0) % 360.0 for i in range(60)]))
+    assert PK.names('Taper_R075', 'Blue', '_lsfill', 2048) == {
+        'map': 'healpix_PKCORR_I_deep_Taper_R075_Blue_lsfill_nside2048.fits', 'recovery': 'peak_recovery_Taper_R075_Blue_lsfill.csv',
+        'curve': 'peak_corr_curve_Taper_R075_Blue_lsfill.csv', 'json': 'pkcorr_Taper_R075_Blue_lsfill.json'}
+
+
+def _sin_tile(path, data, ra0=330.0, dec0=30.0, cd=0.25, **cards):
+    n = data.shape[0]
+    return _img(path, data, CTYPE1='RA---SIN', CTYPE2='DEC--SIN', CRVAL1=ra0, CRVAL2=dec0, CRPIX1=n / 2, CRPIX2=n / 2,
+                CDELT1=-cd, CDELT2=cd, CUNIT1='deg', CUNIT2='deg', BMAJ=2.0, BMIN=1.5, BPA=30.0, **cards)
+
+
+def _paths_module():
+    m = types.ModuleType('fake_coadd_jysr')
+
+    def _paths(root, lst, variant, band, product='I'):
+        return (os.path.join(root, lst, f'I_deep_{variant}_pbcorr_{band}.fits'), os.path.join(root, lst, 'PB_deep_R075_Blue.fits'))
+    m._paths = _paths
+    return m
+
+
+def test_inject_round():
+    from exopipe.phase3.lib.mosaic import pkcorr as PK
+    d = _tmp('inj_')
+    try:
+        root, dst = os.path.join(d, 'root'), os.path.join(d, 'dst')
+        base = np.zeros((64, 64), np.float32)
+        lsts = ['00h', '01h', '02h']
+        pbs = {'00h': np.ones((64, 64), np.float32), '01h': np.full((64, 64), 0.12, np.float32), '02h': np.ones((64, 64), np.float32)}
+        for lst in lsts:
+            dat = base.copy()
+            if lst == '02h':
+                dat[:] = np.nan                                          # a blank tile: nothing injected
+            _sin_tile(os.path.join(root, lst, 'I_deep_Taper_R075_pbcorr_Blue.fits'), dat)
+            _img(os.path.join(root, lst, 'PB_deep_R075_Blue.fits'), pbs[lst])
+        before = _md5f(os.path.join(root, '00h', 'I_deep_Taper_R075_pbcorr_Blue.fits'))
+        with _fake_module('exopipe.phase3.lib.mosaic.coadd_jysr', _paths_module()):
+            tiles = PK.load_tiles(root, 'Blue', 'Taper_R075', lsts)
+            n = PK.inject_round(tiles, dst, 0.0)
+            n2 = PK.inject_round(tiles, os.path.join(d, 'dst2'), 3.0)      # round 1 from the same cache
+        assert sorted(tiles) == lsts and not tiles['00h'][3].flags.writeable and float(np.nansum(tiles['00h'][3])) == 0.0
+        i30 = 30                                                         # node 30: Dec +30, RA 30 x 47 mod 360 = 330 (the tile center)
+        assert n[i30] == 1 and n.sum() == 1, (np.nonzero(n), n.sum())    # 01h: PB <= 0.12; 02h: blank; other nodes off the 16-deg tile
+        assert _md5f(os.path.join(root, '00h', 'I_deep_Taper_R075_pbcorr_Blue.fits')) == before
+        out = fits.getdata(os.path.join(dst, '00h', 'I_deep_Taper_R075_pbcorr_Blue.fits'))
+        assert out.dtype.kind == 'f' and out.dtype.itemsize == 4
+        fx, fn = 2.0 / 0.25, 1.5 / 0.25                                  # FWHM in pixels (BMAJ 2, BMIN 1.5 deg; 0.25 deg pixels)
+        assert abs(out[31, 31] - 50.0) < 1e-3 and out.max() == out[31, 31], (out[31, 31], out.max())   # on the reference pixel
+        integral = 50.0 * np.pi / (4 * np.log(2)) * fx * fn
+        assert abs(out.sum() / integral - 1) < 1e-3, (out.sum(), integral)
+        assert float(np.nansum(fits.getdata(os.path.join(dst, '01h', 'I_deep_Taper_R075_pbcorr_Blue.fits')))) == 0.0
+        assert os.path.islink(os.path.join(dst, '00h', 'PB_deep_R075_Blue.fits'))
+        assert os.readlink(os.path.join(dst, '00h', 'PB_deep_R075_Blue.fits')) == os.path.realpath(
+            os.path.join(root, '00h', 'PB_deep_R075_Blue.fits'))
+        out2 = fits.getdata(os.path.join(d, 'dst2', '00h', 'I_deep_Taper_R075_pbcorr_Blue.fits'))
+        assert n2[i30] == 1 and abs(out2.sum() / integral - 1) < 1e-3 and out2.max() < 50.0 + 1e-3, (n2[i30], out2.sum())  # one source
+        assert out2[31, 31] < out[31, 31] - 1                            # moved 3 deg in RA: not the round-0 source
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def _hpx_read(path):
+    return np.asarray(fits.getdata(path, 1)['SIGNAL'], np.float32).ravel()
+
+
+def _fake_run_band(calls, verdict='pass', refuse=None):
+    from exopipe.phase3.lib.mosaic import pkcorr as PK
+
+    def run_band(root, band, variant, out, lsts, rounds, tag, mos_c, psf, scratch, nside, record_dir=None):
+        calls.append(dict(root=root, band=band, variant=variant, lsts=list(lsts), rounds=rounds, tag=tag, nside=nside, n=len(mos_c),
+                          links=sorted(os.listdir(os.path.join(root, lsts[0]))), scratch=os.path.isdir(scratch)))
+        if refuse:
+            raise PK.InjectionRefusal(refuse)
+        nm = PK.names(variant, band, tag, nside)
+        P = {k: os.path.join(out, f) for k, f in nm.items()}
+        _hpx(P['map'], np.full(12, 0.9), NSIDE=nside, ORDERING='RING', BUNIT='', SINJ=50.0, NROUNDS=rounds)
+        for k in ('curve', 'recovery'):
+            open(P[k], 'w').write('x\n')
+        res = dict(rounds=rounds, rec_median=0.9, rec_min=0.9, rec_max=0.9, ra_scatter_median_mad=0.01,
+                   map=os.path.join(record_dir, nm['map']), test_pkcorr=dict(verdict=verdict, nodes=60, missing_or_few_rounds=[],
+                                                                            out_of_range=[], max_map_err=0.0))
+        json.dump(res, open(P['json'], 'w'))
+        return P, res
+    return run_band
+
+
+def test_pkcorr_unit():
+    from exopipe.phase3.lib.mosaic import pkcorr as PK
+    d = _tmp('pk_')
+    try:
+        with _patched((CFG.mosaic_coadd, 'NSIDE', 1)):
+            out = _coadded(d)
+            work = os.path.join(d, 'work')
+            P = v5.paths(out, 'Blue', 'R075')
+            calls = []
+            eng = _fake_engine([])
+            with _fake_module('exopipe.phase3.lib.mosaic.coadd_jysr', eng), _no_content_tests(), \
+                    _patched((PK, 'run_band', _fake_run_band(calls)), (PK, 'read_map', _hpx_read)):
+                u = _unit(out, 'pkcorr', v5.pkcorr_unit, work)
+            assert u.status == 'done', (u.status, u.reason)
+            c = calls[0]
+            assert (c['band'], c['variant'], c['rounds'], c['tag'], c['nside'], c['n'], c['lsts']) == (
+                'Blue', 'Taper_R075', 5, '_lsfill', 1, 12, LSTS) and c['scratch'], c
+            assert c['links'] == ['I_deep_Taper_R075_pbcorr_Blue.fits', 'PB_deep_R075_Blue.fits'], c['links']
+            for k in ('map', 'curve', 'recovery', 'json'):
+                assert os.path.exists(P[f'pkcorr_{k}']) and u.meta['md5'][k] == _md5f(P[f'pkcorr_{k}']), k
+            assert os.path.basename(P['pkcorr_map']) == 'healpix_PKCORR_I_deep_Taper_R075_Blue_lsfill_nside1.fits'
+            assert json.load(open(P['pkcorr_json']))['map'] == P['pkcorr_map']
+            assert os.listdir(work) == [] and not [f for f in os.listdir(v5.unit_dir(out, 'Blue', 'R075')) if f.startswith('.tmp')]
+            assert u.meta['tiles_md5'] == _md5f(P['tiles']) and u.meta['pkcorr']['rounds'] == 5
+            # an injection refusal, then a failed test_pkcorr: the unit does not end done and nothing stays in place (v5.run)
+            with _fake_module('exopipe.phase3.lib.mosaic.coadd_jysr', eng), _no_content_tests(), \
+                    _patched((PK, 'run_band', _fake_run_band([], refuse='tiles not added')), (PK, 'read_map', _hpx_read)):
+                u = _unit(out, 'pkcorr', v5.pkcorr_unit, work)
+            assert u.status == 'refused' and 'tiles not added' in u.reason and not os.path.exists(P['pkcorr_map']), (u.status, u.reason)
+            with _fake_module('exopipe.phase3.lib.mosaic.coadd_jysr', eng), _no_content_tests(), \
+                    _patched((PK, 'run_band', _fake_run_band([], verdict='fail')), (PK, 'read_map', _hpx_read)):
+                v5.run(_args(stages='pkcorr', scopes='Blue', weightings='R075', work=work), _run(out))
+            r = record.load_record(out, v5.STEP, v5.unit_name('pkcorr', 'Blue', 'R075'))
+            assert r['status'] != 'done' and 'test_pkcorr' in str(r['reason']), (r['status'], r['reason'])
+            assert not any(os.path.exists(P[f'pkcorr_{k}']) for k in ('map', 'curve', 'recovery', 'json'))
+            # the clean map changed since the coadd; other engine weights than the coadd's
+            with open(P['unfilled_jysr'], 'ab') as f:
+                f.write(b'\0' * 2880)
+            with _fake_module('exopipe.phase3.lib.mosaic.coadd_jysr', eng), _no_content_tests(), \
+                    _patched((PK, 'run_band', _fake_run_band([])), (PK, 'read_map', _hpx_read)):
+                u = _unit(out, 'pkcorr', v5.pkcorr_unit, work)
+            assert u.status == 'refused' and 'changed since the coadd' in u.reason, (u.status, u.reason)
+            out = _coadded(d)
+            with _fake_module('exopipe.phase3.lib.mosaic.coadd_jysr', eng), _no_content_tests(), \
+                    _patched((PK, 'run_band', _fake_run_band([])), (PK, 'read_map', _hpx_read),
+                             (CFG.mosaic_coadd, 'PB_FEATHER_START', float(CFG.mosaic_coadd.PB_FEATHER_START) + 0.05)):
+                u = _unit(out, 'pkcorr', v5.pkcorr_unit, work)
+            assert u.status == 'refused' and 'weights now' in u.reason, (u.status, u.reason)
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def _report(n=24, med=1.002, fr=0.95, nsrc=150, links=True, files=None):
+    pv = [dict(lst=x, file=(files or {}).get(x, f'/x/{x}.fits'), pb=f'/x/pb_{x}.fits', md5='0' * 32, symlink=links) for x in LSTS[:n]]
+    r = dict(map='m', variant='Taper_R075', band='Blue', n_tiles=n, n_sources=nsrc, median_ratio=med, p05=0.97, p95=1.03,
+             frac_within_5pct=fr, provenance=pv, result='PASS' if abs(med - 1) <= 0.01 and fr >= 0.9 and nsrc >= 20 and links else 'FAIL')
+    return r
+
+
+def test_content_unit():
+    from exopipe.phase3.lib.mosaic import content as CT
+    d = _tmp('ct_')
+    try:
+        par = os.path.join(d, 'parents')
+        os.makedirs(par)
+        open(os.path.join(par, 'master_R075_00h_Blue.gaul.csv'), 'w').write('# none\n')
+        with _patched((CFG.mosaic_coadd, 'NSIDE', 1), (CFG.mosaic_content, 'PARENTS', par)):
+            out = _coadded(d)
+            work = os.path.join(d, 'work')
+            P = v5.paths(out, 'Blue', 'R075')
+            listed = json.load(open(P['tiles']))['tiles']
+            good = [dict(lst=r['lst'], file=os.path.realpath(r['path']), pb=os.path.realpath(r['pb']), symlink=True) for r in listed]
+            calls = []
+
+            def fake_run(maps, root, variant, band, parents, med=1.002, read=good):
+                calls.append(([os.path.basename(m) for m in maps.values()], variant, band, list(maps), parents, sorted(os.listdir(root))))
+                out = {}
+                for dom in maps:
+                    r = _report(med=med if dom == 'jybeam' else 1.002)
+                    r.pop('provenance')
+                    out[dom] = dict(r, domain=dom, read=[dict(x) for x in read])
+                return out
+            eng = _fake_engine([])
+            with _fake_module('exopipe.phase3.lib.mosaic.coadd_jysr', eng), _patched((CT, 'run', fake_run)):
+                u = _unit(out, 'content', v5.content_unit, work)
+            assert u.status == 'done', (u.status, u.reason)
+            assert len(calls) == 1 and calls[0][3] == ['jysr', 'jybeam']                     # one reading of the tiles, both domains
+            assert calls[0][0] == [os.path.basename(P['unfilled_jysr']), os.path.basename(P['unfilled_jybeam'])]
+            assert calls[0][1:3] == ('Taper_R075', 'Blue') and calls[0][4] == par and calls[0][5] == LSTS
+            rep = json.load(open(P['content']))
+            assert rep['jysr']['provenance_matches_tiles'] and os.path.basename(P['content']) == 'content_I_deep_Taper_R075_Blue_lsfill.json'
+            assert [x['md5'] for x in rep['jybeam']['provenance']] == [r['md5'] for r in listed] and 'read' not in rep['jysr']
+            assert os.listdir(work) == []
+            # TEST 1 fails in Jy/beam; TEST 2: a PB that is not the listed one, a tile TEST 1 skipped
+            wrong_pb = [dict(x, pb='/elsewhere/pb.fits') if x['lst'] == '05h' else x for x in good]
+            for kw, name in ((dict(med=1.03), 'TEST1'), (dict(read=wrong_pb), 'TEST2'), (dict(read=good[1:]), 'TEST2')):
+                bad = (lambda kw: lambda *a: fake_run(*a, **kw))(kw)
+                with _fake_module('exopipe.phase3.lib.mosaic.coadd_jysr', eng), _patched((CT, 'run', bad)):
+                    v5.run(_args(stages='content', scopes='Blue', weightings='R075', work=work), _run(out))
+                r = record.load_record(out, v5.STEP, v5.unit_name('content', 'Blue', 'R075'))
+                assert r['status'] != 'done' and name in str(r['reason']) and not os.path.exists(P['content']), (name, r['status'], r['reason'])
+            with _patched((CFG.mosaic_content, 'PARENTS', os.path.join(d, 'none'))), \
+                    _fake_module('exopipe.phase3.lib.mosaic.coadd_jysr', eng), _patched((CT, 'run', fake_run)):
+                u = _unit(out, 'content', v5.content_unit, work)
+            assert u.status == 'refused' and 'no parent catalog' in u.reason, (u.status, u.reason)
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_curve_map_and_catalog_reader():
+    try:
+        import healpy as hp
+    except ImportError:                                                          # CI has no healpy: the catalog reader only
+        hp = None
+    from exopipe.phase3.lib.mosaic import content as CT
+    from exopipe.phase3.lib.mosaic import pkcorr as PK
+    cd, cm = [-30.0, 0.0, 40.0, 88.0], [0.80, 0.85, 0.90, 0.95]
+    for nside in (4, 16) if hp else ():
+        th, _ = hp.pix2ang(nside, np.arange(hp.nside2npix(nside)))
+        assert np.array_equal(PK.curve_map(cd, cm, nside), np.interp(90.0 - np.degrees(th), cd, cm))   # MP 129-130
+    d = _tmp('cmap_')
+    try:
+        mp = os.path.join(d, 'pk.fits')
+        if hp is None:
+            print('  (healpy absent: curve_map and the map-without-curve test not run)')
+        else:
+            with _patched((CFG.mosaic_coadd, 'NSIDE', 1)):
+                _hpx(mp, PK.curve_map(cd, cm, 1).astype(np.float32), NSIDE=1, ORDERING='RING', BUNIT='', SINJ=50.0, NROUNDS=5)
+                ok, err, msg = T5.pkcorr_map_is_curve(mp, rounds=5)                # no curve: no comparison, no TypeError
+                assert ok and err is None and 'no curve' in msg, (ok, err, msg)
+        par = os.path.join(d, 'cats[1]')                                         # a '[' in the directory name
+        os.makedirs(par)
+        open(os.path.join(par, 'master_R075_00h_Blue.gaul.csv'), 'w').write('# header only\n\n')
+        assert CT._sources(par, 'Blue', 200, 0.3).shape == (0, 3)                  # no row: empty, not an IndexError
+        row = lambda ra, dec, pk: ','.join(['x'] * 4 + [str(ra), 'x', str(dec)] + ['x'] * 3 + [str(pk)]) + '\n'  # noqa: E731
+        open(os.path.join(par, 'master_R075_01h_Blue.gaul.csv'), 'w').write(
+            row(10.0, 20.0, 5.0) + row(10.5, 20.0, 4.0) + row(30.0, 20.0, 3.0) + row(30.0, -40.0, 9.0))
+        S = CT._sources(par, 'Blue', 200, 0.3)                                     # 0.5 deg < 5 beams: the fainter neighbor dropped
+        assert S.tolist() == [[10.0, 20.0, 5.0], [30.0, 20.0, 3.0]], S.tolist()   # Dec -40 < DEC_MIN + 3 beams
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_pkcorr_and_content_file_tests():
+    d = _tmp('ft7b_')
+    try:
+        decs = np.arange(-30.0, 89.0, 2.0)
+
+        def curve(path, rows):
+            with open(path, 'w') as f:
+                f.write('dec,rec_median,rec_mad,n,n_rounds\n')
+                for dec, med, nr in rows:
+                    f.write(f'{dec:.1f},{med:.4f},0.0100,{nr},{nr}\n')
+            return path
+        good = curve(os.path.join(d, 'c.csv'), [(x, 0.85, 5) for x in decs])
+        assert T5.pkcorr_curve_nodes(good, rounds=5)[0]
+        assert not T5.pkcorr_curve_nodes(curve(os.path.join(d, 'c1.csv'), [(x, 0.85, 5) for x in decs[1:]]), rounds=5)[0]
+        assert not T5.pkcorr_curve_nodes(curve(os.path.join(d, 'c2.csv'), [(x, 0.85, 2 if x == 0 else 5) for x in decs]), rounds=5)[0]
+        assert not T5.pkcorr_curve_nodes(curve(os.path.join(d, 'c3.csv'), [(x, 1.25 if x == 40 else 0.85, 5) for x in decs]), rounds=5)[0]
+        rp = os.path.join(d, 'r.csv')
+        open(rp, 'w').write('round,dec,ra,ntile,rec\n' + ''.join(f'{r},-30.0,{r * 3:.2f},2,0.8500\n' for r in range(5)))
+        assert T5.pkcorr_recovery_rounds(rp, rounds=5)[0] and not T5.pkcorr_recovery_rounds(rp, rounds=6)[0]
+        jp = os.path.join(d, 'p.json')
+        json.dump(dict(rounds=5, map='/m.fits', rec_median=0.85, test_pkcorr=dict(verdict='pass')), open(jp, 'w'))
+        assert T5.pkcorr_report_pass(jp, map_path='/m.fits', rounds=5)[0]
+        assert not T5.pkcorr_report_pass(jp, map_path='/other.fits', rounds=5)[0] and not T5.pkcorr_report_pass(jp, rounds=4)[0]
+        json.dump(dict(rounds=5, map='/m.fits', test_pkcorr=dict(verdict='fail')), open(jp, 'w'))
+        assert not T5.pkcorr_report_pass(jp, map_path='/m.fits', rounds=5)[0]
+        cp = os.path.join(d, 'content.json')
+        for rep, ok in ((_report(), True), (_report(med=1.011), False), (_report(fr=0.89), False), (_report(nsrc=19), False),
+                        (_report(links=False), False), (_report(n=23), False)):
+            rep['provenance_matches_tiles'] = True
+            json.dump({'jysr': rep, 'jybeam': rep}, open(cp, 'w'))
+            assert T5.content_passes(cp, n_tiles=24)[0] is ok, (rep['median_ratio'], rep['frac_within_5pct'], rep['n_sources'], ok)
+        rep = _report()
+        rep['provenance_matches_tiles'] = False
+        json.dump({'jysr': dict(_report(), provenance_matches_tiles=True), 'jybeam': rep}, open(cp, 'w'))
+        assert not T5.content_passes(cp, n_tiles=24)[0]
+        json.dump({'jysr': dict(_report(), provenance_matches_tiles=True)}, open(cp, 'w'))
+        assert not T5.content_passes(cp, n_tiles=24)[0]                  # a domain missing
     finally:
         shutil.rmtree(d, ignore_errors=True)
 

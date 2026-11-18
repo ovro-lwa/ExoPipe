@@ -300,3 +300,64 @@ class mosaic_fill(_Section):
              'JB_SPREAD': 'R-GREGG-20261111-KEEP-LSFILL-NAME-FOR-ZERO-SPACING-MOSAICS'}
     PROTECTED_KEYS = ('TEST_NSIDE', 'LS_SMOOTH_DEG', 'HP_SMOOTH_DEG', 'INNER_APOD_MIN', 'JB_SMOOTH_DEG', 'JB_BRIGHT_PERCENTILE',
                       'JB_PBEFF_MIN')
+
+
+class mosaic_content(_Section):
+    """Stage `test` of mosaic v5 (MT = production mosaic_content_test.py: TEST 1 run 108, TEST 2 provenance 95; lib/mosaic/content.py):
+    the unfilled co-add, in Jy/sr and Jy/beam, against the same apertures recomputed from its staged tiles with the co-add's weights
+    (production's V5 tables/summary.csv rows are the unfilled maps' values)."""
+    PARENTS = '/lustre/gh/main/phase3/deep_parent_catalogs_union_20261014T0203'
+    #   MT 201 (--parents default): master_R075_<LST>_<scope>.gaul.csv, positions and peaks of the brightest sources only. PINNED to
+    #   production's value for parity. NOTE 2026-11-18: this union is stale on 47 of 456 cells after the Release 1 master rebuilds
+    #   (RESULT-20261118-DEEP-PARENT-UNION-REFRESH); which union a v2 rebuild reads is the deep chat's call (hybrid_recon.CATALOGS)
+    N_SOURCES = 200
+    DEC_MIN = -30.0
+    ISOLATION_BEAMS = 5.0
+    APERTURE_BEAMS = 2.0
+    #   MT 24 (DEC_MIN), 27-48 (isolated by 5 beams, Dec >= DEC_MIN + 3 beams), 114 (R = 2 beams), 202 (--n 200)
+    MIN_SOURCES = 20
+    MED_TOL = 0.01
+    FRAC5_MIN = 0.90
+    #   MT 137: PASS when >= 20 sources, |median ratio - 1| <= 0.01 and >= 90 % of the sources within 5 % (MT 8-13). The content
+    #   tests belong to the run plan Gregg approved 2026-10-22 (R-GREGG-20261022-MOSAIC-RUN-GO-52-WIDEBAND-AS-IS-LWACALIM09); the
+    #   limits are production's literals (exopipe 93a0d02), not stated in a ruling: protected, not RULED
+    #   TEST 2 (MT 103 hashed each tile's first 64 MB and compared it with nothing): the unit checks that TEST 1 read exactly its
+    #   tile list's files, each at the full md5 it verified (lib/mosaic/content.py); no size to configure
+    RULED = {'DEC_MIN': 'R-GREGG-20261016-MOSAIC-DEC-MIN-30'}
+    #   Gregg 2026-10-16: "Use declination >= -30" (the products' southern limit)
+    PROTECTED_KEYS = ('PARENTS', 'N_SOURCES', 'DEC_MIN', 'ISOLATION_BEAMS', 'APERTURE_BEAMS', 'MIN_SOURCES', 'MED_TOL', 'FRAC5_MIN')
+
+
+class mosaic_pkcorr(_Section):
+    """Stage `pkcorr` of mosaic v5 (MP = production mosaic_pkcorr.py; lib/mosaic/pkcorr.py): the injection-calibrated peak-recovery
+    correction map of the Jy/sr mosaic (the point-source set: S_true = peak x Omega_eff / PKCORR). Each round adds S_INJ restoring-beam
+    Gaussians to copies of the staged tiles (PB > INJ_PB_MIN) at Dec DEC_START..DEC_STOP every DEC_STEP, RA i x RA_STEP + round x
+    ROUND_OFF, co-adds them with the real engine and differences against the unfilled co-add (production's --clean-map: the chain ran
+    PKCORR before the fill, run_v5_pkcorr.sh and lostsky_hybrids_green_full_20261113.sh step 3)."""
+    S_INJ = 50.0
+    DEC_START = -30.0
+    DEC_STOP = 89.0
+    DEC_STEP = 2.0
+    RA_STEP = 47.0
+    ROUND_OFF = 3.0
+    INJ_PB_MIN = 0.12
+    PEAK_RADIUS_FWHM = 0.5
+    PEAK_RADIUS_MIN_DEG = 0.05
+    OMEGA_RADIUS_DEG = 0.2
+    #   MP 32-35 (S_INJ, DECS = arange(-30, 89, 2), RA_BASE i x 47 mod 360, ROUND_OFF), 78 (PB > 0.12), 89-93 (Omega_eff = median PSF
+    #   map within 0.2 deg; peak = max within max(0.5 FWHM_eff, 0.05 deg))
+    ROUNDS = 5
+    #   run_v5_pkcorr.sh (--rounds 5; MP default 5): 5 rounds sample the 15-deg LST tile period
+    MIN_ROUNDS = 3
+    REC_MIN = 0.5
+    REC_MAX = 1.2
+    MAP_TOL = 1e-6
+    #   MP 148-158 (test_pkcorr): every node holds samples from >= min(3, rounds) rounds, every node's median recovery in 0.5-1.2,
+    #   the map read back equals the curve within 1e-6. The point-source set is an archive deliverable by
+    #   R-GREGG-20261023-MOSAIC-ALL-PRODUCTS-ON-LUSTRE-NOTAPER-ABOVE-TAPER-JYSR-AND-POINT-SOURCE-SET, and it is the 2026-07-27 PKCORR
+    #   program (CORRECTION-POINT-SOURCE-SET-IS-THE-20260727-PROGRAM-PKCORR-NOT-ARCHIVED); the method's numbers are production's
+    #   literals (exopipe 26ff18f, "method unchanged"), not stated in a ruling: protected; the ruling's gate is HG15 at conform
+    RULED = {'DEC_START': 'R-GREGG-20261016-MOSAIC-DEC-MIN-30'}
+    #   Gregg 2026-10-16: "Use declination >= -30" (MP 10: "-30 (the product limit)")
+    PROTECTED_KEYS = ('S_INJ', 'DEC_START', 'DEC_STOP', 'DEC_STEP', 'RA_STEP', 'ROUND_OFF', 'INJ_PB_MIN', 'PEAK_RADIUS_FWHM',
+                      'PEAK_RADIUS_MIN_DEG', 'OMEGA_RADIUS_DEG', 'ROUNDS', 'MIN_ROUNDS', 'REC_MIN', 'REC_MAX', 'MAP_TOL')

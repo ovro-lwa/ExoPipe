@@ -5,8 +5,11 @@ pass them (exopipe3 verify re-runs them from the record's ctx):
                        it fills) and, for the Jy/beam map, filled_jysr (the Jy/sr map whose fill it carries)
   mosaic_caveat_map    scope
   mosaic_caveat_table  n_tiles
+  mosaic_content_report  n_tiles, scope, variant
+  mosaic_pkcorr_map    curve (the curve CSV), rounds, scope, variant; mosaic_pkcorr_curve, _recovery: rounds, scope, variant;
+                       mosaic_pkcorr_report: map_path, rounds, scope, variant
 The numeric tests of the fill (MF test_tpfill, the Jy/beam identity) and of the caveat map (test_caveat_map) need the computed arrays:
-the units record them as inline checks (HG19.fill_jysr, HG19.fill_jybeam, test_caveat_map)."""
+the units record them as inline checks (HG19.fill_jysr, HG19.fill_jybeam, test_caveat_map, test_pkcorr, TEST1, TEST2)."""
 import json
 import os
 
@@ -185,3 +188,124 @@ def caveat_rows(path, n_tiles=None, **ctx):
     if nh:
         probs.append(f'not hybrid: {nh}')
     return not probs, len(rows), '; '.join(probs) or f'{len(rows)} hybrid tiles'
+
+
+# ---- mosaic_content_report (content/content_I_deep_<V>_<S>_lsfill.json) -----------------------------------------------------------
+
+@content_test('mosaic_content_report')
+def content_passes(path, n_tiles=None, **ctx):
+    """TEST 1 and TEST 2 of both domains (MT run 108, provenance 95), re-judged from the numbers with mosaic_content's limits: >=
+    MIN_SOURCES sources, |median ratio - 1| <= MED_TOL, a fraction >= FRAC5_MIN within 5 %, one link per tile, every input a link to
+    a staged tile."""
+    C = _cfg().mosaic_content
+    with open(path) as f:
+        rep = json.load(f)
+    probs = []
+    for dom in ('jysr', 'jybeam'):
+        r = rep.get(dom)
+        if not r:
+            probs.append(f'{dom}: missing')
+            continue
+        med, fr, n = r.get('median_ratio'), r.get('frac_within_5pct'), r.get('n_sources') or 0
+        ok1 = (n >= int(C.MIN_SOURCES) and med is not None and abs(med - 1) <= float(C.MED_TOL) and fr is not None
+               and fr >= float(C.FRAC5_MIN))
+        if not ok1 or r.get('result') != 'PASS':
+            probs.append(f'{dom} TEST 1: {n} sources, median {med}, within 5 % {fr}, result {r.get("result")}')
+        pv = r.get('provenance') or []
+        if (n_tiles is not None and len(pv) != int(n_tiles)) or not all(x.get('symlink') for x in pv) \
+                or not r.get('provenance_matches_tiles'):
+            probs.append(f'{dom} TEST 2: {len(pv)} links, all links {all(x.get("symlink") for x in pv)}, '
+                         f'the staged tiles {r.get("provenance_matches_tiles")}')
+    return not probs, {d: (rep.get(d) or {}).get('median_ratio') for d in ('jysr', 'jybeam')}, \
+        '; '.join(probs) or 'TEST 1 and TEST 2 pass in Jy/sr and Jy/beam'
+
+
+# ---- PKCORR (pkcorr/: the map, the curve, the recovery rows, the JSON) -----------------------------------------------------------
+
+def _curve_rows(path):
+    import csv
+    with open(path, newline='') as f:
+        return list(csv.DictReader(f))
+
+
+@content_test('mosaic_pkcorr_curve')
+def pkcorr_curve_nodes(path, rounds=None, **ctx):
+    """MP test_pkcorr on the written curve: one row per Dec node (mosaic_pkcorr DEC_START..DEC_STOP every DEC_STEP), each with samples
+    from >= min(MIN_ROUNDS, rounds) rounds and a median in REC_MIN..REC_MAX."""
+    from exopipe.phase3.lib.mosaic.pkcorr import nodes
+    C = _cfg().mosaic_pkcorr
+    rows = _curve_rows(path)
+    cols = list(rows[0]) if rows else []
+    if cols != ['dec', 'rec_median', 'rec_mad', 'n', 'n_rounds']:
+        return False, cols, f'columns {cols}'
+    need = min(int(C.MIN_ROUNDS), int(rounds if rounds is not None else C.ROUNDS))
+    have = {round(float(r['dec']), 1): r for r in rows}
+    decs, _ra = nodes()
+    few = [float(d) for d in decs if round(float(d), 1) not in have or int(have[round(float(d), 1)]['n_rounds']) < need]
+    bad = [(r['dec'], r['rec_median']) for r in rows if not float(C.REC_MIN) <= float(r['rec_median']) <= float(C.REC_MAX)]
+    probs = ([f'nodes missing or under {need} rounds: {few[:6]}'] if few else []) + ([f'medians out of range: {bad[:6]}'] if bad else [])
+    return not probs, len(rows), '; '.join(probs) or f'{len(rows)} nodes, each >= {need} rounds, medians in range'
+
+
+@content_test('mosaic_pkcorr_map')
+def pkcorr_map_is_curve(path, curve=None, rounds=None, **ctx):
+    """RING HEALPix at mosaic_coadd.NSIDE, column SIGNAL, BUNIT '', SINJ = mosaic_pkcorr.S_INJ, NROUNDS = the unit's rounds; the map
+    equals the curve file interpolated in Dec within the CSV's 4-decimal rounding (5e-5) + MAP_TOL (the unit's inline test_pkcorr
+    compares it with the unrounded curve at MAP_TOL)."""
+    import numpy as np
+    from astropy.io import fits
+    from exopipe.phase3.lib.mosaic.pkcorr import curve_map
+    C = _cfg()
+    n = int(C.mosaic_coadd.NSIDE)
+    with fits.open(path, memmap=False) as h:
+        h1 = h[1].header
+        if 'SIGNAL' not in h[1].columns.names:
+            return False, h[1].columns.names, 'no SIGNAL column'
+        m = np.asarray(h[1].data['SIGNAL'], dtype=np.float64).ravel()
+    probs = []
+    if int(h1.get('NSIDE', -1)) != n or str(h1.get('ORDERING')) != 'RING' or m.size != 12 * n * n:
+        probs.append(f'NSIDE {h1.get("NSIDE")} ORDERING {h1.get("ORDERING")} pixels {m.size}')
+    if str(h1.get('BUNIT', None)) != '' or float(h1.get('SINJ', -1)) != float(C.mosaic_pkcorr.S_INJ) \
+            or (rounds is not None and int(h1.get('NROUNDS', -1)) != int(rounds)):
+        probs.append(f'BUNIT {h1.get("BUNIT")!r} SINJ {h1.get("SINJ")} NROUNDS {h1.get("NROUNDS")}')
+    err = None
+    if curve and not probs:
+        rows = _curve_rows(curve)
+        err = float(np.max(np.abs(m - curve_map([float(r['dec']) for r in rows], [float(r['rec_median']) for r in rows], n))))
+        if not err <= 5e-5 + float(C.mosaic_pkcorr.MAP_TOL):
+            probs.append(f'map vs curve file {err:.2e}')
+    if not np.all(np.isfinite(m)):
+        probs.append(f'{int((~np.isfinite(m)).sum())} non-finite pixels')
+    return not probs, err, '; '.join(probs) or (f'NSIDE {n}, map = curve (max {err:.1e})' if err is not None
+                                                else f'NSIDE {n}, finite (no curve given: map vs curve not compared)')
+
+
+@content_test('mosaic_pkcorr_recovery')
+def pkcorr_recovery_rounds(path, rounds=None, **ctx):
+    """MP 116-119: columns round,dec,ra,ntile,rec; every round 0..rounds-1 present; ntile >= 1."""
+    import csv
+    with open(path, newline='') as f:
+        rd = csv.DictReader(f)
+        cols, rows = rd.fieldnames or [], list(rd)
+    if cols != ['round', 'dec', 'ra', 'ntile', 'rec']:
+        return False, cols, f'columns {cols}'
+    want = set(range(int(rounds))) if rounds is not None else None
+    got = {int(r['round']) for r in rows}
+    probs = ([f'rounds {sorted(got)}'] if want is not None and got != want else []) + \
+        ([f'{sum(int(r["ntile"]) < 1 for r in rows)} rows without a tile'] if any(int(r['ntile']) < 1 for r in rows) else [])
+    return not probs, len(rows), '; '.join(probs) or f'{len(rows)} rows, rounds {sorted(got)}'
+
+
+@content_test('mosaic_pkcorr_report')
+def pkcorr_report_pass(path, map_path=None, rounds=None, **ctx):
+    """MP 139-142: the JSON's test_pkcorr verdict is pass, its rounds are the unit's, and it names the unit's map."""
+    with open(path) as f:
+        r = json.load(f)
+    probs = []
+    if (r.get('test_pkcorr') or {}).get('verdict') != 'pass':
+        probs.append(f'test_pkcorr {r.get("test_pkcorr")}')
+    if rounds is not None and r.get('rounds') != int(rounds):
+        probs.append(f'rounds {r.get("rounds")} != {rounds}')
+    if map_path is not None and r.get('map') != map_path:
+        probs.append(f'map {r.get("map")} != {map_path}')
+    return not probs, r.get('rec_median'), '; '.join(probs) or f'test_pkcorr pass, median recovery {r.get("rec_median")}'
