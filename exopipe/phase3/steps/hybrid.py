@@ -26,8 +26,8 @@ a refused item of the unit - its files, with the gate - and the other variant go
 scratch: --work or the site SCRATCH_ROOT (the derived warp screens are cached there, hybrid_stack.SCREEN_CACHE_SUBDIR).
 
 Gates here (each refuses; spec 3.4): HG0 the node-local co-add build directories (hybrid_stack.COADD_SB) are present on this node
-(stack); HG6 the double-size PSF registry is pinned (recon, wideband); the striation selection's md5 equals the pinned one (hybrid); the
-unfilled inputs are pinned (tilefill); HG20 every refused unit is listed and makes the exit non-zero (core/record.Run.exit_code);
+(stack); HG6 the double-size PSF registry is pinned (recon, wideband) and every file's md5 equals its entry (recon); the striation
+selection's md5 equals the pinned one (hybrid); the unfilled inputs are pinned (tilefill); HG20 every refused unit is listed and makes the exit non-zero (core/record.Run.exit_code);
 a scope or weighting outside the route refuses before any unit runs; --out never is, lies in or contains a production work run or
 an archive run, and is never the work root itself.
 """
@@ -153,7 +153,7 @@ def plan_units(args, cfg):
 
 
 def _md5(path):
-    """md5 of a small pinned input (lib/install/steps_common.md5: ordinary reads, no memory map); None when it cannot be read."""
+    """md5 of a pinned input (lib/install/steps_common.md5: ordinary reads, no memory map); None when it cannot be read."""
     from exopipe.phase3.lib.install.steps_common import md5
     try:
         return md5(path)
@@ -170,6 +170,11 @@ def stage_gate_problems(stage, cfg):
     if stage in ('recon', 'wideband') and not cfg.hybrid_psf2x.REGISTRY:
         out.append('HG6: the double-size PSF registry hybrid_psf2x.REGISTRY is empty (question Q1 with Gregg: which antenna list '
                    'each band\'s PSF was made with)')
+    elif stage == 'recon':
+        for (band, v), (path, md5, _ants) in sorted(cfg.hybrid_psf2x.REGISTRY.items()):
+            got = _md5(path)
+            if got != md5:
+                out.append(f'HG6: the double-size PSF {band} {v} {path} has md5 {got}, not the pinned hybrid_psf2x.REGISTRY md5 {md5}')
     if stage == 'hybrid':
         got = _md5(cfg.hybrid.STRIATION_SELECTION)
         if got != cfg.hybrid.STRIATION_SELECTION_MD5:
