@@ -38,6 +38,15 @@ PHASE2_ARCHIVE = _env('PHASE2_ARCHIVE', '/lustre/pipeline/exopipe/phase2')
 # the 10-second snapshots used by the T5 escalation.
 PHASE2_FAST = _env('PHASE2_FAST', '/fast/gh/main/phase2')
 
+# Node-local scratch for T5's temp dirs (snapshot copies, funpack, dewarp; snapshots.py removes each one after use).
+# The step (`exopipe3 followup investigate`) sets it to its own scratch directory under --work, the only place a
+# --parity run may write; a direct call of the package keeps production's /fast/gh/main.
+SCRATCH_DIR = _env('SCRATCH_DIR', '/fast/gh/main')
+# funpack of the T5 frames (snapshots._copy_funpack), called by path: the `development` conda env's binary, which
+# production's `conda run -n development funpack` resolves to (conda 4.12, 2026-11-17; the same 69,808-byte binary on
+# lwacalim00-10). No conda start per frame (~0.5 s each) and no conda write to /opt/miniconda3/conda-meta/history.
+FUNPACK = _env('FUNPACK', '/opt/devel/pipeline/envs/development/bin/funpack')
+
 # --- Output (conformant dossier home) --------------------------------------
 # phase3_paths.candidate_dir(OUT_ROOT, OUT_LABEL, cand_id) ->
 #   {OUT_ROOT}/transients/Run_{OUT_LABEL}/candidates/{cand_id}/

@@ -1562,6 +1562,31 @@ def test_item7_fallback_plain_subprocess_and_grandchild():
         fallback._ENV = None
 
 
+def test_scratch_root_absolute():
+    """fitsio.scratch_root returns an absolute path (review of PR 106: followup investigate changes into its scratch
+    directory, and a relative --work then named a directory that does not exist), and a relative --work under a Lustre
+    working directory is refused as Lustre scratch."""
+    from exopipe.phase3.core import fitsio
+    from exopipe.phase3.core.record import Refusal
+    here = os.getcwd()
+    d = tempfile.mkdtemp(prefix='test_core_v2_scratch_root_', dir=_scratch_root())
+    try:
+        os.chdir(d)
+        assert fitsio.scratch_root('rel') == os.path.join(os.path.realpath(d), 'rel') or \
+            fitsio.scratch_root('rel') == os.path.join(d, 'rel'), fitsio.scratch_root('rel')
+        assert os.path.isabs(fitsio.scratch_dir('t', 'rel'))
+        if os.path.isdir('/lustre/gh/main/exopipe'):         # not on the data-free CI runner
+            os.chdir('/lustre/gh/main/exopipe')
+            try:
+                fitsio.scratch_root('rel')
+                raise AssertionError('a relative --work under a Lustre working directory was not refused')
+            except Refusal as e:
+                assert 'on Lustre' in str(e), e
+    finally:
+        os.chdir(here)
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def test_item7_fallback_registry():
     """Every fallback key is RULED, is set to 'fallback' in the production parity file, and is named by a
     fallback.site(<key>) call; every such call names its key as a string literal that is a config key (an AST scan: no

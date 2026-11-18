@@ -10,7 +10,16 @@
                stored raws (read only) equal to the archive's plans (P-F1) and of a bad one (refused)
   tess         fake TESS script: done / no sector (exit 3) / SIMBAD failure (G9)
   investigate  the package in-process: G11 on an empty synthetic bundle; G13 when the package config was imported with
-               other paths; dossier writers of the package -> the followup_* content tests (column constants checked)
+               other paths; dossier writers of the package -> the followup_* content tests (column constants checked);
+               the package's SCRATCH_DIR is the op's own scratch directory under --work
+  t5_scratch   every tempfile.mkdtemp of followup/snapshots.py takes dir=C.SCRATCH_DIR; a fresh interpreter takes
+               CANDINV_SCRATCH_DIR (snapshot_spectrum makes its temp dir there and removes it) and keeps production's
+               /fast/gh/main without it
+  funpack      T5 calls funpack by path (followup/config.py FUNPACK, no conda): the default binary is executable, a
+               synthetic tile-compressed frame through _copy_funpack comes back pixel-identical, a missing binary raises
+  g30          the real package on the pinned rank-0 bundle (child processes: G13) with T5 replaced: T5 raising ->
+               refused G30 with the partial dossier recorded and present; the same under --no-write -> refused G30
+               (not no-input); T5 returning -> done
   summary      synthetic top-50 + one evidence file: ranked summary, missing dossier row, re-score written back
   hone         the REAL phase3_honing.py on a 2-candidate CSV: every candidate no-products (exit 3), as production today
   periodicity  fake stage scripts: lightcurves -> search (G28 refuses 1 of 24 cells; then all 24) -> page; a second
@@ -429,6 +438,8 @@ def test_investigate():
     r = _records(out, 'rank00_J061934+410530_LST07h')
     assert r['status'] == 'refused' and r['reason'].startswith('G11'), r['reason']
     assert r['meta']['candinv_env']['CANDINV_BUNDLE_DIR'] == bundle
+    # T5's temp dirs (followup/snapshots.py) go to the op's own node-local scratch directory, removed at the end
+    assert os.path.dirname(r['meta']['candinv_env']['CANDINV_SCRATCH_DIR']) == os.path.abspath(work), r['meta']
     assert any('cross-match empty' in n for n in r['notes']), r['notes']
     from exopipe.phase3.core import exclusions
     assert r['admitted'] == ([] if exclusions.is_excluded('07h', '23MHz', '2024-12-31') else ['2024-12-31']), r
@@ -477,6 +488,191 @@ def test_investigate():
     assert cut, 'the package cutout writer failed on a synthetic all-sky image'
     res = validate.run('followup_fits', cut)
     assert res[0]['passed'] and res[0]['value'] == [161, 161], res
+
+
+def test_t5_scratch():
+    """T5's temp dirs follow CANDINV_SCRATCH_DIR. Found by the followup parity shadow (2026-11-17): production's
+    hard-coded dir='/fast/gh/main' was refused by the --parity guard, so T5 of every parity run ended in an escalation
+    error."""
+    import ast
+    import subprocess
+    from exopipe.phase3.followup import _cfg_adapter as A
+    src = os.path.join(REPO, 'exopipe', 'phase3', 'followup', 'snapshots.py')
+    calls = [n for n in ast.walk(ast.parse(open(src).read())) if isinstance(n, ast.Call)
+             and isinstance(n.func, ast.Attribute) and n.func.attr == 'mkdtemp']
+    assert len(calls) == 4, f'{len(calls)} mkdtemp calls in snapshots.py; this test knows 4'
+    for n in calls:
+        dv = {k.arg: k.value for k in n.keywords}.get('dir')
+        assert (isinstance(dv, ast.Attribute) and dv.attr == 'SCRATCH_DIR' and isinstance(dv.value, ast.Name)
+                and dv.value.id == 'C'), f'snapshots.py:{n.lineno}: mkdtemp without dir=C.SCRATCH_DIR'
+    d = _fresh('t5_scratch')
+    t5 = os.path.join(d, 't5')              # the probe runs in d (CASA writes its log to the cwd)
+    os.makedirs(t5)
+    sec = _cfg().followup_investigate
+    assert A.env_for(sec, d, scratch=d)['CANDINV_SCRATCH_DIR'] == d
+    assert 'CANDINV_SCRATCH_DIR' not in A.env_for(sec, d)
+    # a fresh interpreter (the package reads CANDINV_* once, at import); no frames exist for 07h 2000-01-01, so
+    # snapshot_spectrum only makes and removes its temp dir
+    probe = '\n'.join([
+        'import os, tempfile',
+        'from exopipe.phase3.core import env',
+        'env.legacy()',
+        'seen, real = [], tempfile.mkdtemp',
+        'def spy(suffix=None, prefix=None, dir=None):',
+        '    if str(prefix).startswith("candinv_"):',
+        '        seen.append(dir)',
+        '    return real(suffix, prefix, dir)',
+        'tempfile.mkdtemp = spy',
+        'from exopipe.phase3.followup import config as C, snapshots as SN',
+        'print("SCRATCH_DIR=" + C.SCRATCH_DIR)',
+        'if "CANDINV_SCRATCH_DIR" in os.environ:',
+        '    SN.snapshot_spectrum("07h", "2000-01-01", 94.895, 41.092, "20000101_073000", scopes=["23MHz"],',
+        '                         verbose=False)',
+        '    print("SEEN=" + repr(seen) + " LEFT=" + repr(os.listdir(C.SCRATCH_DIR)))'])
+    base = {k: v for k, v in os.environ.items() if not k.startswith('CANDINV_')}
+    base['PYTHONPATH'] = REPO
+
+    def probe_run(extra):
+        p = subprocess.run([sys.executable, '-c', probe], env=dict(base, **extra), cwd=d, stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE, universal_newlines=True, timeout=300)
+        assert p.returncode == 0, p.stderr[-3000:]
+        return {ln.split('=', 1)[0]: ln.split('=', 1)[1] for ln in p.stdout.splitlines()
+                if ln.startswith(('SCRATCH_DIR=', 'SEEN='))}
+    got = probe_run({'CANDINV_SCRATCH_DIR': t5})
+    assert got.get('SCRATCH_DIR') == t5 and got.get('SEEN') == f'{[t5]!r} LEFT=[]', got
+    got = probe_run({})
+    assert got.get('SCRATCH_DIR') == '/fast/gh/main' and 'SEEN' not in got, got
+
+
+def test_funpack():
+    """T5 calls funpack by path (followup/config.py FUNPACK; default the `development` env's binary, which production's
+    `conda run -n development funpack` resolves to): no conda start per frame and no conda write to its history file
+    (refused by the --parity guard 391 times per P-F7 run). A fresh interpreter (the package reads CANDINV_* once)."""
+    import subprocess
+    src = open(os.path.join(REPO, 'exopipe', 'phase3', 'followup', 'snapshots.py')).read()
+    assert "'conda'" not in src and 'subprocess.run([C.FUNPACK, ' in src, 'snapshots.py: funpack not called by path'
+    d = _fresh('funpack')
+    probe = '\n'.join([
+        'import os, sys',
+        'import numpy as np',
+        'from astropy.io import fits',
+        'from exopipe.phase3.core import env',
+        'env.legacy()',
+        'from exopipe.phase3.followup import config as C, snapshots as SN',
+        'd = sys.argv[1]',
+        'print("FUNPACK=" + C.FUNPACK + " X_OK=" + str(os.access(C.FUNPACK, os.X_OK)))',
+        'x = (np.arange(4096, dtype=np.int32).reshape(64, 64) * 7919) % 30011 - 15000',
+        'src = os.path.join(d, "f-image.fits.fs")',
+        'fits.HDUList([fits.PrimaryHDU(), fits.CompImageHDU(x, compression_type="RICE_1")]).writeto(src)',
+        'fp = SN._copy_funpack(src, os.path.join(d, "f-image.fits.fz"))',
+        'with fits.open(fp, memmap=False) as h:',
+        '    y = [u.data for u in h if u.data is not None][0]',
+        'print("EQUAL=" + str(bool(y.dtype.kind == "i" and np.array_equal(x, y))))',
+        'C.FUNPACK = os.path.join(d, "no_such_funpack")',
+        'try:',
+        '    SN._copy_funpack(src, os.path.join(d, "g-image.fits.fz"))',
+        '    print("MISSING=returned")',
+        'except FileNotFoundError:',
+        '    print("MISSING=raised")'])
+    base = {k: v for k, v in os.environ.items() if not k.startswith('CANDINV_')}
+    p = subprocess.run([sys.executable, '-c', probe, d], env=dict(base, PYTHONPATH=REPO), cwd=d, stdout=subprocess.PIPE,
+                       stderr=subprocess.PIPE, universal_newlines=True, timeout=300)
+    assert p.returncode == 0, p.stderr[-3000:]
+    got = dict(ln.split('=', 1) for ln in p.stdout.splitlines() if ln.startswith(('FUNPACK=', 'EQUAL=', 'MISSING=')))
+    assert got.get('FUNPACK') == '/opt/devel/pipeline/envs/development/bin/funpack X_OK=True', got
+    # the step runs the package default (it removes inherited CANDINV_* variables); its config key pins that value
+    assert _cfg().followup_investigate.SNAP_FUNPACK + ' X_OK=True' == got['FUNPACK'], got
+    assert got.get('EQUAL') == 'True' and got.get('MISSING') == 'raised', got
+
+
+def test_g30():
+    """G30: an escalation that raised refuses the investigate unit after its written outputs are recorded (B-30 site
+    fallbacks.FOLLOWUP_ESCALATION_FALLBACK, ruled 'refuse'); under production's value 'fallback' the unit is done and the
+    failure counted. The package (followup/dossier.py:189-194, as production) keeps 'error: ...' in the evidence and
+    writes the dossier without the escalation's products, and production records the candidate done. The real package
+    on the pinned rank-0 bundle
+    (read only), one child process per run (the package reads its paths once, G13), T5 (_run_snapshot) replaced after
+    the package import."""
+    import subprocess
+    d = _fresh('g30')
+    driver = '\n'.join([
+        'import sys',
+        'from exopipe.phase3.core import env',
+        'env.legacy()',
+        'import exopipe.phase3.steps.followup as F',
+        'from exopipe.phase3 import cli',
+        'mode, real = sys.argv[1], F._package',
+        'def run_snapshot(cand, ev, *a, **k):',
+        '    if mode == "raise":',
+        '        raise RuntimeError("synthetic T5 failure (test_g30)")',
+        '    if mode == "swallow":',          # as dossier.py:306-308: the spectrum fails, the package logs it and goes on
+        '        a[-1]("T5 snapshot spectrum error:", "synthetic spectrum failure (test_g30)")',
+        '    if mode == "mkdtemp":',          # T5 makes its temp dirs in the package SCRATCH_DIR (snapshots.py)
+        '        import os, tempfile',
+        '        from exopipe.phase3.followup import config as C',
+        '        os.rmdir(tempfile.mkdtemp(dir=C.SCRATCH_DIR))',
+        '    ev["escalation"]["snapshot"] = "run (test_g30 stub: no frames read)"',
+        'def package(*a, **k):',
+        '    mods, env_ = real(*a, **k)',
+        '    if "dossier" in mods:',
+        '        mods["dossier"]._run_snapshot = run_snapshot',
+        '    return mods, env_',
+        'F._package = package',
+        'sys.exit(cli.main(["followup"] + sys.argv[2:]))'])
+
+    def run(mode, name, *extra, work=None):
+        out, work = os.path.join(d, name, 'out'), work or os.path.join(d, name, 'work')
+        p = subprocess.run([sys.executable, '-c', driver, mode, 'investigate', '--ra', '94.895', '--dec', '41.092',
+                            '--lst', '07h', '--date', '2024-12-31', '--band', '23MHz', '--out', out, '--work', work,
+                            '--cores', 'none'] + list(extra), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                           universal_newlines=True, env=dict(os.environ, PYTHONPATH=REPO), cwd=d, timeout=900)
+        recs = _records(out) if os.path.isdir(os.path.join(out, '_records', 'followup')) else {}
+        assert len(recs) == 1, (name, p.returncode, sorted(recs), p.stderr[-2000:])
+        return p.returncode, list(recs.values())[0]
+    key = 'fallbacks.FOLLOWUP_ESCALATION_FALLBACK'
+    rc, r = run('raise', 'raise')
+    assert rc == 2 and r['status'] == 'refused', (rc, r['status'], r['reason'])
+    assert (f'B-30 fallback site {key}: G30: sub-products failed (escalation snapshot: synthetic T5 failure (test_g30)) - '
+            'the dossier lacks them; a re-run retries the unit - REFUSED') in r['reason'], r['reason']
+    assert [x['key'] for x in r.get('fallback_refusals') or []] == [key], r.get('fallback_refusals')
+    classes = sorted({o['class'] for o in r['outputs']})
+    assert {'followup_dossier', 'followup_table', 'followup_region'} <= set(classes), classes
+    assert all(os.path.isfile(o['path']) for o in r['outputs']) and all(t['passed'] for t in r['tests']), r
+    tables = [os.path.basename(o['path']) for o in r['outputs'] if o['class'] == 'followup_table']
+    assert tables == [r['unit'] + '_spectrum.csv'], tables      # no T5 tables (_snapshot_lc.csv, _snapshot_spectrum.csv)
+    evp = [o['path'] for o in r['outputs'] if o['class'] == 'followup_dossier']
+    assert json.load(open(evp[0]))['escalation']['snapshot'] == 'error: synthetic T5 failure (test_g30)', evp
+    n_ruled = len(r['outputs'])
+    rc, r = run('raise', 'no_write', '--no-write')
+    assert rc == 2 and r['status'] == 'refused' and f'{key}: G30:' in r['reason'] and not r['outputs'], (rc, r)
+    # production's value (parity/production_20261013.cfg): the same failure keeps the unit done, counted in its record
+    rc, r = run('raise', 'production', '--set', f'{key}=fallback')
+    assert rc == 0 and r['status'] == 'done' and r.get('fallbacks') == {key: 1}, (rc, r['status'], r['reason'],
+                                                                                 r.get('fallbacks'))
+    assert len(r['outputs']) == n_ruled and all(t['passed'] for t in r['tests']), r
+    rc, r = run('return', 'done')
+    assert rc == 0 and r['status'] == 'done' and r['outputs'], (rc, r['status'], r['reason'])
+    assert r['reason'] == '' and all(t['passed'] for t in r['tests']) and not r.get('fallbacks'), r
+    # review of PR 106: a sub-product the package catches and only prints (here the T5 spectrum) refuses too
+    rc, r = run('swallow', 'swallow')
+    assert rc == 2 and r['status'] == 'refused' and (
+        f'{key}: G30: sub-products failed (T5 snapshot spectrum: synthetic spectrum failure (test_g30)) - the dossier lacks '
+        'them') in r['reason'], (rc, r['status'], r['reason'])
+    # ... and the unit's log keeps that line: a re-run that succeeds reads only its own part of the log
+    rc, r = run('return', 'swallow')
+    assert rc == 0 and r['status'] == 'done' and r['reason'] == '' and not r.get('fallbacks'), (rc, r['status'],
+                                                                                                 r['reason'])
+    # review of PR 106: a relative --work (the op changes into its scratch directory before the package reads it)
+    rc, r = run('mkdtemp', 'relwork', work=os.path.join('relwork', 'work'))
+    sd = r['meta']['candinv_env']['CANDINV_SCRATCH_DIR']
+    assert rc == 0 and r['status'] == 'done' and r['reason'] == '', (rc, r['status'], r['reason'])
+    assert os.path.isabs(sd) and os.path.dirname(sd) == os.path.join(d, 'relwork', 'work'), sd
+    # every sub-product failure the package only prints is in the step's table (a new one in dossier.py fails here)
+    import re
+    import exopipe.phase3.steps.followup as F
+    src = open(os.path.join(REPO, 'exopipe', 'phase3', 'followup', 'dossier.py')).read()
+    printed = set(re.findall(r"(?:log|print)\('\s*((?:T5 snapshot (?:\w+ )?error|\[io\] WARN [^']*failed):)'", src))
+    assert printed == {p for p, _ in F._SWALLOWED} | {'T5 snapshot error:'}, sorted(printed)
 
 
 def test_summary():
@@ -749,7 +945,8 @@ def test_real_products():
 
 
 TESTS = ['test_cli', 'test_config', 'test_ep_plan', 'test_tess', 'test_real_products', 'test_investigate',
-         'test_summary', 'test_hone', 'test_periodicity', 'test_fold_and_source_page', 'test_negative']
+         'test_t5_scratch', 'test_funpack', 'test_g30', 'test_summary', 'test_hone', 'test_periodicity',
+         'test_fold_and_source_page', 'test_negative']
 
 
 def main(argv):

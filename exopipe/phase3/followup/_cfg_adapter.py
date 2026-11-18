@@ -4,7 +4,9 @@ The package reads its paths from CANDINV_<NAME> environment variables ONCE, when
 first imported (config.py:14-15, module-level ``_env``). The step therefore sets them from ``CFG.followup_investigate``
 (and the run's --out) BEFORE that first import, here and nowhere else, and checks afterwards that the package took them.
 Every other CANDINV_* variable inherited from the caller's shell is removed first, so the package's own defaults apply
-exactly as in production (a stale CANDINV_VLSS_FULL or CANDINV_TRANSIENTS_DIR never leaks in).
+exactly as in production (a stale CANDINV_VLSS_FULL or CANDINV_TRANSIENTS_DIR never leaks in). CANDINV_SCRATCH_DIR is
+not a config key: the investigate op passes its own node-local scratch directory, where T5 makes its temp dirs (so a
+second investigate op in one process refuses G13: its scratch directory differs).
 
 Gate G13 (spec followup.md section 5): if the package config is already imported when ``apply`` is called, the paths would
 not apply - refuse. The adapter changes nothing in the package modules; it disappears at absorption, when the package
@@ -19,19 +21,22 @@ ENV_KEYS = ('TOP50_CSV', 'BUNDLE_DIR', 'PROD_ROOT', 'PROD_LABEL', 'REDO1_LABEL',
 PKG_CONFIG = 'exopipe.phase3.followup.config'
 
 
-def env_for(section, out_root=None):
-    """{CANDINV_<KEY>: value} from a followup_investigate section; OUT_ROOT is the run's product root when given."""
+def env_for(section, out_root=None, scratch=None):
+    """{CANDINV_<KEY>: value} from a followup_investigate section; OUT_ROOT is the run's product root when given, and
+    SCRATCH_DIR the run's node-local scratch directory when given (T5's temp dirs, followup/snapshots.py)."""
     env = {f'CANDINV_{k}': str(getattr(section, k)) for k in ENV_KEYS}
     if out_root:
         env['CANDINV_OUT_ROOT'] = os.path.abspath(out_root)
+    if scratch:
+        env['CANDINV_SCRATCH_DIR'] = os.path.abspath(scratch)
     return env
 
 
-def apply(section, out_root=None):
+def apply(section, out_root=None, scratch=None):
     """Set the CANDINV_* environment for the package's first import; returns the mapping. Raises record.Refusal (G13) when
     the package config was imported before (its paths would silently stay the earlier ones)."""
     from exopipe.phase3.core.record import Refusal
-    env = env_for(section, out_root)
+    env = env_for(section, out_root, scratch)
     if PKG_CONFIG in sys.modules:
         mod = sys.modules[PKG_CONFIG]
         stale = {k: (getattr(mod, k[len('CANDINV_'):], None), v) for k, v in env.items()

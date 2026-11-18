@@ -9,7 +9,8 @@ apply the per-band warp screen first (same machinery as Phase 2).
 SAFETY: the Phase-1 snapshots are fpack-compressed `.fits.fs` in the archive,
 and the pipeline's _funpack renames+deletes the original. So we COPY each
 snapshot to a scratch workdir and funpack the COPY — the archive is untouched.
-funpack lives in the `development` conda env.
+funpack is called by path (config.FUNPACK: the `development` conda env's binary, which production runs through
+`conda run -n development funpack`).
 
 FRAMES AND EXCLUSIONS (snapshot chat 2026-11-14, JUDGED-20261114-FOLLOWUP-SNAPSHOT-CUTOUTS-SURVEY-ROOT-ONLY): the frames of a
 (LST, night) come from the search's own frame root (core/inputs.frame_root: the GPU pipeline's tree for a cell of
@@ -42,7 +43,6 @@ from . import resolve as R
 from . import photometry as PHOT
 from exopipe.phase2.cascade_dewarp import apply_warp
 
-FPACK_ENV = 'development'
 # Timestamp after 'Snapshot-' regardless of any Stokes suffix (run conventions
 # vary: '-V-image' / '-I-image' on some runs, bare '-image' on others).
 _TS = re.compile(r'Snapshot-(\d{8}_\d{6})-')
@@ -182,7 +182,7 @@ def save_burst_allsky(cand, lst, date, scope, ra, dec, frame_times, outdir,
     if _phase1_snap_dir(lst, date, scope) is None:      # excluded (snap_refusal) or no frames
         return []
     scr = _load_warp(scope, lst, date)
-    tmp = tempfile.mkdtemp(prefix='candinv_snapsave_', dir='/fast/gh/main')
+    tmp = tempfile.mkdtemp(prefix='candinv_snapsave_', dir=C.SCRATCH_DIR)
     written = []
     try:
         for ts in frame_times:
@@ -230,7 +230,7 @@ def snapshot_spectrum(lst, date, ra, dec, timestamp, scopes=None,
     the fixed position. timestamp = 'YYYYMMDD_HHMMSS'. Returns list of dicts.
     """
     scopes = scopes or C.SUBBANDS
-    tmp = tempfile.mkdtemp(prefix='candinv_snapspec_', dir='/fast/gh/main')
+    tmp = tempfile.mkdtemp(prefix='candinv_snapspec_', dir=C.SCRATCH_DIR)
     rows = []
     try:
         for sb in scopes:
@@ -288,7 +288,16 @@ def _copy_funpack(src, dst, retries=3):
     concurrent-IO truncation that made a single batch funpack fail with CFITSIO
     read/EOF errors (107/108) under parallel workers. Verifies the copy size,
     funpacks with -F (overwrite), and retries with a fresh re-copy. Returns the
-    funpacked `.fits` path or None. The archive `src` is never mutated."""
+    funpacked `.fits` path or None. The archive `src` is never mutated.
+    funpack runs by path (config.FUNPACK); a missing binary raises instead of skipping every frame (T5 then ends in an
+    escalation error, which the step refuses: G30). Deliberate deviation, not behind a config key: production's
+    `conda run` on a node without the binary skips every frame ('no frames in window'); a parity run there records an
+    escalation error instead (counted, unit done) - the binary is present on lwacalim00-10. CANDINV_FUNPACK applies only
+    to a direct call of the package: the step removes inherited CANDINV_* variables (followup/_cfg_adapter.py) and runs
+    the default, which followup_investigate.SNAP_FUNPACK pins."""
+    if not os.access(C.FUNPACK, os.X_OK):
+        raise FileNotFoundError(f'funpack not executable: {C.FUNPACK} (followup/config.py FUNPACK; the step pins it as '
+                                f'followup_investigate.SNAP_FUNPACK)')
     fp = dst[:-3] if dst.endswith('.fz') else dst + '.fits'
     try:
         ssz = os.path.getsize(src)
@@ -299,8 +308,7 @@ def _copy_funpack(src, dst, retries=3):
             shutil.copyfile(src, dst)
             if os.path.getsize(dst) != ssz:          # truncated copy -> retry
                 continue
-            r = subprocess.run(['conda', 'run', '-n', FPACK_ENV, 'funpack',
-                                '-F', dst], capture_output=True, timeout=180)
+            r = subprocess.run([C.FUNPACK, '-F', dst], capture_output=True, timeout=180)
             if r.returncode == 0 and os.path.exists(fp):
                 return fp
         except Exception:
@@ -354,7 +362,7 @@ def snapshot_morphology(lst, date, scope, ra, dec, timestamp, verbose=True):
         out['note'] = 'no snapshot dir'
         return out
     scr = _load_warp(scope, lst, date)
-    tmp = tempfile.mkdtemp(prefix='candinv_snapmorph_', dir='/fast/gh/main')
+    tmp = tempfile.mkdtemp(prefix='candinv_snapmorph_', dir=C.SCRATCH_DIR)
     try:
         vdw, vhdr, vw = _funpack_dewarp(lst, date, scope, scr, timestamp, 'V', tmp)
         idw, ihdr, iw = _funpack_dewarp(lst, date, scope, scr, timestamp, 'I', tmp)
@@ -445,7 +453,7 @@ def snapshot_lightcurve(lst, date, scope, ra, dec, start_iso, end_iso,
     out['available'] = True
     out['n_frames'] = len(snaps)
 
-    tmp = workdir or tempfile.mkdtemp(prefix='candinv_snap_', dir='/fast/gh/main')
+    tmp = workdir or tempfile.mkdtemp(prefix='candinv_snap_', dir=C.SCRATCH_DIR)
     try:
         # copy+funpack each snapshot PER-FILE (archive untouched), robust to
         # concurrent-IO truncation: a few unreadable frames are skipped rather
