@@ -272,6 +272,9 @@ def run(args, run):
         if v2only:                            # never ignored: v5 selects by --scopes, --weightings, --stages (--dry-run plans)
             raise ValueError(f'--generation v5 refuses the v2 option(s) {", ".join("--" + f.replace("_", "-") for f in v2only)} '
                              f'(v5 selects by --scopes, --weightings and --stages; --dry-run prints the plan)')
+        if (getattr(args, 'workers', None) or 1) > 1:   # FINDING-20261118-V2-HYBRID-STEP-IGNORES-WORKERS: never silently ignored
+            raise ValueError(f'--generation v5 refuses --workers {args.workers}: its units run one after another in one process; run '
+                             f'one process per disjoint --scopes group instead (unit records are per unit; tables last, alone)')
         _start_gates(run)
         return v5.run(args, run)
     for flag in ('weightings', 'hybrid_out'):

@@ -239,6 +239,9 @@ def run(args, run):
     from exopipe.phase3.config import CFG
     from exopipe.phase3.core.record import NoInput, Refusal
     bad = out_problems(run.out_root, CFG)
+    if (getattr(args, 'workers', None) or 1) > 1:       # FINDING-20261118-V2-HYBRID-STEP-IGNORES-WORKERS: a flag never silently ignored
+        bad.append(f'--workers {args.workers}: exopipe3 hybrid runs its units one after another in one process (lib/hybrid keeps '
+                   'per-process module state); run one process per disjoint --lsts group instead (unit records are per unit)')
     if bad:
         raise Refusal('; '.join(bad))
     units = plan_units(args, CFG)
