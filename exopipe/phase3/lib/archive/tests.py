@@ -40,6 +40,7 @@ optional, so `exopipe3 verify <class> <file>` runs them alone.
                            v3_copy_card_superset   D7 per HDU: every card key of the file it replaced, less MOSAIC_V3_RETIRED_KEYS
 """
 import os
+import re
 
 from exopipe.phase3.core.validate import content_test
 
@@ -533,10 +534,14 @@ def readme_staged(path, prefix_md5=None, prefix_bytes=None, round=None, **ctx):
     head, tail = b[:int(prefix_bytes)], b[int(prefix_bytes):].decode('utf-8')
     if hashlib.md5(head).hexdigest() != prefix_md5:
         return False, len(head), f'the first {prefix_bytes} bytes are not the installed README (md5 {prefix_md5})'
-    n = tail.count('\nUPDATE ') + tail.startswith('UPDATE ')
-    ok = n == 1 and f'UPDATE {round}:' in tail and tail.endswith('\n')
-    return ok, n, (f'the installed README ({prefix_bytes} bytes) + one section UPDATE {round} ({len(tail)} characters)' if ok else
-                   f'{n} UPDATE section(s) after the installed README, round {round} {"found" if f"UPDATE {round}:" in tail else "missing"}')
+    # the section starts right after the separator with its header; a second line starting 'UPDATE <round>: ' would be a second
+    # section (a note line starting with UPDATE is not one: only the header puts a colon right after the round)
+    body = tail.lstrip('\n')
+    heads = re.findall(r'(?m)^UPDATE ' + re.escape(str(round)) + ': ', body)
+    ok = body.startswith(f'UPDATE {round}: ') and len(heads) == 1 and tail.endswith('\n')
+    return ok, len(heads), (f'the installed README ({prefix_bytes} bytes) + one section UPDATE {round} ({len(tail)} characters)' if ok
+                            else f'after the installed README: {len(heads)} section header(s), starts with UPDATE {round}: '
+                                 f'{body.startswith(f"UPDATE {round}: ")}, ends with a newline: {tail.endswith(chr(10))}')
 
 
 content_test('archive_readme_copy', name='readme_copy_checksum')(copy_checksum)

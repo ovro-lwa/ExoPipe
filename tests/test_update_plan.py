@@ -136,6 +136,12 @@ def test_commands_parse():
         assert 'needs --update-note' in _raises(UP.build, TRIG_1113, OUTS, apply=True)                 # an apply needs the note
         assert 'needs --update-note' in _raises(UP.build, TRIG_1113, OUTS, apply=True, note='no ledger id here')
         pls = [UP.build(TRIG_1113, OUTS, apply=a, note=NOTE if a else None) for a in (False, True)]
+        order = CFG.runner.UPDATE_ORDER                              # no push entry runs: an apply needs no note
+        try:
+            CFG.runner.UPDATE_ORDER = tuple(x for x in order if not x[2].startswith('archive push'))
+            assert UP.build(TRIG_1113, OUTS, apply=True)['update_note'] is None
+        finally:
+            CFG.runner.UPDATE_ORDER = order
     for e in pls[1]['entries']:                                       # every push of an apply plan carries the plan's note
         if e['argv'] and e['argv'][:2] == ['archive', 'push']:
             assert e['argv'][e['argv'].index('--update-note') + 1] == NOTE, e['argv']

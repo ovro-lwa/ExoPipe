@@ -46,7 +46,7 @@ W_TOKEN = {'R075': 'Robust-0.75', 'R0': 'Robust+0.0'}
 # byte-identical; which of the two is known only after the steps ran. A kind a planned unit makes with no installed file: publish.
 ACTION = 'replace or keep'
 PUBLISH = 'publish'
-README = 'append a section'
+README = 'append a section (when the push changes a file)'
 QUARANTINE = ('hybrid', 'mosaic_v5', 'mosaic_v3')   # push classes with a quarantine_dir in lib/archive/<class>.py
 
 
@@ -153,9 +153,6 @@ def build(trigger, outs, apply=False, rnd=None, note=None):
         ok = False
     if not ok:
         raise ValueError(f'the quarantine round must be a date YYYYMMDD, got {rnd!r}')
-    if apply and not (note and _ruling_ids([note])):
-        raise ValueError(f'run update --apply needs --update-note "<why, ledger ID>" citing a row of {_cfg().paths.FIX_LEDGER} (every '
-                         f'push appends it to its archive run\'s README; got {note!r})')
     entries, gated = [], False
     for name, kind, cmd in _cfg().runner.UPDATE_ORDER:
         its = items_for(kind, cells)
@@ -167,13 +164,13 @@ def build(trigger, outs, apply=False, rnd=None, note=None):
         elif gated and not apply:
             e['skipped'] = 'needs --apply (this entry or one before it writes the installed tree or the archive)'
         entries.append(e)
+    from exopipe.phase3.lib.archive.common import ruling_ids
+    pushes = [e['name'] for e in entries if not e.get('skipped') and (e['argv'] or [])[:2] == ['archive', 'push']]
+    if apply and pushes and not (note and ruling_ids([note])):
+        raise ValueError(f'run update --apply needs --update-note "<why, ledger ID>" citing a row of {_cfg().paths.FIX_LEDGER} (the '
+                         f'push(es) {pushes} append it to their archive run\'s README; got {note!r})')
     return dict(trigger=list(trigger), cells=[f'{lst}_{s}' for lst, s in cells], outs=dict(outs), apply=bool(apply), round=rnd,
                 update_note=note, entries=entries)
-
-
-def _ruling_ids(texts):
-    from exopipe.phase3.lib.archive.common import ruling_ids
-    return ruling_ids(texts)
 
 
 def from_exclusions(workers=None):

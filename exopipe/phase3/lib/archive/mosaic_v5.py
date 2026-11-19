@@ -264,6 +264,8 @@ def run_push(ctx, args, run, unit_fn, cls, what, items_fn, rd, qd, qman_name):
         raise NoInput(f'push --class {cls}: no conform or tables record under --staging-root {args.staging_root} - nothing to push')
     rnd = args.round or time.strftime('%Y%m%d', time.gmtime())
     stages = args._stages
+    from exopipe.phase3.lib.archive.readme import precheck, push_readme
+    precheck(ctx, args, cls, rd)                                    # an apply without its README note refuses before any swap
     pre = f'push_{cls}_'
     units = []
     for suffix, meta, plan in items:
@@ -292,7 +294,6 @@ def run_push(ctx, args, run, unit_fn, cls, what, items_fn, rd, qd, qman_name):
         units.append(unit_fn(name, body, describe=lambda rows: ', '.join(
             f'{k} {sum(1 for r in rows if r["action"] == k)}' for k in ('keep', 'publish', 'replace', 'keep-or-replace')
             if any(r['action'] == k for r in rows)) or '0 files'))
-    from exopipe.phase3.lib.archive.readme import push_readme
     push_readme(ctx, args, run, unit_fn, cls, rd, qd, qman_name, units, rnd, args.staging_root)
 
 
