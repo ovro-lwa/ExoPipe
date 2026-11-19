@@ -251,13 +251,15 @@ def read_items(path):
 # ---------------------------------------------------------------------------------------------------------------------
 
 def fits_history(path, max_blocks=400):
-    """HISTORY card texts of the primary header (order kept), read block by block up to END."""
+    """HISTORY card texts of the primary header (order kept), read block by block up to END. OSError when the file is not
+    FITS or its header ends (a short block, max_blocks) before END: a partial list is never returned as the header's."""
     out = []
     with open(path, 'rb') as f:
         for n in range(max_blocks):
             blk = f.read(2880)
             if len(blk) < 2880 or (n == 0 and not blk.startswith(b'SIMPLE')):
-                return out
+                raise OSError(f'{path}: ' + ('not a FITS file' if n == 0 and not blk.startswith(b'SIMPLE') else
+                                             f'header ends in block {n + 1} before END (truncated)'))
             for i in range(0, 2880, 80):
                 card = blk[i:i + 80].decode('ascii', 'replace')
                 key = card[:8].strip()
@@ -265,7 +267,7 @@ def fits_history(path, max_blocks=400):
                     return out
                 if key == 'HISTORY':
                     out.append(card[8:].rstrip())
-    return out
+    raise OSError(f'{path}: no END in the first {max_blocks} header blocks')
 
 
 def coadd_constituents(path):
