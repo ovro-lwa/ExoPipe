@@ -856,47 +856,64 @@ def tilefill_field(out_root, scope, w, rows, mosaic_out=None):
     return rec
 
 
-REFUSED_STATES = ('refused', 'failed', 'no-input', 'unreadable')
+DONE_STATES = ('done', 'skipped-valid')
+REFUSED_STATES = ('refused', 'no-input')        # the run's own verdict that the unit cannot be made (a ruling may keep / quarantine)
 
 
-def work_states(out_root):
-    """{(LST, scope, weighting): {stage: (status, reason)}}: every unit record of the hybrid --out, read now
-    (<out>/_records/hybrid/<stage>.<LST>_<scope>_<w>.json, stage in STAGES); a record that cannot be read is ('unreadable', why).
-    {} when the run holds no records."""
+def work_states(out_root, lsts=None, scope=None, w=None):
+    """{(LST, scope, weighting): {stage: (status, reason, staged)}}: the unit records of the hybrid --out (core.record.record_path:
+    <out>/_records/hybrid/<stage>.<LST>_<scope>_<w>.json, stage in STAGES), narrowed by name (lsts, scope, w) before any is read;
+    staged = the record was staged from production (its staged_from key). A record that cannot be read is ('unreadable', why,
+    False). {} when the run holds no records."""
     import json
-    d = os.path.join(out_root, '_records', 'hybrid')
+    from exopipe.phase3.core.record import record_path
+    d = os.path.dirname(record_path(out_root, 'hybrid', 'x'))
     got = {}
     for name in sorted(os.listdir(d)) if os.path.isdir(d) else ():
         stage, _dot, key = name[:-len('.json')].partition('.')
         if not name.endswith('.json') or stage not in STAGES or key.count('_') < 2:
             continue
         lst, rest = key.split('_', 1)
-        scope, w = rest.rsplit('_', 1)
+        sc, wt = rest.rsplit('_', 1)
+        if lsts is not None and lst not in lsts or scope is not None and sc != scope or w is not None and wt != w:
+            continue
         try:
             with open(os.path.join(d, name)) as f:
                 r = json.load(f)
-            st = (str(r.get('status')), str(r.get('reason') or ''))
+            st = (str(r.get('status')), str(r.get('reason') or ''), 'staged_from' in r)
         except (OSError, ValueError) as e:
-            st = ('unreadable', f'{type(e).__name__}: {e}')
-        got.setdefault((lst, scope, w), {})[stage] = st
+            st = ('unreadable', f'{type(e).__name__}: {e}', False)
+        got.setdefault((lst, sc, wt), {})[stage] = st
     return got
 
 
-def unit_state(stages):
-    """(state, stage, status, reason) of one unit from its work_states entry. refused: a stage record is refused, failed, no-input
-    or unreadable (the first in STAGES order; a done tilefill after it does not undo it); input: only a stack record, done (a
-    member's stack the run made or staged as an input - the Q1 run holds 22 high-band Robust -0.75 Taper residual stacks staged
-    from production for the striation-restored base - not a unit the run builds); done: the tilefill record is done (a pinned
-    tilefill unit holds only that record); unfinished: otherwise (a stage running, or not yet run)."""
-    for s in STAGES:
-        if s in stages and stages[s][0] in REFUSED_STATES:
-            return ('refused', s) + tuple(stages[s])
-    if set(stages) == {'stack'}:
-        return ('input', 'stack') + tuple(stages['stack'])
-    if stages.get('tilefill', ('',))[0] == 'done':
-        return 'done', 'tilefill', 'done', ''
-    last = [s for s in STAGES if s in stages][-1]
-    return ('unfinished', last) + tuple(stages[last])
+def unit_state(stages, through='tilefill'):
+    """(state, stage, status, reason) of one unit from its work_states entry, over its stage records up to `through`: 'tilefill'
+    (the archive push: the filled masters) or 'hybrid' (the hybrid or full stage's unfilled masters: the v5 mosaic, made before
+    tilefill, and tilefill's own work source). States, in this order:
+      input       only a stack record, staged from production and done (a member input such as the 22 high-band Robust -0.75
+                  Taper residual stacks staged into the Q1 run; not a unit the run builds);
+      refused     a record refused or no-input (the first in STAGES order), even before a done later record;
+      unfinished  a record neither done nor refused (running, error, interrupted, unreadable), or the last stage not yet run
+                  (a stack made by the run whose recon has not started is unfinished, never an input);
+      done        every record done (or skipped-valid) and the last stage (tilefill; hybrid or full) among them;
+      none        no record up to `through` (a pinned tilefill unit seen by the v5 mosaic)."""
+    upto = STAGES[:STAGES.index('full' if through == 'hybrid' else through) + 1]
+    st = [(s, stages[s]) for s in upto if s in stages]
+    if not st:
+        return 'none', '', '', ''
+    if set(stages) == {'stack'} and stages['stack'][2] and stages['stack'][0] in DONE_STATES:
+        return 'input', 'stack', stages['stack'][0], stages['stack'][1]
+    for s, (status, reason, _g) in st:
+        if status in REFUSED_STATES:
+            return 'refused', s, status, reason
+    for s, (status, reason, _g) in st:
+        if status not in DONE_STATES:
+            return 'unfinished', s, status, reason
+    ends = ('tilefill',) if through == 'tilefill' else ('hybrid', 'full')
+    if any(s in ends for s, _x in st):
+        return 'done', st[-1][0], st[-1][1][0], ''
+    return 'unfinished', st[-1][0], st[-1][1][0], f'done; the stages after it, through {through}, have not run'
 
 
 def _installed(lst, scope, w, root=None):
@@ -984,6 +1001,10 @@ def tilefill_source(out_root, lst, scope, w, rows, mode='work', plan_only=False,
         why = _upstream_problem(out_root, f'{"full" if scope == "Full" else "hybrid"}.{lst}_{scope}_{w}', [hj])
         if why:
             raise Refusal(f'its hybrid may not be used: {why} - REFUSED')
+        ws = work_states(out_root, lsts=(lst,), scope=scope, w=w).get((lst, scope, w))
+        st = unit_state(ws, through='hybrid') if ws else ('none',)
+        if st[0] not in ('done', 'none'):     # a stage before the hybrid rerun after it and refused / unfinished: a stale hybrid
+            raise Refusal(f'its hybrid may not be used: {st[0]} in the work run at stage {st[1]} ({st[2]}: {st[3][:200]}) - REFUSED')
         with open(hj) as f:
             rec = json.load(f)
         reads, src = [hj], {}

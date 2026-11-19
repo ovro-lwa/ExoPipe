@@ -194,20 +194,22 @@ def resolve_tiles(scope, w, hybrid_out, plan_only=False):
     C = _cfg()
     rows = HS._manifest_rows(C.hybrid_tilefill)
     root = hybrid_out or os.path.join(os.sep, 'nonexistent', 'no-hybrid-out')
-    states = HS.work_states(hybrid_out) if hybrid_out else {}
+    states = HS.work_states(hybrid_out, scope=scope, w=w) if hybrid_out else {}     # this scope and weighting's records only
     tiles, probs = [], []
     for lst in LSTS:
-        mode = 'work' if hybrid_out and os.path.exists(os.path.join(hybrid_out, f'{lst}_{scope}', f'{w}_hybrid.json')) else 'pinned'
+        st, stage, status, reason = HS.unit_state(states[(lst, scope, w)], through='hybrid') if (lst, scope, w) in states else (
+            'none', '', '', '')
         caveat = ''
-        if mode == 'pinned' and (lst, scope, w) in states:          # the work run tried this unit and made no hybrid
-            st, stage, status, reason = HS.unit_state(states[(lst, scope, w)])
-            disp = C.hybrid_unit.REFUSED_INSTALLED.get((lst, scope, w))
-            if st == 'unfinished' or st == 'refused' and disp != 'keep':     # input (a member stack) / done (pinned tilefill): pinned
-                probs.append(f'{lst}: {st} in the work run at stage {stage} ({status}: {reason[:160]}), no hybrid record; '
+        if st in ('refused', 'unfinished'):         # the work run tried this unit and holds no usable hybrid (a hybrid record
+            disp = C.hybrid_unit.REFUSED_INSTALLED.get((lst, scope, w))     # left from before a refused rerun is stale)
+            if st == 'unfinished' or disp != 'keep':
+                probs.append(f'{lst}: {st} in the work run at stage {stage} ({status}: {reason[:160]}); '
                              f'hybrid_unit.REFUSED_INSTALLED {disp!r} - its installed tile never stands in silently')
                 continue
-            if st == 'refused':
-                caveat = f'kept by ruling (hybrid_unit.REFUSED_INSTALLED): refused in the work run at stage {stage} ({reason[:160]})'
+            mode = 'pinned'
+            caveat = f'kept by ruling (hybrid_unit.REFUSED_INSTALLED): refused in the work run at stage {stage} ({reason[:160]})'
+        else:                                       # done, an input (a staged member stack), none (a pinned tilefill unit)
+            mode = 'work' if hybrid_out and os.path.exists(os.path.join(hybrid_out, f'{lst}_{scope}', f'{w}_hybrid.json')) else 'pinned'
         try:
             s = HS.tilefill_source(root, lst, scope, w, rows, mode, plan_only=True, need_pb=False)   # the mosaic reads no diffuse PB
         except (TilefillRefusal, Refusal, NoInput, OSError, KeyError, ValueError) as e:

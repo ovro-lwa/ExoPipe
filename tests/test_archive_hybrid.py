@@ -445,12 +445,12 @@ def test_swap_and_copy_failures():
         shutil.rmtree(d, ignore_errors=True)
 
 
-def _records(out, unit, **stages):
+def _records(out, unit, staged=False, **stages):
     d = os.path.join(out, '_records', 'hybrid')
     os.makedirs(d, exist_ok=True)
     for s, st in stages.items():
         with open(os.path.join(d, f'{s}.{unit}.json'), 'w') as f:
-            json.dump(dict(status=st, reason=f'{s} {st} (synthetic)'), f)
+            json.dump(dict(status=st, reason=f'{s} {st} (synthetic)', **({'staged_from': {}} if staged else {})), f)
 
 
 def test_refused_units():
@@ -463,12 +463,18 @@ def test_refused_units():
         _records(out, '18h_50MHz_R075', stack='done', recon='done', hybrid='running')
         _records(out, '18h_55MHz_R075', stack='done', recon='refused', hybrid='done', tilefill='done')   # a stale done tilefill
         _records(out, '19h_46MHz_R075', stack='done', recon='done', hybrid='done', tilefill='done')
-        _records(out, '18h_69MHz_R075', stack='done')                   # a member stack staged as an input: not listed
+        _records(out, '18h_69MHz_R075', staged=True, stack='done')      # a member stack staged from production: an input
+        _records(out, '18h_64MHz_R075', stack='done')                   # a stack the run made, recon not started: unfinished
+        _records(out, '18h_59MHz_R075', stack='done', recon='error', hybrid='done', tilefill='done')    # a rerun that crashed
         S = {k: SH.unit_state(v) for k, v in SH.work_states(out).items()}
         assert S[('18h', '46MHz', 'R075')][:3] == ('refused', 'recon', 'refused'), S
         assert S[('18h', '50MHz', 'R075')][:3] == ('unfinished', 'hybrid', 'running'), S
         assert S[('18h', '55MHz', 'R075')][:2] == ('refused', 'recon') and S[('19h', '46MHz', 'R075')][0] == 'done', S
-        assert S[('18h', '69MHz', 'R075')][0] == 'input', S
+        assert S[('18h', '69MHz', 'R075')][0] == 'input' and S[('18h', '64MHz', 'R075')][:2] == ('unfinished', 'stack'), S
+        assert S[('18h', '59MHz', 'R075')][:3] == ('unfinished', 'recon', 'error'), S
+        assert SH.unit_state(SH.work_states(out)[('18h', '50MHz', 'R075')], through='hybrid')[:2] == ('unfinished', 'hybrid')
+        assert SH.unit_state({'tilefill': ('done', '', False)}, through='hybrid')[0] == 'none'          # a pinned tilefill unit
+        assert set(SH.work_states(out, lsts={'19h'})) == {('19h', '46MHz', 'R075')}
         with _Env(d) as E:
             st = S[('18h', '46MHz', 'R075')]
             assert 'unfinished' in _raises(Refusal, AH.refused_rows, E.ctx, '18h', '50MHz', 'R075', S[('18h', '50MHz', 'R075')])
@@ -480,7 +486,8 @@ def test_refused_units():
             assert 'REFUSED_INSTALLED' in msg and 'stay silently' in msg and _names('014')['plain'] in msg, msg
             CFG.hybrid_unit.REFUSED_INSTALLED[('18h', '46MHz', 'R075')] = 'keep'
             rows, notes = AH.refused_rows(E.ctx, '18h', '46MHz', 'R075', st)
-            assert sorted((r['kind'], r['action'], r['dst']) for r in rows) == sorted((k, 'keep', p) for k, p in olds.items()), rows
+            assert sorted((r['kind'], r['action'], r['dst'], r['md5']) for r in rows) == sorted(
+                (k, 'keep', p, _md5(p)) for k, p in olds.items()), rows
             assert notes and notes[0].startswith('keep by ruling') and 'recon' in notes[0], notes
             CFG.hybrid_unit.REFUSED_INSTALLED[('18h', '46MHz', 'R075')] = 'quarantine'
             rows, notes = AH.refused_rows(E.ctx, '18h', '46MHz', 'R075', st)
@@ -498,7 +505,7 @@ def test_refused_units():
             args = types.SimpleNamespace(staging_root=out, round='T9', _stages=['transfer'], lsts=None)
             E.ctx.tier = 'deep'
             AH.run_hybrid(E.ctx, args, None, lambda name, body, describe: names.append(name))
-            assert names == ['push_hybrid_18h_46MHz_R075', 'push_hybrid_18h_50MHz_R075', 'push_hybrid_18h_55MHz_R075'], names
+            assert names == [f'push_hybrid_18h_{b}MHz_R075' for b in ('46', '50', '55', '59', '64')], names
             names.clear()
             AH.run_hybrid(E.ctx, types.SimpleNamespace(**{**vars(args), 'lsts': '19h'}), None,
                           lambda name, body, describe: names.append(name))

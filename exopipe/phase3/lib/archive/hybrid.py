@@ -12,12 +12,12 @@ root>/<LST>/<scope>/ (production notaper_largescale.archive_hybrid_unit 1637, th
 A pinned unit (filled from the installed masters' own unfilled sources) pushes only the tilefill outputs.
 
 Units the work run did not finish (refused_unit; steps.hybrid.work_states / unit_state over every unit record of the staging root,
---lsts narrows): a unit whose stage records include a refused, failed, no-input or unreadable one (refused; this takes precedence
-over a done tilefill record), or none done through tilefill (unfinished; a unit with only a done stack record is a member input, not
-a unit the run built, and is not listed). Each is a push unit of its own, so the installed products
+--lsts narrows): a unit whose stage records include a refused or no-input one (refused; this takes precedence over a done tilefill
+record), or one neither done nor refused (error, running, unreadable), or none done through tilefill (unfinished); a unit whose only
+record is a stack staged from production is a member input and is not listed. Each is a push unit of its own, so the installed products
 of a cell the rebuild did not remake never stay or go silently: unfinished refuses (finish the run or narrow --lsts); refused with
 nothing installed refuses as a gap; refused with installed products refuses unless a ruling set hybrid_unit.REFUSED_INSTALLED for it:
-keep (a 'keep' row per installed product, noted as kept by ruling) or quarantine (a 'retire' row per installed product, moved into
+keep (a 'keep' row per installed product with its checksum, recorded as the unit's input, noted as kept by ruling) or quarantine (a 'retire' row per installed product, moved into
 the round quarantine as below). The PB maps stay: they describe the beam, not the refused product.
 
 Per file: keep (the installed file of the kind has the same name and the same checksum: byte-identical; a file with the same pixels
@@ -111,13 +111,17 @@ def quarantine_dir(ctx, rnd):
     return os.path.join(ctx.archive_root, f'{_p().HYBRID_QUARANTINE_PREFIX}{rnd}')
 
 
+def push_lsts(args):
+    from exopipe.phase3.core import cells as CC
+    return CC.expand(args.lsts, universe=CC.LSTS) if getattr(args, 'lsts', None) else CC.LSTS
+
+
 def hybrid_units(args, staging):
     """[(LST, scope, weighting)] of the tilefill records under the staging root (--lsts narrows)."""
-    from exopipe.phase3.core import cells as CC
     if not staging or not os.path.isdir(staging):
         raise ValueError(f'push --class hybrid: --staging-root must be the hybrid step\'s --out (the tilefill records are read '
                          f'there); got {staging!r}')
-    lsts = CC.expand(args.lsts, universe=CC.LSTS) if getattr(args, 'lsts', None) else CC.LSTS
+    lsts = push_lsts(args)
     units = []
     for lst in lsts:
         for d in sorted(glob.glob(os.path.join(staging, f'{lst}_*'))):
@@ -129,9 +133,10 @@ def hybrid_units(args, staging):
     return units
 
 
-def refused_rows(ctx, lst, scope, w, state):
+def refused_rows(ctx, lst, scope, w, state, checksum=True):
     """(rows, notes) of a unit the work run did not finish (module docstring); Refusal unless hybrid_unit.REFUSED_INSTALLED rules it.
-    state: steps.hybrid.unit_state's (state, stage, status, reason)."""
+    state: steps.hybrid.unit_state's (state, stage, status, reason). A kept file's row carries its checksum (checksum=False: the
+    dry run, none computed), recorded as the unit's input: the ruling covers that file and no other."""
     from exopipe.phase3.config import CFG
     from exopipe.phase3.steps import hybrid as SH
     unit = f'{lst}_{scope}_{w}'
@@ -152,8 +157,9 @@ def refused_rows(ctx, lst, scope, w, state):
                       f'A ruling sets hybrid_unit.REFUSED_INSTALLED[{(lst, scope, w)!r}] = keep | quarantine '
                       f'(got {disp!r}) - REFUSED')
     keep = disp == 'keep'
-    rows = [dict(unit=unit, kind=k, src='', dst=v[0] if keep else '', bytes=os.path.getsize(v[0]), md5='',
-                 action='keep' if keep else 'retire', replaces='' if keep else v[0], written_at='') for k, v in inst.items()]
+    rows = [dict(unit=unit, kind=k, src='', dst=v[0] if keep else '', bytes=os.path.getsize(v[0]),
+                 md5=K.checksum(v[0], ctx.algo) if keep and checksum else '', action='keep' if keep else 'retire',
+                 replaces='' if keep else v[0], written_at='') for k, v in inst.items()]
     return rows, [f'{disp} by ruling (hybrid_unit.REFUSED_INSTALLED): {why}; installed {names}']
 
 
@@ -353,21 +359,23 @@ def run_hybrid(ctx, args, run, unit_fn):
     staging = args.staging_root
     rnd = args.round or time.strftime('%Y%m%d', time.gmtime())
     stages = args._stages
-    from exopipe.phase3.core import cells as CC
+    from exopipe.phase3.core.record import record_path
     from exopipe.phase3.steps import hybrid as SH
-    lsts = set(CC.expand(args.lsts, universe=CC.LSTS) if getattr(args, 'lsts', None) else CC.LSTS)
     done = hybrid_units(args, staging)
-    states = {k: SH.unit_state(v) for k, v in SH.work_states(staging).items() if k[0] in lsts}
-    notdone = {k: s for k, s in states.items() if s[0] in ('refused', 'unfinished')}   # refused before a done tilefill record
+    states = {k: SH.unit_state(v) for k, v in SH.work_states(staging, lsts=set(push_lsts(args))).items()}
+    notdone = {k: s for k, s in states.items() if s[0] in ('refused', 'unfinished')}   # before a done tilefill record
     for lst, scope, w in sorted(set(done) | set(notdone)):
         def body(u, lst=lst, scope=scope, w=w):
             u.meta.update(push_class='hybrid', lst=lst, scope=scope, weighting=w, staging_root=staging,
                           archive_root=ctx.archive_root, archive_dir=archive_dir(ctx, lst, scope), round=rnd)
             if (lst, scope, w) in notdone:
                 u.meta['work_state'] = list(notdone[(lst, scope, w)])
-                rows, notes = refused_rows(ctx, lst, scope, w, notdone[(lst, scope, w)])
-                reads = [r for r in (os.path.join(staging, '_records', 'hybrid', f'{x}.{lst}_{scope}_{w}.json') for x in SH.STAGES)
-                         if os.path.exists(r)]
+                rows, notes = refused_rows(ctx, lst, scope, w, notdone[(lst, scope, w)], checksum=not ctx.dry)
+                reads = [r for r in (record_path(staging, 'hybrid', f'{x}.{lst}_{scope}_{w}') for x in SH.STAGES) if os.path.exists(r)]
+                for r in rows:
+                    if r['action'] == 'keep':
+                        u.add_input(r['dst'], extra={'md5': r['md5']} if r['md5'] else None)
+                u.meta['kept'] = [dict(path=r['dst'], md5=r['md5']) for r in rows if r['action'] == 'keep']
             else:
                 rows, reads, notes = hybrid_plan(ctx, staging, lst, scope, w, checksum=not ctx.dry)
             for p in reads:

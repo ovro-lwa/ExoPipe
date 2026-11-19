@@ -227,17 +227,21 @@ def test_resolve_tiles():
             os.makedirs(rd)
             for name, st in (('wideband.09h_Blue_R075', 'refused'), ('hybrid.10h_Blue_R075', 'running'),
                              ('hybrid.03h_Blue_R075', 'done'), ('wideband.09h_Blue_R0', 'refused'),
-                             ('stack.11h_Blue_R075', 'done'), ('tilefill.12h_Blue_R075', 'done')):   # an input; a pinned tilefill
+                             ('wideband.17h_Blue_R075', 'refused'), ('hybrid.17h_Blue_R075', 'done'),   # a stale work hybrid
+                             ('tilefill.12h_Blue_R075', 'done')):                                       # a pinned tilefill
                 json.dump(dict(status=st, reason='synthetic'), open(os.path.join(rd, name + '.json'), 'w'))
+            json.dump(dict(status='done', staged_from={}), open(os.path.join(rd, 'stack.11h_Blue_R075.json'), 'w'))   # an input
             t, probs = v5.resolve_tiles('Blue', 'R075', ho)
-            assert len(probs) == 2 and probs[0].startswith('09h: refused') and probs[1].startswith('10h: unfinished'), probs
-            assert all('REFUSED_INSTALLED' in p for p in probs) and len(t) == 22, probs
-            with _patched((CFG.hybrid_unit, 'REFUSED_INSTALLED', {('09h', 'Blue', 'R075'): 'keep', ('10h', 'Blue', 'R075'): 'keep'})):
+            assert [p[:13] for p in probs] == ['09h: refused ', '10h: unfinish', '17h: refused '], probs
+            assert all('REFUSED_INSTALLED' in p for p in probs) and len(t) == 21, probs
+            keep = {(x, 'Blue', 'R075'): 'keep' for x in ('09h', '10h', '17h')}
+            with _patched((CFG.hybrid_unit, 'REFUSED_INSTALLED', keep)):
                 t, probs = v5.resolve_tiles('Blue', 'R075', ho)
             assert len(probs) == 1 and probs[0].startswith('10h: unfinished'), probs       # keep rules a refused unit only
-            r9 = [x for x in t if x['lst'] == '09h'][0]
-            assert r9['source'] == 'pinned' and r9['caveat'].startswith('kept by ruling') and not [x for x in t if x['caveat'] and
-                                                                                                   x['lst'] != '09h'], t
+            kept = {x['lst']: x for x in t if x['caveat']}
+            assert sorted(kept) == ['09h', '17h'] and all(x['source'] == 'pinned' and x['caveat'].startswith('kept by ruling')
+                                                          for x in kept.values()), t
+            assert {x['lst'] for x in t if x['source'] == 'work'} == {'03h'}, t
             shutil.rmtree(os.path.join(ho, '_records'))
             t, probs = v5.resolve_tiles('Blue', 'R075', None)            # no hybrid work run: all pinned
             assert not probs and all(x['source'] == 'pinned' for x in t)

@@ -210,6 +210,12 @@ def test_sources_and_plan():
         with open(os.path.join(out, '18h_46MHz', 'R075_hybrid.json'), 'w') as f:
             f.write('{}')
         assert 'rebuilt in --out' in _raises(Refusal, _source, d, out, rows, 'pinned')
+        rd = os.path.join(out, '_records', 'hybrid')                       # a recon rerun refused after the hybrid was made: stale
+        os.makedirs(rd)
+        for unit, st in (('hybrid.18h_46MHz_R075', 'done'), ('recon.18h_46MHz_R075', 'refused'), ('stack.18h_46MHz_R075', 'done')):
+            json.dump(dict(status=st, reason='synthetic'), open(os.path.join(rd, unit + '.json'), 'w'))
+        assert 'refused in the work run at stage recon' in _raises(Refusal, _source, d, out, rows, 'work')
+        shutil.rmtree(os.path.join(out, '_records'))
         # the work plan: the CLEAN residual renamed without lsfill
         sw = dict(source='work', src={'plain': ('/a', NAME.format(pb='', cr='')), 'pbcorr': ('/b', NAME.format(pb='_pbcorr', cr='')),
                                       'cleanres': ('/c', NAME.format(pb='', cr='_cleanres'))})
