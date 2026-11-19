@@ -285,6 +285,15 @@ class mosaic_v3(_Section):
     #   the cleaned Stokes V masters are Taper Robust 0 (coadd_jysr._PRODUCT_VARIANT; their weighting map is the Robust 0 one)
     VCLEAN_PATTERN = '{scope}_V_deep_Taper_Robust+0.0_vclean_*pbcorr_dewarped_aligned_coadd_LST{lst}_*.fits'
     #   STG 'Vclean' branch: the archived cleaned-V beam-corrected master of the cell, exactly one
+    VCLEAN_WEIGHTING = 'own'
+    #   the weighting PB map of a cleaned Stokes V tile. 'own': derived from the V master itself (its constituent nights set the
+    #   subband weights, its beam the bandwidth smearing), and a tile whose map is made from other nights refuses - ruled 2026-11-18
+    #   for the next Stokes V mosaic rebuild (FINDING-20261118-VCLEAN-WEIGHTING-MAP-FROM-STOKES-I-NIGHTS). Measured 2026-11-19 on
+    #   the archive: it changes 92 of the 456 maps - 26 cells whose V and Taper R0 I masters hold different nights, 66 with the
+    #   same nights whose V master's fitted beam differs from the I master's (median 0.15%, up to 13% at Full 23h, where the map
+    #   moves by a median 1% and at most 3.6%). 'production': the plain Taper R0 Stokes I
+    #   job's map of the LST (production coadd_jysr._paths), the two night lists recorded per tile - parity runs only (a --out
+    #   outside the production roots, or --ruling-for).
     SSUB_PATTERN = '{scope}_I_deep_{var}_shflux*_pbcorr_dewarped_aligned_coadd_{tag}_LST{lst}_*.fits'
     #   S2B: the archived striation-corrected beam-corrected master of a selected (LST, band, variant), exactly one; {tag} =
     #   masters_striation.TAG
@@ -307,7 +316,8 @@ class mosaic_v3(_Section):
     TABLES_CARRIED = ('selection_20261022.csv', 'striation_restore_summary_20261022.csv')
     #   the archived tables of the striation selection (this run's input, hybrid.STRIATION_SELECTION): carried forward whole
     RULED = {'STRIATION': 'R-GREGG-20261022-STRIATION-RESTORE-AND-MOSAIC-SCOPE-MEM-OPTION-B',
-             'PRODUCTS': 'R-GREGG-20261110-VCLEAN-REBUILD-ALL-456-V-MOSAICS-IN-FEATHER3'}
+             'PRODUCTS': 'R-GREGG-20261110-VCLEAN-REBUILD-ALL-456-V-MOSAICS-IN-FEATHER3',
+             'VCLEAN_WEIGHTING': 'R-GREGG-20261118-VCLEAN-WEIGHTING-OWN-NIGHTS-AT-NEXT-REBUILD'}
     PROTECTED_KEYS = ('VARIANTS', 'VCLEAN_VARIANT', 'VCLEAN_PATTERN', 'SSUB_PATTERN', 'ARCHIVE_RUN')
 
 

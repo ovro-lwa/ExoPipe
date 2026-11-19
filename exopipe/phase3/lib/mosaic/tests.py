@@ -757,11 +757,14 @@ def robust_card(path, **ctx):
     got = str(h.get('PBROBUST', ''))
     pbfor = str(h.get('PBFOR', ''))
     tok = 'Taper_Robust-0.75' if rob == 'R075' else 'Taper_Robust+0.0'
+    # a cleaned Stokes V tile weighted by its own nights (ctx product Vclean, lib/mosaic/v3.own_weighting): the map's master is
+    # the cleaned-V Taper Robust 0 master; every other map's is the Stokes I Taper master of its robust
+    want_master = f'_V_deep_{tok}_vclean' if ctx.get('product') == 'Vclean' else f'_I_deep_{tok}'
     p = []
     if got != want:
         p.append(f'PBROBUST {got!r} != {want!r} (a map from before PB step 2 or of the other robust)')
-    if f'_I_deep_{tok}' not in pbfor or '_I_deep_No' in pbfor:
-        p.append(f'PBFOR {pbfor!r} is not the {tok} master')
+    if want_master not in pbfor or '_I_deep_No' in pbfor:
+        p.append(f'PBFOR {pbfor!r} is not the {want_master.strip("_")} master')
     for k in ('PBCHROM', 'PBRESID'):
         if k not in h:
             p.append(f'no {k}')

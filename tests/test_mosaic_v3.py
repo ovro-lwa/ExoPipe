@@ -12,8 +12,10 @@ parity below):
   4. the plain stage: the weighting maps derived per LST from the robust's Taper master, with production's header (STG); a plan
      refusal and a failed derivation refuse; the tile list tests pass, and fail on 23 tiles and on a changed weighting map;
   5. the striation-corrected and Stokes V stages: the selected LSTs (all for Stokes V) take the archived master, the others the plain
-     one, the weighting maps are the plain job's; a missing corrected master, a master with an excluded night, and a missing plain
-     stage refuse;
+     one, the weighting maps are the plain job's (Stokes V under mosaic_v3.VCLEAN_WEIGHTING 'production', parity runs); a missing
+     corrected master, a master with an excluded night, and a missing plain stage refuse. Stokes V under 'own' (the 2026-11-18
+     ruling, the default): each map derived from the V master itself, no Stokes I stage read; a map of other nights than the
+     tile's or one not derivable refuses; HG13 re-resolves the V masters only;
   6. the co-add: the engine is called per domain on a link tree under its own names with the job's tag and product; outputs placed
      with their md5s; a MISSING tile refuses, a guard skip is recorded (mosaic.TILE_GUARD_ACTION skip-and-record) or refuses
      ('refuse'); the render is called with the job's product and tag and refuses on another tile list;
@@ -43,6 +45,7 @@ from exopipe.phase3.core import exclusions, record, validate  # noqa: E402
 from exopipe.phase3.lib.masters import pb_apply  # noqa: E402
 from exopipe.phase3.lib.mosaic import tests_v3 as T3  # noqa: E402
 from exopipe.phase3.lib.mosaic import v3  # noqa: E402
+from exopipe.phase3.lib.mosaic import tests as MT  # noqa: E402
 
 LSTS = [f'{h:02d}h' for h in range(24)]
 J_R075, J_R0 = v3.Job('I', 'Taper_R075'), v3.Job('I', 'Taper_R0')
@@ -209,7 +212,15 @@ def test_names_equal_production():
     assert v3.outputs_of('content', '/o', 'Blue', J_V) == [
         ('/o/Blue_Vclean/content/content_V_deep_Taper_R0_clean_Blue.json', 'mosaic_content_random_report')]
     assert st[5] == ('/o/Blue_I_Taper_R075/stage/pb/04h/PB_deep_R075_Blue.fits', 'mosaic_weight_pb')
-    assert v3.outputs_of('stage', '/o', 'Blue', J_V) == [('/o/Blue_Vclean/stage/tiles.json', 'mosaic_v3_tiles')]
+    sv = v3.outputs_of('stage', '/o', 'Blue', J_V)               # Stokes V weighted by its own nights (the ruling): its own maps
+    assert sv[0] == ('/o/Blue_Vclean/stage/tiles.json', 'mosaic_v3_tiles') and len(sv) == 25
+    assert sv[5] == ('/o/Blue_Vclean/stage/pb/04h/PB_deep_Blue.fits', 'mosaic_weight_pb')
+    with _patched((CFG.mosaic_v3, 'VCLEAN_WEIGHTING', 'production')):                  # parity runs: the plain job's maps
+        assert v3.outputs_of('stage', '/o', 'Blue', J_V) == [('/o/Blue_Vclean/stage/tiles.json', 'mosaic_v3_tiles')]
+    with _patched((CFG.mosaic_v3, 'VCLEAN_WEIGHTING', 'mixed')):
+        assert "'own' or 'production'" in _raises(ValueError, v3.paths, '/o', 'Blue', J_V)
+    assert CFG.mosaic_v3.VCLEAN_WEIGHTING == 'own' and CFG.ruled('mosaic_v3.VCLEAN_WEIGHTING') == (
+        'R-GREGG-20261118-VCLEAN-WEIGHTING-OWN-NIGHTS-AT-NEXT-REBUILD',)
     assert v3.unit_name('coadd', 'Blue', J_SSUB) == 'v3-coadd.Blue_I_Taper_R075_ssub-rst8'
     _raises(ValueError, v3.Job, 'Vclean', 'Taper_R0', ssub=True)
     _raises(ValueError, v3.Job, 'Q', 'Taper_R0')
@@ -255,10 +266,14 @@ def test_select_units():
     # a substituted job's stage needs its plain job's stage, in this run or done in --out (refused before any unit)
     d = _tmp('dep_')
     try:
-        need = v3.missing_plain_stages(v3.select_units(_args(scopes='Blue', products='Vclean'), SEL), d)
-        assert len(need) == 1 and 'Blue Vclean needs the done stage of Blue I_Taper_R0' in need[0], need
+        assert v3.missing_plain_stages(v3.select_units(_args(scopes='Blue', products='Vclean'), SEL), d) == []   # own nights
         need = v3.missing_plain_stages(v3.select_units(_args(scopes='Blue', variants='Taper_R075', striation='with'), SEL), d)
-        assert [x.split(' needs')[0] for x in need] == ['Blue I_Taper_R075_ssub-rst8', 'Blue Vclean'], need
+        assert [x.split(' needs')[0] for x in need] == ['Blue I_Taper_R075_ssub-rst8'], need
+        with _patched((CFG.mosaic_v3, 'VCLEAN_WEIGHTING', 'production')):             # parity: Stokes V reads the plain job's maps
+            need = v3.missing_plain_stages(v3.select_units(_args(scopes='Blue', products='Vclean'), SEL), d)
+            assert len(need) == 1 and 'Blue Vclean needs the done stage of Blue I_Taper_R0' in need[0], need
+            need = v3.missing_plain_stages(v3.select_units(_args(scopes='Blue', variants='Taper_R075', striation='with'), SEL), d)
+            assert [x.split(' needs')[0] for x in need] == ['Blue I_Taper_R075_ssub-rst8', 'Blue Vclean'], need
         assert v3.missing_plain_stages(v3.select_units(_args(scopes='Blue'), SEL), d) == []
         assert v3.missing_plain_stages(v3.select_units(_args(scopes='Blue', products='Vclean', stages='coadd'), SEL), d) == []
         assert v3.choices(_args(scopes='Blue', products='Vclean')) == (['Blue'], ['Vclean'], list(CFG.mosaic_v3.VARIANTS), 'both')
@@ -405,38 +420,90 @@ def test_substituted_stages():
         with env():
             u = _unit(out, 'stage', v3.stage_unit, 'Blue', J_SSUB, sel)
         assert u.status == 'refused' and '05h tile' in u.reason and '04h' not in u.reason, u.reason
-        # Stokes V: every LST its cleaned-V master, the Robust 0 weighting maps
-        _archive(d, 'vclean', LSTS[:23])
-        with env():
+        # Stokes V under production's weighting (parity runs): every LST its cleaned-V master, the plain Robust 0 job's maps
+        with _patched((CFG.mosaic_v3, 'VCLEAN_WEIGHTING', 'production')):
+            _archive(d, 'vclean', LSTS[:23])
+            with env():
+                u = _unit(out, 'stage', v3.stage_unit, 'Blue', J_V, {})
+            assert u.status == 'refused' and 'no stage record for Blue I_Taper_R0' in u.reason, u.reason
+            assert _stage_plain(d, out, J_R0)[0].status == 'done'
+            with env():
+                u = _unit(out, 'stage', v3.stage_unit, 'Blue', J_V, {})
+            assert u.status == 'refused' and '23h: 0 archived vclean masters' in u.reason, u.reason
+            vv = _archive(d, 'vclean', ['23h'], PBCORR=False)
+            with env():
+                u = _unit(out, 'stage', v3.stage_unit, 'Blue', J_V, {})
+            assert u.status == 'refused' and 'G8 23h: PBCORR False' in u.reason, u.reason
+            _archive(d, 'vclean', ['23h'], nights=('2025-08-09', '2025-10-29', '2025-11-01'))   # V holds a night the I master lacks
+            with env():
+                u = _unit(out, 'stage', v3.stage_unit, 'Blue', J_V, {})
+            assert u.status == 'done', (u.status, u.reason)
+            t = json.load(open(v3.paths(out, 'Blue', J_V)['tiles']))
+            r0 = json.load(open(v3.paths(out, 'Blue', J_R0)['tiles']))['tiles']
+            assert all(r['kind'] == 'vclean' for r in t['tiles']) and t['tiles'][23]['path'] == vv['23h']
+            assert all(r['pb'] == p['pb'] and os.path.basename(r['pb']) == 'PB_deep_Blue.fits' for r, p in zip(t['tiles'], r0))
+            assert u.meta['nights_differ_from_weighting_master'] == {'23h': {'only_substitute': ['2025-11-01'], 'only_plain': []}}
+            assert t['tiles'][23]['plain_nights'] == ['2025-08-09', '2025-10-29'] and any('23h' in n for n in u.notes)
+            assert set(u.inputs).isdisjoint(os.path.abspath(r['path']) for r in r0)    # Stokes V reads no Stokes I master
+            with _patched((CFG.mosaic_v3, 'REQUIRE_N_LSTS', 23)):
+                assert [r['passed'] for r in validate.run('mosaic_v3_tiles', v3.paths(out, 'Blue', J_V)['tiles'], scope='Blue',
+                                                          job=J_V.label)] == [True, True]
+            with open(r0[7]['pb'], 'ab') as f:                          # the weighting maps always are verified
+                f.write(b'x')
+            with env():
+                u = _unit(out, 'stage', v3.stage_unit, 'Blue', J_V, {})
+            assert u.status == 'refused' and '07h PB' in u.reason, u.reason
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_vclean_own_weighting():
+    """mosaic_v3.VCLEAN_WEIGHTING 'own' (R-GREGG-20261118-VCLEAN-WEIGHTING-OWN-NIGHTS-AT-NEXT-REBUILD): each cleaned Stokes V tile is
+    weighted by a map derived from its own master (no Stokes I stage, master or map read); a map made from other nights than the
+    tile's refuses; a map that cannot be derived refuses; HG13 re-resolves the V masters only."""
+    d = _tmp('own_')
+    try:
+        out = os.path.join(d, 'out')
+        vv = _archive(d, 'vclean', LSTS[:23])
+        vv.update(_archive(d, 'vclean', ['23h'], nights=('2025-08-09', '2025-10-29', '2025-11-01')))
+        env = lambda calls, fail=(): _patched((CFG.mosaic, 'INPUT_COADD_RUN', os.path.join(d, 'A')),          # noqa: E731
+                                              (exclusions, 'load', lambda *a, **k: _Ex()),
+                                              (pb_apply, 'wideband_pb', _fake_pb(calls, fail)))
+        calls = []
+        with env(calls):
             u = _unit(out, 'stage', v3.stage_unit, 'Blue', J_V, {})
-        assert u.status == 'refused' and 'no stage record for Blue I_Taper_R0' in u.reason, u.reason
-        assert _stage_plain(d, out, J_R0)[0].status == 'done'
-        with env():
+        assert u.status == 'done', (u.status, u.reason)                  # no I_Taper_R0 stage in this --out
+        assert [c[1] for c in calls] == LSTS and all(c[2] == vv[c[1]] for c in calls), calls
+        P = v3.paths(out, 'Blue', J_V)
+        t = json.load(open(P['tiles']))
+        assert t['weighting'] == 'own' and 'plain_job' not in t and u.meta['weighting'] == 'own'
+        for r in t['tiles']:
+            assert r['kind'] == 'vclean' and r['path'] == vv[r['lst']] and r['pbfor'] == vv[r['lst']] and r['pb'] == P['pb'][r['lst']]
+            assert r['pb_md5'] == _md5f(P['pb'][r['lst']]) and 'plain_path' not in r and r['pb_nights'] == r['nights']
+        assert t['tiles'][23]['nights'] == ['2025-08-09', '2025-10-29', '2025-11-01'] and u.meta['nights_differ_from_weighting_master'] == {}
+        h = fits.getheader(P['pb']['23h'])
+        assert h['PBFOR'] == os.path.basename(vv['23h'])[:60] and h['PBROBUST'] == '0' and h['PBSCOPE'] == 'Blue'
+        assert sorted(o['path'] for o in u.outputs if o['class'] == 'mosaic_weight_pb') == sorted(P['pb'].values())
+        assert [r['passed'] for r in validate.run('mosaic_v3_tiles', P['tiles'], scope='Blue', job=J_V.label)] == [True, True]
+        assert MT.robust_card(P['pb']['04h'], robust='R0', product='Vclean')[0] is True       # the V master is the map's master
+        assert 'is not the I_deep_Taper_Robust+0.0 master' in MT.robust_card(P['pb']['04h'], robust='R0')[2]
+        # HG13 re-resolves the V masters only: plain_plan is never asked; a V master gone is a difference
+        boom = lambda *a, **k: (_ for _ in ()).throw(AssertionError('plan_plain read'))                         # noqa: E731
+        with _patched((CFG.mosaic, 'INPUT_COADD_RUN', os.path.join(d, 'A')), (v3, 'plan_plain', boom)):
+            assert v3.resolve_now('Blue', J_V, t, {}) == []
+            os.rename(vv['05h'], vv['05h'] + '.away')
+            probs = v3.resolve_now('Blue', J_V, t, {})
+            os.rename(vv['05h'] + '.away', vv['05h'])
+        assert len(probs) == 1 and 'LST 05h' in probs[0], probs
+        # refusals: a map made from other nights than the tile's; a map that cannot be derived
+        real = pb_apply.constituent_dates
+        with env([]), _patched((pb_apply, 'constituent_dates',
+                                lambda p: ['2025-08-09'] if '_LST07h_' in p else real(p))):
             u = _unit(out, 'stage', v3.stage_unit, 'Blue', J_V, {})
-        assert u.status == 'refused' and '23h: 0 archived vclean masters' in u.reason, u.reason
-        vv = _archive(d, 'vclean', ['23h'], PBCORR=False)
-        with env():
+        assert u.status == 'refused' and 'G1 07h: the weighting map' in u.reason, u.reason
+        with env([], fail=('09h',)):
             u = _unit(out, 'stage', v3.stage_unit, 'Blue', J_V, {})
-        assert u.status == 'refused' and 'G8 23h: PBCORR False' in u.reason, u.reason
-        _archive(d, 'vclean', ['23h'], nights=('2025-08-09', '2025-10-29', '2025-11-01'))   # V holds a night the I master lacks
-        with env():
-            u = _unit(out, 'stage', v3.stage_unit, 'Blue', J_V, {})
-        assert u.status == 'done', (u.status, u.reason)
-        t = json.load(open(v3.paths(out, 'Blue', J_V)['tiles']))
-        r0 = json.load(open(v3.paths(out, 'Blue', J_R0)['tiles']))['tiles']
-        assert all(r['kind'] == 'vclean' for r in t['tiles']) and t['tiles'][23]['path'] == vv['23h']
-        assert all(r['pb'] == p['pb'] and os.path.basename(r['pb']) == 'PB_deep_Blue.fits' for r, p in zip(t['tiles'], r0))
-        assert u.meta['nights_differ_from_weighting_master'] == {'23h': {'only_substitute': ['2025-11-01'], 'only_plain': []}}
-        assert t['tiles'][23]['plain_nights'] == ['2025-08-09', '2025-10-29'] and any('23h' in n for n in u.notes)
-        assert set(u.inputs).isdisjoint(os.path.abspath(r['path']) for r in r0)    # Stokes V reads no Stokes I master
-        with _patched((CFG.mosaic_v3, 'REQUIRE_N_LSTS', 23)):
-            assert [r['passed'] for r in validate.run('mosaic_v3_tiles', v3.paths(out, 'Blue', J_V)['tiles'], scope='Blue',
-                                                      job=J_V.label)] == [True, True]
-        with open(r0[7]['pb'], 'ab') as f:                          # the weighting maps always are verified
-            f.write(b'x')
-        with env():
-            u = _unit(out, 'stage', v3.stage_unit, 'Blue', J_V, {})
-        assert u.status == 'refused' and '07h PB' in u.reason, u.reason
+        assert u.status == 'refused' and 'G5 09h: no weighting PB' in u.reason, u.reason
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
@@ -607,7 +674,7 @@ def test_pkcorr_and_content_units():
         with _patched((CFG.mosaic_coadd, 'NSIDE', 1), (CFG.mosaic_content, 'PARENTS', par)):
             assert _stage_plain(d, out, J_R075)[0].status == 'done' and _stage_plain(d, out, J_R0)[0].status == 'done'
             _archive(d, 'vclean', LSTS)
-            with _patched((CFG.mosaic, 'INPUT_COADD_RUN', os.path.join(d, 'A'))):
+            with _patched((CFG.mosaic, 'INPUT_COADD_RUN', os.path.join(d, 'A')), (pb_apply, 'wideband_pb', _fake_pb([]))):
                 assert _unit(out, 'stage', v3.stage_unit, 'Blue', J_V, {}).status == 'done'
             eng = _fake_engine([])
             for job in (J_R075, J_V):
@@ -931,7 +998,7 @@ def _v3_chain(d):
         u, ms[job.variant], _c = _stage_plain(d, out, job, big=True)
         assert u.status == 'done', (u.status, u.reason)
     _archive(d, 'vclean', LSTS, data=_noise(99), **_time_cards(3))
-    with _patched((CFG.mosaic, 'INPUT_COADD_RUN', os.path.join(d, 'A'))):
+    with _patched((CFG.mosaic, 'INPUT_COADD_RUN', os.path.join(d, 'A')), (pb_apply, 'wideband_pb', _fake_pb([], shape=(12, 12)))):
         assert _unit(out, 'stage', v3.stage_unit, 'Blue', J_V, {}).status == 'done'
     eng = _fake_engine([])
     for job in (J_R075, J_V):

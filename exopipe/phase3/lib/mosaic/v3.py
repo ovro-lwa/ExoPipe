@@ -13,10 +13,14 @@ release1_v_mosaics_20261110.sh (the Stokes V maps, TEST 1R).
           ssub-rst8: the plain job's tiles with, at each LST the selection names for (scope, variant), the archived striation-
           corrected master (mosaic_v3.SSUB_PATTERN, exactly one; G1 on its own nights, G8; its nights must be the plain master's);
           weighting maps = the plain job's (S2B); refuses unless every selected LST was substituted -> stage/tiles.json
-          Vclean: per LST the archived cleaned Stokes V master (mosaic_v3.VCLEAN_PATTERN, exactly one; G1, G8), weighted by the maps
-          of the plain mosaic_v3.VCLEAN_VARIANT job (the Robust 0 map serves Stokes V: coadd_jysr._paths); LSTs whose V and I
-          masters hold other nights are recorded (meta nights_differ_from_weighting_master). Only the plain masters that stay tiles
-          and the weighting maps are re-verified. A substituted job's stage needs the plain job's stage (refused before any unit).
+          Vclean: per LST the archived cleaned Stokes V master (mosaic_v3.VCLEAN_PATTERN, exactly one; G1, G8). Its weighting map
+          (mosaic_v3.VCLEAN_WEIGHTING): 'own' (the ruling) derive_weight_pb from the V master itself (its nights and its beam)
+          -> stage/pb/<LST>/PB_deep_<S>.fits [mosaic_weight_pb], refused when the map's nights are not the tile's; the job then
+          needs no Stokes I stage. 'production' (parity runs): the map of the plain mosaic_v3.VCLEAN_VARIANT job (the Robust 0
+          map serves Stokes V: coadd_jysr._paths), LSTs whose V and I masters hold other nights recorded (meta
+          nights_differ_from_weighting_master).
+          Only the plain masters that stay tiles and the weighting maps are re-verified. A job that reads the plain job's weighting
+          maps needs the plain job's stage (refused before any unit).
   coadd   a node-local link tree of the staged tiles under the engine's names (coadd_jysr._paths), then coadd_jysr in process with the
           mosaic_coadd globals, product I or Vclean, tag '' or '_ssub-rst8', Jy/sr and Jy/beam. Engine verdicts: a MISSING tile
           refuses (mosaic.MISSING_TILE_ACTION); a tile the engine guard skips refuses (G9: every staged LST a tile); G1 is re-checked
@@ -134,7 +138,8 @@ def unit_dir(out, scope, job):
 
 
 def paths(out, scope, job):
-    """Every file path of the unit, by key (the weighting maps of a plain job under 'pb' by LST)."""
+    """Every file path of the unit, by key (the weighting maps of a plain job, and of a Stokes V job weighted by its own nights,
+    under 'pb' by LST)."""
     from exopipe.phase3.lib.masters.pb_apply import deep_pb_name
     C = _cfg()
     d = unit_dir(out, scope, job)
@@ -145,7 +150,8 @@ def paths(out, scope, job):
          'psf': os.path.join(d, 'healpix', f'healpix_PSF_{s}_nside{n}.fits'),
          'jybeam': os.path.join(d, 'healpix', f'healpix_{s}_jybeam_nside{n}.fits'),
          'pbeff': os.path.join(d, 'healpix', f'healpix_PBeff_{s}_nside{n}.fits'),
-         'pb': {lst: os.path.join(d, 'stage', 'pb', lst, deep_pb_name(scope, job.robust)) for lst in LSTS} if job.kind == 'plain' else {}}
+         'pb': ({lst: os.path.join(d, 'stage', 'pb', lst, deep_pb_name(scope, job.robust)) for lst in LSTS}
+                if job.kind == 'plain' or own_weighting(job) else {})}
     for dom in ('jysr', 'jybeam'):
         for k, suf in (('mollweide', 'Mollweide'), ('radec', 'RADec')):
             p[f'render_{dom}_{k}'] = os.path.join(d, 'renders', f'{scope}_{job.render_label}{job.tag}_{dom}_{suf}.fits')
@@ -160,6 +166,17 @@ def paths(out, scope, job):
 
 def tables_dir(out):
     return os.path.join(out, 'tables')
+
+
+def own_weighting(job):
+    """True when the job is a cleaned Stokes V job weighted by maps derived from its own masters (mosaic_v3.VCLEAN_WEIGHTING
+    'own', the ruling); False for a Stokes I job and under 'production' (the plain Taper R0 Stokes I job's maps; parity runs)."""
+    if job.kind != 'vclean':
+        return False
+    w = _cfg().mosaic_v3.VCLEAN_WEIGHTING
+    if w not in ('own', 'production'):
+        raise ValueError(f"mosaic_v3.VCLEAN_WEIGHTING {w!r}: 'own' or 'production'")
+    return w == 'own'
 
 
 def has_stage(job, st):
@@ -276,12 +293,13 @@ def select_units(args, sel=None):
 
 
 def missing_plain_stages(units, out):
-    """A substituted job's stage reads the plain job's weighting maps: the plain stage must be in this run or done in out."""
+    """A substituted job's stage reads the plain job's weighting maps (not a Stokes V job weighted by its own nights): the plain
+    stage must be in this run or done in out."""
     from exopipe.phase3.core.record import load_record
     made = {(sc, j) for st, sc, j in units if st == 'stage' and j.kind == 'plain'}
     probs = []
     for st, sc, j in units:
-        if st != 'stage' or j.kind == 'plain' or (sc, j.pb_job()) in made:
+        if st != 'stage' or j.kind == 'plain' or own_weighting(j) or (sc, j.pb_job()) in made:
             continue
         pj = j.pb_job()
         r = load_record(out, STEP, unit_name('stage', sc, pj))
@@ -462,13 +480,19 @@ def stage_plain(u, scope, job, out):
 
 
 def stage_substituted(u, scope, job, out, sel):
-    """The striation-corrected and the Stokes V tile lists: the plain job's weighting maps, other masters (module docstring)."""
+    """The striation-corrected and the Stokes V tile lists: other masters, the plain job's weighting maps or (a Stokes V job weighted
+    by its own nights) maps derived from the V masters (module docstring)."""
     from exopipe.phase3.core import exclusions
+    from exopipe.phase3.lib.masters.pb_apply import constituent_dates
     C = _cfg()
     P = paths(out, scope, job)
     pj = job.pb_job()
+    own = own_weighting(job)
     want = selected_lsts(sel, scope, job.variant) if job.kind == 'ssub' else list(LSTS)
-    pt = _tiles(u, out, scope, pj, masters=set(LSTS) - set(want))    # the plain masters that stay tiles; every weighting map
+    if own:                                                          # the ruling: no Stokes I master or map is read
+        pt = dict(tiles=[dict(lst=lst) for lst in LSTS], json_md5=None)
+    else:
+        pt = _tiles(u, out, scope, pj, masters=set(LSTS) - set(want))    # the plain masters that stay tiles; every weighting map
     ex = exclusions.load()
     tok = C.mosaic.VARIANT_TOKENS[job.variant]
     tiles, probs, n_sub, nd = [], [], 0, {}
@@ -487,16 +511,32 @@ def stage_substituted(u, scope, job, out, sel):
             if bad:
                 probs += bad
                 continue
-            if h['dates'] != r['nights']:
-                diff = dict(only_substitute=sorted(set(h['dates']) - set(r['nights'])), only_plain=sorted(set(r['nights']) - set(h['dates'])))
+            if own:
+                # R-GREGG-20261118-VCLEAN-WEIGHTING-OWN-NIGHTS-AT-NEXT-REBUILD: the tile's map from the V master's own nights
+                try:
+                    meta = derive_weight_pb(scope, lst, g[0], job.robust, P['pb'][lst])
+                except Exception as e:
+                    probs.append(f'G5 {lst}: no weighting PB from {os.path.basename(g[0])} ({type(e).__name__}: {str(e)[:160]})')
+                    continue
+                mn = constituent_dates(g[0])
+                if sorted(mn) != sorted(h['dates']):
+                    probs.append(f'G1 {lst}: the weighting map of {os.path.basename(g[0])} is made from nights {mn}, the tile holds '
+                                 f'{h["dates"]} (mosaic_v3.VCLEAN_WEIGHTING own: the same nights)')
+                    continue
+                row.update(pb=P['pb'][lst], pb_md5=_md5(P['pb'][lst]), pbfor=g[0], pb_nights=sorted(mn),
+                           pb_used_dates=len(meta.get('used_dates', []) or []))
+            elif h['dates'] != r['nights']:
+                diff = dict(only_substitute=sorted(set(h['dates']) - set(r['nights'])),
+                            only_plain=sorted(set(r['nights']) - set(h['dates'])))
                 if job.kind == 'ssub':     # a corrected copy of the plain master: other nights = made from an older or newer master
                     probs.append(f'G1 {lst}: {os.path.basename(g[0])} nights differ from the plain master it replaces {diff}')
                     continue
                 # Stokes V: production weights the cleaned-V tile with the map derived from the Taper R0 Stokes I master's nights
                 # (coadd_jysr._paths); the two masters' nights differ in 26 of the 456 archived (scope, LST) cells (2026-11-18)
                 nd[lst] = diff
-            row.update(path=g[0], md5=_md5(g[0]), nights=h['dates'], BMAJ=h.get('BMAJ'), BMIN=h.get('BMIN'), kind=job.kind,
-                       plain_path=r['path'], plain_md5=r['md5'], plain_nights=r['nights'])
+            row.update(path=g[0], md5=_md5(g[0]), nights=h['dates'], BMAJ=h.get('BMAJ'), BMIN=h.get('BMIN'), kind=job.kind)
+            if not own:
+                row.update(plain_path=r['path'], plain_md5=r['md5'], plain_nights=r['nights'])
             n_sub += 1
             u.add_input(g[0], extra={'md5': row['md5']})
         tiles.append(row)
@@ -504,11 +544,17 @@ def stage_substituted(u, scope, job, out, sel):
     if n_sub != len(want) or len(tiles) != len(pt['tiles']):
         u.refuse(f'{scope} {job.label}: {n_sub} of the {len(want)} LSTs substituted - REFUSED')
     u.set_admitted(sorted({f'{r["lst"]}:{d}' for r in tiles for d in r['nights']}))
-    u.meta.update(n_substituted=n_sub, substituted=want, plain_tiles_md5=pt['json_md5'], nights_differ_from_weighting_master=nd)
+    u.meta.update(n_substituted=n_sub, substituted=want, plain_tiles_md5=pt['json_md5'], nights_differ_from_weighting_master=nd,
+                  weighting='own' if own else 'plain job')
     if nd:
         u.note(f'{len(nd)} LST(s) whose weighting map comes from a master with other nights (production\'s Stokes V weighting): '
                f'{sorted(nd)}')
-    _write_tiles(u, P['tiles'], scope, job, tiles, plain_job=pj.label, plain_tiles_md5=pt['json_md5'])
+    if own:
+        for r in tiles:
+            u.add_output(r['pb'], 'mosaic_weight_pb', master=r['pbfor'], robust=job.robust, product='Vclean')
+        _write_tiles(u, P['tiles'], scope, job, tiles, weighting='own')
+    else:
+        _write_tiles(u, P['tiles'], scope, job, tiles, plain_job=pj.label, plain_tiles_md5=pt['json_md5'], weighting='plain job')
 
 
 def stage_unit(u, scope, job, out, sel):
@@ -707,17 +753,19 @@ def _rec_ok(u, scope, job, rec, st, tiles_md5):
 def resolve_now(scope, job, t, sel):
     """HG13 (v3): the masters the stage would choose now against the staged tile list t: [problem], empty when they are the staged
     ones. The plain masters (a substituted row's plain_path: the weighting map's master) by plan_plain of the job's plain job; the
-    substituted LSTs by the selection now; each substitute by its archived pattern now (exactly the staged file)."""
+    substituted LSTs by the selection now; each substitute by its archived pattern now (exactly the staged file). A Stokes V job
+    weighted by its own nights reads no plain master: only its V masters are re-resolved."""
     C = _cfg()
-    plan = plan_plain(scope, job.pb_job())
-    probs = [f'{g} {m}' for g, m in plan.refusals]
-    plain_now = {lst: x['master'] for lst, x in plan.tiles.items()}
+    own = own_weighting(job)
+    plan = None if own else plan_plain(scope, job.pb_job())
+    probs = [f'{g} {m}' for g, m in plan.refusals] if plan else []
+    plain_now = {lst: x['master'] for lst, x in plan.tiles.items()} if plan else {lst: None for lst in LSTS}
     want = set(LSTS) if job.kind == 'vclean' else set(selected_lsts(sel, scope, job.variant)) if job.kind == 'ssub' else set()
     tok = C.mosaic.VARIANT_TOKENS[job.variant]
     differ = []
     for r in t['tiles']:
         lst = r['lst']
-        if (r.get('plain_path') or r['path']) != plain_now.get(lst):
+        if not own and (r.get('plain_path') or r['path']) != plain_now.get(lst):
             differ.append(lst)
         elif lst in want:
             g = (_archived(lst, scope, C.mosaic_v3.SSUB_PATTERN, var=tok, tag=C.masters_striation.TAG) if job.kind == 'ssub'
