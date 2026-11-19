@@ -6,6 +6,7 @@ import json
 import os
 
 from exopipe.phase3.core.validate import content_test
+from exopipe.phase3.lib.mosaic import tests_v5 as _t5
 
 _KINDS = {'plain': ('plain',), 'ssub': ('plain', 'ssub'), 'vclean': ('vclean',)}
 
@@ -111,8 +112,5 @@ def product_conformant(path, kind=None, scope=None, nstack=None, thermnoi=None, 
     return not probs, len(probs), '; '.join(probs) or 'audit, PRODNAME, PROVENANCE, HISTORY, TIMEFIX, THERMNOI agree'
 
 
-@content_test('mosaic_v3_table')
-def table_complete(path, columns=None, n_rows=None, **ctx):
-    """A FEATHER3 table: its columns are the unit's, it holds n_rows rows, every result PASS (tests_v5's mosaic_v5_table)."""
-    from exopipe.phase3.lib.mosaic.tests_v5 import table_complete as t5
-    return t5(path, columns=columns, n_rows=n_rows)
+content_test('mosaic_v3_table')(_t5.table_complete)
+#   a FEATHER3 table: its columns are the unit's, it holds n_rows rows, every result PASS (the mosaic_v5_table test)

@@ -39,12 +39,11 @@ mosaic_v3.SCOPES (both domains), every result PASS.
 """
 import json
 import os
-import shutil
-import textwrap
 
 import numpy as np
 
 from exopipe.phase3.lib.mosaic import conform_v5 as CF5
+from exopipe.phase3.lib.mosaic import gen_common as GC
 from exopipe.phase3.lib.mosaic.conform_v5 import ConformRefusal
 
 SUMMARY_COLS = CF5.SUMMARY_COLS
@@ -137,10 +136,7 @@ def provbas():
 def stage(scope, job, P, tiles, dest, floor, therm, plan=None):
     """Stage the unit's products under dest/<scope>/<I|V>/<subdirectory>/. Returns ([(final path, source, kind)], info). plan(final
     paths) is called once the names are known, before anything is written. Raises ConformRefusal; nothing is renamed into place unless
-    every product was written."""
-    from astropy.io import fits
-    from astropy.time import Time
-    from exopipe.phase3.core.products import write_standard_header, append_provenance_table
+    every product was written (gen_common.stamp_products)."""
     C = _cfg()
     K = C.mosaic_conform
     V3 = C.mosaic_v3
@@ -149,65 +145,30 @@ def stage(scope, job, P, tiles, dest, floor, therm, plan=None):
     nm = names(scope, job, P, t0, t1, n)
     if plan:
         plan([os.path.join(subdir(dest, scope, job, sub), name) for _src, sub, name, _p in nm.values()])
-    run = os.path.basename(archive_run())
     pv = provbas()
-    hist = textwrap.wrap(f'Mosaic {run}: {n} constituent masters, listed in the PROVENANCE extension; method, rulings and Release 1 '
-                         f'updates in {run}/README.txt', 72, break_long_words=False)
-    psf_name = nm['psfmap'][2]
-    pid = os.getpid()
-    done = []
-    try:
-        for kind, (src, sub, name, pbc) in nm.items():
-            base = {'PRODNAME': (name, 'Phase 3 product name (grammar; CONTINUE cards)'), 'NSTACK': (n, 'Constituent LST tiles'),
-                    'PROVBAS': pv, 'BEAMNOTE': V3.BEAMNOTE}
-            if kind == 'jysr':
-                ex = CF5._hdr1(src, K.COPY_HEADER_KEYS, base)
-            elif kind in ('jybeam', 'pbmap'):
-                ex = CF5._hdr1(src, K.COPY_HEADER_KEYS_APPARENT, dict(base, **({'BUNIT': ''} if kind == 'pbmap' else {})))
-            elif kind == 'psfmap':
-                ex = dict(base, BUNIT='sr')
-            elif kind == 'pkcorr':
-                ex = dict(base, BUNIT='')
-            else:                                                      # a render: MC stamps the base cards only
-                ex = dict(base)
-            dd = subdir(dest, scope, job, sub)
-            os.makedirs(dd, exist_ok=True)
-            dst = os.path.join(dd, name)
-            tmp = os.path.join(dd, f'.{name}.tmp.{pid}')
-            done.append((tmp, dst, src, kind))
-            shutil.copy2(src, tmp)
-            if sub == 'healpix':
-                with fits.open(tmp, mode='update', memmap=False) as h:
-                    h[1].header['PRODNAME'] = base['PRODNAME']
-                    if kind == 'jybeam':
-                        h[1].header['PSFMAP'] = (psf_name, 'the PSF (Omega_eff) map of this mosaic')
-            write_standard_header(tmp, scope=scope, stokes=stokes_of(job), start=Time(t0, format='mjd').isot,
-                                  end=Time(t1, format='mjd').isot, inttime_s=itt or None, time_basis=K.TIME_BASIS, beam=beam,
-                                  thermnoi=therm, pbcorr=pbc, extra=ex, validate=K.HEADER_VALIDATE or sub != 'healpix')
-            append_provenance_table(tmp, rows)
-            with fits.open(tmp, mode='update', memmap=False) as h:
-                for ln in hist:
-                    h[0].header.add_history(ln)
-    except BaseException:
-        for tmp, _d, _s, _k in done:
-            if os.path.exists(tmp):
-                os.remove(tmp)
-        raise
-    out = []
-    for tmp, dst, src, kind in done:
-        os.replace(tmp, dst)
-        out.append((dst, src, kind))
+    items = []
+    for kind, (src, sub, name, pbc) in nm.items():
+        base = {'PRODNAME': (name, 'Phase 3 product name (grammar; CONTINUE cards)'), 'NSTACK': (n, 'Constituent LST tiles'),
+                'PROVBAS': pv, 'BEAMNOTE': V3.BEAMNOTE}
+        if kind == 'jysr':
+            ex = CF5._hdr1(src, K.COPY_HEADER_KEYS, base)
+        elif kind in ('jybeam', 'pbmap'):
+            ex = CF5._hdr1(src, K.COPY_HEADER_KEYS_APPARENT, dict(base, **({'BUNIT': ''} if kind == 'pbmap' else {})))
+        elif kind == 'psfmap':
+            ex = dict(base, BUNIT='sr')
+        elif kind == 'pkcorr':
+            ex = dict(base, BUNIT='')
+        else:                                                          # a render: MC stamps the base cards only
+            ex = dict(base)
+        items.append((kind, src, sub, os.path.join(subdir(dest, scope, job, sub), name), pbc, ex))
+    out = GC.stamp_products(items, rows, GC.mosaic_history(os.path.basename(archive_run()), n), scope=scope, stokes=stokes_of(job),
+                            t0=t0, t1=t1, itt=itt, beam=beam, thermnoi=therm, psf_name=nm['psfmap'][2])
     info = {'n': n, 't0': t0, 't1': t1, 'inttime_s': itt, 'beam': beam, 'names': {k: v[2] for k, v in nm.items()},
             'prov_files': [r['FILE'] for r in rows]}
     return out, info
 
 
 # ---- tables -----------------------------------------------------------------------------------------------------------------------
-
-def summary_rows(content_json):
-    """summary.csv: one row per domain of a Stokes I content report (conform_v5.summary_rows)."""
-    return CF5.summary_rows(content_json)
-
 
 def vclean_rows(content_json):
     """summary_vclean.csv: one row per domain of a Stokes V TEST 1R report (jybeam, then jysr)."""

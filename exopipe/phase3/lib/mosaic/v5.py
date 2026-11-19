@@ -131,11 +131,10 @@ def outputs_of(st, out, scope, w):
     if st == 'content':
         return [(p['content'], 'mosaic_content_report')]
     if st == 'conform':                 # the names carry the tiles' dates: the files the unit's directory holds now
-        return [(f, 'mosaic_v5_product') for f in _files_under(p['conform'])]
+        return [(f, 'mosaic_v5_product') for f in GC.files_under(p['conform'])]
     raise ValueError(f'unknown v5 stage {st!r}')
 
 
-_files_under = GC.files_under
 
 
 def tables_dir(out):
@@ -513,13 +512,7 @@ def _rec_ok(u, scope, w, rec, st, tiles_path):
     fp = (rec.get('inputs') or {}).get(os.path.abspath(tiles_path))
     if fp is None or not same_fingerprint(fp, fingerprint(tiles_path)):
         u.refuse(f'{scope} {w}: the {st} unit was not made from the current stage/tiles.json: rerun --stages {st} - REFUSED')
-    tests = rec.get('tests') or []
-    bad = sorted({str(t.get('name')) for t in tests if not t.get('passed')})
-    if bad:
-        u.refuse(f'{scope} {w}: the {st} record holds failed test(s) {bad[:6]} - REFUSED')
-    miss = [n for n in CONFORM_NEEDS.get(st, ()) if not any(t.get('name') == n for t in tests)]
-    if miss:
-        u.refuse(f'{scope} {w}: the {st} record lacks the test(s) {miss} - REFUSED')
+    GC.rec_tests_ok(u, f'{scope} {w}', rec, st, CONFORM_NEEDS.get(st, ()))
 
 
 def _tile_key(r):
@@ -727,7 +720,7 @@ def select_units(args):
 def _own(st, out, sc, w):
     """The files a unit owns now (conform and tables: their directories' files; their names are known only once computed)."""
     if st == 'tables':
-        return _files_under(tables_dir(out))
+        return GC.files_under(tables_dir(out))
     return [p for p, _c in outputs_of(st, out, sc, w)]
 
 

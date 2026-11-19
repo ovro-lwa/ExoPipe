@@ -125,6 +125,72 @@ def files_under(d):
     return sorted(out)
 
 
+def rec_tests_ok(u, what, rec, st, needs=()):
+    """Refuse unless every test the done record rec of stage st holds passed (a waived failure never reaches the archive) and the tests
+    needs names are among them (the v3 and v5 conform units; v3's tables unit)."""
+    tests = rec.get('tests') or []
+    bad = sorted({str(t.get('name')) for t in tests if not t.get('passed')})
+    if bad:
+        u.refuse(f'{what}: the {st} record holds failed test(s) {bad[:6]} - REFUSED')
+    miss = [n for n in needs if not any(t.get('name') == n for t in tests)]
+    if miss:
+        u.refuse(f'{what}: the {st} record lacks the test(s) {miss} - REFUSED')
+
+
+HEALPIX_SUBS = ('healpix', 'unfilled')
+#   the subdirectories of a conform unit that hold HEALPix maps (data in HDU 1)
+
+
+def mosaic_history(run, n):
+    """The 'Mosaic <run>:' HISTORY lines of a conformed product (production's MC stamp(), wrapped at 72)."""
+    import textwrap
+    return textwrap.wrap(f'Mosaic {run}: {n} constituent masters, listed in the PROVENANCE extension; method, rulings and Release 1 '
+                         f'updates in {run}/README.txt', 72, break_long_words=False)
+
+
+def stamp_products(items, rows, hist, *, scope, stokes, t0, t1, itt, beam, thermnoi, psf_name):
+    """Write a conform unit's products (conform_v3.stage, conform_v5.stage): items [(kind, source, subdirectory, final path, pbcorr,
+    extra cards incl. PRODNAME)] in order. Each source is copied to a temporary name beside its final path; a HEALPix map gets PRODNAME
+    in HDU 1 and a Jy/beam map PSFMAP = psf_name (bug B14); then the standard header (validate=True; a HEALPix map
+    mosaic_conform.HEADER_VALIDATE), the PROVENANCE table of rows and the HISTORY lines hist. Nothing is renamed into place unless
+    every product was written (the temporary files are removed on any error). Returns [(final path, source, kind)]."""
+    import shutil
+    from astropy.io import fits
+    from astropy.time import Time
+    from exopipe.phase3.core.products import append_provenance_table, write_standard_header
+    K = _cfg().mosaic_conform
+    pid = os.getpid()
+    done = []
+    try:
+        for kind, src, sub, dst, pbc, ex in items:
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            tmp = os.path.join(os.path.dirname(dst), f'.{os.path.basename(dst)}.tmp.{pid}')
+            done.append((tmp, dst, src, kind))
+            shutil.copy2(src, tmp)
+            if sub in HEALPIX_SUBS:
+                with fits.open(tmp, mode='update', memmap=False) as h:
+                    h[1].header['PRODNAME'] = ex['PRODNAME']
+                    if kind in ('jybeam', 'unfilled_jybeam'):
+                        h[1].header['PSFMAP'] = (psf_name, 'the PSF (Omega_eff) map of this mosaic')
+            write_standard_header(tmp, scope=scope, stokes=stokes, start=Time(t0, format='mjd').isot, end=Time(t1, format='mjd').isot,
+                                  inttime_s=itt or None, time_basis=K.TIME_BASIS, beam=beam, thermnoi=thermnoi, pbcorr=pbc, extra=ex,
+                                  validate=K.HEADER_VALIDATE or sub not in HEALPIX_SUBS)
+            append_provenance_table(tmp, rows)
+            with fits.open(tmp, mode='update', memmap=False) as h:
+                for ln in hist:
+                    h[0].header.add_history(ln)
+    except BaseException:
+        for tmp, _d, _s, _k in done:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        raise
+    out = []
+    for tmp, dst, src, kind in done:
+        os.replace(tmp, dst)
+        out.append((dst, src, kind))
+    return out
+
+
 def link_tree(t, sd, tile_name, pb_name):
     """The staged tiles and their weighting maps linked under the engine's names (coadd_jysr._paths: <sd>/<lst>/<tile_name>,
     <pb_name>) in the scratch dir sd; returns the LSTs in tile-list order."""

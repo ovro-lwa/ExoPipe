@@ -294,7 +294,8 @@ def run(args, run):
                              f'selects by --scopes, --products, --variants, --striation and --stages; every LST is a tile)')
         if (getattr(args, 'workers', None) or 1) > 1:   # FINDING-20261118-V2-HYBRID-STEP-IGNORES-WORKERS: never silently ignored
             raise ValueError(f'--generation v3 refuses --workers {args.workers}: its units run one after another in one process; run '
-                             f'one process per disjoint --scopes group instead (unit records are per unit)')
+                             f'one process per disjoint --scopes group instead (unit records are per unit; tables last, alone: '
+                             f'--stages tables)')
         _start_gates(run)
         return v3.run(args, run)
     if getattr(args, 'generation', 'v2') == 'v5':

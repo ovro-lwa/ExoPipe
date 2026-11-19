@@ -253,17 +253,25 @@ def selection_for(products, striation):
 
 def select_units(args, sel=None):
     """[(stage, scope, job)] in pipeline order: per scope every stage but conform of a job before the next job (the jobs in jobs_for's
-    order), then the conform units of the scope's jobs (the Stokes I conform reads the Stokes V coadd: THERMNOI); the run's tables unit
-    ('tables', None, None) last."""
+    order), then the conform units of the scope's jobs, the Stokes V job's first (its record holds the scope's THERMNOI, which the
+    Stokes I conform units read). The tables unit ('tables', None, None) runs alone (--stages tables), after the conform units of every
+    scope group: it rewrites <out>/tables from every done conform record, so processes of disjoint --scopes groups never race on it;
+    without --stages/--from/--until a run takes every job stage and leaves tables out; asked for with another stage it raises
+    ValueError."""
     scopes, products, variants, striation = choices(args)
     if sel is None:
         sel = selection_for(products, striation)
     stages = select_stages(args)
+    if 'tables' in stages and len(stages) > 1:
+        if any(getattr(args, k, None) for k in ('stages', 'from_stage', 'until_stage')):
+            raise ValueError(f'the tables stage runs alone (--stages tables), after the conform units of every scope group (asked: '
+                             f'{",".join(stages)})')
+        stages = [s for s in stages if s not in RUN_STAGES]
     units = []
     for sc in scopes:
         jobs = jobs_for(sc, products, striation, variants, sel)
         units += [(st, sc, j) for j in jobs for st in stages if st not in RUN_STAGES + ('conform',) and has_stage(j, st)]
-        units += [('conform', sc, j) for j in jobs if 'conform' in stages]
+        units += [('conform', sc, j) for j in sorted(jobs, key=lambda j: j.product != 'Vclean') if 'conform' in stages]
     return units + [(st, None, None) for st in RUN_STAGES if st in stages]
 
 
@@ -693,14 +701,7 @@ def _rec_ok(u, scope, job, rec, st, tiles_md5):
     """Refuse unless the done record rec of stage st was made from the tile list whose md5 is tiles_md5, every test it records passed
     (a waived failure never reaches the archive) and the tests CONFORM_NEEDS names for it are among them."""
     _same_tiles(u, scope, job, tiles_md5, rec, st)
-    tests = rec.get('tests') or []
-    bad = sorted({str(x.get('name')) for x in tests if not x.get('passed')})
-    if bad:
-        u.refuse(f'{scope} {job.label}: the {st} record holds failed test(s) {bad[:6]} - REFUSED')
-    need = CONFORM_NEEDS.get(f'{st}_{job.product}', CONFORM_NEEDS.get(st, ()))
-    miss = [n for n in need if not any(x.get('name') == n for x in tests)]
-    if miss:
-        u.refuse(f'{scope} {job.label}: the {st} record lacks the test(s) {miss} - REFUSED')
+    GC.rec_tests_ok(u, f'{scope} {job.label}', rec, st, CONFORM_NEEDS.get(f'{st}_{job.product}', CONFORM_NEEDS.get(st, ())))
 
 
 def resolve_now(scope, job, t, sel):
@@ -736,6 +737,7 @@ def resolve_now(scope, job, t, sel):
 def conform_unit(u, scope, job, out, sel):
     """conform_v3.stage of one job (module docstring, conform), on its own done records."""
     import shutil
+    from exopipe.phase3.core.record import load_record
     from exopipe.phase3.lib.mosaic import coadd_jysr as mcj
     from exopipe.phase3.lib.mosaic import conform_v3 as CF
     from exopipe.phase3.lib.mosaic import tests_v3  # noqa: F401  (registers mosaic_v3_product)
@@ -750,18 +752,6 @@ def conform_unit(u, scope, job, out, sel):
     probs = resolve_now(scope, job, t, sel)
     if probs:
         u.refuse(f'HG13 {scope} {job.label}: ' + '; '.join(probs[:4]) + ' - REFUSED')
-    # THERMNOI: this run's Stokes V coadd of the scope, made from its staged tiles, its maps at their recorded md5s
-    vj = Job('Vclean', C.mosaic_v3.VCLEAN_VARIANT)
-    VP = paths(out, scope, vj)
-    vco = co if job == vj else _upstream(u, out, 'coadd', scope, vj)
-    if not os.path.exists(VP['tiles']):
-        u.refuse(f'{VP["tiles"]} is missing (THERMNOI is read from the Stokes V coadd of the scope) - REFUSED')
-    _same_tiles(u, scope, vj, _md5(VP['tiles']), vco, 'coadd')
-    GC.coadd_maps(u, {k: VP[k] for k in ('jysr', 'psf')}, vco)
-    try:
-        therm = CF.thermnoi(VP['jysr'], VP['psf'])
-    except CF.ConformRefusal as e:
-        u.refuse(f'{scope} {job.label}: {e} - REFUSED')
     md5_of = lambda rec, k: (rec['meta'].get('md5') or {}).get(k)   # noqa: E731
     want = {P[k]: md5_of(co, k) for k in ('jysr', 'psf', 'jybeam', 'pbeff')}
     want.update({P[f'render_{d}_{k}']: md5_of(recs['render'], f'{d}_{k}') for d in ('jysr', 'jybeam') for k in ('mollweide', 'radec')})
@@ -774,6 +764,31 @@ def conform_unit(u, scope, job, out, sel):
         if not os.path.exists(pp) or _md5(pp) != m:
             u.refuse(f'{pp} missing or changed since its stage (md5) - REFUSED')
         u.add_input(pp, extra={'md5': m})
+    # THERMNOI, one value per scope: the Stokes V job computes it from its own coadd maps (checked above, under its own content
+    # record and HG13); a Stokes I job takes it from the scope's done Stokes V conform record, both maps still at the md5s recorded there
+    vj = Job('Vclean', C.mosaic_v3.VCLEAN_VARIANT)
+    if job == vj:
+        try:
+            therm = CF.thermnoi(P['jysr'], P['psf'])
+        except CF.ConformRefusal as e:
+            u.refuse(f'{scope} {job.label}: {e} - REFUSED')
+        tmd5 = {P['jysr']: want[P['jysr']], P['psf']: want[P['psf']]}
+    else:
+        vr = load_record(out, STEP, unit_name('conform', scope, vj))
+        if vr is None or vr.get('status') != 'done':
+            u.refuse(f'{scope} {job.label}: THERMNOI is read from the Stokes V conform unit of the scope, which is not done in {out}: '
+                     f'run --products Vclean --stages conform first - REFUSED')
+        GC.rec_tests_ok(u, f'{scope} {vj.label}', vr, 'conform')
+        th = (vr.get('meta') or {}).get('thermnoi') or {}
+        tmd5 = th.get('md5') or {}
+        if not tmd5 or not th.get('jy_per_beam'):
+            u.refuse(f'the Stokes V conform record of {scope} holds no THERMNOI with the md5s of its maps (a record of earlier code): '
+                     f'rerun it - REFUSED')
+        for pp, m in tmd5.items():
+            if not os.path.exists(pp) or _md5(pp) != m:
+                u.refuse(f'{pp} missing or changed since the Stokes V conform of {scope} (md5) - REFUSED')
+            u.add_input(pp, extra={'md5': m})
+        therm = float(th['jy_per_beam'])
     try:
         staged, info = CF.stage(scope, job, P, t['tiles'], P['conform'], float(mcj.PBCORR_FLOOR), therm,
                                 plan=lambda ps: [u.plan(x, 'mosaic_v3_product') for x in ps])
@@ -782,7 +797,7 @@ def conform_unit(u, scope, job, out, sel):
     u.meta['tiles_md5'] = t['json_md5']
     u.meta['membership'] = {k: info[k] for k in ('n', 't0', 't1', 'inttime_s', 'beam')}
     u.meta['prov_files'] = info['prov_files']
-    u.meta['thermnoi'] = {'jy_per_beam': therm, 'from': [VP['jysr'], VP['psf']]}
+    u.meta['thermnoi'] = {'jy_per_beam': therm, 'md5': tmd5}
     u.meta['products'] = {kind: {'path': dst, 'md5': _md5(dst), 'source': src, 'source_md5': want[src]} for dst, src, kind in staged}
     u.meta['tables'] = {'job': job.label, 'product': job.product, 'variant': job.variant, 'band': scope,
                         'version': C.masters_striation.TAG if job.ssub else 'plain', 'content': [P['content'], want[P['content']]],
@@ -805,16 +820,15 @@ def tables_unit(u, out):
     td = tables_dir(out)
     if os.path.lexists(td):
         shutil.rmtree(td)
-    jobs = {sc: jobs_for(sc, V3.PRODUCTS, 'both', V3.VARIANTS, striation_selection()) for sc in V3.SCOPES}
+    ss = striation_selection()
+    jobs = {sc: jobs_for(sc, V3.PRODUCTS, 'both', V3.VARIANTS, ss) for sc in V3.SCOPES}
     T = {}
     for sc, js in jobs.items():
         for j in js:
             r = load_record(out, STEP, unit_name('conform', sc, j))
             if r is None or r.get('status') != 'done':
                 continue
-            bad = sorted({str(x.get('name')) for x in r.get('tests') or [] if not x.get('passed')})
-            if bad:
-                u.refuse(f'the conform record of {sc} {j.label} holds failed test(s) {bad[:6]} - REFUSED')
+            GC.rec_tests_ok(u, f'{sc} {j.label}', r, 'conform')
             T[(sc, j)] = tt = r['meta']['tables']
             for k in ('content', 'curve'):
                 if tt.get(k):
@@ -840,7 +854,7 @@ def tables_unit(u, out):
     tv = [tt for (_sc, j), tt in sorted(T.items(), key=lambda x: (x[0][0], x[0][1].label)) if j.product == 'Vclean']
     ckey = lambda x: (x[0], x[1], x[-1])   # noqa: E731  (variant, band, version)
     tables = {'summary.csv': (CF.SUMMARY_COLS, CF5.merge(archived('summary.csv', CF.SUMMARY_COLS),
-                                                         [x for tt in ti for x in CF.summary_rows(tt['content'][0])], CF.map_sort,
+                                                         [x for tt in ti for x in CF5.summary_rows(tt['content'][0])], CF.map_sort,
                                                          CF.map_sort)),
               'summary_vclean.csv': (CF.VCLEAN_COLS, CF5.merge(archived('summary_vclean.csv', CF.VCLEAN_COLS),
                                                                [x for tt in tv for x in CF.vclean_rows(tt['content'][0])], CF.map_sort,
@@ -897,7 +911,7 @@ def out_problems(out):
     """--out is a work run of its own: never inside or above the masters it reads or a mosaic archive run."""
     C = _cfg()
     held = {'mosaic.INPUT_COADD_RUN': C.mosaic.INPUT_COADD_RUN, 'hybrid.ARCHIVE_MASTERS': C.hybrid.ARCHIVE_MASTERS,
-            'hybrid_tilefill.FILLED_MOSAIC_RUN': C.hybrid_tilefill.FILLED_MOSAIC_RUN}
+            'hybrid_tilefill.FILLED_MOSAIC_RUN': C.hybrid_tilefill.FILLED_MOSAIC_RUN, 'mosaic_v3.ARCHIVE_RUN': C.mosaic_v3.ARCHIVE_RUN}
     held.update({f'hybrid_tilefill.UNFILLED_MOSAIC_RUNS[{i}]': r for i, r in enumerate(C.hybrid_tilefill.UNFILLED_MOSAIC_RUNS)})
     return GC.held_problems(out, held)
 

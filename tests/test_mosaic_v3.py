@@ -226,15 +226,17 @@ def test_select_units():
     for _s, _sc, j in u:
         if j not in jobs:
             jobs.append(j)
-    assert jobs == [J_R075, J_R0, J_SSUB, J_V, None], jobs
+    assert jobs == [J_R075, J_R0, J_SSUB, J_V], jobs                    # the default leaves the run-wide tables unit out
     assert v3.STAGES == ('stage', 'coadd', 'pkcorr', 'render', 'content', 'conform', 'tables')
     assert [s for s, _sc, j in u if j == J_V] == ['stage', 'coadd', 'render', 'content', 'conform']   # no PKCORR for Stokes V
-    assert [s for s, _sc, j in u if j == J_SSUB] == list(v3.STAGES[:-1]) and u[-1] == ('tables', None, None)
-    # the conform units of a scope follow every other stage of its jobs (the Stokes I conform reads the Stokes V coadd); tables last
-    assert [(s, j) for s, _sc, j in u][-5:] == [('conform', J_R075), ('conform', J_R0), ('conform', J_SSUB), ('conform', J_V),
-                                                ('tables', None)]
-    assert [(s, sc) for s, sc, _j in v3.select_units(_args(scopes='Blue,Red', products='Vclean', stages='content,conform,tables'), SEL)] \
-        == [('content', 'Blue'), ('conform', 'Blue'), ('content', 'Red'), ('conform', 'Red'), ('tables', None)]
+    assert [s for s, _sc, j in u if j == J_SSUB] == list(v3.STAGES[:-1])
+    # the conform units of a scope follow every other stage of its jobs, the Stokes V job's first (its record holds THERMNOI)
+    assert [(s, j) for s, _sc, j in u][-4:] == [('conform', J_V), ('conform', J_R075), ('conform', J_R0), ('conform', J_SSUB)]
+    assert [(s, sc) for s, sc, _j in v3.select_units(_args(scopes='Blue,Red', products='Vclean', stages='content,conform'), SEL)] \
+        == [('content', 'Blue'), ('conform', 'Blue'), ('content', 'Red'), ('conform', 'Red')]
+    assert v3.select_units(_args(scopes='Blue', stages='tables'), SEL) == [('tables', None, None)]
+    for kw in (dict(stages='conform,tables'), dict(from_stage='conform'), dict(until_stage='tables')):   # tables runs alone
+        assert 'the tables stage runs alone' in _raises(ValueError, v3.select_units, _args(scopes='Blue', **kw), SEL), kw
     assert v3.select_units(_args(scopes='Blue', products='Vclean', stages='pkcorr'), SEL) == []
     assert not v3.has_stage(v3.Job('Vclean', 'Taper_R0'), 'pkcorr') and v3.has_stage(v3.Job('Vclean', 'Taper_R0'), 'content')
     assert v3.has_stage(v3.Job('I', 'Taper_R075'), 'pkcorr')
@@ -990,6 +992,28 @@ def test_conform_and_tables_units():
                         _patched((CFG.mosaic, 'INPUT_COADD_RUN', os.path.join(d, 'A')), (CFG.mosaic_v3, 'ARCHIVE_RUN', arun)):
                     return _unit(out, 'conform', v3.conform_unit, 'Blue', job, sel)
             P, PV = v3.paths(out, 'Blue', J_R075), v3.paths(out, 'Blue', J_V)
+            u = conform(J_R075)                                           # THERMNOI: the scope's Stokes V conform runs first
+            assert u.status == 'refused' and 'Stokes V conform unit of the scope' in u.reason, u.reason
+            rv = record.record_path(out, v3.STEP, v3.unit_name('content', 'Blue', J_V))
+            keep = open(rv).read()
+            r = json.loads(keep)
+            r['tests'][0]['passed'] = False
+            json.dump(r, open(rv, 'w'))
+            u = conform(J_V)                                              # a failed Stokes V content test refuses (THERMNOI's source)
+            open(rv, 'w').write(keep)
+            assert u.status == 'refused' and 'holds failed test' in u.reason, u.reason
+            u = conform(J_V)
+            assert u.status == 'done', (u.status, u.reason)
+            therm = u.meta['thermnoi']['jy_per_beam']
+            assert abs(therm - 1.4826 * 1.0 * 2.5) < 1e-6, therm       # V jysr [0, 1, 2, 3] in the strip: MAD 1; PSF [1, 2, 3, 4]: 2.5
+            assert sorted(u.meta['thermnoi']['md5']) == sorted([PV['jysr'], PV['psf']])
+            sv = {k: x['path'] for k, x in u.meta['products'].items()}
+            assert len(sv) == 8 and 'pkcorr' not in sv and all('/Blue/V/' in x for x in sv.values())
+            with fits.open(sv['jysr'], memmap=False) as h:
+                h0 = h[0].header
+                assert h0['STOKES'] == 'V' and h0['THERMNOI'] == float(f'{therm:.16G}') and '_vclean_' in h0['PRODNAME']
+                assert list(h['PROVENANCE'].data['FILE'])[0].endswith('_vclean_shflux_pbcorr_dewarped_aligned_coadd_LST00h_'
+                                                                         '20250809-20251029_N002.fits')
             u = conform(J_R075)
             assert u.status == 'done', (u.status, u.reason)
             assert not [x for x in u.tests if not x['passed']] and sum(x['cls'] == 'mosaic_v3_product' for x in u.tests) == 9, u.tests
@@ -997,8 +1021,7 @@ def test_conform_and_tables_units():
             assert sorted(staged) == sorted(['jysr', 'jysr_mollweide', 'jysr_radec', 'jybeam', 'pbmap', 'jybeam_mollweide',
                                              'jybeam_radec', 'psfmap', 'pkcorr'])
             assert all(os.path.dirname(os.path.dirname(x)) == os.path.join(P['conform'], 'Blue', 'I') for x in staged.values())
-            therm = u.meta['thermnoi']['jy_per_beam']
-            assert abs(therm - 1.4826 * 1.0 * 2.5) < 1e-6, therm       # V jysr [0, 1, 2, 3] in the strip: MAD 1; PSF [1, 2, 3, 4]: 2.5
+            assert u.meta['thermnoi'] == {'jy_per_beam': therm, 'md5': {PV[k]: _md5f(PV[k]) for k in ('jysr', 'psf')}}
             n0 = os.path.basename(staged['jysr'])
             assert n0.startswith('Blue_I_deep_Taper_Robust-0.75_pbcorr_coadd_mosaic_jysr_feather_allsky_') and n0.endswith('_N024.fits')
             with fits.open(staged['jysr'], memmap=False) as h:
@@ -1015,17 +1038,8 @@ def test_conform_and_tables_units():
             for k in ('pkcorr', 'jysr_mollweide', 'pbmap'):
                 assert fits.getheader(staged[k], 0)['THERMNOI'] == float(f'{therm:.16G}'), k
             assert u.meta['tables']['curve'][0] == P['pkcorr_curve'] and u.meta['tables']['version'] == 'plain'
-            u = conform(J_V)
-            assert u.status == 'done', (u.status, u.reason)
-            sv = {k: x['path'] for k, x in u.meta['products'].items()}
-            assert len(sv) == 8 and 'pkcorr' not in sv and all('/Blue/V/' in x for x in sv.values())
-            with fits.open(sv['jysr'], memmap=False) as h:
-                h0 = h[0].header
-                assert h0['STOKES'] == 'V' and h0['THERMNOI'] == float(f'{therm:.16G}') and '_vclean_' in h0['PRODNAME']
-                assert list(h['PROVENANCE'].data['FILE'])[0].endswith('_vclean_shflux_pbcorr_dewarped_aligned_coadd_LST00h_'
-                                                                         '20250809-20251029_N002.fits')
             # refusals: a master replaced since the stage (HG13); a render record of earlier code (no md5); a failed test upstream;
-            # a file changed since its stage; no Stokes V coadd (THERMNOI)
+            # a file changed since its stage; a Stokes V map changed since the Stokes V conform; no Stokes V conform record
             m2 = dict(ms, Taper_R075=dict(ms['Taper_R075'], **{'05h': ms['Taper_R075']['05h'].replace('_N002', '_N003')}))
             u = conform(J_R075, m2)
             assert u.status == 'refused' and 'HG13' in u.reason and '05h' in u.reason and not os.path.exists(P['conform']), u.reason
@@ -1045,11 +1059,16 @@ def test_conform_and_tables_units():
             u = conform(J_R075)
             open(P['render_jysr_radec'], 'wb').write(keep)
             assert u.status == 'refused' and 'changed since its stage' in u.reason, u.reason
-            vr = record.record_path(out, v3.STEP, v3.unit_name('coadd', 'Blue', J_V))
+            keep = open(PV['psf'], 'rb').read()
+            open(PV['psf'], 'ab').write(b'\0' * 2880)
+            u = conform(J_R075)
+            open(PV['psf'], 'wb').write(keep)
+            assert u.status == 'refused' and 'changed since the Stokes V conform of Blue' in u.reason, u.reason
+            vr = record.record_path(out, v3.STEP, v3.unit_name('conform', 'Blue', J_V))
             os.rename(vr, vr + '.x')
             u = conform(J_R075)
             os.rename(vr + '.x', vr)
-            assert u.status == 'refused' and 'Blue Vclean' in u.reason, u.reason
+            assert u.status == 'refused' and 'Stokes V conform unit of the scope, which is not done' in u.reason, u.reason
             assert conform(J_R075).status == 'done'
             # tables: the archived tables with this run's rows (Blue R-0.75 and Vclean) replaced, in the archived order
             run = record.Run('mosaic', ['test'], out, CFG)
