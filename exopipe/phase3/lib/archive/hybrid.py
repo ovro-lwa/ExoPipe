@@ -17,8 +17,9 @@ record), or one neither done nor refused (error, running, unreadable), or none d
 record is a stack staged from production is a member input and is not listed. Each is a push unit of its own, so the installed products
 of a cell the rebuild did not remake never stay or go silently: unfinished refuses (finish the run or narrow --lsts); refused with
 nothing installed refuses as a gap; refused with installed products refuses unless a ruling set hybrid_unit.REFUSED_INSTALLED for it:
-keep (a 'keep' row per installed product with its checksum, recorded as the unit's input, noted as kept by ruling) or quarantine (a 'retire' row per installed product, moved into
-the round quarantine as below). The PB maps stay: they describe the beam, not the refused product.
+keep (a 'keep' row per installed product with its checksum, recorded as the unit's input, noted as kept by ruling) or
+quarantine (a 'retire' row per installed product, moved into the round quarantine as below). The PB maps stay: they describe the
+beam, not the refused product.
 
 Per file: keep (the installed file of the kind has the same name and the same checksum: byte-identical; a file with the same pixels
 and another header is replaced - its beam, noise and stack cards are part of the product, and the 11-13 lost-sky swap replaced five
