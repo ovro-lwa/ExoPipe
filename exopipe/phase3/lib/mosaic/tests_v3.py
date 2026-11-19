@@ -54,7 +54,7 @@ def tiles_complete(path, **ctx):
 @content_test('mosaic_v3_tiles')
 def tiles_on_disk(path, **ctx):
     """Every master and weighting map exists with the staged md5 (the files the co-add reads)."""
-    from exopipe.phase3.lib.mosaic.v5 import _md5
+    from exopipe.phase3.lib.mosaic.gen_common import _md5
     rows = _tiles(path).get('tiles') or []
     bad = [r['lst'] for r in rows if not (os.path.exists(r['path']) and os.path.exists(r['pb']))
            or _md5(r['path']) != r['md5'] or _md5(r['pb']) != r.get('pb_md5')]
