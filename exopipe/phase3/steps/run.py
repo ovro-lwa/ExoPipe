@@ -47,7 +47,7 @@ def add_arguments(p):
     p.add_argument('--items', help='items (any item grammar); default: the --cells value inside the step command')
     p.add_argument('--chain', help='run each item through the steps of runner.CHAINS[NAME] in order (submit)')
     p.add_argument('--code', metavar='COMMIT', help='run every step process from a read-only worktree of COMMIT '
-                                                   '(submit)')
+                                                   '(submit; update, default the clean HEAD of the package tree)')
     p.add_argument('--no-start', action='store_true', help='create the job record only; `run start JOB` starts it')
     p.add_argument('--after', help='wait until this job is finished before starting (submit)')
     p.add_argument('--retry', type=int, default=0, help='retries of an item that ends in error (submit)')
@@ -62,7 +62,8 @@ def add_arguments(p):
     u.add_argument('--v3-out', help='the standing mosaic --generation v3 work run (update)')
     u.add_argument('--v5-out', help='the standing mosaic --generation v5 work run (update)')
     u.add_argument('--plan', metavar='DIR', help='write plan.json and plan.csv to DIR and stop (update)')
-    u.add_argument('--apply', action='store_true', help='the pushes apply (update); each class must be in the cutover allowance')
+    u.add_argument('--apply', action='store_true', help='submit install and the pushes too (update); without it the plan stops '
+                                                        'before install; each push class must be in the cutover allowance')
 
 
 def argparse_suppress():
@@ -130,26 +131,47 @@ def update(args):
         raise SystemExit('run update needs --trigger <LST>_<scope>[,...] (the changed master cells)')
     outs = {k: getattr(args, k) for k in UP.OUTS}
     try:
-        trig = (open(args.trigger[1:]).read().replace(',', ' ').split() if args.trigger.startswith('@')
-                else [c for c in args.trigger.split(',') if c.strip()])
-        pl = UP.build([c.strip() for c in trig], outs, apply=args.apply)
-    except ValueError as e:
+        if args.trigger.startswith('@'):
+            with open(args.trigger[1:]) as f:
+                trig = f.read().replace(',', ' ').split()
+        else:
+            trig = [c.strip() for c in args.trigger.split(',') if c.strip()]
+        pl = UP.build(trig, outs, apply=args.apply)
+        rows = UP.predicted(pl)
+    except (ValueError, OSError) as e:
         raise SystemExit(f'refused: {e}')
-    if not args.plan and not args.nodes:
-        raise SystemExit('refused: run update submits jobs; give --nodes (or --plan DIR to write the plan only)')
-    rows = UP.predicted(pl)
     stamp = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())
     if args.plan:
         p = UP.write(pl, rows, args.plan)
         print(f'update plan {p}: cells {", ".join(pl["cells"])}; '
-              + '; '.join(f'{e["name"]} {len(e["items"])}' for e in pl['entries'] if not e.get('skipped'))
+              + '; '.join(f'{e["name"]} {len(e["items"])}' + (' (needs --apply)' if e.get('needs_apply') and not pl['apply'] else '')
+                          for e in pl['entries'] if e['items'])
               + f'; predicted push files {len(rows)}')
         return 0
-    jobs = UP.submit(pl, runner.parse_nodes(args.nodes or ''), f'update_{stamp}')
+    if not args.nodes:
+        raise SystemExit('refused: run update submits jobs; give --nodes (or --plan DIR to write the plan only)')
+    code = args.code or _clean_head(runner)
+    pl['code'] = code
+    jobs = UP.submit(pl, runner.parse_nodes(args.nodes), f'update_{stamp}', code)     # every record first: a refusal starts none
+    if not jobs:
+        raise SystemExit('refused: the plan has no entry to submit')
     UP.write(pl, rows, os.path.join(runner.job_dir(jobs[0][1]), 'update_plan'))
+    UP.start(jobs)
     for name, job in jobs:
         print(f'{name}: job {job}')
+    print(f'code {code}; ' + ('every entry submitted' if pl['apply'] else
+                              'stopped before the first entry that writes the installed tree or the archive (no --apply)'))
     return 0
+
+
+def _clean_head(runner):
+    """The commit of the package tree run update submits from, refused when the tree has uncommitted changes (the jobs run
+    from a read-only worktree of that commit, so a later checkout or merge never changes their code mid-plan)."""
+    repo = runner._pkg_root()
+    st = runner._git(repo, 'status', '--porcelain', '--untracked-files=no', timeout=120)
+    if st.returncode != 0 or st.stdout.strip():
+        raise SystemExit(f'refused: the package tree {repo} has uncommitted changes (or git failed); commit them or give --code')
+    return runner._git(repo, 'rev-parse', 'HEAD', timeout=60).stdout.strip()
 
 
 def run(args, run):

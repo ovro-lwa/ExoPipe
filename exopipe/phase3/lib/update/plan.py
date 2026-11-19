@@ -20,17 +20,21 @@ Plan:   runner.UPDATE_ORDER (config) entries in order, each a step command or a 
           push_mosaic_v3  the same in the FEATHER3 run (its carried tables aside).
         A planned file the update leaves byte-identical is kept at the push (keep = byte-identical only).
 Output: plan.json and plan.csv (one row per entry, item and command; one row per predicted push file) under the plan
-        directory; nothing else is written. `run update` without --plan submits the entries as runner jobs, each --after the
-        one before; the pushes stay plan-only unless --apply (and the class is in the cutover allowance).
+        directory; nothing else is written. `run update` without --plan creates every job record first (a refusal starts
+        none), each --after the one before with after_ok (a failed or refused item upstream refuses every later job), all
+        from a read-only worktree of one commit (--code, default the clean HEAD), then starts them. Without --apply it stops
+        before install, the first entry that writes the installed tree or the archive (every later entry reads what install
+        publishes); with --apply every entry runs, each push class still subject to the cutover allowance.
 """
 import csv
 import json
 import os
 import re
 
-CELL_RE = re.compile(r'^(?P<lst>\d\dh)_(?P<scope>\S+)$')
+from exopipe.phase3.core.runner import ITEM_CELL_RE as CELL_RE
 KINDS = ('cells', 'cells:sub', 'cells:wb', 'cells:full', 'lsts', 'v3', 'v5', 'tiles', 'deep')
 OUTS = ('hybrid_out', 'v3_out', 'v5_out')
+PER_SCOPE_TABLE = re.compile(r'^caveats_.+_(?P<scope>[^_]+)_lsfill\.csv$')
 W_TOKEN = {'R075': 'Robust-0.75', 'R0': 'Robust+0.0'}
 # every predicted file is installed now: the push replaces it (the old file to the push round's quarantine, D2) or keeps it when
 # the new one is byte-identical; which of the two is known only after the steps ran (PR-8b: publish names from the dry runs)
@@ -99,12 +103,17 @@ def command(cmd, outs, apply=False):
     argv = cmd.split()
     for k in OUTS:
         argv = [a.replace('{' + k + '}', outs[k]) for a in argv]
-    left = sorted({m for a in argv for m in re.findall(r'\{(\w+)\}', a)} - {'item', 'lst', 'scope'})
+    left = sorted({m for a in argv for m in re.findall(r'\{(\w+)\}', a)} - {'item', 'item_lst', 'item_scope'})
     if left:
         raise ValueError(f'runner.UPDATE_ORDER {cmd!r}: unknown placeholder(s) {left}')
     if argv[:2] == ['archive', 'push']:
         return argv + (['--apply'] if apply else []), None, []
     return argv + ['--resume'], None, []
+
+
+def writes_archive(argv):
+    """True for a step command that writes the installed tree or the archive: install, archive push."""
+    return bool(argv) and (argv[0] == 'install' or argv[:2] == ['archive', 'push'])
 
 
 def build(trigger, outs, apply=False):
@@ -114,13 +123,16 @@ def build(trigger, outs, apply=False):
     if miss:
         raise ValueError(f'run update needs the standing work runs: --{", --".join(k.replace("_", "-") for k in miss)}')
     cells = closure(trigger)
-    entries = []
+    entries, gated = [], False
     for name, kind, cmd in _cfg().runner.UPDATE_ORDER:
         its = items_for(kind, cells)
         argv, chain, fwd = command(cmd, outs, apply)
-        e = dict(name=name, kind=kind, items=its, argv=argv, chain=chain, forward=fwd)
+        gated = gated or writes_archive(argv)
+        e = dict(name=name, kind=kind, items=its, argv=argv, chain=chain, forward=fwd, needs_apply=gated)
         if not its:
             e['skipped'] = 'no item'
+        elif gated and not apply:
+            e['skipped'] = 'needs --apply (this entry or one before it writes the installed tree or the archive)'
         entries.append(e)
     return dict(trigger=list(trigger), cells=[f'{lst}_{s}' for lst, s in cells], outs=dict(outs), apply=bool(apply), entries=entries)
 
@@ -162,16 +174,16 @@ def hybrid_unit_files(cell_dir, scope, w, rebuilt):
 
 def tables_touched(d, cls, scopes):
     """The installed tables of a mosaic run its tables unit may rewrite for an update of `scopes`: every run-wide table, and a
-    per-scope table (a scope token in its name: caveats_<V>_<scope>_lsfill.csv) only of an updated scope; never a carried table
-    (mosaic_v3.TABLES_CARRIED: copied unchanged)."""
+    per-scope table (PER_SCOPE_TABLE: caveats_<V>_<scope>_lsfill.csv, the only per-scope tables either run writes) only of an
+    updated scope; never a carried table (mosaic_v3.TABLES_CARRIED: copied unchanged). A name the pattern does not match counts
+    as run-wide (over-predicting is safe; the push keeps a byte-identical file)."""
     C = _cfg()
-    every = set(C.mosaic_v5.SCOPES) | set(C.mosaic_v3.SCOPES)
     carried = set(C.mosaic_v3.TABLES_CARRIED) if cls == 'mosaic_v3' else set()
     out = []
     for p in _files(d):
         n = os.path.basename(p)
-        sc = set(re.split(r'[_.]', n)) & every
-        if n not in carried and (not sc or sc & set(scopes)):
+        m = PER_SCOPE_TABLE.match(n)
+        if n not in carried and (not m or m['scope'] in scopes):
             out.append(p)
     return out
 
@@ -185,12 +197,18 @@ def predicted(plan, archive_root=None):
         return os.path.join(root, os.path.relpath(run, C.paths.PHASE3_ARCHIVE_ROOT))
     hyb = {tuple(c.split('_', 1)) for c in plan['cells']}
     rows = []
+
+    def items_of(kind):
+        e = next((x for x in plan['entries'] if x['kind'] == kind), None)
+        if e is None:
+            raise ValueError(f'runner.UPDATE_ORDER has no entry of item kind {kind!r}, which the push predictions need')
+        return e['items']
     for e in plan['entries']:
         if e.get('skipped') or not e['argv'] or e['argv'][:2] != ['archive', 'push']:
             continue
         cls = e['argv'][e['argv'].index('--class') + 1]
         if cls == 'hybrid':
-            tiles = next(x['items'] for x in plan['entries'] if x['kind'] == 'tiles')
+            tiles = items_of('tiles')
             for it in tiles:
                 lst, scope = it.split('_', 1)
                 for w in C.hybrid.WEIGHTINGS:
@@ -199,7 +217,7 @@ def predicted(plan, archive_root=None):
                         rows.append(dict(entry=e['name'], unit=f'{lst}_{scope}_{w}', kind=kind, dst=p, action=ACTION))
         elif cls in ('mosaic_v5', 'mosaic_v3'):
             run = under(C.hybrid_tilefill.FILLED_MOSAIC_RUN if cls == 'mosaic_v5' else C.mosaic_v3.ARCHIVE_RUN)
-            scopes = next(x['items'] for x in plan['entries'] if x['kind'] == cls[-2:])
+            scopes = items_of({'mosaic_v5': 'v5', 'mosaic_v3': 'v3'}[cls])
             for s in scopes:
                 rows += [dict(entry=e['name'], unit=s, kind='product', dst=p, action=ACTION) for p in _walk(os.path.join(run, s))]
             rows += [dict(entry=e['name'], unit='tables', kind='table', dst=p, action=ACTION)
@@ -227,15 +245,25 @@ def write(plan, rows, d):
     return os.path.join(d, 'plan.json')
 
 
-def submit(plan, nodes, name_prefix):
-    """Submit the plan's entries as runner jobs in order, each --after the one before: [(entry, job id)]."""
+def submit(plan, nodes, name_prefix, code):
+    """Create the plan's job records in order, each --after the one before with after_ok (a job whose upstream job ended
+    with a failed or refused item refuses every item, so a failure stops the rest of the plan), all from the read-only
+    worktree of `code`; nothing starts here (start(): after every record exists and the plan is written).
+    [(entry, job id)]."""
     from exopipe.phase3.core import runner
     jobs, prev = [], None
     for e in plan['entries']:
         if e.get('skipped'):
             continue
         job = runner.submit(f'{name_prefix}_{e["name"]}', e['argv'] or [], e['items'], nodes, after=prev, chain=e['chain'],
-                            forward=e['forward'])
+                            forward=e['forward'], code=code, start=False, after_ok=prev is not None)
         jobs.append((e['name'], job))
         prev = job
     return jobs
+
+
+def start(jobs):
+    """Start the supervisors of the created jobs (each waits for its --after job)."""
+    from exopipe.phase3.core import runner
+    for _name, job in jobs:
+        runner.start_supervisor(job)

@@ -10,8 +10,11 @@ Data-free (CI):
      hybrids by scope class, v5 mosaics to conform, v5 tables, tilefill, push hybrid, push mosaic_v5);
   4. every step command of the plan, item substituted (runner._subst), parses with that step's own CLI parser; a chain's steps
      parse with the forwarded --resume; every non-push step carries --resume; a push carries --apply only from --apply;
-  5. runner._subst: {lst} / {scope} from an <LST>_<scope> item, no --cells appended; a non-cell item refuses;
+     without --apply the plan stops before install (the first entry writing the installed tree or the archive);
+  5. runner._subst: {item_lst} / {item_scope} from an <LST>_<scope> item, no --cells appended; a non-cell item refuses; other
+     brace text passes through;
   6. tables_touched: run-wide tables and the updated scopes' tables, never another scope's or a carried table;
+  6b. runner after_ok: a job whose --after job ended with a failed item refuses every item without starting a worker;
   7. the CLI: `run update` without --trigger or a work run refuses; --plan writes plan.json / plan.csv and submits nothing.
 Cluster only (the installed archive present; else UNTESTED-CLUSTER, not a failure):
   8. the 11-13 replay: every file of the 11-13 v5 push manifest and every replaced file of the 11-13 hybrid manifest is in the
@@ -100,7 +103,11 @@ def _parse(argv):
 def test_commands_parse():
     for apply in (False, True):
         pl = UP.build(TRIG_1113, OUTS, apply=apply)
-        assert [e['name'] for e in pl['entries'] if e.get('skipped')] == ['hybrid_sub']
+        names = [e['name'] for e in pl['entries']]
+        gated = names[names.index('install'):]
+        want = ['hybrid_sub'] if apply else sorted(set(['hybrid_sub'] + gated), key=names.index)
+        assert [e['name'] for e in pl['entries'] if e.get('skipped')] == want, [e['name'] for e in pl['entries'] if e.get('skipped')]
+        assert [e['name'] for e in pl['entries'] if e['needs_apply']] == gated
         for e in pl['entries']:
             for item in e['items'] or ['13h_Green']:
                 if e['chain']:
@@ -123,20 +130,47 @@ def test_commands_parse():
 
 
 def test_subst():
-    out = runner._subst(['hybrid', '--lsts', '{lst}', '--scopes', '{scope}'], '07h_Red')
+    out = runner._subst(['hybrid', '--lsts', '{item_lst}', '--scopes', '{item_scope}'], '07h_Red')
     assert out == ['hybrid', '--lsts', '07h', '--scopes', 'Red'], out
     assert runner._subst(['install', '--tier', 'deep'], '07h_Red')[-2:] == ['--cells', '07h_Red']
     assert runner._subst(['x', '--scopes', '{item}'], 'Green') == ['x', '--scopes', 'Green']
-    _raises(runner._subst, ['hybrid', '--lsts', '{lst}'], 'Green')
+    _raises(runner._subst, ['hybrid', '--lsts', '{item_lst}'], 'Green')
+    out = runner._subst(['x', '--set', 'a.GLOB={scope}/I/*', '--lsts', '{item}'], '09h')       # a config glob's brace text
+    assert out == ['x', '--set', 'a.GLOB={scope}/I/*', '--lsts', '09h'], out
+
+
+def test_after_ok():
+    d = tempfile.mkdtemp(prefix='upd_jobs_', dir=os.environ.get('TMPDIR'))
+    saved = runner.jobs_root
+    try:
+        runner.jobs_root = lambda: d
+        up = '20261119T000000Z_up'
+        os.makedirs(os.path.join(d, up, 'items'))
+        with open(os.path.join(d, up, 'items.txt'), 'w') as f:
+            f.write('13h_Green\n13h_Full\n')
+        for it, st in (('13h_Green', 'done'), ('13h_Full', 'failed')):
+            runner._wjson(os.path.join(d, up, 'items', f'{runner._safe(it)}.json'), {'status': st, 'attempts': 1})
+        assert runner.job_state(up)[0] == 'finished'
+        job = runner.submit('down', ['install', '--tier', 'deep'], ['13h_Green'], [('nohost', 1)], after=up, start=False,
+                            after_ok=True)
+        assert runner.load_job(job)['after_ok'] is True
+        runner.supervise(job)                                   # refuses without starting a worker (nohost would fail)
+        st = runner.item_state(job, '13h_Green')
+        assert st['status'] == 'refused' and up in st['reason'] and 'failed' in st['reason'], st
+        assert runner.job_state(job)[0] == 'finished'
+    finally:
+        runner.jobs_root = saved
+        shutil.rmtree(d, ignore_errors=True)
 
 
 def test_tables_touched():
     d = tempfile.mkdtemp(prefix='upd_tables_', dir=os.environ.get('TMPDIR'))
     try:
         names = ['summary.csv', 'pkcorr_curves.csv', 'caveats_Taper_R0_Full_lsfill.csv', 'caveats_Taper_R0_Blue_lsfill.csv',
-                 'summary_tpfill_Taper_R0.csv', 'taper_only.csv'] + list(CFG.mosaic_v3.TABLES_CARRIED)
+                 'summary_tpfill_Taper_R0.csv', 'taper_only.csv', 'Full_summary.csv'] + list(CFG.mosaic_v3.TABLES_CARRIED)
         for n in names:
             open(os.path.join(d, n), 'w').close()
+        assert 'Full_summary.csv' in {os.path.basename(p) for p in UP.tables_touched(d, 'mosaic_v5', ['Green'])}
         got = {os.path.basename(p) for p in UP.tables_touched(d, 'mosaic_v5', ['Green', 'Full'])}
         assert 'caveats_Taper_R0_Full_lsfill.csv' in got and 'caveats_Taper_R0_Blue_lsfill.csv' not in got, got
         assert {'summary.csv', 'pkcorr_curves.csv', 'summary_tpfill_Taper_R0.csv', 'taper_only.csv'} <= got, got
@@ -159,6 +193,8 @@ def test_cli():
     assert r.returncode != 0 and '--v5-out' in r.stdout, r.stdout[-400:]
     r = _cli(['--trigger', '13h_Grn', '--hybrid-out', '/x/H', '--v3-out', '/x/M3', '--v5-out', '/x/M5'])
     assert r.returncode != 0 and 'refused' in r.stdout, r.stdout[-400:]
+    r = _cli(['--trigger', '@/nonexistent/trigger.txt', '--hybrid-out', '/x/H', '--v3-out', '/x/M3', '--v5-out', '/x/M5', '--plan', '/x/P'])
+    assert r.returncode != 0 and 'refused' in r.stdout and 'Traceback' not in r.stdout, r.stdout[-400:]
     r = _cli(['--trigger', '13h_Green', '--hybrid-out', '/x/H', '--v3-out', '/x/M3', '--v5-out', '/x/M5'])
     assert r.returncode != 0 and '--nodes' in r.stdout, r.stdout[-400:]
     d = tempfile.mkdtemp(prefix='upd_plan_', dir=os.environ.get('TMPDIR'))
@@ -182,7 +218,7 @@ def test_replay_1113_cluster():
     if not (os.path.isfile(H) and os.path.isfile(V) and os.path.isdir(CFG.hybrid.ARCHIVE_HYBRID)):
         print('UNTESTED-CLUSTER  test_replay_1113_cluster (manifests or the installed archive not here)')
         return
-    pl = UP.build(TRIG_1113, OUTS)
+    pl = UP.build(TRIG_1113, OUTS, apply=True)            # the preview of an --apply run (`--plan D --apply`)
     pred = {}
     for r in UP.predicted(pl):
         pred.setdefault(r['entry'], {})[r['dst']] = (r['unit'], r['kind'])
@@ -198,7 +234,7 @@ def test_replay_1113_cluster():
     assert {os.path.basename(p) for p in set(pv) - vm} <= {'taper_only.csv'}, sorted(set(pv) - vm)
 
 
-TESTS = [test_closure, test_items_1113, test_order, test_commands_parse, test_subst, test_tables_touched, test_cli,
+TESTS = [test_closure, test_items_1113, test_order, test_commands_parse, test_subst, test_after_ok, test_tables_touched, test_cli,
          test_replay_1113_cluster]
 
 
