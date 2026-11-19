@@ -300,7 +300,10 @@ class hybrid_unit(_Section):
     RULED_TAPER_ONLY = {}
     #   NL 1679: units that enter the mosaics as the plain Taper master (empty since 2026-11-08: a hybrid for every cell); a
     #   refused unit refuses its mosaics (gate HG14)
-    REFUSED_INSTALLED = {}
+    REFUSED_INSTALLED = {('19h', '59MHz', 'R0'): 'keep', ('19h', 'Green', 'R0'): 'keep', ('19h', 'Full', 'R0'): 'keep'}
+    #   2026-11-19 (Q1 low-band rebuild): the 19h 59 MHz Robust 0 reconstruction is refused by the large-scale level test (Dec
+    #   +10..+40 level 0.411, limits 0.5-1.6) and with it the 19h Green and Full Robust 0 hybrids; their earlier builds stay
+    #   installed as a recorded caveat, so the three Robust 0 v5 mosaics stay complete.
     #   {(LST, scope, weighting): 'keep' | 'quarantine'}, set only by a ruling: a unit a rebuild's work run refused (a stage record
     #   refused, failed, no-input or unreadable; steps.hybrid.unit_state) whose products the archive holds from an earlier build.
     #   keep: they stay, a recorded caveat (push --class hybrid lists them as kept; the v5 mosaic takes the unit's pinned tile with
@@ -311,7 +314,8 @@ class hybrid_unit(_Section):
     RULED = {'RAW_NIGHT_CAVEAT': 'R-GREGG-20261104-HB-13H64-KEEP-23H69-TAPER-ONLY-13H78R0-DROP-NIGHT',
              'RULED_TAPER_ONLY': 'R-GREGG-20261108-MIN-HYBRID-EVERY-CELL-BOTH-ROBUSTS',
              'JUMP10': 'R-GREGG-20261028-HYBRID-10DEG-JUMP-DIAGNOSTIC-NOT-GATE',
-             'STRIATION_IDENTITY': 'R-GREGG-20261031-HIGH-BAND-HYBRID-PLAN-AND-STRIATION-RESTORED-BASE-APPROVED'}
+             'STRIATION_IDENTITY': 'R-GREGG-20261031-HIGH-BAND-HYBRID-PLAN-AND-STRIATION-RESTORED-BASE-APPROVED',
+             'REFUSED_INSTALLED': 'R-GREGG-20261119-Q1-19H-R0-59MHZ-GREEN-FULL-REFUSED-INSTALLED-KEEP'}
     PROTECTED_KEYS = ()
 
 

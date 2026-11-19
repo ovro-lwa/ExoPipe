@@ -485,8 +485,21 @@ def test_archive_names_round_trip():
           f'the grammar; {retired} with the retired tpfill)')
 
 
+def test_refused_installed_ruled():
+    """hybrid_unit.REFUSED_INSTALLED: every key an (LST 00h-23h, hybrid scope, weighting) unit, every value keep | quarantine, the
+    dict set by a ruling (RULED); the Q1 rebuild's three LST 19h Robust 0 units kept (2026-11-19)."""
+    from exopipe.phase3.config import CFG
+    ri = CFG.hybrid_unit.REFUSED_INSTALLED
+    lsts = {f'{h:02d}h' for h in range(24)}
+    for k, v in ri.items():
+        assert len(k) == 3 and k[0] in lsts and k[1] in CFG.hybrid.SCOPES and k[2] in CFG.hybrid.WEIGHTINGS, k
+        assert v in ('keep', 'quarantine'), (k, v)
+    assert CFG.ruled('hybrid_unit.REFUSED_INSTALLED') == ('R-GREGG-20261119-Q1-19H-R0-59MHZ-GREEN-FULL-REFUSED-INSTALLED-KEEP',)
+    assert ri == {('19h', '59MHz', 'R0'): 'keep', ('19h', 'Green', 'R0'): 'keep', ('19h', 'Full', 'R0'): 'keep'}, ri
+
+
 TESTS = [test_sections_keys_and_consistency, test_psf2x_registry, test_psf2x_files_match_registry, test_protected_keys_refuse_override,
-         test_plan_units, test_stage_gates_and_out,
+         test_plan_units, test_stage_gates_and_out, test_refused_installed_ruled,
          test_fill_card_rule, test_cli_skeleton_refuses_every_unit, test_values_equal_production, test_archive_names_round_trip]
 
 try:                                                      # pytest collects TestHybridConfig, not the plain functions
