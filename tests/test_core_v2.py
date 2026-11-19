@@ -154,10 +154,12 @@ def test_item1_narrow_cutover_allowance():
     ops, clv = os.path.join(CFG.paths.OPS_ROOT, 'x'), os.path.join(CFG.paths.CLV15_ROOT, 'x')
     assert CFG.writes_allowed('hybrid', work) and CFG.writes_allowed('mosaic:v5', work)
     assert CFG.writes_allowed('archive:hybrid', arch) and CFG.writes_allowed('archive:hybrid', recs)
+    assert CFG.writes_allowed('archive:mosaic_v5', arch) and CFG.writes_allowed('archive:mosaic_v5', recs)   # after its scratch check
     for k, p in (('hybrid', arch), ('hybrid', ops), ('hybrid', None), ('mosaic:v5', arch), ('archive:hybrid', work),
-                 ('archive:hybrid', ops), ('archive:hybrid', clv)):          # each key only under its own roots, never ops/clv15
+                 ('archive:hybrid', ops), ('archive:hybrid', clv), ('archive:mosaic_v5', work), ('archive:mosaic_v5', ops),
+                 ('archive:mosaic_v5', clv)):                                # each key only under its own roots, never ops/clv15
         assert not CFG.writes_allowed(k, p), (k, p)
-    for k in (None, 'masters', 'mosaic', 'mosaic:v3', 'archive:epoch', 'archive:mosaic', 'archive:mosaic_v5'):   # mosaic_v5: no parity yet
+    for k in (None, 'masters', 'mosaic', 'mosaic:v3', 'archive:epoch', 'archive:mosaic', 'archive:mosaic_v3'):
         assert not CFG.writes_allowed(k, work) and not CFG.writes_allowed(k, arch), k
     prod = os.path.join(CFG.paths.PRODUCTION_ROOTS[0], 'x')
     assert CLI._guard_out(work, 'hybrid') is None and CLI._guard_out(prod, 'hybrid') is not None
@@ -167,9 +169,11 @@ def test_item1_narrow_cutover_allowance():
     assert CLI._allow_key('archive', argparse.Namespace(action='push', push_class='hybrid')) == 'archive:hybrid'
     assert CLI._allow_key('archive', argparse.Namespace(action='sync', push_class='hybrid')) == 'archive'
     assert CLI._guard_out(recs, 'archive:hybrid') is None and CLI._guard_out(recs, 'archive') is not None
-    assert CLI._guard_out(recs, CLI._allow_key('archive', argparse.Namespace(action='push', push_class='mosaic_v5'))) is not None
+    assert CLI._guard_out(recs, CLI._allow_key('archive', argparse.Namespace(action='push', push_class='mosaic_v5'))) is None
+    assert CLI._guard_out(recs, CLI._allow_key('archive', argparse.Namespace(action='push', push_class='mosaic_v3'))) is not None
     K.Ctx.guard_writes(None, [arch, recs], 'push --class hybrid t', allow='archive:hybrid')     # allowed: no refusal
-    for a, ps in ((None, [arch]), ('archive:epoch', [arch]), ('hybrid', [arch]), ('archive:mosaic_v5', [arch]),
+    K.Ctx.guard_writes(None, [arch, recs], 'push --class mosaic_v5 t', allow='archive:mosaic_v5')
+    for a, ps in ((None, [arch]), ('archive:epoch', [arch]), ('hybrid', [arch]), ('archive:mosaic_v3', [arch]), ('archive:mosaic_v5', [arch, ops]),
                   ('archive:hybrid', [arch, ops]), ('archive:hybrid', [clv]), ('archive:hybrid', [work])):
         try:
             K.Ctx.guard_writes(None, ps, 'push t', allow=a)

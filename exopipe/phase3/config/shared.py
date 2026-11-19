@@ -64,11 +64,14 @@ class paths(_Section):
     #   'archive:hybrid'  exopipe3 archive push --class hybrid     parity PR-5b (mirror push of the 11-11 event, 11-13 replay)
     #   'mosaic:v5'       exopipe3 mosaic --generation v5          parity PR-7a (stage, coadd), PR-7b (pkcorr, content), PR-7c
     #                                                              (caveat, render, content, conform, tables): Blue Taper R-0.75
-    #   'archive:mosaic_v5' waits for its own check (a push into a scratch archive root, PR-7d notes); until then it refuses.
+    #   'archive:mosaic_v5' exopipe3 archive push --class mosaic_v5  check (PR-7d notes): the Q1 rebuild's pushes, class hybrid then
+    #                                                              mosaic_v5, plan + apply + audit into a scratch archive root
+    #                                                              (2026-11-19, RESULT-20261119-ARCHIVE-MOSAIC-V5-SCRATCH-CHECK)
     PRODUCTION_WRITES_ALLOWED = {
         'hybrid': ('/lustre/gh/main/phase3/lsrecon',),                                      # hybrid.WORK_ROOT
         'mosaic:v5': ('/lustre/gh/main/phase3/lsrecon',),                                   # beside the hybrid work runs
         'archive:hybrid': ('/lustre/pipeline/exopipe/phase3', '/lustre/gh/main/phase3/archive_ops'),   # the archive; archive.RECORDS_ROOT
+        'archive:mosaic_v5': ('/lustre/pipeline/exopipe/phase3', '/lustre/gh/main/phase3/archive_ops'),
     }
     # Config keys ('section.KEY') whose values are PINNED inputs - frozen, checksummed inputs a ruling names (e.g. a
     # frozen master tree, a tier-rule pin). They are protected like the keys in PROTECTED (DESIGN 11.4, 11.6).
