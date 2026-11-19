@@ -187,6 +187,13 @@ class archive_push(_Section):
         # quarantine (D2); standing-approved (INSTALLED-PRUNED-CLAUDE-MD-AND-MEMORY-INDEX). Gate HG20: the masters filled from the
         # mosaic are installed first.
         'mosaic_v5': {'enabled': True, 'tiers': ('deep',), 'existing': 'replace-quarantine'},
+        # FEATHER3 mosaics (PR-6e; spec plan/specs/hybrid.md 2.15, D2, D7): per conform unit of an `exopipe3 mosaic --generation v3`
+        # run's --out, its products -> <root>/<mosaic_v3.ARCHIVE_RUN relative to the archive root>/<scope>/<I|V>/<sub>/<name>, then
+        # the FEATHER3 tables -> <run>/tables/ (production push_mosaic_v3_20261022.py and the Release 1 / 11-09 / 11-12 / 11-13
+        # in-place updates, L3365). An installed file of the same kind is replaced through the round quarantine (D2);
+        # standing-approved (INSTALLED-PRUNED-CLAUDE-MD-AND-MEMORY-INDEX). Not in the narrow cutover allowance: an apply under the
+        # production archive refuses (G2) until a ruling adds 'archive:mosaic_v3'.
+        'mosaic_v3': {'enabled': True, 'tiers': ('deep',), 'existing': 'replace-quarantine'},
         # QA: ARCHIVED-PHASE3-QA-TO-LUSTRE-AND-INDEXED-THE-PER-NIGHT-PHASE2-QA (1494) - one manual copy, no standing push.
         'qa': {'enabled': False, 'dest_root': '{root}/QA'},
         # run catalogues / pages / verdict journals: B17 gap, nothing pushes them today (ops-deep-serve-archive 9.5); no ruled destination.
@@ -208,6 +215,12 @@ class archive_push(_Section):
     MOSAIC_V5_QUARANTINE_PREFIX = 'mosaic/Run_HYBRID_QUARANTINE_'
     # D7 at the mosaic push: card keys a replacement may lack of the file it replaces (none ruled)
     MOSAIC_V5_RETIRED_KEYS = ()
+    # Quarantine Run of files a push --class mosaic_v3 replaces, relative to the archive root; the round is --round, default the UTC
+    # date (production's rounds mosaic/Run_FEATHER3_QUARANTINE_20261109, _20261112, _20261113, same <scope>/<I|V>/<sub> layout). Its
+    # checksum manifest MANIFEST_MOSAIC_V3_QUARANTINE.csv (the HYBRID_QUARANTINE_COLUMNS) sits at the Run's root.
+    MOSAIC_V3_QUARANTINE_PREFIX = 'mosaic/Run_FEATHER3_QUARANTINE_'
+    # D7 at the FEATHER3 push: card keys a replacement may lack of the file it replaces (none ruled)
+    MOSAIC_V3_RETIRED_KEYS = ()
     # The applied push manifest <hybrid run>/MANIFEST_<stamp>.csv (production's place and src/dst/bytes/md5 columns, NL 1637); md5 and
     # bytes are the file at dst after the push (a kept file: the archive's own).
     HYBRID_PUSH_COLUMNS = ('unit', 'kind', 'src', 'dst', 'bytes', 'md5', 'action', 'replaces', 'written_at')

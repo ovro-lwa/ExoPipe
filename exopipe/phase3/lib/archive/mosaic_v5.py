@@ -105,11 +105,12 @@ def header_problems(path, name):
     return bad + list(audit_mosaic(path))
 
 
-def missing_keys(new, old):
-    """D7 per HDU: card keys of the replaced file (commentary aside) absent from the new one, less MOSAIC_V5_RETIRED_KEYS."""
+def missing_keys(new, old, retired=None):
+    """D7 per HDU: card keys of the replaced file (commentary aside) absent from the new one, less retired (default
+    MOSAIC_V5_RETIRED_KEYS; the class mosaic_v3 passes its own)."""
     from astropy.io import fits
     from exopipe.phase3.lib.hybrid.tests_tilefill import missing_card_keys
-    retired = tuple(_p().MOSAIC_V5_RETIRED_KEYS)
+    retired = tuple(_p().MOSAIC_V5_RETIRED_KEYS) if retired is None else tuple(retired)
     out = []
     with fits.open(new, memmap=False) as a, fits.open(old, memmap=False) as b:
         for i in range(len(b)):
@@ -146,9 +147,9 @@ def _done(rec, path):
         raise Refusal(f'{path}: failed content test(s) {bad[:4]} (a waived failure is never pushed) - nothing of it is pushed')
 
 
-def _row(ctx, unit, kind, src, dst, md5, checksum, d7=True):
+def _row(ctx, unit, kind, src, dst, md5, checksum, d7=True, retired=None):
     """The plan row of one file (keep / publish / replace / keep-or-replace) and the installed file it supersedes; Refusal on
-    an ambiguous kind, an occupied destination or D7."""
+    an ambiguous kind, an occupied destination or D7 (missing_keys with retired)."""
     inst = installed(os.path.dirname(dst), os.path.basename(dst))
     if len(inst) > 1:
         raise Refusal(f'{unit} {kind}: more than one installed file of the kind: {inst} - which one the new file replaces is ambiguous')
@@ -165,7 +166,7 @@ def _row(ctx, unit, kind, src, dst, md5, checksum, d7=True):
         dm = K.checksum(dst, ctx.algo)
         act = 'keep' if dm == md5 else 'replace'
     if d7 and act in ('replace', 'keep-or-replace'):
-        miss = missing_keys(src, old)
+        miss = missing_keys(src, old, retired)
         if miss:
             raise Refusal(f'D7: {src} lacks card key(s) {miss[:10]} of the file it replaces {old} - REFUSING the unit')
     keep = act == 'keep'

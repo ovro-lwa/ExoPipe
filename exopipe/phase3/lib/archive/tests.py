@@ -29,6 +29,10 @@ optional, so `exopipe3 verify <class> <file>` runs them alone.
                            v5_copy_header          a product: PRODNAME (HDU 0, HDU 1 of a HEALPix map) = its file name, a phase3 name,
                                                    push.audit_mosaic clean; a table: a V5 table's columns
                            v5_copy_card_superset   D7 per HDU: every card key of the file it replaced, less MOSAIC_V5_RETIRED_KEYS
+  mosaic_v3_archive_copy   v3_copy_checksum        a file push --class mosaic_v3 wrote: its checksum = the pushed source's (ctx md5)
+                           v3_copy_header          a product: as v5_copy_header; a table: a FEATHER3 table's columns (a carried
+                                                   table: a header row)
+                           v3_copy_card_superset   D7 per HDU: every card key of the file it replaced, less MOSAIC_V3_RETIRED_KEYS
 """
 import os
 
@@ -482,6 +486,44 @@ def v5_copy_card_superset(path, kind=None, replaces=None, **ctx):
     if not replaces or not path.endswith('.fits'):
         return True, None, 'replaced no installed file' if not replaces else 'a table: no cards'
     miss = AM.missing_keys(path, replaces)
+    return not miss, len(miss), (f'missing {miss[:8]} of {os.path.basename(replaces)}' if miss else
+                                 f'holds every card key of {os.path.basename(replaces)} (less the retired keys)')
+
+
+@content_test('mosaic_v3_archive_copy')
+def v3_copy_checksum(path, md5=None, algo='md5', **ctx):
+    return copy_checksum(path, md5=md5, algo=algo)
+
+
+@content_test('mosaic_v3_archive_copy')
+def v3_copy_header(path, kind=None, **ctx):
+    """A product: PRODNAME (HDU 0, and HDU 1 of a HEALPix map) is its file name, a phase3 name, the archive audit clean; a table: its
+    columns are a FEATHER3 table's (a carried table: a header row)."""
+    from exopipe.phase3.lib.archive import mosaic_v5 as AM
+    if not path.endswith('.fits'):
+        return v3_table_columns(path)
+    bad = AM.header_problems(path, os.path.basename(path))
+    return not bad, len(bad), '; '.join(bad) or f'{kind or "product"}: PRODNAME is the file name, a phase3 name; audit clean'
+
+
+def v3_table_columns(path):
+    import csv
+    from exopipe.phase3.lib.mosaic import conform_v3 as CF
+    with open(path, newline='') as f:
+        head = next(csv.reader(f), [])
+    n = os.path.basename(path)
+    want = {'summary.csv': CF.SUMMARY_COLS, 'summary_vclean.csv': CF.VCLEAN_COLS, 'pkcorr_curves.csv': CF.CURVE_COLS}.get(n)
+    if want is None:
+        return bool(head), len(head), f'{n}: {len(head)} columns (a carried table)'
+    return tuple(head) == tuple(want), len(head), f'{n}: columns {"are" if tuple(head) == tuple(want) else "are not"} the FEATHER3 table\'s'
+
+
+@content_test('mosaic_v3_archive_copy')
+def v3_copy_card_superset(path, kind=None, replaces=None, **ctx):
+    from exopipe.phase3.lib.archive import mosaic_v5 as AM
+    if not replaces or not path.endswith('.fits'):
+        return True, None, 'replaced no installed file' if not replaces else 'a table: no cards'
+    miss = AM.missing_keys(path, replaces, AM._p().MOSAIC_V3_RETIRED_KEYS)
     return not miss, len(miss), (f'missing {miss[:8]} of {os.path.basename(replaces)}' if miss else
                                  f'holds every card key of {os.path.basename(replaces)} (less the retired keys)')
 
