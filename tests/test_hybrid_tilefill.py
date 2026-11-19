@@ -15,6 +15,8 @@ Data-free (CI):
      product replaces is found by kind, not by name; the dry run's plan reads no md5 and no PB map; the mosaic pair takes the
      first unfilled run holding the twin and refuses 0 or 2 filled maps;
   5a. exclusion per member for wideband and Full units (a night excluded in one member only is no refusal), per night for subbands;
+  5c. Full's diffuse PB map: the hybrid_full.PBDIFFUSE_WEIGHTING unit's file, or, where that unit refused and
+     hybrid_unit.REFUSED_INSTALLED keeps it, the installed map; no keep, an unfinished writer or no installed map refuses;
   5b. the band field is made once per --out and reused while unchanged; a changed filled mosaic remakes it, a changed unfilled
      mosaic records FAIL (HG13); a record without a compact-source block fails tilefill_compact;
   6. the plan: the filled names are the masters' product names, the CLEAN residual loses 'lsfill'; pinned re-makes no CLEAN residual.
@@ -224,6 +226,60 @@ def test_sources_and_plan():
         assert os.path.basename(plan[2][0]) == NAME.format(pb='', cr='_cleanres').replace('_lsfill_cleanres_', '_cleanres_')
         assert (CFG.hybrid.ARCHIVE_HYBRID, CFG.hybrid.LSRECON_RUNS) == old
     finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_full_diffuse_kept_cell():
+    """5c. A Full unit reads the cell's diffuse PB map from the hybrid_full.PBDIFFUSE_WEIGHTING unit's file; where that unit refused
+    and hybrid_unit.REFUSED_INSTALLED keeps it, the installed map (the kept cell's); without the keep, or with the writer unfinished
+    rather than refused, or with no installed map, it refuses."""
+    from exopipe.phase3.core import exclusions
+    d = _tmp('tf_fdiff_')
+    old = (CFG.hybrid.ARCHIVE_HYBRID, dict(CFG.hybrid_unit.REFUSED_INSTALLED), exclusions.for_tier, HS.excluded_in_unit)
+    try:
+        out, pw = os.path.join(d, 'w'), CFG.hybrid_full.PBDIFFUSE_WEIGHTING
+        w = 'R075' if pw == 'R0' else 'R0'
+        cell = os.path.join(out, '18h_Full')
+        os.makedirs(cell)
+        prods = {}
+        for k, n in (('product', 'a.fits'), ('product_pbcorr', 'b.fits')):
+            p = _fits(os.path.join(cell, n))
+            prods[k] = dict(path=p, prodname=n, md5=hashlib.md5(open(p, 'rb').read()).hexdigest())
+        with open(os.path.join(cell, f'{w}_hybrid.json'), 'w') as f:
+            json.dump(dict(prods, product_cleanres=None, span=dict(nights=[dict(date='2025-04-05')])), f)
+        rd = os.path.join(out, '_records', 'hybrid')
+        os.makedirs(rd)
+
+        def rec(wt, status):
+            with open(os.path.join(rd, f'full.18h_Full_{wt}.json'), 'w') as f:
+                json.dump(dict(status=status, reason='synthetic'), f)
+        rec(w, 'done')
+        rec(pw, 'refused')
+        arch = os.path.join(d, 'H', '18h', 'Full')
+        os.makedirs(arch)
+        mp = _fits(os.path.join(arch, 'PBdiffuse_deep_Full.fits'), data=np.full((4, 4), 0.5, np.float32))
+        setattr(CFG.hybrid, 'ARCHIVE_HYBRID', os.path.join(d, 'H'))
+        exclusions.for_tier = lambda tier, fresh=False: _Excl(())
+        HS.excluded_in_unit = lambda *a, **k: ({}, [])
+
+        def src():
+            return HS.tilefill_source(out, '18h', 'Full', w, {}, 'work')
+        CFG.hybrid_unit.REFUSED_INSTALLED.pop(('18h', 'Full', pw), None)
+        assert f'unit full.18h_Full_{pw} ended refused' in _raises(Refusal, src)            # no ruling: refused
+        CFG.hybrid_unit.REFUSED_INSTALLED[('18h', 'Full', pw)] = 'quarantine'
+        assert 'ended refused' in _raises(Refusal, src)                                     # quarantine: the cell has no map
+        CFG.hybrid_unit.REFUSED_INSTALLED[('18h', 'Full', pw)] = 'keep'
+        s = src()                                                                             # keep: the installed map
+        assert s['pb_how'] == mp and mp in s['reads'] and float(s['pb'].max()) == 0.5 and s['source'] == 'work', s
+        rec(pw, 'error')                                                                      # the writer unfinished: refused
+        assert 'ended error' in _raises(Refusal, src)
+        rec(pw, 'refused')
+        os.remove(mp)                                                                         # no installed map: refused
+        assert 'missing' in _raises(Refusal, src)
+    finally:
+        setattr(CFG.hybrid, 'ARCHIVE_HYBRID', old[0])
+        CFG.hybrid_unit.REFUSED_INSTALLED.clear(); CFG.hybrid_unit.REFUSED_INSTALLED.update(old[1])
+        exclusions.for_tier, HS.excluded_in_unit = old[2], old[3]
         shutil.rmtree(d, ignore_errors=True)
 
 
