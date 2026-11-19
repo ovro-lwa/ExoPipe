@@ -182,7 +182,7 @@ def test_tables_touched():
 
 def _cli(args):
     env = dict(os.environ, PYTHONPATH=ROOT)
-    return subprocess.run([sys.executable, '-m', 'exopipe.phase3', 'run', 'update'] + args, cwd=ROOT, env=env,
+    return subprocess.run([sys.executable, '-m', 'exopipe.phase3', 'run', 'update'] + args + ['--cores', 'none'], cwd=ROOT, env=env,
                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
 
 
@@ -192,11 +192,11 @@ def test_cli():
     r = _cli(['--trigger', '13h_Green', '--hybrid-out', '/x/H', '--v3-out', '/x/M3'])
     assert r.returncode != 0 and '--v5-out' in r.stdout, r.stdout[-400:]
     r = _cli(['--trigger', '13h_Grn', '--hybrid-out', '/x/H', '--v3-out', '/x/M3', '--v5-out', '/x/M5'])
-    assert r.returncode != 0 and 'refused' in r.stdout, r.stdout[-400:]
+    assert r.returncode != 0 and 'refused' in r.stdout and '13h_Grn' in r.stdout, r.stdout[-400:]
     r = _cli(['--trigger', '@/nonexistent/trigger.txt', '--hybrid-out', '/x/H', '--v3-out', '/x/M3', '--v5-out', '/x/M5', '--plan', '/x/P'])
-    assert r.returncode != 0 and 'refused' in r.stdout and 'Traceback' not in r.stdout, r.stdout[-400:]
+    assert r.returncode != 0 and 'refused' in r.stdout and 'trigger.txt' in r.stdout and 'Traceback' not in r.stdout, r.stdout[-400:]
     r = _cli(['--trigger', '13h_Green', '--hybrid-out', '/x/H', '--v3-out', '/x/M3', '--v5-out', '/x/M5'])
-    assert r.returncode != 0 and '--nodes' in r.stdout, r.stdout[-400:]
+    assert r.returncode != 0 and 'give --nodes' in r.stdout, r.stdout[-400:]
     d = tempfile.mkdtemp(prefix='upd_plan_', dir=os.environ.get('TMPDIR'))
     try:
         jobs_before = sorted(os.listdir(runner.jobs_root())) if os.path.isdir(runner.jobs_root()) else []
