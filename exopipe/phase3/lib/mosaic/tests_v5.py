@@ -319,6 +319,13 @@ def product_conformant(path, kind=None, scope=None, nstack=None, **ctx):
     with the name, NSTACK = N, DATE-OBS and DATE-END, finite pixels), PRODNAME = the file name (HDU 0, and HDU 1 of a HEALPix map),
     the PROVENANCE extension holds NSTACK rows, the 'Mosaic <run>' HISTORY line, TIMEFIX of the mosaic time basis; a Jy/beam map's
     PSFMAP names a psfmap product of the same name stem (bug B14)."""
+    probs = product_problems(path, kind, nstack, _cfg().hybrid_tilefill.FILLED_MOSAIC_RUN)
+    return not probs, len(probs), '; '.join(probs) or 'audit, PRODNAME, PROVENANCE, HISTORY, TIMEFIX agree'
+
+
+def product_problems(path, kind, nstack, archive_run, extra=None):
+    """The checks of a conformed mosaic product (mosaic_v5_product; v3's mosaic_v3_product too): [problem]. archive_run names the
+    'Mosaic <run>:' HISTORY line; extra(h0) adds the generation's own header checks."""
     from astropy.io import fits
     from exopipe.phase3.core.fitsio import has_data
     from exopipe.phase3.lib.archive.push import audit_mosaic
@@ -336,17 +343,19 @@ def product_conformant(path, kind=None, scope=None, nstack=None, **ctx):
             if not pv or (nstack is not None and nrow != int(nstack)) or nrow != int(h0.get('NSTACK', -1)):
                 probs.append(f'PROVENANCE rows {nrow}, NSTACK {h0.get("NSTACK")}')
             hist = ' '.join(str(x) for x in h0.get('HISTORY', []))
-            if f'Mosaic {os.path.basename(_cfg().hybrid_tilefill.FILLED_MOSAIC_RUN)}:' not in hist:
+            if f'Mosaic {os.path.basename(archive_run)}:' not in hist:
                 probs.append('no Mosaic HISTORY line')
             if not str(h0.get('TIMEFIX', '')).endswith(str(_cfg().mosaic_conform.TIME_BASIS)):
                 probs.append(f'TIMEFIX {h0.get("TIMEFIX")!r}')
             if kind in ('jybeam', 'unfilled_jybeam'):
                 psf = str(h[1].header.get('PSFMAP', ''))
-                if 'psfmap' not in psf or not psf.startswith(n.split('_I_deep_')[0] + '_I_deep_'):
+                if 'psfmap' not in psf or not psf.startswith(n.split('_deep_')[0] + '_deep_'):
                     probs.append(f'PSFMAP {psf!r} is not a psfmap product of the scope')
+            if extra:
+                probs += extra(h0)
     except Exception as e:
         probs.append(f'unreadable {str(e)[:60]}')
-    return not probs, len(probs), '; '.join(probs) or 'audit, PRODNAME, PROVENANCE, HISTORY, TIMEFIX agree'
+    return probs
 
 
 @content_test('mosaic_v5_table')

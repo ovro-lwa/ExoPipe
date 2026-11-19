@@ -39,10 +39,10 @@ for every scope of mosaic_v5.SCOPES and both weightings, and every result is PAS
 import csv
 import io
 import os
-import shutil
-import textwrap
 
 import numpy as np
+
+from exopipe.phase3.lib.mosaic import gen_common as GC
 
 SUMMARY_COLS = ('map', 'variant', 'band', 'domain', 'n_tiles', 'n_sources', 'median_ratio', 'p05', 'p95', 'frac_within_5pct', 'result')
 CURVE_COLS = ('variant', 'band', 'dec', 'rec_median', 'rec_mad', 'n', 'n_rounds')
@@ -74,8 +74,9 @@ def prov_file(lst, scope, prodname):
     return C.mosaic_v5.PROV_FILE.format(archive_hybrid=C.hybrid.ARCHIVE_HYBRID, lst=lst, scope=scope, name=prodname)
 
 
-def membership(tiles, scope, floor):
-    """MC 219-262 on the staged tiles: (PROVENANCE rows, t0 MJD, t1 MJD, summed INTTIME s, beam (bmaj, bmin, 0) deg)."""
+def membership(tiles, scope, floor, file_of=None):
+    """MC 219-262 on the staged tiles: (PROVENANCE rows, t0 MJD, t1 MJD, summed INTTIME s, beam (bmaj, bmin, 0) deg). file_of(tile row)
+    gives a row's FILE (default: prov_file of the tile's name; v3: the tile master's real path)."""
     from astropy.io import fits
     from astropy.time import Time
     rows, mjd0, mjd1, itt, beams = [], [], [], 0.0, []
@@ -95,7 +96,8 @@ def membership(tiles, scope, floor):
             raise ConformRefusal(f'{t["lst"]}: sigma {sig:.2e} (flat or corrupt) in {t["path"]}, which the coadd added')
         if hdr.get('MJD-OBS') is None or not hdr.get('DATE-END'):
             raise ConformRefusal(f'{t["lst"]}: {t["path"]} lacks MJD-OBS or DATE-END: the time block would be incomplete (R-07)')
-        rows.append({'FILE': prov_file(t['lst'], scope, t['prodname']), 'MJD_OBS': hdr.get('MJD-OBS'), 'MJD_MID': hdr.get('MJD-MID'),
+        rows.append({'FILE': file_of(t) if file_of else prov_file(t['lst'], scope, t['prodname']), 'MJD_OBS': hdr.get('MJD-OBS'),
+                     'MJD_MID': hdr.get('MJD-MID'),
                      'INTTIME': hdr.get('INTTIME'), 'WEIGHT': 1.0 / sig ** 2, 'THERMNOI': hdr.get('THERMNOI'),
                      'P1RUN': str(hdr.get('GITTAG', ''))})
         mjd0.append(hdr['MJD-OBS'])
@@ -194,10 +196,8 @@ def stage(scope, w, P, tiles, caveat, dest, floor, plan=None):
     """Stage the unit's products under dest/<scope>/I/<subdirectory>/ (the archive run's layout; the unfilled twins under
     dest/unfilled/<scope>/I/healpix/). Returns ([(final path, source,
     kind)], info). plan(final paths) is called once the names are known, before anything is written. Raises ConformRefusal;
-    nothing is renamed into place unless every product was written."""
+    nothing is renamed into place unless every product was written (gen_common.stamp_products)."""
     from astropy.io import fits
-    from astropy.time import Time
-    from exopipe.phase3.core.products import write_standard_header, append_provenance_table
     C = _cfg()
     K = C.mosaic_conform
     V5 = C.mosaic_v5
@@ -206,59 +206,29 @@ def stage(scope, w, P, tiles, caveat, dest, floor, plan=None):
     nm = names(scope, w, P, caveat, t0, t1, n)
     if plan:
         plan([os.path.join(_subdir(dest, scope, sub), name) for _src, sub, name, _p in nm.values()])
-    run = os.path.basename(archive_run())
     provbas = V5.PROVBAS.format(archive_hybrid=os.path.relpath(C.hybrid.ARCHIVE_HYBRID, C.paths.PHASE3_ARCHIVE_ROOT))
     if caveat:
         provbas += V5.PROVBAS_CAVEAT
-    hist = textwrap.wrap(f'Mosaic {run}: {n} constituent masters, listed in the PROVENANCE extension; method, rulings and Release 1 '
-                         f'updates in {run}/README.txt', 72, break_long_words=False)
-    psf_name = nm['psfmap'][2]
-    pid = os.getpid()
-    done = []
-    try:
-        for kind, (src, sub, name, pbc) in nm.items():
-            base = {'PRODNAME': (name, 'Phase 3 product name (grammar; CONTINUE cards)'), 'NSTACK': (n, 'Constituent LST tiles'),
-                    'PROVBAS': provbas, 'BEAMNOTE': V5.BEAMNOTE}
-            if kind in ('jysr', 'unfilled_jysr'):
-                ex = _hdr1(src, K.COPY_HEADER_KEYS, base)
-            elif kind in ('jybeam', 'unfilled_jybeam', 'pbmap'):
-                ex = _hdr1(src, K.COPY_HEADER_KEYS_APPARENT, dict(base, **({'BUNIT': ''} if kind == 'pbmap' else {})))
-            elif kind == 'psfmap':
-                ex = dict(base, BUNIT='sr')
-            elif kind == 'pkcorr':
-                ex = dict(base, BUNIT='')
-            elif kind == 'caveat':
-                ex = dict(base, BUNIT='', NSIDE=fits.getheader(src, 1, memmap=False)['NSIDE'])
-            else:                                                      # a render: its filled map's fill cards
-                h1 = fits.getheader(nm[kind.split('_')[0]][0], 1, memmap=False)
-                ex = dict(base, **{k: (h1[k], h1.comments[k]) for k in TP_RENDER_KEYS if k in h1})
-            dd = _subdir(dest, scope, sub)
-            os.makedirs(dd, exist_ok=True)
-            dst = os.path.join(dd, name)
-            tmp = os.path.join(dd, f'.{name}.tmp.{pid}')
-            done.append((tmp, dst, src, kind))
-            shutil.copy2(src, tmp)
-            if sub in ('healpix', 'unfilled'):
-                with fits.open(tmp, mode='update', memmap=False) as h:
-                    h[1].header['PRODNAME'] = base['PRODNAME']
-                    if kind in ('jybeam', 'unfilled_jybeam'):
-                        h[1].header['PSFMAP'] = (psf_name, 'the PSF (Omega_eff) map of this mosaic')
-            write_standard_header(tmp, scope=scope, stokes='I', start=Time(t0, format='mjd').isot, end=Time(t1, format='mjd').isot,
-                                  inttime_s=itt or None, time_basis=K.TIME_BASIS, beam=beam, thermnoi=None, pbcorr=pbc, extra=ex,
-                                  validate=K.HEADER_VALIDATE or sub not in ('healpix', 'unfilled'))
-            append_provenance_table(tmp, rows)
-            with fits.open(tmp, mode='update', memmap=False) as h:
-                for ln in hist:
-                    h[0].header.add_history(ln)
-    except BaseException:
-        for tmp, _d, _s, _k in done:
-            if os.path.exists(tmp):
-                os.remove(tmp)
-        raise
-    out = []
-    for tmp, dst, src, kind in done:
-        os.replace(tmp, dst)
-        out.append((dst, src, kind))
+    items = []
+    for kind, (src, sub, name, pbc) in nm.items():
+        base = {'PRODNAME': (name, 'Phase 3 product name (grammar; CONTINUE cards)'), 'NSTACK': (n, 'Constituent LST tiles'),
+                'PROVBAS': provbas, 'BEAMNOTE': V5.BEAMNOTE}
+        if kind in ('jysr', 'unfilled_jysr'):
+            ex = _hdr1(src, K.COPY_HEADER_KEYS, base)
+        elif kind in ('jybeam', 'unfilled_jybeam', 'pbmap'):
+            ex = _hdr1(src, K.COPY_HEADER_KEYS_APPARENT, dict(base, **({'BUNIT': ''} if kind == 'pbmap' else {})))
+        elif kind == 'psfmap':
+            ex = dict(base, BUNIT='sr')
+        elif kind == 'pkcorr':
+            ex = dict(base, BUNIT='')
+        elif kind == 'caveat':
+            ex = dict(base, BUNIT='', NSIDE=fits.getheader(src, 1, memmap=False)['NSIDE'])
+        else:                                                      # a render: its filled map's fill cards
+            h1 = fits.getheader(nm[kind.split('_')[0]][0], 1, memmap=False)
+            ex = dict(base, **{k: (h1[k], h1.comments[k]) for k in TP_RENDER_KEYS if k in h1})
+        items.append((kind, src, sub, os.path.join(_subdir(dest, scope, sub), name), pbc, ex))
+    out = GC.stamp_products(items, rows, GC.mosaic_history(os.path.basename(archive_run()), n), scope=scope, stokes='I', t0=t0, t1=t1,
+                            itt=itt, beam=beam, thermnoi=None, psf_name=nm['psfmap'][2])
     info = {'n': n, 't0': t0, 't1': t1, 'inttime_s': itt, 'beam': beam, 'names': {k: v[2] for k, v in nm.items()},
             'prov_files': [r['FILE'] for r in rows]}
     return out, info

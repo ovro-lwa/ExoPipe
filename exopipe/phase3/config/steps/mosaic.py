@@ -212,7 +212,7 @@ class mosaic_conform(_Section):
     HEADER_VALIDATE = False          # write_standard_header(validate=False) as today (CP:163; decision C-08 pending)
     THERMNOI_DEC_STRIP_DEG = (20.0, 55.0)
     #   deg; THERMNOI = cleaned-V mosaic zenith-strip MAD x median Omega_eff (CP:134-148). v2 has no cleaned-V mosaic, so
-    #   THERMNOI is absent, exactly as today (PUSHED-MOSAIC-V2-TAPER-WIDEBAND).
+    #   THERMNOI is absent, exactly as today (PUSHED-MOSAIC-V2-TAPER-WIDEBAND); --generation v3 has one (conform_v3.thermnoi)
     COPY_HEADER_KEYS = ('FLUXSCL', 'FEATHER', 'NSIDE', 'JY2K', 'BUNIT')   # map HDU 1 -> staged header (jysr; CP:197)
     COPY_HEADER_KEYS_APPARENT = ('FEATHER', 'NSIDE', 'BUNIT')             # jybeam / pbmap (CP:233)
     PROVBAS = ("Lustre Run_20260909_000000 current masters (symlink stage, mosaic_stage_from_lustre.py); "
@@ -295,9 +295,20 @@ class mosaic_v3(_Section):
     #   = Run_FEATHER3 (both kinds; Gregg 2026-10-22 "Create a version with and without striations")
     RENDER_SCOPES = mosaic.SCOPES
     #   Run_FEATHER3 holds Mollweide and RA/Dec renders of every map: 264 = (38 plain + 9 corrected + 19 Stokes V) x 2 domains x 2
+    ARCHIVE_RUN = '/lustre/pipeline/exopipe/phase3/mosaic/Run_FEATHER3_20241218-20251029'
+    #   the FEATHER3 mosaic archive run: its name is each conformed product's HISTORY line (MC ARUN v3), its tables/ the base of this
+    #   run's tables (stage tables)
+    PROVBAS = ("{input_run} current masters (exopipe3 mosaic --generation v3 stage; the striation-corrected and cleaned Stokes V "
+               "masters of the same run where the job takes them); beams from the master headers")
+    #   MC PROVBAS v3 restated for v2 (production's names its staging tool, mosaic_stage_from_lustre.py); {input_run} =
+    #   mosaic.INPUT_COADD_RUN relative to paths.PHASE3_ARCHIVE_ROOT
+    BEAMNOTE = 'scalar beam = median constituent master header; per-pixel Omega_eff in the psfmap product'
+    #   = mosaic_conform.BEAMNOTE (MC takes the v3 beams from the master headers; production's v3 text names a repair ledger)
+    TABLES_CARRIED = ('selection_20261022.csv', 'striation_restore_summary_20261022.csv')
+    #   the archived tables of the striation selection (this run's input, hybrid.STRIATION_SELECTION): carried forward whole
     RULED = {'STRIATION': 'R-GREGG-20261022-STRIATION-RESTORE-AND-MOSAIC-SCOPE-MEM-OPTION-B',
              'PRODUCTS': 'R-GREGG-20261110-VCLEAN-REBUILD-ALL-456-V-MOSAICS-IN-FEATHER3'}
-    PROTECTED_KEYS = ('VARIANTS', 'VCLEAN_VARIANT', 'VCLEAN_PATTERN', 'SSUB_PATTERN')
+    PROTECTED_KEYS = ('VARIANTS', 'VCLEAN_VARIANT', 'VCLEAN_PATTERN', 'SSUB_PATTERN', 'ARCHIVE_RUN')
 
 
 class mosaic_caveat(_Section):
