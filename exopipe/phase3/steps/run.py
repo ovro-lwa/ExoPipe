@@ -8,6 +8,9 @@
     exopipe3 run hold JOB | release JOB | drain JOB --host lwacalim09 | retry JOB [--which failed,refused]
     exopipe3 run reorder JOB --first 09h_Full,09h_Red
     exopipe3 run submit --no-start ...; exopipe3 run start JOB      # create the job record now, start it later
+    exopipe3 run update --trigger 13h_Green,13h_Full,15h_Green --hybrid-out H --v3-out M3 --v5-out M5 --plan DIR
+                                       # a partial update as one plan (lib/update/plan.py; runner.UPDATE_ORDER): --plan
+                                       # writes plan.json / plan.csv only; without it the jobs are submitted in order
 
 Inputs:  a step command line after '--', or --chain NAME (runner.CHAINS: step command templates run in order per
          item); items from --cells/--items (any item grammar: list, @file, JOB:STATUS, record:STATUS:STEP@OUT). Use
@@ -37,14 +40,14 @@ CONFIG = ('runner',)      # config sections this step reads (plus config.SHARED_
 
 def add_arguments(p):
     p.add_argument('action', choices=['submit', 'start', 'status', 'hold', 'release', 'drain', 'retry', 'reorder',
-                                      'list', 'supervise', 'worker'])
+                                      'list', 'supervise', 'worker', 'update'])
     p.add_argument('job', nargs='?', help='job id (start/status/hold/release/drain/retry/reorder)')
     p.add_argument('--name', help='job name (submit)')
     p.add_argument('--nodes', help='host:lanes[,host:lanes] or a site pool name (submit)')
     p.add_argument('--items', help='items (any item grammar); default: the --cells value inside the step command')
     p.add_argument('--chain', help='run each item through the steps of runner.CHAINS[NAME] in order (submit)')
     p.add_argument('--code', metavar='COMMIT', help='run every step process from a read-only worktree of COMMIT '
-                                                   '(submit)')
+                                                   '(submit; update, default the clean HEAD of the package tree)')
     p.add_argument('--no-start', action='store_true', help='create the job record only; `run start JOB` starts it')
     p.add_argument('--after', help='wait until this job is finished before starting (submit)')
     p.add_argument('--retry', type=int, default=0, help='retries of an item that ends in error (submit)')
@@ -53,6 +56,14 @@ def add_arguments(p):
     p.add_argument('--which', default='failed', help='statuses to re-queue (retry), e.g. failed,refused')
     p.add_argument('--first', help='items to move to the front (reorder)')
     p.add_argument('--lane', type=int, default=0, help=argparse_suppress())
+    u = p.add_argument_group('update (a partial update of the hybrid route; spec plan/specs/hybrid.md 3.7)')
+    u.add_argument('--trigger', help='the changed master cells <LST>_<scope>: list or @file (update)')
+    u.add_argument('--hybrid-out', help='the standing hybrid work run (update): --resume skips its unchanged units')
+    u.add_argument('--v3-out', help='the standing mosaic --generation v3 work run (update)')
+    u.add_argument('--v5-out', help='the standing mosaic --generation v5 work run (update)')
+    u.add_argument('--plan', metavar='DIR', help='write plan.json and plan.csv to DIR and stop (update)')
+    u.add_argument('--apply', action='store_true', help='submit install and the pushes too (update); without it the plan stops '
+                                                        'before install; each push class must be in the cutover allowance')
 
 
 def argparse_suppress():
@@ -111,6 +122,58 @@ def _status_line(j, it, s):
     return line
 
 
+def update(args):
+    """`run update`: the plan (lib/update/plan.py) written to --plan, or submitted as runner jobs in order."""
+    import time
+    from exopipe.phase3.core import runner
+    from exopipe.phase3.lib.update import plan as UP
+    if not args.trigger:
+        raise SystemExit('run update needs --trigger <LST>_<scope>[,...] (the changed master cells)')
+    outs = {k: getattr(args, k) for k in UP.OUTS}
+    try:
+        if args.trigger.startswith('@'):
+            with open(args.trigger[1:]) as f:
+                trig = f.read().replace(',', ' ').split()
+        else:
+            trig = [c.strip() for c in args.trigger.split(',') if c.strip()]
+        pl = UP.build(trig, outs, apply=args.apply)
+        rows = UP.predicted(pl)
+    except (ValueError, OSError) as e:
+        raise SystemExit(f'refused: {e}')
+    stamp = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())
+    if args.plan:
+        p = UP.write(pl, rows, args.plan)
+        print(f'update plan {p}: cells {", ".join(pl["cells"])}; '
+              + '; '.join(f'{e["name"]} {len(e["items"])}' + (' (needs --apply)' if e.get('needs_apply') and not pl['apply'] else '')
+                          for e in pl['entries'] if e['items'])
+              + f'; predicted push files {len(rows)}')
+        return 0
+    if not args.nodes:
+        raise SystemExit('refused: run update submits jobs; give --nodes (or --plan DIR to write the plan only)')
+    code = args.code or _clean_head(runner)
+    pl['code'] = code
+    jobs = UP.submit(pl, runner.parse_nodes(args.nodes), f'update_{stamp}', code)     # every record first: a refusal starts none
+    if not jobs:
+        raise SystemExit('refused: the plan has no entry to submit')
+    UP.write(pl, rows, os.path.join(runner.job_dir(jobs[0][1]), 'update_plan'))
+    UP.start(jobs)
+    for name, job in jobs:
+        print(f'{name}: job {job}')
+    print(f'code {code}; ' + ('every entry submitted' if pl['apply'] else
+                              'stopped before the first entry that writes the installed tree or the archive (no --apply)'))
+    return 0
+
+
+def _clean_head(runner):
+    """The commit of the package tree run update submits from, refused when the tree has uncommitted changes (the jobs run
+    from a read-only worktree of that commit, so a later checkout or merge never changes their code mid-plan)."""
+    repo = runner._pkg_root()
+    st = runner._git(repo, 'status', '--porcelain', '--untracked-files=no', timeout=120)
+    if st.returncode != 0 or st.stdout.strip():
+        raise SystemExit(f'refused: the package tree {repo} has uncommitted changes (or git failed); commit them or give --code')
+    return runner._git(repo, 'rev-parse', 'HEAD', timeout=60).stdout.strip()
+
+
 def run(args, run):
     from exopipe.phase3.core import runner, cells
     a = args.action
@@ -137,6 +200,8 @@ def run(args, run):
               + (f'; forwarded {" ".join(j["forward_argv"])}' if j['forward_argv'] else '')
               + f'; record {runner.job_dir(job)}' + ('; not started (run start JOB)' if args.no_start else ''))
         return 0
+    if a == 'update':
+        return update(args)
     if a == 'list' or (a == 'status' and not args.job):
         for jb in runner.list_jobs():
             st, by = runner.job_state(jb)

@@ -349,6 +349,30 @@ class runner(_Section):
     CHILD_ENV_CLEAR_PREFIXES = ('P3_', 'P3S', 'P3T', 'SUBLST_', 'SNAP_', 'FORK_', 'CATPUB_', 'NOCAT_', 'DEEP_FORCED_',
                                 'FT_', 'TENMIN_', 'GEN4_', 'BDSF_')   # production switch families never inherited by a child
     CHAIN_VARS = {'deep_run': 'P3S5'}      # {deep_run} in a chain template: the current deep transient run label
+    UPDATE_ORDER = (
+        # `exopipe3 run update` (PR-8; spec plan/specs/hybrid.md 3.7): the 2.16 item 9 order of a partial update (the 11-13 lost-sky
+        # update) as one plan of runner jobs, each after the one before: (name, item kind, step command or chain:NAME). Item kinds
+        # (lib/update/plan.py): cells (the trigger cells and the band cells of their subbands), cells:sub / cells:wb / cells:full
+        # (one scope class), lsts, v3 / v5 (their scopes that are mosaic_v3 / mosaic_v5 scopes), tiles (every LST of each v5
+        # scope), deep (one run-wide item, taken as --tier). {hybrid_out} {v3_out} {v5_out}: the standing work runs; {item_lst}
+        # {item_scope}: the parts of an <LST>_<scope> item. Every step gets --resume. An entry that writes the installed tree or
+        # the archive (install, archive push) and every entry after it are submitted only with `run update --apply`.
+        ('masters', 'cells', 'chain:deep-build-cell'),
+        ('dewarp', 'lsts', 'dewarp --tier deep --lsts {item}'),
+        ('install', 'cells', 'install --tier deep --cells {item}'),
+        ('mosaic_v3', 'v3', 'mosaic --generation v3 --scopes {item} --out {v3_out}'),
+        ('mosaic_v3_tables', 'deep', 'mosaic --generation v3 --tier {item} --stages tables --out {v3_out}'),
+        ('push_mosaic_v3', 'deep', 'archive push --tier {item} --class mosaic_v3 --staging-root {v3_out}'),
+        ('hybrid_sub', 'cells:sub', 'hybrid --stages stack,recon,wideband,hybrid,full --lsts {item_lst} --scopes {item_scope} --out {hybrid_out}'),
+        ('hybrid_wb', 'cells:wb', 'hybrid --stages stack,recon,wideband,hybrid,full --lsts {item_lst} --scopes {item_scope} --out {hybrid_out}'),
+        ('hybrid_full', 'cells:full', 'hybrid --stages stack,recon,wideband,hybrid,full --lsts {item_lst} --scopes {item_scope} --out {hybrid_out}'),
+        # the scope units stop at conform (--until): parallel scope jobs never write the run's tables; the tables unit runs once after
+        ('mosaic_v5', 'v5', 'mosaic --generation v5 --scopes {item} --until conform --hybrid-out {hybrid_out} --out {v5_out}'),
+        ('mosaic_v5_tables', 'deep', 'mosaic --generation v5 --tier {item} --stages tables --hybrid-out {hybrid_out} --out {v5_out}'),
+        ('tilefill', 'tiles', 'hybrid --stages tilefill --lsts {item_lst} --scopes {item_scope} --mosaic-out {v5_out} --out {hybrid_out}'),
+        ('push_hybrid', 'deep', 'archive push --tier {item} --class hybrid --staging-root {hybrid_out}'),
+        ('push_mosaic_v5', 'deep', 'archive push --tier {item} --class mosaic_v5 --staging-root {v5_out}'),
+    )
     CHAINS = {
         # per hour: one LST hour of one night, every tier, against the installed masters (item kind: epoch 04h_2025-10-14)
         # deep frames are made by the deep search engine (frames_residuals.DEEP_PRODUCER 'search'): no frames step here

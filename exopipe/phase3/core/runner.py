@@ -42,6 +42,7 @@ site file (clv15, exopipe_ops) are still imported in place. To delete a code wor
 """
 import json
 import os
+import re
 import shlex
 import socket
 import subprocess
@@ -49,6 +50,8 @@ import sys
 import time
 
 TERMINAL = ('done', 'refused', 'no-input', 'failed')
+AFTER_OK = ('done', 'no-input')         # --after with after_ok (run update): the upstream job's items must all end in one of these
+ITEM_CELL_RE = re.compile(r'^(?P<lst>\d\dh)_(?P<scope>\S+)$')   # an <LST>_<scope> item: {item_lst} / {item_scope} (run update)
 RC_STATUS = {0: 'done', 2: 'refused', 3: 'no-input'}
 
 
@@ -263,12 +266,15 @@ def _overrides_of(forward):
 
 
 def submit(name, step_argv, item_list, nodes, after=None, retry=0, gpu=False, python=None, start=True, chain=None,
-           forward=(), code=None):
+           forward=(), code=None, after_ok=False):
     """Create a job record and (unless start=False) launch its supervisor in the background.
 
     chain:   a runner.CHAINS name: every item runs through its steps in order (step_argv must then be empty).
     forward: argv tokens added to every step command (`run submit --set/--config/--ruling-for/--parity/--injected`).
-    code:    a commit: step processes run from its read-only worktree (``ensure_code_worktree``)."""
+    code:    a commit: step processes run from its read-only worktree (``ensure_code_worktree``).
+    after_ok: with ``after``, run only when every item of that job ended in AFTER_OK; otherwise every item of this job is
+             refused without running (so a failure upstream stops a `run update` plan at that point, and the refusal
+             passes down the chain of --after jobs)."""
     cfg = _cfg()
     if chain and step_argv:
         raise SystemExit('refused: give either --chain NAME or a step command after --, not both')
@@ -292,7 +298,7 @@ def submit(name, step_argv, item_list, nodes, after=None, retry=0, gpu=False, py
         f.write(''.join(f'{it}\n' for it in item_list))
     forward = list(forward or ())
     j = {'id': job, 'step_argv': list(step_argv) if not chain else [f'chain:{chain}'],
-         'nodes': [list(n) for n in nodes], 'after': after,
+         'nodes': [list(n) for n in nodes], 'after': after, 'after_ok': bool(after_ok),
          'retry': int(retry), 'gpu': bool(gpu), 'created': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
          'launch_host': socket.gethostname(), 'python': python, 'pkg_root': _pkg_root(),
          'site_file': os.environ.get('EXOPIPE3_SITE', ''), 'n_items': len(item_list), 'jobs_root': jobs_root(),
@@ -335,7 +341,16 @@ def supervise(job):
         print(f'{_now()} waiting for job {j["after"]} to finish', flush=True)
         while job_state(j['after'])[0] != 'finished':
             time.sleep(cfg.runner.POLL_S)
-        print(f'{_now()} job {j["after"]} finished: {job_state(j["after"])[1]}', flush=True)
+        st = job_state(j['after'])[1]
+        print(f'{_now()} job {j["after"]} finished: {st}', flush=True)
+        bad = {k: n for k, n in st.items() if k not in AFTER_OK}
+        if j.get('after_ok') and bad:
+            why = f'upstream job {j["after"]} ended with {bad} (after_ok: every item must end {"/".join(AFTER_OK)})'
+            for it in items(job):
+                _wjson(os.path.join(job_dir(job), 'items', f'{_safe(it)}.json'),
+                       {'status': 'refused', 'attempts': 0, 'reason': why, 'finished': _now()})
+            print(f'{_now()} refused every item: {why}', flush=True)
+            return
     me = socket.gethostname()
     for host, lanes in j['nodes']:
         for lane in range(int(lanes)):
@@ -393,7 +408,17 @@ def _subst_vars(argv):
 
 
 def _subst(argv, item):
+    """The step argv of one item: {item} replaced, and {item_lst} / {item_scope} by the parts of an <LST>_<scope> item (run
+    update's hybrid and tilefill entries; ITEM_CELL_RE); a template with none of them gets '--cells <item>' appended. Any other
+    brace text (a config glob's {scope}) is passed through unchanged."""
     out = _subst_vars(argv)
+    if any('{item_lst}' in a or '{item_scope}' in a for a in out):
+        m = ITEM_CELL_RE.match(item)
+        if not m:
+            raise SystemExit(f'refused: item {item!r} is not <LST>_<scope>, which {{item_lst}} / {{item_scope}} in the step '
+                             f'command need')
+        out = [a.replace('{item_lst}', m['lst']).replace('{item_scope}', m['scope']) for a in out]
+        return [a.replace('{item}', item) for a in out]
     if any('{item}' in a for a in out):
         return [a.replace('{item}', item) for a in out]
     return out + ['--cells', item]
