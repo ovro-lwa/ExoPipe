@@ -1084,6 +1084,7 @@ def test_conform_and_tables_units():
             assert sorted(os.listdir(td)) == sorted(['pkcorr_curves.csv', 'summary.csv', 'summary_vclean.csv'] +
                                                     list(CFG.mosaic_v3.TABLES_CARRIED))
             assert u.meta['rows'] == {'summary.csv': 10, 'summary_vclean.csv': 4, 'pkcorr_curves.csv': 10}, u.meta['rows']
+            assert u.meta['md5'] == {n: _md5f(os.path.join(td, n)) for n in os.listdir(td)}, u.meta['md5']   # the push takes these
             h, rows = CF5._read(os.path.join(td, 'summary.csv'))
             assert [x[0] for x in rows] == sorted(x[0] for x in rows)
             new = [x for x in rows if x[6] == '1.002']

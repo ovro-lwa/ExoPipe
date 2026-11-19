@@ -890,9 +890,11 @@ def tables_unit(u, out):
     for name in sorted(set(tables) | set(carried)):
         u.plan(os.path.join(td, name), 'mosaic_v3_table')
     os.makedirs(td, exist_ok=True)
+    md5 = {}                                            # each table's md5: archive push --class mosaic_v3 pushes them at these
     for name, (cols, rows) in sorted(tables.items()):
         CF5._write(os.path.join(td, name), list(cols), rows)
         u.add_output(os.path.join(td, name), 'mosaic_v3_table', columns=list(cols), n_rows=len(rows))
+        md5[name] = _md5(os.path.join(td, name))
     for name, pa in sorted(carried.items()):            # this run's input: the archived bytes
         m = _md5(pa)
         u.add_input(pa, extra={'md5': m})
@@ -901,7 +903,9 @@ def tables_unit(u, out):
             u.refuse(f'{name}: the copy differs from the archived table (md5) - REFUSED')
         head, rows = CF5._read(pa)
         u.add_output(os.path.join(td, name), 'mosaic_v3_table', columns=head, n_rows=len(rows))
+        md5[name] = m
     u.meta['rows'] = {name: len(rows) for name, (_c, rows) in tables.items()}
+    u.meta['md5'] = md5
     u.meta['conformed'] = sorted(f'{sc} {j.label}' for sc, j in T)
 
 

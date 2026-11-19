@@ -375,7 +375,8 @@ def run_action(ctx, args, run, unit_fn):
     if not cls:
         cls = 'epoch' if getattr(args, 'epochs', None) else None
     if not cls:
-        raise ValueError('push needs --class (mosaic, epoch, hybrid, mosaic_v5, qa, run-tables); --epochs alone means --class epoch')
+        raise ValueError('push needs --class (mosaic, epoch, hybrid, mosaic_v3, mosaic_v5, qa, run-tables); --epochs alone means '
+                         '--class epoch')
     class_cfg(cls)
     if cls == 'mosaic':
         return run_mosaic(ctx, args, run, unit_fn)
@@ -384,6 +385,9 @@ def run_action(ctx, args, run, unit_fn):
     if cls == 'hybrid':
         from exopipe.phase3.lib.archive.hybrid import run_hybrid
         return run_hybrid(ctx, args, run, unit_fn)
+    if cls == 'mosaic_v3':
+        from exopipe.phase3.lib.archive.mosaic_v3 import run_mosaic_v3
+        return run_mosaic_v3(ctx, args, run, unit_fn)
     if cls == 'mosaic_v5':
         from exopipe.phase3.lib.archive.mosaic_v5 import run_mosaic_v5
         return run_mosaic_v5(ctx, args, run, unit_fn)
@@ -394,7 +398,8 @@ def run_action(ctx, args, run, unit_fn):
 # audit of earlier manifests
 # ---------------------------------------------------------------------------------------------------------------------
 
-AUDIT_CLASSES = {'mosaic': 'archive_manifest', 'epoch': 'archive_manifest', 'hybrid': 'archive_manifest', 'mosaic_v5': 'archive_manifest',
+AUDIT_CLASSES = {'mosaic': 'archive_manifest', 'epoch': 'archive_manifest', 'hybrid': 'archive_manifest', 'mosaic_v3': 'archive_manifest',
+                 'mosaic_v5': 'archive_manifest',
                  'quarantine': 'quarantine_manifest',
                  'sync': 'archive_sync_record', 'retire': None, 'rollback': 'restore_manifest',
                  'rows': 'row_quarantine_manifest', 'supersede': 'quarantine_manifest'}
