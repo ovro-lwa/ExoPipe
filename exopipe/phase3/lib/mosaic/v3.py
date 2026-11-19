@@ -594,10 +594,12 @@ def pkcorr_unit(u, scope, job, out, work):
     for pp, c in outputs_of('pkcorr', out, scope, job):
         u.plan(pp, c)
     _clear(own)
-    t, _co = _from_coadd(u, out, scope, job, ('jysr', 'psf'))
-    GC.pkcorr(u, f'{scope} {job.label}', scope, job.variant, job.tag, t, {k: P[k] for k in ('jysr', 'psf')},
-              {k: P[f'pkcorr_{k}'] for k in ('map', 'curve', 'recovery', 'json')}, lambda sd: _link_tree(t, scope, job, sd),
-              (f'mosaic_v3_pkcorr_{scope}_{job.label}', f'mosaic_v3_pkcorr_inj_{scope}_{job.label}'), unit_dir(out, scope, job), work)
+    t, co = _from_coadd(u, out, scope, job, ('jysr', 'psf'))
+    GC.pkcorr(u, what=f'{scope} {job.label}', scope=scope, variant=job.variant, tag=job.tag, t=t,
+              maps={k: P[k] for k in ('jysr', 'psf')}, outp={k: P[f'pkcorr_{k}'] for k in ('map', 'curve', 'recovery', 'json')},
+              link=lambda sd: _link_tree(t, scope, job, sd),
+              scratch=(f'mosaic_v3_pkcorr_{scope}_{job.label}', f'mosaic_v3_pkcorr_inj_{scope}_{job.label}'),
+              udir=unit_dir(out, scope, job), work=work, label=job.label, co=co)
 
 
 # ---- content ----------------------------------------------------------------------------------------------------------------------

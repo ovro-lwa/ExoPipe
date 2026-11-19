@@ -52,6 +52,10 @@ mosaic_coadd globals and refuse unless they equal the coadd record's. The push c
 import json
 import os
 
+from exopipe.phase3.lib.mosaic import gen_common as GC     # shared with v3: one copy of each rule
+from exopipe.phase3.lib.mosaic.gen_common import (_MD5, _bind_engine, _clear, _engine_as_coadd,  # noqa: F401  (one md5 cache
+                                                  _key, _md5, _seed)                  # per process for v3 and v5)
+
 LSTS = tuple(f'{h:02d}h' for h in range(24))
 STAGES = ('stage', 'coadd', 'pkcorr', 'caveat', 'fill', 'render', 'content', 'conform', 'tables')
 #   spec 3.1 (exopipe3 mosaic --generation v5 --stages stage,coadd,pkcorr,caveat,fill,render,content,conform,tables)
@@ -148,10 +152,6 @@ def stages_for(scope, stages):
     return [s for s in stages if s != 'tables' and not (s == 'caveat' and scope not in C.hybrid.CAVEAT_SCOPES)
             and not (s == 'render' and scope not in C.mosaic_v5.RENDER_SCOPES)]
 
-
-from exopipe.phase3.lib.mosaic import gen_common as GC                     # noqa: E402  (shared with v3: one copy of each rule)
-from exopipe.phase3.lib.mosaic.gen_common import (_MD5, _bind_engine, _clear, _engine_as_coadd,  # noqa: E402,F401  (one md5 cache
-                                                  _key, _md5, _seed)                               # per process for v3 and v5)
 
 
 def _upstream(u, out, st, scope, w):
@@ -454,10 +454,11 @@ def pkcorr_unit(u, scope, w, out, work):
     t = _tiles(u, out, scope, w)
     _same_tiles(u, scope, w, t['json_md5'], co, 'coadd')
     _coadd_maps(u, out, scope, w, co, ('jysr', 'psf'))
-    _engine_as_coadd(u, scope, w, co)
-    GC.pkcorr(u, f'{scope} {w}', scope, variant_of(w), C.mosaic_v5.TAG, t, {k: P[f'unfilled_{k}'] for k in ('jysr', 'psf')},
-              {k: P[f'pkcorr_{k}'] for k in ('map', 'curve', 'recovery', 'json')}, lambda sd: _link_tree(t, scope, w, sd),
-              (f'mosaic_v5_pkcorr_{scope}_{w}', f'mosaic_v5_pkcorr_inj_{scope}_{w}'), unit_dir(out, scope, w), work)
+    GC.pkcorr(u, what=f'{scope} {w}', scope=scope, variant=variant_of(w), tag=C.mosaic_v5.TAG, t=t,
+              maps={k: P[f'unfilled_{k}'] for k in ('jysr', 'psf')},
+              outp={k: P[f'pkcorr_{k}'] for k in ('map', 'curve', 'recovery', 'json')},
+              link=lambda sd: _link_tree(t, scope, w, sd), scratch=(f'mosaic_v5_pkcorr_{scope}_{w}', f'mosaic_v5_pkcorr_inj_{scope}_{w}'),
+              udir=unit_dir(out, scope, w), work=work, label=w, co=co)
 
 
 # ---- content ----------------------------------------------------------------------------------------------------------------------

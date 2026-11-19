@@ -186,20 +186,24 @@ def held_problems(out, held):
     return bad
 
 
-def pkcorr(u, what, scope, variant, tag, t, maps, outp, link, scratch, udir, work):
+def pkcorr(u, *, what, scope, variant, tag, t, maps, outp, link, scratch, udir, work, label, co):
     """The PKCORR stage after its gates: MP run_band (lib/mosaic/pkcorr.py) on the co-added Jy/sr and PSF maps (maps['jysr'],
     maps['psf']), mosaic_pkcorr.ROUNDS injection rounds through the engine on the tile tree link(sd) builds, then test_pkcorr. The
     four outputs (outp: map, curve, recovery, json -> path) are written under a temporary directory in udir and renamed into place;
-    scratch = the names of the unit's two scratch directories under work (the tile tree, the injections)."""
+    scratch = the names of the unit's two scratch directories under work (the tile tree, the injections). The engine is bound to the
+    coadd record co's globals first and refused unless they match (_engine_as_coadd, label = the job): the injections run with
+    the coadd's weights whatever unit ran before in the process."""
     import shutil
     from exopipe.phase3.core import fitsio
     from exopipe.phase3.lib.mosaic import coadd_jysr as mcj
     from exopipe.phase3.lib.mosaic import pkcorr as PK
     C = _cfg()
+    _engine_as_coadd(u, scope, label, co)
     nside, rounds = int(mcj.NSIDE), int(C.mosaic_pkcorr.ROUNDS)
     mos_c, psf = PK.read_map(maps['jysr']), PK.read_map(maps['psf'])
     if len(mos_c) != 12 * nside ** 2 or len(psf) != 12 * nside ** 2:
         u.refuse(f'{what}: the co-added maps hold {len(mos_c)} / {len(psf)} pixels, not NSIDE {nside} - REFUSED')
+        return
     sd = fitsio.scratch_dir(scratch[0], work)
     inj = fitsio.scratch_dir(scratch[1], work)
     tmp = os.path.join(udir, f'.tmp_pkcorr_{os.getpid()}')
@@ -211,6 +215,7 @@ def pkcorr(u, what, scope, variant, tag, t, maps, outp, link, scratch, udir, wor
                                   record_dir=os.path.dirname(outp['map']))
         except PK.InjectionRefusal as e:
             u.refuse(f'{what}: {e} - REFUSED')
+            return
         os.makedirs(os.path.dirname(outp['map']), exist_ok=True)
         for k in ('map', 'curve', 'recovery', 'json'):
             os.replace(os.path.join(tmp, os.path.basename(outp[k])), outp[k])
@@ -235,7 +240,8 @@ def pkcorr(u, what, scope, variant, tag, t, maps, outp, link, scratch, udir, wor
 def test2_write(rep, t, path):
     """TEST 2 of the content stage: per domain, the files the test read ('read', removed from the report) against the tile list t
     (each LST's real tile and PB paths): r['provenance'] (each read file with its tile's verified md5) and
-    r['provenance_matches_tiles']. The report is written to path (temporary name, renamed into place); returns its md5."""
+    r['provenance_matches_tiles']. Mutates rep in place (test2_check reads the keys added here). The report is written to path
+    (temporary name, renamed into place); returns its md5."""
     listed = {r['lst']: (os.path.realpath(r['path']), os.path.realpath(r['pb']), r['md5']) for r in t['tiles']}
     for _dom, r in rep.items():
         read = r.pop('read')
