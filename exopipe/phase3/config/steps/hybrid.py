@@ -97,6 +97,12 @@ class hybrid_stack(_Section):
     MAX_UNDERIVABLE = 1
     #   NL 418-420: at most ONE night per stack without a derivable screen or failing the alignment test is left out (recorded);
     #   more refuses the stack (gate HG4)
+    RAW_NIGHT_ADMIT = tuple(('13h', b) for b in hybrid.WIDEBAND_MEMBERS['Red'] + hybrid.WIDEBAND_MEMBERS['Green'])
+    #   the (LST, subband) cells, 13h 18-59 MHz, where a night whose Phase 2 image is dewarped but has no saved warp screen
+    #   (2025-04/05) enters the stacks unaligned (its Phase 1 images as they are), as production's stacks of Run_20261028_234240
+    #   took them, instead of through a derived screen: no screen is derived, the night does not count against MAX_UNDERIVABLE,
+    #   the stack record lists it (nights_raw_admitted), and the hybrids built on a stack that lists nights (the cell's, and the
+    #   wideband and Full hybrids it enters) carry card LSRAWNT and a raw_night_caveat naming the nights; every other cell keeps HG4
     MIN_NIGHTS_DROP = 2
     #   NL 424: the stack refuses when fewer than max(2, N - MIN_NIGHTS_DROP) nights with Phase 1 dirty images remain (N = the
     #   master's constituent nights; a night whose Phase 1 dirty image or PSF was never written is left out, recorded)
@@ -127,6 +133,7 @@ class hybrid_stack(_Section):
              'FLOW_RECOVERED_RATIO_TOL': 'R-GREGG-20261026-FLOW-RECOVERED-CELLS-BUILT-ON-CURRENT-RECORD-ACCEPTED-FOR-PRODUCTION',
              'ADMISSION': 'R-GREGG-20261031-ADMIT-HB-FLOW-RECOVERED-NOTAPER-STACKS-AS-HYBRIDS',
              'MAX_UNDERIVABLE': 'R-GREGG-20261103-23H-69MHZ-DROP-UNDERIVABLE-NIGHT-FROM-RECON-STACKS',
+             'RAW_NIGHT_ADMIT': 'R-GREGG-20261119-Q1-13H-18-59MHZ-RAW-NIGHTS-ADMIT',
              'WARP_P90_PX': 'R-GREGG-20261104-HB-13H64-KEEP-23H69-TAPER-ONLY-13H78R0-DROP-NIGHT',
              'MIN_NIGHTS_DROP': 'R-GREGG-20261027-LSRECON-SCALE-BOUND-0P5-2P0-LEVEL-REFUSALS-STAY-GAPS-55MHZ-06H-R0-N-MINUS-1'}
     PROTECTED_KEYS = ('MDEWARP', 'PHASE1_ROOT')

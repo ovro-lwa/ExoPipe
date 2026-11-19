@@ -230,6 +230,33 @@ def _write_product(path, data, h, name, scope, span, beam, pbcorr, gen):
                           validate=True)
 
 
+def raw_night_caveats(run_dir, lst, bands, v):
+    """{band: caveat text} for the bands of a hybrid whose reconstruction stacks took nights undewarped: production's cells by their
+    archived text (hybrid_unit.RAW_NIGHT_CAVEAT), and a cell ruled by hybrid_stack.RAW_NIGHT_ADMIT (Gregg 2026-11-19) only when its
+    stack records (v and its Taper variant) list such nights (nights_raw_admitted), the text naming them; in the order of bands."""
+    out = {}
+    for b in bands:
+        if (lst, b) in RAW_NIGHT_CAVEAT:
+            out[b] = RAW_NIGHT_CAVEAT[(lst, b)]
+            continue
+        nights = set()
+        for w in (v, TAPER_OF.get(v)):
+            p = f'{run_dir}/{lst}_{b}/{w}_stack.json'
+            if w and os.path.exists(p):
+                nights |= set(_json(p).get('nights_raw_admitted') or ())
+        if nights:
+            out[b] = (f'nights {", ".join(sorted(nights))} entered the reconstruction stacks undewarped (Phase 2 image dewarped, no '
+                      f'saved warp screen), as in the archived production stacks (Gregg 2026-11-19)')
+    return out
+
+
+def set_lsrawnt(h, bands):
+    """Card LSRAWNT = the bands, with its comment only when the card fits 80 characters (the 11 bands of the 13h Full hybrid do not:
+    astropy would cut the comment with a warning)."""
+    val, com = ','.join(bands), 'undewarped nights in recon stacks (caveat)'
+    h['LSRAWNT'] = (val, com) if 10 + max(len(val) + 2, 20) + 3 + len(com) <= 80 else val
+
+
 def hybrid_unit(lst, scope, v, run_dir):
     """Hybrid NoTaper master of one cell and weighting (Gregg 2026-10-27 proposal; preamble approved 2026-10-28): the installed Taper
     master (WSClean visibility-domain deconvolution: compact sources and small scales) + G (x) (reconstruction - Taper master), G = 1 below
@@ -279,9 +306,9 @@ def hybrid_unit(lst, scope, v, run_dir):
     h['LSRGEN'] = (RECON_GEN, 'reconstruction: CLEAN, step and prior to the true horizon')
     for k, val, com in cards:
         h[k] = (val, com)
-    raw_b = [b for b, _ in subs if (lst, b) in RAW_NIGHT_CAVEAT]
-    if raw_b:                                     # Gregg 2026-11-04: kept with undewarped nights in the reconstruction stacks, a recorded caveat
-        h['LSRAWNT'] = (','.join(raw_b), 'undewarped nights in recon stacks (caveat)')
+    raw = raw_night_caveats(run_dir, lst, [b for b, _ in subs], v)
+    if raw:                                       # Gregg 2026-11-04 / 11-19: undewarped nights in the recon stacks, a recorded caveat
+        set_lsrawnt(h, list(raw))
     adm_b = [b for b, _ in subs if _json(f'{run_dir}/{lst}_{b}/{v}_lsrecon.json').get('stack_admission')]
     if adm_b:                                     # Gregg 2026-10-31 "Admit them as hybrids": the (subband) stacks admitted at hybrid scales
         h['LSSTKADM'] = (','.join(adm_b), 'stack admitted at hybrid scales (Gregg 10-31)')
@@ -291,7 +318,7 @@ def hybrid_unit(lst, scope, v, run_dir):
     path = f'{wd}/I_deep_Taper_{v}_lsrecon_lsfill_{scope}.fits'; _write_product(path, H, h, name, scope, span, beam, False, gen); ph = _getheader(path)
     nt = installed_master(lst, scope, v, False)[0]
     rec = dict(lst=lst, scope=scope, weighting=v, taper_master=tpath, striation_model=smodel, reconstruction=rrec['product']['path'], span=span, filter_wavelengths=[HYB_U_IN, HYB_U_OUT],
-               stacks_admitted_at_hybrid_scales=adm_b, raw_night_caveat={b: RAW_NIGHT_CAVEAT[(lst, b)] for b in raw_b},
+               stacks_admitted_at_hybrid_scales=adm_b, raw_night_caveat=raw,
                reconstruction_restoring=dict(method='final residual + model (x) Taper master beam', own_beam_identity_rel_err=rerr))
     rec['test_hybrid'] = test_hybrid(path, A, T, F, ok, th, lst, scope, rd(nt))
     if cards and f"{float(ph.get('LSSMALL', float('nan'))):.4g}" != f"{rec['test_hybrid']['small_scale_rel']:.4g}":   # at the
@@ -421,9 +448,9 @@ def hybrid_full(lst, v, run_dir):
     h['LSWBSB'] = (','.join(s['band'] for s in subs), 'combined subband hybrids'); h['LSWBW'] = (','.join(f'{x:.4f}' for x in Wn), 'normalized subband weights')
     for k, val, com in cards:
         h[k] = (val, com)
-    raw_b = [s['band'] for s in subs if (lst, s['band']) in RAW_NIGHT_CAVEAT]
-    if raw_b:
-        h['LSRAWNT'] = (','.join(raw_b), 'undewarped nights in recon stacks (caveat)')
+    raw = raw_night_caveats(run_dir, lst, [s['band'] for s in subs], v)
+    if raw:
+        set_lsrawnt(h, list(raw))
     adm_b = [s['band'] for s in subs if s['admitted']]
     if adm_b:
         h['LSSTKADM'] = (','.join(adm_b), 'stack admitted at hybrid scales (Gregg 10-31)')
@@ -438,7 +465,7 @@ def hybrid_full(lst, v, run_dir):
                                 for wn, s in zip(Wn, subs)],
                method='Taper Full + G (x) (sum_s w_s regrid(subband hybrid) - Taper Full); bilinear regrid onto the Taper Full grid; w_s = 1/THERMNOI^2',
                span=span, filter_wavelengths=[HYB_U_IN, HYB_U_OUT], stacks_admitted_at_hybrid_scales=adm_b,
-               raw_night_caveat={b: RAW_NIGHT_CAVEAT[(lst, b)] for b in raw_b})
+               raw_night_caveat=raw)
     rec['test_hybrid'] = test_hybrid(path, A, T, F, ok, th, lst, scope, rd(nt))
     if f"{float(ph.get('LSSMALL', float('nan'))):.4g}" != f"{rec['test_hybrid']['small_scale_rel']:.4g}":
         raise ReconRefusal(f'{path}: LSSMALL {ph.get("LSSMALL")} is not the tested {rec["test_hybrid"]["small_scale_rel"]} - REFUSING')
