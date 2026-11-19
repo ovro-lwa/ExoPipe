@@ -4,7 +4,8 @@ content-test class hybrid_archive_copy of lib/archive/tests.py) and the diffuse 
 
 Data-free (CI); a synthetic hybrid --out (a done tilefill unit, its products, its reconstruction record, its diffuse PB map) and a
 MIRROR archive root under $TMPDIR, the exclusion read stubbed:
-  1. the config: HYBRID_RETIRED_KEYS = the ruled card lists of pb_apply; pbdiffuse_header leaves no SH* or master card;
+  1. the config: HYBRID_RETIRED_KEYS = the ruled card lists of pb_apply; pbdiffuse_header leaves no SH* or master card (LSSTKADM
+     included);
   2. an empty archive: every file of a work unit is published (filled master, beam-corrected sibling, CLEAN residual,
      reconstruction and its split, diffuse PB map, full PB map from the masters archive); the copies carry the sources' md5, the
      applied manifest lists them, the content audit passes; a second plan keeps all;
@@ -61,7 +62,7 @@ RECON = '46MHz_I_deep_NoTaper_Robust-0.75_shflux_mdewarp{pb}_dewarped_aligned_co
 NIGHTS = ['2025-04-05', '2025-05-07', '2025-10-14']
 REPAIR = dict(P2RUN='r', SCALE_A=1.0, MDWSTAT='applied')
 SH = dict(SHSCALE=1.0, SHERR=0.1)
-MASTER = dict(FLUXFIT='x', IMGRMS=1.0, THERMNOI=1.0)
+MASTER = dict(FLUXFIT='x', IMGRMS=1.0, THERMNOI=1.0, LSSTKADM='82MHz')   # LSSTKADM: a Robust -0.75 master's admission card
 
 
 def _raises(exc, fn, *a, **kw):
