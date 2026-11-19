@@ -181,7 +181,10 @@ def _coadd_maps(u, out, scope, w, co, keys):
 # ---- stage ------------------------------------------------------------------------------------------------------------------------
 
 def resolve_tiles(scope, w, hybrid_out, plan_only=False):
-    """([tile rows], [problems]): one unfilled beam-corrected hybrid master per LST (module docstring, stage)."""
+    """([tile rows], [problems]): one unfilled beam-corrected hybrid master per LST (module docstring, stage). A unit the work run
+    holds records of but made no hybrid for (steps.hybrid.unit_state: refused or unfinished) takes its pinned tile only when
+    hybrid_unit.REFUSED_INSTALLED rules 'keep' for it (the row carries the caveat); otherwise it is a problem (HG14): the installed
+    tile of a unit the rebuild refused never stands in silently."""
     from astropy.io import fits
     from exopipe.phase3.core.products import parse_name
     from exopipe.phase3.core.record import NoInput, Refusal
@@ -191,9 +194,20 @@ def resolve_tiles(scope, w, hybrid_out, plan_only=False):
     C = _cfg()
     rows = HS._manifest_rows(C.hybrid_tilefill)
     root = hybrid_out or os.path.join(os.sep, 'nonexistent', 'no-hybrid-out')
+    states = HS.work_states(hybrid_out) if hybrid_out else {}
     tiles, probs = [], []
     for lst in LSTS:
         mode = 'work' if hybrid_out and os.path.exists(os.path.join(hybrid_out, f'{lst}_{scope}', f'{w}_hybrid.json')) else 'pinned'
+        caveat = ''
+        if mode == 'pinned' and (lst, scope, w) in states:          # the work run tried this unit and made no hybrid
+            st, stage, status, reason = HS.unit_state(states[(lst, scope, w)])
+            disp = C.hybrid_unit.REFUSED_INSTALLED.get((lst, scope, w))
+            if st == 'unfinished' or st == 'refused' and disp != 'keep':     # input (a member stack) / done (pinned tilefill): pinned
+                probs.append(f'{lst}: {st} in the work run at stage {stage} ({status}: {reason[:160]}), no hybrid record; '
+                             f'hybrid_unit.REFUSED_INSTALLED {disp!r} - its installed tile never stands in silently')
+                continue
+            if st == 'refused':
+                caveat = f'kept by ruling (hybrid_unit.REFUSED_INSTALLED): refused in the work run at stage {stage} ({reason[:160]})'
         try:
             s = HS.tilefill_source(root, lst, scope, w, rows, mode, plan_only=True, need_pb=False)   # the mosaic reads no diffuse PB
         except (TilefillRefusal, Refusal, NoInput, OSError, KeyError, ValueError) as e:
@@ -202,7 +216,7 @@ def resolve_tiles(scope, w, hybrid_out, plan_only=False):
         path, prodname, want = s['src']['pbcorr']
         pb = os.path.join(C.hybrid.ARCHIVE_MASTERS, lst, scope, deep_pb_name(scope, w))
         row = dict(lst=lst, source=mode, path=path, prodname=prodname, md5=want, pb=pb, nights=s['nights'],
-                   nights_from=s['nights_from'], kind='hybrid')
+                   nights_from=s['nights_from'], kind='hybrid', caveat=caveat)
         if not os.path.exists(pb):
             probs.append(f'{lst}: the weighting map {pb} is missing')
             continue
@@ -240,6 +254,9 @@ def stage_unit(u, scope, w, out, hybrid_out):
         u.add_input(t['pb'], extra={'md5': t['pb_md5']})
         if t['nights_from']:
             u.add_input(t['nights_from'])
+    for t in tiles:
+        if t.get('caveat'):
+            u.note(f'{t["lst"]}: {t["caveat"]}')
     nights = sorted({n for t in tiles for n in t['nights']})
     u.set_admitted(nights)
     u.meta['sources'] = {k: sum(t['source'] == k for t in tiles) for k in ('work', 'pinned')}

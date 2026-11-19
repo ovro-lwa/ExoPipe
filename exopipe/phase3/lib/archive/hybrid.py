@@ -11,6 +11,15 @@ root>/<LST>/<scope>/ (production notaper_largescale.archive_hybrid_unit 1637, th
                             weighting's full PB map of the masters archive (hybrid.ARCHIVE_MASTERS).
 A pinned unit (filled from the installed masters' own unfilled sources) pushes only the tilefill outputs.
 
+Units the work run did not finish (refused_unit; steps.hybrid.work_states / unit_state over every unit record of the staging root,
+--lsts narrows): a unit whose stage records include a refused, failed, no-input or unreadable one (refused; this takes precedence
+over a done tilefill record), or none done through tilefill (unfinished; a unit with only a done stack record is a member input, not
+a unit the run built, and is not listed). Each is a push unit of its own, so the installed products
+of a cell the rebuild did not remake never stay or go silently: unfinished refuses (finish the run or narrow --lsts); refused with
+nothing installed refuses as a gap; refused with installed products refuses unless a ruling set hybrid_unit.REFUSED_INSTALLED for it:
+keep (a 'keep' row per installed product, noted as kept by ruling) or quarantine (a 'retire' row per installed product, moved into
+the round quarantine as below). The PB maps stay: they describe the beam, not the refused product.
+
 Per file: keep (the installed file of the kind has the same name and the same checksum: byte-identical; a file with the same pixels
 and another header is replaced - its beam, noise and stack cards are part of the product, and the 11-13 lost-sky swap replaced five
 such files whose restoring beam and NSTACK had changed), publish (none installed), replace (D2: the installed file of the kind - same name or another night
@@ -118,6 +127,34 @@ def hybrid_units(args, staging):
             for p in sorted(glob.glob(os.path.join(d, '*_tilefill.json'))):
                 units.append((lst, scope, os.path.basename(p)[:-len('_tilefill.json')]))
     return units
+
+
+def refused_rows(ctx, lst, scope, w, state):
+    """(rows, notes) of a unit the work run did not finish (module docstring); Refusal unless hybrid_unit.REFUSED_INSTALLED rules it.
+    state: steps.hybrid.unit_state's (state, stage, status, reason)."""
+    from exopipe.phase3.config import CFG
+    from exopipe.phase3.steps import hybrid as SH
+    unit = f'{lst}_{scope}_{w}'
+    st, stage, status, reason = state
+    why = f'{st} in the work run at stage {stage} ({status}: {reason[:240]})'
+    if st == 'unfinished':
+        raise Refusal(f'{unit}: {why} - finish the run, or narrow --lsts, before pushing it - REFUSED')
+    inst = {k: v for k, v in SH._installed(lst, scope, w, root=archive_dir(ctx)).items() if v}
+    if not inst:
+        raise Refusal(f'{unit}: {why}; the archive holds no product of it - a gap, nothing to push or keep - REFUSED')
+    many = {k: v for k, v in inst.items() if len(v) > 1}
+    if many:
+        raise Refusal(f'{unit}: {why}; more than one installed file of a kind {many} - REFUSED')
+    disp = CFG.hybrid_unit.REFUSED_INSTALLED.get((lst, scope, w))
+    names = ', '.join(os.path.basename(v[0]) for v in inst.values())
+    if disp not in ('keep', 'quarantine'):
+        raise Refusal(f'{unit}: {why}; the archive holds its products from an earlier build ({names}), which would stay silently. '
+                      f'A ruling sets hybrid_unit.REFUSED_INSTALLED[{(lst, scope, w)!r}] = keep | quarantine '
+                      f'(got {disp!r}) - REFUSED')
+    keep = disp == 'keep'
+    rows = [dict(unit=unit, kind=k, src='', dst=v[0] if keep else '', bytes=os.path.getsize(v[0]), md5='',
+                 action='keep' if keep else 'retire', replaces='' if keep else v[0], written_at='') for k, v in inst.items()]
+    return rows, [f'{disp} by ruling (hybrid_unit.REFUSED_INSTALLED): {why}; installed {names}']
 
 
 def unit_items(staging, lst, scope, w):
@@ -293,13 +330,15 @@ def apply_unit(ctx, u, rows, rnd, cls='hybrid', adir=None, qdir=None, qman_name=
         raise Refusal(f'{unit}: the swap stopped ({type(e).__name__}: {e}) after {len(moved)} file(s) quarantined (rows in {qman}) and '
                       f'{len(written)} written (rows in {pman}); {len(left)} unswapped .part removed - a rerun keeps the written files '
                       f'and publishes any kind left without an installed file') from e
-    with K.CsvAppender(pman, _p().HYBRID_PUSH_COLUMNS) as wp:
-        for r in rows:
-            if r['action'] != 'retire':
+    listed = [r for r in rows if r['action'] != 'retire']
+    if listed:                                  # a retire-only unit (a ruled quarantine) writes no push manifest
+        with K.CsvAppender(pman, _p().HYBRID_PUSH_COLUMNS) as wp:
+            for r in listed:
                 wp.write(r)
     if moved:
         u.add_output(qman, 'quarantine_manifest', since=t0, paths=[r['replaces'] for r, _q in moved])
-    u.add_output(pman, 'archive_manifest', paths=[r['dst'] for r in rows if r['action'] != 'retire'])
+    if listed:
+        u.add_output(pman, 'archive_manifest', paths=[r['dst'] for r in listed])
     qof = {r['dst']: q for r, q in moved if r['action'] == 'replace'}
     for r in written:
         u.add_output(r['dst'], copy_class, kind=r['kind'], md5=r['md5'], replaces=qof.get(r['dst']), algo=ctx.algo)
@@ -314,11 +353,23 @@ def run_hybrid(ctx, args, run, unit_fn):
     staging = args.staging_root
     rnd = args.round or time.strftime('%Y%m%d', time.gmtime())
     stages = args._stages
-    for lst, scope, w in hybrid_units(args, staging):
+    from exopipe.phase3.core import cells as CC
+    from exopipe.phase3.steps import hybrid as SH
+    lsts = set(CC.expand(args.lsts, universe=CC.LSTS) if getattr(args, 'lsts', None) else CC.LSTS)
+    done = hybrid_units(args, staging)
+    states = {k: SH.unit_state(v) for k, v in SH.work_states(staging).items() if k[0] in lsts}
+    notdone = {k: s for k, s in states.items() if s[0] in ('refused', 'unfinished')}   # refused before a done tilefill record
+    for lst, scope, w in sorted(set(done) | set(notdone)):
         def body(u, lst=lst, scope=scope, w=w):
             u.meta.update(push_class='hybrid', lst=lst, scope=scope, weighting=w, staging_root=staging,
                           archive_root=ctx.archive_root, archive_dir=archive_dir(ctx, lst, scope), round=rnd)
-            rows, reads, notes = hybrid_plan(ctx, staging, lst, scope, w, checksum=not ctx.dry)
+            if (lst, scope, w) in notdone:
+                u.meta['work_state'] = list(notdone[(lst, scope, w)])
+                rows, notes = refused_rows(ctx, lst, scope, w, notdone[(lst, scope, w)])
+                reads = [r for r in (os.path.join(staging, '_records', 'hybrid', f'{x}.{lst}_{scope}_{w}.json') for x in SH.STAGES)
+                         if os.path.exists(r)]
+            else:
+                rows, reads, notes = hybrid_plan(ctx, staging, lst, scope, w, checksum=not ctx.dry)
             for p in reads:
                 u.add_input(p)
             for n in notes:

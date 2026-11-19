@@ -856,6 +856,49 @@ def tilefill_field(out_root, scope, w, rows, mosaic_out=None):
     return rec
 
 
+REFUSED_STATES = ('refused', 'failed', 'no-input', 'unreadable')
+
+
+def work_states(out_root):
+    """{(LST, scope, weighting): {stage: (status, reason)}}: every unit record of the hybrid --out, read now
+    (<out>/_records/hybrid/<stage>.<LST>_<scope>_<w>.json, stage in STAGES); a record that cannot be read is ('unreadable', why).
+    {} when the run holds no records."""
+    import json
+    d = os.path.join(out_root, '_records', 'hybrid')
+    got = {}
+    for name in sorted(os.listdir(d)) if os.path.isdir(d) else ():
+        stage, _dot, key = name[:-len('.json')].partition('.')
+        if not name.endswith('.json') or stage not in STAGES or key.count('_') < 2:
+            continue
+        lst, rest = key.split('_', 1)
+        scope, w = rest.rsplit('_', 1)
+        try:
+            with open(os.path.join(d, name)) as f:
+                r = json.load(f)
+            st = (str(r.get('status')), str(r.get('reason') or ''))
+        except (OSError, ValueError) as e:
+            st = ('unreadable', f'{type(e).__name__}: {e}')
+        got.setdefault((lst, scope, w), {})[stage] = st
+    return got
+
+
+def unit_state(stages):
+    """(state, stage, status, reason) of one unit from its work_states entry. refused: a stage record is refused, failed, no-input
+    or unreadable (the first in STAGES order; a done tilefill after it does not undo it); input: only a stack record, done (a
+    member's stack the run made or staged as an input - the Q1 run holds 22 high-band Robust -0.75 Taper residual stacks staged
+    from production for the striation-restored base - not a unit the run builds); done: the tilefill record is done (a pinned
+    tilefill unit holds only that record); unfinished: otherwise (a stage running, or not yet run)."""
+    for s in STAGES:
+        if s in stages and stages[s][0] in REFUSED_STATES:
+            return ('refused', s) + tuple(stages[s])
+    if set(stages) == {'stack'}:
+        return ('input', 'stack') + tuple(stages['stack'])
+    if stages.get('tilefill', ('',))[0] == 'done':
+        return 'done', 'tilefill', 'done', ''
+    last = [s for s in STAGES if s in stages][-1]
+    return ('unfinished', last) + tuple(stages[last])
+
+
 def _installed(lst, scope, w, root=None):
     """{'plain', 'pbcorr', 'cleanres', 'recon', 'recon_pbcorr': [paths]}: the installed hybrid products of the cell and weighting in
     root/<LST>/<scope>/ (default hybrid.ARCHIVE_HYBRID; the archive push passes its --archive-root's copy): filled master, filled
