@@ -105,8 +105,11 @@ def stack_rules(path, lst=None, band=None, weighting=None, **ctx):
         bad.append(f'nights {len(nights)} - dropped {dropped} != stacked {len(stacked)}')
     if len(stacked) < max(2, len(nights) - S.MIN_NIGHTS_DROP):
         bad.append(f'{len(stacked)} nights stacked < max(2, {len(nights)} - {S.MIN_NIGHTS_DROP})')
-    if rec.get('nights_raw_admitted') and (rec.get('lst'), rec.get('band')) not in S.RAW_NIGHT_ADMIT:
-        bad.append(f'nights entered unaligned {rec["nights_raw_admitted"]} outside hybrid_stack.RAW_NIGHT_ADMIT')
+    raw = rec.get('nights_raw_admitted') or []
+    if raw and (rec.get('lst'), rec.get('band')) not in S.RAW_NIGHT_ADMIT:
+        bad.append(f'nights entered unaligned {raw} outside hybrid_stack.RAW_NIGHT_ADMIT')
+    if not set(raw) <= set(stacked):
+        bad.append(f'nights entered unaligned {sorted(set(raw) - set(stacked))} are not among the nights stacked')
     if len(rec.get('nights_dropped_no_screen', {})) > S.MAX_UNDERIVABLE:
         bad.append(f'{len(rec["nights_dropped_no_screen"])} nights without a screen > {S.MAX_UNDERIVABLE}')
     if rec.get('weighting') in TAPER_OF and not rec.get('inputs'):

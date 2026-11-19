@@ -216,13 +216,14 @@ def stack_variant(lst, band, v, workdir, prep, screen_cache, read=None):
         if len(scr) > 1:
             raise StackRefusal(f'{r["date"]}: {len(scr)} screens - REFUSING', 'HG4')
         wx = None
+        dew = not scr and '_dewarped' in os.path.basename(night_input(r, 'image'))   # screenless, Phase 2 image dewarped
         if scr:
             with fits.open(scr[0], memmap=False) as hs:
                 wx, wy = hs['SCREEN_X'].data.astype(np.float64), hs['SCREEN_Y'].data.astype(np.float64)
             read.add(scr[0])
-        elif (lst, band) in S.RAW_NIGHT_ADMIT and '_dewarped' in os.path.basename(night_input(r, 'image')):
+        elif dew and (lst, band) in S.RAW_NIGHT_ADMIT:
             raw_admitted.add(r['date'])               # ruled: enters unaligned, as the archived production stacks (RAW_NIGHT_ADMIT)
-        elif '_dewarped' in os.path.basename(night_input(r, 'image')):
+        elif dew:
             # the Phase 2 image the master uses IS dewarped but no screen was saved (flow cascade; 13h 2025-04/05 nights keep only
             # 73 MHz, 23h 2025-09-06 lacks 69 MHz): the screen derived as Phase 2 recovers it (Gregg 2026-11-01 "All approved"), and
             # the dirty image must then line up with that Phase 2 image (a residual image has no sources: the screen's own test
@@ -310,8 +311,8 @@ def stack_variant(lst, band, v, workdir, prep, screen_cache, read=None):
             return False
     rows_d = [r for r in rows if has_p1(r)]           # Gregg 2026-10-27: a night whose Phase 1 dirty image / PSF was never written is
     nodrv = {}                                        # left out of the dirty stacks, recorded
-    # Gregg 2026-11-03 "(b) - if it's only dropping one night of 7, the impact is small!": a
-    for r in (rows_d if (lst, band) not in S.RAW_NIGHT_ADMIT else ()):   # (ruled cells: no screen is derived, the night enters raw)
+    ruled = (lst, band) in S.RAW_NIGHT_ADMIT          # ruled cells (Gregg 2026-11-19): no screen is derived, the night enters raw
+    for r in (() if ruled else rows_d):               # Gregg 2026-11-03 "(b) - if it's only dropping one night of 7, the impact is small!": a
         if (not glob.glob(f'{r["sci_dir"]}/Dewarp_Diagnostics/maps/{r["date"]}_{lst}_{band}_warp_screen.fits')  # night whose warp screen
                 and '_dewarped' in os.path.basename(night_input(r, 'image'))):   # cannot be derived (23h 69 MHz 2025-09-06: 36 arcmin off the
             try:                                                                 # master's frame) is left out of these stacks - at most

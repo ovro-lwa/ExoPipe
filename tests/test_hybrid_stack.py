@@ -445,6 +445,11 @@ def test_stack_unit_items_and_content_tests():
                 json.dump(rec, f)
             r = validate.run('hybrid_stack_record', recp)[0]
             assert ('outside hybrid_stack.RAW_NIGHT_ADMIT' not in r['detail']) is ok, (cell, r)
+        rec['nights_raw_admitted'] = ['2031-01-01']                      # a night not stacked
+        with open(recp, 'w') as f:
+            json.dump(rec, f)
+        r = validate.run('hybrid_stack_record', recp)[0]
+        assert not r['passed'] and 'are not among the nights stacked' in r['detail'], r
         inp = os.path.join(wdir, 'inputs', 'PB_deep_46MHz.fits')
         r = validate.run('hybrid_stack_input', inp, md5='0' * 32, installed='x')[0]
         assert not r['passed'], r

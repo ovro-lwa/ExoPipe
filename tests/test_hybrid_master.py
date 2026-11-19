@@ -56,8 +56,7 @@ def test_bind_equals_production():
     bad = {k: (g[k], v) for k, v in want.items() if g[k] != v}
     assert not bad, bad
     assert {k: tuple(v) for k, v in g['WIDEBANDS'].items()} == dict(Red=RED, Green=GREEN, Blue=BLUE, Full=RED + GREEN + BLUE)
-    low = ('18MHz', '23MHz', '27MHz', '32MHz', '36MHz', '41MHz', '46MHz', '50MHz', '55MHz', '59MHz')
-    assert set(g['RAW_NIGHT_CAVEAT']) == {('13h', '64MHz')} | {('13h', b) for b in low}   # archived caveat + ruled 11-19 admission
+    assert set(g['RAW_NIGHT_CAVEAT']) == {('13h', '64MHz')}      # the archived caveat; the ruled 11-19 cells by their stack records
     assert M.IDENTITY == 1e-5 and M.WIDEBANDS['Full'][-1] == '82MHz'           # bound as module globals for the ported functions
 
 
@@ -270,6 +269,44 @@ class TestHybridMaster(unittest.TestCase):
             if name.startswith('test_') and callable(fn):
                 with self.subTest(name):
                     fn()
+
+
+def test_raw_night_caveats():
+    """LSRAWNT and raw_night_caveat (Gregg 2026-11-19): the archived 13h 64 MHz caveat by its text; a ruled 13h 18-59 MHz cell only when
+    its stack records (the NoTaper weighting's and its Taper variant's) list nights entered unaligned, the text naming them."""
+    import json
+    import tempfile
+    from astropy.io import fits
+    from exopipe.phase3.lib.hybrid.common import TAPER_OF
+    M.bind()
+    d = tempfile.mkdtemp(prefix='hyb_raw_', dir=os.environ.get('TMPDIR', '/tmp'))
+    try:
+        v = next(iter(TAPER_OF))
+        for b, w, nights in (('18MHz', v, ['2025-05-03']), ('18MHz', TAPER_OF[v], ['2025-04-21', '2025-05-03']),
+                             ('23MHz', v, []), ('64MHz', v, [])):
+            os.makedirs(os.path.join(d, f'13h_{b}'), exist_ok=True)
+            with open(os.path.join(d, f'13h_{b}', f'{w}_stack.json'), 'w') as f:
+                json.dump({'nights_raw_admitted': nights}, f)
+        raw = M.raw_night_caveats(d, '13h', ['18MHz', '23MHz', '27MHz', '64MHz'], v)
+        assert list(raw) == ['18MHz', '64MHz'], raw                       # 23 MHz lists none; 27 MHz has no record
+        assert raw['18MHz'].startswith('nights 2025-04-21, 2025-05-03 entered the reconstruction stacks undewarped')
+        assert raw['64MHz'] == M.RAW_NIGHT_CAVEAT[('13h', '64MHz')]
+        assert M.raw_night_caveats(d, '14h', ['18MHz'], v) == {}
+        h = fits.Header()
+        M.set_lsrawnt(h, ['18MHz', '64MHz'])
+        assert h['LSRAWNT'] == '18MHz,64MHz' and h.comments['LSRAWNT'] == 'undewarped nights in recon stacks (caveat)'
+        full = [f'{x}MHz' for x in (18, 23, 27, 32, 36, 41, 46, 50, 55, 59, 64)]
+        h = fits.Header()
+        M.set_lsrawnt(h, full)
+        assert h['LSRAWNT'] == ','.join(full) and h.comments['LSRAWNT'] == ''
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter('error')                                # no 'comment will be truncated' warning
+            for c in h.cards:
+                assert len(str(c)) == 80
+    finally:
+        import shutil
+        shutil.rmtree(d, ignore_errors=True)
 
 
 if __name__ == '__main__':
