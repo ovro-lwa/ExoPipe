@@ -223,6 +223,26 @@ def test_resolve_tiles():
             assert not probs and len(t) == 24, probs
             assert {x['lst'] for x in t if x['source'] == 'work'} == {'03h', '17h'} and all(c[2] and c[3] is False for c in calls)
             assert t[0]['pb'] == os.path.join(d, 'M', '00h', 'Blue', 'PB_deep_R075_Blue.fits') and t[0]['pb_md5'] and t[0]['BMAJ'] == 0.1
+            rd = os.path.join(ho, '_records', 'hybrid')                  # the work run refused 09h, has 10h running
+            os.makedirs(rd)
+            for name, st in (('wideband.09h_Blue_R075', 'refused'), ('hybrid.10h_Blue_R075', 'running'),
+                             ('hybrid.03h_Blue_R075', 'done'), ('wideband.09h_Blue_R0', 'refused'),
+                             ('wideband.17h_Blue_R075', 'refused'), ('hybrid.17h_Blue_R075', 'done'),   # a stale work hybrid
+                             ('tilefill.12h_Blue_R075', 'done')):                                       # a pinned tilefill
+                json.dump(dict(status=st, reason='synthetic'), open(os.path.join(rd, name + '.json'), 'w'))
+            json.dump(dict(status='done', staged_from={}), open(os.path.join(rd, 'stack.11h_Blue_R075.json'), 'w'))   # an input
+            t, probs = v5.resolve_tiles('Blue', 'R075', ho)
+            assert [p[:13] for p in probs] == ['09h: refused ', '10h: unfinish', '17h: refused '], probs
+            assert all('REFUSED_INSTALLED' in p for p in probs) and len(t) == 21, probs
+            keep = {(x, 'Blue', 'R075'): 'keep' for x in ('09h', '10h', '17h')}
+            with _patched((CFG.hybrid_unit, 'REFUSED_INSTALLED', keep)):
+                t, probs = v5.resolve_tiles('Blue', 'R075', ho)
+            assert len(probs) == 1 and probs[0].startswith('10h: unfinished'), probs       # keep rules a refused unit only
+            kept = {x['lst']: x for x in t if x['caveat']}
+            assert sorted(kept) == ['09h', '17h'] and all(x['source'] == 'pinned' and x['caveat'].startswith('kept by ruling')
+                                                          for x in kept.values()), t
+            assert {x['lst'] for x in t if x['source'] == 'work'} == {'03h'}, t
+            shutil.rmtree(os.path.join(ho, '_records'))
             t, probs = v5.resolve_tiles('Blue', 'R075', None)            # no hybrid work run: all pinned
             assert not probs and all(x['source'] == 'pinned' for x in t)
             with open(tiles['05h'][0], 'ab') as f:                       # a changed tile

@@ -300,6 +300,12 @@ class hybrid_unit(_Section):
     RULED_TAPER_ONLY = {}
     #   NL 1679: units that enter the mosaics as the plain Taper master (empty since 2026-11-08: a hybrid for every cell); a
     #   refused unit refuses its mosaics (gate HG14)
+    REFUSED_INSTALLED = {}
+    #   {(LST, scope, weighting): 'keep' | 'quarantine'}, set only by a ruling: a unit a rebuild's work run refused (a stage record
+    #   refused, failed, no-input or unreadable; steps.hybrid.unit_state) whose products the archive holds from an earlier build.
+    #   keep: they stay, a recorded caveat (push --class hybrid lists them as kept; the v5 mosaic takes the unit's pinned tile with
+    #   the caveat); quarantine: the hybrid push retires them into the round quarantine (the scope's v5 mosaics then refuse, HG14).
+    #   A unit not listed refuses its hybrid push unit and its v5 mosaics: no installed product stays or goes silently
     JUMP10 = 'record'
     #   NL 1206-1218: the jump across 10 deg elevation is recorded as a diagnostic, never a gate
     RULED = {'RAW_NIGHT_CAVEAT': 'R-GREGG-20261104-HB-13H64-KEEP-23H69-TAPER-ONLY-13H78R0-DROP-NIGHT',

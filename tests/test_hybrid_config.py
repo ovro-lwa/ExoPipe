@@ -59,7 +59,7 @@ SPEC_KEYS = {
                      'PRIOR_RMS_FRAC', 'COMPACT_TOL', 'COMPACT_TOL_LOW', 'LEVEL_LIMITS', 'CLEAN_REGION', 'CASCADE', 'LFSS_DIR',
                      'CATALOGS'),
     'hybrid_unit': ('OWN_BEAM_MAX', 'IDENTITY', 'LARGE_REL', 'SMALL_LIMIT', 'STRIATION_IDENTITY', 'RAW_NIGHT_CAVEAT',
-                    'RULED_TAPER_ONLY', 'JUMP10'),
+                    'RULED_TAPER_ONLY', 'REFUSED_INSTALLED', 'JUMP10'),
     'hybrid_full': ('MEMBERS', 'REGRID'),
     'hybrid_tilefill': ('TILE_RT_NSIDE', 'TILE_RT_MAX', 'COMPACT_K', 'COMPACT_MED_MAX', 'COMPACT_MAX', 'COMPACT_SIG',
                         'TPCAVEAT_UNITS', 'UNFILLED_INPUTS', 'LFSS_MHZ', 'LMAX', 'APOD_DEG', 'L_LO', 'L_HI', 'TPCAVEAT_TEXT',
