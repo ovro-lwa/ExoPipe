@@ -141,7 +141,7 @@ def update(args):
     try:
         if args.from_exclusions:
             UP.check_outs(outs)                         # before the master audit's minutes
-            trig, ev, n, fp = UP.from_exclusions(workers=getattr(args, 'workers', None))
+            trig, ev, n, fp = UP.from_exclusions()
             if not trig:
                 raise NoInput(f'none of the {n} installed deep masters holds a night data_decisions.csv excludes now (sha1 '
                               f'{fp["sha1"][:12]}, {fp["n_exclude_rows"]} exclude rows): nothing to update')

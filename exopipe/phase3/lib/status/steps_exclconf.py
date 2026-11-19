@@ -86,7 +86,7 @@ def working_tree_audit(cells, ex, workers=None):
             try:
                 con = K.coadd_constituents(m)
                 if not con:     # every master names its constituents (912 of 912 on 2026-11-19: 2-30 each): none = not judged
-                    raise OSError("no 'COADD constituent' HISTORY line (not a FITS header, truncated, or not a master)")
+                    raise OSError("no 'COADD constituent' HISTORY line (not a master)")   # not FITS / truncated: fits_history
             except OSError as e:
                 out.append(dict(part='master-working', run='working-tree', file=m, row_id=os.path.basename(m), lst=lst,
                                 date='', band=scope, verdict='UNREADABLE', note=str(e)[:80]))

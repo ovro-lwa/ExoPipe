@@ -194,13 +194,16 @@ def test_tables_touched():
 
 
 def test_round():
-    assert _raises(UP.build, TRIG_1113, OUTS, rnd='2026111').startswith('the quarantine round')
+    for bad in ('2026111', '20261399', '20261113\n'):           # short, not a date, a trailing newline
+        assert _raises(UP.build, TRIG_1113, OUTS, rnd=bad).startswith('the quarantine round'), bad
+    assert 'never its own' in _raises(UP.command, 'archive push --class hybrid --round 20261201', OUTS, rnd='20261119')
     pl = UP.build(TRIG_1113, OUTS, apply=True, rnd='20261113')
     assert pl['round'] == '20261113' and all(e['argv'][e['argv'].index('--round') + 1] == '20261113' for e in pl['entries']
                                              if e['argv'] and e['argv'][:2] == ['archive', 'push'])
     assert UP.build(TRIG_1113, OUTS)['round'] == __import__('time').strftime('%Y%m%d', __import__('time').gmtime())
     R = '/R'
-    h = UP.quarantine_dst('hybrid', R, '20261113', f'{R}/Coadd/Run_NOTAPER_HYBRID_20261028/13h/Green/x.fits', None)
+    h = UP.quarantine_dst('hybrid', R, '20261113', f'{R}/Coadd/Run_NOTAPER_HYBRID_20261028/13h/Green/x.fits',
+                          f'{R}/Coadd/Run_NOTAPER_HYBRID_20261028')
     assert h == f'{R}/{CFG.archive_push.HYBRID_QUARANTINE_PREFIX}20261113/13h/Green/x.fits', h
     run = f'{R}/mosaic/Run_HYBRID_20241218-20260419'
     v = UP.quarantine_dst('mosaic_v5', R, '20261113', f'{run}/Green/I/healpix/y.fits', run)
@@ -217,6 +220,13 @@ def test_publish_rows():
         assert rows and all(r['action'] == UP.PUBLISH and r['entry'] == 'push_hybrid' and not r['quarantine'] for r in rows), rows[:2]
         assert len(rows) == 24 * len(CFG.hybrid.WEIGHTINGS) * 2, len(rows)       # 24 LSTs of Green (a wideband: no Full) x w x 2
         assert {r['kind'] for r in rows} == {'plain', 'pbcorr'} and all(r['note'].startswith('named by the step') for r in rows)
+        reb = [r for r in rows if r['unit'].startswith('13h_Green_')]     # rebuilt by the plan: named only after the rebuild
+        assert len(reb) == len(CFG.hybrid.WEIGHTINGS) * 2 and all('after the rebuild' in r['note'] for r in reb), reb
+        assert all('dry run: NoInput' in r['note'] or 'dry run: OSError' in r['note'] for r in rows if r not in reb), rows[0]
+        pl['trigger_evidence'] = [dict(cell='13h_Green', master='/m/I.fits', date='2025-05-07', verdict='STALE', note='n')]
+        UP.write(pl, rows, os.path.join(d, 'plan'))
+        assert not any(x[1] == 'trigger' for x in csv.reader(open(os.path.join(d, 'plan', 'plan.csv'))))
+        assert list(csv.DictReader(open(os.path.join(d, 'plan', 'trigger.csv')))) == pl['trigger_evidence']
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
@@ -292,6 +302,14 @@ def test_from_exclusions():
         _with_tree(T, rows, {**m, ('16h_Blue', 'I'): None})
         msg = _raises(UP.from_exclusions)
         assert 'unreadable' in msg and '16h_Blue' in msg, msg
+        card = lambda t: t.encode().ljust(80)                      # noqa: E731
+        trunc = card('SIMPLE  =                    T') + card('HISTORY COADD constituent 2025-04-05') * 40   # cut in block 2
+        noend = (card('SIMPLE  =                    T') + card('HISTORY no constituent') + card('END')).ljust(2880)
+        for bad in (trunc, noend):              # a partial constituent list (no END); a header without a constituent line
+            p = os.path.join(CFG.paths.COADD_SB_ROOT, '16h_Blue', 'coadd_final', 'I_deep_Taper_R075_Blue.fits')
+            open(p, 'wb').write(bad)
+            msg = _raises(UP.from_exclusions)
+            assert 'unreadable' in msg and '16h_Blue' in msg, msg
         _with_tree(os.path.join(T, 'empty'), [], {})
         assert UP.from_exclusions()[:2] == ([], [])
     finally:

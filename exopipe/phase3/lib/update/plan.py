@@ -24,7 +24,8 @@ Plan:   runner.UPDATE_ORDER (config) entries in order, each a step command or a 
         --round <the plan's round>, so the destination planned is the one the push uses). A planned hybrid tile unit with no
         installed filled master of a kind (plain, pbcorr) gets a 'publish' row, named by the tilefill step's dry-run plan
         over the work run when it can name it (else the cell directory and the dry run's reason).
-Output: plan.json and plan.csv (one row per entry, item and command; one row per predicted push file) under the plan
+Output: plan.json and plan.csv (one row per entry, item and command; one row per predicted push file; with --from-exclusions
+        trigger.csv: each trigger cell's master, night and audit verdict) under the plan
         directory; nothing else is written. `run update` without --plan creates every job record first (a refusal starts
         none), each --after the one before with after_ok (a failed or refused item upstream refuses every later job), all
         from a read-only worktree of one commit (--code, default the clean HEAD), then starts them. Without --apply it stops
@@ -45,8 +46,7 @@ W_TOKEN = {'R075': 'Robust-0.75', 'R0': 'Robust+0.0'}
 # byte-identical; which of the two is known only after the steps ran. A kind a planned unit makes with no installed file: publish.
 ACTION = 'replace or keep'
 PUBLISH = 'publish'
-QUARANTINE = {'hybrid': ('hybrid', 'HYBRID_QUARANTINE_PREFIX'), 'mosaic_v5': ('mosaic_v5', 'MOSAIC_V5_QUARANTINE_PREFIX'),
-              'mosaic_v3': ('mosaic_v3', 'MOSAIC_V3_QUARANTINE_PREFIX')}   # push class: (lib/archive module, archive_push key)
+QUARANTINE = ('hybrid', 'mosaic_v5', 'mosaic_v3')   # push classes with a quarantine_dir in lib/archive/<class>.py
 
 
 def _cfg():
@@ -105,8 +105,8 @@ def items_for(kind, cells):
 
 def command(cmd, outs, apply=False, rnd=None):
     """(argv or None, chain or None, forward) of an UPDATE_ORDER command: 'chain:NAME' or a step command with the work runs
-    filled in; every step gets --resume (a chain: forwarded into each of its steps), a push --round rnd (the plan's round, when
-    given and the command has none) and --apply only when asked."""
+    filled in; every step gets --resume (a chain: forwarded into each of its steps), a push --round rnd (the plan's round; a
+    template with its own --round refuses, so the planned quarantine destinations are the push's) and --apply only when asked."""
     if cmd.startswith('chain:'):
         return None, cmd[6:], ['--resume']
     argv = cmd.split()
@@ -116,7 +116,9 @@ def command(cmd, outs, apply=False, rnd=None):
     if left:
         raise ValueError(f'runner.UPDATE_ORDER {cmd!r}: unknown placeholder(s) {left}')
     if argv[:2] == ['archive', 'push']:
-        return argv + (['--round', rnd] if rnd and '--round' not in argv else []) + (['--apply'] if apply else []), None, []
+        if '--round' in argv:
+            raise ValueError(f'runner.UPDATE_ORDER {cmd!r}: a push takes the plan\'s round (run update --round), never its own')
+        return argv + (['--round', rnd] if rnd else []) + (['--apply'] if apply else []), None, []
     return argv + ['--resume'], None, []
 
 
@@ -140,8 +142,12 @@ def build(trigger, outs, apply=False, rnd=None):
     check_outs(outs)
     cells = closure(trigger)
     rnd = rnd or time.strftime('%Y%m%d', time.gmtime())
-    if not re.match(r'^\d{8}$', rnd):
-        raise ValueError(f'the quarantine round must be YYYYMMDD, got {rnd!r}')
+    try:
+        ok = bool(re.fullmatch(r'\d{8}', rnd)) and bool(time.strptime(rnd, '%Y%m%d'))
+    except ValueError:
+        ok = False
+    if not ok:
+        raise ValueError(f'the quarantine round must be a date YYYYMMDD, got {rnd!r}')
     entries, gated = [], False
     for name, kind, cmd in _cfg().runner.UPDATE_ORDER:
         its = items_for(kind, cells)
@@ -160,10 +166,12 @@ def build(trigger, outs, apply=False, rnd=None):
 def from_exclusions(workers=None):
     """--from-exclusions (spec 3.7): (trigger cells, evidence rows, masters read, exclusions fingerprint). A trigger cell is a
     deep cell whose installed working-tree master (status_conformance.WORKING_MASTERS: Stokes I and V) holds a 'COADD
-    constituent' night that data_decisions.csv read now excludes for the cell (core.exclusions, the band rule): the audit of
-    `status --stale master` and `--exclusion-conformance` (lib/status/steps_exclconf.working_tree_audit), every verdict that
+    constituent' night that data_decisions.csv read now excludes for the cell (core.exclusions, the band rule): the
+    master-working part of `status --exclusion-conformance` (lib/status/steps_exclconf.working_tree_audit), every verdict that
     names a night (STALE: excluded after the master was written; BREACH: already excluded then; UNKNOWN-EPOCH: no
-    data_decisions backup that old). A master the audit cannot read refuses (ValueError): the trigger never under-selects.
+    data_decisions backup that old; `status --stale master` lists the STALE ones only). A master the audit cannot read (not
+    FITS, a header without END, no constituent line) refuses (ValueError): the trigger never under-selects. The masters root
+    is node-local (paths.COADD_SB_ROOT on lwacalim07; need_inputs refuses elsewhere): 912 headers in ~2 s on 2026-11-19.
     The plan rebuilds these masters first (UPDATE_ORDER 'masters'). Only this direction triggers: a night admitted now that
     no build record names (a lifted exclusion, a new night: `status --stale master_coverage`) is growth, taken in by the
     admission rule (D-ADMIT) or by a rebuild `status --rebuild-due` calls due, never by an update."""
@@ -241,27 +249,30 @@ def tables_touched(d, cls, scopes):
 
 def quarantine_dst(cls, root, rnd, path, run):
     """Where push --class cls of round rnd moves the installed file `path` when it replaces it: the class's quarantine Run (its
-    lib/archive module's quarantine_dir) + <LST>/<scope>/<name> (hybrid) or + the path relative to the mosaic run `run`."""
+    lib/archive module's quarantine_dir) + the path relative to the class's archive run `run` (lib/archive/hybrid.apply_unit's
+    qpath: the hybrid run's <LST>/<scope>/<name>, a mosaic run's <scope>/I/<sub>/<name> or tables/<name>)."""
     import importlib
     import types
-    mod = importlib.import_module(f'exopipe.phase3.lib.archive.{QUARANTINE[cls][0]}')
-    q = mod.quarantine_dir(types.SimpleNamespace(archive_root=root), rnd)
-    if cls == 'hybrid':
-        cell = os.path.dirname(path)
-        return os.path.join(q, os.path.basename(os.path.dirname(cell)), os.path.basename(cell), os.path.basename(path))
-    return os.path.join(q, os.path.relpath(path, run))
+    mod = importlib.import_module(f'exopipe.phase3.lib.archive.{cls}')
+    return os.path.join(mod.quarantine_dir(types.SimpleNamespace(archive_root=root), rnd), os.path.relpath(path, run))
 
 
-def publish_names(hybrid_out, lst, scope, w, kinds):
-    """({kind: product name}, reason): the names the tilefill step's dry-run plan (steps.hybrid.tilefill_source, source 'work',
-    plan_only) gives the unit's filled masters of `kinds` in the work run now; ({}, reason) when it cannot name them."""
+def publish_names(hybrid_out, lst, scope, w, kinds, rebuilt):
+    """({kind: product name}, note): the names the tilefill step's dry-run plan (steps.hybrid.tilefill_source, source 'work',
+    plan_only) gives the unit's filled masters of `kinds` in the work run now. A unit the plan rebuilds is not named: its
+    name (night span, N) comes from the rebuild, and the work run holds the record from before it ({}, note). The dry run's
+    own refusals (and a missing manifest or record) become the note; any other error is a bug and propagates."""
+    from exopipe.phase3.core.record import NoInput, Refusal
+    from exopipe.phase3.lib.hybrid.tilefill import TilefillRefusal
     from exopipe.phase3.steps import hybrid as SH
+    if rebuilt:
+        return {}, 'named by the step after the rebuild (the plan rebuilds this unit: its night span and N may change)'
     try:
         s = SH.tilefill_source(hybrid_out, lst, scope, w, SH._manifest_rows(_cfg().hybrid_tilefill), 'work', plan_only=True,
                                need_pb=False)
-        return {k: s['src'][k][1] for k in kinds}, ''
-    except Exception as e:          # noqa: BLE001 - the dry run's refusal is the row's note, never the plan's failure
+    except (TilefillRefusal, Refusal, NoInput, OSError) as e:
         return {}, f'named by the step (dry run: {type(e).__name__}: {str(e)[:160]})'
+    return {k: s['src'][k][1] for k in kinds}, ''
 
 
 def predicted(plan, archive_root=None):
@@ -288,21 +299,22 @@ def predicted(plan, archive_root=None):
         if cls not in QUARANTINE:
             raise ValueError(f'runner.UPDATE_ORDER {e["name"]}: no file prediction for push class {cls!r}')
 
-        def row(unit, kind, p, run=None, action=ACTION, note=''):
+        def row(unit, kind, p, run, action=ACTION, note=''):
             q = quarantine_dst(cls, root, rnd, p, run) if action == ACTION else ''
             return dict(entry=e['name'], unit=unit, kind=kind, dst=p, action=action, quarantine=q, note=note)
         if cls == 'hybrid':
             for it in items_of('tiles'):
                 lst, scope = it.split('_', 1)
-                cd = os.path.join(under(C.hybrid.ARCHIVE_HYBRID), lst, scope)
+                hrun = under(C.hybrid.ARCHIVE_HYBRID)
+                cd = os.path.join(hrun, lst, scope)
                 for w in C.hybrid.WEIGHTINGS:
                     got = hybrid_unit_files(cd, scope, w, (lst, scope) in hyb)
-                    rows += [row(f'{lst}_{scope}_{w}', kind, p) for kind, p in got]
+                    rows += [row(f'{lst}_{scope}_{w}', kind, p, hrun) for kind, p in got]
                     miss = [k for k in ('plain', 'pbcorr') if k not in {kind for kind, _p in got}]
                     if miss:
-                        names, why = publish_names(plan['outs']['hybrid_out'], lst, scope, w, miss)
-                        rows += [row(f'{lst}_{scope}_{w}', k, os.path.join(cd, names[k]) if k in names else cd, action=PUBLISH,
-                                     note=why) for k in miss]
+                        names, why = publish_names(plan['outs']['hybrid_out'], lst, scope, w, miss, (lst, scope) in hyb)
+                        rows += [row(f'{lst}_{scope}_{w}', k, os.path.join(cd, names[k]) if k in names else cd, hrun,
+                                     action=PUBLISH, note=why) for k in miss]
         else:
             run = under(C.hybrid_tilefill.FILLED_MOSAIC_RUN if cls == 'mosaic_v5' else C.mosaic_v3.ARCHIVE_RUN)
             scopes = items_of({'mosaic_v5': 'v5', 'mosaic_v3': 'v3'}[cls])
@@ -325,10 +337,13 @@ def write(plan, rows, d):
             cmd = f'chain:{e["chain"]} {" ".join(e["forward"])}' if e['chain'] else shlex.join(e['argv'])
             for it in e['items'] or ['']:
                 w.writerow((i, e['name'], it, e.get('skipped') or cmd, 'run', '', '', '', ''))
-        for r in plan.get('trigger_evidence') or ():
-            w.writerow(('', 'trigger', r['cell'], '', 'excluded-night', r['verdict'], r['master'], '', f'{r["date"]}: {r["note"]}'))
         for r in rows:
             w.writerow(('', r['entry'], r['unit'], '', r['kind'], r['action'], r['dst'], r['quarantine'], r['note']))
+    if plan.get('trigger_evidence'):          # --from-exclusions: why each trigger cell is one
+        with open(os.path.join(d, 'trigger.csv'), 'w', newline='') as f:
+            w = csv.DictWriter(f, ('cell', 'master', 'date', 'verdict', 'note'), lineterminator='\n')
+            w.writeheader()
+            w.writerows(plan['trigger_evidence'])
     return os.path.join(d, 'plan.json')
 
 
