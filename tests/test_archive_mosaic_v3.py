@@ -37,7 +37,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
 
 from exopipe.phase3.config import CFG  # noqa: E402
-from exopipe.phase3.core.record import Refusal  # noqa: E402
+from exopipe.phase3.core.record import NoInput, Refusal  # noqa: E402
 from exopipe.phase3.lib.archive import common as K  # noqa: E402
 from exopipe.phase3.lib.archive import mosaic_v3 as AM  # noqa: E402
 from exopipe.phase3.lib.archive import tests as AT  # noqa: E402
@@ -125,7 +125,9 @@ class _Env:
         from exopipe.phase3.core import exclusions
         self.d, self.bad = d, dict(bad or {})
         self.E = exclusions
-        self.old = exclusions.for_tier
+        self.old = (exclusions.for_tier, v3.resolve_now, v3.striation_selection)
+        self.hg13, self.seen = [], []                           # v3.resolve_now stub: its problems; the calls it saw
+        self.therm = {'jy_per_beam': 3.7065, 'md5': {'V.jysr': 'a' * 32, 'V.psf': 'b' * 32}}
         self.out = os.path.join(d, 'out')
         self.root = os.path.join(d, 'root')
         self.ctx = types.SimpleNamespace(archive_root=self.root, algo='md5', stamp='20261119T000000Z', dry=False, apply=True,
@@ -142,22 +144,26 @@ class _Env:
                 os.makedirs(os.path.dirname(m), exist_ok=True)
                 fits.PrimaryHDU(np.full((2, 2), float(LSTS.index(lst)), np.float32)).writeto(m, overwrite=True)
                 tiles.append(dict(lst=lst, kind='plain', path=m, md5=_md5(m), nights=['2025-01-01', '2025-02-01']))
+                if j == J_V:                                  # every Vclean row is substituted: the plain master weights it
+                    p0 = self.tiles[J_I][len(tiles) - 1]
+                    tiles[-1].update(kind='vclean', plain_path=p0['path'], plain_md5=p0['md5'], plain_nights=p0['nights'])
             self.tiles[j] = tiles
             os.makedirs(os.path.dirname(P['tiles']), exist_ok=True)
             with open(P['tiles'], 'w') as f:
                 json.dump(dict(scope='Blue', job=j.label, tiles=tiles), f)
             self.conform(j)
+        self.tables()
 
     def _mdir(self, name):
         p = os.path.join(self.d, 'plans', name)
         os.makedirs(p, exist_ok=True)
         return p
 
-    def conform(self, j=J_I, status='done', tests=(), drop=(), tables=None):
+    def conform(self, j=J_I, status='done', tests=(), drop=(), tables=None, therm=None):
         P = self.P[j]
         meta = dict(tiles_md5=_md5(P['tiles']), prov_files=[t['path'] for t in self.tiles[j]],
                     products={k: dict(path=p, md5=_md5(p)) for k, p in self.prods[j].items() if k not in drop},
-                    tables=tables or {'content': [P['content'], 'c' * 32]})
+                    tables=tables or {'content': [P['content'], 'c' * 32]}, thermnoi=therm or self.therm)
         return _record(self.out, v3.unit_name('conform', 'Blue', j), status, meta, tests)
 
     def tables(self, names=('summary.csv', 'selection_20261022.csv'), md5=True, conformed=('Blue I_Taper_R075', 'Blue Vclean')):
@@ -184,10 +190,15 @@ class _Env:
 
     def __enter__(self):
         self.E.for_tier = lambda tier, fresh=False: _Excl(self.bad)
+
+        def resolve_now(scope, job, t, sel):
+            self.seen.append((scope, job, len(t['tiles']), sel))
+            return list(self.hg13)
+        v3.resolve_now, v3.striation_selection = resolve_now, lambda: {'sel': 1}
         return self
 
     def __exit__(self, *a):
-        self.E.for_tier = self.old
+        self.E.for_tier, v3.resolve_now, v3.striation_selection = self.old
 
     def plan(self, j=J_I):
         return AM.scope_plan(self.ctx, self.out, 'Blue', j)[0]
@@ -214,7 +225,7 @@ def _audit(u):
     for path, cls, ctx in u.outputs:
         if cls != 'mosaic_v3_archive_copy':
             continue
-        for t in (AT.v3_copy_checksum, AT.v3_copy_header, AT.v3_copy_card_superset):
+        for t in (AT.mosaic_copy_checksum, AT.v3_copy_header, AT.v3_copy_card_superset):
             ok, _v, why = t(path, **ctx)
             assert ok, (t.__name__, path, why)
         n += 1
@@ -307,16 +318,51 @@ def test_gates():
             E.bad = {'07h': ['2025-02-01']}
             assert 'now excluded' in _raises(Refusal, E.plan) and '07h' in _raises(Refusal, E.plan)
             E.bad = {}
+            E.hg13 = ['the masters the stage would choose now differ from stage/tiles.json at LST 03h']   # conform's own HG13
+            assert 'HG13' in _raises(Refusal, E.plan) and 'LST 03h' in _raises(Refusal, E.plan)
+            assert E.seen[-1] == ('Blue', J_I, 24, {'sel': 1}), E.seen[-1]
+            E.hg13 = []
+            E.conform(J_V, therm=dict(E.therm, jy_per_beam=3.8))         # the Stokes V conform ran again: another THERMNOI
+            assert 'THERMNOI' in _raises(Refusal, E.plan) and E.plan(J_V)
+            E.conform(J_V)
+            E.tables(conformed=('Blue Vclean',))                          # the tables must describe what is pushed, made first
+            assert 'does not list Blue I_Taper_R075' in _raises(Refusal, E.plan)
+            E.tables()
+            E.conform(tables={'content': [E.P[J_I]['content'], 'd' * 32]})
+            assert 'made from an earlier conform' in _raises(Refusal, E.plan)
+            E.conform()
+            os.remove(os.path.join(E.out, '_records', v3.STEP, v3.TABLES_UNIT + '.json'))
+            assert 'no done tables record' in _raises(Refusal, E.plan)
+            E.tables()
             m = E.tiles[J_I][5]['path']                                   # HG13: a tile master replaced since the stage
             keep = open(m, 'rb').read()
             open(m, 'ab').write(b'\0' * 2880)
             assert 'HG13' in _raises(Refusal, E.plan) and '05h' in _raises(Refusal, E.plan)
+            assert '05h' in _raises(Refusal, E.plan, J_V)                 # the plain master behind a Vclean row's weighting map
             E.ctx.dry = True                                              # a dry run checks existence only
             assert {r['action'] for r in AM.scope_plan(E.ctx, E.out, 'Blue', J_I, checksum=False)[0]} == {'publish'}
             E.ctx.dry = False
             os.remove(m)
             assert 'HG13' in _raises(Refusal, AM.scope_plan, E.ctx, E.out, 'Blue', J_I, checksum=False)
             open(m, 'wb').write(keep)
+            os.utime(m, (1, 1))                                           # a new mtime: the md5 cache reads it again
+            from exopipe.phase3.core.record import fingerprint
+            ref = os.path.join(d, 'masters', 'Taper_R0_ref.fits')         # a weighting map's reference master of another variant
+
+            def pbfor(val):
+                E.tiles[J_I][7]['pbfor'] = val
+                with open(E.P[J_I]['tiles'], 'w') as f:
+                    json.dump(dict(scope='Blue', job=J_I.label, tiles=E.tiles[J_I]), f)
+                E.conform()
+            fits.PrimaryHDU(np.zeros((2, 2), np.float32)).writeto(ref)
+            pbfor(ref)
+            assert 'reference master of the weighting map at LST [\'07h\']' in _raises(Refusal, E.plan)   # no stage read it
+            _record(E.out, v3.unit_name('stage', 'Blue', J_I), inputs={os.path.abspath(ref): fingerprint(ref)})
+            assert E.plan() and ref in AM.scope_plan(E.ctx, E.out, 'Blue', J_I)[1]
+            fits.PrimaryHDU(np.ones((2, 2), np.float32)).writeto(ref, overwrite=True)   # replaced since the stage read it
+            assert 'reference master of the weighting map' in _raises(Refusal, E.plan)
+            pbfor(E.tiles[J_I][7]['path'])                                # its own master: no reference read
+            E.plan()
             with fits.open(E.prods[J_I]['pbmap'], mode='update', memmap=False) as h:
                 h[0].header['X'] = 1
             assert 'changed since conform' in _raises(Refusal, E.plan)
@@ -418,6 +464,9 @@ def test_run_plan_only():
             assert man.startswith(os.path.join(d, 'plans', 'push_mosaic_v3')) and os.path.exists(man)
             assert not os.path.exists(AM.run_dir(E.ctx))
             assert 'staging-root' in _raises(ValueError, AM.v3_units, os.path.join(d, 'none'))
+            os.makedirs(os.path.join(d, 'empty'))                         # no record there: refused, never a clean exit
+            args.staging_root = os.path.join(d, 'empty')
+            assert 'nothing to push' in _raises(NoInput, AM.run_mosaic_v3, E.ctx, args, None, unit_fn)
     finally:
         shutil.rmtree(d, ignore_errors=True)
 

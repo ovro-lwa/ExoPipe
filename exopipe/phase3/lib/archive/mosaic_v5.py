@@ -20,11 +20,14 @@ Gates (a unit refuses whole; nothing of it is copied):
   PRODNAME its file name and a phase3 name, the archive audit clean (push.audit_mosaic: name, PBCORR, BUNIT, NSTACK, DATE-OBS / END,
   finite pixels); HG20 the masters first: every PROVENANCE FILE (the record's prov_files) is installed, and the filled master of a
   hybrid tile holds TPSRCMD5 = the tile's md5, TPMOSAIC = the Jy/sr product's name and TPMOSMD5 = its md5 (the masters were filled
-  from this mosaic: `exopipe3 hybrid --stages tilefill --mosaic-out` then `archive push --class hybrid` come first); D7 a replacement
-  holds every card key of the file it replaces (commentary aside) less archive_push.MOSAIC_V5_RETIRED_KEYS; at most one installed
-  file per kind;
+  from this mosaic: `exopipe3 hybrid --stages tilefill --mosaic-out` then `archive push --class hybrid` come first); the run's
+  v5-tables record done, listing the unit and made from its conform (the archive tables must describe the products installed: the
+  tables stage runs before the push); D7 a replacement holds every card key of the file it replaces (commentary aside) less
+  archive_push.MOSAIC_V5_RETIRED_KEYS; at most one installed file per kind; the header gates run before any file is hashed, and a
+  file is hashed once per process (gen_common._md5, keyed by inode, size and mtime; a file written is seeded at its verified md5);
   the tables unit: the v5-tables record done with every test passed, each table at its md5; every conform unit whose rows the tables
   hold is installed (each pushed product of its record in the run at the record's md5);
+  the push: a --staging-root without any conform or tables record refuses (NoInput), never a clean exit with nothing done;
   both: G4 quarantine destinations free; G19 free space; G2 production writes. All copies are verified (.part, checksum) before the
   first move. Content audit after the swap: class mosaic_v5_archive_copy on every file written.
 The run's README.txt is not written here (spec PR-8: README notes as templated files).
@@ -40,6 +43,7 @@ from exopipe.phase3.lib.archive import common as K
 
 QUARANTINE_MANIFEST = 'MANIFEST_MOSAIC_V5_QUARANTINE.csv'
 TABLES_UNIT = 'tables'
+TABLE_KEYS = ('content', 'curve', 'caveat_table')      # a conform record's meta.tables files the tables stage reads
 _SPAN = re.compile(r'_\d{8}-\d{8}_N\d+\.fits$')
 
 
@@ -163,8 +167,7 @@ def _row(ctx, unit, kind, src, dst, md5, checksum, d7=True, retired=None):
     elif not checksum:
         act = 'keep-or-replace'
     else:
-        dm = K.checksum(dst, ctx.algo)
-        act = 'keep' if dm == md5 else 'replace'
+        act = 'keep' if md5_of(ctx, dst) == md5 else 'replace'
     if d7 and act in ('replace', 'keep-or-replace'):
         miss = missing_keys(src, old, retired)
         if miss:
@@ -172,6 +175,121 @@ def _row(ctx, unit, kind, src, dst, md5, checksum, d7=True, retired=None):
     keep = act == 'keep'
     return dict(unit=unit, kind=kind, src=src, dst=dst, bytes=os.path.getsize(dst if keep else src), md5=md5, action=act,
                 replaces='' if keep else old, written_at='')
+
+
+def md5_of(ctx, p):
+    """The checksum (ctx.algo) of a file; md5 through the process cache gen_common._md5 (a file hashed, or written and seeded, in this
+    process is not read again while its inode, size and mtime hold)."""
+    if ctx.algo == 'md5':
+        from exopipe.phase3.lib.mosaic.gen_common import _md5
+        return _md5(p)
+    return K.checksum(p, ctx.algo)
+
+
+def made_from(trec, crec, keys):
+    """[key] of the conform record crec's table inputs (meta.tables[key] = [path, md5]) that the tables record trec was NOT made from
+    (its input of that path holds another md5)."""
+    ins = trec.get('inputs') or {}
+    ct = (crec.get('meta') or {}).get('tables') or {}
+    return [f'{k} {ct[k][0]}' for k in keys if ct.get(k) and (ins.get(os.path.abspath(ct[k][0])) or {}).get('md5') != ct[k][1]]
+
+
+def tables_current(staging, step, tables_unit, label, listed_key, crec, keys):
+    """[problem] (empty = current): the run's tables record is done, lists the conform unit label under meta[listed_key] and was made
+    from this conform record's files. A scope unit is pushed only then: the archive tables must describe the products installed."""
+    from exopipe.phase3.core.record import load_record
+    trec = load_record(staging, step, tables_unit)
+    if trec is None or trec.get('status') != 'done':
+        return [f'the run holds no done tables record ({tables_unit})']
+    if label not in ((trec.get('meta') or {}).get(listed_key) or []):
+        return [f'the tables record does not list {label}']
+    st = made_from(trec, crec, keys)
+    return [f'the tables record was made from an earlier conform of {label} ({st[:2]})'] if st else []
+
+
+def installed_problems(rd, label, products, conform_dir, checksum, skip=None):
+    """[problem] of a conform unit's products (kinds starting with skip aside) against the run rd: each installed at the md5 its record
+    holds (a dry run: existence only); md5 through the process cache."""
+    from exopipe.phase3.lib.mosaic.gen_common import _md5
+    bad = []
+    for kind, e in sorted(products.items()):
+        if skip and kind.startswith(skip):
+            continue
+        dst = os.path.join(rd, os.path.relpath(e['path'], conform_dir))
+        if not os.path.exists(dst) or (checksum and _md5(dst) != e['md5']):
+            bad.append(f'{label} {kind}: {dst} is not installed at the record\'s md5')
+    return bad
+
+
+def tables_rows(ctx, rec, rp, rd, arch_run, checksum):
+    """The plan rows of a done tables record's outputs into <rd>/tables: each at the md5 the record holds; an installed table is the
+    one the tables stage merged from (the record's input from <arch_run>/tables) or this one (no lost update between pushes)."""
+    ins = rec.get('inputs') or {}
+    md5s = (rec.get('meta') or {}).get('md5') or {}
+    arch_t = os.path.realpath(os.path.join(arch_run, 'tables'))
+    merged = {os.path.basename(p): (fp or {}).get('md5') for p, fp in ins.items() if os.path.dirname(os.path.realpath(p)) == arch_t}
+    rows = []
+    for o in rec.get('outputs') or []:
+        src = o['path']
+        name = os.path.basename(src)
+        if name not in md5s:
+            raise Refusal(f'{rp}: no md5 recorded for {name} (made before the tables record held them); run --stages tables again')
+        if not os.path.exists(src):
+            raise Refusal(f'tables: {src} does not exist - REFUSING')
+        m = _checked(ctx, src, md5s[name], checksum, f'tables {name}', 'the tables stage')
+        dst = os.path.join(rd, 'tables', name)
+        if os.path.exists(dst) and md5_of(ctx, dst) not in (merged.get(name), md5s[name]):   # no lost update between pushes
+            raise Refusal(f'tables {name}: the installed {dst} is not the table the tables stage merged from '
+                          f'(md5 {merged.get(name)}) - another push changed it; run --stages tables again')
+        rows.append(_row(ctx, TABLES_UNIT, 'table', src, dst, m, checksum, d7=False))
+    if not rows:
+        raise Refusal(f'{rp}: no table recorded - REFUSING')
+    return rows
+
+
+def run_push(ctx, args, unit_fn, cls, what, items_fn, rd, qd, qman_name):
+    """The units of a mosaic push class (mosaic_v5, mosaic_v3): items_fn() -> [(suffix, meta, plan)], plan(checksum) -> (rows, reads);
+    unit push_<cls>_<suffix>. No item refuses (NoInput: a push that would do nothing is an error, never a clean exit). Without --apply
+    (or the transfer stage) each unit writes its plan manifest; with it, apply_unit (the class hybrid's D2 swap), and every file written
+    is seeded into the process md5 cache (its copy was verified), so the tables unit's installed check reads it no second time."""
+    from exopipe.phase3.lib.archive import hybrid as AH
+    from exopipe.phase3.lib.archive.push import class_cfg
+    from exopipe.phase3.lib.mosaic.gen_common import _seed
+    c = class_cfg(cls)
+    if ctx.tier not in c.get('tiers', ('deep',)):
+        raise NoInput(f'push --class {cls} --tier {ctx.tier}: {what} are deep-tier products; nothing to push')
+    items = items_fn()
+    if not items:
+        raise NoInput(f'push --class {cls}: no conform or tables record under --staging-root {args.staging_root} - nothing to push')
+    rnd = args.round or time.strftime('%Y%m%d', time.gmtime())
+    stages = args._stages
+    pre = f'push_{cls}_'
+    for suffix, meta, plan in items:
+        name = pre + suffix
+
+        def body(u, meta=meta, plan=plan, name=name):
+            u.meta.update(push_class=cls, staging_root=args.staging_root, archive_root=ctx.archive_root, run_dir=rd, round=rnd, **meta)
+            rows, reads = plan(not ctx.dry)
+            for p in reads:
+                u.add_input(p)
+            u.meta['counts'] = {k: sum(1 for r in rows if r['action'] == k) for k in ('keep', 'publish', 'replace', 'keep-or-replace')}
+            if ctx.dry:
+                return rows
+            if not ctx.apply or 'transfer' not in stages:
+                man = os.path.join(ctx.manifest_dir(pre[:-1]), f'{name[len(pre):]}_{ctx.stamp}.csv')
+                K.write_csv(man, _p().HYBRID_PUSH_COLUMNS, rows)
+                u.add_output(man, 'csv_table', required_columns=('unit', 'kind', 'src', 'dst', 'action', 'replaces'))
+                return rows
+            if any(r['action'] in ('publish', 'replace') for r in rows):
+                AH.apply_unit(ctx, u, rows, rnd, cls=cls, adir=rd, qdir=qd, qman_name=qman_name, copy_class=f'{cls}_archive_copy')
+                if ctx.algo == 'md5':
+                    for r in rows:
+                        if r['action'] in ('publish', 'replace') and os.path.exists(r['dst']):
+                            _seed(r['dst'], r['md5'])
+            return rows
+        unit_fn(name, body, describe=lambda rows: ', '.join(
+            f'{k} {sum(1 for r in rows if r["action"] == k)}' for k in ('keep', 'publish', 'replace', 'keep-or-replace')
+            if any(r['action'] == k for r in rows)) or '0 files')
 
 
 def masters_problems(ctx, tiles, prov_files, jysr_name, jysr_md5):
@@ -235,6 +353,10 @@ def scope_plan(ctx, staging, scope, w, checksum=True):
     if mp:                                                    # header reads only: before any product is hashed
         raise Refusal(f'HG20: the installed masters were not filled from this mosaic ({len(mp)}): {mp[:4]} - push the masters filled '
                       f'from it first (hybrid --stages tilefill --mosaic-out {staging}, then archive push --class hybrid)')
+    tp = tables_current(staging, v5.STEP, v5.TABLES_UNIT, unit, 'units', rec, TABLE_KEYS)
+    if tp:
+        raise Refusal(f'{unit}: {tp[0]} - the archive tables must describe the products installed: run mosaic --stages tables, then '
+                      f'push - REFUSING')
     rd = run_dir(ctx)
     rows = []
     for kind, e in sorted(prods.items()):
@@ -273,7 +395,6 @@ def tables_plan(ctx, staging, checksum=True):
     rec = load_record(staging, v5.STEP, v5.TABLES_UNIT)
     _done(rec, rp)
     meta = rec.get('meta') or {}
-    ins = rec.get('inputs') or {}
     rd = run_dir(ctx)
     bad, stale = [], []
     for sw in meta.get('units') or []:
@@ -282,85 +403,27 @@ def tables_plan(ctx, staging, checksum=True):
         if cr is None or cr.get('status') != 'done':
             bad.append(f'{sw}: {"no conform record" if cr is None else cr.get("status")}')
             continue
-        ct = (cr.get('meta') or {}).get('tables') or {}
-        for k in ('content', 'curve', 'caveat_table'):                                # made from THIS conform's files
-            if ct.get(k) and (ins.get(os.path.abspath(ct[k][0])) or {}).get('md5') != ct[k][1]:
-                stale.append(f'{sw} {k} {ct[k][0]}')
-        P = v5.paths(staging, scope, w)
-        for kind, e in ((cr.get('meta') or {}).get('products') or {}).items():
-            if kind.startswith('unfilled_'):
-                continue
-            dst = os.path.join(rd, os.path.relpath(e['path'], P['conform']))
-            if not os.path.exists(dst) or (checksum and K.checksum(dst, 'md5') != e['md5']):   # a dry run: existence only
-                bad.append(f'{sw} {kind}: {dst} is not installed at the record\'s md5')
+        stale += [f'{sw} {x}' for x in made_from(rec, cr, TABLE_KEYS)]                # made from THIS conform's files
+        bad += installed_problems(rd, sw, (cr.get('meta') or {}).get('products') or {}, v5.paths(staging, scope, w)['conform'],
+                                  checksum, skip='unfilled_')
     if stale:
         raise Refusal(f'the tables were made from an earlier conform ({len(stale)}): {stale[:4]} - run --stages tables again')
     if not meta.get('units'):
         bad.append('the tables record lists no conform unit')
     if bad:
         raise Refusal(f'the tables describe products not installed ({len(bad)}): {bad[:4]} - push the scopes first')
-    rows = []
-    md5s = meta.get('md5') or {}
-    arch_t = os.path.realpath(os.path.join(K.cfg().hybrid_tilefill.FILLED_MOSAIC_RUN, 'tables'))
-    merged = {os.path.basename(p): (fp or {}).get('md5') for p, fp in ins.items() if os.path.dirname(os.path.realpath(p)) == arch_t}
-    for o in rec.get('outputs') or []:
-        src = o['path']
-        name = os.path.basename(src)
-        if name not in md5s:
-            raise Refusal(f'{rp}: no md5 recorded for {name} (made before the tables record held them); run --stages tables again')
-        if not os.path.exists(src):
-            raise Refusal(f'tables: {src} does not exist - REFUSING')
-        m = _checked(ctx, src, md5s[name], checksum, f'tables {name}', 'the tables stage')
-        dst = os.path.join(rd, 'tables', name)
-        if os.path.exists(dst) and K.checksum(dst, 'md5') not in (merged.get(name), md5s[name]):   # no lost update between pushes
-            raise Refusal(f'tables {name}: the installed {dst} is not the table the tables stage merged from '
-                          f'(md5 {merged.get(name)}) - another push changed it; run --stages tables again')
-        rows.append(_row(ctx, TABLES_UNIT, 'table', src, os.path.join(rd, 'tables', name), m, checksum, d7=False))
-    if not rows:
-        raise Refusal(f'{rp}: no table recorded - REFUSING')
-    return rows, [rp]
+    return tables_rows(ctx, rec, rp, rd, K.cfg().hybrid_tilefill.FILLED_MOSAIC_RUN, checksum), [rp]
 
 
 def run_mosaic_v5(ctx, args, run, unit_fn):
-    from exopipe.phase3.lib.archive import hybrid as AH
-    from exopipe.phase3.lib.archive.push import class_cfg
     from exopipe.phase3.lib.mosaic import v5
-    c = class_cfg('mosaic_v5')
-    if ctx.tier not in c.get('tiers', ('deep',)):
-        raise NoInput(f'push --class mosaic_v5 --tier {ctx.tier}: the hybrid mosaics are deep-tier products; nothing to push')
     staging = args.staging_root
+
+    def items():
+        it = [(f'{scope}_{w}', dict(scope=scope, weighting=w),
+               lambda checksum, scope=scope, w=w: scope_plan(ctx, staging, scope, w, checksum=checksum)) for scope, w in v5_units(staging)]
+        if os.path.exists(_rec_path(staging, v5.TABLES_UNIT)):
+            it.append((TABLES_UNIT, dict(scope=TABLES_UNIT, weighting=None), lambda checksum: tables_plan(ctx, staging, checksum=checksum)))
+        return it
     rnd = args.round or time.strftime('%Y%m%d', time.gmtime())
-    stages = args._stages
-    items = v5_units(staging)
-    if os.path.exists(_rec_path(staging, v5.TABLES_UNIT)):
-        items.append((TABLES_UNIT, None))
-    rd = run_dir(ctx)
-    qd = quarantine_dir(ctx, rnd)
-
-    for scope, w in items:
-        name = 'push_mosaic_v5_tables' if scope == TABLES_UNIT else f'push_mosaic_v5_{scope}_{w}'
-
-        def body(u, scope=scope, w=w, name=name):
-            u.meta.update(push_class='mosaic_v5', scope=scope, weighting=w, staging_root=staging, archive_root=ctx.archive_root,
-                          run_dir=rd, round=rnd)
-            if scope == TABLES_UNIT:
-                rows, reads = tables_plan(ctx, staging, checksum=not ctx.dry)
-            else:
-                rows, reads = scope_plan(ctx, staging, scope, w, checksum=not ctx.dry)
-            for p in reads:
-                u.add_input(p)
-            u.meta['counts'] = {k: sum(1 for r in rows if r['action'] == k) for k in ('keep', 'publish', 'replace', 'keep-or-replace')}
-            if ctx.dry:
-                return rows
-            if not ctx.apply or 'transfer' not in stages:
-                man = os.path.join(ctx.manifest_dir('push_mosaic_v5'), f'{name[len("push_mosaic_v5_"):]}_{ctx.stamp}.csv')
-                K.write_csv(man, _p().HYBRID_PUSH_COLUMNS, rows)
-                u.add_output(man, 'csv_table', required_columns=('unit', 'kind', 'src', 'dst', 'action', 'replaces'))
-                return rows
-            if any(r['action'] in ('publish', 'replace') for r in rows):
-                AH.apply_unit(ctx, u, rows, rnd, cls='mosaic_v5', adir=rd, qdir=qd, qman_name=QUARANTINE_MANIFEST,
-                              copy_class='mosaic_v5_archive_copy')
-            return rows
-        unit_fn(name, body, describe=lambda rows: ', '.join(
-            f'{k} {sum(1 for r in rows if r["action"] == k)}' for k in ('keep', 'publish', 'replace', 'keep-or-replace')
-            if any(r['action'] == k for r in rows)) or '0 files')
+    run_push(ctx, args, unit_fn, 'mosaic_v5', 'the hybrid mosaics', items, run_dir(ctx), quarantine_dir(ctx, rnd), QUARANTINE_MANIFEST)

@@ -35,7 +35,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
 
 from exopipe.phase3.config import CFG  # noqa: E402
-from exopipe.phase3.core.record import Refusal  # noqa: E402
+from exopipe.phase3.core.record import NoInput, Refusal  # noqa: E402
 from exopipe.phase3.lib.archive import common as K  # noqa: E402
 from exopipe.phase3.lib.archive import mosaic_v5 as AM  # noqa: E402
 from exopipe.phase3.lib.archive import tests as AT  # noqa: E402
@@ -141,6 +141,7 @@ class _Env:
         self.prov = [os.path.join(ah, lst, 'Blue', MASTER.format(lst=lst)) for lst in LSTS]
         self.conform()
         self.masters()
+        self.tables()
 
     def _mdir(self, name):
         p = os.path.join(self.d, 'plans', name)
@@ -218,7 +219,7 @@ def _audit(u):
     for path, cls, ctx in u.outputs:
         if cls != 'mosaic_v5_archive_copy':
             continue
-        for t in (AT.v5_copy_checksum, AT.v5_copy_header, AT.v5_copy_card_superset):
+        for t in (AT.mosaic_copy_checksum, AT.v5_copy_header, AT.v5_copy_card_superset):
             ok, _v, why = t(path, **ctx)
             assert ok, (t.__name__, path, why)
         n += 1
@@ -320,6 +321,11 @@ def test_gates():
             E.masters(src={'11h': 'other'})
             assert 'TPSRCMD5' in _raises(Refusal, E.plan)
             E.masters()
+            os.remove(os.path.join(E.out, '_records', v5.STEP, v5.TABLES_UNIT + '.json'))   # the tables stage runs before the push
+            assert 'no done tables record' in _raises(Refusal, E.plan)
+            E.tables(units=())
+            assert 'does not list Blue_R075' in _raises(Refusal, E.plan)
+            E.tables()
             E.plan()                                                    # every gate clear again
             # D7: the installed file holds a card key (HDU 1) the new one lacks
             sub, stem, lay, bu, pbc = PRODUCTS['jybeam']
@@ -407,6 +413,9 @@ def test_run_plan_only():
             assert man.startswith(os.path.join(d, 'plans', 'push_mosaic_v5')) and os.path.exists(man)
             assert not os.path.exists(AM.run_dir(E.ctx))
             assert 'staging-root' in _raises(ValueError, AM.v5_units, os.path.join(d, 'none'))
+            os.makedirs(os.path.join(d, 'empty'))                         # no record there: refused, never a clean exit
+            args.staging_root = os.path.join(d, 'empty')
+            assert 'nothing to push' in _raises(NoInput, AM.run_mosaic_v5, E.ctx, args, None, unit_fn)
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
