@@ -125,7 +125,9 @@ def add_arguments(p):
     p.add_argument('--domains', metavar='LIST', help='co-add domains (default mosaic.DOMAINS: jysr,jybeam)')
     p.add_argument('--products', metavar='LIST', help="products (default mosaic.PRODUCTS: I; any other refuses); v3: I, Vclean (default "
                                                       "mosaic_v3.PRODUCTS)")
-    p.add_argument('--stages', metavar='LIST', help='comma list of inputs,coadd,render,qa,conform (default all)')
+    p.add_argument('--stages', metavar='LIST', help='comma list of stages (default all): v2 inputs,coadd,render,qa,conform; v3 stage,'
+                                                    'coadd,pkcorr,render,content; v5 stage,coadd,pkcorr,caveat,fill,render,content,conform,'
+                                                    'tables')
     p.add_argument('--from', dest='from_stage', metavar='STAGE', help='first stage to run')
     p.add_argument('--until', dest='until_stage', metavar='STAGE', help='last stage to run')
     p.add_argument('--list-jobs', action='store_true', help='print the selected job items, one per line, and exit')

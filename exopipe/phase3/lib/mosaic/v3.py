@@ -45,10 +45,10 @@ import glob
 import json
 import os
 
-from exopipe.phase3.lib.mosaic.v5 import LSTS, _bind_engine, _clear, _md5   # one md5 cache per process for v3 and v5
+from exopipe.phase3.lib.mosaic.v5 import LSTS, _bind_engine, _clear, _engine_as_coadd, _md5   # one md5 cache per process for v3 and v5
 
 STAGES = ('stage', 'coadd', 'pkcorr', 'render', 'content')
-I_ONLY = ('pkcorr',)                  # stages a Stokes V job does not have (production ran no PKCORR for Vclean)
+I_ONLY = ('pkcorr',)                  # stages a Stokes V job does not have (production ran no PKCORR for Vclean): has_stage
 STEP = 'mosaic'
 STRIATION_CHOICES = ('with', 'without', 'both')
 _STG_GRID = ('NAXIS1', 'NAXIS2', 'CTYPE1', 'CTYPE2', 'CRVAL1', 'CRVAL2', 'CRPIX1', 'CRPIX2', 'CDELT1', 'CDELT2', 'EQUINOX', 'RADESYS')
@@ -147,16 +147,21 @@ def paths(out, scope, job):
     return p
 
 
+def has_stage(job, st):
+    """Does the job have stage st? Every stage but I_ONLY's for a Stokes V job (the one place that decides)."""
+    return not (st in I_ONLY and job.product != 'I')
+
+
 def outputs_of(st, out, scope, job):
     """[(path, product class)] the stage owes."""
+    if not has_stage(job, st):
+        raise ValueError(f'v3 stage {st}: no {st.upper()} for {job.label} (has_stage)')
     p = paths(out, scope, job)
     if st == 'stage':
         return [(p['tiles'], 'mosaic_v3_tiles')] + [(p['pb'][lst], 'mosaic_weight_pb') for lst in sorted(p['pb'])]
     if st == 'coadd':
         return [(p['jysr'], 'mosaic_map'), (p['psf'], 'mosaic_psfmap'), (p['jybeam'], 'mosaic_map'), (p['pbeff'], 'mosaic_pbeff')]
     if st == 'pkcorr':
-        if job.product != 'I':
-            raise ValueError(f'v3 stage pkcorr: no PKCORR for {job.label}')
         return [(p['pkcorr_map'], 'mosaic_pkcorr_map'), (p['pkcorr_curve'], 'mosaic_pkcorr_curve'),
                 (p['pkcorr_recovery'], 'mosaic_pkcorr_recovery'), (p['pkcorr_json'], 'mosaic_pkcorr_report')]
     if st == 'content':
@@ -243,7 +248,7 @@ def select_units(args, sel=None):
         sel = selection_for(products, striation)
     stages = select_stages(args)
     return [(st, sc, j) for sc in scopes for j in jobs_for(sc, products, striation, variants, sel) for st in stages
-            if not (st in I_ONLY and j.product != 'I')]
+            if has_stage(j, st)]
 
 
 def missing_plain_stages(units, out):
@@ -303,15 +308,6 @@ def _same_tiles(u, scope, job, cur, rec, st):
                  f'now {cur}): rerun --stages {st} - REFUSED')
 
 
-def _engine_as_coadd(u, scope, job, co):
-    """Bind the engine globals and refuse unless they equal the coadd record's (the weights the maps were made with)."""
-    g = json.loads(json.dumps(_bind_engine()))
-    if g != co['meta'].get('engine_globals'):
-        u.refuse(f'{scope} {job.label}: the mosaic_coadd weights now {g} are not the coadd\'s {co["meta"].get("engine_globals")} - REFUSED')
-    u.meta['engine_globals'] = g
-    return g
-
-
 def _link_tree(t, scope, job, sd):
     """The staged tiles and their weighting maps linked under the engine's names (coadd_jysr._paths) in the scratch dir sd."""
     from exopipe.phase3.lib.masters.pb_apply import deep_pb_name
@@ -342,7 +338,7 @@ def _from_coadd(u, out, scope, job, keys):
     _same_tiles(u, scope, job, t['json_md5'], co, 'coadd')
     _recheck_exclusions(u, scope, job, t)
     _coadd_maps(u, out, scope, job, co, keys)
-    _engine_as_coadd(u, scope, job, co)
+    _engine_as_coadd(u, scope, job.label, co)                  # v5's check, labeled with the v3 job
     return t, co
 
 
@@ -761,6 +757,7 @@ def content_unit(u, scope, job, out, work):
                         if r['provenance_matches_tiles'] else
                         f'the test read {len(r["provenance"])} files, not the {len(t["tiles"])} listed tiles and PB maps'))
     u.meta['tiles_md5'] = t['json_md5']
+    u.meta['md5'] = {'content': _md5(P['content'])}          # as v5.content_unit: a later stage (conform) checks the report it reads
     u.add_output(P['content'], cls, n_tiles=len(t['tiles']), scope=scope, variant=job.variant, job=job.label)
 
 
@@ -794,6 +791,8 @@ def run(args, run):
     units = select_units(args, sel)
     run.meta = {'generation': 'v3', 'units': len(units), 'striation': striation, 'products': products}
     if not units:
+        if 'I' not in products and set(select_stages(args)) <= set(I_ONLY):
+            raise NoInput(f'no unit: Stokes V jobs have no {",".join(I_ONLY)} stage (production ran no PKCORR for Stokes V)')
         raise NoInput('no unit: the selected products, variants and striation choice give no job')
     need = missing_plain_stages(units, run.out_root)
     if need:

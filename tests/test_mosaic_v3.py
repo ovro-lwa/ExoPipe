@@ -231,6 +231,8 @@ def test_select_units():
     assert [s for s, _sc, j in u if j == J_V] == ['stage', 'coadd', 'render', 'content']           # no PKCORR for Stokes V
     assert [s for s, _sc, j in u if j == J_SSUB] == list(v3.STAGES)
     assert v3.select_units(_args(scopes='Blue', products='Vclean', stages='pkcorr'), SEL) == []
+    assert not v3.has_stage(v3.Job('Vclean', 'Taper_R0'), 'pkcorr') and v3.has_stage(v3.Job('Vclean', 'Taper_R0'), 'content')
+    assert v3.has_stage(v3.Job('I', 'Taper_R075'), 'pkcorr')
     assert [j for _s, _sc, j in v3.select_units(_args(scopes='78MHz', striation='with', products='I', stages='stage'), SEL)] == \
         [v3.Job('I', 'Taper_R075', ssub=True), v3.Job('I', 'Taper_R0', ssub=True)]
     assert [j for _s, _sc, j in v3.select_units(_args(scopes='Red', stages='coadd'), SEL)] == [v3.Job('I', 'Taper_R075'),
@@ -633,6 +635,7 @@ def test_pkcorr_and_content_units():
             assert rep['jysr']['provenance_matches_tiles'] and [x['md5'] for x in rep['jybeam']['provenance']] == [
                 r['md5'] for r in t['tiles']] and 'read' not in rep['jysr']
             assert sorted(x['name'] for x in u.tests if x['name'].startswith('TEST')) == ['TEST1.jybeam', 'TEST1.jysr', 'TEST2.jybeam', 'TEST2.jysr']
+            assert u.meta['md5'] == {'content': hashlib.md5(open(P['content'], 'rb').read()).hexdigest()}
             assert [x['passed'] for x in validate.run('mosaic_content_report', P['content'], n_tiles=24)] == [True]
             # content, Stokes V: TEST 1R (random positions), product Vclean, the V tiles with the Robust 0 weighting maps
             PV = v3.paths(out, 'Blue', J_V)
@@ -646,6 +649,7 @@ def test_pkcorr_and_content_units():
                               ['PB_deep_Blue.fits', 'V_deep_Taper_R0_clean_pbcorr_Blue.fits'])], calls
             assert sorted(x['name'] for x in u.tests if x['name'].startswith('TEST')) == ['TEST1R.jybeam', 'TEST1R.jysr', 'TEST2.jybeam', 'TEST2.jysr']
             assert u.outputs[0]['class'] == 'mosaic_content_random_report' and 'parents' not in u.meta
+            assert u.meta['md5'] == {'content': hashlib.md5(open(PV['content'], 'rb').read()).hexdigest()}
             assert [x['passed'] for x in validate.run('mosaic_content_random_report', PV['content'], n_tiles=24)] == [True]
             # TEST 1R fails; TEST 2: a tile the test did not read: the unit does not end done, the report is removed (v3.run)
             good = [dict(lst=r['lst'], file=os.path.realpath(r['path']), pb=os.path.realpath(r['pb']), symlink=True) for r in tv['tiles']]
