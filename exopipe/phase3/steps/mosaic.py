@@ -90,6 +90,13 @@ weighting) of the stages stage, coadd, pkcorr, caveat (hybrid.CAVEAT_SCOPES), fi
 --scopes (default mosaic_v5.SCOPES), --weightings, --hybrid-out (the rebuilt tiles), --out (required), --work (node-local link trees):
     exopipe3 mosaic --generation v5 --scopes Blue --weightings R075 --out /fast/gh/v5run --work /fast/gh/scratch
     exopipe3 mosaic --generation v5 --hybrid-out /fast/gh/hybrid_q1 --scopes 18MHz,Red --out /fast/gh/v5run --dry-run
+
+Generation v3 (--generation v3; the FEATHER3 mosaics of mosaic/Run_FEATHER3, plan/specs/hybrid.md 2.9-2.13): units (stage, scope, job)
+of the stages stage, coadd, render - see lib/mosaic/v3.py. Jobs: the plain Stokes I maps of mosaic_v3.VARIANTS, the striation-corrected
+maps of the pairs of hybrid.STRIATION_SELECTION (--striation with|without|both, default mosaic_v3.STRIATION), the cleaned Stokes V maps
+(--products I,Vclean). --scopes, --variants, --out (required), --work (node-local link trees):
+    exopipe3 mosaic --generation v3 --scopes Blue --out /fast/gh/v3run --work /fast/gh/scratch
+    exopipe3 mosaic --generation v3 --scopes 78MHz --striation with --stages stage --out /fast/gh/v3run --dry-run
 """
 import os
 import sys
@@ -98,7 +105,7 @@ SUMMARY = 'all-sky HEALPix mosaics of the deep masters: co-add, renders, QA, arc
 TIERS = ('deep',)
 SELECTORS = ('tier', 'scopes', 'lsts')
 CONFIG = ('mosaic', 'mosaic_coadd', 'mosaic_render', 'mosaic_qa', 'mosaic_conform', 'mosaic_v5', 'mosaic_caveat', 'mosaic_fill',
-          'mosaic_content', 'mosaic_pkcorr',
+          'mosaic_content', 'mosaic_pkcorr', 'mosaic_v3', 'masters_striation',
           'hybrid', 'hybrid_recon', 'hybrid_tilefill', 'paths', 'exclusions', 'instrument', 'runner', 'site')
 WRITES = True
 STAGES = ('inputs', 'coadd', 'render', 'qa', 'conform')
@@ -115,16 +122,21 @@ def add_arguments(p):
     p.add_argument('--variants', metavar='LIST', help='imaging variants (default mosaic.VARIANTS: Taper_R075,Taper_R0,'
                                                       'NoTaper_R075,NoTaper_R0)')
     p.add_argument('--domains', metavar='LIST', help='co-add domains (default mosaic.DOMAINS: jysr,jybeam)')
-    p.add_argument('--products', metavar='LIST', help="products (default mosaic.PRODUCTS: I; any other refuses)")
+    p.add_argument('--products', metavar='LIST', help="products (default mosaic.PRODUCTS: I; any other refuses); v3: I, Vclean (default "
+                                                      "mosaic_v3.PRODUCTS)")
     p.add_argument('--stages', metavar='LIST', help='comma list of inputs,coadd,render,qa,conform (default all)')
     p.add_argument('--from', dest='from_stage', metavar='STAGE', help='first stage to run')
     p.add_argument('--until', dest='until_stage', metavar='STAGE', help='last stage to run')
     p.add_argument('--list-jobs', action='store_true', help='print the selected job items, one per line, and exit')
     p.add_argument('--keep-stage', action='store_true', help='keep the node-local stage (symlinks + weighting PB maps)')
-    g = p.add_argument_group('generation v5 (the hybrid mosaics, lib/mosaic/v5.py)')
-    g.add_argument('--generation', choices=('v2', 'v5'), default='v2',
-                   help='v2 (default): the mosaics of the deep masters, stages inputs..conform; v5: the hybrid mosaics of the unfilled '
-                        'hybrid masters, stages stage,coadd,pkcorr,caveat,fill,render,content (--out required)')
+    g = p.add_argument_group('generations v3 and v5 (the FEATHER3 mosaics, lib/mosaic/v3.py; the hybrid mosaics, lib/mosaic/v5.py)')
+    g.add_argument('--generation', choices=('v2', 'v3', 'v5'), default='v2',
+                   help='v2 (default): the mosaics of the deep masters, stages inputs..conform; v3: the FEATHER3 mosaics (plain, '
+                        'striation-corrected, Stokes V), stages stage,coadd,render (--out required); v5: the hybrid mosaics of the '
+                        'unfilled hybrid masters, stages stage,coadd,pkcorr,caveat,fill,render,content (--out required)')
+    g.add_argument('--striation', choices=('with', 'without', 'both'),
+                   help='v3: the striation-corrected maps of the selected pairs (with), the plain maps (without) or both (default '
+                        'mosaic_v3.STRIATION)')
     g.add_argument('--weightings', metavar='LIST', help='v5: R075, R0 or both (default mosaic_v5.WEIGHTINGS)')
     g.add_argument('--hybrid-out', metavar='DIR',
                    help='v5 stage: the `exopipe3 hybrid` work run whose done hybrid records give the rebuilt tiles (work); every other '
@@ -136,6 +148,10 @@ def default_out(args):
         from exopipe.phase3.config import ConfigRefusal
         raise ConfigRefusal('exopipe3 mosaic --generation v5 needs --out: a work run of its own (node-local; ~2.4 GB per scope and '
                             'weighting), never an archive run or the hybrid work run')
+    if getattr(args, 'generation', 'v2') == 'v3':
+        from exopipe.phase3.config import ConfigRefusal
+        raise ConfigRefusal('exopipe3 mosaic --generation v3 needs --out: a work run of its own (~1 GB of weighting maps per plain job, '
+                            '~0.8 GB of maps per job), never an archive run')
     if getattr(args, 'list_jobs', False):
         return '/tmp/exopipe3_mosaic_list_jobs'
     from exopipe.phase3.config import CFG
@@ -267,9 +283,21 @@ def run(args, run):
     from exopipe.phase3.core.record import EXIT_NO_INPUT
     from exopipe.phase3.lib.mosaic import steps_common as SC
 
+    if getattr(args, 'generation', 'v2') == 'v3':
+        from exopipe.phase3.lib.mosaic import v3
+        other = [f for f in ('jobs', 'domains', 'lsts', 'list_jobs', 'keep_stage', 'weightings', 'hybrid_out') if getattr(args, f, None)]
+        if other:                             # never ignored: v3 selects by --scopes, --products, --variants, --striation, --stages
+            raise ValueError(f'--generation v3 refuses the option(s) {", ".join("--" + f.replace("_", "-") for f in other)} (v3 '
+                             f'selects by --scopes, --products, --variants, --striation and --stages; every LST is a tile)')
+        if (getattr(args, 'workers', None) or 1) > 1:   # FINDING-20261118-V2-HYBRID-STEP-IGNORES-WORKERS: never silently ignored
+            raise ValueError(f'--generation v3 refuses --workers {args.workers}: its units run one after another in one process; run '
+                             f'one process per disjoint --scopes group instead (unit records are per unit)')
+        _start_gates(run)
+        return v3.run(args, run)
     if getattr(args, 'generation', 'v2') == 'v5':
         from exopipe.phase3.lib.mosaic import v5
-        v2only = [f for f in ('jobs', 'variants', 'domains', 'products', 'lsts', 'list_jobs', 'keep_stage') if getattr(args, f, None)]
+        v2only = [f for f in ('jobs', 'variants', 'domains', 'products', 'lsts', 'list_jobs', 'keep_stage', 'striation')
+                  if getattr(args, f, None)]
         if v2only:                            # never ignored: v5 selects by --scopes, --weightings, --stages (--dry-run plans)
             raise ValueError(f'--generation v5 refuses the v2 option(s) {", ".join("--" + f.replace("_", "-") for f in v2only)} '
                              f'(v5 selects by --scopes, --weightings and --stages; --dry-run prints the plan)')
@@ -281,6 +309,8 @@ def run(args, run):
     for flag in ('weightings', 'hybrid_out'):
         if getattr(args, flag, None):
             raise ValueError(f'--{flag.replace("_", "-")} is a --generation v5 option')
+    if getattr(args, 'striation', None):
+        raise ValueError('--striation is a --generation v3 option')
     jobs = SC.select_jobs(args)
     if args.list_jobs:
         run.no_records = True

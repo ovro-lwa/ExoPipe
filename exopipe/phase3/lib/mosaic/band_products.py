@@ -34,13 +34,13 @@ def _sample(m, w, shape, frame, dec_cut=None):
     return img.astype(np.float32)
 
 
-def _beam_arcmin(hpx_dir, variant, b, suffix=''):
+def _beam_arcmin(hpx_dir, variant, b, suffix='', pre=None):
     """Scalar beam for the render header. v2 (2026-09-29): the equivalent circular FWHM of the median per-pixel Omega_eff
     of the mosaic's own PSF map, which exists for every band including the subbands; else the July fixed table. A tagged run
     (suffix '<tag>_<domain>', v5 '_lsfill_jysr') reads its own PSF map healpix_PSF_..._<band><tag>_nside2048.fits (production
     make_band_products 14e8dba, 2026-10-26)."""
     tag = re.sub(r'_(jysr|jybeam)$', '', suffix or '')      # '' for the untagged maps (suffix '_jysr' / '_jybeam')
-    p = f"{hpx_dir}/healpix_PSF_I_deep_{variant}_{b}{tag}_nside2048.fits"
+    p = f"{hpx_dir}/healpix_PSF_{pre or 'I_deep_' + variant}_{b}{tag}_nside2048.fits"
     if os.path.exists(p):
         om = hp.read_map(p, verbose=False); om = om[np.isfinite(om) & (om > 0) & (om != hp.UNSEEN)]
         if om.size:
@@ -64,30 +64,36 @@ def car_wcs(cdelt_deg, dec_lo=-45.0, dec_hi=90.0):
 
 
 def build(variant, hpx_dir, suffix, out, bands=('Red', 'Green', 'Blue', 'Full'),
-          moll_W=12000, car_cdelt=1.5/60, dec_cut=None):
+          moll_W=12000, car_cdelt=1.5/60, dec_cut=None, product='I'):
+    # product 'Vclean' (production make_band_products 1f719ce, 2026-11-10, the Release 1 Stokes V mosaics): the cleaned-V maps
+    # healpix_V_deep_Taper_R0_clean_<band>..., rendered as <band>_V_deep_Taper_R0_clean<suffix>_*; variant is ignored
+    if product not in ('I', 'Vclean'):
+        raise ValueError(f'band_products.build: product {product!r} is neither I nor Vclean')
+    pre = f'I_deep_{variant}' if product == 'I' else 'V_deep_Taper_R0_clean'
+    label = variant if product == 'I' else pre
     os.makedirs(out, exist_ok=True)
     for b in bands:
-        src = f"{hpx_dir}/healpix_I_deep_{variant}_{b}{suffix}_nside2048.fits"
+        src = f"{hpx_dir}/healpix_{pre}_{b}{suffix}_nside2048.fits"
         m = hp.read_map(src, verbose=False)
         bunit = fits.getheader(src, 1).get('BUNIT', 'JY/BEAM')   # v2 jysr maps are Jy/sr - was hardcoded JY/BEAM
-        bm = _beam_arcmin(hpx_dir, variant, b, suffix)
+        bm = _beam_arcmin(hpx_dir, variant, b, suffix, pre)
         pxbm = bm / (360./moll_W*60)
         # Mollweide (galactic)
         w, sh = moll_wcs(moll_W)
         img = _sample(m, w, sh, 'galactic', dec_cut)
-        h = w.to_header(); h['BUNIT'] = bunit; h['BAND'] = b; h['VARIANT'] = variant
+        h = w.to_header(); h['BUNIT'] = bunit; h['BAND'] = b; h['VARIANT'] = label
         h['BMAJ'] = bm/60; h['PXPERBM'] = round(pxbm, 2)
         if dec_cut is not None:
             h['DECMIN'] = (float(dec_cut), '[deg] rendered declination >= DECMIN')
-        fits.writeto(f"{out}/{b}_{variant}{suffix}_Mollweide.fits", img, h, overwrite=True)
+        fits.writeto(f"{out}/{b}_{label}{suffix}_Mollweide.fits", img, h, overwrite=True)
         # RA/Dec (equatorial CAR)
         w2, sh2 = car_wcs(car_cdelt)
         img2 = _sample(m, w2, sh2, 'equatorial', dec_cut)
-        h2 = w2.to_header(); h2['BUNIT'] = bunit; h2['BAND'] = b; h2['VARIANT'] = variant
+        h2 = w2.to_header(); h2['BUNIT'] = bunit; h2['BAND'] = b; h2['VARIANT'] = label
         h2['BMAJ'] = bm/60; h2['PXPERBM'] = round(bm/(car_cdelt*60), 2)
         if dec_cut is not None:
             h2['DECMIN'] = (float(dec_cut), '[deg] rendered declination >= DECMIN')
-        fits.writeto(f"{out}/{b}_{variant}{suffix}_RADec.fits", img2, h2, overwrite=True)
+        fits.writeto(f"{out}/{b}_{label}{suffix}_RADec.fits", img2, h2, overwrite=True)
         print(f"wrote {b}: Mollweide {sh} ({pxbm:.1f}px/bm) + RADec {sh2} "
               f"({bm/(car_cdelt*60):.1f}px/bm)", flush=True)
 
