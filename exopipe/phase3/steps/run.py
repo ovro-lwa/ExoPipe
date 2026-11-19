@@ -11,6 +11,8 @@
     exopipe3 run update --trigger 13h_Green,13h_Full,15h_Green --hybrid-out H --v3-out M3 --v5-out M5 --plan DIR
                                        # a partial update as one plan (lib/update/plan.py; runner.UPDATE_ORDER): --plan
                                        # writes plan.json / plan.csv only; without it the jobs are submitted in order
+    exopipe3 run update --from-exclusions --hybrid-out H --v3-out M3 --v5-out M5 --plan DIR
+                                       # the trigger = every installed master holding a night excluded now (exit 3: none)
 
 Inputs:  a step command line after '--', or --chain NAME (runner.CHAINS: step command templates run in order per
          item); items from --cells/--items (any item grammar: list, @file, JOB:STATUS, record:STATUS:STEP@OUT). Use
@@ -58,6 +60,9 @@ def add_arguments(p):
     p.add_argument('--lane', type=int, default=0, help=argparse_suppress())
     u = p.add_argument_group('update (a partial update of the hybrid route; spec plan/specs/hybrid.md 3.7)')
     u.add_argument('--trigger', help='the changed master cells <LST>_<scope>: list or @file (update)')
+    u.add_argument('--from-exclusions', action='store_true',
+                   help='the trigger = every installed deep master holding a night data_decisions.csv excludes now (update)')
+    u.add_argument('--round', metavar='YYYYMMDD', help='the quarantine round of every push of the plan (update; default today, UTC)')
     u.add_argument('--hybrid-out', help='the standing hybrid work run (update): --resume skips its unchanged units')
     u.add_argument('--v3-out', help='the standing mosaic --generation v3 work run (update)')
     u.add_argument('--v5-out', help='the standing mosaic --generation v5 work run (update)')
@@ -127,18 +132,31 @@ def update(args):
     import time
     from exopipe.phase3.core import runner
     from exopipe.phase3.lib.update import plan as UP
-    if not args.trigger:
-        raise SystemExit('run update needs --trigger <LST>_<scope>[,...] (the changed master cells)')
+    from exopipe.phase3.core.record import NoInput, Refusal
+    if bool(args.trigger) == bool(args.from_exclusions):
+        raise SystemExit('run update needs exactly one of --trigger <LST>_<scope>[,...] (the changed master cells) and '
+                         '--from-exclusions')
     outs = {k: getattr(args, k) for k in UP.OUTS}
+    ev = fp = None
     try:
-        if args.trigger.startswith('@'):
+        if args.from_exclusions:
+            UP.check_outs(outs)                         # before the master audit's minutes
+            trig, ev, n, fp = UP.from_exclusions(workers=getattr(args, 'workers', None))
+            if not trig:
+                raise NoInput(f'none of the {n} installed deep masters holds a night data_decisions.csv excludes now (sha1 '
+                              f'{fp["sha1"][:12]}, {fp["n_exclude_rows"]} exclude rows): nothing to update')
+            print(f'--from-exclusions: {len(trig)} cell(s) of {n} masters hold an excluded night: ' + ', '.join(
+                f'{c} ({", ".join(sorted({e["date"] for e in ev if e["cell"] == c}))})' for c in trig))
+        elif args.trigger.startswith('@'):
             with open(args.trigger[1:]) as f:
                 trig = f.read().replace(',', ' ').split()
         else:
             trig = [c.strip() for c in args.trigger.split(',') if c.strip()]
-        pl = UP.build(trig, outs, apply=args.apply)
+        pl = UP.build(trig, outs, apply=args.apply, rnd=args.round)
+        if ev is not None:
+            pl.update(trigger_from='exclusions', trigger_evidence=ev, exclusions=fp)
         rows = UP.predicted(pl)
-    except (ValueError, OSError) as e:
+    except (ValueError, OSError, Refusal) as e:
         raise SystemExit(f'refused: {e}')
     stamp = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())
     if args.plan:
@@ -146,7 +164,8 @@ def update(args):
         print(f'update plan {p}: cells {", ".join(pl["cells"])}; '
               + '; '.join(f'{e["name"]} {len(e["items"])}' + (' (needs --apply)' if e.get('needs_apply') and not pl['apply'] else '')
                           for e in pl['entries'] if e['items'])
-              + f'; predicted push files {len(rows)}')
+              + f'; predicted push files {len(rows)} ({sum(r["action"] == UP.PUBLISH for r in rows)} publish); '
+              f'quarantine round {pl["round"]}')
         return 0
     if not args.nodes:
         raise SystemExit('refused: run update submits jobs; give --nodes (or --plan DIR to write the plan only)')
