@@ -8,6 +8,9 @@
     exopipe3 run hold JOB | release JOB | drain JOB --host lwacalim09 | retry JOB [--which failed,refused]
     exopipe3 run reorder JOB --first 09h_Full,09h_Red
     exopipe3 run submit --no-start ...; exopipe3 run start JOB      # create the job record now, start it later
+    exopipe3 run update --trigger 13h_Green,13h_Full,15h_Green --hybrid-out H --v3-out M3 --v5-out M5 --plan DIR
+                                       # a partial update as one plan (lib/update/plan.py; runner.UPDATE_ORDER): --plan
+                                       # writes plan.json / plan.csv only; without it the jobs are submitted in order
 
 Inputs:  a step command line after '--', or --chain NAME (runner.CHAINS: step command templates run in order per
          item); items from --cells/--items (any item grammar: list, @file, JOB:STATUS, record:STATUS:STEP@OUT). Use
@@ -37,7 +40,7 @@ CONFIG = ('runner',)      # config sections this step reads (plus config.SHARED_
 
 def add_arguments(p):
     p.add_argument('action', choices=['submit', 'start', 'status', 'hold', 'release', 'drain', 'retry', 'reorder',
-                                      'list', 'supervise', 'worker'])
+                                      'list', 'supervise', 'worker', 'update'])
     p.add_argument('job', nargs='?', help='job id (start/status/hold/release/drain/retry/reorder)')
     p.add_argument('--name', help='job name (submit)')
     p.add_argument('--nodes', help='host:lanes[,host:lanes] or a site pool name (submit)')
@@ -53,6 +56,13 @@ def add_arguments(p):
     p.add_argument('--which', default='failed', help='statuses to re-queue (retry), e.g. failed,refused')
     p.add_argument('--first', help='items to move to the front (reorder)')
     p.add_argument('--lane', type=int, default=0, help=argparse_suppress())
+    u = p.add_argument_group('update (a partial update of the hybrid route; spec plan/specs/hybrid.md 3.7)')
+    u.add_argument('--trigger', help='the changed master cells <LST>_<scope>: list or @file (update)')
+    u.add_argument('--hybrid-out', help='the standing hybrid work run (update): --resume skips its unchanged units')
+    u.add_argument('--v3-out', help='the standing mosaic --generation v3 work run (update)')
+    u.add_argument('--v5-out', help='the standing mosaic --generation v5 work run (update)')
+    u.add_argument('--plan', metavar='DIR', help='write plan.json and plan.csv to DIR and stop (update)')
+    u.add_argument('--apply', action='store_true', help='the pushes apply (update); each class must be in the cutover allowance')
 
 
 def argparse_suppress():
@@ -111,6 +121,37 @@ def _status_line(j, it, s):
     return line
 
 
+def update(args):
+    """`run update`: the plan (lib/update/plan.py) written to --plan, or submitted as runner jobs in order."""
+    import time
+    from exopipe.phase3.core import runner
+    from exopipe.phase3.lib.update import plan as UP
+    if not args.trigger:
+        raise SystemExit('run update needs --trigger <LST>_<scope>[,...] (the changed master cells)')
+    outs = {k: getattr(args, k) for k in UP.OUTS}
+    try:
+        trig = (open(args.trigger[1:]).read().replace(',', ' ').split() if args.trigger.startswith('@')
+                else [c for c in args.trigger.split(',') if c.strip()])
+        pl = UP.build([c.strip() for c in trig], outs, apply=args.apply)
+    except ValueError as e:
+        raise SystemExit(f'refused: {e}')
+    if not args.plan and not args.nodes:
+        raise SystemExit('refused: run update submits jobs; give --nodes (or --plan DIR to write the plan only)')
+    rows = UP.predicted(pl)
+    stamp = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())
+    if args.plan:
+        p = UP.write(pl, rows, args.plan)
+        print(f'update plan {p}: cells {", ".join(pl["cells"])}; '
+              + '; '.join(f'{e["name"]} {len(e["items"])}' for e in pl['entries'] if not e.get('skipped'))
+              + f'; predicted push files {len(rows)}')
+        return 0
+    jobs = UP.submit(pl, runner.parse_nodes(args.nodes or ''), f'update_{stamp}')
+    UP.write(pl, rows, os.path.join(runner.job_dir(jobs[0][1]), 'update_plan'))
+    for name, job in jobs:
+        print(f'{name}: job {job}')
+    return 0
+
+
 def run(args, run):
     from exopipe.phase3.core import runner, cells
     a = args.action
@@ -137,6 +178,8 @@ def run(args, run):
               + (f'; forwarded {" ".join(j["forward_argv"])}' if j['forward_argv'] else '')
               + f'; record {runner.job_dir(job)}' + ('; not started (run start JOB)' if args.no_start else ''))
         return 0
+    if a == 'update':
+        return update(args)
     if a == 'list' or (a == 'status' and not args.job):
         for jb in runner.list_jobs():
             st, by = runner.job_state(jb)

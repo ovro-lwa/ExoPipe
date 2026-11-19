@@ -393,7 +393,16 @@ def _subst_vars(argv):
 
 
 def _subst(argv, item):
+    """The step argv of one item: {item} replaced, or {lst} / {scope} by the parts of an <LST>_<scope> item (run update's hybrid
+    and tilefill entries); a template with none of them gets '--cells <item>' appended."""
     out = _subst_vars(argv)
+    if any('{lst}' in a or '{scope}' in a for a in out):
+        import re
+        m = re.match(r'^(\d\dh)_(\S+)$', item)
+        if not m:
+            raise SystemExit(f'refused: item {item!r} is not <LST>_<scope>, which {{lst}} / {{scope}} in the step command need')
+        out = [a.replace('{lst}', m.group(1)).replace('{scope}', m.group(2)) for a in out]
+        return [a.replace('{item}', item) for a in out]
     if any('{item}' in a for a in out):
         return [a.replace('{item}', item) for a in out]
     return out + ['--cells', item]
