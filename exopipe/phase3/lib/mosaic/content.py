@@ -7,9 +7,14 @@ TEST 1 - the map is the weighted co-add of its inputs (MT 5-13, run 108): at the
   beam-corrected tile x n(l,m) / Omega_zen; Jy/beam: the tile x PB), combined with the co-add's weight at the source (PB^2 /
   sigma^2 x the PB feather; sigma = the tile's apparent-domain MAD). PASS: at least MIN_SOURCES sources, |median ratio - 1| <=
   MED_TOL, a fraction >= FRAC5_MIN of the sources within 5 %, every input a link.
-TEST 2 - provenance (MT provenance 95): run() reports, per LST, the tile and PB files TEST 1 read (their link targets); the unit
-  (v5.content_unit) passes TEST 2 only when they are exactly the files of its tile list, each at the md5 it verified this run. MT
-  recorded the md5 of each tile's first 64 MB and compared it with nothing; v2 checks the whole file against the stage's record.
+TEST 1R - the same identity at random positions, for the Stokes V maps (MT run_random 157-185; PR-6c, v3.content_unit): RAND_N
+  seeded positions (RAND_SEED; Dec >= DEC_MIN + 3 beams; the map finite at every pixel within APERTURE_BEAMS beams); at each, the
+  map's mean minus the same mean recomputed from the tiles as TEST 1; scale = 1.4826 x the MAD of the recomputed means. PASS: >=
+  RAND_MIN_POSITIONS positions, median |difference| / scale <= RAND_MED_MAX and the 90th percentile <= RAND_P90_MAX.
+TEST 2 - provenance (MT provenance 95): run() and run_random() report, per LST, the tile and PB files the test read (their link
+  targets); the unit (v5.content_unit, v3.content_unit) passes TEST 2 only when they are exactly the files of its tile list, each at
+  the md5 it verified this run. MT recorded the md5 of each tile's first 64 MB and compared it with nothing; v2 checks the whole file
+  against the stage's record.
 
 The arithmetic is MT's line for line; the engine module is the v2 coadd_jysr with the mosaic_coadd globals bound (v5._bind_engine).
 Changes: every read uses memmap=False (MT read the Lustre tiles memory-mapped: spec section 7 B1); the tiles and the sources are read
@@ -126,15 +131,70 @@ def _read_map(path):
     return read_map(path)
 
 
+def _staged(root, variant, band, product='I'):
+    """{LST: Tile} of the link tree root (the LSTs whose tile and weighting map exist)."""
+    lsts = sorted(os.path.basename(d) for d in glob.glob(os.path.join(glob.escape(root), '*h')))
+    tiles = {lst: Tile(root, lst, variant, band, product) for lst in lsts}
+    return {lst: t for lst, t in tiles.items() if t.ok}
+
+
+def run_random(maps, root, variant, band, product='Vclean', n=None, seed=None):
+    """TEST 1R (MT run_random 157-185) of each domain's map ({domain: path}) against one reading of the staged tiles: {domain: report}
+    with result PASS / FAIL and `read`, the files the test read. Each domain draws its positions afresh from the seed, as MT did (one
+    process per domain)."""
+    import healpy as hp
+    C = _cfg()
+    n = int(n or C.RAND_N)
+    seed = int(C.RAND_SEED if seed is None else seed)
+    tiles = _staged(root, variant, band, product)
+    beam = float(np.median([t.h['BMAJ'] for t in tiles.values()])) if tiles else float('nan')
+    R = float(C.APERTURE_BEAMS) * beam
+    read = [t.read for t in tiles.values()]
+    out = {}
+    for domain, map_path in maps.items():
+        diffs, exps = [], []
+        if tiles:
+            mp = _read_map(map_path)
+            nside = hp.get_nside(mp)
+            rng = np.random.default_rng(seed)
+            tries, smin = 0, np.sin(np.radians(float(C.DEC_MIN) + 3 * beam))
+            while len(diffs) < n and tries < int(C.RAND_TRIES_PER_POSITION) * n:
+                tries += 1
+                ra = rng.uniform(0, 360)
+                dec = np.degrees(np.arcsin(rng.uniform(smin, 1)))
+                vals = mp[hp.query_disc(nside, hp.ang2vec(ra, dec, lonlat=True), np.radians(R))]
+                if vals.size < 3 or not np.all(np.isfinite(vals) & (vals != hp.UNSEEN)):
+                    continue
+                num = den = 0.0
+                for t in tiles.values():
+                    r = t.aperture(ra, dec, R, domain)
+                    if r is not None:
+                        num += r[1] * r[0]
+                        den += r[1]
+                if den <= 0:
+                    continue
+                exp = num / den
+                diffs.append(float(np.mean(vals) - exp))
+                exps.append(exp)
+            del mp
+        d, e = np.abs(np.array(diffs)), np.array(exps)
+        scale = 1.4826 * float(np.median(np.abs(e - np.median(e)))) if len(e) else float('nan')
+        med = float(np.median(d) / scale) if len(d) and scale > 0 else float('nan')
+        p90 = float(np.percentile(d, 90) / scale) if len(d) and scale > 0 else float('nan')
+        ok = len(d) >= int(C.RAND_MIN_POSITIONS) and med <= float(C.RAND_MED_MAX) and p90 <= float(C.RAND_P90_MAX)
+        out[domain] = dict(map=map_path, variant=variant, band=band, domain=domain, product=product, test='random-identity',
+                           n_tiles=len(tiles), n_positions=int(len(d)), scale=scale, median_absdiff_over_scale=med,
+                           p90_absdiff_over_scale=p90, seed=seed, read=read, result='PASS' if ok else 'FAIL')
+    return out
+
+
 def run(maps, root, variant, band, parents, n=None):
     """TEST 1 (MT run 108-140) of each domain's map ({domain: path}) against one reading of the staged tiles and sources: {domain:
     report}. Each report holds result PASS / FAIL for TEST 1 and `read`, the files TEST 1 read (TEST 2 is judged by the unit)."""
     import healpy as hp
     C = _cfg()
     n = int(n or C.N_SOURCES)
-    lsts = sorted(os.path.basename(d) for d in glob.glob(os.path.join(glob.escape(root), '*h')))
-    tiles = {lst: Tile(root, lst, variant, band) for lst in lsts}
-    tiles = {lst: t for lst, t in tiles.items() if t.ok}
+    tiles = _staged(root, variant, band)
     beam = float(np.median([t.h['BMAJ'] for t in tiles.values()])) if tiles else float('nan')
     R = float(C.APERTURE_BEAMS) * beam
     src = _sources(parents, band, n, beam) if tiles else np.zeros((0, 3))
