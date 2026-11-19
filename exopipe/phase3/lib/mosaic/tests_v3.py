@@ -54,6 +54,35 @@ def tiles_complete(path, **ctx):
 
 
 @content_test('mosaic_v3_tiles')
+def tiles_weighting(path, **ctx):
+    """Stokes V: the weighting maps are the ones the tile list declares (mosaic_v3.VCLEAN_WEIGHTING; a list without 'weighting' was
+    staged with production's). 'own': each map derived from the tile's own master - row pbfor = path, the map's PBFOR card the
+    master's name, PBSCOPE the scope, PBNDATE the tile's nights less those without a QA table (pb_missing_dates). 'production':
+    each map derived from a Stokes I master. Other jobs: nothing to check."""
+    from astropy.io import fits
+    t = _tiles(path)
+    if _job_kind(t) != 'vclean':
+        return True, 0, 'not a Stokes V job'
+    w = t.get('weighting') or 'production'
+    rows = t.get('tiles') or []
+    probs = []
+    for r in rows:
+        if w == 'production':
+            if '_I_deep_' not in os.path.basename(r.get('pbfor') or ''):
+                probs.append(f'{r.get("lst")}: pbfor {r.get("pbfor")!r} is not a Stokes I master')
+            continue
+        if w != 'own' or r.get('pbfor') != r.get('path'):
+            probs.append(f'{r.get("lst")}: weighting {w!r}, pbfor {r.get("pbfor")!r} is not the tile {r.get("path")!r}')
+            continue
+        h = fits.getheader(r['pb'], memmap=False)
+        nd = len(r.get('nights') or []) - len(r.get('pb_missing_dates') or [])
+        got = (h.get('PBFOR'), h.get('PBSCOPE'), h.get('PBNDATE'))
+        if got != (os.path.basename(r['path'])[:60], t.get('scope'), nd):
+            probs.append(f'{r.get("lst")}: map PBFOR/PBSCOPE/PBNDATE {got} != {(os.path.basename(r["path"])[:60], t.get("scope"), nd)}')
+    return not probs, len(probs), '; '.join(probs[:3]) or f'{len(rows)} Stokes V tiles with {w!r} weighting maps'
+
+
+@content_test('mosaic_v3_tiles')
 def tiles_on_disk(path, **ctx):
     """Every master and weighting map exists with the staged md5 (the files the co-add reads)."""
     from exopipe.phase3.lib.mosaic.gen_common import _md5
