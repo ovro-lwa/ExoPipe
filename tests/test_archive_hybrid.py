@@ -17,6 +17,10 @@ MIRROR archive root under $TMPDIR, the exclusion read stubbed:
      replaces (D7) - while a PB map lacking only retired keys passes; two installed files of a kind; a quarantine destination that
      exists (G4) leaves no .part behind;
   5. a pinned unit pushes only the tilefill outputs and retires nothing;
+  5b. a unit the work run did not finish (its stage records; steps.hybrid.unit_state, refused before a done tilefill): unfinished
+     refuses; refused with nothing installed refuses as a gap; refused with installed products refuses until
+     hybrid_unit.REFUSED_INSTALLED rules it: keep (keep rows) or quarantine (retire rows, moved into the round quarantine with
+     manifest rows, no push manifest); run_hybrid makes it a push unit of its own;
   6. master.write_diffuse_pb: a clean PB-map header (no SH* or master card, no PRODNAME, the repair cards kept); a current map kept;
      a map with other values or a master card rewritten; Full's left to the full stage.
 Cluster parity (not here): the PR-5 parity products of 18h 46 MHz Robust -0.75 pushed into a scratch mirror holding the installed
@@ -438,6 +442,77 @@ def test_swap_and_copy_failures():
             assert all(os.path.exists(r['dst']) for r in rows)
     finally:
         K.commit_part, K.verified_copy = old_commit, old_copy
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def _records(out, unit, staged=False, **stages):
+    d = os.path.join(out, '_records', 'hybrid')
+    os.makedirs(d, exist_ok=True)
+    for s, st in stages.items():
+        with open(os.path.join(d, f'{s}.{unit}.json'), 'w') as f:
+            json.dump(dict(status=st, reason=f'{s} {st} (synthetic)', **({'staged_from': {}} if staged else {})), f)
+
+
+def test_refused_units():
+    from exopipe.phase3.steps import hybrid as SH
+    d = _tmp('ah_ref_')
+    old = dict(CFG.hybrid_unit.REFUSED_INSTALLED)
+    try:
+        out = os.path.join(d, 'out')
+        _records(out, '18h_46MHz_R075', stack='done', recon='refused')
+        _records(out, '18h_50MHz_R075', stack='done', recon='done', hybrid='running')
+        _records(out, '18h_55MHz_R075', stack='done', recon='refused', hybrid='done', tilefill='done')   # a stale done tilefill
+        _records(out, '19h_46MHz_R075', stack='done', recon='done', hybrid='done', tilefill='done')
+        _records(out, '18h_69MHz_R075', staged=True, stack='done')      # a member stack staged from production: an input
+        _records(out, '18h_64MHz_R075', stack='done')                   # a stack the run made, recon not started: unfinished
+        _records(out, '18h_59MHz_R075', stack='done', recon='error', hybrid='done', tilefill='done')    # a rerun that crashed
+        S = {k: SH.unit_state(v) for k, v in SH.work_states(out).items()}
+        assert S[('18h', '46MHz', 'R075')][:3] == ('refused', 'recon', 'refused'), S
+        assert S[('18h', '50MHz', 'R075')][:3] == ('unfinished', 'hybrid', 'running'), S
+        assert S[('18h', '55MHz', 'R075')][:2] == ('refused', 'recon') and S[('19h', '46MHz', 'R075')][0] == 'done', S
+        assert S[('18h', '69MHz', 'R075')][0] == 'input' and S[('18h', '64MHz', 'R075')][:2] == ('unfinished', 'stack'), S
+        assert S[('18h', '59MHz', 'R075')][:3] == ('unfinished', 'recon', 'error'), S
+        assert SH.unit_state(SH.work_states(out)[('18h', '50MHz', 'R075')], through='hybrid')[:2] == ('unfinished', 'hybrid')
+        assert SH.unit_state({'tilefill': ('done', '', False)}, through='hybrid')[0] == 'none'          # a pinned tilefill unit
+        assert set(SH.work_states(out, lsts={'19h'})) == {('19h', '46MHz', 'R075')}
+        with _Env(d) as E:
+            st = S[('18h', '46MHz', 'R075')]
+            assert 'unfinished' in _raises(Refusal, AH.refused_rows, E.ctx, '18h', '50MHz', 'R075', S[('18h', '50MHz', 'R075')])
+            assert 'a gap' in _raises(Refusal, AH.refused_rows, E.ctx, '18h', '46MHz', 'R075', st)
+            a = E.adir()
+            olds = {k: _fits(os.path.join(a, _names('014')[k]), 1.0, **REPAIR) for k in ('plain', 'pbcorr', 'cleanres')}
+            pbm = _fits(os.path.join(a, 'PB_deep_R075_46MHz.fits'), 0.8, prodname=False, BUNIT='')
+            msg = _raises(Refusal, AH.refused_rows, E.ctx, '18h', '46MHz', 'R075', st)
+            assert 'REFUSED_INSTALLED' in msg and 'stay silently' in msg and _names('014')['plain'] in msg, msg
+            CFG.hybrid_unit.REFUSED_INSTALLED[('18h', '46MHz', 'R075')] = 'keep'
+            rows, notes = AH.refused_rows(E.ctx, '18h', '46MHz', 'R075', st)
+            assert sorted((r['kind'], r['action'], r['dst'], r['md5']) for r in rows) == sorted(
+                (k, 'keep', p, _md5(p)) for k, p in olds.items()), rows
+            assert notes and notes[0].startswith('keep by ruling') and 'recon' in notes[0], notes
+            CFG.hybrid_unit.REFUSED_INSTALLED[('18h', '46MHz', 'R075')] = 'quarantine'
+            rows, notes = AH.refused_rows(E.ctx, '18h', '46MHz', 'R075', st)
+            assert {(r['kind'], r['action'], r['replaces']) for r in rows} == {(k, 'retire', p) for k, p in olds.items()}, rows
+            u = _U()
+            AH.apply_unit(E.ctx, u, rows, 'T9')
+            q = AH.quarantine_dir(E.ctx, 'T9')
+            assert all(not os.path.exists(p) and os.path.exists(os.path.join(q, '18h', '46MHz', os.path.basename(p)))
+                       for p in olds.values())
+            ok, _v, why = AT.rows_quarantined(os.path.join(q, AH.QUARANTINE_MANIFEST))
+            assert ok, why
+            assert os.path.exists(pbm) and not os.path.exists(os.path.join(AH.archive_dir(E.ctx), f'MANIFEST_{E.ctx.stamp}.csv'))
+            assert [c for _p, c, _x in u.outputs] == ['quarantine_manifest'], u.outputs
+            names = []
+            args = types.SimpleNamespace(staging_root=out, round='T9', _stages=['transfer'], lsts=None)
+            E.ctx.tier = 'deep'
+            AH.run_hybrid(E.ctx, args, None, lambda name, body, describe: names.append(name))
+            assert names == [f'push_hybrid_18h_{b}MHz_R075' for b in ('46', '50', '55', '59', '64')], names
+            names.clear()
+            AH.run_hybrid(E.ctx, types.SimpleNamespace(**{**vars(args), 'lsts': '19h'}), None,
+                          lambda name, body, describe: names.append(name))
+            assert names == [], names                       # 19h: done by its records, but no tilefill output to push here
+    finally:
+        CFG.hybrid_unit.REFUSED_INSTALLED.clear()
+        CFG.hybrid_unit.REFUSED_INSTALLED.update(old)
         shutil.rmtree(d, ignore_errors=True)
 
 
