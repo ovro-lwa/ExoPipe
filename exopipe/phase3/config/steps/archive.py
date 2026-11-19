@@ -253,7 +253,8 @@ class archive_push(_Section):
         'pb': ('SHSCALE', 'SHERR', 'SHNSRC', 'SHSRCS', 'SHMETHOD', 'SHFREQ', 'SHFRQSRC', 'SHDATE'),
         # the same + R-GREGG-20261118-HYBRID-Q1-Q3-GO-WITH-RECOMMENDATIONS, Q3 (= pb_apply.PBDIFFUSE_MASTER_CARDS)
         'pbdiffuse': ('SHSCALE', 'SHERR', 'SHNSRC', 'SHSRCS', 'SHMETHOD', 'SHFREQ', 'SHFRQSRC', 'SHDATE',
-                      'FLUXFIT', 'FLUXBND', 'FLUXABS', 'FLUXCORR', 'FLUXVER', 'FLUXBAKE', 'FLUXREF', 'IMGRMS', 'THERMNOI'),
+                      'FLUXFIT', 'FLUXBND', 'FLUXABS', 'FLUXCORR', 'FLUXVER', 'FLUXBAKE', 'FLUXREF', 'IMGRMS', 'THERMNOI',
+                      'LSSTKADM'),
     }
     # Product class of an archived per-epoch file, by name tokens, first match wins: (token that must be present, second
     # token or None, class). The archived copy is content-tested with the producing step's class test. A search frame and

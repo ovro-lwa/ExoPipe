@@ -220,7 +220,11 @@ def pb_map_header_problems(h):
 # R-GREGG-20261118-HYBRID-Q1-Q3-GO-WITH-RECOMMENDATIONS): a diffuse PB map (PBdiffuse_deep_<scope>.fits, hybrid split beam correction)
 # starts from a reconstruction's header and carries none of the master's flux and noise cards either; the 456 archived maps were
 # passed the same way on 2026-11-18 (DONE-20261118-PBDIFFUSE-MASTER-CARDS-HEADER-PASS). The full PB maps (PB_deep*) keep theirs.
-PBDIFFUSE_MASTER_CARDS = ('FLUXFIT', 'FLUXBND', 'FLUXABS', 'FLUXCORR', 'FLUXVER', 'FLUXBAKE', 'FLUXREF', 'IMGRMS', 'THERMNOI')
+# LSSTKADM (the subband stacks admitted at hybrid scales, Gregg 10-31) is a master card of the same kind (2026-11-19): admission is
+# per weighting, while the diffuse map is one map for both weightings (the same pixels); production's maps took the card from
+# whichever weighting's header seeded them (11 archived maps carry a Robust -0.75 master's value; no rebuilt map carries it).
+PBDIFFUSE_MASTER_CARDS = ('FLUXFIT', 'FLUXBND', 'FLUXABS', 'FLUXCORR', 'FLUXVER', 'FLUXBAKE', 'FLUXREF', 'IMGRMS', 'THERMNOI',
+                          'LSSTKADM')
 PBDIFFUSE_RULING = 'R-GREGG-20261118-HYBRID-Q1-Q3-GO-WITH-RECOMMENDATIONS'
 
 
