@@ -65,7 +65,7 @@ def _raises(exc, fn, *a, **k):
     raise AssertionError(f'{fn.__name__} did not raise {exc.__name__}')
 
 
-def _img(path, nights=('2025-08-09', '2025-10-29'), **cards):
+def _img(path, nights=('2025-08-09', '2025-10-29'), data=None, **cards):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     h = fits.Header()
     for k, v in dict(PBCORR=True, BMAJ=0.1, BMIN=0.09, RESTFRQ=7.5e7, PBMODEL='m', PBCHROM='c', PBRESID='r',
@@ -78,7 +78,7 @@ def _img(path, nights=('2025-08-09', '2025-10-29'), **cards):
             h[k] = v
     for n in nights:
         h.add_history(f'COADD constituent {n}')
-    fits.PrimaryHDU(np.ones((4, 4), np.float32), header=h).writeto(path, overwrite=True)
+    fits.PrimaryHDU(np.ones((4, 4), np.float32) if data is None else data, header=h).writeto(path, overwrite=True)
     return path
 
 
@@ -226,10 +226,15 @@ def test_select_units():
     for _s, _sc, j in u:
         if j not in jobs:
             jobs.append(j)
-    assert jobs == [J_R075, J_R0, J_SSUB, J_V], jobs
-    assert v3.STAGES == ('stage', 'coadd', 'pkcorr', 'render', 'content')
-    assert [s for s, _sc, j in u if j == J_V] == ['stage', 'coadd', 'render', 'content']           # no PKCORR for Stokes V
-    assert [s for s, _sc, j in u if j == J_SSUB] == list(v3.STAGES)
+    assert jobs == [J_R075, J_R0, J_SSUB, J_V, None], jobs
+    assert v3.STAGES == ('stage', 'coadd', 'pkcorr', 'render', 'content', 'conform', 'tables')
+    assert [s for s, _sc, j in u if j == J_V] == ['stage', 'coadd', 'render', 'content', 'conform']   # no PKCORR for Stokes V
+    assert [s for s, _sc, j in u if j == J_SSUB] == list(v3.STAGES[:-1]) and u[-1] == ('tables', None, None)
+    # the conform units of a scope follow every other stage of its jobs (the Stokes I conform reads the Stokes V coadd); tables last
+    assert [(s, j) for s, _sc, j in u][-5:] == [('conform', J_R075), ('conform', J_R0), ('conform', J_SSUB), ('conform', J_V),
+                                                ('tables', None)]
+    assert [(s, sc) for s, sc, _j in v3.select_units(_args(scopes='Blue,Red', products='Vclean', stages='content,conform,tables'), SEL)] \
+        == [('content', 'Blue'), ('conform', 'Blue'), ('content', 'Red'), ('conform', 'Red'), ('tables', None)]
     assert v3.select_units(_args(scopes='Blue', products='Vclean', stages='pkcorr'), SEL) == []
     assert not v3.has_stage(v3.Job('Vclean', 'Taper_R0'), 'pkcorr') and v3.has_stage(v3.Job('Vclean', 'Taper_R0'), 'content')
     assert v3.has_stage(v3.Job('I', 'Taper_R075'), 'pkcorr')
@@ -239,8 +244,8 @@ def test_select_units():
                                                                                                 v3.Job('I', 'Taper_R0'), J_V]
     assert [j for _s, _sc, j in v3.select_units(_args(scopes='Blue', striation='without', variants='Taper_R0', stages='stage'), SEL)] \
         == [J_R0, J_V]
-    assert [(s, j) for s, _sc, j in v3.select_units(_args(scopes='Blue', products='Vclean', from_stage='coadd'), SEL)] == \
-        [('coadd', J_V), ('render', J_V), ('content', J_V)]
+    assert [(s, j) for s, _sc, j in v3.select_units(_args(scopes='Blue', products='Vclean', from_stage='coadd', until_stage='content'),
+                                                    SEL)] == [('coadd', J_V), ('render', J_V), ('content', J_V)]
     for k, val, msg in (('scopes', 'Purple', '--scopes'), ('products', 'Q', '--products'), ('variants', 'NoTaper_R0', '--variants'),
                         ('striation', 'maybe', '--striation'), ('stages', 'caveat', 'unknown v3 stage')):
         assert msg in _raises(ValueError, v3.select_units, _args(**{k: val}), SEL), k
@@ -267,26 +272,39 @@ def _plan(masters, refusals=()):
                                  admitted=sorted(f'{l}:{d}' for l in masters for d in ('2025-08-09', '2025-10-29')))
 
 
-def _masters(d, job, scope='Blue'):
+def _time_cards(i):
+    from astropy.time import Time
+    t0 = 60662.0 + 10 * i
+    return {'MJD-OBS': t0, 'MJD-MID': t0 + 5, 'DATE-END': Time(t0 + 10 + i, format='mjd').isot, 'INTTIME': 1000.0 + i, 'GITTAG': f'g{i}'}
+
+
+def _noise(seed):
+    return np.random.default_rng(seed).normal(0, 1, (12, 12)).astype(np.float32)
+
+
+def _masters(d, job, scope='Blue', big=False):
+    """The 24 archived masters of a plain job; big: 12 x 12 noise images with the time cards a conform reads."""
     tok = CFG.mosaic.VARIANT_TOKENS[job.variant]
     return {lst: _img(os.path.join(d, 'A', lst, scope, f'{scope}_I_deep_{tok}_shflux_pbcorr_dewarped_aligned_coadd_LST{lst}_'
-                                                         f'20250809-20251029_N002.fits')) for lst in LSTS}
+                                                         f'20250809-20251029_N002.fits'),
+                      **(dict(data=_noise(i), **_time_cards(i)) if big else {})) for i, lst in enumerate(LSTS)}
 
 
-def _fake_pb(calls, fail=()):
+def _fake_pb(calls, fail=(), shape=(4, 4)):
     def wideband_pb(scope, lst, master_path, **k):
         calls.append((scope, lst, master_path))
         if lst in fail:
             raise RuntimeError('library map missing')
-        return np.full((4, 4), 0.5, np.float32), {'used_dates': ['2025-08-09', '2025-10-29'], 'chromatic': 'bs-sqbp-v1',
+        return np.full(shape, 0.5, np.float32), {'used_dates': ['2025-08-09', '2025-10-29'], 'chromatic': 'bs-sqbp-v1',
                                                   'residual_pb': 'residual_pb_v2-perband'}
     return wideband_pb
 
 
-def _stage_plain(d, out, job, fail=(), refusals=()):
-    ms = _masters(d, job)
+def _stage_plain(d, out, job, fail=(), refusals=(), big=False):
+    ms = _masters(d, job, big=big)
     calls = []
-    with _patched((v3, 'plan_plain', lambda scope, j: _plan(ms, refusals)), (pb_apply, 'wideband_pb', _fake_pb(calls, fail))):
+    with _patched((v3, 'plan_plain', lambda scope, j: _plan(ms, refusals)),
+                  (pb_apply, 'wideband_pb', _fake_pb(calls, fail, (12, 12) if big else (4, 4)))):
         u = _unit(out, 'stage', v3.stage_unit, 'Blue', job, {})
     return u, ms, calls
 
@@ -441,7 +459,8 @@ def _fake_engine(calls, skip=(), missing=()):
         names = ([f'healpix_{stem}{tag}_jybeam_nside{ns}.fits', f'healpix_PBeff_{stem}{tag}_nside{ns}.fits'] if domain == 'jybeam'
                  else [f'healpix_{stem}{tag}_jysr_nside{ns}.fits', f'healpix_PSF_{stem}{tag}_nside{ns}.fits'])
         for i, n in enumerate(names):
-            _hpx(os.path.join(out_dir, n), np.arange(12) + i + (10 if domain == 'jybeam' else 0), FREQ=7.0e7)
+            _hpx(os.path.join(out_dir, n), np.arange(12) + i + (10 if domain == 'jybeam' else 0), FREQ=7.0e7,
+                 **({} if i else {'BUNIT': 'Jy/beam' if domain == 'jybeam' else 'Jy/sr'}))     # the engine's BUNIT (coadd_jysr 290)
         return None, None
     m.coadd_jysr = coadd_jysr
     return m
@@ -461,7 +480,8 @@ def _fake_build(calls):
         label = variant if product == 'I' else 'V_deep_Taper_R0_clean'
         for b in bands:
             for proj in ('Mollweide', 'RADec'):
-                fits.PrimaryHDU(np.zeros((2, 2), np.float32)).writeto(os.path.join(out, f'{b}_{label}{suffix}_{proj}.fits'))
+                h = fits.Header({'BUNIT': 'Jy/sr' if suffix.endswith('jysr') else 'Jy/beam'})   # band_products: the map's BUNIT
+                fits.PrimaryHDU(np.zeros((2, 2), np.float32), header=h).writeto(os.path.join(out, f'{b}_{label}{suffix}_{proj}.fits'))
     return build
 
 
@@ -534,7 +554,7 @@ def _hpx_read(path):
     return np.asarray(fits.getdata(path, 1)['SIGNAL'], np.float32).ravel()
 
 
-def _fake_run_band(calls, verdict='pass', refuse=None):
+def _fake_run_band(calls, verdict='pass', refuse=None, curve='x\n'):
     from exopipe.phase3.lib.mosaic import pkcorr as PK
 
     def run_band(root, band, variant, out, lsts, rounds, tag, mos_c, psf, scratch, nside, record_dir=None):
@@ -545,8 +565,8 @@ def _fake_run_band(calls, verdict='pass', refuse=None):
         nm = PK.names(variant, band, tag, nside)
         P = {k: os.path.join(out, f) for k, f in nm.items()}
         _hpx(P['map'], np.full(12, 0.9), NSIDE=nside, ORDERING='RING', BUNIT='', SINJ=50.0, NROUNDS=rounds)
-        for k in ('curve', 'recovery'):
-            open(P[k], 'w').write('x\n')
+        open(P['curve'], 'w').write(curve)
+        open(P['recovery'], 'w').write('x\n')
         res = dict(rounds=rounds, rec_median=0.9, rec_min=0.9, rec_max=0.9, ra_scatter_median_mad=0.01,
                    map=os.path.join(record_dir, nm['map']), test_pkcorr=dict(verdict=verdict, nodes=60, missing_or_few_rounds=[],
                                                                             out_of_range=[], max_map_err=0.0))
@@ -825,6 +845,252 @@ def test_render_vclean_names():
             h = fits.getheader(os.path.join(d, 'r', f'Blue_V_deep_Taper_R0_clean_jysr_{proj}.fits'))
             assert h['VARIANT'] == 'V_deep_Taper_R0_clean' and h['DECMIN'] == -30.0
         _raises(ValueError, BP.build, 'Taper_R0', d, '_jysr', d, bands=['Blue'], product='Q')
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+# ---- 7. conform and tables (PR-6d) ------------------------------------------------------------------------------------------------
+
+_A = '_allsky_20241218-20251029_N024.fits'
+ARCH_V3 = {   # the archived FEATHER3 Blue products (mosaic/Run_FEATHER3_20241218-20251029/Blue/<I|V>/<sub>/), listed 2026-11-19
+    J_R075: {('healpix', f'Blue_I_deep_Taper_Robust-0.75_{x}{_A}') for x in (
+        'coadd_mosaic_feather_pbmap', 'coadd_mosaic_jybeam_feather', 'pbcorr_coadd_mosaic_feather_pkcorr',
+        'pbcorr_coadd_mosaic_feather_psfmap', 'pbcorr_coadd_mosaic_jysr_feather')}
+    | {(k, f'Blue_I_deep_Taper_Robust-0.75_{x}_{t}{_A}') for k, t in (('mollweide', 'molrender'), ('radec', 'carrender'))
+       for x in ('coadd_mosaic_jybeam_feather', 'pbcorr_coadd_mosaic_jysr_feather')},
+    J_SSUB: {('healpix', f'Blue_I_deep_Taper_Robust-0.75_{x}{_A}') for x in (
+        'coadd_ssub-rst8_mosaic_feather_pbmap', 'coadd_ssub-rst8_mosaic_jybeam_feather', 'pbcorr_coadd_ssub-rst8_mosaic_feather_pkcorr',
+        'pbcorr_coadd_ssub-rst8_mosaic_feather_psfmap', 'pbcorr_coadd_ssub-rst8_mosaic_jysr_feather')}
+    | {(k, f'Blue_I_deep_Taper_Robust-0.75_{x}_{t}{_A}') for k, t in (('mollweide', 'molrender'), ('radec', 'carrender'))
+       for x in ('coadd_ssub-rst8_mosaic_jybeam_feather', 'pbcorr_coadd_ssub-rst8_mosaic_jysr_feather')},
+    J_V: {('healpix', f'Blue_V_deep_Taper_Robust+0.0_vclean_{x}{_A}') for x in (
+        'coadd_mosaic_feather_pbmap', 'coadd_mosaic_jybeam_feather', 'pbcorr_coadd_mosaic_feather_psfmap',
+        'pbcorr_coadd_mosaic_jysr_feather')}
+    | {(k, f'Blue_V_deep_Taper_Robust+0.0_vclean_{x}_{t}{_A}') for k, t in (('mollweide', 'molrender'), ('radec', 'carrender'))
+       for x in ('coadd_mosaic_jybeam_feather', 'pbcorr_coadd_mosaic_jysr_feather')}}
+
+
+def test_conform_names_equal_archive():
+    from astropy.time import Time
+    from exopipe.phase3.lib.mosaic import conform_v3 as CF
+    t0, t1 = Time('2024-12-18T03:04:12.100').mjd, Time('2025-10-29T08:21:24.560').mjd
+    for job, want in ARCH_V3.items():
+        nm = CF.names('Blue', job, v3.paths('/o', 'Blue', job), t0, t1, 24)
+        assert {(sub, n) for _s, sub, n, _p in nm.values()} == want, (job, sorted(nm))
+        assert [k for k, v in nm.items() if v[3]] == ['jysr', 'jysr_mollweide', 'jysr_radec', 'psfmap'] + (
+            ['pkcorr'] if job.product == 'I' else [])                                                        # PBCORR
+    assert CF.names('18MHz', J_R0, v3.paths('/o', '18MHz', J_R0), t0, t1, 24)['jysr'][2] == \
+        '18MHz_I_deep_Taper_Robust+0.0_pbcorr_coadd_mosaic_jysr_feather_allsky_20241218-20251029_N024.fits'
+    assert CF.subdir('/s', 'Blue', J_V, 'radec') == '/s/Blue/V/radec' and CF.provbas().startswith('Coadd/Run_')
+    # the archived pkcorr_curves.csv order: variants in mosaic_v3.VARIANTS order, then band, then version
+    rows = [['Taper_R0', 'Blue', '-30.0', 'plain'], ['Taper_R075', 'Blue', '-30.0', 'ssub-rst8'], ['Taper_R075', 'Blue', '-30.0', 'plain'],
+            ['Taper_R075', '82MHz', '-28.0', 'plain'], ['Taper_R075', '82MHz', '-30.0', 'plain']]
+    assert sorted(rows, key=CF.curve_sort) == [rows[3], rows[4], rows[2], rows[1], rows[0]]
+
+
+@contextlib.contextmanager
+def _healpy_nside1():
+    """A healpy stand-in for conform_v3.thermnoi: read_map reads the SIGNAL column; NSIDE 1 pixels 0-3 lie at Dec +41.8 deg (inside the
+    zenith strip), 4-7 at 0, 8-11 at -41.8."""
+    hp = types.ModuleType('healpy')
+
+    def read_map(path, memmap=False):
+        assert memmap is False
+        with fits.open(path, memmap=False) as h:
+            return np.asarray(h[1].data['SIGNAL'], np.float32).ravel()
+    hp.read_map = read_map
+    hp.npix2nside = lambda npix: int(round((npix / 12) ** 0.5))
+    hp.pix2ang = lambda nside, ip: (np.array([np.arccos(2 / 3)] * 4 + [np.pi / 2] * 4 + [np.arccos(-2 / 3)] * 4)[ip], np.zeros(len(ip)))
+    old = sys.modules.get('healpy')
+    sys.modules['healpy'] = hp
+    try:
+        yield hp
+    finally:
+        if old is None:
+            sys.modules.pop('healpy', None)
+        else:
+            sys.modules['healpy'] = old
+
+
+CURVE = 'dec,rec_median,rec_mad,n,n_rounds\r\n-30.0,0.8255,0.0159,5,5\r\n-28.0,0.8303,0.0195,5,5\r\n'
+
+
+def _v3_chain(d):
+    """Blue Taper R-0.75 and Vclean through stage .. content (NSIDE 1) with stand-ins whose files a conform can stamp: 12 x 12 noise
+    masters with time cards, weighting maps of 0.5. Returns (out, work, {variant: masters}, the parents dir)."""
+    from exopipe.phase3.lib.mosaic import content as CT
+    from exopipe.phase3.lib.mosaic import pkcorr as PK
+    out, work = os.path.join(d, 'out'), os.path.join(d, 'work')
+    par = os.path.join(d, 'parents')
+    os.makedirs(par)
+    open(os.path.join(par, 'master_R075_00h_Blue.gaul.csv'), 'w').write('# none\n')
+    ms = {}
+    for job in (J_R075, J_R0):
+        u, ms[job.variant], _c = _stage_plain(d, out, job, big=True)
+        assert u.status == 'done', (u.status, u.reason)
+    _archive(d, 'vclean', LSTS, data=_noise(99), **_time_cards(3))
+    with _patched((CFG.mosaic, 'INPUT_COADD_RUN', os.path.join(d, 'A'))):
+        assert _unit(out, 'stage', v3.stage_unit, 'Blue', J_V, {}).status == 'done'
+    eng = _fake_engine([])
+    for job in (J_R075, J_V):
+        with _fake_module('exopipe.phase3.lib.mosaic.coadd_jysr', eng), _no_content_tests():
+            assert _unit(out, 'coadd', v3.coadd_unit, 'Blue', job, work).status == 'done'
+        with _fake_module('exopipe.phase3.lib.mosaic.band_products', _fake_bp([])), _no_content_tests():
+            assert _unit(out, 'render', v3.render_unit, 'Blue', job, work).status == 'done'
+        run, run_random = _fake_content([], json.load(open(v3.paths(out, 'Blue', job)['tiles'])))
+        with _fake_module('exopipe.phase3.lib.mosaic.coadd_jysr', eng), _patched((CT, 'run', run), (CT, 'run_random', run_random)), \
+                _patched((CFG.mosaic_content, 'PARENTS', par)):
+            assert _unit(out, 'content', v3.content_unit, 'Blue', job, work).status == 'done'
+    with _fake_module('exopipe.phase3.lib.mosaic.coadd_jysr', eng), _no_content_tests(), \
+            _patched((PK, 'run_band', _fake_run_band([], curve=CURVE)), (PK, 'read_map', _hpx_read)):
+        assert _unit(out, 'pkcorr', v3.pkcorr_unit, 'Blue', J_R075, work).status == 'done'
+    return out, work, ms, eng
+
+
+def _arch_tables(d, scopes, sel):
+    """An archive run whose tables hold a row for every job of scopes (old numbers), plus the two carried selection tables."""
+    from exopipe.phase3.lib.mosaic import conform_v3 as CF
+    from exopipe.phase3.lib.mosaic import conform_v5 as CF5
+    run = os.path.join(d, 'ARCH', 'Run_FEATHER3_20241218-20251029')
+    td = os.path.join(run, 'tables')
+    os.makedirs(td)
+    si, sv, cu = [], [], []
+    for sc in scopes:
+        for j in v3.jobs_for(sc, ('I', 'Vclean'), 'both', CFG.mosaic_v3.VARIANTS, sel):
+            for dom in ('jybeam', 'jysr'):
+                m = os.path.basename(v3.paths('/o', sc, j)[dom])
+                if j.product == 'I':
+                    si.append([m, j.variant, sc, dom, '24', '200', '0.99', '0.98', '1.01', '1.0', 'PASS'])
+                else:
+                    sv.append([m, sc, dom, '24', '200', '0.02', '0.05', 'PASS'])
+            if j.product == 'I':
+                cu += [[j.variant, sc, dec, '0.8', '0.01', '5', '5', 'ssub-rst8' if j.ssub else 'plain'] for dec in ('-30.0', '-28.0')]
+    CF5._write(os.path.join(td, 'summary.csv'), list(CF.SUMMARY_COLS), sorted(si))
+    CF5._write(os.path.join(td, 'summary_vclean.csv'), list(CF.VCLEAN_COLS), sorted(sv))
+    CF5._write(os.path.join(td, 'pkcorr_curves.csv'), list(CF.CURVE_COLS), sorted(cu, key=CF.curve_sort))
+    for name in CFG.mosaic_v3.TABLES_CARRIED:
+        open(os.path.join(td, name), 'w').write('lst,band,variant\n04h,Blue,Taper_R075\n')
+    return run
+
+
+def test_conform_and_tables_units():
+    from exopipe.phase3.lib.mosaic import conform_v3 as CF
+    from exopipe.phase3.lib.mosaic import conform_v5 as CF5
+    d = _tmp('cf_')
+    try:
+        with _patched((CFG.mosaic_coadd, 'NSIDE', 1)):
+            out, work, ms, eng = _v3_chain(d)
+            sel = {('04h', 'Blue'): ['Taper_R075']}
+            arun = _arch_tables(d, ('18MHz', 'Blue'), sel)
+
+            def conform(job, plans=None):
+                pl = plans or ms
+                with _fake_module('exopipe.phase3.lib.mosaic.coadd_jysr', eng), _healpy_nside1(), \
+                        _patched((v3, 'plan_plain', lambda scope, j: _plan(pl[j.variant]))), \
+                        _patched((CFG.mosaic, 'INPUT_COADD_RUN', os.path.join(d, 'A')), (CFG.mosaic_v3, 'ARCHIVE_RUN', arun)):
+                    return _unit(out, 'conform', v3.conform_unit, 'Blue', job, sel)
+            P, PV = v3.paths(out, 'Blue', J_R075), v3.paths(out, 'Blue', J_V)
+            u = conform(J_R075)
+            assert u.status == 'done', (u.status, u.reason)
+            assert not [x for x in u.tests if not x['passed']] and sum(x['cls'] == 'mosaic_v3_product' for x in u.tests) == 9, u.tests
+            staged = {k: x['path'] for k, x in u.meta['products'].items()}
+            assert sorted(staged) == sorted(['jysr', 'jysr_mollweide', 'jysr_radec', 'jybeam', 'pbmap', 'jybeam_mollweide',
+                                             'jybeam_radec', 'psfmap', 'pkcorr'])
+            assert all(os.path.dirname(os.path.dirname(x)) == os.path.join(P['conform'], 'Blue', 'I') for x in staged.values())
+            therm = u.meta['thermnoi']['jy_per_beam']
+            assert abs(therm - 1.4826 * 1.0 * 2.5) < 1e-6, therm       # V jysr [0, 1, 2, 3] in the strip: MAD 1; PSF [1, 2, 3, 4]: 2.5
+            n0 = os.path.basename(staged['jysr'])
+            assert n0.startswith('Blue_I_deep_Taper_Robust-0.75_pbcorr_coadd_mosaic_jysr_feather_allsky_') and n0.endswith('_N024.fits')
+            with fits.open(staged['jysr'], memmap=False) as h:
+                h0, h1, pv = h[0].header, h[1].header, h['PROVENANCE'].data
+                assert h0['PRODNAME'] == n0 == h1['PRODNAME'] and h0['NSTACK'] == 24 and h0['THERMNOI'] == float(f'{therm:.16G}')
+                with _patched((CFG.mosaic, 'INPUT_COADD_RUN', os.path.join(d, 'A'))):
+                    pb = CF.provbas()
+                assert h0['STOKES'] == 'I' and h0['BUNIT'] == 'Jy/sr' and h0['PROVBAS'] == pb and pb.endswith(' master headers')
+                assert list(pv['FILE']) == [os.path.realpath(ms['Taper_R075'][x]) for x in LSTS]
+                assert ' '.join(h0['HISTORY']).count('Mosaic Run_FEATHER3_20241218-20251029: 24 constituent masters') == 1
+                assert np.array_equal(h[1].data['SIGNAL'], fits.getdata(P['jysr'], 1)['SIGNAL'])
+            with fits.open(staged['jybeam'], memmap=False) as h:
+                assert h[1].header['PSFMAP'] == os.path.basename(staged['psfmap']) and h[0].header['PBCORR'] is False
+            for k in ('pkcorr', 'jysr_mollweide', 'pbmap'):
+                assert fits.getheader(staged[k], 0)['THERMNOI'] == float(f'{therm:.16G}'), k
+            assert u.meta['tables']['curve'][0] == P['pkcorr_curve'] and u.meta['tables']['version'] == 'plain'
+            u = conform(J_V)
+            assert u.status == 'done', (u.status, u.reason)
+            sv = {k: x['path'] for k, x in u.meta['products'].items()}
+            assert len(sv) == 8 and 'pkcorr' not in sv and all('/Blue/V/' in x for x in sv.values())
+            with fits.open(sv['jysr'], memmap=False) as h:
+                h0 = h[0].header
+                assert h0['STOKES'] == 'V' and h0['THERMNOI'] == float(f'{therm:.16G}') and '_vclean_' in h0['PRODNAME']
+                assert list(h['PROVENANCE'].data['FILE'])[0].endswith('_vclean_shflux_pbcorr_dewarped_aligned_coadd_LST00h_'
+                                                                         '20250809-20251029_N002.fits')
+            # refusals: a master replaced since the stage (HG13); a render record of earlier code (no md5); a failed test upstream;
+            # a file changed since its stage; no Stokes V coadd (THERMNOI)
+            m2 = dict(ms, Taper_R075=dict(ms['Taper_R075'], **{'05h': ms['Taper_R075']['05h'].replace('_N002', '_N003')}))
+            u = conform(J_R075, m2)
+            assert u.status == 'refused' and 'HG13' in u.reason and '05h' in u.reason and not os.path.exists(P['conform']), u.reason
+            for st, edit, want in (('render', lambda r: r['meta'].pop('md5'), 'recorded no md5'),
+                                   ('content', lambda r: r['tests'][0].update(passed=False), 'holds failed test'),
+                                   ('pkcorr', lambda r: r['tests'].clear(), 'lacks the test')):
+                rp = record.record_path(out, v3.STEP, v3.unit_name(st, 'Blue', J_R075))
+                keep = open(rp).read()
+                r = json.loads(keep)
+                edit(r)
+                json.dump(r, open(rp, 'w'))
+                u = conform(J_R075)
+                open(rp, 'w').write(keep)
+                assert u.status == 'refused' and want in u.reason, (st, u.status, u.reason)
+            keep = open(P['render_jysr_radec'], 'rb').read()
+            open(P['render_jysr_radec'], 'ab').write(b'\0' * 2880)
+            u = conform(J_R075)
+            open(P['render_jysr_radec'], 'wb').write(keep)
+            assert u.status == 'refused' and 'changed since its stage' in u.reason, u.reason
+            vr = record.record_path(out, v3.STEP, v3.unit_name('coadd', 'Blue', J_V))
+            os.rename(vr, vr + '.x')
+            u = conform(J_R075)
+            os.rename(vr + '.x', vr)
+            assert u.status == 'refused' and 'Blue Vclean' in u.reason, u.reason
+            assert conform(J_R075).status == 'done'
+            # tables: the archived tables with this run's rows (Blue R-0.75 and Vclean) replaced, in the archived order
+            run = record.Run('mosaic', ['test'], out, CFG)
+
+            def tables(**patch):
+                with _patched((CFG.mosaic_v3, 'ARCHIVE_RUN', arun), (CFG.mosaic_v3, 'SCOPES', ('18MHz', 'Blue')),
+                              (v3, 'striation_selection', lambda: sel)), run.unit(v3.TABLES_UNIT, stage='tables') as u:
+                    v3.tables_unit(u, out)
+                return u
+            u = tables()
+            assert u.status == 'done', (u.status, u.reason)
+            td = v3.tables_dir(out)
+            assert sorted(os.listdir(td)) == sorted(['pkcorr_curves.csv', 'summary.csv', 'summary_vclean.csv'] +
+                                                    list(CFG.mosaic_v3.TABLES_CARRIED))
+            assert u.meta['rows'] == {'summary.csv': 10, 'summary_vclean.csv': 4, 'pkcorr_curves.csv': 10}, u.meta['rows']
+            h, rows = CF5._read(os.path.join(td, 'summary.csv'))
+            assert [x[0] for x in rows] == sorted(x[0] for x in rows)
+            new = [x for x in rows if x[6] == '1.002']
+            assert sorted(x[0] for x in new) == [f'healpix_I_deep_Taper_R075_Blue_{dm}_nside1.fits' for dm in ('jybeam', 'jysr')]
+            h, rows = CF5._read(os.path.join(td, 'pkcorr_curves.csv'))
+            assert [tuple(x[:2] + x[-1:]) for x in rows][::2] == [('Taper_R075', '18MHz', 'plain'), ('Taper_R075', 'Blue', 'plain'),
+                                                                  ('Taper_R075', 'Blue', 'ssub-rst8'), ('Taper_R0', '18MHz', 'plain'),
+                                                                  ('Taper_R0', 'Blue', 'plain')]
+            assert rows[2] == ['Taper_R075', 'Blue', '-30.0', '0.8255', '0.0159', '5', '5', 'plain'] and rows[4][3] == '0.8'
+            h, rows = CF5._read(os.path.join(td, 'summary_vclean.csv'))
+            assert [x[5] for x in rows if x[1] == 'Blue'] == ['0.01', '0.01'] and [x[5] for x in rows if x[1] == '18MHz'] == ['0.02', '0.02']
+            for name in CFG.mosaic_v3.TABLES_CARRIED:
+                assert _md5f(os.path.join(td, name)) == _md5f(os.path.join(arun, 'tables', name))
+            assert not [x for x in u.tests if not x['passed']] and sum(x['cls'] == 'mosaic_v3_table' for x in u.tests) == 5
+            # an archived table without a job's rows refuses (completeness); no done conform unit refuses
+            sp = os.path.join(arun, 'tables', 'summary.csv')
+            hh, rr = CF5._read(sp)
+            CF5._write(sp, hh, [x for x in rr if not x[0].startswith('healpix_I_deep_Taper_R0_18MHz_jysr')])
+            u = tables()
+            assert u.status == 'refused' and 'rows missing' in u.reason and 'Taper_R0_18MHz_jysr' in u.reason, u.reason
+            assert not os.path.exists(td)
+            shutil.rmtree(P['conform'])
+            for j in (J_R075, J_V):
+                os.remove(record.record_path(out, v3.STEP, v3.unit_name('conform', 'Blue', j)))
+            u = tables()
+            assert u.status == 'refused' and 'no done conform unit' in u.reason, u.reason
     finally:
         shutil.rmtree(d, ignore_errors=True)
 

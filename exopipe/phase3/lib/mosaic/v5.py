@@ -135,11 +135,7 @@ def outputs_of(st, out, scope, w):
     raise ValueError(f'unknown v5 stage {st!r}')
 
 
-def _files_under(d):
-    out = []
-    for root, _dirs, files in os.walk(d):
-        out += [os.path.join(root, f) for f in files]
-    return sorted(out)
+_files_under = GC.files_under
 
 
 def tables_dir(out):

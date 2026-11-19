@@ -74,8 +74,9 @@ def prov_file(lst, scope, prodname):
     return C.mosaic_v5.PROV_FILE.format(archive_hybrid=C.hybrid.ARCHIVE_HYBRID, lst=lst, scope=scope, name=prodname)
 
 
-def membership(tiles, scope, floor):
-    """MC 219-262 on the staged tiles: (PROVENANCE rows, t0 MJD, t1 MJD, summed INTTIME s, beam (bmaj, bmin, 0) deg)."""
+def membership(tiles, scope, floor, file_of=None):
+    """MC 219-262 on the staged tiles: (PROVENANCE rows, t0 MJD, t1 MJD, summed INTTIME s, beam (bmaj, bmin, 0) deg). file_of(tile row)
+    gives a row's FILE (default: prov_file of the tile's name; v3: the tile master's real path)."""
     from astropy.io import fits
     from astropy.time import Time
     rows, mjd0, mjd1, itt, beams = [], [], [], 0.0, []
@@ -95,7 +96,8 @@ def membership(tiles, scope, floor):
             raise ConformRefusal(f'{t["lst"]}: sigma {sig:.2e} (flat or corrupt) in {t["path"]}, which the coadd added')
         if hdr.get('MJD-OBS') is None or not hdr.get('DATE-END'):
             raise ConformRefusal(f'{t["lst"]}: {t["path"]} lacks MJD-OBS or DATE-END: the time block would be incomplete (R-07)')
-        rows.append({'FILE': prov_file(t['lst'], scope, t['prodname']), 'MJD_OBS': hdr.get('MJD-OBS'), 'MJD_MID': hdr.get('MJD-MID'),
+        rows.append({'FILE': file_of(t) if file_of else prov_file(t['lst'], scope, t['prodname']), 'MJD_OBS': hdr.get('MJD-OBS'),
+                     'MJD_MID': hdr.get('MJD-MID'),
                      'INTTIME': hdr.get('INTTIME'), 'WEIGHT': 1.0 / sig ** 2, 'THERMNOI': hdr.get('THERMNOI'),
                      'P1RUN': str(hdr.get('GITTAG', ''))})
         mjd0.append(hdr['MJD-OBS'])

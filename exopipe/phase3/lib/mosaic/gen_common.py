@@ -117,6 +117,14 @@ def coadd_maps(u, maps, co):
         u.add_input(pp, extra={'md5': want})
 
 
+def files_under(d):
+    """Every file under the directory d, sorted (a conform unit's products: their names carry the tiles' dates)."""
+    out = []
+    for root, _dirs, files in os.walk(d):
+        out += [os.path.join(root, f) for f in files]
+    return sorted(out)
+
+
 def link_tree(t, sd, tile_name, pb_name):
     """The staged tiles and their weighting maps linked under the engine's names (coadd_jysr._paths: <sd>/<lst>/<tile_name>,
     <pb_name>) in the scratch dir sd; returns the LSTs in tile-list order."""

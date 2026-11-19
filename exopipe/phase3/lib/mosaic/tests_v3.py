@@ -1,6 +1,7 @@
 """Content tests of the mosaic v3 tile list (lib/mosaic/v3.py; spec plan/specs/hybrid.md 2.9-2.13). Context keys as the stage unit
 passes them (exopipe3 verify re-runs them from the record's ctx): mosaic_v3_tiles  scope, job; mosaic_content_random_report
-n_tiles, scope, variant, job (the Stokes I content report and the PKCORR files use tests_v5's classes)."""
+n_tiles, scope, variant, job; mosaic_v3_product kind, scope, nstack, thermnoi; mosaic_v3_table columns, n_rows (the Stokes I content
+report and the PKCORR files use tests_v5's classes)."""
 import json
 import os
 
@@ -89,3 +90,29 @@ def content_random_passes(path, n_tiles=None, **ctx):
                          f'the staged tiles {r.get("provenance_matches_tiles")}')
     return not probs, {d: (rep.get(d) or {}).get('median_absdiff_over_scale') for d in ('jysr', 'jybeam')}, \
         '; '.join(probs) or 'TEST 1R and TEST 2 pass in Jy/sr and Jy/beam'
+
+
+@content_test('mosaic_v3_product')
+def product_conformant(path, kind=None, scope=None, nstack=None, thermnoi=None, **ctx):
+    """A product conform staged (conform_v3): tests_v5.product_problems (the push audit, PRODNAME in HDU 0 and HDU 1 of a HEALPix map,
+    NSTACK PROVENANCE rows, the 'Mosaic <mosaic_v3.ARCHIVE_RUN>' HISTORY line, TIMEFIX, a Jy/beam map's PSFMAP naming a psfmap product),
+    and THERMNOI the unit's value (finite, positive, in Jy/beam)."""
+    import math
+    from exopipe.phase3.lib.mosaic.tests_v5 import product_problems
+
+    def therm(h0):
+        v = h0.get('THERMNOI')
+        if not isinstance(v, (int, float)) or not math.isfinite(v) or v <= 0:
+            return [f'THERMNOI {v!r}']
+        # the card holds the value as astropy formats it (16 significant digits)
+        return [] if thermnoi is None or abs(v - float(thermnoi)) <= 1e-12 * abs(float(thermnoi)) else [
+            f'THERMNOI {v!r} != the unit\'s {thermnoi!r}']
+    probs = product_problems(path, kind, nstack, _cfg().mosaic_v3.ARCHIVE_RUN, extra=therm)
+    return not probs, len(probs), '; '.join(probs) or 'audit, PRODNAME, PROVENANCE, HISTORY, TIMEFIX, THERMNOI agree'
+
+
+@content_test('mosaic_v3_table')
+def table_complete(path, columns=None, n_rows=None, **ctx):
+    """A FEATHER3 table: its columns are the unit's, it holds n_rows rows, every result PASS (tests_v5's mosaic_v5_table)."""
+    from exopipe.phase3.lib.mosaic.tests_v5 import table_complete as t5
+    return t5(path, columns=columns, n_rows=n_rows)

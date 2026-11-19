@@ -35,11 +35,17 @@ release1_v_mosaics_20261110.sh (the Stokes V maps, TEST 1R).
           [mosaic_content_report | mosaic_content_random_report]
   pkcorr and content read the coadd's record and maps (at its md5s), refuse when the engine weights now differ from the coadd's, and
   re-check G1.
+  conform per (scope, job), after every other stage of the scope's jobs: lib/mosaic/conform_v3.stage (MC v3) of the job's maps,
+          renders, PSF, PB_eff and (Stokes I) PKCORR map under the archived names, THERMNOI from this run's Stokes V coadd of the
+          scope. Refuses unless every upstream record of the job is done, from the tile list now staged, with its required tests
+          passed (CONFORM_NEEDS), every file at its recorded md5, the Stokes V coadd done from its staged tiles, and the masters the
+          stage would choose now are the staged ones (HG13 v3). -> conform/<S>/<I|V>/{healpix,mollweide,radec}/ [mosaic_v3_product]
+  tables  one unit per run: the FEATHER3 tables (conform_v3 docstring) with the rows of every done conform unit of --out
+          -> tables/ [mosaic_v3_table]
 
 The frame is v5's: a stage reads its predecessor's done record (never a glob) and refuses unless it was made from the tile list now in
 stage/tiles.json (its md5); a unit removes its own earlier outputs first and, when it does not end done, everything it placed. A failed
-content test or test_pkcorr removes the unit's outputs (the record keeps the results). Conformance v3 and the tables are PR-6d, the
-archive push PR-6e.
+content test or test_pkcorr removes the unit's outputs (the record keeps the results). The archive push is PR-6e.
 """
 import glob
 import json
@@ -49,7 +55,9 @@ from exopipe.phase3.lib.mosaic import gen_common as GC                     # sha
 from exopipe.phase3.lib.mosaic.gen_common import _clear, _engine_as_coadd, _md5   # one md5 cache per process for v3 and v5
 from exopipe.phase3.lib.mosaic.v5 import LSTS
 
-STAGES = ('stage', 'coadd', 'pkcorr', 'render', 'content')
+STAGES = ('stage', 'coadd', 'pkcorr', 'render', 'content', 'conform', 'tables')
+RUN_STAGES = ('tables',)              # one unit per run (no scope, no job)
+TABLES_UNIT = 'v3-tables'
 I_ONLY = ('pkcorr',)                  # stages a Stokes V job does not have (production ran no PKCORR for Vclean): has_stage
 STEP = 'mosaic'
 STRIATION_CHOICES = ('with', 'without', 'both')
@@ -146,7 +154,12 @@ def paths(out, scope, job):
         for k, f in PK.names(job.variant, scope, job.tag, n).items():
             p[f'pkcorr_{k}'] = os.path.join(d, 'pkcorr', f)
     p['content'] = os.path.join(d, 'content', f'content_{job.stem}_{scope}{job.tag}.json')
+    p['conform'] = os.path.join(d, 'conform')
     return p
+
+
+def tables_dir(out):
+    return os.path.join(out, 'tables')
 
 
 def has_stage(job, st):
@@ -170,7 +183,16 @@ def outputs_of(st, out, scope, job):
         return [(p['content'], 'mosaic_content_report' if job.product == 'I' else 'mosaic_content_random_report')]
     if st == 'render':
         return [(p[f'render_{d}_{k}'], 'mosaic_render') for d in ('jysr', 'jybeam') for k in ('mollweide', 'radec')]
+    if st == 'conform':                 # the names carry the tiles' dates: the files the unit's directory holds now
+        return [(f, 'mosaic_v3_product') for f in GC.files_under(p['conform'])]
     raise ValueError(f'unknown v3 stage {st!r}')
+
+
+def _own(st, out, sc, job):
+    """The files a unit owns (cleared when it does not end done)."""
+    if st == 'tables':
+        return GC.files_under(tables_dir(out))
+    return [pp for pp, _c in outputs_of(st, out, sc, job)]
 
 
 # ---- job selection ----------------------------------------------------------------------------------------------------------------
@@ -230,13 +252,19 @@ def selection_for(products, striation):
 
 
 def select_units(args, sel=None):
-    """[(stage, scope, job)] in pipeline order: every stage of a job before the next job, the jobs of a scope in jobs_for's order."""
+    """[(stage, scope, job)] in pipeline order: per scope every stage but conform of a job before the next job (the jobs in jobs_for's
+    order), then the conform units of the scope's jobs (the Stokes I conform reads the Stokes V coadd: THERMNOI); the run's tables unit
+    ('tables', None, None) last."""
     scopes, products, variants, striation = choices(args)
     if sel is None:
         sel = selection_for(products, striation)
     stages = select_stages(args)
-    return [(st, sc, j) for sc in scopes for j in jobs_for(sc, products, striation, variants, sel) for st in stages
-            if has_stage(j, st)]
+    units = []
+    for sc in scopes:
+        jobs = jobs_for(sc, products, striation, variants, sel)
+        units += [(st, sc, j) for j in jobs for st in stages if st not in RUN_STAGES + ('conform',) and has_stage(j, st)]
+        units += [('conform', sc, j) for j in jobs if 'conform' in stages]
+    return units + [(st, None, None) for st in RUN_STAGES if st in stages]
 
 
 def missing_plain_stages(units, out):
@@ -577,6 +605,7 @@ def render_unit(u, scope, job, out, work):
         fitsio.cleanup(ld)
         shutil.rmtree(tmp, ignore_errors=True)
     u.meta['tiles_md5'] = cur
+    u.meta['md5'] = {f'{dom}_{k}': _md5(P[f'render_{dom}_{k}']) for dom in ('jysr', 'jybeam') for k in ('mollweide', 'radec')}
     for dom in ('jysr', 'jybeam'):
         for k in ('mollweide', 'radec'):
             u.add_output(P[f'render_{dom}_{k}'], 'mosaic_render', source=P[dom], psfmap=P['psf'], kind=k, scope=scope,
@@ -652,6 +681,216 @@ def content_unit(u, scope, job, out, work):
     u.add_output(P['content'], cls, n_tiles=len(t['tiles']), scope=scope, variant=job.variant, job=job.label)
 
 
+# ---- conform ----------------------------------------------------------------------------------------------------------------------
+
+CONFORM_NEEDS = {'pkcorr': ('test_pkcorr',),
+                 'content_I': ('TEST1.jysr', 'TEST1.jybeam', 'TEST2.jysr', 'TEST2.jybeam'),
+                 'content_Vclean': ('TEST1R.jysr', 'TEST1R.jybeam', 'TEST2.jysr', 'TEST2.jybeam')}
+#   the tests each upstream record must hold, passed, before conform stages the job's products (v5.CONFORM_NEEDS; content by product)
+
+
+def _rec_ok(u, scope, job, rec, st, tiles_md5):
+    """Refuse unless the done record rec of stage st was made from the tile list whose md5 is tiles_md5, every test it records passed
+    (a waived failure never reaches the archive) and the tests CONFORM_NEEDS names for it are among them."""
+    _same_tiles(u, scope, job, tiles_md5, rec, st)
+    tests = rec.get('tests') or []
+    bad = sorted({str(x.get('name')) for x in tests if not x.get('passed')})
+    if bad:
+        u.refuse(f'{scope} {job.label}: the {st} record holds failed test(s) {bad[:6]} - REFUSED')
+    need = CONFORM_NEEDS.get(f'{st}_{job.product}', CONFORM_NEEDS.get(st, ()))
+    miss = [n for n in need if not any(x.get('name') == n for x in tests)]
+    if miss:
+        u.refuse(f'{scope} {job.label}: the {st} record lacks the test(s) {miss} - REFUSED')
+
+
+def resolve_now(scope, job, t, sel):
+    """HG13 (v3): the masters the stage would choose now against the staged tile list t: [problem], empty when they are the staged
+    ones. The plain masters (a substituted row's plain_path: the weighting map's master) by plan_plain of the job's plain job; the
+    substituted LSTs by the selection now; each substitute by its archived pattern now (exactly the staged file)."""
+    C = _cfg()
+    plan = plan_plain(scope, job.pb_job())
+    probs = [f'{g} {m}' for g, m in plan.refusals]
+    plain_now = {lst: x['master'] for lst, x in plan.tiles.items()}
+    want = set(LSTS) if job.kind == 'vclean' else set(selected_lsts(sel, scope, job.variant)) if job.kind == 'ssub' else set()
+    tok = C.mosaic.VARIANT_TOKENS[job.variant]
+    differ = []
+    for r in t['tiles']:
+        lst = r['lst']
+        if (r.get('plain_path') or r['path']) != plain_now.get(lst):
+            differ.append(lst)
+        elif lst in want:
+            g = (_archived(lst, scope, C.mosaic_v3.SSUB_PATTERN, var=tok, tag=C.masters_striation.TAG) if job.kind == 'ssub'
+                 else _archived(lst, scope, C.mosaic_v3.VCLEAN_PATTERN))
+            if g != [r['path']]:
+                differ.append(lst)
+    sub = {r['lst'] for r in t['tiles'] if r.get('kind', 'plain') != 'plain'}
+    if sub != want:
+        probs.append(f'the substituted LSTs {sorted(sub)} are not the ones the selection names now {sorted(want)}')
+    differ += sorted(set(plain_now) - {r['lst'] for r in t['tiles']})
+    if differ:
+        probs.append(f'the masters the stage would choose now differ from stage/tiles.json at LST {", ".join(sorted(set(differ))[:6])} '
+                     f'(a master replaced, or a night now excluded): rerun from --stages stage')
+    return probs
+
+
+def conform_unit(u, scope, job, out, sel):
+    """conform_v3.stage of one job (module docstring, conform), on its own done records."""
+    import shutil
+    from exopipe.phase3.lib.mosaic import coadd_jysr as mcj
+    from exopipe.phase3.lib.mosaic import conform_v3 as CF
+    from exopipe.phase3.lib.mosaic import tests_v3  # noqa: F401  (registers mosaic_v3_product)
+    C = _cfg()
+    P = paths(out, scope, job)
+    if os.path.lexists(P['conform']):
+        shutil.rmtree(P['conform'])
+    t, co = _from_coadd(u, out, scope, job, ('jysr', 'psf', 'jybeam', 'pbeff'))   # also binds the engine: PBCORR_FLOOR = the coadd's
+    recs = {st: _upstream(u, out, st, scope, job) for st in ('render', 'content', 'pkcorr') if has_stage(job, st)}
+    for st, rec in recs.items():
+        _rec_ok(u, scope, job, rec, st, t['json_md5'])
+    probs = resolve_now(scope, job, t, sel)
+    if probs:
+        u.refuse(f'HG13 {scope} {job.label}: ' + '; '.join(probs[:4]) + ' - REFUSED')
+    # THERMNOI: this run's Stokes V coadd of the scope, made from its staged tiles, its maps at their recorded md5s
+    vj = Job('Vclean', C.mosaic_v3.VCLEAN_VARIANT)
+    VP = paths(out, scope, vj)
+    vco = co if job == vj else _upstream(u, out, 'coadd', scope, vj)
+    if not os.path.exists(VP['tiles']):
+        u.refuse(f'{VP["tiles"]} is missing (THERMNOI is read from the Stokes V coadd of the scope) - REFUSED')
+    _same_tiles(u, scope, vj, _md5(VP['tiles']), vco, 'coadd')
+    GC.coadd_maps(u, {k: VP[k] for k in ('jysr', 'psf')}, vco)
+    try:
+        therm = CF.thermnoi(VP['jysr'], VP['psf'])
+    except CF.ConformRefusal as e:
+        u.refuse(f'{scope} {job.label}: {e} - REFUSED')
+    md5_of = lambda rec, k: (rec['meta'].get('md5') or {}).get(k)   # noqa: E731
+    want = {P[k]: md5_of(co, k) for k in ('jysr', 'psf', 'jybeam', 'pbeff')}
+    want.update({P[f'render_{d}_{k}']: md5_of(recs['render'], f'{d}_{k}') for d in ('jysr', 'jybeam') for k in ('mollweide', 'radec')})
+    want[P['content']] = md5_of(recs['content'], 'content')
+    if 'pkcorr' in recs:
+        want[P['pkcorr_map']], want[P['pkcorr_curve']] = md5_of(recs['pkcorr'], 'map'), md5_of(recs['pkcorr'], 'curve')
+    for pp, m in want.items():
+        if not m:
+            u.refuse(f'{pp}: its stage recorded no md5 (a record of earlier code): rerun that stage - REFUSED')
+        if not os.path.exists(pp) or _md5(pp) != m:
+            u.refuse(f'{pp} missing or changed since its stage (md5) - REFUSED')
+        u.add_input(pp, extra={'md5': m})
+    try:
+        staged, info = CF.stage(scope, job, P, t['tiles'], P['conform'], float(mcj.PBCORR_FLOOR), therm,
+                                plan=lambda ps: [u.plan(x, 'mosaic_v3_product') for x in ps])
+    except CF.ConformRefusal as e:
+        u.refuse(f'{scope} {job.label}: {e} - REFUSED')
+    u.meta['tiles_md5'] = t['json_md5']
+    u.meta['membership'] = {k: info[k] for k in ('n', 't0', 't1', 'inttime_s', 'beam')}
+    u.meta['prov_files'] = info['prov_files']
+    u.meta['thermnoi'] = {'jy_per_beam': therm, 'from': [VP['jysr'], VP['psf']]}
+    u.meta['products'] = {kind: {'path': dst, 'md5': _md5(dst), 'source': src, 'source_md5': want[src]} for dst, src, kind in staged}
+    u.meta['tables'] = {'job': job.label, 'product': job.product, 'variant': job.variant, 'band': scope,
+                        'version': C.masters_striation.TAG if job.ssub else 'plain', 'content': [P['content'], want[P['content']]],
+                        'curve': [P['pkcorr_curve'], want[P['pkcorr_curve']]] if 'pkcorr' in recs else None}
+    for dst, src, kind in staged:
+        u.add_output(dst, 'mosaic_v3_product', kind=kind, scope=scope, nstack=info['n'], source=src, thermnoi=therm)
+
+
+# ---- tables -----------------------------------------------------------------------------------------------------------------------
+
+def tables_unit(u, out):
+    """One per run (conform_v3 docstring, tables): the FEATHER3 tables with the rows of every done conform unit of --out."""
+    import shutil
+    from exopipe.phase3.core.record import load_record
+    from exopipe.phase3.lib.mosaic import conform_v3 as CF
+    from exopipe.phase3.lib.mosaic import conform_v5 as CF5
+    from exopipe.phase3.lib.mosaic import tests_v3  # noqa: F401  (registers mosaic_v3_table)
+    C = _cfg()
+    V3 = C.mosaic_v3
+    td = tables_dir(out)
+    if os.path.lexists(td):
+        shutil.rmtree(td)
+    jobs = {sc: jobs_for(sc, V3.PRODUCTS, 'both', V3.VARIANTS, striation_selection()) for sc in V3.SCOPES}
+    T = {}
+    for sc, js in jobs.items():
+        for j in js:
+            r = load_record(out, STEP, unit_name('conform', sc, j))
+            if r is None or r.get('status') != 'done':
+                continue
+            bad = sorted({str(x.get('name')) for x in r.get('tests') or [] if not x.get('passed')})
+            if bad:
+                u.refuse(f'the conform record of {sc} {j.label} holds failed test(s) {bad[:6]} - REFUSED')
+            T[(sc, j)] = tt = r['meta']['tables']
+            for k in ('content', 'curve'):
+                if tt.get(k):
+                    pp, m = tt[k]
+                    if not os.path.exists(pp) or _md5(pp) != m:
+                        u.refuse(f'{pp} missing or changed since the conform of {sc} {j.label} (md5) - REFUSED')
+                    u.add_input(pp, extra={'md5': m})
+    if not T:
+        u.refuse(f'no done conform unit in {out}: run --stages conform first - REFUSED')
+    arch = os.path.join(CF.archive_run(), 'tables')
+
+    def archived(name, cols):
+        pa = os.path.join(arch, name)
+        if not os.path.exists(pa):
+            u.refuse(f'the archived table {pa} is missing - REFUSED')
+        u.add_input(pa, extra={'md5': _md5(pa)})
+        head, rows = CF5._read(pa)
+        if tuple(head) != tuple(cols):
+            u.refuse(f'{pa}: columns {head} are not {list(cols)} - REFUSED')
+        return rows
+
+    ti = [tt for (_sc, j), tt in sorted(T.items(), key=lambda x: (x[0][0], x[0][1].label)) if j.product == 'I']
+    tv = [tt for (_sc, j), tt in sorted(T.items(), key=lambda x: (x[0][0], x[0][1].label)) if j.product == 'Vclean']
+    ckey = lambda x: (x[0], x[1], x[-1])   # noqa: E731  (variant, band, version)
+    tables = {'summary.csv': (CF.SUMMARY_COLS, CF5.merge(archived('summary.csv', CF.SUMMARY_COLS),
+                                                         [x for tt in ti for x in CF.summary_rows(tt['content'][0])], CF.map_sort,
+                                                         CF.map_sort)),
+              'summary_vclean.csv': (CF.VCLEAN_COLS, CF5.merge(archived('summary_vclean.csv', CF.VCLEAN_COLS),
+                                                               [x for tt in tv for x in CF.vclean_rows(tt['content'][0])], CF.map_sort,
+                                                               CF.map_sort)),
+              'pkcorr_curves.csv': (CF.CURVE_COLS, CF5.merge(archived('pkcorr_curves.csv', CF.CURVE_COLS),
+                                                             [x for tt in ti for x in CF.curve_rows(tt['variant'], tt['band'], tt['version'],
+                                                                                                    tt['curve'][0])], ckey, CF.curve_sort))}
+    # completeness: exactly the rows of every job of mosaic_v3.SCOPES (both domains), every result PASS (the archived rows included)
+    ji = [(sc, j) for sc, js in jobs.items() for j in js if j.product == 'I']
+    jv = [(sc, j) for sc, js in jobs.items() for j in js if j.product == 'Vclean']
+    want = {'summary.csv': {os.path.basename(paths(out, sc, j)[d]) for sc, j in ji for d in ('jysr', 'jybeam')},
+            'summary_vclean.csv': {os.path.basename(paths(out, sc, j)[d]) for sc, j in jv for d in ('jysr', 'jybeam')},
+            'pkcorr_curves.csv': {(j.variant, sc, C.masters_striation.TAG if j.ssub else 'plain') for sc, j in ji}}
+    probs = []
+    for name, (cols, rows) in tables.items():
+        have = [ckey(x) if name == 'pkcorr_curves.csv' else x[0] for x in rows]
+        if name != 'pkcorr_curves.csv' and len(have) != len(set(have)):
+            probs.append(f'{name}: {len(have) - len(set(have))} duplicate row(s)')
+        if set(have) != want[name]:
+            probs.append(f'{name}: rows missing {sorted(want[name] - set(have))[:3]}, rows not of mosaic_v3 '
+                         f'{sorted(set(have) - want[name])[:3]}')
+        if 'result' in cols:
+            i = cols.index('result')
+            bad = [x[0] for x in rows if x[i].strip() != 'PASS']
+            if bad:
+                probs.append(f'{name}: {len(bad)} row(s) not PASS, e.g. {bad[0]}')
+    if probs:
+        u.refuse('; '.join(probs[:4]) + ' - REFUSED')
+    carried = {name: os.path.join(arch, name) for name in V3.TABLES_CARRIED}
+    for name, pa in carried.items():
+        if not os.path.exists(pa):
+            u.refuse(f'the archived table {pa} is missing - REFUSED')
+    for name in sorted(set(tables) | set(carried)):
+        u.plan(os.path.join(td, name), 'mosaic_v3_table')
+    os.makedirs(td, exist_ok=True)
+    for name, (cols, rows) in sorted(tables.items()):
+        CF5._write(os.path.join(td, name), list(cols), rows)
+        u.add_output(os.path.join(td, name), 'mosaic_v3_table', columns=list(cols), n_rows=len(rows))
+    for name, pa in sorted(carried.items()):            # this run's input: the archived bytes
+        m = _md5(pa)
+        u.add_input(pa, extra={'md5': m})
+        shutil.copyfile(pa, os.path.join(td, name))
+        if _md5(os.path.join(td, name)) != m:
+            u.refuse(f'{name}: the copy differs from the archived table (md5) - REFUSED')
+        head, rows = CF5._read(pa)
+        u.add_output(os.path.join(td, name), 'mosaic_v3_table', columns=head, n_rows=len(rows))
+    u.meta['rows'] = {name: len(rows) for name, (_c, rows) in tables.items()}
+    u.meta['conformed'] = sorted(f'{sc} {j.label}' for sc, j in T)
+
+
 # ---- the step ---------------------------------------------------------------------------------------------------------------------
 
 def out_problems(out):
@@ -681,8 +920,15 @@ def run(args, run):
         raise Refusal('; '.join(need[:4]) + (f' (+{len(need) - 4} more)' if len(need) > 4 else ''))
     if run.dry_run:
         for st, sc, j in units:
+            if st == 'tables':
+                print(f'  plan {TABLES_UNIT}: {os.path.relpath(tables_dir(run.out_root), run.out_root)}/ (the FEATHER3 tables with the rows '
+                      f'of every done conform unit)', flush=True)
+                continue
             what = ', '.join(os.path.relpath(p, run.out_root) for p, _c in outputs_of(st, run.out_root, sc, j)[:4])
-            if st == 'stage' and j.kind == 'plain':
+            if st == 'conform':
+                what = (f'{os.path.relpath(paths(run.out_root, sc, j)["conform"], run.out_root)}/{sc}/'
+                        f'{"V" if j.product == "Vclean" else "I"}/{{healpix,mollweide,radec}}/')
+            elif st == 'stage' and j.kind == 'plain':
                 plan = plan_plain(sc, j)
                 what = (f'refused: {"; ".join(f"{g} {m}" for g, m in plan.refusals[:3])}' if plan.refusals else
                         f'{len(plan.masters)} masters, {len(LSTS)} weighting maps -> {what} ...')
@@ -693,8 +939,8 @@ def run(args, run):
         return 0
     work = getattr(args, 'work', None)
     for st, sc, j in units:
-        own = [p for p, _c in outputs_of(st, run.out_root, sc, j)]
-        with run.unit(unit_name(st, sc, j), stage=st, scope=sc, job=j.label, generation='v3') as u:
+        name, ctx = (TABLES_UNIT, {}) if st == 'tables' else (unit_name(st, sc, j), dict(scope=sc, job=j.label))
+        with run.unit(name, stage=st, generation='v3', **ctx) as u:
             try:
                 if st == 'stage':
                     stage_unit(u, sc, j, run.out_root, sel)
@@ -704,11 +950,16 @@ def run(args, run):
                     pkcorr_unit(u, sc, j, run.out_root, work)
                 elif st == 'render':
                     render_unit(u, sc, j, run.out_root, work)
-                else:
+                elif st == 'content':
                     content_unit(u, sc, j, run.out_root, work)
+                elif st == 'conform':
+                    conform_unit(u, sc, j, run.out_root, sel)
+                else:
+                    tables_unit(u, run.out_root)
             except BaseException:
-                _clear(own)                   # nothing of a unit that did not end done stays in place
+                _clear(_own(st, run.out_root, sc, j))   # nothing of a unit that did not end done stays in place
                 raise
+            own = _own(st, run.out_root, sc, j)
             if u.failed_tests():
                 _clear(own)
                 u.note(f'a content test failed: the {len(own)} outputs were removed (the record keeps the results)')
