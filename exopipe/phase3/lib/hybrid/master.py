@@ -68,7 +68,8 @@ def bind():
     g.update(HYB_U_IN=float(H.HYB_U_IN), HYB_U_OUT=float(H.HYB_U_OUT), STRIATION_SELECTION=H.STRIATION_SELECTION,
              STRIATION_RESTORED=H.STRIATION_RESTORED, STRIATION_SCOPES=tuple(H.STRIATION_SCOPES),
              WIDEBANDS=dict(H.WIDEBAND_MEMBERS, Full=tuple(CFG.hybrid_full.MEMBERS)), COADD_SB=CFG.hybrid_stack.COADD_SB,
-             RAW_NIGHT_CAVEAT=dict(CFG.hybrid_unit.RAW_NIGHT_CAVEAT), OWN_BEAM_MAX=float(CFG.hybrid_unit.OWN_BEAM_MAX),
+             RAW_NIGHT_CAVEAT={**CFG.hybrid_unit.RAW_NIGHT_CAVEAT, **CFG.hybrid_stack.RAW_NIGHT_ADMIT},
+             OWN_BEAM_MAX=float(CFG.hybrid_unit.OWN_BEAM_MAX),
              IDENTITY=float(CFG.hybrid_unit.IDENTITY), LARGE_REL=float(CFG.hybrid_unit.LARGE_REL),
              STRIATION_IDENTITY=float(CFG.hybrid_unit.STRIATION_IDENTITY), PBDIFFUSE_WEIGHTING=CFG.hybrid_full.PBDIFFUSE_WEIGHTING)
     globals().update(g)
@@ -280,7 +281,7 @@ def hybrid_unit(lst, scope, v, run_dir):
     for k, val, com in cards:
         h[k] = (val, com)
     raw_b = [b for b, _ in subs if (lst, b) in RAW_NIGHT_CAVEAT]
-    if raw_b:                                     # Gregg 2026-11-04: kept with undewarped nights in the reconstruction stacks, a recorded caveat
+    if raw_b:                                     # Gregg 2026-11-04 / 11-19: undewarped nights in the recon stacks, a recorded caveat
         h['LSRAWNT'] = (','.join(raw_b), 'undewarped nights in recon stacks (caveat)')
     adm_b = [b for b, _ in subs if _json(f'{run_dir}/{lst}_{b}/{v}_lsrecon.json').get('stack_admission')]
     if adm_b:                                     # Gregg 2026-10-31 "Admit them as hybrids": the (subband) stacks admitted at hybrid scales

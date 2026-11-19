@@ -19,6 +19,10 @@ night (warp.py); each night's dirty image is aligned once and the full and half 
 (production aligned each night twice; the co-adds take the files in production's order); the alignment test of a dirty image on a
 derived screen runs once per night (production ran it once per dirty stack); a missing weights.csv, master or Phase 2 date list
 refuses (HG1) instead of raising. Arrays are read with ordinary reads (memmap=False).
+
+Ruled change (Gregg 2026-11-19, hybrid_stack.RAW_NIGHT_ADMIT): in the 13h 18-59 MHz cells a night whose Phase 2 image is dewarped
+but has no saved warp screen enters unaligned, as production's stacks took it before derived screens existed (production since
+2026-11-03 derives the screen there); the stack record lists those nights (nights_raw_admitted).
 """
 import csv
 import glob
@@ -186,6 +190,7 @@ def stack_variant(lst, band, v, workdir, prep, screen_cache, read=None):
             sx, sy = h['SCREEN_X'].data.astype(np.float64), h['SCREEN_Y'].data.astype(np.float64)
         read.add(md)
     derived = {}                                      # nights whose warp screen was derived (no saved screen; derive_warp_screen)
+    raw_admitted = set()                              # nights that entered unaligned under hybrid_stack.RAW_NIGHT_ADMIT
     dirty_test = {}                                   # date -> (pass, summary): the dirty image on its derived screen, tested once
 
     def dirty_on_screen(r, a, wx, wy):
@@ -215,6 +220,8 @@ def stack_variant(lst, band, v, workdir, prep, screen_cache, read=None):
             with fits.open(scr[0], memmap=False) as hs:
                 wx, wy = hs['SCREEN_X'].data.astype(np.float64), hs['SCREEN_Y'].data.astype(np.float64)
             read.add(scr[0])
+        elif (lst, band) in S.RAW_NIGHT_ADMIT and '_dewarped' in os.path.basename(night_input(r, 'image')):
+            raw_admitted.add(r['date'])               # ruled: enters unaligned, as the archived production stacks (RAW_NIGHT_ADMIT)
         elif '_dewarped' in os.path.basename(night_input(r, 'image')):
             # the Phase 2 image the master uses IS dewarped but no screen was saved (flow cascade; 13h 2025-04/05 nights keep only
             # 73 MHz, 23h 2025-09-06 lacks 69 MHz): the screen derived as Phase 2 recovers it (Gregg 2026-11-01 "All approved"), and
@@ -303,7 +310,8 @@ def stack_variant(lst, band, v, workdir, prep, screen_cache, read=None):
             return False
     rows_d = [r for r in rows if has_p1(r)]           # Gregg 2026-10-27: a night whose Phase 1 dirty image / PSF was never written is
     nodrv = {}                                        # left out of the dirty stacks, recorded
-    for r in rows_d:                                  # Gregg 2026-11-03 "(b) - if it's only dropping one night of 7, the impact is small!": a
+    # Gregg 2026-11-03 "(b) - if it's only dropping one night of 7, the impact is small!": a
+    for r in (rows_d if (lst, band) not in S.RAW_NIGHT_ADMIT else ()):   # (ruled cells: no screen is derived, the night enters raw)
         if (not glob.glob(f'{r["sci_dir"]}/Dewarp_Diagnostics/maps/{r["date"]}_{lst}_{band}_warp_screen.fits')  # night whose warp screen
                 and '_dewarped' in os.path.basename(night_input(r, 'image'))):   # cannot be derived (23h 69 MHz 2025-09-06: 36 arcmin off the
             try:                                                                 # master's frame) is left out of these stacks - at most
@@ -334,6 +342,7 @@ def stack_variant(lst, band, v, workdir, prep, screen_cache, read=None):
                      diag_header(mh, 'stack of the Phase 1 Taper CLEAN residual images'))
         log(lst, band, v, 'residual_stack')
         rec['derived_screens'] = derived
+        rec['nights_raw_admitted'] = sorted(raw_admitted)
         atomic_write_json(f'{workdir}/{v}_stack.json', rec)
         return rec
     aligned = align('dirty', rows_d)                  # each night once; the three co-adds read the same aligned files
@@ -359,6 +368,7 @@ def stack_variant(lst, band, v, workdir, prep, screen_cache, read=None):
     write_atomic(f'{workdir}/{v}_psf_stack.fits', P.astype(np.float32), diag_header(mh, 'weighted mean Phase 1 PSF, peak 1'))
     rec['inputs'] = copy_inputs(inputs_dir(workdir), S.COADD_SB, lst, band, v, read)
     rec['derived_screens'] = derived
+    rec['nights_raw_admitted'] = sorted(raw_admitted)
     atomic_write_json(f'{workdir}/{v}_stack.json', rec)
     return rec
 

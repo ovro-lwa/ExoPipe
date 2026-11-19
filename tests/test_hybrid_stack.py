@@ -437,6 +437,14 @@ def test_stack_unit_items_and_content_tests():
             json.dump(rec, f)
         r = validate.run('hybrid_stack_record', recp, lst='18h', band='46MHz', weighting='T075')[0]
         assert not r['passed'] and 'rebuild verdict' in r['detail'] and 'without a screen' in r['detail'], r
+        rec['nights_dropped_no_screen'], rec['nights_raw_admitted'] = {}, ['2025-05-03']   # unaligned nights: ruled cells only
+        rec['test_stack_rebuild']['verdict'] = 'pass (exact)'
+        for cell, ok in ((('18h', '46MHz'), False), (('13h', '46MHz'), True)):
+            rec['lst'], rec['band'] = cell
+            with open(recp, 'w') as f:
+                json.dump(rec, f)
+            r = validate.run('hybrid_stack_record', recp)[0]
+            assert ('outside hybrid_stack.RAW_NIGHT_ADMIT' not in r['detail']) is ok, (cell, r)
         inp = os.path.join(wdir, 'inputs', 'PB_deep_46MHz.fits')
         r = validate.run('hybrid_stack_input', inp, md5='0' * 32, installed='x')[0]
         assert not r['passed'], r

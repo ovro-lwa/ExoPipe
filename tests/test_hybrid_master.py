@@ -56,7 +56,8 @@ def test_bind_equals_production():
     bad = {k: (g[k], v) for k, v in want.items() if g[k] != v}
     assert not bad, bad
     assert {k: tuple(v) for k, v in g['WIDEBANDS'].items()} == dict(Red=RED, Green=GREEN, Blue=BLUE, Full=RED + GREEN + BLUE)
-    assert set(g['RAW_NIGHT_CAVEAT']) == {('13h', '64MHz')}
+    low = ('18MHz', '23MHz', '27MHz', '32MHz', '36MHz', '41MHz', '46MHz', '50MHz', '55MHz', '59MHz')
+    assert set(g['RAW_NIGHT_CAVEAT']) == {('13h', '64MHz')} | {('13h', b) for b in low}   # archived caveat + ruled 11-19 admission
     assert M.IDENTITY == 1e-5 and M.WIDEBANDS['Full'][-1] == '82MHz'           # bound as module globals for the ported functions
 
 
