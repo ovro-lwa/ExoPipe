@@ -287,7 +287,7 @@ class mosaic_v3(_Section):
     #   STG 'Vclean' branch: the archived cleaned-V beam-corrected master of the cell, exactly one
     VCLEAN_WEIGHTING = 'own'
     #   the weighting PB map of a cleaned Stokes V tile. 'own': derived from the V master itself (its constituent nights set the
-    #   subband weights, its beam the bandwidth smearing), and a tile whose map is made from other nights refuses - ruled 2026-11-18
+    #   subband weights, its beam the bandwidth smearing; tests_v3.tiles_weighting checks each map against its tile) - ruled 2026-11-18
     #   for the next Stokes V mosaic rebuild (FINDING-20261118-VCLEAN-WEIGHTING-MAP-FROM-STOKES-I-NIGHTS). Measured 2026-11-19 on
     #   the archive: it changes 92 of the 456 maps - 26 cells whose V and Taper R0 I masters hold different nights, 66 with the
     #   same nights whose V master's fitted beam differs from the I master's (median 0.15%, up to 13% at Full 23h, where the map
