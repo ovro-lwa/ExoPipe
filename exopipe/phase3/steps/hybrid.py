@@ -969,7 +969,8 @@ def tilefill_source(out_root, lst, scope, w, rows, mode='work', plan_only=False,
     nights, reads, replaces = {kind: the installed file a product of the kind replaces, or None}).
     'work' (spec D1): the hybrid stage's products in --out (record <w>_hybrid.json; its v2 unit record must be done; each file's md5
     must equal the recorded one); the diffuse PB of a subband or wideband computed as production's archive step wrote it
-    (lib/hybrid/master.diffuse_pb_map, rounded through float32), Full's read from the file of the hybrid_full.PBDIFFUSE_WEIGHTING unit.
+    (lib/hybrid/master.diffuse_pb_map, rounded through float32), Full's read from the file of the hybrid_full.PBDIFFUSE_WEIGHTING unit
+    (where that unit refused and hybrid_unit.REFUSED_INSTALLED keeps it: the installed map, the kept cell's).
     'pinned' (a unit this run did not rebuild, whose band field changed): the installed filled masters in hybrid.ARCHIVE_HYBRID, whose
     TPSRCMD5 names their unfilled sources in the pinned manifests (HG13), the installed diffuse PB map, and the nights of the
     production hybrid record of those sources; the CLEAN residual is not re-made.
@@ -1021,8 +1022,17 @@ def tilefill_source(out_root, lst, scope, w, rows, mode='work', plan_only=False,
         if not need_pb:
             how = None
         elif scope == 'Full':
+            pw = CFG.hybrid_full.PBDIFFUSE_WEIGHTING
             pbf = os.path.join(wd, f'PBdiffuse_deep_{scope}.fits')
-            why = _upstream_problem(out_root, f'full.{lst}_{scope}_{CFG.hybrid_full.PBDIFFUSE_WEIGHTING}', [pbf])
+            why = _upstream_problem(out_root, f'full.{lst}_{scope}_{pw}', [pbf])
+            pws = work_states(out_root, lsts=(lst,), scope=scope, w=pw).get((lst, scope, pw)) if why and w != pw else None
+            if (pws and unit_state(pws, through='hybrid')[0] == 'refused'
+                    and CFG.hybrid_unit.REFUSED_INSTALLED.get((lst, scope, pw)) == 'keep'):
+                # the cell's map-writing unit refused and is kept by ruling: its installed products stay the cell's, the diffuse map
+                # among them (archive push --class hybrid pushes the map with the writer's unit only). The map's values depend on
+                # neither the weighting nor the rebuild (the Q1 rebuild's 23 written Full maps equal the archived ones bit for bit,
+                # 2026-11-19), so this weighting's unit divides by the installed map.
+                pbf, why = os.path.join(CFG.hybrid.ARCHIVE_HYBRID, lst, scope, f'PBdiffuse_deep_{scope}.fits'), None
             if why or not os.path.exists(pbf):
                 raise Refusal(f'the diffuse PB map {pbf} may not be used: {why or "missing"} - REFUSED')
             reads.append(pbf)
