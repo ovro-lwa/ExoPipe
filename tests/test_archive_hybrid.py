@@ -23,6 +23,11 @@ MIRROR archive root under $TMPDIR, the exclusion read stubbed:
      manifest rows, no push manifest); run_hybrid makes it a push unit of its own;
   6. master.write_diffuse_pb: a clean PB-map header (no SH* or master card, no PRODNAME, the repair cards kept); a current map kept;
      a map with other values or a master card rewritten; Full's left to the full stage.
+  7. the README unit (lib/archive/readme.py): the changed units in words; a plan stages the installed README + one section
+     (content test archive_readme) and its manifest; an apply refuses without --update-note citing a ledger row; with one, the
+     README is swapped in (the old one quarantined as README/<stamp>/README.txt; content tests archive_readme_copy: checksum, history
+     kept); a second push of the same round adds a second section; a resumed unit already named in the README, a unit that
+     changed nothing and a push of no changing unit add nothing (no-input); an archive run without a README refuses.
 Cluster parity (not here): the PR-5 parity products of 18h 46 MHz Robust -0.75 pushed into a scratch mirror holding the installed
 unfilled masters, and the plan replay of the 11-13 lost-sky tile swap; run by hand on lwacalim07.
 Run: python tests/test_archive_hybrid.py   (or under pytest)
@@ -513,6 +518,131 @@ def test_refused_units():
     finally:
         CFG.hybrid_unit.REFUSED_INSTALLED.clear()
         CFG.hybrid_unit.REFUSED_INSTALLED.update(old)
+        shutil.rmtree(d, ignore_errors=True)
+
+
+class _RU:
+    """A push unit as lib/archive/readme reads it (core.record.Unit's attributes)."""
+
+    def __init__(self, name, status='done', counts=None, notes=(), inputs=(), manifests=()):
+        self.name, self.status, self.reason = name, status, ''
+        self.meta = {'counts': dict(counts or {})}
+        self.notes, self.inputs = list(notes), {p: {} for p in inputs}
+        self.outputs = [{'path': m, 'class': 'archive_manifest'} for m in manifests]
+
+    def add_input(self, p, extra=None):
+        self.inputs[p] = extra or {}
+
+    def add_output(self, path, cls, **ctx):
+        self.outputs.append({'path': path, 'class': cls, 'ctx': ctx})
+
+    def note(self, s):
+        self.notes.append(s)
+
+
+def _ledger(d, lid):
+    p = os.path.join(d, 'fix_ledger.csv')
+    with open(p, 'w', newline='') as f:
+        f.write(f'date,fix_id,files,description,authorized_by,status\r\n2026-11-19T07:00Z,{lid},,test only,,done\r\n')
+    return p
+
+
+def test_readme():
+    from exopipe.phase3.core.record import NoInput
+    from exopipe.phase3.lib.archive import readme as R
+    assert R.summary('hybrid', ['push_hybrid_18h_46MHz_R075', 'push_hybrid_19h_46MHz_R075', 'push_hybrid_21h_46MHz_R075',
+                                'push_hybrid_18h_Green_R0']) == '46MHz R075 at 18h-19h, 21h; Green R0 at 18h'
+    assert R.summary('mosaic_v5', ['push_mosaic_v5_Green_R0', 'push_mosaic_v5_tables']) == 'Green R0; tables'
+    d = _tmp('ahr_')
+    old_ledger = CFG.paths.FIX_LEDGER
+    try:
+        CFG.paths.FIX_LEDGER = _ledger(d, 'TEST-README-20261119')
+        ctx = types.SimpleNamespace(archive_root=os.path.join(d, 'root'), algo='md5', stamp='20261119T000000Z', dry=False, apply=False,
+                                    manifest_dir=lambda kind: os.path.join(d, 'plans', kind),
+                                    guard_writes=lambda paths, what, allow=None: K.Ctx.guard_writes(None, paths, what, allow))
+        adir, qdir = AH.archive_dir(ctx), AH.quarantine_dir(ctx, 'T5')
+        os.makedirs(adir)
+        base = b'HYBRID NoTaper DEEP MASTERS (test)\nline two\n'
+        with open(os.path.join(adir, 'README.txt'), 'wb') as f:
+            f.write(base)
+        run = types.SimpleNamespace(commit='abc1234', out_root=os.path.join(d, 'out'), step='archive')
+        rec = os.path.join(d, 'work', '_records', 'hybrid', 'tilefill.18h_46MHz_R075.json')
+        os.makedirs(os.path.dirname(rec))
+        with open(rec, 'w') as f:
+            json.dump(dict(status='done', commit='feed123'), f)
+        seen = {}
+
+        def unit_fn(name, body, describe=None):
+            u = _RU(name)
+            try:
+                seen[name] = describe(body(u))
+            except (Refusal, NoInput) as e:
+                u.status, u.reason = ('refused' if isinstance(e, Refusal) else 'no-input'), str(e)
+                seen[name] = f'{u.status.upper()} {e}'
+            return u
+        units = [_RU('push_hybrid_18h_46MHz_R075', counts=dict(replace=3, keep=1), inputs=[rec]),
+                 _RU('push_hybrid_19h_46MHz_R075', counts=dict(keep=4)),                                # changed nothing
+                 _RU('push_hybrid_19h_59MHz_R0', status='refused'),
+                 _RU('push_hybrid_20h_59MHz_R0', counts=dict(retire=2), notes=['quarantine by ruling (hybrid_unit.REFUSED_INSTALLED): '
+                                                                               'refused at recon; installed a, b'])]
+        args = types.SimpleNamespace(_stages=['manifest'], update_note=[])
+        u = R.push_readme(ctx, args, run, unit_fn, 'hybrid', adir, qdir, AH.QUARANTINE_MANIFEST, units, 'T5', os.path.join(d, 'work'))
+        assert u.status == 'done' and seen['push_hybrid_readme'].startswith('README section appended'), seen
+        staged = next(o['path'] for o in u.outputs if o['class'] == 'archive_readme')
+        ok, n, why = AT.readme_staged(staged, **next(o['ctx'] for o in u.outputs if o['class'] == 'archive_readme'))
+        assert ok and n == 1, why
+        txt = open(staged).read()
+        assert txt.startswith(base.decode()) and '\n\nUPDATE T5: ' + R.NO_NOTE in txt, txt
+        assert '2 unit(s) changed: 46MHz R075 at 18h; 59MHz R0 at 20h' in ' '.join(txt.split()), txt
+        assert 'feed123' in txt and 'abc1234' in txt and 'Files: 3 replaced, 0 published, 2 retired, 1 kept' in ' '.join(txt.split())
+        assert 'By ruling: push_hybrid_20h_59MHz_R0: quarantine by ruling' in ' '.join(txt.split())
+        assert 'Not pushed in this job (1 unit(s)' in ' '.join(txt.split()) and 'push_hybrid_19h_59MHz_R0' in txt
+        assert all(len(x) <= CFG.archive_push.README_WIDTH for x in txt.splitlines())
+        assert any(o['class'] == 'csv_table' for o in u.outputs) and open(os.path.join(adir, 'README.txt'), 'rb').read() == base
+        # an apply: refuses without a note citing a ledger row; with one, the README swapped in, the old one in the round
+        ctx.apply, args._stages = True, ['transfer']
+        u = R.push_readme(ctx, args, run, unit_fn, 'hybrid', adir, qdir, AH.QUARANTINE_MANIFEST, units, 'T5', os.path.join(d, 'work'))
+        assert u.status == 'refused' and 'needs --update-note' not in u.reason and '--update-note' in u.reason, u.reason
+        args.update_note = ['why without an id']
+        u = R.push_readme(ctx, args, run, unit_fn, 'hybrid', adir, qdir, AH.QUARANTINE_MANIFEST, units, 'T5', os.path.join(d, 'work'))
+        assert u.status == 'refused' and 'no ledger ID' in u.reason, u.reason
+        args.update_note = ['Q1 rebuild (TEST-README-20261119)']
+        u = R.push_readme(ctx, args, run, unit_fn, 'hybrid', adir, qdir, AH.QUARANTINE_MANIFEST, units, 'T5', os.path.join(d, 'work'))
+        assert u.status == 'done', u.reason
+        new = open(os.path.join(adir, 'README.txt'), 'rb').read()
+        q = os.path.join(qdir, 'README', '20261119T000000Z', 'README.txt')
+        assert new.startswith(base) and b'UPDATE T5: Q1 rebuild (TEST-README-20261119)' in new and open(q, 'rb').read() == base
+        cp = [o for o in u.outputs if o['class'] == 'archive_readme_copy']
+        assert len(cp) == 1 and cp[0]['ctx']['replaces'] == q
+        for t in (AT.copy_checksum, AT.readme_history_kept):
+            ok, _v, why = t(cp[0]['path'], **cp[0]['ctx'])
+            assert ok, (t.__name__, why)
+        ok, _v, why = AT.rows_quarantined(os.path.join(qdir, AH.QUARANTINE_MANIFEST))
+        assert ok, why
+        with open(os.path.join(adir, f'MANIFEST_{ctx.stamp}.csv')) as f:
+            assert [(r['unit'], r['kind'], r['action']) for r in csv.DictReader(f)] == [('push_hybrid_readme', 'readme', 'replace')]
+        ok, _v, why = AT.rows_transferred(os.path.join(adir, f'MANIFEST_{ctx.stamp}.csv'), paths=[os.path.join(adir, 'README.txt')])
+        assert ok, why
+        # a second push of the same round: its own quarantine name, a second section
+        ctx.stamp = '20261119T010000Z'
+        u = R.push_readme(ctx, args, run, unit_fn, 'hybrid', adir, qdir, AH.QUARANTINE_MANIFEST, units[:1], 'T5', os.path.join(d, 'work'))
+        two = open(os.path.join(adir, 'README.txt'), 'rb').read()
+        assert u.status == 'done' and two.startswith(new) and two.count(b'\nUPDATE T5: ') == 2, u.reason
+        assert os.path.exists(os.path.join(qdir, 'README', '20261119T010000Z', 'README.txt'))
+        # resumed units the README already names add nothing; nothing changing adds nothing; no README refuses
+        man = os.path.join(adir, 'MANIFEST_20261119T000000Z.csv')
+        f1 = dict(name='push_hybrid_18h_46MHz_R075', status='skipped-valid', counts={'replace': 1}, manifests=[man])
+        f2 = dict(name='push_hybrid_20h_59MHz_R0', status='skipped-valid', counts={'retire': 1}, manifests=[])
+        f3 = dict(name='push_hybrid_21h_59MHz_R0', status='skipped-valid', counts={'retire': 1}, manifests=[])
+        assert [f['name'] for f in R.selected([f1, f2, f3], two.decode())[0]] == ['push_hybrid_21h_59MHz_R0']
+        u = R.push_readme(ctx, args, run, unit_fn, 'hybrid', adir, qdir, AH.QUARANTINE_MANIFEST, [units[1]], 'T5', d)
+        assert u.status == 'no-input' and 'stays as installed' in u.reason, u.reason
+        os.remove(os.path.join(adir, 'README.txt'))
+        u = R.push_readme(ctx, args, run, unit_fn, 'hybrid', adir, qdir, AH.QUARANTINE_MANIFEST, units, 'T5', d)
+        assert u.status == 'refused' and 'no README.txt' in u.reason, u.reason
+        assert R.push_readme(ctx, args, run, unit_fn, 'hybrid', adir, qdir, AH.QUARANTINE_MANIFEST, [None], 'T5', d) is None
+    finally:
+        CFG.paths.FIX_LEDGER = old_ledger
         shutil.rmtree(d, ignore_errors=True)
 
 

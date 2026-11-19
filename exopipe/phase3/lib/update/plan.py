@@ -46,6 +46,7 @@ W_TOKEN = {'R075': 'Robust-0.75', 'R0': 'Robust+0.0'}
 # byte-identical; which of the two is known only after the steps ran. A kind a planned unit makes with no installed file: publish.
 ACTION = 'replace or keep'
 PUBLISH = 'publish'
+README = 'append a section'
 QUARANTINE = ('hybrid', 'mosaic_v5', 'mosaic_v3')   # push classes with a quarantine_dir in lib/archive/<class>.py
 
 
@@ -103,10 +104,11 @@ def items_for(kind, cells):
     raise ValueError(f'runner.UPDATE_ORDER: unknown item kind {kind!r} ({", ".join(KINDS)})')
 
 
-def command(cmd, outs, apply=False, rnd=None):
+def command(cmd, outs, apply=False, rnd=None, note=None):
     """(argv or None, chain or None, forward) of an UPDATE_ORDER command: 'chain:NAME' or a step command with the work runs
     filled in; every step gets --resume (a chain: forwarded into each of its steps), a push --round rnd (the plan's round; a
-    template with its own --round refuses, so the planned quarantine destinations are the push's) and --apply only when asked."""
+    template with its own --round refuses, so the planned quarantine destinations are the push's), --update-note note (the
+    plan's; the README section of each push, lib/archive/readme.py) and --apply only when asked."""
     if cmd.startswith('chain:'):
         return None, cmd[6:], ['--resume']
     argv = cmd.split()
@@ -116,9 +118,11 @@ def command(cmd, outs, apply=False, rnd=None):
     if left:
         raise ValueError(f'runner.UPDATE_ORDER {cmd!r}: unknown placeholder(s) {left}')
     if argv[:2] == ['archive', 'push']:
-        if '--round' in argv:
-            raise ValueError(f'runner.UPDATE_ORDER {cmd!r}: a push takes the plan\'s round (run update --round), never its own')
-        return argv + (['--round', rnd] if rnd else []) + (['--apply'] if apply else []), None, []
+        own = [a for a in ('--round', '--update-note') if a in argv]
+        if own:
+            raise ValueError(f'runner.UPDATE_ORDER {cmd!r}: a push takes the plan\'s {" and ".join(own)} (run update), never its own')
+        return (argv + (['--round', rnd] if rnd else []) + (['--update-note', note] if note else []) + (['--apply'] if apply else []),
+                None, [])
     return argv + ['--resume'], None, []
 
 
@@ -134,9 +138,10 @@ def check_outs(outs):
         raise ValueError(f'run update needs the standing work runs: --{", --".join(k.replace("_", "-") for k in miss)}')
 
 
-def build(trigger, outs, apply=False, rnd=None):
+def build(trigger, outs, apply=False, rnd=None, note=None):
     """The plan dict: trigger, closure cells, round, entries [{name, kind, items, argv | chain, forward}] (an entry without items
-    is listed with skipped=reason). rnd: the quarantine round of every push (default the UTC date now). ValueError on a bad
+    is listed with skipped=reason). rnd: the quarantine round of every push (default the UTC date now); note: every push's
+    --update-note (an apply needs one citing a ledger row: the README section, lib/archive/readme.py). ValueError on a bad
     trigger, a missing work run or a bad UPDATE_ORDER entry."""
     import time
     check_outs(outs)
@@ -148,10 +153,13 @@ def build(trigger, outs, apply=False, rnd=None):
         ok = False
     if not ok:
         raise ValueError(f'the quarantine round must be a date YYYYMMDD, got {rnd!r}')
+    if apply and not (note and _ruling_ids([note])):
+        raise ValueError(f'run update --apply needs --update-note "<why, ledger ID>" citing a row of {_cfg().paths.FIX_LEDGER} (every '
+                         f'push appends it to its archive run\'s README; got {note!r})')
     entries, gated = [], False
     for name, kind, cmd in _cfg().runner.UPDATE_ORDER:
         its = items_for(kind, cells)
-        argv, chain, fwd = command(cmd, outs, apply, rnd)
+        argv, chain, fwd = command(cmd, outs, apply, rnd, note)
         gated = gated or writes_archive(argv)
         e = dict(name=name, kind=kind, items=its, argv=argv, chain=chain, forward=fwd, needs_apply=gated)
         if not its:
@@ -160,7 +168,12 @@ def build(trigger, outs, apply=False, rnd=None):
             e['skipped'] = 'needs --apply (this entry or one before it writes the installed tree or the archive)'
         entries.append(e)
     return dict(trigger=list(trigger), cells=[f'{lst}_{s}' for lst, s in cells], outs=dict(outs), apply=bool(apply), round=rnd,
-                entries=entries)
+                update_note=note, entries=entries)
+
+
+def _ruling_ids(texts):
+    from exopipe.phase3.lib.archive.common import ruling_ids
+    return ruling_ids(texts)
 
 
 def from_exclusions(workers=None):
@@ -321,6 +334,11 @@ def predicted(plan, archive_root=None):
             for s in scopes:
                 rows += [row(s, 'product', p, run) for p in _walk(os.path.join(run, s))]
             rows += [row('tables', 'table', p, run) for p in tables_touched(os.path.join(run, 'tables'), cls, scopes)]
+        if cls in (C.archive_push.README_TEMPLATES or {}):               # the push's README unit (lib/archive/readme.py)
+            ar = under(C.hybrid.ARCHIVE_HYBRID) if cls == 'hybrid' else run
+            q = quarantine_dst(cls, root, rnd, os.path.join(ar, 'README', '<push stamp>', C.archive_push.README_NAME), ar)
+            rows.append(dict(entry=e['name'], unit='readme', kind='readme', dst=os.path.join(ar, C.archive_push.README_NAME),
+                             action=README, quarantine=q, note='the installed README + the section of this push'))
     return rows
 
 

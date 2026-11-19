@@ -127,6 +127,9 @@ def add_arguments(p):
     g.add_argument('--apply-ruling', action='append', default=[], metavar='TEXT',
                    help="Gregg's go for a ruled apply (archive.RULING_REQUIRED): \"<Gregg's words, UTC, ledger ID>\"; the "
                         'ledger ID must be a row of paths.FIX_LEDGER (G10)')
+    g.add_argument('--update-note', action='append', default=[], metavar='TEXT',
+                   help='push: why the update was made, with its ledger ID; appended to the archive run\'s README as the section '
+                        'of this push (archive_push.README_TEMPLATES; an apply that writes the README refuses without a ledger ID)')
     g.add_argument('--stages', help='stages of the action, comma-separated (default: manifest; with --apply all of '
                                     'STAGES[action]); e.g. --stages audit --manifest F re-audits an earlier push')
     g.add_argument('--from', dest='from_stage', metavar='STAGE', help='first stage to run')

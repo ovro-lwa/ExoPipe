@@ -63,6 +63,9 @@ def add_arguments(p):
     u.add_argument('--from-exclusions', action='store_true',
                    help='the trigger = every installed deep master holding a night data_decisions.csv excludes now (update)')
     u.add_argument('--round', metavar='YYYYMMDD', help='the quarantine round of every push of the plan (update; default today, UTC)')
+    u.add_argument('--update-note', metavar='TEXT',
+                   help='why the update is made, with its ledger ID: every push of the plan appends it to its archive run\'s README '
+                        '(update; an apply refuses without a ledger ID)')
     u.add_argument('--hybrid-out', help='the standing hybrid work run (update): --resume skips its unchanged units')
     u.add_argument('--v3-out', help='the standing mosaic --generation v3 work run (update)')
     u.add_argument('--v5-out', help='the standing mosaic --generation v5 work run (update)')
@@ -152,7 +155,7 @@ def update(args):
                 trig = f.read().replace(',', ' ').split()
         else:
             trig = [c.strip() for c in args.trigger.split(',') if c.strip()]
-        pl = UP.build(trig, outs, apply=args.apply, rnd=args.round)
+        pl = UP.build(trig, outs, apply=args.apply, rnd=args.round, note=args.update_note)
         if ev is not None:
             pl.update(trigger_from='exclusions', trigger_evidence=ev, exclusions=fp)
         rows = UP.predicted(pl)

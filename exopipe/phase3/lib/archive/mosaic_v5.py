@@ -30,7 +30,8 @@ Gates (a unit refuses whole; nothing of it is copied):
   the push: a --staging-root without any conform or tables record refuses (NoInput), never a clean exit with nothing done;
   both: G4 quarantine destinations free; G19 free space; G2 production writes. All copies are verified (.part, checksum) before the
   first move. Content audit after the swap: class mosaic_v5_archive_copy on every file written.
-The run's README.txt is not written here (spec PR-8: README notes as templated files).
+The run's README.txt gets one section per push from the push's last unit, push_<class>_readme (lib/archive/readme.py, spec
+PR-8c: archive_push.README_TEMPLATES).
 """
 import glob
 import json
@@ -247,7 +248,7 @@ def tables_rows(ctx, rec, rp, rd, arch_run, checksum):
     return rows
 
 
-def run_push(ctx, args, unit_fn, cls, what, items_fn, rd, qd, qman_name):
+def run_push(ctx, args, run, unit_fn, cls, what, items_fn, rd, qd, qman_name):
     """The units of a mosaic push class (mosaic_v5, mosaic_v3): items_fn() -> [(suffix, meta, plan)], plan(checksum) -> (rows, reads);
     unit push_<cls>_<suffix>. No item refuses (NoInput: a push that would do nothing is an error, never a clean exit). Without --apply
     (or the transfer stage) each unit writes its plan manifest; with it, apply_unit (the class hybrid's D2 swap), and every file written
@@ -264,6 +265,7 @@ def run_push(ctx, args, unit_fn, cls, what, items_fn, rd, qd, qman_name):
     rnd = args.round or time.strftime('%Y%m%d', time.gmtime())
     stages = args._stages
     pre = f'push_{cls}_'
+    units = []
     for suffix, meta, plan in items:
         name = pre + suffix
 
@@ -287,9 +289,11 @@ def run_push(ctx, args, unit_fn, cls, what, items_fn, rd, qd, qman_name):
                         if r['action'] in ('publish', 'replace') and os.path.exists(r['dst']):
                             _seed(r['dst'], r['md5'])
             return rows
-        unit_fn(name, body, describe=lambda rows: ', '.join(
+        units.append(unit_fn(name, body, describe=lambda rows: ', '.join(
             f'{k} {sum(1 for r in rows if r["action"] == k)}' for k in ('keep', 'publish', 'replace', 'keep-or-replace')
-            if any(r['action'] == k for r in rows)) or '0 files')
+            if any(r['action'] == k for r in rows)) or '0 files'))
+    from exopipe.phase3.lib.archive.readme import push_readme
+    push_readme(ctx, args, run, unit_fn, cls, rd, qd, qman_name, units, rnd, args.staging_root)
 
 
 def masters_problems(ctx, tiles, prov_files, jysr_name, jysr_md5):
@@ -426,4 +430,4 @@ def run_mosaic_v5(ctx, args, run, unit_fn):
             it.append((TABLES_UNIT, dict(scope=TABLES_UNIT, weighting=None), lambda checksum: tables_plan(ctx, staging, checksum=checksum)))
         return it
     rnd = args.round or time.strftime('%Y%m%d', time.gmtime())
-    run_push(ctx, args, unit_fn, 'mosaic_v5', 'the hybrid mosaics', items, run_dir(ctx), quarantine_dir(ctx, rnd), QUARANTINE_MANIFEST)
+    run_push(ctx, args, run, unit_fn, 'mosaic_v5', 'the hybrid mosaics', items, run_dir(ctx), quarantine_dir(ctx, rnd), QUARANTINE_MANIFEST)
