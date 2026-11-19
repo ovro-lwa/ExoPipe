@@ -38,6 +38,7 @@ import csv
 import importlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -222,7 +223,9 @@ def test_publish_rows():
         assert {r['kind'] for r in rows} == {'plain', 'pbcorr'} and all(r['note'].startswith('named by the step') for r in rows)
         reb = [r for r in rows if r['unit'].startswith('13h_Green_')]     # rebuilt by the plan: named only after the rebuild
         assert len(reb) == len(CFG.hybrid.WEIGHTINGS) * 2 and all('after the rebuild' in r['note'] for r in reb), reb
-        assert all('dry run: NoInput' in r['note'] or 'dry run: OSError' in r['note'] for r in rows if r not in reb), rows[0]
+        caught = ('NoInput', 'Refusal', 'TilefillRefusal') + tuple(c.__name__ for c in (OSError,) + tuple(OSError.__subclasses__()))
+        assert all(re.search(r'dry run: (\w+):', r['note']) and re.search(r'dry run: (\w+):', r['note']).group(1) in caught
+                   for r in rows if r not in reb), rows[0]   # the step's own refusals only (CI: FileNotFoundError, no manifests)
         pl['trigger_evidence'] = [dict(cell='13h_Green', master='/m/I.fits', date='2025-05-07', verdict='STALE', note='n')]
         UP.write(pl, rows, os.path.join(d, 'plan'))
         assert not any(x[1] == 'trigger' for x in csv.reader(open(os.path.join(d, 'plan', 'plan.csv'))))
