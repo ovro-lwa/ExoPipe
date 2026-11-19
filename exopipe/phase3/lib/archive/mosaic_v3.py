@@ -33,7 +33,8 @@ Gates (a unit refuses whole; nothing of it is copied), the cheap ones before any
   both: G4 quarantine destinations free; G19 free space; G2 production writes ('archive:mosaic_v3' is not in the narrow cutover
   allowance: a production apply refuses until a ruling adds it). All copies are verified (.part, checksum) before the first move.
   Content audit after the swap: class mosaic_v3_archive_copy on every file written.
-The run's README.txt is not written here (spec PR-8: README notes as templated files).
+The run's README.txt gets one section per push from the push's last unit, push_<class>_readme (lib/archive/readme.py, spec
+PR-8c: archive_push.README_TEMPLATES).
 """
 
 import json
@@ -215,4 +216,5 @@ def run_mosaic_v3(ctx, args, run, unit_fn):
             it.append((TABLES_UNIT, dict(scope=TABLES_UNIT, job=None), lambda checksum: tables_plan(ctx, staging, checksum=checksum)))
         return it
     rnd = args.round or time.strftime('%Y%m%d', time.gmtime())
-    run_push(ctx, args, unit_fn, 'mosaic_v3', 'the FEATHER3 mosaics', items, run_dir(ctx), quarantine_dir(ctx, rnd), QUARANTINE_MANIFEST)
+    run_push(ctx, args, run, unit_fn, 'mosaic_v3', 'the FEATHER3 mosaics', items, run_dir(ctx), quarantine_dir(ctx, rnd),
+             QUARANTINE_MANIFEST)

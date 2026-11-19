@@ -35,6 +35,7 @@ its stage recorded; a product's PRODNAME = its file name and a phase3 name; HG12
 replaces except archive_push.HYBRID_RETIRED_KEYS[kind]; at most one installed file per kind; a destination that exists is the
 installed file of its kind; G4 quarantine destinations free; G19 free space; G2 production writes. All copies are verified (.part,
 checksum) before the first move. Content audit after the swap: class hybrid_archive_copy on every file written.
+The run's README.txt gets one section per push from the push's last unit, push_hybrid_readme (lib/archive/readme.py, spec PR-8c).
 """
 import glob
 import json
@@ -274,11 +275,12 @@ def hybrid_plan(ctx, staging, lst, scope, w, checksum=True):
 
 
 def apply_unit(ctx, u, rows, rnd, cls='hybrid', adir=None, qdir=None, qman_name=QUARANTINE_MANIFEST,
-               copy_class='hybrid_archive_copy'):
+               copy_class='hybrid_archive_copy', push_manifest=True):
     """D2 swap of one planned unit: verified copies first, then per file the installed one into the round quarantine (manifest
     row) and the new one renamed in, back to back; the applied push manifest; the content audit. The class hybrid's places by
     default; push --class mosaic_v5 passes its run (adir), its round quarantine (qdir, qman_name) and its copy class. An
-    installed file's quarantine path is qdir + its path under adir."""
+    installed file's quarantine path is qdir + its path under adir, or a row's own 'qdest'. push_manifest=False (the README unit,
+    lib/archive/readme.py): the rows go to no push manifest - every later push replaces the file."""
     unit = rows[0]['unit']
     todo = [r for r in rows if r['action'] in ('publish', 'replace', 'retire')]
     adir = adir or archive_dir(ctx)
@@ -287,9 +289,10 @@ def apply_unit(ctx, u, rows, rnd, cls='hybrid', adir=None, qdir=None, qman_name=
     qman = os.path.join(qdir, qman_name)
     pman = os.path.join(adir, f'MANIFEST_{ctx.stamp}.csv')
     ctx.guard_writes([adir, qdir, qman, pman], f'push --class {cls} {unit}', allow=f'archive:{cls}')
+    qof_row = lambda r: r.get('qdest') or qpath(r['replaces'])            # noqa: E731  (a README: README/<stamp>/, lib/archive/readme)
     for r in todo:
-        if r['action'] in ('replace', 'retire') and os.path.lexists(qpath(r['replaces'])):
-            raise Refusal(f'G4: quarantine destination exists: {qpath(r["replaces"])} (choose another --round)')
+        if r['action'] in ('replace', 'retire') and os.path.lexists(qof_row(r)):
+            raise Refusal(f'G4: quarantine destination exists: {qof_row(r)} (choose another --round)')
     ok, free = K.free_space_ok(ctx.archive_root, K.sec().FREE_SPACE_FLOOR_GB)
     if not ok:
         raise Refusal(f'G19: {free} GB free < archive.FREE_SPACE_FLOOR_GB')
@@ -311,7 +314,7 @@ def apply_unit(ctx, u, rows, rnd, cls='hybrid', adir=None, qdir=None, qman_name=
     try:
         for r in todo:
             if r['action'] in ('replace', 'retire'):
-                q = qpath(r['replaces'])
+                q = qof_row(r)
                 with K.CsvAppender(qman, _p().HYBRID_QUARANTINE_COLUMNS) as wq:
                     b, m, t = K.quarantine_move(r['replaces'], q, ctx.algo, what=f'push {cls} {unit} {r["action"]}')
                     wq.write(dict(unit=unit, kind=r['kind'], path=r['replaces'], dest=q, bytes=b, md5=m,
@@ -329,15 +332,16 @@ def apply_unit(ctx, u, rows, rnd, cls='hybrid', adir=None, qdir=None, qman_name=
         left = [p for d_, (p, _m) in parts.items() if d_ not in done and os.path.lexists(p)]
         for p in left:
             os.remove(p)
-        with K.CsvAppender(pman, _p().HYBRID_PUSH_COLUMNS) as wp:
-            for r in written:
-                wp.write(r)
+        if push_manifest:
+            with K.CsvAppender(pman, _p().HYBRID_PUSH_COLUMNS) as wp:
+                for r in written:
+                    wp.write(r)
         if not isinstance(e, Exception):
             raise
         raise Refusal(f'{unit}: the swap stopped ({type(e).__name__}: {e}) after {len(moved)} file(s) quarantined (rows in {qman}) and '
                       f'{len(written)} written (rows in {pman}); {len(left)} unswapped .part removed - a rerun keeps the written files '
                       f'and publishes any kind left without an installed file') from e
-    listed = [r for r in rows if r['action'] != 'retire']
+    listed = [r for r in rows if r['action'] != 'retire'] if push_manifest else []
     if listed:                                  # a retire-only unit (a ruled quarantine) writes no push manifest
         with K.CsvAppender(pman, _p().HYBRID_PUSH_COLUMNS) as wp:
             for r in listed:
@@ -360,11 +364,14 @@ def run_hybrid(ctx, args, run, unit_fn):
     staging = args.staging_root
     rnd = args.round or time.strftime('%Y%m%d', time.gmtime())
     stages = args._stages
+    from exopipe.phase3.lib.archive.readme import precheck, push_readme
+    precheck(ctx, args, 'hybrid', archive_dir(ctx))                 # an apply without its README note refuses before any swap
     from exopipe.phase3.core.record import record_path
     from exopipe.phase3.steps import hybrid as SH
     done = hybrid_units(args, staging)
     states = {k: SH.unit_state(v) for k, v in SH.work_states(staging, lsts=set(push_lsts(args))).items()}
     notdone = {k: s for k, s in states.items() if s[0] in ('refused', 'unfinished')}   # before a done tilefill record
+    units = []
     for lst, scope, w in sorted(set(done) | set(notdone)):
         def body(u, lst=lst, scope=scope, w=w):
             u.meta.update(push_class='hybrid', lst=lst, scope=scope, weighting=w, staging_root=staging,
@@ -395,6 +402,7 @@ def run_hybrid(ctx, args, run, unit_fn):
             if any(r['action'] in ('publish', 'replace', 'retire') for r in rows):
                 apply_unit(ctx, u, rows, rnd)
             return rows
-        unit_fn(f'push_hybrid_{lst}_{scope}_{w}', body, describe=lambda rows: ', '.join(
+        units.append(unit_fn(f'push_hybrid_{lst}_{scope}_{w}', body, describe=lambda rows: ', '.join(
             f'{k} {sum(1 for r in rows if r["action"] == k)}' for k in ('keep', 'publish', 'replace', 'retire', 'keep-or-replace')
-            if any(r['action'] == k for r in rows)) or '0 files')
+            if any(r['action'] == k for r in rows)) or '0 files'))
+    push_readme(ctx, args, run, unit_fn, 'hybrid', archive_dir(ctx), quarantine_dir(ctx, rnd), QUARANTINE_MANIFEST, units, rnd, staging)

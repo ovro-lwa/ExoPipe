@@ -152,6 +152,18 @@ class archive_retire(_Section):
              'CADENCES': ('FINDING-EXCLUDED-NIGHTS-ARCHIVE-PRODUCTS-NOT-RETIRED-20261012', 'LANDED-TENMIN-ARCHIVE-WRITES-STEPS-61-66')}
 
 
+# the README section of one push (archive_push.README_TEMPLATES; module level so that it is no config key of its own)
+_README_UPDATE = (
+    'UPDATE {round}: {note}',
+    'Pushed by exopipe3 archive push --class {cls} (ExoPipe v2 {push_commit}; the products built by {built_commits}) from the '
+    'working run {work_run} (each unit\'s record and content tests under its _records/). {n_units} unit(s) changed: {changed}. '
+    'Files: {replace} replaced, {publish} published, {retire} retired, {keep} kept byte-identical. Superseded files: '
+    '{quarantine}/ (checksum manifest {quarantine_manifest}); the files of this push: {push_manifest}.',
+    '{by_ruling}',
+    '{refused}',
+)
+
+
 class archive_push(_Section):
     """push --class C: manifest -> checksum transfer -> content audit (procedure model ops/push_mosaic_v2_20260929.py;
     RULING-LUSTRE-PUSH-GO-recover-local-class-approved-asap, ledger 335; R-PUSH-WHEN-READY, 489)."""
@@ -224,6 +236,16 @@ class archive_push(_Section):
     # The applied push manifest <hybrid run>/MANIFEST_<stamp>.csv (production's place and src/dst/bytes/md5 columns, NL 1637); md5 and
     # bytes are the file at dst after the push (a kept file: the archive's own).
     HYBRID_PUSH_COLUMNS = ('unit', 'kind', 'src', 'dst', 'bytes', 'md5', 'action', 'replaces', 'written_at')
+    # README notes (spec hybrid.md 3.7, PR-8c; 2.16 item 5: no inline code writes into the archive). The last unit of a push of a
+    # class listed here, push_<class>_readme, appends one section to its archive run's README_NAME, filled from the records of the
+    # push's own units (what each unit changed, kept or retired, and the step records' commits) and from --update-note (why; must
+    # cite a ledger row). The installed README is copied byte for byte ahead of the section and quarantined with the round
+    # (README/<stamp>/README.txt). Fields: round, note, cls, push_commit, built_commits, work_run, n_units, changed, replace,
+    # publish, retire, keep, quarantine, quarantine_manifest, push_manifest, by_ruling, refused. Paragraphs are wrapped at
+    # README_WIDTH. A class without a template gets no README unit.
+    README_NAME = 'README.txt'
+    README_WIDTH = 132
+    README_TEMPLATES = {'hybrid': _README_UPDATE, 'mosaic_v5': _README_UPDATE, 'mosaic_v3': _README_UPDATE}
     # D7 at the push: a replacement holds every card key of the file it replaces (commentary cards aside) except the keys a ruling
     # retired from that kind of file (spec hybrid.md, design corrections: D7 against D6). Every other missing key refuses.
     HYBRID_RETIRED_KEYS = {

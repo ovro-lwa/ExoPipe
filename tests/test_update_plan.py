@@ -34,6 +34,7 @@ Cluster only (the installed archive present; else UNTESTED-CLUSTER, not a failur
 Run: python tests/test_update_plan.py   (or under pytest)
 """
 import argparse
+import contextlib
 import csv
 import importlib
 import json
@@ -54,6 +55,23 @@ from exopipe.phase3.lib.update import plan as UP          # noqa: E402
 TRIG_1113 = ['13h_Green', '13h_Full', '15h_Green']
 OUTS = dict(hybrid_out='/x/H', v3_out='/x/M3', v5_out='/x/M5')
 MANIFESTS = '/lustre/gh/main/exopipe_ops/hybrid_highband_20261031/'
+NOTE_ID = 'TEST-UPDATE-NOTE-20261119'
+NOTE = f'why: a test update ({NOTE_ID})'
+
+
+@contextlib.contextmanager
+def note_ledger():
+    """CFG.paths.FIX_LEDGER = a ledger holding NOTE_ID (CI has no fix ledger), restored after."""
+    d = tempfile.mkdtemp(prefix='upd_ledger_', dir=os.environ.get('TMPDIR'))
+    old, p = CFG.paths.FIX_LEDGER, os.path.join(d, 'fix_ledger.csv')
+    with open(p, 'w', newline='') as f:
+        f.write(f'date,fix_id,files,description,authorized_by,status\r\n2026-11-19T07:00Z,{NOTE_ID},,test only,,done\r\n')
+    CFG.paths.FIX_LEDGER = p
+    try:
+        yield p
+    finally:
+        CFG.paths.FIX_LEDGER = old
+        shutil.rmtree(d, ignore_errors=True)
 
 
 def _raises(fn, *a, **k):
@@ -114,8 +132,21 @@ def _parse(argv):
 
 
 def test_commands_parse():
-    for apply in (False, True):
-        pl = UP.build(TRIG_1113, OUTS, apply=apply)
+    with note_ledger():
+        assert 'needs --update-note' in _raises(UP.build, TRIG_1113, OUTS, apply=True)                 # an apply needs the note
+        assert 'needs --update-note' in _raises(UP.build, TRIG_1113, OUTS, apply=True, note='no ledger id here')
+        pls = [UP.build(TRIG_1113, OUTS, apply=a, note=NOTE if a else None) for a in (False, True)]
+        order = CFG.runner.UPDATE_ORDER                              # no push entry runs: an apply needs no note
+        try:
+            CFG.runner.UPDATE_ORDER = tuple(x for x in order if not x[2].startswith('archive push'))
+            assert UP.build(TRIG_1113, OUTS, apply=True)['update_note'] is None
+        finally:
+            CFG.runner.UPDATE_ORDER = order
+    for e in pls[1]['entries']:                                       # every push of an apply plan carries the plan's note
+        if e['argv'] and e['argv'][:2] == ['archive', 'push']:
+            assert e['argv'][e['argv'].index('--update-note') + 1] == NOTE, e['argv']
+    assert pls[1]['update_note'] == NOTE
+    for apply, pl in zip((False, True), pls):
         names = [e['name'] for e in pl['entries']]
         gated = names[names.index('install'):]
         want = ['hybrid_sub'] if apply else sorted(set(['hybrid_sub'] + gated), key=names.index)
@@ -198,7 +229,9 @@ def test_round():
     for bad in ('2026111', '20261399', '20261113\n'):           # short, not a date, a trailing newline
         assert _raises(UP.build, TRIG_1113, OUTS, rnd=bad).startswith('the quarantine round'), bad
     assert 'never its own' in _raises(UP.command, 'archive push --class hybrid --round 20261201', OUTS, rnd='20261119')
-    pl = UP.build(TRIG_1113, OUTS, apply=True, rnd='20261113')
+    assert 'never its own' in _raises(UP.command, 'archive push --class hybrid --update-note x', OUTS, rnd='20261119')
+    with note_ledger():
+        pl = UP.build(TRIG_1113, OUTS, apply=True, rnd='20261113', note=NOTE)
     assert pl['round'] == '20261113' and all(e['argv'][e['argv'].index('--round') + 1] == '20261113' for e in pl['entries']
                                              if e['argv'] and e['argv'][:2] == ['archive', 'push'])
     assert UP.build(TRIG_1113, OUTS)['round'] == __import__('time').strftime('%Y%m%d', __import__('time').gmtime())
@@ -216,8 +249,17 @@ def test_round():
 def test_publish_rows():
     d = tempfile.mkdtemp(prefix='upd_pub_', dir=os.environ.get('TMPDIR'))
     try:
-        pl = UP.build(['13h_Green'], OUTS, apply=True)
+        with note_ledger():
+            pl = UP.build(['13h_Green'], OUTS, apply=True, note=NOTE)
         rows = UP.predicted(pl, archive_root=d)
+        rd = {r['entry']: r for r in rows if r['kind'] == 'readme'}     # each push's README unit: one row per push entry
+        pushes = [e['name'] for e in pl['entries'] if not e.get('skipped') and e['argv'] and e['argv'][:2] == ['archive', 'push']]
+        assert sorted(rd) == sorted(pushes) and len(pushes) == 3 and all(r['action'] == UP.README for r in rd.values()), rd
+        h = rd['push_hybrid']
+        assert h['dst'].endswith('Coadd/Run_NOTAPER_HYBRID_20261028/README.txt') and h['quarantine'].endswith(
+            'Coadd/Run_NOTAPER_HYBRID_QUARANTINE_' + pl['round'] + '/README/<push stamp>/README.txt'), h
+        assert rd['push_mosaic_v5']['quarantine'].endswith('mosaic/Run_HYBRID_QUARANTINE_' + pl['round'] + '/README/<push stamp>/README.txt')
+        rows = [r for r in rows if r['kind'] != 'readme']
         assert rows and all(r['action'] == UP.PUBLISH and r['entry'] == 'push_hybrid' and not r['quarantine'] for r in rows), rows[:2]
         assert len(rows) == 24 * len(CFG.hybrid.WEIGHTINGS) * 2, len(rows)       # 24 LSTs of Green (a wideband: no Full) x w x 2
         assert {r['kind'] for r in rows} == {'plain', 'pbcorr'} and all(r['note'].startswith('named by the step') for r in rows)
@@ -396,9 +438,12 @@ def test_replay_1113_cluster():
     if not (os.path.isfile(H) and os.path.isfile(V) and os.path.isdir(CFG.hybrid.ARCHIVE_HYBRID)):
         print('UNTESTED-CLUSTER  test_replay_1113_cluster (manifests or the installed archive not here)')
         return
-    pl = UP.build(TRIG_1113, OUTS, apply=True, rnd='20261113')   # the preview of an --apply run (`--plan D --apply`)
+    with note_ledger():
+        pl = UP.build(TRIG_1113, OUTS, apply=True, rnd='20261113', note=NOTE)   # the preview of an --apply run (`--plan D --apply`)
     pred, qd = {}, {}
     for r in UP.predicted(pl):
+        if r['kind'] == 'readme':                    # the README units (lib/archive/readme.py); 11-13 rewrote README in place
+            continue
         pred.setdefault(r['entry'], {})[r['dst']] = (r['unit'], r['kind'])
         qd[r['dst']] = r['quarantine']
     hrows = [r for r in csv.DictReader(open(H)) if r['kind'] == 'superseded']

@@ -32,9 +32,15 @@ optional, so `exopipe3 verify <class> <file>` runs them alone.
   mosaic_v3_archive_copy   v3_copy_checksum        a file push --class mosaic_v3 wrote: its checksum = the pushed source's (ctx md5)
                            v3_copy_header          a product: as v5_copy_header; a table: a FEATHER3 table's columns (a carried
                                                    table: a header row)
+  archive_readme           readme_staged           a README a push staged (lib/archive/readme.py): UTF-8; its first prefix_bytes
+                                                   are the installed README (md5 prefix_md5); the rest is one section 'UPDATE <round>'
+  archive_readme_copy      readme_copy_checksum    the README a push wrote: its checksum = the staged one's (ctx md5)
+                           readme_history_kept     it begins with every byte of the README it replaced (ctx replaces: the
+                                                   quarantined copy) and adds to it
                            v3_copy_card_superset   D7 per HDU: every card key of the file it replaced, less MOSAIC_V3_RETIRED_KEYS
 """
 import os
+import re
 
 from exopipe.phase3.core.validate import content_test
 
@@ -512,6 +518,46 @@ v5_copy_header = content_test('mosaic_v5_archive_copy', name='v5_copy_header')(_
 v3_copy_header = content_test('mosaic_v3_archive_copy', name='v3_copy_header')(_mosaic_copy_header(v3_table_columns))
 v5_copy_card_superset = content_test('mosaic_v5_archive_copy', name='v5_copy_card_superset')(_mosaic_card_superset('MOSAIC_V5_RETIRED_KEYS'))
 v3_copy_card_superset = content_test('mosaic_v3_archive_copy', name='v3_copy_card_superset')(_mosaic_card_superset('MOSAIC_V3_RETIRED_KEYS'))
+
+
+@content_test('archive_readme')
+def readme_staged(path, prefix_md5=None, prefix_bytes=None, round=None, **ctx):
+    import hashlib
+    with open(path, 'rb') as fh:
+        b = fh.read()
+    try:
+        b.decode('utf-8')
+    except UnicodeDecodeError as e:
+        return False, None, f'not UTF-8 ({e})'
+    if prefix_bytes is None or not prefix_md5:
+        return False, None, 'no installed-README prefix in the context'
+    head, tail = b[:int(prefix_bytes)], b[int(prefix_bytes):].decode('utf-8')
+    if hashlib.md5(head).hexdigest() != prefix_md5:
+        return False, len(head), f'the first {prefix_bytes} bytes are not the installed README (md5 {prefix_md5})'
+    # the section starts right after the separator with its header; a second line starting 'UPDATE <round>: ' would be a second
+    # section (a note line starting with UPDATE is not one: only the header puts a colon right after the round)
+    body = tail.lstrip('\n')
+    heads = re.findall(r'(?m)^UPDATE ' + re.escape(str(round)) + ': ', body)
+    ok = body.startswith(f'UPDATE {round}: ') and len(heads) == 1 and tail.endswith('\n')
+    return ok, len(heads), (f'the installed README ({prefix_bytes} bytes) + one section UPDATE {round} ({len(tail)} characters)' if ok
+                            else f'after the installed README: {len(heads)} section header(s), starts with UPDATE {round}: '
+                                 f'{body.startswith(f"UPDATE {round}: ")}, ends with a newline: {tail.endswith(chr(10))}')
+
+
+content_test('archive_readme_copy', name='readme_copy_checksum')(copy_checksum)
+
+
+@content_test('archive_readme_copy')
+def readme_history_kept(path, replaces=None, **ctx):
+    if not replaces:
+        return True, None, 'replaced no installed README'
+    with open(path, 'rb') as fh:
+        new = fh.read()
+    with open(replaces, 'rb') as fh:
+        old = fh.read()
+    ok = new.startswith(old) and len(new) > len(old)
+    return ok, len(new) - len(old), (f'begins with all {len(old)} bytes of {os.path.basename(replaces)} and adds {len(new) - len(old)}'
+                                     if ok else f'does not begin with {os.path.basename(replaces)} byte for byte (history lost)')
 
 
 @content_test('archive_mosaic_copy')
