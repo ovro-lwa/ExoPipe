@@ -18,6 +18,21 @@ if getattr(sys, '_exopipe3_sitecustomize_loaded', False):
     raise ImportError('exopipe3 sitecustomize: already loaded in this process (chained back from another sitecustomize)')
 sys._exopipe3_sitecustomize_loaded = True
 
+# SAFE COPIES (as exopipe/__init__.py installs in every process that imports exopipe; the in-place children import none):
+# shutil copies with ordinary reads and writes (its sendfile copies silently truncated Lustre-to-Lustre copies on lwacalim07,
+# 2026-11-20) and a copy shorter than its source is refused - exopipe/_safe_copy.py, the one source, loaded by path. First in
+# this file, so no later block's failure can skip it; its own failure is reported on stderr and the blocks below still run.
+try:
+    import importlib.util as _ilu_sc
+    _sc_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', '..', '_safe_copy.py')
+    _sc_spec = _ilu_sc.spec_from_file_location('exopipe3_safe_copy', _sc_path)
+    _sc = _ilu_sc.module_from_spec(_sc_spec)
+    _sc_spec.loader.exec_module(_sc)
+    _sc.install()
+    del _ilu_sc, _sc_path, _sc_spec, _sc
+except Exception as _sc_exc:                                     # noqa: BLE001 - reported, the guard below must still install
+    sys.stderr.write(f'SAFE-COPY: not installed in this process: {_sc_exc!r}\n')
+
 _ROOTS = os.environ.get('EXOPIPE3_PARITY_ROOT', '')
 _HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -540,17 +555,6 @@ _NoLustreMap.__name__ = _NoLustreMap.__qualname__ = 'mmap'
 _NoLustreMap.__module__ = NoLustreMapError.__module__ = 'mmap'
 _mmap.mmap = _NoLustreMap                         # once: this file runs once per process (the check at its top)
 _mmap.NoLustreMapError = NoLustreMapError
-
-# NO SENDFILE COPIES, as exopipe/__init__.py sets for every process that imports exopipe (2026-11-20,
-# FINDING-20261120-SHUTIL-SENDFILE-COPIES-TRUNCATE-ON-LWACALIM07: shutil's sendfile copies silently truncated Lustre-to-Lustre
-# copies on lwacalim07). The in-place children import no exopipe, so their shutil copies are switched to shutil's read/write
-# fallback here. shutil is standard library (no astropy, no numpy); Python 3.6 has no sendfile path (the names set are unused).
-import shutil as _shutil_nosf
-_shutil_nosf._USE_CP_SENDFILE = False
-if hasattr(_shutil_nosf, '_USE_CP_COPY_FILE_RANGE'):
-    _shutil_nosf._USE_CP_COPY_FILE_RANGE = False
-_shutil_nosf.COPY_BUFSIZE = 16 << 20
-del _shutil_nosf
 
 # chain to any other sitecustomize on the path (the environment's own, if it has one) - never back to the sitecustomize
 # Python imported at start-up when that is another file which chained here (the sub-LST frozen-code guard first on the

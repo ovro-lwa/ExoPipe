@@ -42,7 +42,7 @@ jobs:
         run: python tests/test_r1_epoch_header_gate.py
       - name: no memory maps (R-GREGG-20261117-NO-MMAP-OF-LUSTRE-FILES-READ-OR-WRITE)
         run: python tests/test_no_mmap.py
-      - name: no sendfile copies (shutil copies read and write; FINDING-20261120-SHUTIL-SENDFILE-COPIES-TRUNCATE-ON-LWACALIM07)
+      - name: safe copies (shutil copies read and write; a short copy is refused)
         run: python tests/test_no_sendfile.py
       - name: the parity guard's astropy hook composes with the sub-LST frozen-code guard (no import recursion)
         run: python tests/test_guard_reentry.py
