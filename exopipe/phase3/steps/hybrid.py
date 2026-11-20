@@ -764,7 +764,7 @@ def v5_mosaic_pair(mosaic_out, scope, w, out_root, rows):
     filled masters' TPMOSAIC and TPMOSMD5 name the archived mosaic as production's do (the fill stage's work files carry another name
     and header). Refuses (HG13) unless the record is done, both files and the tile list (stage/tiles.json) have its md5s now, and
     the mosaic was made from the unfilled masters this tilefill run fills: per LST, the source ('work' where this run
-    holds the cell's hybrid record <out_root>/<LST>_<scope>/<w>_hybrid.json, else 'pinned') and the md5 of the beam-corrected master
+    holds the cell's hybrid record <out_root>/<LST>_<scope>/<w>_hybrid.json and it is not a kept cell, else 'pinned') and the md5 of the beam-corrected master
     that tilefill_source gives now, as the v5 stage resolved them (rows: the pinned manifests)."""
     import json
     from exopipe.phase3.core.record import Refusal, NoInput, load_record
@@ -787,7 +787,8 @@ def v5_mosaic_pair(mosaic_out, scope, w, out_root, rows):
         tiles = {t['lst']: t for t in json.load(f)['tiles']}
     bad = [f'{lst} (no tile)' for lst in v5.LSTS if lst not in tiles]
     for lst, t in sorted(tiles.items()):
-        mode = 'work' if os.path.exists(os.path.join(out_root, f'{lst}_{scope}', f'{w}_hybrid.json')) else 'pinned'
+        mode = 'pinned' if kept_cell(out_root, lst, scope, w) else (
+            'work' if os.path.exists(os.path.join(out_root, f'{lst}_{scope}', f'{w}_hybrid.json')) else 'pinned')
         try:
             want = tilefill_source(out_root, lst, scope, w, rows, mode, plan_only=True, need_pb=False)['src']['pbcorr'][2]
         except (TilefillRefusal, Refusal, NoInput) as e:
@@ -888,6 +889,18 @@ def work_states(out_root, lsts=None, scope=None, w=None):
     return got
 
 
+def kept_cell(out_root, lst, scope, w):
+    """True when the work run out_root refused the unit (unit_state through 'hybrid': refused) and hybrid_unit.REFUSED_INSTALLED keeps
+    its installed products. One predicate for the three places that take such a cell's pinned unfilled master: the v5 mosaic's tile
+    (lib/mosaic/v5.resolve_tiles, the same test), the band field's check of that tile (v5_mosaic_pair) and its fill
+    (tilefill_source). A stale hybrid record of the unit does not change it."""
+    from exopipe.phase3.config import CFG
+    if not out_root or CFG.hybrid_unit.REFUSED_INSTALLED.get((lst, scope, w)) != 'keep':
+        return False
+    ws = work_states(out_root, lsts=(lst,), scope=scope, w=w).get((lst, scope, w))
+    return ws is not None and unit_state(ws, through='hybrid')[0] == 'refused'
+
+
 def unit_state(stages, through='tilefill'):
     """(state, stage, status, reason) of one unit from its work_states entry, over its stage records up to `through`: 'tilefill'
     (the archive push: the filled masters) or 'hybrid' (the hybrid or full stage's unfilled masters: the v5 mosaic, made before
@@ -972,10 +985,10 @@ def tilefill_source(out_root, lst, scope, w, rows, mode='work', plan_only=False,
     must equal the recorded one); the diffuse PB of a subband or wideband computed as production's archive step wrote it
     (lib/hybrid/master.diffuse_pb_map, rounded through float32), Full's read from the file of the hybrid_full.PBDIFFUSE_WEIGHTING unit
     (where that unit refused and hybrid_unit.REFUSED_INSTALLED keeps it: the installed map, the kept cell's).
-    'work' on a unit with no hybrid record in --out that hybrid_unit.REFUSED_INSTALLED keeps (refused in the work run, its installed
-    products kept by ruling): as 'pinned' - its filled masters follow the band field, as the v5 mosaic takes its pinned tile
-    (lib/mosaic/v5.resolve_tiles) and as v5_mosaic_pair checks it; without the refill the archived mosaic and that cell's fill differ
-    (archive push --class mosaic_v5 refuses them, HG20).
+    'work' on a kept cell (kept_cell: refused in the work run, its installed products kept by ruling): as 'pinned' - its filled
+    masters follow the band field, as the v5 mosaic takes its pinned tile (lib/mosaic/v5.resolve_tiles) and as v5_mosaic_pair
+    checks it; a stale hybrid record of it in --out does not make it 'rebuilt'. Without the refill the archived mosaic and that
+    cell's fill differ (archive push --class mosaic_v5 refuses them, HG20).
     'pinned' (a unit this run did not rebuild, whose band field changed): the installed filled masters in hybrid.ARCHIVE_HYBRID, whose
     TPSRCMD5 names their unfilled sources in the pinned manifests (HG13), the installed diffuse PB map, and the nights of the
     production hybrid record of those sources; the CLEAN residual is not re-made.
@@ -1000,7 +1013,8 @@ def tilefill_source(out_root, lst, scope, w, rows, mode='work', plan_only=False,
         raise TilefillRefusal(f'{lst} {scope} {w}: more than one installed hybrid master of a kind {many} - REFUSING')
     replaces = {k: (v[0] if v else None) for k, v in inst.items()}
     pb = None
-    if mode == 'work' and not os.path.exists(hj) and CFG.hybrid_unit.REFUSED_INSTALLED.get((lst, scope, w)) == 'keep':
+    kept = kept_cell(out_root, lst, scope, w)
+    if mode == 'work' and kept:
         mode = 'pinned'                 # a cell kept by ruling: re-filled from its installed masters' own unfilled sources (docstring)
     if mode == 'work':
         if not os.path.exists(hj):
@@ -1056,7 +1070,7 @@ def tilefill_source(out_root, lst, scope, w, rows, mode='work', plan_only=False,
                 how = f'in memory: {how0} (rounded through float32)'
         source = 'work'
     else:
-        if os.path.exists(hj):
+        if os.path.exists(hj) and not kept:
             raise Refusal(f'{lst} {scope} {w} was rebuilt in --out ({hj}): its fill is --tilefill-source work - REFUSED')
         if not inst['plain'] or not inst['pbcorr']:
             raise TilefillRefusal(f'{lst} {scope} {w}: installed filled masters {inst} - not one each; REFUSING')

@@ -137,10 +137,11 @@ def hybrid_units(args, staging):
     return units
 
 
-def refused_rows(ctx, lst, scope, w, state, checksum=True):
+def refused_rows(ctx, lst, scope, w, state, checksum=True, skip=()):
     """(rows, notes) of a unit the work run did not finish (module docstring); Refusal unless hybrid_unit.REFUSED_INSTALLED rules it.
     state: steps.hybrid.unit_state's (state, stage, status, reason). A kept file's row carries its checksum (checksum=False: the
-    dry run, none computed), recorded as the unit's input: the ruling covers that file and no other."""
+    dry run, none computed), recorded as the unit's input: the ruling covers that file and no other. skip: kinds a re-fill pushes
+    (kept_refill), given no row here."""
     from exopipe.phase3.config import CFG
     from exopipe.phase3.steps import hybrid as SH
     unit = f'{lst}_{scope}_{w}'
@@ -163,21 +164,37 @@ def refused_rows(ctx, lst, scope, w, state, checksum=True):
     keep = disp == 'keep'
     rows = [dict(unit=unit, kind=k, src='', dst=v[0] if keep else '', bytes=os.path.getsize(v[0]),
                  md5=K.checksum(v[0], ctx.algo) if keep and checksum else '', action='keep' if keep else 'retire',
-                 replaces='' if keep else v[0], written_at='') for k, v in inst.items()]
+                 replaces='' if keep else v[0], written_at='') for k, v in inst.items() if k not in skip]
     return rows, [f'{disp} by ruling (hybrid_unit.REFUSED_INSTALLED): {why}; installed {names}']
 
 
+def _tilefill_paths(staging, lst, scope, w):
+    """(the tilefill record <LST>_<scope>/<w>_tilefill.json, its unit record _records/hybrid/tilefill.<LST>_<scope>_<w>.json)."""
+    return (os.path.join(staging, f'{lst}_{scope}', f'{w}_tilefill.json'),
+            os.path.join(staging, '_records', 'hybrid', f'tilefill.{lst}_{scope}_{w}.json'))
+
+
 def kept_refill(staging, lst, scope, w, state):
-    """True when a unit the work run refused is kept by ruling (hybrid_unit.REFUSED_INSTALLED keep) and its tilefill record is done
-    with source pinned: its filled masters were re-filled from their own unfilled sources (module docstring)."""
+    """Whether a unit the work run did not finish pushes a re-fill (module docstring). False: not refused, not kept by ruling
+    (hybrid_unit.REFUSED_INSTALLED keep), or no tilefill unit record (nothing re-filled: the keep rows alone). True: kept, its tilefill
+    unit done with source pinned (its filled masters re-filled from their own unfilled sources). Refusal: kept, but the re-fill did not
+    finish (its unit record not done) or its record is not a pinned fill (a work fill of a refused unit is stale) - the cell's fill
+    would otherwise stay behind the band field silently."""
     from exopipe.phase3.config import CFG
     if state[0] != 'refused' or CFG.hybrid_unit.REFUSED_INSTALLED.get((lst, scope, w)) != 'keep':
         return False
-    up = os.path.join(staging, '_records', 'hybrid', f'tilefill.{lst}_{scope}_{w}.json')
-    tp = os.path.join(staging, f'{lst}_{scope}', f'{w}_tilefill.json')
-    if not (os.path.exists(up) and os.path.exists(tp)) or _json(up).get('status') != 'done':
+    tp, up = _tilefill_paths(staging, lst, scope, w)
+    if not os.path.exists(up):
         return False
-    return _json(tp).get('source') == 'pinned'
+    ur = _json(up)
+    if ur.get('status') != 'done':
+        raise Refusal(f'{lst}_{scope}_{w}: kept by ruling, but its re-fill ({up}) is {ur.get("status")!r}: '
+                      f'{str(ur.get("reason") or "")[:200]} - run --stages tilefill again; REFUSED')
+    src = _json(tp).get('source') if os.path.exists(tp) else None
+    if src != 'pinned':
+        raise Refusal(f'{lst}_{scope}_{w}: kept by ruling, but its done tilefill record {tp} has source {src!r}, not pinned (a work '
+                      f'fill of a refused unit is stale) - run --stages tilefill again; REFUSED')
+    return True
 
 
 def unit_items(staging, lst, scope, w):
@@ -185,8 +202,7 @@ def unit_items(staging, lst, scope, w):
     from exopipe.phase3.config import CFG
     from exopipe.phase3.lib.masters import pb_apply as PBA
     wd = os.path.join(staging, f'{lst}_{scope}')
-    tp = os.path.join(wd, f'{w}_tilefill.json')
-    up = os.path.join(staging, '_records', 'hybrid', f'tilefill.{lst}_{scope}_{w}.json')
+    tp, up = _tilefill_paths(staging, lst, scope, w)
     if not os.path.exists(up):
         raise Refusal(f'{up}: no tilefill unit record - nothing of {lst} {scope} {w} is pushed')
     ur = _json(up)
@@ -393,13 +409,14 @@ def run_hybrid(ctx, args, run, unit_fn):
                           archive_root=ctx.archive_root, archive_dir=archive_dir(ctx, lst, scope), round=rnd)
             if (lst, scope, w) in notdone:
                 u.meta['work_state'] = list(notdone[(lst, scope, w)])
-                rows, notes = refused_rows(ctx, lst, scope, w, notdone[(lst, scope, w)], checksum=not ctx.dry)
+                refill = kept_refill(staging, lst, scope, w, notdone[(lst, scope, w)])   # its filled masters re-filled (pinned)
+                frows, freads, fnotes = hybrid_plan(ctx, staging, lst, scope, w, checksum=not ctx.dry) if refill else ([], [], [])
+                pushed = {r['kind'] for r in frows}
+                rows, notes = refused_rows(ctx, lst, scope, w, notdone[(lst, scope, w)], checksum=not ctx.dry, skip=pushed)
+                rows = frows + rows
                 reads = [r for r in (record_path(staging, 'hybrid', f'{x}.{lst}_{scope}_{w}') for x in SH.STAGES) if os.path.exists(r)]
-                if kept_refill(staging, lst, scope, w, notdone[(lst, scope, w)]):     # its filled masters re-filled (pinned)
-                    frows, freads, fnotes = hybrid_plan(ctx, staging, lst, scope, w, checksum=not ctx.dry)
-                    pushed = {r['kind'] for r in frows}
-                    rows = frows + [r for r in rows if r['kind'] not in pushed]
-                    reads += freads
+                reads += freads
+                if refill:
                     notes += fnotes + [f'kept by ruling, filled masters re-filled from their own unfilled sources (pinned tilefill): '
                                        f'{", ".join(sorted(pushed))} pushed, the rest kept']
                 for r in rows:

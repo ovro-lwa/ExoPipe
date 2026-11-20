@@ -565,10 +565,21 @@ def test_kept_refill():
             assert not AH.kept_refill(out, '18h', '46MHz', 'R075', st)                 # no ruling
             CFG.hybrid_unit.REFUSED_INSTALLED[('18h', '46MHz', 'R075')] = 'keep'
             assert AH.kept_refill(out, '18h', '46MHz', 'R075', st)
-            tf = json.load(open(tp))
-            json.dump({**tf, 'source': 'work'}, open(tp, 'w'))
-            assert not AH.kept_refill(out, '18h', '46MHz', 'R075', st)                 # a stale work-source tilefill
-            json.dump(tf, open(tp, 'w'))
+            with open(tp) as f:
+                tf = json.load(f)
+            with open(tp, 'w') as f:
+                json.dump({**tf, 'source': 'work'}, f)
+            assert 'stale' in _raises(Refusal, AH.kept_refill, out, '18h', '46MHz', 'R075', st)       # a work fill of a refused unit
+            with open(tp, 'w') as f:
+                json.dump(tf, f)
+            up = os.path.join(out, '_records', 'hybrid', 'tilefill.18h_46MHz_R075.json')
+            with open(up) as f:
+                ur = json.load(f)
+            with open(up, 'w') as f:
+                json.dump({**ur, 'status': 'refused', 'reason': 'HG13 synthetic'}, f)
+            assert 'HG13 synthetic' in _raises(Refusal, AH.kept_refill, out, '18h', '46MHz', 'R075', st)   # a re-fill that failed
+            with open(up, 'w') as f:
+                json.dump(ur, f)
             with open(os.path.join(AH.archive_dir(E.ctx), 'README.txt'), 'w') as f:
                 f.write('test README\n')
             old_fl, res = CFG.paths.FIX_LEDGER, {}

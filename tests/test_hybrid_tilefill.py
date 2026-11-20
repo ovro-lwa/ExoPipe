@@ -197,15 +197,33 @@ def test_sources_and_plan():
         assert s['nights'] == ['2025-04-05', '2025-04-08'] and rj in s['reads'], s
         assert s['replaces']['plain'] == os.path.join(arch, NAME.format(pb='', cr='')) and s['replaces']['cleanres'] == cr, s['replaces']
         old_ri = dict(CFG.hybrid_unit.REFUSED_INSTALLED)
-        try:                                        # a cell kept by ruling, no hybrid record in --out: work fills it as pinned
+        rd = os.path.join(out, '_records', 'hybrid')
+        try:                                        # a cell kept by ruling (refused in --out): work fills it as pinned
             CFG.hybrid_unit.REFUSED_INSTALLED[('18h', '46MHz', 'R075')] = 'keep'
+            assert not HS.kept_cell(out, '18h', '46MHz', 'R075')                    # no records: not refused in this run
+            assert 'no hybrid record' in _raises(NoInput, _source, d, out, rows, 'work')
+            os.makedirs(rd)
+            for unit, stt in (('stack.18h_46MHz_R075', 'done'), ('recon.18h_46MHz_R075', 'refused')):
+                with open(os.path.join(rd, unit + '.json'), 'w') as f:
+                    json.dump(dict(status=stt, reason='synthetic'), f)
+            assert HS.kept_cell(out, '18h', '46MHz', 'R075')
             sk = _source(d, out, rows, 'work')
             assert sk['source'] == 'pinned' and sk['src'] == s['src'] and sk['nights_from'] == s['nights_from'], sk
+            hj = os.path.join(out, '18h_46MHz', 'R075_hybrid.json')            # a stale hybrid record does not make it rebuilt
+            with open(hj, 'w') as f:
+                f.write('{}')
+            with open(os.path.join(rd, 'hybrid.18h_46MHz_R075.json'), 'w') as f:
+                json.dump(dict(status='done', reason=''), f)
+            assert HS.kept_cell(out, '18h', '46MHz', 'R075') and _source(d, out, rows, 'work')['source'] == 'pinned'
             CFG.hybrid_unit.REFUSED_INSTALLED[('18h', '46MHz', 'R075')] = 'quarantine'
+            assert not HS.kept_cell(out, '18h', '46MHz', 'R075')
+            assert 'refused in the work run at stage recon' in _raises(Refusal, _source, d, out, rows, 'work')
+            os.remove(hj)
             assert 'no hybrid record' in _raises(NoInput, _source, d, out, rows, 'work')
         finally:
             CFG.hybrid_unit.REFUSED_INSTALLED.clear()
             CFG.hybrid_unit.REFUSED_INSTALLED.update(old_ri)
+            shutil.rmtree(os.path.join(out, '_records'), ignore_errors=True)
         assert '2025-04-08' in _raises(TF.TilefillRefusal, _source, d, out, rows, 'pinned', excluded=('2025-04-08',))
         plan = HS.tilefill_plan(out, '18h', '46MHz', 'R075', s)
         assert [c for _p, c in plan] == ['hybrid_filled_master', 'hybrid_filled_master', 'hybrid_tilefill_record'], plan
