@@ -559,7 +559,7 @@ class Store:
         self.tree = os.path.realpath(tree) if tree else None   # a backend builds the pages of this code tree only
         self.builds = builds                                   # the front builds none
         self.code_report = {}                 # (page_id, inspect) -> {'code': [path, md5], 'helpers': {name: [path, md5]}}
-        self._mod_md5 = {}                    # id(module) -> (path, md5) when first seen: the bytes it was imported from
+        self._mod_md5 = {}                    # id(module) -> (module, path, md5) when first seen: the bytes it was imported from
         self.registry_path = registry_path
         self.base_env = dict(base_env if base_env is not None else _ENV._base)
         self.max_pages, self.keep_s = max_pages, keep_s
@@ -757,7 +757,7 @@ class Store:
                 pg = build_page(e, inspect, self.base_env, self.write_locks[self.labels_dir(e)])
             finally:
                 with self.lock:
-                    self.builds_done += 1             # a build of the process finished (its page's report may wait)
+                    self.builds_done += 1             # a build of the process finished (its page's report follows at once)
             pg.build_s, pg.gen, pg.build_start = round(time.time() - t, 1), gen, t
             prime_page(pg)
             report = self._report(e)
@@ -801,17 +801,21 @@ class Store:
         """The code a page was built from: its own file and every project module in this process (project_modules), each with
         the md5 of the bytes it was imported from (recorded when the module is first seen). Never under _BUILD_LOCK: that lock
         is held for a page's whole main() (sys.argv, sys.path), so a finished page waiting for it could not be served while any
-        other page built - the 2026-11-20 hub hang (a cold 10-minute build held every page for two hours). project_modules
-        copies sys.modules first, and the first md5 recorded for a module stays (setdefault)."""
+        other page built - the 2026-11-20 hub hang (a cold 10-minute build held every page for two hours). So the report can
+        run while another build imports: a module still executing its import (spec._initializing) is left out, as it was when
+        the report ran between builds; and a cache entry holds its module, so a reload that clears the cache while a report
+        hashes cannot leave an entry whose id a new module reuses (the entry keeps the old module alive; the new one gets a
+        new id and its own md5)."""
         helpers = {}
         for name, path in sorted(project_modules().items()):
             mod = sys.modules.get(name)
-            if mod is None:
+            if mod is None or getattr(getattr(mod, '__spec__', None), '_initializing', False):
                 continue
             rec = self._mod_md5.get(id(mod))
-            if rec is None:
-                rec = self._mod_md5.setdefault(id(mod), (path, md5_file(path)))
-            helpers[name] = list(rec)
+            if rec is None or rec[0] is not mod:
+                rec = (mod, path, md5_file(path))
+                self._mod_md5[id(mod)] = rec
+            helpers[name] = [rec[1], rec[2]]
         return {'code': [os.path.realpath(e['code']), md5_file(e['code'])], 'helpers': helpers}
 
     def _evict(self):
@@ -1071,8 +1075,8 @@ def backend_status(store):
     or held by its run's publish hold ('held'). The BUILD STATE of a page (lib/serve/register.wait_built): 'built' also names
     what the page was built from ('entry': entry_md5) and when its build started ('build_start', epoch s); 'building' = the
     builds under way or waiting for the build lock; 'errors' = the last failed build per page (its text, the entry it was
-    built from, when it started); 'builds_done' = the builds finished so far (a page's own completion can wait behind the
-    next build: its report takes the build lock)."""
+    built from, when it started); 'builds_done' = the builds finished so far (a page is 'built' once its report is made, right
+    after its build: the report does not take the build lock)."""
     def _k(pid, insp):
         return f'{pid}{":inspection" if insp else ""}'
     with store.lock:

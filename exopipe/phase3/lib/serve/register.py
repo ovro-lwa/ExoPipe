@@ -466,7 +466,7 @@ def page_state(status, key, want, t0):
 
 def progress(status):
     """What changes when a build starts or ends anywhere on the server (the stall rule's signature): the builds under way,
-    the builds finished (two_port's builds_done: a page's own completion can wait behind the next build), the pages built
+    the builds finished (two_port's builds_done; a page counts as built once its report is made, right after), the pages built
     and their last failures."""
     if not status:
         return None
