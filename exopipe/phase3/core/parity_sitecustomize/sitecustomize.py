@@ -18,6 +18,21 @@ if getattr(sys, '_exopipe3_sitecustomize_loaded', False):
     raise ImportError('exopipe3 sitecustomize: already loaded in this process (chained back from another sitecustomize)')
 sys._exopipe3_sitecustomize_loaded = True
 
+# SAFE COPIES (as exopipe/__init__.py installs in every process that imports exopipe; the in-place children import none):
+# shutil copies with ordinary reads and writes (its sendfile copies silently truncated Lustre-to-Lustre copies on lwacalim07,
+# 2026-11-20) and a copy shorter than its source is refused - exopipe/_safe_copy.py, the one source, loaded by path. First in
+# this file, so no later block's failure can skip it; its own failure is reported on stderr and the blocks below still run.
+try:
+    import importlib.util as _ilu_sc
+    _sc_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', '..', '_safe_copy.py')
+    _sc_spec = _ilu_sc.spec_from_file_location('exopipe3_safe_copy', _sc_path)
+    _sc = _ilu_sc.module_from_spec(_sc_spec)
+    _sc_spec.loader.exec_module(_sc)
+    _sc.install()
+    del _ilu_sc, _sc_path, _sc_spec, _sc
+except Exception as _sc_exc:                                     # noqa: BLE001 - reported, the guard below must still install
+    sys.stderr.write(f'SAFE-COPY: not installed in this process: {_sc_exc!r}\n')
+
 _ROOTS = os.environ.get('EXOPIPE3_PARITY_ROOT', '')
 _HERE = os.path.dirname(os.path.abspath(__file__))
 

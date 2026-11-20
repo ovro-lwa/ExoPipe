@@ -16,3 +16,9 @@ try:
     del _fits
 except ImportError:          # environments without astropy (no FITS reads there)
     pass
+
+# Safe copies: shutil copies with ordinary reads and writes (no sendfile, which silently truncated Lustre-to-Lustre copies on
+# lwacalim07 on 2026-11-20), and a copy shorter than its source is refused (exopipe/_safe_copy.py; the in-place children get the
+# same from core/parity_sitecustomize/sitecustomize.py). tests/test_no_sendfile.py.
+from exopipe import _safe_copy
+_safe_copy.install()
