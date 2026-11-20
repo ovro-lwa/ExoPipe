@@ -649,8 +649,7 @@ def test_static_lists():
     write_registry(reg, [{'id': 'jupiter', 'kind': 'static', 'root': site, 'greenlit': True,
                           'lists': {'run': 'jupiter_v2', 'ids': 'lists_ids.json'}},
                          {'id': 'plain', 'kind': 'static', 'root': site, 'greenlit': True}])
-    st = TP.Store(reg)
-    st.lists_dir = ld
+    st = TP.Store(reg, lists_dir=ld)
     form = {'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'fetch'}
 
     def req(inspect, method, path, body=b''):
@@ -697,7 +696,19 @@ def test_static_lists():
         s, h, b = req(False, 'POST', '/s/jupiter/list', bd)
         check(f'lists: {what} is refused', s == 400, (s, b))
     s, h, b = req(False, 'POST', '/s/plain/list', body)
-    check('lists: a site without "lists" has no list route', s == 404, (s, b))
+    check('lists: a site without "lists" has no list route', s == 200 and b == b'<p>events</p>' or s == 404, (s, b))
+    os.makedirs(os.path.join(site, 'list'))
+    open(os.path.join(site, 'list', 'state'), 'w').write('a file')
+    s, h, b = req(False, 'GET', '/s/plain/list/state')
+    check('lists: a site without "lists" serves its own file at list/state', s == 200 and b == b'a file', (s, b))
+    s, h, b = req(True, 'POST', '/s/plain/list', body)
+    check('lists: the inspection listener refuses list writes to a site without "lists"', s == 403, s)
+    write_registry(p, [{'id': 'j', 'kind': 'static', 'root': site, 'lists': {'run': 'jupiter_v2\n', 'ids': 'lists_ids.json'}}])
+    try:
+        TP.load_registry(p)
+        check('lists: the registry refuses a run name with a newline', False)
+    except TP.RegistryError:
+        pass
     s, h, b = req(True, 'POST', '/s/jupiter/index.html', body)
     check("lists: the inspection listener refuses a static site's other writes", s == 403, s)
     s, h, b = req(False, 'GET', '/s/jupiter/list')
@@ -705,6 +716,10 @@ def test_static_lists():
     st.lists_dir = None
     s, h, b = req(False, 'GET', q)
     check('lists: no lists directory, no lists', s == 503, s)
+    st.lists_dir = os.path.join(TMP, 'not_a_dir_file')
+    open(st.lists_dir, 'w').write('x')                  # the lists directory is a file: the write fails
+    s, h, b = req(False, 'POST', '/s/jupiter/list/user', b'name=Carol')
+    check('lists: a lists directory that cannot be written answers 503', s == 503, (s, b))
     st.lists_dir = ld
     sid2 = sid.replace('18MHz', '23MHz')
     json.dump({**ids, sid2: {'ra': 1.0, 'dec': 2.0, 'title': 't2'}}, open(os.path.join(site, 'lists_ids.json'), 'w'))

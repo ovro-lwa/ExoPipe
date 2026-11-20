@@ -10,6 +10,9 @@ files under the same lock, and this module writes them as those do:
 - each file replaced whole (<file>.part, then a rename) under an exclusive flock of <lists_dir>/.lock, so a static site's write
   and a review page's write (another process) never interleave.
 A row is keyed by (run, source id): a toggle replaces or removes only its own run's row, and keeps every other run's rows.
+Two writers until the review pages are ported (they run frozen exopipe_ops code today): a change to the file layout, the lock, the
+name rule or the columns is made here and in classify_transients.py together. The rows differ only in their values: a static site
+writes labels '' and ra/dec from its ids file (5 decimals), a review page its labels directory and its catalog's ra/dec.
 """
 import csv
 import datetime
