@@ -501,7 +501,8 @@ class catalog_sublst_tie(_Section):
     """window tie (sublst_pertie.py) - every constant of the module, and its md5-pinned tables (PROTECTED)."""
     # every key of this section is a [lit] of sublst_pertie.py / astrom_frame.py or a pinned table: none is overridable
     PROTECTED_KEYS = ('WIDEN_DEG', 'REF_TRY', 'REF_N', 'TIE_MIN_REFS', 'TIE_CONSISTENCY_K', 'TIE_SYS_FLOOR_ARCMIN', 'ACCEPT_SNR',
-                      'ACCEPT_OFFSET_BEAMS', 'STAT_COEFF_SNR_FLOOR', 'ELEV_BANDS_DEG', 'FALLBACK_PCT', 'FALLBACK_MIN_N', 'FEW_Z',
+                      'ACCEPT_OFFSET_BEAMS', 'ISOL_BEAMS', 'ISOL_FRAC', 'ISOL_SEARCH_DEG', 'STAT_COEFF_SNR_FLOOR', 'ELEV_BANDS_DEG',
+                      'FALLBACK_PCT', 'FALLBACK_MIN_N', 'FEW_Z',
                       'FEW_FRAC', 'MAX_SIGNAL_FRAMES', 'CUBE_ROOTS', 'CALIB_GRID_STEP_PCT', 'CALIB_MIN_N', 'PAIR_CAP_PER_REF',
                       'RHO_PAIR_CAP', 'RADIUS99_EDGES', 'WINERR_SNR_EDGES', 'ERR_MIN_N', 'PINNED_TABLES', 'ERRMODEL_FITS',
                       'ERRMODEL_FITS_SHA256', 'VLSSR_CAT', 'VLSSR_SHA256', 'ASTROM_FRAME_INPUT_DIR', 'ASTROM_FRAME_INPUT_MD5_FILE',
@@ -514,6 +515,11 @@ class catalog_sublst_tie(_Section):
     TIE_SYS_FLOOR_ARCMIN = 0.05                           # arcmin; sublst_pertie.py:83 [lit]
     ACCEPT_SNR = 7.0                                      # sigma, accepted reference fit; sublst_pertie.py:84 [lit]
     ACCEPT_OFFSET_BEAMS = 1.0                             # beams; sublst_pertie.py:85 [lit]
+    # reference isolation (R-GREGG-20261120-TENMIN-TIE-REFERENCE-ISOLATION-RULE): a Master reference with another Master Gaussian (any
+    # code) of peak >= ISOL_FRAC x its own within ISOL_BEAMS x the window BMAJ is never fitted, in the window and per-frame ties
+    ISOL_BEAMS = 2.0                                      # window beams (BMAJ); sublst_pertie.py:90 [lit]
+    ISOL_FRAC = 0.25                                      # neighbor peak / reference peak; sublst_pertie.py:91 [lit]
+    ISOL_SEARCH_DEG = 3.0                                 # deg neighbor search radius (2 beams <= 1.1 deg at 18 MHz); sublst_pertie.py:92 [lit]
     STAT_COEFF_SNR_FLOOR = (0.42, 5.0)                    # sublst_pertie.py:86 [lit] (Gregg 2026-09-28)
     ELEV_BANDS_DEG = ((25.0, 35.0), (35.0, 50.0), (50.0, 90.01))   # sublst_pertie.py:87 [lit] (Gregg 2026-09-27)
     FALLBACK_PCT = 90.0                                   # untied -> measured 90th percentile (ruling item 3); sublst_pertie.py:88 [lit]
@@ -546,6 +552,9 @@ class catalog_sublst_tie(_Section):
     ASTROM_FRAME_BAND_FALLBACK_PCT = 90.0                 # astrom_frame.py:77 [lit]
     RULED = {'WIDEN_DEG': 'RULING-GREGG-20261008-ASTROMETRY-MEASURE-DONT-MOVE-BOTH-TIERS',
              'FALLBACK_PCT': 'RULING-GREGG-20261008-ASTROMETRY-MEASURE-DONT-MOVE-BOTH-TIERS',
+             'ISOL_BEAMS': 'R-GREGG-20261120-TENMIN-TIE-REFERENCE-ISOLATION-RULE',
+             'ISOL_FRAC': 'R-GREGG-20261120-TENMIN-TIE-REFERENCE-ISOLATION-RULE',
+             'ISOL_SEARCH_DEG': 'R-GREGG-20261120-TENMIN-TIE-REFERENCE-ISOLATION-RULE',
              'STAT_COEFF_SNR_FLOOR': 'R-ASSOCIATION-RADIUS-QUADRATURE',
              'ELEV_BANDS_DEG': 'R-SUBLST-TABLES-GO-ELEVATION-BANDS',
              'FEW_Z': 'RULINGS-GREGG-20261009-ASTROMETRY-FOLLOWUPS-1-8',

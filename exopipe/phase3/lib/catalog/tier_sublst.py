@@ -27,7 +27,7 @@ Stages (--stages a,b / --from S / --until S; default all, in this order):
               then the 10-minute elevation floor again at the FITTED positions (S-G10; exopipe_ops 24d2b39), then the
               2024-12-28 ghost-track gate there (S-G26; exopipe_ops d1616d6)
   select      select_v3.py (no verdict file, as production: question Q7) + p3s2_ephem_filter.py + split (S-G15)
-  tie         sublst_pertie.py measure + frames on every selected row (S-G11: the window tie T1-T13 at the fitted positions)
+  tie         sublst_pertie.py measure + frames on every selected row (S-G11: the window tie T1-T14 at the fitted positions)
   veto        leak_veto_sublst.py per (band, Stokes) of master_catalog.csv (S-G16; output unserved, B-24)
   build       source catalogues without the leak veto + localizations + rejected-source record (S-G18..S-G20)
   buildv      source catalogues with the leak veto + localizations (S-G17)
@@ -853,6 +853,9 @@ LIT = {
     'catalog_sublst_tie.TIE_SYS_FLOOR_ARCMIN': ('exopipe_ops', 'sublst_pertie.py', 'TIE_SYS_FLOOR_ARCMIN'),
     'catalog_sublst_tie.ACCEPT_SNR': ('exopipe_ops', 'sublst_pertie.py', 'ACCEPT_SNR'),
     'catalog_sublst_tie.ACCEPT_OFFSET_BEAMS': ('exopipe_ops', 'sublst_pertie.py', 'ACCEPT_OFFSET_BEAMS'),
+    'catalog_sublst_tie.ISOL_BEAMS': ('exopipe_ops', 'sublst_pertie.py', 'ISOL_BEAMS'),
+    'catalog_sublst_tie.ISOL_FRAC': ('exopipe_ops', 'sublst_pertie.py', 'ISOL_FRAC'),
+    'catalog_sublst_tie.ISOL_SEARCH_DEG': ('exopipe_ops', 'sublst_pertie.py', 'ISOL_SEARCH_DEG'),
     'catalog_sublst_tie.STAT_COEFF_SNR_FLOOR': ('exopipe_ops', 'sublst_pertie.py', ('STAT_COEFF', 'SNR_FLOOR')),
     'catalog_sublst_tie.ELEV_BANDS_DEG': ('exopipe_ops', 'sublst_pertie.py', 'ELEV_BANDS'),
     'catalog_sublst_tie.FALLBACK_PCT': ('exopipe_ops', 'sublst_pertie.py', 'FALLBACK_PCT'),
