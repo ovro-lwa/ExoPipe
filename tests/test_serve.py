@@ -2863,6 +2863,12 @@ def test_start_registers():
                     ('I', ('J0007+0007_08h_2030-01-05_Red', 'J0008+0008_09h_2030-01-06_23MHz'))):   # no night excluded (G17)
         with open(f'{U}/judgements/queue_p3s3_{S_}.txt', 'w') as f:
             f.write('# queue_name: p3s3_%s_deep\n' % S_ + '\n'.join(ids) + '\n')
+        # the Stokes catalog and review folders the page index records (start builds it before the registration)
+        for i_ in ids:
+            os.makedirs(f'{U}/candidates/{S_}/{i_}')
+            wcsv(f'{U}/candidates/{S_}/{i_}/detections.csv', ['cand_id', 'snr'], [dict(cand_id=f'{i_}_c1', snr=7)])
+        wcsv(f'{U}/source_catalogs_{S_}/Red_sources_survivors.csv', ['source_id', 'band', 'review_dir'],
+             [dict(source_id=i_, band='Red', review_dir=f'candidates/{S_}/{i_}') for i_ in ids])
     V = next(p_ for p_ in plan.pages if p_.key == 'V')
     I_ = next(p_ for p_ in plan.pages if p_.key == 'I')
 
@@ -2925,6 +2931,22 @@ def test_start_registers():
         assert u['deep_Run_TEST_register_warm'].status == 'no-input', u['deep_Run_TEST_register_warm'].status
         assert writes == {'registered_pages.json': 1, 'registry.json': 1}, writes
         assert not os.path.exists(hp) and glob.glob(hp + '.removed_*'), os.listdir(U)
+        # the page index of the run: built after the marker was lifted and before the registry write, recorded and tested
+        ru = u['deep_Run_TEST_register']
+        pio = [o_ for o_ in ru.outputs if o_['class'] == 'detections_index']
+        assert len(pio) == 1 and pio[0]['path'] == f'{U}/page_index/manifest.json', ru.outputs
+        assert [t_ for t_ in ru.tests if t_['path'] == pio[0]['path']] and all(
+            t_['passed'] for t_ in ru.tests if t_['path'] == pio[0]['path']), ru.tests
+        man = json.load(open(f'{U}/page_index/manifest.json'))
+        assert (man['n_folders'] == 5 and os.path.realpath(man['run_dir']) == os.path.realpath(U)
+                and man['started_ns'] < os.stat(f'{d}/registry.json').st_mtime_ns), man
+        notes = ' | '.join(ru.notes)
+        assert notes.index('publish marker of') < notes.index('page index of'), ru.notes
+        rr = json.load(open(ru.outputs[[o_['class'] for o_ in ru.outputs].index('page_registration')]['path']))
+        assert any(h_.get('lifted') for h_ in rr.get('holds') or []), rr.get('holds')
+        ok('start stage (deep): the run\'s page index built after the publish marker is lifted and before the registry write '
+           '(5 review folders, the run\'s path), recorded as detections_index with its content tests passing; the '
+           'registration record names the lifted marker')
         assert not any(procs.port_in_use(p_.port) for p_ in plan.pages) and run1.exit_code() == 0
         reg = {e['id']: e for e in json.load(open(f'{d}/registry.json'))['pages']}
         e = reg['p29766']
@@ -2980,9 +3002,72 @@ def test_start_registers():
         ok('start stage, a page refused at start: the other page registered (one change), the publish marker removed all the '
            'same (as production), the refused page rebuilt like any other (no hold), and the registered page\'s previously '
            'built inspection page requested once and built from the new entry (the warm-up)')
+        # a page index that cannot be built refuses the registration: the registry unchanged, no page registered
+        import types
+        orig_run = scripts.run
+
+        def failing(name, *a_, **k_):
+            if name == 'build_detections_index':
+                return types.SimpleNamespace(ok=False, rc=1, reason='exit 1 - error', tail='REFUSING: stand-in failure')
+            return orig_run(name, *a_, **k_)
+        reg1 = open(f'{d}/registry.json', 'rb').read()
+        scripts.run = failing
+        try:
+            run3 = Run('serve', ['test'], out, CFG, config_sections=None)
+            flow.start_stage(run3, plan, state_for({}), utc='2026-11-02 08:00 UT')
+        finally:
+            scripts.run = orig_run
+        u = {x.name: x for x in run3.units}
+        ru = u['deep_Run_TEST_register']
+        assert ru.status == 'refused' and 'page index' in ru.reason and 'stand-in failure' in ru.reason, (ru.status, ru.reason)
+        assert open(f'{d}/registry.json', 'rb').read() == reg1 and run3.exit_code() == 2
+        assert all(u[pg_.unit].status == 'refused' and 'not registered' in u[pg_.unit].reason for pg_ in (V, I_)), \
+            {n: (x.status, x.reason) for n, x in u.items()}
+        ok('start stage: a page index that cannot be built refuses the registration - the registry unchanged, both pages '
+           'refused (not registered), exit 2')
     finally:
         register.atomic_write = orig_w
         srv.stop()
+
+
+def test_page_index_stage():
+    """serve --stages page-index without start (deep, sub-LST): unit <tier>_<run>_page_index runs build_detections_index.py
+    --run U on the served run (production's tool, in place) - refused while the run's publish marker stands (the tool's own
+    rule: start lifts the marker first), done without it, its manifest recorded as detections_index with the content tests
+    passing; the stage sits after carry/swap and before start in both tiers, and the start of these tiers (not of the
+    snapshot tier, whose own page-index stage builds it) builds the index."""
+    from exopipe.phase3.core.record import Run
+    from exopipe.phase3.lib.serve import deep, flow
+    assert deep.STAGES.index('page-index') == deep.STAGES.index('start') - 1
+    assert sublst_build.STAGES.index('page-index') == sublst_build.STAGES.index('swap') + 1 == sublst_build.STAGES.index('start') - 1
+    assert flow.PAGE_INDEX_TIERS == ('deep', 'sublst')
+    out = f'{T}/pidx_out'
+    plan = planmod.make(_ns(tier='deep', run_label='TEST'), out)
+    U = plan.U
+    for i_ in ('J0001+0001_04h_2030-01-01_Red', 'J0002+0002_05h_2030-01-02_Red'):
+        os.makedirs(f'{U}/candidates/V/{i_}')
+        wcsv(f'{U}/candidates/V/{i_}/detections.csv', ['cand_id', 'snr'], [dict(cand_id=f'{i_}_c1', snr=7)])
+        open(f'{U}/candidates/V/{i_}/rank1_{i_}.png', 'wb').close()
+    wcsv(f'{U}/source_catalogs_V/Red_sources_survivors.csv', ['source_id', 'band', 'review_dir'],
+         [dict(source_id=i_, band='Red', review_dir=f'candidates/V/{i_}') for i_ in sorted(os.listdir(f'{U}/candidates/V'))])
+    hp, _ = register.set_hold(U, 'publish (test)')
+    run1 = Run('serve', ['test'], out, CFG, config_sections=None)
+    deep.run(_ns(tier='deep', run_label='TEST'), run1, plan, ['page-index'])
+    assert [x.name for x in run1.units] == ['deep_Run_TEST_page_index'], [x.name for x in run1.units]
+    x = run1.units[0]
+    assert x.status == 'refused' and 'PUBLISH_IN_PROGRESS' in x.reason and not os.path.exists(f'{U}/page_index/manifest.json'), \
+        (x.status, x.reason)
+    register.lift_hold(U)
+    run2 = Run('serve', ['test'], out, CFG, config_sections=None)
+    deep.run(_ns(tier='deep', run_label='TEST'), run2, plan, ['page-index'])
+    x = run2.units[0]
+    assert x.status == 'done' and [o_['class'] for o_ in x.outputs] == ['detections_index'], (x.status, x.reason, x.outputs)
+    assert x.tests and all(t_['passed'] for t_ in x.tests), x.tests
+    man = json.load(open(f'{U}/page_index/manifest.json'))
+    assert man['n_folders'] == 2 and os.path.realpath(man['run_dir']) == os.path.realpath(U), man
+    ok('page-index stage alone (deep): refused while the publish marker stands (nothing written), then built on the served run '
+       '(2 folders), recorded as detections_index with its content tests passing; the stage sits right before start (deep) '
+       'and between swap and start (sub-LST), and start builds the index for the deep and sub-LST tiers only')
 
 
 def test_forced_checks_server_first():
@@ -3217,6 +3302,7 @@ def main():
             srvh.stop()
         test_old_server_refused()
         test_start_registers()
+        test_page_index_stage()
         test_forced_checks_server_first()
         test_server_env_mirrors_launcher()
         test_production_readonly()
