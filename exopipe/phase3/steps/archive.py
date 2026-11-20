@@ -110,6 +110,15 @@ _WRITES_ARCHIVE_TREE = ('push', 'sync', 'quarantine', 'retire-excluded', 'retire
 from exopipe.phase3.lib.archive import tests as _content_tests  # noqa: E402,F401  (registers the archive content tests)
 
 
+def apply_guard(ctx, args):
+    """G2 at the step, before any unit: an apply that writes the archive tree, checked under its push class's cutover allowance key
+    (cli._allow_key: 'archive:<class>' for push --class <class>, the key each class's own G2 passes) so the RULED narrow allowance
+    paths.PRODUCTION_WRITES_ALLOWED (R-GREGG-20261118-CUTOVER-ALLOWANCE-HYBRID-MOSAIC-V5) reaches a production push of an allowed
+    class. Every other action or class opens nothing: refused while paths.PRODUCTION_WRITES is False."""
+    from exopipe.phase3.cli import _allow_key
+    ctx.guard_writes([ctx.archive_root], f'archive {args.action} --apply', allow=_allow_key('archive', args))
+
+
 def add_arguments(p):
     p.add_argument('action', choices=ACTIONS, help='what to do (see the list above)')
     g = p.add_argument_group('archive')
@@ -277,7 +286,7 @@ def run(args, run):
         print(f'archive {args.action} --tier {tier}: {where}stages {",".join(args._stages)}'
               f'{", DRY RUN" if run.dry_run else ""}; out {ctx.out}')
         if args.apply and not run.dry_run and args.action in _WRITES_ARCHIVE_TREE:
-            ctx.guard_writes([ctx.archive_root], f'archive {args.action} --apply')
+            apply_guard(ctx, args)
         _dispatch(args, run, ctx, tier, unit_fn)
     except ValueError as e:
         print(f'error: {e}', file=sys.stderr)
