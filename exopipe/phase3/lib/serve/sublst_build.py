@@ -1,6 +1,6 @@
 """serve --tier sublst: the cumulative 10-minute product Run_SLSTB on 8787/8788 (+ multi-integration 8789/8790).
 Port of sublst_cumulative.sh (+ the prepare/start halves of sublst_serve.sh it calls); stages
-build -> views -> test -> carry -> swap -> start -> hub -> verify. carry, swap and start run only together (the journal
+build -> views -> test -> carry -> swap -> start -> hub -> verify (+ page-index alone). carry, swap and start run only together (the journal
 lines written on the old servers between the copy and the swap are appended at the swap, sublst_cumulative.sh:106-120).
 
 build  (unit sublst_<run>_build)  the build lock (G12; sublst_cumulative.sh:23 flock, servers never inherit it); the
@@ -35,7 +35,9 @@ carry/swap/start  journals copied into B, B swapped in (U -> U.prev_<utc>), the 
        (unit sublst_<run>_page_context: page_context_tenmin.py U --workers serve.SUBLST_PAGE_CONTEXT_WORKERS, the panels'
        <png>.page.json run-context sidecars; page text, not a gate - a failure is recorded and the serve continues,
        sublst_cumulative.sh:295-300), the four pages registered in ONE registration and each one's build waited on
-       (flow.start_stage; sublst_cumulative.sh:301-307 -> sublst_register_pages.py: no server of its own since 2026-10-22).
+       (flow.start_stage; sublst_cumulative.sh:301-307 -> sublst_register_pages.py: no server of its own since 2026-10-22),
+       the swapped-in run's page index built first (flow.build_page_index, class detections_index; a failure refuses the
+       registration). page-index without start: the served run's index alone (unit sublst_<run>_page_index).
 hub    10-min / 10-min-multiples set; '10-min-sublst' removed (sublst_cumulative.sh:145-150).
 verify served_page tests + sublst_cumulative (with tests (c)+(d), sublst_catalog_publish.sh:101-108) on the served run.
 Parity: U, B and the lock live under <out>/sublst/; the build hard-links the LST runs' candidates (cp -al), so a parity
@@ -56,7 +58,7 @@ from concurrent.futures import ThreadPoolExecutor
 from exopipe.phase3.core.record import NoInput, Refusal
 from exopipe.phase3.lib.serve import common, flow, journals, queues, scripts, views
 
-STAGES = ('build', 'views', 'test', 'carry', 'swap', 'start', 'hub', 'verify')
+STAGES = ('build', 'views', 'test', 'carry', 'swap', 'page-index', 'start', 'hub', 'verify')
 
 
 def _CFG():
@@ -785,7 +787,10 @@ def run(args, run, plan, stages):
             except Exception as e:                     # the unit is recorded 'error' (the serve exits 1 at the end); the
                 print(f'serve: PAGE-CONTEXT FAILED ({type(e).__name__}: {str(e)[:300]}) - the serve continues without the '
                       f'page text', file=sys.stderr)   # pages are still registered, as production's `|| say` does
-            flow.start_stage(run, plan, state)
+            flow.start_stage(run, plan, state)        # builds the page index of U before the registration
+        elif 'page-index' in stages:
+            if flow.halts(flow.page_index_stage(run, plan, 'sublst'), 'page-index'):
+                return
     if 'hub' in stages and not getattr(args, 'no_hub', False):
         flow.hub_stage(run, plan, state, remove=S.HUB_REMOVE_TIERS.get('sublst', ()))
     if 'verify' in stages:
@@ -803,3 +808,6 @@ def describe(plan, stages, args):
     if 'start' in stages:
         print(f'  page context after the swap: {scripts.SCRIPTS["page_context_tenmin"][0]} {plan.U} --workers '
               f'{_CFG().serve.SUBLST_PAGE_CONTEXT_WORKERS} (page text; a failure does not stop the serve)')
+        print(f'  page index before the registration: build_detections_index.py --run {plan.U} (a failure refuses it)')
+    if os.path.isdir(plan.U or '') and ('start' in stages or 'page-index' in stages):
+        print(flow.page_index_describe(plan.U))

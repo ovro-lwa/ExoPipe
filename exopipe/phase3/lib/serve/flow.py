@@ -26,6 +26,82 @@ def new_state():
     return {'refused': {}, 'expected': {}, 'served': {}}
 
 
+PAGE_INDEX_TIERS = ('deep', 'sublst')      # tiers whose start builds the served run's page index (snapshot: its page-index stage)
+
+
+def _index_current(U):
+    """'' when U's page index passes every detections_index content test (current for the pages), else the first failure."""
+    from exopipe.phase3.lib.serve import tests as stests
+    mf = os.path.join(U, 'page_index', 'manifest.json')
+    if not os.path.exists(mf):
+        return 'no index'
+    for t in (stests.manifest_current, stests.folders_cover_catalogs, stests.records_current):
+        ok, _, detail = t(mf, run=U)
+        if not ok:
+            return f'{t.__name__}: {detail}'
+    return ''
+
+
+def build_page_index(u, U, publisher=False):
+    """THE PAGE INDEX of served run U inside unit ``u``: build_detections_index.py --run U in place - <U>/page_index/
+    (manifest.json + one shard per parent directory of the review folders), which the review server reads instead of one
+    detections.csv per folder - recorded as class detections_index. Kept when it is current (every detections_index content
+    test passes: no re-read of every folder on a busy disk); else built. The tool refuses while the run changes under it and,
+    unless ``publisher`` (the caller holds the run's publish marker and has finished writing: the registration, which lifts
+    the marker inside the registry lock right after), while a publish marker stands. G23: a write under a production root
+    refuses in the refactor window (register.guard). A parity mirror's page_index/ must be its own (mirror.build never links
+    it): a page_index/ or log that is a symlink refuses, so a parity serve never writes into the production run's index. A
+    failed tool or content test refuses the unit (Refusal).
+    The writers into a served run mark its index dirty (build_detections_index.mark_run_dirty) and production rebuilt it for the
+    snapshot tier only: on 2026-11-20 the deep run (20,257 review folders) and the 10-minute run (55,439) had had no current
+    index for 6 and 3 days, and after a hub restart one cold 10-minute page build read every folder for about two hours while
+    the other pages waited (FINDING-20261120-DEEP-AND-TENMIN-PAGE-INDEXES-NEVER-REBUILT-AFTER-DIRTY)."""
+    from exopipe.phase3.lib.serve import register, scripts
+    register.guard(U, 'the page index of')
+    log = os.path.join(U, 'page_index_build.log')
+    mf = os.path.join(U, 'page_index', 'manifest.json')
+    linked = [p for p in (os.path.join(U, 'page_index'), log) if os.path.islink(p)]
+    if linked:
+        u.refuse(f'page index of {U}: {linked} is a symlink (a parity mirror linking the production run\'s index?) - the build '
+                 f'would write through it')
+    why = _index_current(U)
+    if not why:
+        u.note(f'page index of {U}: current, kept (every detections_index content test passes)')
+        u.add_output(mf, 'detections_index', run=U)
+        return mf
+    u.note(f'page index of {U}: rebuilt ({why[:200]})')
+    res = scripts.run('build_detections_index', ['--run', U] + (['--publisher'] if publisher else []), log=log, unit=u)
+    if not res.ok:
+        u.refuse(f'page index: build_detections_index.py --run {U}: {res.reason or "failed"}: {scripts.last_line(res.tail)[:300]} - without a '
+                 f'current index every page build reads each review folder (see {log})')
+    u.note(f'page index of {U}: {scripts.last_line(res.tail)[:200]}')
+    n0 = len(u.failed_tests())
+    u.add_output(mf, 'detections_index', run=U)
+    bad = u.failed_tests()[n0:]
+    if bad:
+        u.refuse(f'page index of {U}: content test {bad[0].get("name")} failed ({str(bad[0].get("detail"))[:200]})')
+    return mf
+
+
+def page_index_stage(run, plan, tier):
+    """serve --stages page-index without start: the served run's page index alone, unit <tier>_<run>_page_index
+    (build_page_index; refused while the run's publish marker stands - start builds it under the marker it lifts)."""
+    with run.unit(f'{tier}_{plan.run_name}_page_index', stage='page-index', tier=tier, run=plan.run_name,
+                  parity=plan.parity) as u:
+        build_page_index(u, plan.U)
+    return u
+
+
+def page_index_describe(U):
+    """Dry-run line: the run's page index as the review server would take it (content test detections_index.manifest_current)."""
+    mf = os.path.join(U, 'page_index', 'manifest.json')
+    if not os.path.exists(mf):
+        return f'  page index: none ({mf}) - start builds it before the registration'
+    from exopipe.phase3.lib.serve import tests as stests
+    ok, _, detail = stests.manifest_current(mf, run=U)
+    return f'  page index: {"current" if ok else "NOT CURRENT"} - {detail}; start rebuilds it before the registration'
+
+
 def halts(u, what, need_done=False):
     """True when the unit ``u`` of an earlier stage of this invocation stops the later stages: it ended refused or error
     (with need_done: anything but done). A unit's `with` block records a Refusal and swallows it, so without this check
@@ -209,7 +285,8 @@ def start_checks(plan, pg, state, U):
 def start_stage(run, plan, state, root=None, utc=None):
     """REGISTER the selected pages on the two-port server (production since 2026-10-22: no review page has a server of its
     own): each page's checks (start_checks), then ONE registration of every page that passed and each page's build
-    (register_pages). A page refused here keeps its registry entry."""
+    (register_pages; for a tier of PAGE_INDEX_TIERS the run's page index is built first). A page refused here keeps its
+    registry entry."""
     from exopipe.phase3.lib.serve import register
     utc = utc or common.utc_text()
     U = root or plan.U
@@ -225,10 +302,11 @@ def start_stage(run, plan, state, root=None, utc=None):
             inputs = [x for x in (pg.at('queue', U), pg.at('mchain_queue', U)) if x]
             items.append((pg, U, register.page_entry(plan, pg, utc, root), exp, inputs))
         return items, refused
-    state['served'].update(register_pages(run, plan, prepare, f'{plan.tier}_{plan.run_name}_register'))
+    state['served'].update(register_pages(run, plan, prepare, f'{plan.tier}_{plan.run_name}_register',
+                                          page_index=plan.tier in PAGE_INDEX_TIERS))
 
 
-def register_pages(run, plan, prepare, unit_name, stage='start', inc_log=True):
+def register_pages(run, plan, prepare, unit_name, stage='start', inc_log=True, page_index=False):
     """THE ONE REGISTRATION of a serve (lib/serve/register.py) and each registered page's build.
     Unit ``unit_name`` (class page_registration): the two-port server first (register.check_server, G16 / G13: it answers,
     reports the build state, reads this registry, runs with the configured publish-hold option) - before ``prepare(u)`` ->
@@ -239,7 +317,11 @@ def register_pages(run, plan, prepare, unit_name, stage='start', inc_log=True):
     change. Then one unit per page (page.unit): a refused page refuses (or ends no-input) with its reason; a registered page
     waits on its build state (register.wait_built) and writes its served_page record. Then unit <unit_name>_warm: every
     inspection page the server had built before the registration is requested once, the registered pages' first (the warm-up
-    of register_page.py:76-87 / warm_pages.py; record class csv_table). Returns {page key: (record path, record)}."""
+    of register_page.py:76-87 / warm_pages.py; record class csv_table). Returns {page key: (record path, record)}.
+    With page_index (the deep and sub-LST start): before the registry lock, each registered run's page index is built (kept when
+    current) with its publish marker still standing (build_page_index publisher: every write into the run is done by now; the
+    marker is lifted inside the lock as always); a failed index refuses the unit, so nothing is registered and the marker
+    stands - the pages never rebuild against a run without a current index."""
     from exopipe.phase3.lib.serve import register
     d, ports = register.registry_dir(plan), register.listeners(plan)
     got = {'items': [], 'refused': {}, 'res': None, 'inspection': [], 'prepared': False}
@@ -250,6 +332,9 @@ def register_pages(run, plan, prepare, unit_name, stage='start', inc_log=True):
         got['items'], got['refused'], got['prepared'] = items, refused, True
         if not items:
             raise recmod.NoInput('no page passed its checks - nothing registered (the registry is unchanged)')
+        if page_index:
+            for r in dict.fromkeys(it[1] for it in items):
+                build_page_index(u, r, publisher=True)
         with register.registry_lock(d):                 # from the registry's read to its write: no other writer between
             prep = register.prepare([it[2] for it in items], d)
             st = register.check_server(ports, d)        # again, right before the write: and what it has built now

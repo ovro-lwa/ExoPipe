@@ -1,6 +1,6 @@
 """serve --tier deep (review pages p8766/p8768/p8772/p8773 on the two-port server; inspection: the greenlit entries on its
 inspection listener, the former twins' ports 8796/8797/8793/8794 their inspection_legacy_port): views -> test -> carry ->
-start -> hub -> verify.
+start -> hub -> verify (+ page-index alone).
 
 views  (unit deep_<run>_views)  the parity mirror (parity only); the pages merge must be current (views.deep_merge_current:
        pages owns the review_dir merge, decision 6 group 12); then THE PUBLISH MARKER on the served run (register.set_hold,
@@ -19,6 +19,9 @@ start  (unit deep_<run>_register, then one unit per page, then deep_<run>_regist
        page_registration), then each page's build state (G24 build failed, G16 no progress / held, G13 replaced) and its
        served_page record, then the inspection pages built before requested once (deep_reregister_after_publish_20261031.py,
        p3s3_serve_stokes.sh with P3S3_NO_SERVER=1: no server of its own).
+       Before the registry lock, the run's page index (flow.build_page_index, class detections_index; kept when current; built
+       under the standing publish marker, lifted in the lock as before): a failure refuses the registration, the marker stands.
+page-index (unit deep_<run>_page_index; only without start)  build_detections_index.py --run U on the served run.
 hub    (unit deep_<run>_hub)     build_review_hub.py --set per served page (locked; parity: planned).
 verify (unit deep_<run>_verify)  the served_page tests now.
 """
@@ -27,7 +30,7 @@ import os
 from exopipe.phase3.core.record import Refusal
 from exopipe.phase3.lib.serve import common, exclusion_gate, flow, journals, mirror, queues, register, scripts, views
 
-STAGES = ('views', 'test', 'carry', 'start', 'hub', 'verify')
+STAGES = ('views', 'test', 'carry', 'page-index', 'start', 'hub', 'verify')
 
 
 def _S():
@@ -155,7 +158,10 @@ def run(args, run, plan, stages):
         if flow.halts(carry_stage(run, plan, args), 'carry'):
             return
     if 'start' in stages:
-        flow.start_stage(run, plan, state)
+        flow.start_stage(run, plan, state)                 # builds the page index before the registration
+    elif 'page-index' in stages:
+        if flow.halts(flow.page_index_stage(run, plan, 'deep'), 'page-index'):
+            return
     if 'hub' in stages and not getattr(args, 'no_hub', False):
         flow.hub_stage(run, plan, state)
     if 'verify' in stages:
@@ -192,3 +198,5 @@ def describe(plan, stages, args):
                                              'NONE - the multiples page would refuse (G3)'))
     if getattr(args, 'carry_from', None):
         print(f'  carry from: {getattr(args, "carry_from")}')
+    if os.path.isdir(plan.U or '') and ('start' in stages or 'page-index' in stages):
+        print(flow.page_index_describe(plan.U))
