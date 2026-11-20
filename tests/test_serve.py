@@ -2931,7 +2931,8 @@ def test_start_registers():
         assert u['deep_Run_TEST_register_warm'].status == 'no-input', u['deep_Run_TEST_register_warm'].status
         assert writes == {'registered_pages.json': 1, 'registry.json': 1}, writes
         assert not os.path.exists(hp) and glob.glob(hp + '.removed_*'), os.listdir(U)
-        # the page index of the run: built after the marker was lifted and before the registry write, recorded and tested
+        # the page index of the run: built under the standing publish marker (lifted in the registry lock after it), before the
+        # registry write, recorded and tested
         ru = u['deep_Run_TEST_register']
         pio = [o_ for o_ in ru.outputs if o_['class'] == 'detections_index']
         assert len(pio) == 1 and pio[0]['path'] == f'{U}/page_index/manifest.json', ru.outputs
@@ -2941,10 +2942,12 @@ def test_start_registers():
         assert (man['n_folders'] == 5 and os.path.realpath(man['run_dir']) == os.path.realpath(U)
                 and man['started_ns'] < os.stat(f'{d}/registry.json').st_mtime_ns), man
         notes = ' | '.join(ru.notes)
-        assert notes.index('publish marker of') < notes.index('page index of'), ru.notes
+        assert notes.index('page index of') < notes.index('publish marker of'), ru.notes
+        # (the tool refuses under a marker without --publisher: the build succeeding under it shows the flag was passed)
         rr = json.load(open(ru.outputs[[o_['class'] for o_ in ru.outputs].index('page_registration')]['path']))
         assert any(h_.get('lifted') for h_ in rr.get('holds') or []), rr.get('holds')
-        ok('start stage (deep): the run\'s page index built after the publish marker is lifted and before the registry write '
+        ok('start stage (deep): the run\'s page index built under the standing publish marker (--publisher), the marker lifted '
+           'in the registry lock after it, before the registry write '
            '(5 review folders, the run\'s path), recorded as detections_index with its content tests passing; the '
            'registration record names the lifted marker')
         assert not any(procs.port_in_use(p_.port) for p_ in plan.pages) and run1.exit_code() == 0
@@ -3011,6 +3014,8 @@ def test_start_registers():
                 return types.SimpleNamespace(ok=False, rc=1, reason='exit 1 - error', tail='REFUSING: stand-in failure')
             return orig_run(name, *a_, **k_)
         reg1 = open(f'{d}/registry.json', 'rb').read()
+        hp3, _ = register.set_hold(U, 'publish (test, failing index)')
+        os.utime(f'{U}/source_catalogs_V/Red_sources_survivors.csv')     # a catalog rewritten: the index is no longer current
         scripts.run = failing
         try:
             run3 = Run('serve', ['test'], out, CFG, config_sections=None)
@@ -3021,10 +3026,12 @@ def test_start_registers():
         ru = u['deep_Run_TEST_register']
         assert ru.status == 'refused' and 'page index' in ru.reason and 'stand-in failure' in ru.reason, (ru.status, ru.reason)
         assert open(f'{d}/registry.json', 'rb').read() == reg1 and run3.exit_code() == 2
+        assert os.path.exists(hp3), 'the publish marker was lifted although nothing was registered'
+        register.lift_hold(U)
         assert all(u[pg_.unit].status == 'refused' and 'not registered' in u[pg_.unit].reason for pg_ in (V, I_)), \
             {n: (x.status, x.reason) for n, x in u.items()}
-        ok('start stage: a page index that cannot be built refuses the registration - the registry unchanged, both pages '
-           'refused (not registered), exit 2')
+        ok('start stage: a page index that cannot be built (a catalog rewritten since the index) refuses the registration - '
+           'the registry unchanged, the publish marker standing, both pages refused (not registered), exit 2')
     finally:
         register.atomic_write = orig_w
         srv.stop()
@@ -3065,8 +3072,34 @@ def test_page_index_stage():
     assert x.tests and all(t_['passed'] for t_ in x.tests), x.tests
     man = json.load(open(f'{U}/page_index/manifest.json'))
     assert man['n_folders'] == 2 and os.path.realpath(man['run_dir']) == os.path.realpath(U), man
+    import types
+    orig_run, calls = scripts.run, []
+    scripts.run = lambda name, *a_, **k_: calls.append(name) or orig_run(name, *a_, **k_)
+    try:
+        run3 = Run('serve', ['test'], out, CFG, config_sections=None)
+        deep.run(_ns(tier='deep', run_label='TEST'), run3, plan, ['page-index'])
+    finally:
+        scripts.run = orig_run
+    x = run3.units[0]
+    assert x.status == 'done' and not calls and any('current, kept' in n_ for n_ in x.notes), (x.status, calls, x.notes)
+    assert all(t_['passed'] for t_ in x.tests) and x.tests, x.tests
+    # a parity mirror never links the production run's index, and a linked page_index/ refuses
+    from exopipe.phase3.lib.serve import mirror
+    mdst = f'{T}/pidx_mirror/Run_TEST'
+    mirror.build(U, mdst)
+    assert os.path.isdir(f'{mdst}/candidates') and not os.path.lexists(f'{mdst}/page_index') \
+        and not os.path.lexists(f'{mdst}/page_index_build.log'), sorted(os.listdir(mdst))
+    os.symlink(f'{U}/page_index', f'{mdst}/page_index')
+    plan_m = types.SimpleNamespace(U=mdst, run_name='Run_TEST', parity=True)
+    man0 = open(f'{U}/page_index/manifest.json', 'rb').read()
+    run4 = Run('serve', ['test'], out, CFG, config_sections=None)
+    x = flow.page_index_stage(run4, plan_m, 'deep')
+    assert x.status == 'refused' and 'symlink' in x.reason and open(f'{U}/page_index/manifest.json', 'rb').read() == man0, \
+        (x.status, x.reason)
     ok('page-index stage alone (deep): refused while the publish marker stands (nothing written), then built on the served run '
-       '(2 folders), recorded as detections_index with its content tests passing; the stage sits right before start (deep) '
+       '(2 folders), recorded as detections_index with its content tests passing; a current index is kept (no tool call); a '
+       'parity mirror leaves page_index/ out, and a linked one refuses (the production index untouched); the stage sits right '
+       'before start (deep) '
        'and between swap and start (sub-LST), and start builds the index for the deep and sub-LST tiers only')
 
 

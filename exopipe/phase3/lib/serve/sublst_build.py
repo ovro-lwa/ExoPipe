@@ -789,7 +789,8 @@ def run(args, run, plan, stages):
                       f'page text', file=sys.stderr)   # pages are still registered, as production's `|| say` does
             flow.start_stage(run, plan, state)        # builds the page index of U before the registration
         elif 'page-index' in stages:
-            flow.page_index_stage(run, plan, 'sublst')
+            if flow.halts(flow.page_index_stage(run, plan, 'sublst'), 'page-index'):
+                return
     if 'hub' in stages and not getattr(args, 'no_hub', False):
         flow.hub_stage(run, plan, state, remove=S.HUB_REMOVE_TIERS.get('sublst', ()))
     if 'verify' in stages:
@@ -808,5 +809,5 @@ def describe(plan, stages, args):
         print(f'  page context after the swap: {scripts.SCRIPTS["page_context_tenmin"][0]} {plan.U} --workers '
               f'{_CFG().serve.SUBLST_PAGE_CONTEXT_WORKERS} (page text; a failure does not stop the serve)')
         print(f'  page index before the registration: build_detections_index.py --run {plan.U} (a failure refuses it)')
-    if os.path.isdir(plan.U or ''):
+    if os.path.isdir(plan.U or '') and ('start' in stages or 'page-index' in stages):
         print(flow.page_index_describe(plan.U))

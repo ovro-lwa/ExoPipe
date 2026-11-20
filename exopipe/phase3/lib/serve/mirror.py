@@ -4,7 +4,8 @@ everything else is SYMLINKED to the production run, so the parity serve reads th
 Copied (serve or its in-place scripts rewrite or append them): judgements/ (queues), source_catalogs/ (the union's review_dir
 column), source_catalogs_V/, source_catalogs_I/, views/ (the per-Stokes views, rewritten in place as production does, so
 stale files behave identically), judgements_V/, judgements_I/ (journals, carry), incremental.log.
-Not mirrored: server logs (rewritten by each start). Symlinked: everything else (candidates/, the tier catalogues, master
+Not mirrored: server logs (rewritten by each start), the page index (page_index/, page_index_build.log: the parity serve
+builds its own - a link would let it write into the production run's index). Symlinked: everything else (candidates/, the tier catalogues, master
 catalogues, localizations, ...). Known limit: the review server refuses images whose realpath leaves its run directory
 (classify_transients.py /img handler), so parity pages carry the same HTML but their panel images answer 403; the parity
 comparison is of HTML, queues, views and argv (spec 10).
@@ -15,6 +16,7 @@ import shutil
 COPY = ('judgements', 'source_catalogs', 'source_catalogs_V', 'source_catalogs_I', 'views', 'judgements_V', 'judgements_I',
         'incremental.log')
 SKIP_PREFIXES = ('server_',)
+SKIP_NAMES = ('page_index', 'page_index_build.log')
 
 
 def build(src, dst):
@@ -29,7 +31,7 @@ def build(src, dst):
     copied, linked = [], 0
     for name in sorted(os.listdir(src)):
         s, d = os.path.join(src, name), os.path.join(dst, name)
-        if name.startswith(SKIP_PREFIXES) and name.endswith('.log'):
+        if (name.startswith(SKIP_PREFIXES) and name.endswith('.log')) or name in SKIP_NAMES:
             continue
         if name in COPY:
             if os.path.isdir(s):
