@@ -13,13 +13,15 @@ A pinned unit (filled from the installed masters' own unfilled sources) pushes o
 
 Units the work run did not finish (refused_unit; steps.hybrid.work_states / unit_state over every unit record of the staging root,
 --lsts narrows): a unit whose stage records include a refused or no-input one (refused; this takes precedence over a done tilefill
-record), or one neither done nor refused (error, running, unreadable), or none done through tilefill (unfinished); a unit whose only
+record, except below), or one neither done nor refused (error, running, unreadable), or none done through tilefill (unfinished); a unit whose only
 record is a stack staged from production is a member input and is not listed. Each is a push unit of its own, so the installed products
 of a cell the rebuild did not remake never stay or go silently: unfinished refuses (finish the run or narrow --lsts); refused with
 nothing installed refuses as a gap; refused with installed products refuses unless a ruling set hybrid_unit.REFUSED_INSTALLED for it:
 keep (a 'keep' row per installed product with its checksum, recorded as the unit's input, noted as kept by ruling) or
 quarantine (a 'retire' row per installed product, moved into the round quarantine as below). The PB maps stay: they describe the
-beam, not the refused product.
+beam, not the refused product. A kept unit whose tilefill record is done with source pinned (steps.hybrid.tilefill_source fills a
+kept cell from its installed masters' own unfilled sources, so its fill follows the new band field) pushes its tilefill outputs as a
+pinned unit does, and keeps the rest (kept_refill).
 
 Per file: keep (the installed file of the kind has the same name and the same checksum: byte-identical; a file with the same pixels
 and another header is replaced - its beam, noise and stack cards are part of the product, and the 11-13 lost-sky swap replaced five
@@ -135,10 +137,11 @@ def hybrid_units(args, staging):
     return units
 
 
-def refused_rows(ctx, lst, scope, w, state, checksum=True):
+def refused_rows(ctx, lst, scope, w, state, checksum=True, skip=()):
     """(rows, notes) of a unit the work run did not finish (module docstring); Refusal unless hybrid_unit.REFUSED_INSTALLED rules it.
     state: steps.hybrid.unit_state's (state, stage, status, reason). A kept file's row carries its checksum (checksum=False: the
-    dry run, none computed), recorded as the unit's input: the ruling covers that file and no other."""
+    dry run, none computed), recorded as the unit's input: the ruling covers that file and no other. skip: kinds a re-fill pushes
+    (kept_refill), given no row here."""
     from exopipe.phase3.config import CFG
     from exopipe.phase3.steps import hybrid as SH
     unit = f'{lst}_{scope}_{w}'
@@ -161,8 +164,37 @@ def refused_rows(ctx, lst, scope, w, state, checksum=True):
     keep = disp == 'keep'
     rows = [dict(unit=unit, kind=k, src='', dst=v[0] if keep else '', bytes=os.path.getsize(v[0]),
                  md5=K.checksum(v[0], ctx.algo) if keep and checksum else '', action='keep' if keep else 'retire',
-                 replaces='' if keep else v[0], written_at='') for k, v in inst.items()]
+                 replaces='' if keep else v[0], written_at='') for k, v in inst.items() if k not in skip]
     return rows, [f'{disp} by ruling (hybrid_unit.REFUSED_INSTALLED): {why}; installed {names}']
+
+
+def _tilefill_paths(staging, lst, scope, w):
+    """(the tilefill record <LST>_<scope>/<w>_tilefill.json, its unit record _records/hybrid/tilefill.<LST>_<scope>_<w>.json)."""
+    return (os.path.join(staging, f'{lst}_{scope}', f'{w}_tilefill.json'),
+            os.path.join(staging, '_records', 'hybrid', f'tilefill.{lst}_{scope}_{w}.json'))
+
+
+def kept_refill(staging, lst, scope, w, state):
+    """Whether a unit the work run did not finish pushes a re-fill (module docstring). False: not refused, not kept by ruling
+    (hybrid_unit.REFUSED_INSTALLED keep), or no tilefill unit record (nothing re-filled: the keep rows alone). True: kept, its tilefill
+    unit done with source pinned (its filled masters re-filled from their own unfilled sources). Refusal: kept, but the re-fill did not
+    finish (its unit record not done) or its record is not a pinned fill (a work fill of a refused unit is stale) - the cell's fill
+    would otherwise stay behind the band field silently."""
+    from exopipe.phase3.config import CFG
+    if state[0] != 'refused' or CFG.hybrid_unit.REFUSED_INSTALLED.get((lst, scope, w)) != 'keep':
+        return False
+    tp, up = _tilefill_paths(staging, lst, scope, w)
+    if not os.path.exists(up):
+        return False
+    ur = _json(up)
+    if ur.get('status') != 'done':
+        raise Refusal(f'{lst}_{scope}_{w}: kept by ruling, but its re-fill ({up}) is {ur.get("status")!r}: '
+                      f'{str(ur.get("reason") or "")[:200]} - run --stages tilefill again; REFUSED')
+    src = _json(tp).get('source') if os.path.exists(tp) else None
+    if src != 'pinned':
+        raise Refusal(f'{lst}_{scope}_{w}: kept by ruling, but its done tilefill record {tp} has source {src!r}, not pinned (a work '
+                      f'fill of a refused unit is stale) - run --stages tilefill again; REFUSED')
+    return True
 
 
 def unit_items(staging, lst, scope, w):
@@ -170,8 +202,7 @@ def unit_items(staging, lst, scope, w):
     from exopipe.phase3.config import CFG
     from exopipe.phase3.lib.masters import pb_apply as PBA
     wd = os.path.join(staging, f'{lst}_{scope}')
-    tp = os.path.join(wd, f'{w}_tilefill.json')
-    up = os.path.join(staging, '_records', 'hybrid', f'tilefill.{lst}_{scope}_{w}.json')
+    tp, up = _tilefill_paths(staging, lst, scope, w)
     if not os.path.exists(up):
         raise Refusal(f'{up}: no tilefill unit record - nothing of {lst} {scope} {w} is pushed')
     ur = _json(up)
@@ -378,8 +409,16 @@ def run_hybrid(ctx, args, run, unit_fn):
                           archive_root=ctx.archive_root, archive_dir=archive_dir(ctx, lst, scope), round=rnd)
             if (lst, scope, w) in notdone:
                 u.meta['work_state'] = list(notdone[(lst, scope, w)])
-                rows, notes = refused_rows(ctx, lst, scope, w, notdone[(lst, scope, w)], checksum=not ctx.dry)
+                refill = kept_refill(staging, lst, scope, w, notdone[(lst, scope, w)])   # its filled masters re-filled (pinned)
+                frows, freads, fnotes = hybrid_plan(ctx, staging, lst, scope, w, checksum=not ctx.dry) if refill else ([], [], [])
+                pushed = {r['kind'] for r in frows}
+                rows, notes = refused_rows(ctx, lst, scope, w, notdone[(lst, scope, w)], checksum=not ctx.dry, skip=pushed)
+                rows = frows + rows
                 reads = [r for r in (record_path(staging, 'hybrid', f'{x}.{lst}_{scope}_{w}') for x in SH.STAGES) if os.path.exists(r)]
+                reads += freads
+                if refill:
+                    notes += fnotes + [f'kept by ruling, filled masters re-filled from their own unfilled sources (pinned tilefill): '
+                                       f'{", ".join(sorted(pushed))} pushed, the rest kept']
                 for r in rows:
                     if r['action'] == 'keep':
                         u.add_input(r['dst'], extra={'md5': r['md5']} if r['md5'] else None)

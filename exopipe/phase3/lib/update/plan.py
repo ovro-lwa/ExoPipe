@@ -268,8 +268,8 @@ def quarantine_dst(cls, root, rnd, path, run):
 
 
 def publish_names(hybrid_out, lst, scope, w, kinds, rebuilt):
-    """({kind: product name}, note): the names the tilefill step's dry-run plan (steps.hybrid.tilefill_source, source 'work',
-    plan_only) gives the unit's filled masters of `kinds` in the work run now. A unit the plan rebuilds is not named: its
+    """({kind: product name}, note): the names the tilefill step's dry-run plan (steps.hybrid.tilefill_source, source 'work' - a
+    cell kept by ruling is filled as pinned there, steps.hybrid.kept_cell - plan_only) gives the unit's filled masters of `kinds` in the work run now. A unit the plan rebuilds is not named: its
     name (night span, N) comes from the rebuild, and the work run holds the record from before it ({}, note). The dry run's
     own refusals (and a missing manifest or record) become the note; any other error is a bug and propagates."""
     from exopipe.phase3.core.record import NoInput, Refusal
