@@ -19,6 +19,10 @@
    renders its own tree's helper whichever tree is built first; /_status reports each backend's tree and the md5 of the code
    and helper each page imported; a POST is forwarded and written; the inspection listener refuses writes in the front; a
    dead backend is restarted on the next request; a tree that leaves the registry has its backend stopped.
+7. Static-site lists (Gregg 2026-11-19): a static entry with "lists" answers GET list/state, POST list and POST list/user on both
+   listeners, writing the review pages' list files (users.json, users/<slug>/<list>.csv) with ra, dec and title from the site's
+   ids file; another run's rows stay; unknown sources, lists, people and names are refused; a site without "lists" has no list
+   routes; the registry refuses a malformed "lists"; the ids file is re-read when it changes.
 6. Rebuilds (WEB SPEED step 2, 2026-10-30): at a registry change a page whose own entry is unchanged keeps answering requests
    from the build before (with the stale header) until its background rebuild - indices included (App.prime) - is done; a fresh
    GET waits for it; a POST goes to the page that showed its form, and labels keep their order; a page whose own entry changed,
@@ -617,6 +621,114 @@ def test_trees():
         check('trees: every backend stops with the front', all(p.poll() is not None for p in procs))
 
 
+def test_static_lists():
+    import csv
+    site, ld = os.path.join(TMP, 'jsite'), os.path.join(TMP, 'review_lists')
+    os.makedirs(site)
+    open(os.path.join(site, 'index.html'), 'w').write('<p>events</p>')
+    sid = '03h_2024-12-18|10s|20241218_052247|18MHz'
+    ids = {sid: {'ra': 205.123456, 'dec': -10.5, 'title': 'Jupiter burst 2024-12-18 05:22:47 UTC 18 MHz, 10 s'}}
+    json.dump(ids, open(os.path.join(site, 'lists_ids.json'), 'w'))
+    reg = os.path.join(TMP, 'registry_lists.json')
+    p = os.path.join(TMP, 'bad_lists.json')
+    for what, ls in (('ids outside the site', {'run': 'jupiter_v2', 'ids': '../x.json'}), ('run not a plain name', {'run': 'a b', 'ids': 'x'}),
+                     ('ids absolute', {'run': 'r', 'ids': '/etc/passwd'}), ('not an object', ['r'])):
+        write_registry(p, [{'id': 'j', 'kind': 'static', 'root': site, 'lists': ls}])
+        try:
+            TP.load_registry(p)
+            ok = False
+        except TP.RegistryError:
+            ok = True
+        check(f'lists: the registry refuses {what}', ok)
+    write_registry(p, [{'id': 'r', 'kind': 'review', 'code': 'x.py', 'argv': ['--run', TMP], 'lists': {'run': 'r', 'ids': 'x'}}])
+    try:
+        TP.load_registry(p)
+        check('lists: the registry refuses "lists" on a review page', False)
+    except TP.RegistryError:
+        pass
+    write_registry(reg, [{'id': 'jupiter', 'kind': 'static', 'root': site, 'greenlit': True,
+                          'lists': {'run': 'jupiter_v2', 'ids': 'lists_ids.json'}},
+                         {'id': 'plain', 'kind': 'static', 'root': site, 'greenlit': True}])
+    st = TP.Store(reg, lists_dir=ld)
+    form = {'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'fetch'}
+
+    def req(inspect, method, path, body=b''):
+        s, h, b = TP.serve_request(st, inspect, method, path, form if method == 'POST' else {}, body)
+        return s, dict(h), (json.loads(b) if dict(h).get('Content-Type') == 'application/json' else b)
+    q = '/s/jupiter/list/state?source_id=' + urllib.parse.quote(sid)
+    s, h, b = req(False, 'GET', q)
+    check('lists: state before any write (the default person)', s == 200 and b == {
+        'users': [{'slug': 'gregg', 'name': 'Gregg'}], 'state': {'gregg': {'prioritized': False, 'visibility-data-required': False}}},
+        (s, b))
+    s, h, b = req(True, 'POST', '/s/jupiter/list/user', b'name=Alice+Smith&source_id=x')
+    us = json.load(open(os.path.join(ld, 'users.json')))['users']
+    check("lists: list/user adds the person (inspection listener) and sets the review pages' cookie",
+          s == 200 and b['slug'] == 'alice-smith' and h.get('Set-Cookie', '').startswith('rl_user=alice-smith; Path=/')
+          and [u['slug'] for u in us] == ['gregg', 'alice-smith'], (s, b, h, us))
+    s, h, b = req(False, 'POST', '/s/jupiter/list/user', b'name=1bad')
+    check('lists: a name that is not a plain name is refused', s == 400, (s, b))
+    vis = os.path.join(ld, 'users', 'alice-smith', 'visibility_required.csv')
+    os.makedirs(os.path.dirname(vis), exist_ok=True)
+    with open(vis, 'w', newline='') as f:            # a review page's row of another run stays
+        w = csv.DictWriter(f, fieldnames=['run', 'labels', 'source_id', 'ra', 'dec', 'added_utc', 'title'])
+        w.writeheader()
+        w.writerow(dict(run='Run_P3S5', labels='judgements_I', source_id='J1904-0707', ra='286.19362', dec='-7.13383',
+                        added_utc='2026-11-12T19:06:39Z', title='deep'))
+    body = ('source_id=' + urllib.parse.quote(sid) + '&which=visibility-data-required&on=1&user=alice-smith').encode()
+    s, h, b = req(True, 'POST', '/s/jupiter/list', body)
+    s2, h2, b2 = req(False, 'POST', '/s/jupiter/list', body)            # twice: one row
+    rows = list(csv.DictReader(open(vis, newline='')))
+    check("lists: a POST puts the row on the person's list, from both listeners, once, beside the other run's row",
+          s == 200 and s2 == 200 and b['on'] is True and b['name'] == 'Alice Smith' and len(rows) == 2
+          and rows[0]['run'] == 'Run_P3S5' and {k: rows[1][k] for k in ('run', 'labels', 'source_id', 'ra', 'dec', 'title')} == dict(
+              run='jupiter_v2', labels='', source_id=sid, ra='205.12346', dec='-10.50000', title=ids[sid]['title']), (s, b, rows))
+    check("lists: the file is the review pages' CSV (header, CRLF rows)",
+          open(vis, 'rb').read().startswith(b'run,labels,source_id,ra,dec,added_utc,title\r\n'))
+    s, h, b = req(False, 'GET', q)
+    check('lists: state shows the row', s == 200 and b['state']['alice-smith'] == {'prioritized': False, 'visibility-data-required': True}
+          and b['state']['gregg']['visibility-data-required'] is False, b)
+    s, h, b = req(False, 'POST', '/s/jupiter/list', body.replace(b'on=1', b'on=0'))
+    rows = list(csv.DictReader(open(vis, newline='')))
+    check("lists: on=0 takes the row off, the other run's row stays", s == 200 and b['on'] is False and [r['run'] for r in rows] == ['Run_P3S5'],
+          (s, rows))
+    for what, bd in (('an unknown source', body.replace(b'18MHz', b'99MHz')), ('an unknown list', body.replace(b'visibility-data-required', b'x')),
+                     ('an unknown person', body.replace(b'alice-smith', b'bob'))):
+        s, h, b = req(False, 'POST', '/s/jupiter/list', bd)
+        check(f'lists: {what} is refused', s == 400, (s, b))
+    s, h, b = req(False, 'POST', '/s/plain/list', body)
+    check('lists: a site without "lists" has no list route', s == 200 and b == b'<p>events</p>' or s == 404, (s, b))
+    os.makedirs(os.path.join(site, 'list'))
+    open(os.path.join(site, 'list', 'state'), 'w').write('a file')
+    s, h, b = req(False, 'GET', '/s/plain/list/state')
+    check('lists: a site without "lists" serves its own file at list/state', s == 200 and b == b'a file', (s, b))
+    s, h, b = req(True, 'POST', '/s/plain/list', body)
+    check('lists: the inspection listener refuses list writes to a site without "lists"', s == 403, s)
+    write_registry(p, [{'id': 'j', 'kind': 'static', 'root': site, 'lists': {'run': 'jupiter_v2\n', 'ids': 'lists_ids.json'}}])
+    try:
+        TP.load_registry(p)
+        check('lists: the registry refuses a run name with a newline', False)
+    except TP.RegistryError:
+        pass
+    s, h, b = req(True, 'POST', '/s/jupiter/index.html', body)
+    check("lists: the inspection listener refuses a static site's other writes", s == 403, s)
+    s, h, b = req(False, 'GET', '/s/jupiter/list')
+    check('lists: list takes POST only', s == 405, s)
+    st.lists_dir = None
+    s, h, b = req(False, 'GET', q)
+    check('lists: no lists directory, no lists', s == 503, s)
+    st.lists_dir = os.path.join(TMP, 'not_a_dir_file')
+    open(st.lists_dir, 'w').write('x')                  # the lists directory is a file: the write fails
+    s, h, b = req(False, 'POST', '/s/jupiter/list/user', b'name=Carol')
+    check('lists: a lists directory that cannot be written answers 503', s == 503, (s, b))
+    st.lists_dir = ld
+    sid2 = sid.replace('18MHz', '23MHz')
+    json.dump({**ids, sid2: {'ra': 1.0, 'dec': 2.0, 'title': 't2'}}, open(os.path.join(site, 'lists_ids.json'), 'w'))
+    s, h, b = req(False, 'GET', '/s/jupiter/list/state?source_id=' + urllib.parse.quote(sid2))
+    check('lists: the ids file is read again when it changed', s == 200, (s, b))
+    s, h, b = req(False, 'GET', '/s/jupiter/', b'')
+    check('lists: the site itself is still served', s == 200 and b == b'<p>events</p>', (s, b))
+
+
 def main():
     shutil.rmtree(TMP, ignore_errors=True)
     os.makedirs(TMP)
@@ -624,6 +736,7 @@ def main():
         test_env()
         test_rewrite()
         test_registry()
+        test_static_lists()
         test_pages()
         test_trees()
     finally:

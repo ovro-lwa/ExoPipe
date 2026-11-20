@@ -10,7 +10,8 @@ One backend process per CODE TREE (the directory of a page's classify_transients
 that differ, and one process shares sys.modules by name - the first tree to import a helper served it to every page (found
 2026-10-18: a frozen 19h tree's review_filters served the deep pages without that morning's filters). The listeners' process
 (the front) builds no page: it serves the hub, the static sites and the refusals, and forwards every review-page request to
-its tree's backend over a Unix socket; a backend is started on first use, restarted when it died and stopped when its tree
+its tree's backend over a Unix socket (a static site that keeps lists has its list routes answered by the front:
+static_list_request); a backend is started on first use, restarted when it died and stopped when its tree
 leaves the registry. GET /_status reports every backend's tree and, per built page, the md5 of its code and of every helper
 module of its tree it imported.
 
@@ -175,7 +176,9 @@ def load_registry(path):
     """{page_id: entry}. An entry: id, kind ('review' | 'static'), and for a review page code (the classify_transients.py it
     runs), argv (its arguments as today, without --port and --inspect), env (its P3_* variables), legacy_port (the port it was
     served on: cookie key and link mapping), greenlit (shown on the inspection listener), title; for a static site root (a
-    directory) and greenlit. Refuses a malformed registry rather than serving part of it."""
+    directory), greenlit and, for a site whose pages carry the per-person list buttons, lists = {"run": the run name its rows
+    carry, "ids": the site's file (relative to root) of the source ids it serves, {source id: {"ra", "dec", "title"}}}
+    (static_list_request). Refuses a malformed registry rather than serving part of it."""
     with open(path) as f:
         reg = json.load(f)
     return check_registry(reg, path)
@@ -215,9 +218,19 @@ def check_registry(reg, path):
                     raise RegistryError(f'{path}: {e["id"]}: a review page needs {k}')
             if any(a in ('--port', '--inspect', '--host') for a in e['argv']):
                 raise RegistryError(f'{path}: {e["id"]}: argv carries --port/--inspect/--host (the server sets them)')
+            if 'lists' in e:
+                raise RegistryError(f'{path}: {e["id"]}: "lists" is a static site\'s (a review page writes its lists itself)')
         else:
             if not e.get('root') or not os.path.isdir(e['root']):
                 raise RegistryError(f'{path}: {e["id"]}: static root {e.get("root")!r} is not a directory')
+            if 'lists' in e:
+                ls = e['lists']
+                if (not isinstance(ls, dict) or not re.fullmatch(r'[A-Za-z0-9_.-]+', str(ls.get('run') or ''))
+                        or not isinstance(ls.get('ids'), str) or not ls['ids']):
+                    raise RegistryError(f'{path}: {e["id"]}: "lists" must be {{"run": a plain name, "ids": a file of the site}}: {ls!r}')
+                rel = os.path.normpath(ls['ids'])
+                if os.path.isabs(rel) or rel == '..' or rel.startswith('..' + os.sep):
+                    raise RegistryError(f'{path}: {e["id"]}: lists "ids" {ls["ids"]!r} is not a path inside the site')
         out[e['id']] = e
     ports = collections.Counter(e.get(k) for e in out.values() for k in ('legacy_port', 'inspection_legacy_port') if e.get(k))
     dup = [p for p, n in ports.items() if n > 1]
@@ -233,7 +246,8 @@ def check_registry(reg, path):
 ROUTES = ('source/', 'band/', 'img', 'metrics.json', 'label', 'list')
 HUB_URLS = ('http://localhost:8765/', 'http://localhost:8795/')
 # Gregg 2026-10-27: the per-person review lists ("Add to Prioritized transient", "Add to Visibility Data Required") are written from
-# the inspection listener as well - a page's POST /list and POST /list/user; every other write stays refused there
+# the inspection listener as well - a page's POST /list and POST /list/user, and those of a static site that keeps lists
+# (serve_request, static_list_request; Gregg 2026-11-19); every other write stays refused there
 INSPECTION_WRITES = ('/list', '/list/user')
 
 
@@ -537,8 +551,10 @@ class Store:
     REBUILD_GRACE_S = 30.0                    # the rebuild thread starts this long after a registry change (see _rebuild_loop)
     REBUILD_QUIET_S = 10.0                    # ... and this long after the last build a request waited for
 
-    def __init__(self, registry_path, base_env=None, max_pages=80, keep_s=1800, tree=None, builds=True, publish_hold=False):
+    def __init__(self, registry_path, base_env=None, max_pages=80, keep_s=1800, tree=None, builds=True, publish_hold=False,
+                 lists_dir=None):
         install_env()
+        self.lists_dir = lists_dir            # the per-person lists a static site with "lists" writes (None: those routes answer 503)
         self.publish_hold = bool(publish_hold)                 # the publish hold option (off: production, a banner only)
         self.tree = os.path.realpath(tree) if tree else None   # a backend builds the pages of this code tree only
         self.builds = builds                                   # the front builds none
@@ -832,11 +848,17 @@ def serve_request(store, inspect, method, path, headers, body=b''):
     e = store.entry(pid)
     if e is None or (inspect and not e.get('greenlit')):
         return 404, [('Content-Type', 'text/plain')], b'unknown page'
-    if inspect and method != 'GET' and not inspection_write_ok(method, path):
+    site_lists = kind == 's' and e['kind'] == 'static' and bool(e.get('lists'))     # a static site that keeps lists
+    if inspect and method != 'GET' and not (inspection_write_ok(method, path) or
+                                            (site_lists and method == 'POST' and rest in INSPECTION_WRITES)):
         return 403, [('Content-Type', 'text/plain; charset=utf-8')], b'inspection mode: this view is read-only and records nothing'
     query = path[len(f'/{kind}/{pid}') + len(rest):] if '?' in path else ''
     if kind == 's':
-        return static_file(e, rest, store.port_map()) if e['kind'] == 'static' else (404, [('Content-Type', 'text/plain')], b'unknown page')
+        if e['kind'] != 'static':
+            return 404, [('Content-Type', 'text/plain')], b'unknown page'
+        if site_lists and rest in STATIC_LIST_ROUTES:
+            return static_list_request(e, store.lists_dir, method, rest, query, body)
+        return static_file(e, rest, store.port_map())
     if e['kind'] != 'review':
         return 404, [('Content-Type', 'text/plain')], b'unknown page'
     fresh = method == 'GET' and any(k.lower() == FRESH_HEADER.lower() and v.strip() == '1' for k, v in (headers or {}).items())
@@ -866,6 +888,99 @@ def serve_request(store, inspect, method, path, headers, body=b''):
     if ctype.startswith('text/html'):
         payload = rewrite_body(payload.decode('utf-8'), pg.base, pm, legacy_port=pg.legacy_port).encode('utf-8')
     return status, out, payload
+
+
+# A static site's per-person list buttons (Gregg 2026-11-19, the Jovian event pages: "I want the same \"Add to Visibility Data
+# Required\" Button that we have for the transients pages"): the routes of an entry with "lists" (load_registry), answered by the
+# front. They write the review pages' list files (lib/serve/lists.py; the lists directory of serve --lists-dir).
+STATIC_LIST_ROUTES = ('/list', '/list/user', '/list/state')
+_SITE_IDS = {}                              # ids file -> ((inode, size, mtime ns), {source id: {ra, dec, title}})
+_SITE_IDS_LOCK = threading.Lock()
+
+
+def site_ids(entry):
+    """{source id: {'ra', 'dec', 'title'}} of a static site's ids file (its "lists" "ids"), parsed again only when the file changed
+    (inode, size or modification time)."""
+    p = os.path.normpath(os.path.join(os.path.realpath(entry['root']), entry['lists']['ids']))
+    st = os.stat(p)
+    key = (st.st_ino, st.st_size, st.st_mtime_ns)
+    with _SITE_IDS_LOCK:
+        hit = _SITE_IDS.get(p)
+        if hit is not None and hit[0] == key:
+            return hit[1]
+    with open(p) as f:
+        ids = json.load(f)
+    if not isinstance(ids, dict) or not all(isinstance(v, dict) for v in ids.values()):
+        raise ValueError(f'{p}: not a JSON object of source id -> {{"ra", "dec", "title"}}')
+    with _SITE_IDS_LOCK:
+        _SITE_IDS[p] = (key, ids)
+    return ids
+
+
+def _plain(status, text):
+    return status, [('Content-Type', 'text/plain; charset=utf-8')], text.encode('utf-8')
+
+
+def _json_reply(obj, extra=()):
+    return 200, [('Content-Type', 'application/json')] + list(extra), json.dumps(obj).encode('utf-8')
+
+
+def static_list_request(entry, lists_dir, method, rest, query, body=b''):
+    """(status, headers, body) of a static site's list route: GET <site>/list/state?source_id= ({"users": [{"slug", "name"}],
+    "state": {slug: {list: on}}}), POST <site>/list (source_id, which, on = 1 | 0, user = an existing person's slug), POST
+    <site>/list/user (name: adds the person, sets the rl_user cookie the review pages use). Only a site with "lists" has them; a
+    source id must be in the site's ids file, which gives the row's ra, dec and title (the client never does); the row's run is
+    the entry's "lists" "run" and its labels are empty. Refusals: 404 (no lists here), 405 (method), 400 (source, list or person
+    unknown, or a name that is not a plain name), 503 (no lists directory, the ids file unreadable, or the lists not readable or
+    writable)."""
+    try:
+        return _static_list_request(entry, lists_dir, method, rest, query, body)
+    except OSError as exc:
+        return _plain(503, f'the lists could not be read or written: {exc}')
+
+
+def _static_list_request(entry, lists_dir, method, rest, query, body):
+    from exopipe.phase3.lib.serve import lists as L
+    ls = entry.get('lists')
+    if not ls:
+        return _plain(404, 'this site keeps no lists')
+    want = 'GET' if rest == '/list/state' else 'POST'
+    if method != want:
+        return _plain(405, f'{rest} takes {want} only')
+    if not lists_dir:
+        return _plain(503, 'this server has no lists directory')
+    form = urllib.parse.parse_qs(body.decode('utf-8', errors='replace') if method == 'POST' else query.lstrip('?'))
+
+    def get(k, default=''):
+        return (form.get(k) or [default])[0]
+    if rest == '/list/user':
+        slug = L.add_user(lists_dir, get('name'))
+        if slug is None:
+            return _plain(400, L.BAD_NAME)
+        name = next((u.get('name') or u['slug'] for u in L.users(lists_dir) if u['slug'] == slug), slug)
+        return _json_reply({'ok': True, 'slug': slug, 'name': name},
+                           [('Set-Cookie', f'rl_user={slug}; Path=/; Max-Age=31536000; SameSite=Lax')])
+    try:
+        ids = site_ids(entry)
+    except (OSError, ValueError) as exc:
+        return _plain(503, f'the site\'s source ids cannot be read: {exc}')
+    sid = get('source_id')
+    if sid not in ids:
+        return _plain(400, 'no such source on this site')
+    us = L.users(lists_dir)
+    if rest == '/list/state':
+        return _json_reply({'users': [{'slug': u['slug'], 'name': u.get('name') or u['slug']} for u in us],
+                            'state': {u['slug']: {w: (ls['run'], sid) in L.members(lists_dir, w, u['slug']) for w in L.LIST_FILES}
+                                      for u in us}})
+    which, user, on = get('which'), get('user'), get('on', '1') == '1'
+    if which not in L.LIST_FILES or not any(u['slug'] == user for u in us):
+        return _plain(400, 'pick whose lists first (a name above the list buttons), then the list button')
+    meta = ids[sid]
+    num = lambda v: f'{v:.5f}' if isinstance(v, (int, float)) and not isinstance(v, bool) else ('' if v is None else str(v))
+    L.toggle(lists_dir, which, ls['run'], sid, on, user, dict(labels='', ra=num(meta.get('ra')), dec=num(meta.get('dec')),
+                                                               title=str(meta.get('title') or '')))
+    return _json_reply({'ok': True, 'user': user, 'which': which, 'on': on,
+                        'name': next((u.get('name') or u['slug'] for u in us if u['slug'] == user), user)})
 
 
 def static_file(entry, rest, port_map=None):
@@ -1159,11 +1274,12 @@ def front_request(store, backends, inspect, method, path, headers, body=b''):
     return serve_request(store, inspect, method, path, headers, body)
 
 
-def serve(registry_path, review_port, inspection_port, host='127.0.0.1', sock_dir=None, publish_hold=False):
-    """Run both listeners until interrupted; the backends stop with the front."""
+def serve(registry_path, review_port, inspection_port, host='127.0.0.1', sock_dir=None, publish_hold=False, lists_dir=None):
+    """Run both listeners until interrupted; the backends stop with the front. lists_dir: the per-person lists the static sites
+    with "lists" write (the review pages' own, serve.LISTS_DIR)."""
     from http.server import ThreadingHTTPServer
     backends = Backends(registry_path, sock_dir, publish_hold=publish_hold)     # refuses a socket directory too long first
-    store = Store(registry_path, builds=False)
+    store = Store(registry_path, builds=False, lists_dir=lists_dir)
     srv = [ThreadingHTTPServer((host, review_port),
                                make_handler(lambda m, p, h, b: front_request(store, backends, False, m, p, h, b))),
            ThreadingHTTPServer((host, inspection_port),
@@ -1172,8 +1288,8 @@ def serve(registry_path, review_port, inspection_port, host='127.0.0.1', sock_di
     for t in ts:
         t.start()
     print(f'two-port server: review http://{host}:{review_port}/  inspection http://{host}:{inspection_port}/  '
-          f'({len(store.reg)} registry entries; one backend per code tree, sockets in {backends.sock_dir}'
-          + ('; the publish hold ON' if publish_hold else '') + ')', flush=True)
+          f'({len(store.reg)} registry entries; one backend per code tree, sockets in {backends.sock_dir}; static-site lists in '
+          f'{lists_dir}' + ('; the publish hold ON' if publish_hold else '') + ')', flush=True)
     import signal
 
     def _term(*_a):
@@ -1273,6 +1389,9 @@ def main(argv=None):
     s2.add_argument('--review-port', type=int, required=True)
     s2.add_argument('--inspection-port', type=int, required=True)
     s2.add_argument('--sock-dir', help=f'the backends\' sockets and logs (default {SOCK_DIR})')
+    s2.add_argument('--lists-dir', help='the per-person lists a static site with "lists" writes: production passes serve.LISTS_DIR '
+                                        '(the review pages\' own), a parity server its <out>/review_lists; none = those routes answer '
+                                        '503 (no default: a test server never writes the production lists)')
     s2.add_argument('--publish-hold', action='store_true',
                     help='keep a run\'s built pages on their builds while <run>/' + HOLD_FILE + ' exists (an amendment option; '
                          'off = production: a page rebuilt meanwhile shows the marker\'s text)')
@@ -1294,7 +1413,7 @@ def main(argv=None):
         print(json.dumps({'pages': pages}, indent=1))
         return 0
     try:
-        serve(a.registry, a.review_port, a.inspection_port, sock_dir=a.sock_dir, publish_hold=a.publish_hold)
+        serve(a.registry, a.review_port, a.inspection_port, sock_dir=a.sock_dir, publish_hold=a.publish_hold, lists_dir=a.lists_dir)
     except ValueError as e:                  # a socket directory too long: refused before anything listens
         sys.exit(f'two-port server REFUSED: {e}')
     return 0
