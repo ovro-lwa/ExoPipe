@@ -173,6 +173,18 @@ def test_item1_narrow_cutover_allowance():
     assert CLI._guard_out(recs, CLI._allow_key('archive', argparse.Namespace(action='push', push_class='mosaic_v3'))) is not None
     K.Ctx.guard_writes(None, [arch, recs], 'push --class hybrid t', allow='archive:hybrid')     # allowed: no refusal
     K.Ctx.guard_writes(None, [arch, recs], 'push --class mosaic_v5 t', allow='archive:mosaic_v5')
+    from exopipe.phase3.steps import archive as SA                 # the step's own G2 (before any unit) passes the same key
+    sctx = argparse.Namespace(archive_root=CFG.paths.PHASE3_ARCHIVE_ROOT,
+                              guard_writes=lambda ps, what, allow=None: K.Ctx.guard_writes(None, ps, what, allow=allow))
+    for c in ('hybrid', 'mosaic_v5'):
+        SA.apply_guard(sctx, argparse.Namespace(action='push', push_class=c))              # allowed: no refusal
+    for a, c in (('push', 'mosaic_v3'), ('push', 'mosaic'), ('push', 'epoch'), ('push', None), ('sync', 'hybrid'),
+                 ('quarantine', 'hybrid'), ('rollback', None)):
+        try:
+            SA.apply_guard(sctx, argparse.Namespace(action=a, push_class=c))
+            raise AssertionError(f'step G2 let {a} --class {c} write the production archive')
+        except K.Refusal as e:
+            assert 'PRODUCTION_WRITES_ALLOWED' in str(e), e
     for a, ps in ((None, [arch]), ('archive:epoch', [arch]), ('hybrid', [arch]), ('archive:mosaic_v3', [arch]), ('archive:mosaic_v5', [arch, ops]),
                   ('archive:hybrid', [arch, ops]), ('archive:hybrid', [clv]), ('archive:hybrid', [work])):
         try:
