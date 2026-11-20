@@ -259,6 +259,20 @@ def test_pages():
           and 'href="/p/pa/source/J1">sibling' in ba and 'href="/"' in ba and 'href="/imgs/x.png"' in ba
           and 'href="http://localhost:9999/"' in ba, ba)
     check('page A: filters keyed by its legacy port', "var PORT = '9901', LS = 'filters_v1_9901'" in ba, ba)
+    # a finished page's code report never waits for _BUILD_LOCK, which another page's build holds for its whole main() (the
+    # 2026-11-20 hub hang: a finished page could not be served while a cold 10-minute page built)
+    want = st._report(st.entry('pa'))
+    got, done = {}, threading.Event()
+
+    def rep():
+        got['r'] = st._report(st.entry('pa'))
+        done.set()
+    with TP._BUILD_LOCK:                              # another page's build in progress
+        threading.Thread(target=rep, daemon=True).start()
+        waited = done.wait(10)
+    done.wait(30)
+    check('a page\'s code report is made while another page builds (never under _BUILD_LOCK), equal to the report made without',
+          waited and got.get('r') == want and want['code'][1] and want['helpers'] is not None, (waited, got.get('r'), want))
     s, h, b = get('pa', '/port')
     check("the page's Handler sees its legacy port as server_port", s == 200 and b == b'9901', (s, b))
     s, h, b = TP.serve_request(st, False, 'POST', '/p/pb/label', {'Content-Type': 'application/x-www-form-urlencoded'},

@@ -799,16 +799,19 @@ class Store:
 
     def _report(self, e):
         """The code a page was built from: its own file and every project module in this process (project_modules), each with
-        the md5 of the bytes it was imported from (recorded when the module is first seen)."""
+        the md5 of the bytes it was imported from (recorded when the module is first seen). Never under _BUILD_LOCK: that lock
+        is held for a page's whole main() (sys.argv, sys.path), so a finished page waiting for it could not be served while any
+        other page built - the 2026-11-20 hub hang (a cold 10-minute build held every page for two hours). project_modules
+        copies sys.modules first, and the first md5 recorded for a module stays (setdefault)."""
         helpers = {}
-        with _BUILD_LOCK:
-            for name, path in sorted(project_modules().items()):
-                mod = sys.modules.get(name)
-                if mod is None:
-                    continue
-                if id(mod) not in self._mod_md5:
-                    self._mod_md5[id(mod)] = (path, md5_file(path))
-                helpers[name] = list(self._mod_md5[id(mod)])
+        for name, path in sorted(project_modules().items()):
+            mod = sys.modules.get(name)
+            if mod is None:
+                continue
+            rec = self._mod_md5.get(id(mod))
+            if rec is None:
+                rec = self._mod_md5.setdefault(id(mod), (path, md5_file(path)))
+            helpers[name] = list(rec)
         return {'code': [os.path.realpath(e['code']), md5_file(e['code'])], 'helpers': helpers}
 
     def _evict(self):
