@@ -31,6 +31,7 @@
    changed while it ran goes only to the request that asked; a failed rebuild drops the old page, leaves no module behind, and
    the next request shows the failure.
 """
+import importlib.util
 import json
 import os
 import shutil
@@ -259,6 +260,44 @@ def test_pages():
           and 'href="/p/pa/source/J1">sibling' in ba and 'href="/"' in ba and 'href="/imgs/x.png"' in ba
           and 'href="http://localhost:9999/"' in ba, ba)
     check('page A: filters keyed by its legacy port', "var PORT = '9901', LS = 'filters_v1_9901'" in ba, ba)
+    # a finished page's code report never waits for _BUILD_LOCK, which another page's build holds for its whole main() (the
+    # 2026-11-20 hub hang: a finished page could not be served while a cold 10-minute page built)
+    st._mod_md5.clear()                               # the thread takes the cache-miss path (md5 + insert)
+    got, done = {}, threading.Event()
+
+    def rep():
+        got['r'] = st._report(st.entry('pa'))
+        done.set()
+    with TP._BUILD_LOCK:                              # another page's build in progress (and no build imports meanwhile)
+        threading.Thread(target=rep, daemon=True).start()
+        waited = done.wait(10)
+        want = st._report(st.entry('pa')) if waited else None
+    done.wait(30)
+    r = got.get('r') or {}
+    hel = r.get('helpers') or {}
+    check('a page\'s code report is made while another page builds (never under _BUILD_LOCK): the same report made twice, '
+          'naming the server module with the md5 of its file', waited and r == want and TP.__name__ in hel
+          and all(v == [v[0], TP.md5_file(v[0])] for v in hel.values()), (waited, r, want))
+    # a cache entry belongs to its module object: an entry under the same id for another object (a reload cleared the cache
+    # while a report hashed, and a new module reused the id) is recomputed, never reported
+    st._mod_md5[id(TP)] = (object(), TP.__file__, 'stale')
+    check('a cache entry of another module object under the same id is not reported',
+          st._report(st.entry('pa'))['helpers'][TP.__name__][1] == TP.md5_file(os.path.realpath(TP.__file__)))
+    # a module still executing its import (another build's, in progress) is left out of the report
+    half = os.path.join(TMP, 'half_imported_mod.py')
+    open(half, 'w').write('X = 1\n')
+    spec = importlib.util.spec_from_file_location('half_imported_mod', half)
+    mod = importlib.util.module_from_spec(spec)
+    spec._initializing = True
+    sys.modules['half_imported_mod'] = mod
+    try:
+        out_init = 'half_imported_mod' in st._report(st.entry('pa'))['helpers']
+        spec._initializing = False
+        in_done = 'half_imported_mod' in st._report(st.entry('pa'))['helpers']
+    finally:
+        sys.modules.pop('half_imported_mod', None)
+    check('a module still executing its import is left out of a report, and named once imported', not out_init and in_done,
+          (out_init, in_done))
     s, h, b = get('pa', '/port')
     check("the page's Handler sees its legacy port as server_port", s == 200 and b == b'9901', (s, b))
     s, h, b = TP.serve_request(st, False, 'POST', '/p/pb/label', {'Content-Type': 'application/x-www-form-urlencoded'},
