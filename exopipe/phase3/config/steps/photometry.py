@@ -37,7 +37,8 @@ class photometry(_Section):
     #      "I want the photometry done for all tiers btw, including 1 hour (deep)"): snapshot = the 10-s cubes cut from the consolidated
     #      flow cubes by the search's own path (snapshot_cutout_regen_20261025.sh, snapshot_cutout_regen_wb_20261025.sh); deep and
     #      sub-LST = the tier cutouts of the searched residuals (photometry_tier_cutouts_20261025.py, tiers 'deep' and '10min').
-    #      cutmeasure = the forced measurement of the tier cutouts (photometry_tier_forced_20261026.py, exopipe_ops 9b0ca31 + fa17f4c).
+    #      cutmeasure = the forced measurement of the tier cutouts (photometry_tier_forced_20261026.py, exopipe_ops 9b0ca31 + fa17f4c;
+    #      ad-hoc tags from 4a96529).
     STAGES = {'deep': ('cutouts', 'cutmeasure', 'frames', 'stage', 'measure', 'evaluate'),
               'snapshot': ('cutouts', 'measure', 'evaluate'),
               'sublst': ('cutouts', 'cutmeasure')}
@@ -126,7 +127,7 @@ class photometry(_Section):
               'cutouts_subband': 'phase3_snapshot_search.py',          # --cutouts-from-cubes (regen_cutouts, clv15 23a26da)
               'cutouts_wideband': 'phase3_snapshot_group_search.py',   # --cutouts-from-cubes GROUP (regen_group_cutouts, 8f2126b)
               'cutouts_tier': 'photometry_tier_cutouts_20261025.py',   # --root --tier --cells (exopipe_ops e1e24ff)
-              'cutmeasure_tier': 'photometry_tier_forced_20261026.py'}  # --root --out --tier --lsts --samples (9b0ca31, fa17f4c)
+              'cutmeasure_tier': 'photometry_tier_forced_20261026.py'}  # --root --out --tier --lsts --samples (9b0ca31, fa17f4c, 4a96529)
     ENGINE_PYTHON = {'deep': 'default', 'snapshot': 'py36'}
     # the interpreter of each cutout engine (core/legacy.run), where it is not its tier's: the 10-s regeneration ran under the
     # development env (snapshot_cutout_regen_20261025.sh:12 PY, snapshot_cutout_regen_wb_20261025.sh:13 PY); the generation-5 tier

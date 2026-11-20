@@ -921,10 +921,14 @@ def tier_unit(run, args, tier, cell, root, targets, planets, samples):
 
 
 def tier_out_roots(args, samples):
-    """{root: [samples]} of the cutmeasure outputs: --tier-out for every sample, else photometry.TIER_FORCED_ROOTS."""
+    """{root: [samples]} of the cutmeasure outputs: --tier-out for every sample, else photometry.TIER_FORCED_ROOTS (an ad-hoc tag
+    has no served root: PHOT-ADHOC refuses it without --tier-out)."""
     ph = K.cfg().photometry
     out = {}
     for s in samples:
+        if not getattr(args, 'tier_out', None) and s not in ph.TIER_FORCED_ROOTS:
+            raise Refusal('PHOT-ADHOC: the ad-hoc set %s has no served tier forced root - cutmeasure of --targets writes its own '
+                          'root (give --tier-out)' % s)
         r = os.path.abspath(args.tier_out) if getattr(args, 'tier_out', None) else ph.TIER_FORCED_ROOTS[s]
         out.setdefault(r, []).append(s)
     return out
@@ -953,10 +957,13 @@ def stage_tier_cutmeasure(run, args):
             return []
         raise
     lsts = sorted({cl.split('_', 1)[0] for cl in cells})
+    adhoc_env = K.adhoc_env(targets, bool(getattr(args, 'planets', False)))
     K.plan(run, '[cutmeasure] tier %s: LSTs %s on the cutouts of %s -> %s (photometry_tier_forced_20261026.py in place, '
-                'site PYTHON[%s])' % (token, ','.join(lsts), root, '; '.join('%s: %s' % (','.join(s), r)
-                                                                             for r, s in sorted(roots.items())),
-                                      K.python_key(tier, 'cutmeasure_tier')))
+                'site PYTHON[%s])%s' % (token, ','.join(lsts), root, '; '.join('%s: %s' % (','.join(s), r)
+                                                                               for r, s in sorted(roots.items())),
+                                        K.python_key(tier, 'cutmeasure_tier'),
+                                        '; ad hoc: %s' % ' '.join('%s=%s' % kv for kv in sorted(adhoc_env.items()))
+                                        if targets else ''))
     units = []
     for lst in lsts:
         for out_root, smp in sorted(roots.items()):
@@ -965,11 +972,11 @@ def stage_tier_cutmeasure(run, args):
                 continue
             units += run_unit(run, 'cutmeasure.%s.%s.%s' % (token, lst, '+'.join(smp)),
                               dict(tier=tier, stage='cutmeasure', lst=lst, cutout_root=root, tier_out=out_root),
-                              cutmeasure_unit, run, args, tier, lst, root, out_root, smp)
+                              cutmeasure_unit, run, args, tier, lst, root, out_root, smp, adhoc_env)
     return units
 
 
-def cutmeasure_unit(run, args, tier, lst, root, out_root, samples):
+def cutmeasure_unit(run, args, tier, lst, root, out_root, samples, adhoc_env):
     from exopipe.phase3.lib.photometry import tests_cutouts as TC
     ph = K.cfg().photometry
     cc = _cc()
@@ -1000,7 +1007,7 @@ def cutmeasure_unit(run, args, tier, lst, root, out_root, samples):
             shutil.copy2(old_man, os.path.join(sdir, 'forced_manifest.csv'))
         argv = ['--root', root, '--out', stage, '--tier', token, '--lsts', lst, '--workers', '1', '--samples', ','.join(samples)]
         res, text = K.call(u, 'cutmeasure_tier', argv, tier, 'cutmeasure_tier', run, 'cutmeasure_%s_%s.log' % (token, lst),
-                           env_extra=K.adhoc_env(K.adhoc_targets(args), bool(getattr(args, 'planets', False))),
+                           env_extra=adhoc_env,
                            threads=args.threads)
         m = re.search(r'PHOTOMETRY-TIER-FORCED-DONE (\d+) cutouts measured, (\d+) refused', text)
         if res.refused:              # the tool's own refusal (REFUSING: --samples ...): this unit, not the run
@@ -1021,8 +1028,12 @@ def cutmeasure_unit(run, args, tier, lst, root, out_root, samples):
         bad = []
         for p in mine:
             bad += staged_tests(u, 'photometry_tier_npz', p, cutout_root=root)
+        kept = set(ph.TIER_FORCED_SAMPLES)
+        if os.path.exists(staged_man):    # the rows the tool kept: the named samples and any earlier ad-hoc tag in this root
+            with open(staged_man, newline='', encoding='utf-8') as f:
+                kept |= {q[0] for q in (TC.parse_cutout(r['file']) for r in csv.DictReader(f)) if q}
         bad += staged_tests(u, 'photometry_tier_manifest', staged_man,
-                            npz_dirs={s: odir for s in ph.TIER_FORCED_SAMPLES if s not in samples})
+                            npz_dirs={s: odir for s in kept if s not in samples})
         if bad:
             u.refuse('CM-CONTENT: the staged npz / manifest fail their content test before placement - nothing placed '
                      '(staging kept: %s): %s' % (stage, '; '.join(bad)[:900]))

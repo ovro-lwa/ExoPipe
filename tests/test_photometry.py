@@ -2513,6 +2513,26 @@ def test_cutouts_tiers():
                             env={k: v for k, v in os.environ.items() if k != ph.ADHOC_ENV}, cwd=OPS)
         check('the tier tool without photometry.ADHOC_ENV refuses the ad-hoc tag (REFUSING: --samples ADHOC)',
               pr.returncode != 0 and 'REFUSING: --samples ADHOC' in pr.stdout, pr.stdout[-400:])
+        # PR 142 review: (F1) an ad-hoc tag without --tier-out has no served tier forced root - PHOT-ADHOC refuses it, never a
+        # crash; (F2) a second ad-hoc tag into the same tier forced root passes TM2 with the first tag's rows kept (their npz read
+        # where they are served, not in the staging)
+        rc, txt = step(['photometry', '--tier', 'deep', '--stages', 'cutmeasure', '--cells', TIER_CELL, '--targets',
+                        'ADHOC=%s' % adhoc, '--cutout-root', root_ad, '--out', out, '--cores', 'none', '--dry-run'])
+        check('PHOT-ADHOC: cutmeasure of an ad-hoc tag without --tier-out refuses (dry run, exit 2; no served root, no crash)',
+              rc == 2 and 'PHOT-ADHOC' in txt and 'give --tier-out' in txt and 'Traceback' not in txt, (rc, txt[-800:]))
+        ad_rows = [r for r in rows if '/ADHOC/' in r['file']]
+        rc, txt = step(['photometry', '--tier', 'deep', '--stages', 'cutouts,cutmeasure', '--cells', TIER_CELL, '--targets',
+                        'ADHOC2=%s' % adhoc, '--cutout-root', os.path.join(TMP, 'tier_out', 'photometry_genT_adhoc2'),
+                        '--tier-out', tout, '--out', out, '--cores', 'none'])
+        m2 = records(out).get('cutmeasure.deep.18h.ADHOC2', {})
+        mt2 = {t['name'].split('.', 1)[1]: t['passed'] for t in m2.get('tests', [])}
+        rows2 = list(csv.DictReader(open(man))) if os.path.exists(man) else []
+        check('a second ad-hoc tag (ADHOC2) into the same tier forced root: done, TM2 passes with the first tag\'s rows kept, the '
+              'HWJ and ADHOC rows unchanged, 4 ok ADHOC2 rows',
+              rc == 0 and m2.get('status') == 'done' and all(mt2.values()) and 'TM2_coverage' in mt2 and len(ad_rows) == 4
+              and [r for r in rows2 if '/HWJ/' in r['file']] == hwj_rows and [r for r in rows2 if '/ADHOC/' in r['file']] == ad_rows
+              and sum('/ADHOC2/' in r['file'] and r['status'] == 'ok' for r in rows2) == 4,
+              (rc, m2.get('reason'), mt2, len(ad_rows), len(rows2), txt[-1500:]))
 
 
 def tier_review_fixes(adhoc, root, tout, out):

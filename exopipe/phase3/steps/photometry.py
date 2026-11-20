@@ -125,9 +125,10 @@ def add_arguments(p):
     cu.add_argument('--tier-out', metavar='DIR', help='cutmeasure: the tier forced root of every sample (default '
                                                       'photometry.TIER_FORCED_ROOTS, per sample as served)')
     cu.add_argument('--targets', metavar='TAG=CSV[,TAG=CSV]',
-                    help='an AD-HOC target set replacing the HWJ / 10 pc lists for cutouts and snapshot measure (passed to '
-                         'the engines as P3_SNAP_CUTOUT_SAMPLES; columns common_name|name, ra_current|ra, dec_current|dec); '
-                         'never into a served root (give --cutout-root / --out / --tier-out); not evaluated')
+                    help='an AD-HOC target set replacing the HWJ / 10 pc lists for cutouts, snapshot measure and the '
+                         'deep / 10-minute cutmeasure (passed to the engines as P3_SNAP_CUTOUT_SAMPLES; columns '
+                         'common_name|name, ra_current|ra, dec_current|dec); never into a served root (give --cutout-root / '
+                         '--out, and --tier-out for cutmeasure); not evaluated')
     cu.add_argument('--planets', action='store_true', help='with --targets: cut the planets too (P3_SNAP_CUTOUT_PLANETS=1)')
     cu.add_argument('--in-place', action='store_true',
                     help='cutouts / cutmeasure: regenerate the SERVED generation itself (photometry.CUTOUT_ROOT, TIER_FORCED_ROOTS '
