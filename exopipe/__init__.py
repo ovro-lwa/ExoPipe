@@ -16,3 +16,17 @@ try:
     del _fits
 except ImportError:          # environments without astropy (no FITS reads there)
     pass
+
+# No sendfile copies (2026-11-20, FINDING-20261120-SHUTIL-SENDFILE-COPIES-TRUNCATE-ON-LWACALIM07). On Linux, Python 3.8+
+# shutil.copyfile (and copy, copy2, copytree, a move across filesystems) copies through os.sendfile and takes a return of 0 as
+# the end of the file, without an error. On lwacalim07 that silently truncated 14 of 560 Lustre-to-Lustre copies of 9-39 MB
+# FITS files (to 0-85 percent of their size; 28 units of the 11-20 hybrid archive push refused at G6), while ordinary reads
+# and writes truncated 0 of 448 copies of the same files there. So every process that imports exopipe copies through
+# shutil's own read/write fallback (copyfileobj), in 16 MiB blocks. tests/test_no_sendfile.py; the in-place children (which
+# import no exopipe) get the same switch from core/parity_sitecustomize/sitecustomize.py.
+import shutil as _shutil
+_shutil._USE_CP_SENDFILE = False
+if hasattr(_shutil, '_USE_CP_COPY_FILE_RANGE'):     # newer Pythons: the same fast path through copy_file_range
+    _shutil._USE_CP_COPY_FILE_RANGE = False
+_shutil.COPY_BUFSIZE = 16 << 20
+del _shutil

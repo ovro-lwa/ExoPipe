@@ -541,6 +541,17 @@ _NoLustreMap.__module__ = NoLustreMapError.__module__ = 'mmap'
 _mmap.mmap = _NoLustreMap                         # once: this file runs once per process (the check at its top)
 _mmap.NoLustreMapError = NoLustreMapError
 
+# NO SENDFILE COPIES, as exopipe/__init__.py sets for every process that imports exopipe (2026-11-20,
+# FINDING-20261120-SHUTIL-SENDFILE-COPIES-TRUNCATE-ON-LWACALIM07: shutil's sendfile copies silently truncated Lustre-to-Lustre
+# copies on lwacalim07). The in-place children import no exopipe, so their shutil copies are switched to shutil's read/write
+# fallback here. shutil is standard library (no astropy, no numpy); Python 3.6 has no sendfile path (the names set are unused).
+import shutil as _shutil_nosf
+_shutil_nosf._USE_CP_SENDFILE = False
+if hasattr(_shutil_nosf, '_USE_CP_COPY_FILE_RANGE'):
+    _shutil_nosf._USE_CP_COPY_FILE_RANGE = False
+_shutil_nosf.COPY_BUFSIZE = 16 << 20
+del _shutil_nosf
+
 # chain to any other sitecustomize on the path (the environment's own, if it has one) - never back to the sitecustomize
 # Python imported at start-up when that is another file which chained here (the sub-LST frozen-code guard first on the
 # path): running it again would install its import hook a second time, and two such hooks call each other without end
