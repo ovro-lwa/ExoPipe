@@ -47,7 +47,8 @@ products are only READ.
   with the stack-magnitude bound); one file per key (stale time stamp, orphan; CM2); the snapshot cutouts stage end to end
   through a FAKE engine running the REAL writer on synthetic consolidated cubes (done, manifest, --resume, in-place re-run,
   C-STALE and --fresh quarantine, C-IDENTITY before placement, C-EXCLUDED, C-CELLS, C-ROOT); the deep and 10-minute tier
-  cutouts (the REAL tool's cell_job on synthetic residuals) and cutmeasure (the REAL tier forced tool) end to end; ad-hoc
+  cutouts (the REAL tool's cell_job on synthetic residuals) and cutmeasure (the REAL tier forced tool) end to end, a named
+  sample subset and an ad-hoc tag (ADHOC, measured since 2026-11-20); ad-hoc
   target lists (the REAL stage 1 on ADHOC cutouts; PHOT-ADHOC gates); stage selection (cutouts only when named; sub-LST).
 - the review's findings (refactor_reviews_20261103/P_photometry_review.md): F1 one cutout root for the search, archive and
   photometry (no config key names a retired root); F2 the content tests on the STAGED products (its reproductions: CM1, TN1
@@ -1680,8 +1681,10 @@ def test_cutout_mirrors():
           five and got == want and not cards and "choices=('deep', '10min', 'both')" in src
           and set(cc.TIER_TOKEN.values()) == {'deep', '10min'}, (got, want, cards))
     LF, fsrc = mod_literals(TIER_FORCED_TOOL), open(TIER_FORCED_TOOL).read()
-    check('mirror photometry_tier_forced_20261026.py: SAMPLES, MOVING, its manifest header and completion line',
+    check('mirror photometry_tier_forced_20261026.py: SAMPLES, MOVING, the ad-hoc tags read from photometry.ADHOC_ENV, its '
+          'manifest header and completion line',
           tuple(LF.get('SAMPLES') or ()) == tuple(ph.TIER_FORCED_SAMPLES) and tuple(LF.get('MOVING') or ()) == (ph.PLANET_SAMPLE,)
+          and "ADHOC = tuple(x.split('=', 1)[0] for x in os.environ.get('%s', '')" % ph.ADHOC_ENV in fsrc
           and "fieldnames=%r" % list(TC.TIER_MANIFEST_HEADER) in fsrc
           and 'PHOTOMETRY-TIER-FORCED-DONE %d cutouts measured, %d refused' in fsrc, (LF.get('SAMPLES'), LF.get('MOVING')))
     ss = open(os.path.join(CLV, 'phase3_snapshot_search.py')).read()
@@ -2474,16 +2477,62 @@ def test_cutouts_tiers():
                         '--out', out, '--cores', 'none', '--dry-run'])
         check('C-ROOT: cutmeasure into the production tier forced roots refuses in the refactor window (dry run, exit 2)',
               rc == 2 and 'C-ROOT' in txt, txt[-600:])
-        rc, txt = step(['photometry', '--tier', 'deep', '--stages', 'cutmeasure', '--cells', TIER_CELL, '--targets',
-                        'ADHOC=%s' % adhoc, '--cutout-root', root, '--tier-out', tout, '--out', out, '--cores', 'none',
-                        '--dry-run'])
-        check('PHOT-ADHOC: cutmeasure of a tag the tier tool does not measure (ADHOC) refuses', rc == 2 and 'PHOT-ADHOC' in txt
-              and 'SAMPLES' in txt, txt[-600:])
         rc, txt = step(['photometry', '--tier', 'deep', '--stages', 'cutouts', '--cells', TIER_CELL, '--src-run',
                         os.path.join(TMP, 'deep', 'transients', 'Run_T'), '--cutout-root', root, '--out', out, '--cores', 'none',
                         '--dry-run'])
         check('C-RUN: --src-run naming another run than the tier tool reads refuses', rc == 2 and 'C-RUN' in txt, txt[-600:])
         tier_review_fixes(adhoc, root, tout, out)
+        root_ad = os.path.join(TMP, 'tier_out', 'photometry_genT_adhoc')
+        # an ad-hoc tag that is no named sample (ADHOC) is cut AND measured by the real tier tools, into its own cutout root
+        # (the checks above count the files of `root`) and the shared tier forced root (port queue of
+        # FINDING-20261119-ADHOC-FORCED-MEASURE-SNAPSHOT-ONLY-PORT-QUEUE): the step passes the tags in photometry.ADHOC_ENV
+        man = os.path.join(tout, 'deep', '18h', 'forced_manifest.csv')
+        hwj_rows = [r for r in csv.DictReader(open(man)) if '/HWJ/' in r['file']] if os.path.exists(man) else []
+        rc, txt = step(['photometry', '--tier', 'deep', '--stages', 'cutouts,cutmeasure', '--cells', TIER_CELL, '--targets',
+                        'ADHOC=%s' % adhoc, '--cutout-root', root_ad, '--tier-out', tout, '--out', out, '--cores', 'none'])
+        m = records(out).get('cutmeasure.deep.18h.ADHOC', {})
+        mt = {t['name'].split('.', 1)[1]: t['passed'] for t in m.get('tests', [])}
+        npz = sorted(glob.glob(os.path.join(tout, 'deep', '18h', 'forced_ADHOC_64MHz_[IV].npz')))
+        rows = list(csv.DictReader(open(man))) if os.path.exists(man) else []
+        names = set()
+        for p in npz:
+            with np.load(p, allow_pickle=False) as z:
+                names |= {str(n) for n in z['names']}
+        check('PHOT-ADHOC lifted for cutmeasure: an ad-hoc tag (ADHOC) is cut and measured by the REAL tier tool; npz I and V '
+              'of both targets pass TN1 / TN2, the manifest TM1 / TM2, and the merged manifest keeps the HWJ rows',
+              rc == 0 and m.get('status') == 'done' and len(npz) == 2 and all(mt.values())
+              and {'TN1_shapes', 'TN2_target_remeasure', 'TM1_statuses', 'TM2_coverage'} <= set(mt) and len(names) == 2
+              and len(hwj_rows) > 0 and [r for r in rows if '/HWJ/' in r['file']] == hwj_rows
+              and sum('/ADHOC/' in r['file'] and r['status'] == 'ok' for r in rows) == 4,
+              (rc, m.get('reason'), mt, npz, names, len(hwj_rows), len(rows), txt[-1500:]))
+        # falsifier: without the variable the tool refuses the tag, so the measurement above depended on the step passing it
+        ph = CFG.photometry
+        pr = subprocess.run([CFG.site.PYTHON[ph.ENGINE_PYTHON_BY_KEY['cutmeasure_tier']], K.engine('cutmeasure_tier'), '--root',
+                             root_ad, '--out', os.path.join(TMP, 'adhoc_noenv'), '--tier', 'deep', '--lsts', '18h', '--samples',
+                             'ADHOC'], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True,
+                            env={k: v for k, v in os.environ.items() if k != ph.ADHOC_ENV}, cwd=OPS)
+        check('the tier tool without photometry.ADHOC_ENV refuses the ad-hoc tag (REFUSING: --samples ADHOC)',
+              pr.returncode != 0 and 'REFUSING: --samples ADHOC' in pr.stdout, pr.stdout[-400:])
+        # PR 142 review: (F1) an ad-hoc tag without --tier-out has no served tier forced root - PHOT-ADHOC refuses it, never a
+        # crash; (F2) a second ad-hoc tag into the same tier forced root passes TM2 with the first tag's rows kept (their npz read
+        # where they are served, not in the staging)
+        rc, txt = step(['photometry', '--tier', 'deep', '--stages', 'cutmeasure', '--cells', TIER_CELL, '--targets',
+                        'ADHOC=%s' % adhoc, '--cutout-root', root_ad, '--out', out, '--cores', 'none', '--dry-run'])
+        check('PHOT-ADHOC: cutmeasure of an ad-hoc tag without --tier-out refuses (dry run, exit 2; no served root, no crash)',
+              rc == 2 and 'PHOT-ADHOC' in txt and 'give --tier-out' in txt and 'Traceback' not in txt, (rc, txt[-800:]))
+        ad_rows = [r for r in rows if '/ADHOC/' in r['file']]
+        rc, txt = step(['photometry', '--tier', 'deep', '--stages', 'cutouts,cutmeasure', '--cells', TIER_CELL, '--targets',
+                        'ADHOC2=%s' % adhoc, '--cutout-root', os.path.join(TMP, 'tier_out', 'photometry_genT_adhoc2'),
+                        '--tier-out', tout, '--out', out, '--cores', 'none'])
+        m2 = records(out).get('cutmeasure.deep.18h.ADHOC2', {})
+        mt2 = {t['name'].split('.', 1)[1]: t['passed'] for t in m2.get('tests', [])}
+        rows2 = list(csv.DictReader(open(man))) if os.path.exists(man) else []
+        check('a second ad-hoc tag (ADHOC2) into the same tier forced root: done, TM2 passes with the first tag\'s rows kept, the '
+              'HWJ and ADHOC rows unchanged, 4 ok ADHOC2 rows',
+              rc == 0 and m2.get('status') == 'done' and all(mt2.values()) and 'TM2_coverage' in mt2 and len(ad_rows) == 4
+              and [r for r in rows2 if '/HWJ/' in r['file']] == hwj_rows and [r for r in rows2 if '/ADHOC/' in r['file']] == ad_rows
+              and sum('/ADHOC2/' in r['file'] and r['status'] == 'ok' for r in rows2) == 4,
+              (rc, m2.get('reason'), mt2, len(ad_rows), len(rows2), txt[-1500:]))
 
 
 def tier_review_fixes(adhoc, root, tout, out):

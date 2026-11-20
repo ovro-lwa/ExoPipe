@@ -37,7 +37,8 @@ class photometry(_Section):
     #      "I want the photometry done for all tiers btw, including 1 hour (deep)"): snapshot = the 10-s cubes cut from the consolidated
     #      flow cubes by the search's own path (snapshot_cutout_regen_20261025.sh, snapshot_cutout_regen_wb_20261025.sh); deep and
     #      sub-LST = the tier cutouts of the searched residuals (photometry_tier_cutouts_20261025.py, tiers 'deep' and '10min').
-    #      cutmeasure = the forced measurement of the tier cutouts (photometry_tier_forced_20261026.py, exopipe_ops 9b0ca31 + fa17f4c).
+    #      cutmeasure = the forced measurement of the tier cutouts (photometry_tier_forced_20261026.py, exopipe_ops 9b0ca31 + fa17f4c;
+    #      ad-hoc tags from 4a96529).
     STAGES = {'deep': ('cutouts', 'cutmeasure', 'frames', 'stage', 'measure', 'evaluate'),
               'snapshot': ('cutouts', 'measure', 'evaluate'),
               'sublst': ('cutouts', 'cutmeasure')}
@@ -75,7 +76,8 @@ class photometry(_Section):
     TIER_FORCED_ROOTS = {'HWJ': '/lustre/pipeline/exopipe/phase3/forced_tiers_gen5',
                          '10pc': '/lustre/pipeline/exopipe/phase3/forced_tiers_gen5',
                          'SolarSystem': '/lustre/gh/main/phase3/snapshot_forced/tiers_gen5_planets_orbit'}
-    TIER_FORCED_SAMPLES = ('HWJ', '10pc', 'SolarSystem')   # MIRROR photometry_tier_forced_20261026.py:54 SAMPLES (its --samples)
+    TIER_FORCED_SAMPLES = ('HWJ', '10pc', 'SolarSystem')   # MIRROR photometry_tier_forced_20261026.py:54 SAMPLES (its --samples;
+                                                 # + the ad-hoc tags of ADHOC_ENV, its ADHOC, 2026-11-20)
     PLANET_SAMPLE = 'SolarSystem'                # the cutout tree's planet sample (phase3_snapshot_cutouts.write_cutouts :165)
     # ---- AD-HOC TARGET LISTS (CUTOVER_READINESS 'DATED DRIVERS TO COVER': regen_adhoc_20261028.sh, stage1_when_done_20261028.sh,
     #      tier_cutouts_adhoc_20261028.sh; Gregg 2026-10-28 ~07:0x UTC "Can you produce forced photometry of UX Ari and FI Cnc
@@ -84,7 +86,8 @@ class photometry(_Section):
     #      c4fa0e3); the planets only with --planets (P3_SNAP_CUTOUT_PLANETS=1). Never into the served generation: an ad-hoc run
     #      needs its own --cutout-root and --out (production wrote forced_adhoc_20261028/photometry, stage1). Gate PHOT-ADHOC
     ADHOC_TAG_RE = r'^[A-Za-z0-9][A-Za-z0-9_.+-]*$'   # a sample directory name; PLANET_SAMPLE is refused as a tag
-    ADHOC_ENV = 'P3_SNAP_CUTOUT_SAMPLES'         # phase3_snapshot_cutouts.py:45, snapshot_forced_phot.py:61 (MIRROR)
+    ADHOC_ENV = 'P3_SNAP_CUTOUT_SAMPLES'         # phase3_snapshot_cutouts.py:45, snapshot_forced_phot.py:61,
+                                                 # photometry_tier_forced_20261026.py:60 ADHOC (MIRROR)
     ADHOC_PLANETS_ENV = 'P3_SNAP_CUTOUT_PLANETS'   # phase3_snapshot_cutouts.py:52 (MIRROR)
     RETIRED_CUTOUT_ROOTS = ('/lustre/pipeline/exopipe/phase3/photometry',)    # never written by any stage: photometry (C-ROOT),
                                                  # search --tier snapshot (S-CUTROOT) and archive supersede (G-PHOTROOT) refuse it,
@@ -124,7 +127,7 @@ class photometry(_Section):
               'cutouts_subband': 'phase3_snapshot_search.py',          # --cutouts-from-cubes (regen_cutouts, clv15 23a26da)
               'cutouts_wideband': 'phase3_snapshot_group_search.py',   # --cutouts-from-cubes GROUP (regen_group_cutouts, 8f2126b)
               'cutouts_tier': 'photometry_tier_cutouts_20261025.py',   # --root --tier --cells (exopipe_ops e1e24ff)
-              'cutmeasure_tier': 'photometry_tier_forced_20261026.py'}  # --root --out --tier --lsts --samples (9b0ca31, fa17f4c)
+              'cutmeasure_tier': 'photometry_tier_forced_20261026.py'}  # --root --out --tier --lsts --samples (9b0ca31, fa17f4c, 4a96529)
     ENGINE_PYTHON = {'deep': 'default', 'snapshot': 'py36'}
     # the interpreter of each cutout engine (core/legacy.run), where it is not its tier's: the 10-s regeneration ran under the
     # development env (snapshot_cutout_regen_20261025.sh:12 PY, snapshot_cutout_regen_wb_20261025.sh:13 PY); the generation-5 tier
