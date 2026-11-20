@@ -86,7 +86,8 @@ def add_arguments(p):
     g.add_argument('--tilefill-source', choices=('work', 'pinned'), default='work',
                    help='tilefill: fill the hybrid stage\'s unfilled masters in --out (work, the default; no hybrid record = no '
                         'input), or re-fill the installed filled masters from the pinned unfilled sources their TPSRCMD5 names '
-                        '(pinned: a unit not rebuilt whose band field changed)')
+                        '(pinned: a unit not rebuilt whose band field changed). Under work, a unit kept by ruling '
+                        '(hybrid_unit.REFUSED_INSTALLED keep, no hybrid record) is filled as pinned')
     g.add_argument('--mosaic-out', metavar='DIR',
                    help='tilefill: take the band fields from the hybrid mosaics of the `exopipe3 mosaic --generation v5` work run DIR (its '
                         'done conform records: the conformed filled Jy/sr map and its unfilled twin at their recorded md5s, the '
@@ -971,6 +972,10 @@ def tilefill_source(out_root, lst, scope, w, rows, mode='work', plan_only=False,
     must equal the recorded one); the diffuse PB of a subband or wideband computed as production's archive step wrote it
     (lib/hybrid/master.diffuse_pb_map, rounded through float32), Full's read from the file of the hybrid_full.PBDIFFUSE_WEIGHTING unit
     (where that unit refused and hybrid_unit.REFUSED_INSTALLED keeps it: the installed map, the kept cell's).
+    'work' on a unit with no hybrid record in --out that hybrid_unit.REFUSED_INSTALLED keeps (refused in the work run, its installed
+    products kept by ruling): as 'pinned' - its filled masters follow the band field, as the v5 mosaic takes its pinned tile
+    (lib/mosaic/v5.resolve_tiles) and as v5_mosaic_pair checks it; without the refill the archived mosaic and that cell's fill differ
+    (archive push --class mosaic_v5 refuses them, HG20).
     'pinned' (a unit this run did not rebuild, whose band field changed): the installed filled masters in hybrid.ARCHIVE_HYBRID, whose
     TPSRCMD5 names their unfilled sources in the pinned manifests (HG13), the installed diffuse PB map, and the nights of the
     production hybrid record of those sources; the CLEAN residual is not re-made.
@@ -995,6 +1000,8 @@ def tilefill_source(out_root, lst, scope, w, rows, mode='work', plan_only=False,
         raise TilefillRefusal(f'{lst} {scope} {w}: more than one installed hybrid master of a kind {many} - REFUSING')
     replaces = {k: (v[0] if v else None) for k, v in inst.items()}
     pb = None
+    if mode == 'work' and not os.path.exists(hj) and CFG.hybrid_unit.REFUSED_INSTALLED.get((lst, scope, w)) == 'keep':
+        mode = 'pinned'                 # a cell kept by ruling: re-filled from its installed masters' own unfilled sources (docstring)
     if mode == 'work':
         if not os.path.exists(hj):
             raise NoInput(f'no hybrid record {hj} (its stage refused or was not run; --tilefill-source pinned re-fills the installed '

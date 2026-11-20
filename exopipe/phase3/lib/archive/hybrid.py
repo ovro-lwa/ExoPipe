@@ -13,13 +13,15 @@ A pinned unit (filled from the installed masters' own unfilled sources) pushes o
 
 Units the work run did not finish (refused_unit; steps.hybrid.work_states / unit_state over every unit record of the staging root,
 --lsts narrows): a unit whose stage records include a refused or no-input one (refused; this takes precedence over a done tilefill
-record), or one neither done nor refused (error, running, unreadable), or none done through tilefill (unfinished); a unit whose only
+record, except below), or one neither done nor refused (error, running, unreadable), or none done through tilefill (unfinished); a unit whose only
 record is a stack staged from production is a member input and is not listed. Each is a push unit of its own, so the installed products
 of a cell the rebuild did not remake never stay or go silently: unfinished refuses (finish the run or narrow --lsts); refused with
 nothing installed refuses as a gap; refused with installed products refuses unless a ruling set hybrid_unit.REFUSED_INSTALLED for it:
 keep (a 'keep' row per installed product with its checksum, recorded as the unit's input, noted as kept by ruling) or
 quarantine (a 'retire' row per installed product, moved into the round quarantine as below). The PB maps stay: they describe the
-beam, not the refused product.
+beam, not the refused product. A kept unit whose tilefill record is done with source pinned (steps.hybrid.tilefill_source fills a
+kept cell from its installed masters' own unfilled sources, so its fill follows the new band field) pushes its tilefill outputs as a
+pinned unit does, and keeps the rest (kept_refill).
 
 Per file: keep (the installed file of the kind has the same name and the same checksum: byte-identical; a file with the same pixels
 and another header is replaced - its beam, noise and stack cards are part of the product, and the 11-13 lost-sky swap replaced five
@@ -163,6 +165,19 @@ def refused_rows(ctx, lst, scope, w, state, checksum=True):
                  md5=K.checksum(v[0], ctx.algo) if keep and checksum else '', action='keep' if keep else 'retire',
                  replaces='' if keep else v[0], written_at='') for k, v in inst.items()]
     return rows, [f'{disp} by ruling (hybrid_unit.REFUSED_INSTALLED): {why}; installed {names}']
+
+
+def kept_refill(staging, lst, scope, w, state):
+    """True when a unit the work run refused is kept by ruling (hybrid_unit.REFUSED_INSTALLED keep) and its tilefill record is done
+    with source pinned: its filled masters were re-filled from their own unfilled sources (module docstring)."""
+    from exopipe.phase3.config import CFG
+    if state[0] != 'refused' or CFG.hybrid_unit.REFUSED_INSTALLED.get((lst, scope, w)) != 'keep':
+        return False
+    up = os.path.join(staging, '_records', 'hybrid', f'tilefill.{lst}_{scope}_{w}.json')
+    tp = os.path.join(staging, f'{lst}_{scope}', f'{w}_tilefill.json')
+    if not (os.path.exists(up) and os.path.exists(tp)) or _json(up).get('status') != 'done':
+        return False
+    return _json(tp).get('source') == 'pinned'
 
 
 def unit_items(staging, lst, scope, w):
@@ -380,6 +395,13 @@ def run_hybrid(ctx, args, run, unit_fn):
                 u.meta['work_state'] = list(notdone[(lst, scope, w)])
                 rows, notes = refused_rows(ctx, lst, scope, w, notdone[(lst, scope, w)], checksum=not ctx.dry)
                 reads = [r for r in (record_path(staging, 'hybrid', f'{x}.{lst}_{scope}_{w}') for x in SH.STAGES) if os.path.exists(r)]
+                if kept_refill(staging, lst, scope, w, notdone[(lst, scope, w)]):     # its filled masters re-filled (pinned)
+                    frows, freads, fnotes = hybrid_plan(ctx, staging, lst, scope, w, checksum=not ctx.dry)
+                    pushed = {r['kind'] for r in frows}
+                    rows = frows + [r for r in rows if r['kind'] not in pushed]
+                    reads += freads
+                    notes += fnotes + [f'kept by ruling, filled masters re-filled from their own unfilled sources (pinned tilefill): '
+                                       f'{", ".join(sorted(pushed))} pushed, the rest kept']
                 for r in rows:
                     if r['action'] == 'keep':
                         u.add_input(r['dst'], extra={'md5': r['md5']} if r['md5'] else None)

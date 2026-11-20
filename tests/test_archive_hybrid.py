@@ -536,6 +536,69 @@ def test_refused_units():
         shutil.rmtree(d, ignore_errors=True)
 
 
+def test_kept_refill():
+    """A unit the work run refused, kept by ruling (hybrid_unit.REFUSED_INSTALLED keep), whose tilefill record is done with source
+    pinned: the push replaces its filled masters with the re-filled ones and keeps its other installed products; without the ruling,
+    or with a work-source tilefill record (stale), it is not a refill."""
+    from exopipe.phase3.steps import hybrid as SH
+
+    class _UM(_U):
+        def __init__(self):
+            super().__init__()
+            self.meta, self.inputs = {}, []
+
+        def add_input(self, p, extra=None):
+            self.inputs.append(p)
+    d = _tmp('ah_kref_')
+    old = dict(CFG.hybrid_unit.REFUSED_INSTALLED)
+    try:
+        out = _unit(d, source='pinned', cleanres=False)
+        _records(out, '18h_46MHz_R075', stack='done', recon='refused', hybrid='no-input')
+        st = SH.unit_state(SH.work_states(out)[('18h', '46MHz', 'R075')])
+        assert st[:2] == ('refused', 'recon'), st
+        tp = os.path.join(out, '18h_46MHz', 'R075_tilefill.json')
+        new = {k: json.load(open(tp))[k]['out_md5'] for k in ('plain', 'pbcorr')}
+        with _Env(d) as E:
+            a = E.adir()
+            olds = {k: _fits(os.path.join(a, _names()[k]), 1.0, **REPAIR) for k in ('plain', 'pbcorr', 'cleanres')}
+            olds_md5 = {k: _md5(p) for k, p in olds.items()}
+            assert not AH.kept_refill(out, '18h', '46MHz', 'R075', st)                 # no ruling
+            CFG.hybrid_unit.REFUSED_INSTALLED[('18h', '46MHz', 'R075')] = 'keep'
+            assert AH.kept_refill(out, '18h', '46MHz', 'R075', st)
+            tf = json.load(open(tp))
+            json.dump({**tf, 'source': 'work'}, open(tp, 'w'))
+            assert not AH.kept_refill(out, '18h', '46MHz', 'R075', st)                 # a stale work-source tilefill
+            json.dump(tf, open(tp, 'w'))
+            with open(os.path.join(AH.archive_dir(E.ctx), 'README.txt'), 'w') as f:
+                f.write('test README\n')
+            old_fl, res = CFG.paths.FIX_LEDGER, {}
+
+            def ufn(name, body, describe):
+                if name == 'push_hybrid_18h_46MHz_R075':
+                    u = _UM()
+                    res[name] = (u, body(u))
+            try:
+                CFG.paths.FIX_LEDGER = _ledger(d, 'TEST-KEPT-20261120')
+                args = types.SimpleNamespace(staging_root=out, round='T7', _stages=['transfer'], lsts=None,
+                                             update_note=['test (TEST-KEPT-20261120)'])
+                E.ctx.tier = 'deep'
+                AH.run_hybrid(E.ctx, args, None, ufn)
+            finally:
+                CFG.paths.FIX_LEDGER = old_fl
+            u, rows = res['push_hybrid_18h_46MHz_R075']
+            assert sorted((r['kind'], r['action']) for r in rows) == [('cleanres', 'keep'), ('pbcorr', 'replace'), ('plain', 'replace')], rows
+            assert {k: _md5(olds[k]) for k in ('plain', 'pbcorr')} == new and _md5(olds['cleanres']) == olds_md5['cleanres']
+            q = AH.quarantine_dir(E.ctx, 'T7')
+            assert all(_md5(os.path.join(q, '18h', '46MHz', os.path.basename(olds[k]))) == olds_md5[k] for k in ('plain', 'pbcorr'))
+            assert u.meta['kept'] == [dict(path=olds['cleanres'], md5=olds_md5['cleanres'])], u.meta['kept']
+            assert any('pinned tilefill' in n and 'pbcorr, plain pushed' in n for n in u.notes), u.notes
+            assert _audit(u) == 2
+    finally:
+        CFG.hybrid_unit.REFUSED_INSTALLED.clear()
+        CFG.hybrid_unit.REFUSED_INSTALLED.update(old)
+        shutil.rmtree(d, ignore_errors=True)
+
+
 class _RU:
     """A push unit as lib/archive/readme reads it (core.record.Unit's attributes)."""
 

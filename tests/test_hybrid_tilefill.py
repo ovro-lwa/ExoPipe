@@ -196,6 +196,16 @@ def test_sources_and_plan():
         assert all(s['src'][k][0] in rows and s['src'][k][2] == md[k] for k in s['src']) and s['pb'].shape == (4, 4)
         assert s['nights'] == ['2025-04-05', '2025-04-08'] and rj in s['reads'], s
         assert s['replaces']['plain'] == os.path.join(arch, NAME.format(pb='', cr='')) and s['replaces']['cleanres'] == cr, s['replaces']
+        old_ri = dict(CFG.hybrid_unit.REFUSED_INSTALLED)
+        try:                                        # a cell kept by ruling, no hybrid record in --out: work fills it as pinned
+            CFG.hybrid_unit.REFUSED_INSTALLED[('18h', '46MHz', 'R075')] = 'keep'
+            sk = _source(d, out, rows, 'work')
+            assert sk['source'] == 'pinned' and sk['src'] == s['src'] and sk['nights_from'] == s['nights_from'], sk
+            CFG.hybrid_unit.REFUSED_INSTALLED[('18h', '46MHz', 'R075')] = 'quarantine'
+            assert 'no hybrid record' in _raises(NoInput, _source, d, out, rows, 'work')
+        finally:
+            CFG.hybrid_unit.REFUSED_INSTALLED.clear()
+            CFG.hybrid_unit.REFUSED_INSTALLED.update(old_ri)
         assert '2025-04-08' in _raises(TF.TilefillRefusal, _source, d, out, rows, 'pinned', excluded=('2025-04-08',))
         plan = HS.tilefill_plan(out, '18h', '46MHz', 'R075', s)
         assert [c for _p, c in plan] == ['hybrid_filled_master', 'hybrid_filled_master', 'hybrid_tilefill_record'], plan
