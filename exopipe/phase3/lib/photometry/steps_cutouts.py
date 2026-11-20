@@ -46,7 +46,7 @@ Gates: C-ROOT (gate_write_root: a retired generation never; a production root wh
 INJECTED-RUN GUARD on every root a stage writes (core/injected.check), C-INPLACE (the served roots only with --in-place, the
 measurement chained, snapshot over whole cells; gate_in_place), C-CELLS (a regeneration names its items; a named tier cell
 the tool does not know), C-HOST (the tier tool's inputs not readable on this host), C-RUN (the tier tool reads one deep run),
-PHOT-ADHOC (an ad-hoc target set into or under a served root, or for cutmeasure / evaluate), PHOT-FULL (snapshot Full).
+PHOT-ADHOC (an ad-hoc target set into or under a served root, or for evaluate), PHOT-FULL (snapshot Full).
 """
 import csv
 import glob
@@ -937,10 +937,8 @@ def stage_tier_cutmeasure(run, args):
     targets = K.adhoc_targets(args)
     root = K.cutout_root(args)
     try:
-        if targets and any(t not in ph.TIER_FORCED_SAMPLES for t, _ in targets):
-            raise Refusal('PHOT-ADHOC: cutmeasure measures the samples %s only (photometry_tier_forced_20261026.py :54 '
-                          'SAMPLES, its --samples refuses others); --targets names %s' % (
-                              ','.join(ph.TIER_FORCED_SAMPLES), ','.join(t for t, _ in targets)))
+        # an ad-hoc tag is measured too: the tool takes the tags of photometry.ADHOC_ENV (K.adhoc_env, passed by
+        # cutmeasure_unit) as --samples names (photometry_tier_forced_20261026.py ADHOC, exopipe_ops 2026-11-20)
         if targets:
             samples = [t for t, _ in targets] + ([ph.PLANET_SAMPLE] if getattr(args, 'planets', False) else [])
         else:
@@ -1002,6 +1000,7 @@ def cutmeasure_unit(run, args, tier, lst, root, out_root, samples):
             shutil.copy2(old_man, os.path.join(sdir, 'forced_manifest.csv'))
         argv = ['--root', root, '--out', stage, '--tier', token, '--lsts', lst, '--workers', '1', '--samples', ','.join(samples)]
         res, text = K.call(u, 'cutmeasure_tier', argv, tier, 'cutmeasure_tier', run, 'cutmeasure_%s_%s.log' % (token, lst),
+                           env_extra=K.adhoc_env(K.adhoc_targets(args), bool(getattr(args, 'planets', False))),
                            threads=args.threads)
         m = re.search(r'PHOTOMETRY-TIER-FORCED-DONE (\d+) cutouts measured, (\d+) refused', text)
         if res.refused:              # the tool's own refusal (REFUSING: --samples ...): this unit, not the run

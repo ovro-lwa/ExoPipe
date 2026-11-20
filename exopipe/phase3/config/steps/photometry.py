@@ -75,7 +75,8 @@ class photometry(_Section):
     TIER_FORCED_ROOTS = {'HWJ': '/lustre/pipeline/exopipe/phase3/forced_tiers_gen5',
                          '10pc': '/lustre/pipeline/exopipe/phase3/forced_tiers_gen5',
                          'SolarSystem': '/lustre/gh/main/phase3/snapshot_forced/tiers_gen5_planets_orbit'}
-    TIER_FORCED_SAMPLES = ('HWJ', '10pc', 'SolarSystem')   # MIRROR photometry_tier_forced_20261026.py:54 SAMPLES (its --samples)
+    TIER_FORCED_SAMPLES = ('HWJ', '10pc', 'SolarSystem')   # MIRROR photometry_tier_forced_20261026.py:54 SAMPLES (its --samples;
+                                                 # + the ad-hoc tags of ADHOC_ENV, its ADHOC, 2026-11-20)
     PLANET_SAMPLE = 'SolarSystem'                # the cutout tree's planet sample (phase3_snapshot_cutouts.write_cutouts :165)
     # ---- AD-HOC TARGET LISTS (CUTOVER_READINESS 'DATED DRIVERS TO COVER': regen_adhoc_20261028.sh, stage1_when_done_20261028.sh,
     #      tier_cutouts_adhoc_20261028.sh; Gregg 2026-10-28 ~07:0x UTC "Can you produce forced photometry of UX Ari and FI Cnc
@@ -84,7 +85,8 @@ class photometry(_Section):
     #      c4fa0e3); the planets only with --planets (P3_SNAP_CUTOUT_PLANETS=1). Never into the served generation: an ad-hoc run
     #      needs its own --cutout-root and --out (production wrote forced_adhoc_20261028/photometry, stage1). Gate PHOT-ADHOC
     ADHOC_TAG_RE = r'^[A-Za-z0-9][A-Za-z0-9_.+-]*$'   # a sample directory name; PLANET_SAMPLE is refused as a tag
-    ADHOC_ENV = 'P3_SNAP_CUTOUT_SAMPLES'         # phase3_snapshot_cutouts.py:45, snapshot_forced_phot.py:61 (MIRROR)
+    ADHOC_ENV = 'P3_SNAP_CUTOUT_SAMPLES'         # phase3_snapshot_cutouts.py:45, snapshot_forced_phot.py:61,
+                                                 # photometry_tier_forced_20261026.py:60 ADHOC (MIRROR)
     ADHOC_PLANETS_ENV = 'P3_SNAP_CUTOUT_PLANETS'   # phase3_snapshot_cutouts.py:52 (MIRROR)
     RETIRED_CUTOUT_ROOTS = ('/lustre/pipeline/exopipe/phase3/photometry',)    # never written by any stage: photometry (C-ROOT),
                                                  # search --tier snapshot (S-CUTROOT) and archive supersede (G-PHOTROOT) refuse it,
