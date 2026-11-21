@@ -52,6 +52,8 @@ jobs:
         run: python tests/test_products_grammar_sync.py
       - name: Header validator on HEALPix maps and images (decision C-08)
         run: python tests/test_validate_healpix.py
+      - name: stamp engine of ad hoc 10-s cutouts (helpers, gates on a stub code root)
+        run: python tests/test_stamp_engine.py
       - name: hybrid route PR-1 (config sections, unit plan, stage gates, token-card rule, CLI skeleton refusals)
         run: python tests/test_hybrid_config.py
       - name: hybrid route PR-2 (stack stage - rebuild test, offsets, hybrid filter, membership, Phase 1 choice, unit items, content tests)

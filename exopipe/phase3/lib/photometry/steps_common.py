@@ -237,8 +237,15 @@ def gate_pinned_inputs(paths):
 # ---------------------------------------------------------------------------------------------------------------------
 
 def engine(key):
-    """Absolute path of the in-place engine photometry.ENGINE[key]: exactly one hit among the site LEGACY_CODE_ROOTS."""
+    """Absolute path of engine ``key``: a v2 engine (photometry.ENGINE_V2, a path under exopipe/phase3/), else the in-place
+    engine photometry.ENGINE[key] - exactly one hit among the site LEGACY_CODE_ROOTS."""
     c = cfg()
+    if key in c.photometry.ENGINE_V2:
+        import exopipe.phase3 as p3
+        p = os.path.join(os.path.dirname(os.path.abspath(p3.__file__)), c.photometry.ENGINE_V2[key])
+        if not os.path.isfile(p):
+            raise Refusal('engine %s: no file %s in the v2 package' % (key, p))
+        return p
     name = c.photometry.ENGINE[key]
     hits = [os.path.join(r, name) for r in c.site.LEGACY_CODE_ROOTS if os.path.isfile(os.path.join(r, name))]
     if len(hits) != 1:

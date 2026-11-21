@@ -128,6 +128,9 @@ class photometry(_Section):
               'cutouts_wideband': 'phase3_snapshot_group_search.py',   # --cutouts-from-cubes GROUP (regen_group_cutouts, 8f2126b)
               'cutouts_tier': 'photometry_tier_cutouts_20261025.py',   # --root --tier --cells (exopipe_ops e1e24ff)
               'cutmeasure_tier': 'photometry_tier_forced_20261026.py'}  # --root --out --tier --lsts --samples (9b0ca31, fa17f4c, 4a96529)
+    # ---- engines of the v2 package (a path under exopipe/phase3/, run as a child process like the in-place engines): the ad hoc
+    #      10-s subband cutouts by the stamp method (photometry_cutouts.STAMP_REFERENCE_ROOT; Gregg 2026-11-21)
+    ENGINE_V2 = {'cutouts_stamp': 'lib/photometry/stamp_engine.py'}
     ENGINE_PYTHON = {'deep': 'default', 'snapshot': 'py36'}
     # the interpreter of each cutout engine (core/legacy.run), where it is not its tier's: the 10-s regeneration ran under the
     # development env (snapshot_cutout_regen_20261025.sh:12 PY, snapshot_cutout_regen_wb_20261025.sh:13 PY); the generation-5 tier
@@ -135,7 +138,8 @@ class photometry(_Section):
     # (DATE-CRE aside), the development env does not (its astropy puts the planets' TARGRA 1e-12 deg elsewhere). The ephemeris and
     # WCS arithmetic are part of the bytes, so the parity of these stages depends on this key
     ENGINE_PYTHON_BY_KEY = {'cutouts_subband': 'py36', 'cutouts_wideband': 'py36', 'cutouts_tier': 'default',
-                            'cutmeasure_tier': 'default'}
+                            'cutmeasure_tier': 'default',
+                            'cutouts_stamp': 'py36'}   # the subband engine's interpreter: the stamp calls its write_cutouts
     # process environment added to core/legacy.run's (which already clears inherited P3_* and sets runner.ENV_DEFAULTS, i.e.
     # NUMPY_MADVISE_HUGEPAGE=0, snapshot_forced_fleet.sh:10). deep measure: production pinned every shard to ONE core
     # (run_deep_forced_20260928.sh:33 taskset -c <one core>), so each ran one BLAS/OpenMP thread; the thread caps reproduce that
@@ -144,7 +148,8 @@ class photometry(_Section):
            'deep_evaluate': {}, 'snapshot_measure': {}, 'snapshot_evaluate': {'OMP_NUM_THREADS': '1'},
            # cutouts: the regeneration drivers' exports besides the root (snapshot_cutout_regen_20261025.sh:20 none;
            # snapshot_cutout_regen_wb_20261025.sh:22 P3_SNAP_FLOW=1, read by the group search at import - FLOW_MODE)
-           'cutouts_subband': {}, 'cutouts_wideband': {'P3_SNAP_FLOW': '1'}, 'cutouts_tier': {}, 'cutmeasure_tier': {}}
+           'cutouts_subband': {}, 'cutouts_wideband': {'P3_SNAP_FLOW': '1'}, 'cutouts_tier': {}, 'cutmeasure_tier': {},
+           'cutouts_stamp': {}}
     # caller-environment prefixes refused before any engine starts (gate PHOT-ENV): switches the in-place modules or their
     # launchers read (spec 7.2) that core/legacy.run does not clear (it clears P3_* only)
     ENV_FORBIDDEN_PREFIXES = ('P3S', 'DEEP_FORCED_', 'SF_', 'FORCED_TEST_', 'SUBLST_', 'P3_PHOT_ROOT', 'P3_SNAP_CUTOUT_')
@@ -155,7 +160,7 @@ class photometry(_Section):
     PROTECTED_KEYS = ('SAMPLE_FILES', 'SAMPLE_SHA1', 'SAMPLE_COLUMNS', 'SAMPLE_ENCODING', 'SAMPLES_MEASURED',
                       'SAMPLES_NOT_MEASURED', 'CURRENT_LIST_ONLY', 'OUT_ROOT', 'ENGINE', 'ENV_FORBIDDEN_PREFIXES',
                       'TIERS_WITH_ENGINE', 'RETIRED_CUTOUT_ROOTS', 'ENGINE_PYTHON_BY_KEY', 'TIER_FORCED_SAMPLES',
-                      'PLANET_SAMPLE', 'ADHOC_ENV', 'ADHOC_PLANETS_ENV')
+                      'PLANET_SAMPLE', 'ADHOC_ENV', 'ADHOC_PLANETS_ENV', 'ENGINE_V2')
     RULED = {'SAMPLES_MEASURED': 'R-FORCED-PHOTOMETRY-ELEMENTS-APPROVED-V-FAINT-PARENT-ENTRIES',
              'SAMPLE_FILES': 'HWJ-LIST-CUT-TO-THE-ELEVATION-RULING-AND-HD-20782-REMOVED',
              'SNAPSHOT_BANDS': ('INCIDENT-SNAP-FULL-CUTOUTS-EQUAL-RED-62-CELLS',
@@ -388,6 +393,20 @@ class photometry_cutouts(_Section):
     REGEN_DONE_SUBBAND = 'CUTOUTS-REGEN '
     REGEN_DONE_WIDEBAND = 'CUTOUTS-REGEN-WIDEBAND '
     REGEN_EXCLUDED_RC = 3
+    # ---- AD HOC 10-s CUTOUTS BY THE STAMP METHOD (Gregg 2026-11-21, R-GREGG-20261121-THREE-DECISIONS-APPROVED item 2; the snapshot
+    #      chat's test RESULT-20261119-10S-STAMP-READ-TEST-*): a --targets run cuts a SUBBAND with photometry.ENGINE_V2
+    #      ['cutouts_stamp'] - per target a crop, the hour median over the crop, the production write_cutouts - reading frame
+    #      admission and per-frame rms from the generation's own cutout of the (cell, subband) under STAMP_REFERENCE_ROOT, which
+    #      the engine re-cuts and must reproduce pixel for pixel before it cuts the targets (refused otherwise). Without a
+    #      current reference - no flux-scale record <root>/_fluxscale/<sb>/<cell>_<sb>_fluxscale.json, a cube or a production
+    #      module changed since it, no fixed-target cutout - the engine writes nothing (STAMP_NO_REFERENCE_RC) and the unit is
+    #      cut by the regeneration engine, as before. Widebands of a --targets run keep the group search's path: generation 6
+    #      holds no wideband cutouts (FINDING-20261117-WIDEBAND-REWEIGHTING-ON-RESCALED-CUBES-VS-RULING)
+    STAMP_REFERENCE_ROOT = '/lustre/pipeline/exopipe/phase3/photometry_gen6'
+    STAMP_DONE = 'STAMP-CUTOUTS '
+    STAMP_NO_REFERENCE_RC = 4       # the stamp engine's exit when generation 6 holds no current reference of the (cell, subband)
+                                    # (no flux-scale record, a cube or a production module changed since, no fixed-target cutout):
+                                    # nothing written, the step cuts the unit with the regeneration engine; MIRROR stamp_engine.py
     # ---- the stage's own layout (orchestration): a unit stages its files in <root>/<STAGING_SUBDIR>/<run id>/<unit>/ (the
     #      same filesystem: placement is os.replace) with its manifest <MANIFEST_SUBDIR>/<tier token>/<unit key>.csv (one row
     #      per file: sha256, bytes), passes the content tests there, then is placed: every file the placement replaces (and,
@@ -411,6 +430,7 @@ class photometry_cutouts(_Section):
     MANIFEST_HASH_FILES = 8            # files per manifest whose sha256 the content test recomputes (all sizes are checked)
     TIER_RECUT_SEED = 20261025         # photometry_tier_cutouts_20261025.content_test :214 (one random plane per file)
     PROTECTED_KEYS = ('CUT_DEG', 'MIN_EL_DEG', 'MERGE_ARCMIN', 'PLANETS', 'PLANET_EPHEM_QUANTUM_MIN', 'PLANET_SITE',
+                      'STAMP_REFERENCE_ROOT', 'STAMP_DONE', 'STAMP_NO_REFERENCE_RC',
                       'TIMES_COLUMNS', 'HEADER_CARDS', 'TIER_TOKEN', 'TIER_TIMES_COLUMNS', 'TIER_HEADER_CARDS', 'TIER_DEEP_RUN',
                       'TIER_TENMIN_ROOT', 'TIER_TENMIN_SEARCH', 'REGEN_DONE_SUBBAND', 'REGEN_DONE_WIDEBAND', 'REGEN_EXCLUDED_RC',
                       'IDENTITY_TOL', 'EPS32_FACTOR', 'WEIGHT_REL_PRECISION', 'TIER_RECUT_SEED')
