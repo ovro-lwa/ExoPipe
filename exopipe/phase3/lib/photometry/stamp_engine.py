@@ -45,6 +45,8 @@ import shutil
 import sys
 
 import numpy as np
+from astropy.io import fits as _fits_nommap   # noqa: E402
+_fits_nommap.conf.use_memmap = False   # never memory-map a Lustre file, also when run by path (R-GREGG-20261117-NO-MMAP-OF-LUSTRE-FILES-READ-OR-WRITE)
 
 REF_SAMPLES = ('LPT', '10pc', 'HWJ')        # searched in this order for a reference cutout (fixed targets only)
 MARGIN_PX = 4                               # crop margin beyond write_cutouts' pad (the snapshot chat's test: 2 + 4)
