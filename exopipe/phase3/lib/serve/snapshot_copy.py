@@ -629,16 +629,16 @@ def bright_filter_stage(run, plan):
 
 
 def page_index_stage(run, plan):
-    """PAGE INDEX (snapshot_serve.sh:191-198; Gregg 2026-11-11 "a clear design flaw that needs correcting"): build_detections_index.py
-    --run DST in place - <DST>/page_index/ (manifest.json + one shard per parent directory of the review folders), which the review
-    server reads instead of one detections.csv per folder (20+ h per build of the combined view without it). Last of the four, once
-    the panels, their sidecars, astrometry.png, localization_figs/ and the survivors catalogs are final, and before any page starts.
-    A failure refuses: a page without a current index reads every folder."""
-    DST, S = plan.U, _S()
-    with run.unit(f'snapshot_{plan.run_name}_page_index', stage='page-index', tier='snapshot') as u:
-        _step(u, 'build_detections_index', ['--run', DST], os.path.join(DST, 'page_index_build.log'), cwd=S.SNAPSHOT_STEP_CWD)
-        u.add_output(os.path.join(DST, 'page_index', 'manifest.json'), 'detections_index', run=DST)
-    return u
+    """PAGE INDEX (snapshot_serve.sh:191-198; Gregg 2026-11-11 "a clear design flaw that needs correcting"): <DST>/page_index/
+    (manifest.json + one shard per parent directory of the review folders), which the review server reads instead of one
+    detections.csv per folder (20+ h per build of the combined view without it). Last of the four, once the panels, their
+    sidecars, astrometry.png, localization_figs/ and the survivors catalogs are final, and before any page starts. Built by
+    flow.page_index_stage, the one page-index builder of every served tier (unit snapshot_<run>_page_index), so a failed build or
+    content test refuses: a page without a current index reads every folder. Deliberate deviations from production, which runs
+    build_detections_index.py --run DST on every serve from serve.SNAPSHOT_STEP_CWD: a current index (every detections_index
+    content test passes) is kept, a page_index/ or log that is a symlink refuses, and the tool runs without a working directory,
+    as for the deep and sub-LST tiers."""
+    return flow.page_index_stage(run, plan, 'snapshot')
 
 
 # stage -> function, in production's order (snapshot_serve.sh:164-198); unit snapshot_<name>_<stage with '_'>
