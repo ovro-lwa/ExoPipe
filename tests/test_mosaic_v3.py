@@ -85,10 +85,20 @@ def _img(path, nights=('2025-08-09', '2025-10-29'), data=None, **cards):
     return path
 
 
+def _hpx_cards(npix):
+    """The HEALPix cards of the pipeline's map writers (coadd_jysr 257, tilefill 141, caveat 120, pkcorr 241); NSIDE and INDXSCHM
+    when the pixel count is a full sky. The header validator checks a HEALPix map on its HDU 1 table (decision C-08)."""
+    c = dict(PIXTYPE='HEALPIX', ORDERING='RING', COORDSYS='C')
+    k = int(round((npix / 12.0) ** 0.5))
+    if k > 0 and 12 * k * k == npix:
+        c.update(NSIDE=k, INDXSCHM='IMPLICIT')
+    return c
+
+
 def _hpx(path, sig, **cards1):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     hdu = fits.BinTableHDU.from_columns([fits.Column(name='SIGNAL', format='E', array=np.asarray(sig, np.float32))])
-    for k, v in cards1.items():
+    for k, v in dict(_hpx_cards(len(hdu.data)), **cards1).items():
         hdu.header[k] = v
     fits.HDUList([fits.PrimaryHDU(), hdu]).writeto(path, overwrite=True)
     return path

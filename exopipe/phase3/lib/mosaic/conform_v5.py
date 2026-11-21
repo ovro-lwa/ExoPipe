@@ -13,10 +13,9 @@ conform, per (scope, weighting), on the unit's own records (v5.conform_unit chec
   products    MC 355-470 with SUFFIX_PROC v5 (tokens lsrecon, lsfill): the filled Jy/sr map and its two renders, the filled
               Jy/beam map and its two renders, the PB_eff map, the PSF map, the PKCORR map, and in hybrid.CAVEAT_SCOPES the caveat
               map. Names by core.products.build_name (lst 'allsky'; dates and N from the membership).
-  stamp       MC 295-305: write_standard_header (time_basis mosaic_conform.TIME_BASIS; the renders with validate=True; the HEALPix
-              maps with validate=mosaic_conform.HEADER_VALIDATE, False while decision C-08 is pending: the validator reads pixels
-              from HDU 0 only and a HEALPix map's are in HDU 1, its one error on the conformed Blue R075 maps being 'No data in
-              primary HDU', so the product test and the push audit check their cards), PRODNAME, NSTACK, PROVBAS, BEAMNOTE, the cards MC copies from HDU 1,
+  stamp       MC 295-305: write_standard_header (time_basis mosaic_conform.TIME_BASIS; every product with
+              validate=mosaic_conform.HEADER_VALIDATE, True by decision C-08 (Gregg 2026-11-21; MC validates the renders only):
+              a HEALPix map is checked on its HDU 1 table, NSIDE, ORDERING and 12 NSIDE^2 pixels), PRODNAME, NSTACK, PROVBAS, BEAMNOTE, the cards MC copies from HDU 1,
               append_provenance_table, and the HISTORY line 'Mosaic <run>: N constituent masters ...' wrapped at 72. A render
               carries its filled map's fill cards TPFILL ... TPJBCONV (TP_RENDER_KEYS) in HDU 0, as production's renders.
   Every file is written under a temporary name and renamed into place only when the whole unit succeeded.

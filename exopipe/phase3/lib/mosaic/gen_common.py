@@ -152,7 +152,7 @@ def stamp_products(items, rows, hist, *, scope, stokes, t0, t1, itt, beam, therm
     """Write a conform unit's products (conform_v3.stage, conform_v5.stage): items [(kind, source, subdirectory, final path, pbcorr,
     extra cards incl. PRODNAME)] in order. Each source is copied to a temporary name beside its final path; a HEALPix map gets PRODNAME
     in HDU 1 and a Jy/beam map PSFMAP = psf_name (bug B14); then the standard header (validate=True; a HEALPix map
-    mosaic_conform.HEADER_VALIDATE), the PROVENANCE table of rows and the HISTORY lines hist. Nothing is renamed into place unless
+    mosaic_conform.HEADER_VALIDATE, True by decision C-08, checked on its HDU 1 table), the PROVENANCE table of rows and the HISTORY lines hist. Nothing is renamed into place unless
     every product was written (the temporary files are removed on any error). Returns [(final path, source, kind)]."""
     import shutil
     from astropy.io import fits

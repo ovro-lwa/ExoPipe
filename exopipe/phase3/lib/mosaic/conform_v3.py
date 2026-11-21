@@ -14,8 +14,8 @@ conform, per (scope, job), on the unit's own records (v3.conform_unit checks the
               for Stokes I the PKCORR map, under <dest>/<scope>/<I|V>/<healpix|mollweide|radec>/ (the archive run's layout). Names
               by core.products.build_name (lst 'allsky'; dates and N from the membership; Stokes V adds the token vclean, a
               striation-corrected job ssub-rst8).
-  stamp       as conform_v5.stage: write_standard_header (time_basis mosaic_conform.TIME_BASIS; the renders with validate=True, the
-              HEALPix maps with validate=mosaic_conform.HEADER_VALIDATE), PRODNAME (HDU 0, and HDU 1 of a HEALPix map), NSTACK, PROVBAS,
+  stamp       as conform_v5.stage: write_standard_header (time_basis mosaic_conform.TIME_BASIS; every product with
+              validate=mosaic_conform.HEADER_VALIDATE, True by decision C-08), PRODNAME (HDU 0, and HDU 1 of a HEALPix map), NSTACK, PROVBAS,
               BEAMNOTE, the cards MC copies from HDU 1, append_provenance_table, and the HISTORY line 'Mosaic <run>: N constituent
               masters ...' wrapped at 72. Every file is written under a temporary name and renamed into place only when the whole
               unit succeeded.
