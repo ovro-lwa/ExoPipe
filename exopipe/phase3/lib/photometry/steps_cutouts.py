@@ -592,7 +592,7 @@ def snapshot_unit(run, args, cell, band, root, targets, planets, samples, cubes)
     allcubes = cubes['V'] + cubes['I']
     stamp = bool(targets) and not is_wideband(band)        # ad hoc targets on a subband: the stamp method (STAMP_REFERENCE_ROOT)
     inputs = (sorted(allcubes) + [p for _, p in targets] + ([] if targets else list(K.sample_paths().values()))
-              + ([stamp_record(cell, band)] if stamp else []))
+              + [r for r in [stamp_record(cell, band)] if stamp and os.path.isfile(r)])
     admitted = cutout_admitted(cell, band)
     if K.run_resume_ok(run, name, admitted, {'inputs_listing_sha1': listing_sha1(inputs), 'cutout_root': root}):
         return run.units[-1:]
@@ -621,16 +621,30 @@ def snapshot_unit(run, args, cell, band, root, targets, planets, samples, cubes)
         outcome = {}
         members = {}
         if not is_wideband(band):
+            calls = []
             if stamp:       # the stamp engine re-cuts the reference and refuses unless it equals the generation's file
-                key, mark = 'cutouts_stamp', cc.STAMP_DONE
-                argv = ['--code-root', os.path.dirname(K.engine('cutouts_subband')), '--ref-root', cc.STAMP_REFERENCE_ROOT,
-                        '--cell', cell, '--band', band, '--out', stage]
-            else:
-                key, mark = 'cutouts_subband', cc.REGEN_DONE_SUBBAND
-                argv = ['--lst', lst, '--date', date, '--subband', band, '--stokes', 'VI', '--mode', 'median', '--out', eout,
-                        '--cutouts-from-cubes']
-            res, text = K.call(u, key, argv, 'snapshot', key, run, 'cutouts_%s_%s.log' % (cell, band),
-                               env_extra=env, threads=args.threads)
+                calls.append(('cutouts_stamp', cc.STAMP_DONE, 'stamp_engine.py', 'cutouts_stamp_%s_%s.log' % (cell, band),
+                              ['--code-root', os.path.dirname(K.engine('cutouts_subband')), '--ref-root',
+                               cc.STAMP_REFERENCE_ROOT, '--cell', cell, '--band', band, '--out', stage]))
+            calls.append(('cutouts_subband', cc.REGEN_DONE_SUBBAND, 'phase3_snapshot_search.py --cutouts-from-cubes',
+                          'cutouts_%s_%s.log' % (cell, band),
+                          ['--lst', lst, '--date', date, '--subband', band, '--stokes', 'VI', '--mode', 'median', '--out', eout,
+                           '--cutouts-from-cubes']))
+            for key, mark, what, logname, argv in calls:
+                res, text = K.call(u, key, argv, 'snapshot', key, run, logname, env_extra=env, threads=args.threads)
+                if key == 'cutouts_stamp' and res.rc == cc.STAMP_NO_REFERENCE_RC:
+                    # no current generation-6 reference: the engine wrote nothing, the regeneration engine cuts the unit
+                    why = [ln.strip() for ln in text.splitlines() if ln.startswith('NO-REFERENCE:')]
+                    left = sorted(os.listdir(stage))
+                    if not why or left:
+                        raise RuntimeError('stamp_engine.py exit %d with %d NO-REFERENCE line(s) and %d file(s) in the staging '
+                                           'directory %s (%s): %s' % (res.rc, len(why), len(left), stage, left[:5],
+                                                                      res.tail[-600:]))
+                    u.note('cut by the regeneration engine: the stamp engine had no current generation-6 reference (%s)'
+                           % why[-1])
+                    u.meta['stamp_fallback'] = why[-1]
+                    continue
+                break
             if res.rc == cc.REGEN_EXCLUDED_RC or '\nEXCLUDED:' in '\n' + text:
                 remove_staging(stage)
                 u.meta['staging'] = None
@@ -643,17 +657,18 @@ def snapshot_unit(run, args, cell, band, root, targets, planets, samples, cubes)
             done = [ln for ln in text.splitlines() if mark in ln]
             if res.rc != 0 or not done:
                 raise RuntimeError('%s exit %d without a %r line (staging kept: %s): %s' % (
-                    'stamp_engine.py' if stamp else 'phase3_snapshot_search.py --cutouts-from-cubes', res.rc, mark.strip(), stage,
-                    res.tail[-600:]))
+                    what, res.rc, mark.strip(), stage, res.tail[-600:]))
             counts, refused = _regen_counts(done[-1])
             outcome = {S: counts.get(S) for S in 'VI'}
             if refused:
                 u.note('the search refused (night rule): %s' % refused)
-            if stamp:       # the reference cutouts the engine reproduced (one per Stokes)
+            if key == 'cutouts_stamp':     # the reference cutouts the engine reproduced: one per Stokes generation 6 cut
                 parity = [ln.strip() for ln in text.splitlines() if ln.startswith('STAMP-PARITY ')]
-                if len(parity) != 2:
-                    u.refuse('C-ENGINE: the stamp engine reported %d parity checks, 2 expected (staging kept: %s)' % (
-                        len(parity), stage))
+                cut_stokes = [S for S in 'VI' if outcome.get(S) not in (None, 'None')]
+                if len(parity) != len(cut_stokes) or not all(any(' %s %s: ' % (band, S) in ln for ln in parity)
+                                                             for S in cut_stokes):
+                    u.refuse('C-ENGINE: the stamp engine reported %d parity checks, %d expected (Stokes %s; staging kept: %s)'
+                             % (len(parity), len(cut_stokes), ''.join(cut_stokes) or '-', stage))
                 for ln in parity:
                     u.add_input(ln.rsplit('(', 1)[-1].rstrip(')'))
                 u.meta['stamp_parity'] = parity

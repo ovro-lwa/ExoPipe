@@ -2037,7 +2037,8 @@ def setup_fake_regen(excluded=(), corrupt=False, refuse=(), crash=()):
 FAKE_STAMP = r'''#!/usr/bin/env python
 """FAKE stamp_engine.py for tests/test_photometry.py (the stamp engine's seam): writes its argv and ad hoc set to stamp_argv.json;
 fake_params.json 'stamp_excluded' cells exit 3 (EXCLUDED:), 'stamp_refuse' cells refuse (a failed parity, exit 2),
-'stamp_one_parity' cells report one parity check; otherwise the REAL writer (clv15 phase3_snapshot_cutouts.write_cutouts) on the
+'stamp_one_parity' cells report one parity check, 'stamp_noref' cells have no current reference (exit 4, NO-REFERENCE:, nothing
+written), 'stamp_night' cells cut V only (generation 6 refused I by the night rule); otherwise the REAL writer (clv15 phase3_snapshot_cutouts.write_cutouts) on the
 synthetic cube into --out, V then I, a STAMP-PARITY line per Stokes and the STAMP-CUTOUTS line."""
 import argparse, json, os, sys
 sys.path.insert(0, '/lustre/gh/main/clv15')
@@ -2057,9 +2058,13 @@ if a.cell in P.get('stamp_excluded', []):
 if a.cell in P.get('stamp_refuse', []):
     print('REFUSED: V: PARITY with generation 6 FAILED for (fake): pixels: max |difference| 1')
     raise SystemExit(2)
+if a.cell in P.get('stamp_noref', []):
+    print('NO-REFERENCE: no generation-6 flux-scale record (fake)')
+    raise SystemExit(4)
 import phase3_snapshot_cutouts as CUT
-n = {}
-for S in ('V', 'I'):
+n = {'I': None}
+night = a.cell in P.get('stamp_night', [])
+for S in (('V',) if night else ('V', 'I')):
     p = os.path.join(os.environ['P3_SNAP_CUBE_ROOT'], a.cell, '%s_%s_%s_flowcube.fits' % (a.cell, a.band, S))
     with fits.open(p, memmap=False) as h:
         cube = np.array(h['FRAMES'].data, np.float32)
@@ -2073,14 +2078,16 @@ for S in ('V', 'I'):
     if not (S == 'I' and a.cell in P.get('stamp_one_parity', [])):
         print('STAMP-PARITY %s %s: equal to generation 6 (%s)' % (
             a.band, S, os.path.join(a.ref_root, 'LPT', a.band, 'REF', 'REF_%s_%s.fits' % (a.cell, S))), flush=True)
-print('STAMP-CUTOUTS %s %s %s: V %s I %s' % (lst, date, a.band, n['V'], n['I']), flush=True)
+print('STAMP-CUTOUTS %s %s %s: V %s I %s' % (lst, date, a.band, n['V'], n['I'])
+      + ('; refused: REFUSED (night rule): no frame of I passes (fake)' if night else ''), flush=True)
 '''
 
 
-def setup_fake_stamp(excluded=(), refuse=(), one_parity=()):
+def setup_fake_stamp(excluded=(), refuse=(), one_parity=(), noref=(), night=()):
     p = os.path.join(FAKE_DIR, 'fake_params.json')
     prm = json.load(open(p)) if os.path.exists(p) else {}
-    prm.update(stamp_excluded=list(excluded), stamp_refuse=list(refuse), stamp_one_parity=list(one_parity))
+    prm.update(stamp_excluded=list(excluded), stamp_refuse=list(refuse), stamp_one_parity=list(one_parity),
+               stamp_noref=list(noref), stamp_night=list(night))
     json.dump(prm, open(p, 'w'))
     fp = os.path.join(FAKE_DIR, os.path.basename(CFG.photometry.ENGINE_V2['cutouts_stamp']))
     open(fp, 'w').write(FAKE_STAMP)
@@ -2341,7 +2348,9 @@ def test_cutouts_stamp():
     """Ad hoc targets on a subband: the stamp engine (photometry.ENGINE_V2['cutouts_stamp']; Gregg 2026-11-21, R-GREGG-20261121-
     THREE-DECISIONS-APPROVED item 2) through its seam - a FAKE stamp engine that runs the REAL writer on the synthetic cubes - with
     the step's own checks (identity with the cube, manifest, placement); its exclusion (exit 3), its refusal (a failed parity)
-    and a missing parity report; a run without --targets keeps the regeneration engine."""
+    and a missing parity report; no current generation-6 reference (exit 4): the regeneration engine cuts the unit; generation 6
+    refused I by the night rule: V cut and placed, I not, one parity report; a run without --targets keeps the regeneration engine;
+    STAMP_REFERENCE_ROOT and ENGINE_V2 are protected keys."""
     from exopipe.phase3.lib.photometry import steps_cutouts as SC
     setup_fake_regen()
     setup_fake_stamp()
@@ -2350,8 +2359,16 @@ def test_cutouts_stamp():
     os.makedirs(os.path.dirname(rec_path), exist_ok=True)
     with open(rec_path, 'w') as f:
         f.write('{}')
-    common = ['photometry'] + CUT_COMMON + ['--set', 'photometry_cutouts.STAMP_REFERENCE_ROOT=%s' % ref,
-                                            '--cells', '%s_%s' % (CUT_CELL, CUT_SB)]
+    common = ['photometry'] + CUT_COMMON + ['--cells', '%s_%s' % (CUT_CELL, CUT_SB)]
+    for key in ('photometry_cutouts.STAMP_REFERENCE_ROOT=%s' % ref, 'photometry.ENGINE_V2={}'):
+        rc, txt = step(common + ['--set', key, '--out', os.path.join(TMP, 'stamp_protected'), '--dry-run'])
+        check('stamp: --set %s is refused (a protected key, exit 2)' % key.split('=')[0], rc == 2 and 'REFUSED' in txt, txt[-400:])
+    with patched(CFG.photometry_cutouts, STAMP_REFERENCE_ROOT=ref):
+        _cutouts_stamp_runs(SC, ref, rec_path, common)
+    setup_fake_stamp()
+
+
+def _cutouts_stamp_runs(SC, ref, rec_path, common):
     # without --targets: the regeneration engine, the stamp engine not run; its HWJ objects give the ad hoc list
     out0 = os.path.join(TMP, 'stamp_default')
     rc, txt = step(common + ['--cutout-root', os.path.join(out0, 'photometry_genT'), '--out', out0])
@@ -2405,7 +2422,24 @@ def test_cutouts_stamp():
     check('stamp: one parity report instead of two: the unit refused (C-ENGINE, exit 2), nothing placed',
           rc == 2 and rec.get('status') == 'refused' and '1 parity checks' in str(rec.get('reason')) and not files,
           (rc, rec.get('status'), rec.get('reason'), txt[-600:]))
-    setup_fake_stamp()
+    rc, txt, rec, argv, files, root = run('noref', noref=[CUT_CELL])
+    meta = rec.get('meta') or {}
+    check('stamp: no current generation-6 reference (exit 4): the regeneration engine cuts the unit - done, the V and I cutouts of '
+          'the ad hoc target placed, identity V / I pass, the fallback noted, no parity report',
+          rc == 0 and rec.get('status') == 'done' and argv.get('cell') == CUT_CELL and len(files) == 2
+          and all('/ADHOC/' in f for f in files) and 'NO-REFERENCE' in str(meta.get('stamp_fallback'))
+          and not meta.get('stamp_parity') and any('no current generation-6 reference' in str(n) for n in rec.get('notes', []))
+          and {t['name']: t['passed'] for t in rec.get('tests', [])}.get('photometry_cutout_manifest.I1_identity_I'),
+          (rc, rec.get('status'), str(rec.get('reason'))[:300], files, meta.get('stamp_fallback'), rec.get('notes'), txt[-600:]))
+    rc, txt, rec, argv, files, root = run('night', night=[CUT_CELL])
+    meta = rec.get('meta') or {}
+    check('stamp: generation 6 refused I by the night rule: V cut and placed, I not, one parity report (V), the refusal noted',
+          rc == 0 and rec.get('status') == 'done' and [os.path.basename(f)[-6:] for f in files] == ['V.fits']
+          and len(meta.get('stamp_parity') or []) == 1 and ' V: ' in meta['stamp_parity'][0]
+          and (meta.get('engine_outcome') or {}).get('I') == 'None'
+          and any('night rule' in str(n) for n in rec.get('notes', [])),
+          (rc, rec.get('status'), str(rec.get('reason'))[:300], files, meta.get('stamp_parity'), meta.get('engine_outcome'),
+           rec.get('notes'), txt[-600:]))
 
 
 def test_in_place_whole_cells():
