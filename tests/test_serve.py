@@ -1914,7 +1914,7 @@ def test_snapshot_steps():
                                          f'{DST}/bright_source_filter_{s_}_{c_}.npz', '--workers', S.SNAPSHOT_BRIGHT_WORKERS,
                                          '--peak-cache', f'{pc}/bright_filter_snapshot_peaks'],
                 f'{DST}/bright_source_filter_{s_}_{c_}.log', cw, NH) for s_ in ('I', 'V') for c_ in S.SNAPSHOT_BRIGHT_CADENCES]
-            + [('build_detections_index', ['--run', DST], f'{DST}/page_index_build.log', cw, {})])
+            + [('build_detections_index', ['--run', DST], f'{DST}/page_index_build.log', None, {})])
     steps = tuple(st for st, _ in SC.STEP_STAGES)
     unit_of = {st: f'snapshot_Run_SNAPSTEP_{st.replace("-", "_")}' for st in steps}
     orig = (scripts.run, S.SNAPSHOT_SERVE_HOLD, CFG.paths.SNAPSHOT_FLEET_OUT)
@@ -1946,14 +1946,24 @@ def test_snapshot_steps():
                                ('page_context_snapshot', 'page-context', 'page_context_snapshot.py on the review copy'),
                                ('help', 'bright-filter', f'has no {tier} tier'),
                                ('bright_source_filter', 'bright-filter', 'bright_source_filter_precompute.py I 10s on the review copy'),
-                               ('build_detections_index', 'page-index', 'build_detections_index.py on the review copy')):
+                               ('build_detections_index', 'page-index', 'page index: build_detections_index.py --run')):
             r_ = res[case]
             last = r_.units[-1]
             assert (last.name == unit_of[st] and last.status == 'refused' and text in last.reason and r_.exit_code() == 2
                     and len(r_.units) == steps.index(st) + 1), (case, [(x.name, x.status, x.reason) for x in r_.units])
+        # the page index through flow.page_index_stage: a current one is kept (no tool call), as in the deep and sub-LST tiers
+        w_index()
+        calls.clear()
+        mode['fail'] = None
+        run_k = Run('serve', ['test'], f'{out}_kept', CFG, config_sections=None)
+        SC.run(a, run_k, plan, ('page-index',))
+        xk = run_k.units[-1]
+        assert (xk.name == unit_of['page-index'] and xk.status == 'done' and not calls and any('current, kept' in n_ for n_ in xk.notes)
+                and xk.tests and all(t['passed'] for t in xk.tests)), (xk.name, xk.status, xk.reason, calls, xk.notes)
         ok(f'snapshot steps: {len(want)} calls in production\'s order with its arguments (parity: caches under --out); 7 outputs '
            f'recorded, their {len(tests_)} content tests and checks pass; a failure of each tool (and a --help without the {tier} tier) '
-           f'refuses its unit and nothing later runs - exit 2')
+           f'refuses its unit and nothing later runs - exit 2; the page index goes through flow.page_index_stage (no working '
+           f'directory, a current index kept without a tool call)')
         # G28: a start without the four steps in the same invocation needs their records
         req = []
         o_req, o_start, o_exp = flow.require_done, flow.start_stage, flow.expected_from_record
