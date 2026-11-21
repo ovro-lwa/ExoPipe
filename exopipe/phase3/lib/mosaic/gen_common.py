@@ -151,8 +151,8 @@ def mosaic_history(run, n):
 def stamp_products(items, rows, hist, *, scope, stokes, t0, t1, itt, beam, thermnoi, psf_name):
     """Write a conform unit's products (conform_v3.stage, conform_v5.stage): items [(kind, source, subdirectory, final path, pbcorr,
     extra cards incl. PRODNAME)] in order. Each source is copied to a temporary name beside its final path; a HEALPix map gets PRODNAME
-    in HDU 1 and a Jy/beam map PSFMAP = psf_name (bug B14); then the standard header (validate=True; a HEALPix map
-    mosaic_conform.HEADER_VALIDATE), the PROVENANCE table of rows and the HISTORY lines hist. Nothing is renamed into place unless
+    in HDU 1 and a Jy/beam map PSFMAP = psf_name (bug B14); then the standard header (validate=mosaic_conform.HEADER_VALIDATE, True
+    by decision C-08; a HEALPix map is checked on its HDU 1 table), the PROVENANCE table of rows and the HISTORY lines hist. Nothing is renamed into place unless
     every product was written (the temporary files are removed on any error). Returns [(final path, source, kind)]."""
     import shutil
     from astropy.io import fits
@@ -174,7 +174,7 @@ def stamp_products(items, rows, hist, *, scope, stokes, t0, t1, itt, beam, therm
                         h[1].header['PSFMAP'] = (psf_name, 'the PSF (Omega_eff) map of this mosaic')
             write_standard_header(tmp, scope=scope, stokes=stokes, start=Time(t0, format='mjd').isot, end=Time(t1, format='mjd').isot,
                                   inttime_s=itt or None, time_basis=K.TIME_BASIS, beam=beam, thermnoi=thermnoi, pbcorr=pbc, extra=ex,
-                                  validate=K.HEADER_VALIDATE or sub not in HEALPIX_SUBS)
+                                  validate=K.HEADER_VALIDATE)
             append_provenance_table(tmp, rows)
             with fits.open(tmp, mode='update', memmap=False) as h:
                 for ln in hist:

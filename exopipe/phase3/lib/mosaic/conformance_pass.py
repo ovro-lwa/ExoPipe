@@ -26,6 +26,13 @@ from astropy.time import Time
 from exopipe.phase3.lib.mosaic import coadd_jysr as mcj
 from exopipe.phase3.core.products import build_name, write_standard_header, append_provenance_table
 
+
+def _header_validate():
+    """mosaic_conform.HEADER_VALIDATE (decision C-08, Gregg 2026-11-21: every mosaic product validated; production CP:163
+    writes validate=False)."""
+    from exopipe.phase3.config import CFG
+    return CFG.mosaic_conform.HEADER_VALIDATE
+
 def main():
     MODE = sys.argv[1]
     if MODE == 'wb':
@@ -160,7 +167,7 @@ def main():
                               end=Time(t1, format='mjd').isot if t1 else None,
                               inttime_s=itt or None, time_basis='mosaic-constituents',
                               beam=beam, thermnoi=THERM.get(scope),
-                              pbcorr=pbcorr, extra=extra, validate=False)
+                              pbcorr=pbcorr, extra=extra, validate=_header_validate())
         append_provenance_table(dst, [{k: v for k, v in r.items() if not k.startswith('_')}
                                       for r in prov])
 
