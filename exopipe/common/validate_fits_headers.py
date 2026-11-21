@@ -18,6 +18,7 @@ from astropy.io import fits as _fits_nommap   # noqa: E402
 _fits_nommap.conf.use_memmap = False   # never memory-map a Lustre file, also when run by path (R-GREGG-20261117-NO-MMAP-OF-LUSTRE-FILES-READ-OR-WRITE)
 import sys
 import glob
+import itertools
 import logging
 import argparse
 import numpy as np
@@ -122,6 +123,33 @@ class HeaderReport:
         return "\n".join(lines)
 
 
+def _healpix_shape(h1, report):
+    """(npix,) of a HEALPix map from its HDU 1 binary-table header, or None with the errors added to report.
+    A map with INDXSCHM = 'IMPLICIT' (the default) must hold all 12 NSIDE^2 pixels; NSIDE must be a power of two and ORDERING
+    RING or NESTED."""
+    nside = h1.get('NSIDE')
+    if isinstance(nside, float) and nside.is_integer():      # an integral value written as a float card
+        nside = int(nside)
+    ordering = str(h1.get('ORDERING', '')).strip().upper()
+    tform = str(h1.get('TFORM1', '')).strip()
+    digits = ''.join(itertools.takewhile(str.isdigit, tform))
+    npix = int(h1.get('NAXIS2', 0) or 0) * int(digits or 1)
+    n0 = len(report.errors)
+    if isinstance(nside, bool) or not isinstance(nside, int) or nside <= 0 or nside & (nside - 1):
+        report.errors.append(f"HEALPix map: NSIDE={nside!r} in HDU 1 is not a power of two")
+    if ordering not in ('RING', 'NESTED'):
+        report.errors.append(f"HEALPix map: ORDERING={ordering!r} in HDU 1 is not RING or NESTED")
+    if npix == 0:
+        report.errors.append("HEALPix map: no pixels in the HDU 1 table")
+    elif len(report.errors) == n0 and str(h1.get('INDXSCHM', 'IMPLICIT')).strip().upper() == 'IMPLICIT' \
+            and npix != 12 * nside ** 2:
+        report.errors.append(f"HEALPix map: {npix} pixels in HDU 1, 12 NSIDE^2 = {12 * nside ** 2} for NSIDE={nside}")
+    if len(report.errors) > n0:
+        return None
+    report.keywords_found['HEALPIX'] = f"NSIDE={nside} ORDERING={ordering}"
+    return (npix,)
+
+
 def validate_header(fits_path, level='standard', logger_in=None):
     """Validate a FITS image header.
 
@@ -143,20 +171,47 @@ def validate_header(fits_path, level='standard', logger_in=None):
     log = logger_in or logger
     report = HeaderReport(fits_path)
 
+    # Headers only: the shape comes from the NAXISn cards and the pixels are never read; the file must hold the data every HDU's
+    # header declares (FITS: |BITPIX|/8 x GCOUNT x (PCOUNT + NAXIS1 x ... x NAXISn) bytes from the HDU's data start), except a
+    # compressed file (gzip / bzip2 / zip), whose size on disk is not the FITS stream's. A HEALPix map keeps its standard header
+    # in HDU 0, which has no data, and its pixels in a binary table in HDU 1 (PIXTYPE = 'HEALPIX'); its data check is that
+    # table's (decision C-08 of the mosaic spec, Gregg 2026-11-21).
+    healpix = None
+    ends = []
     try:
-        with fits.open(fits_path) as hdul:
+        with fits.open(fits_path, lazy_load_hdus=True) as hdul:
             hdr = hdul[0].header
-            data = hdul[0].data
+            naxis = int(hdr.get('NAXIS', 0) or 0)
+            shape = tuple(int(hdr.get(f'NAXIS{i}', 0) or 0) for i in range(naxis, 0, -1))
+            if not naxis and len(hdul) > 1:
+                h1 = hdul[1].header
+                if h1.get('XTENSION') == 'BINTABLE' and str(h1.get('PIXTYPE', '')).strip().upper() == 'HEALPIX':
+                    healpix = h1.copy()
+            compressed = getattr(hdul.fileinfo(0)['file'], 'compression', None)
+            for i, hdu in enumerate(hdul if not compressed else ()):
+                h = hdu.header
+                nax = int(h.get('NAXIS', 0) or 0)
+                n = int(np.prod([int(h.get(f'NAXIS{k}', 0) or 0) for k in range(1, nax + 1)], dtype=np.int64)) if nax else 0
+                nbytes = abs(int(h.get('BITPIX', 8))) // 8 * int(h.get('GCOUNT', 1) or 1) * (int(h.get('PCOUNT', 0) or 0) + n)
+                ends.append((hdul.fileinfo(i)['datLoc'] + nbytes, i))
     except Exception as e:
         report.errors.append(f"Cannot open FITS file: {e}")
         return report
 
     # --- Data shape ---
-    if data is None:
+    if healpix is not None:
+        shape = _healpix_shape(healpix, report)
+        if shape is None:
+            return report
+    elif not naxis or 0 in shape:
         report.errors.append("No data in primary HDU")
         return report
+    size = os.path.getsize(fits_path)
+    end, hdu_no = max(ends or [(0, 0)])
+    if end > size:
+        report.errors.append(f"Data truncated: the file has {size} bytes, the data of HDU {hdu_no} end at byte {end}")
+        return report
 
-    shape = data.shape
     ndim = len(shape)
     report.keywords_found['SHAPE'] = str(shape)
 
@@ -247,7 +302,9 @@ def validate_header(fits_path, level='standard', logger_in=None):
     # --- WCS ---
     try:
         wcs = WCS(hdr)
-        if not wcs.has_celestial:
+        if healpix is not None:
+            report.info.append("HEALPix map: pixels indexed by NSIDE and ORDERING in HDU 1, no celestial WCS")
+        elif not wcs.has_celestial:
             report.warnings.append("No valid celestial WCS found")
         else:
             # Check pixel scale is reasonable

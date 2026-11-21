@@ -4,7 +4,7 @@
 PORT of the 'wb2' branch of the production mosaic_conformance_pass.py (CP:43-55, 70-89, 92-131, 155-276; exopipe 927a836)
 as a function with arguments, with the same calls in the same order: core.products.build_name (allsky token), shutil.copy2,
 write_standard_header(time_basis 'mosaic-constituents', beam = median constituent header, THERMNOI from the cleaned-V mosaic
-strip = absent in v2, validate=False) and append_provenance_table. Differences, all from the spec's gates (no product byte
+strip = absent in v2, validate=mosaic_conform.HEADER_VALIDATE: production False, True by decision C-08) and append_provenance_table. Differences, all from the spec's gates (no product byte
 changes on a clean run):
 - membership is the coadd record's contributing tiles (census with the engine's guards, checked against the engine's own
   verdicts) instead of a recomputation over the staged links - same tiles, same arithmetic (CP:104-113 = CJ:200-221);

@@ -209,7 +209,8 @@ class mosaic_conform(_Section):
     CADENCE = 'deep'                 # CP:179
     LST_TOKEN = 'allsky'             # mosaic footprint token (M-09, DOC); CP:180
     TIME_BASIS = 'mosaic-constituents'   # written TIMEFIX = 'v2-mosaic-constituents'; CP:161
-    HEADER_VALIDATE = False          # write_standard_header(validate=False) as today (CP:163; decision C-08 pending)
+    HEADER_VALIDATE = True           # every mosaic product validated at write (decision C-08, Gregg 2026-11-21; was False as
+    #   production CP:163). A HEALPix map is checked on its HDU 1 table (validate_fits_headers._healpix_shape).
     THERMNOI_DEC_STRIP_DEG = (20.0, 55.0)
     #   deg; THERMNOI = cleaned-V mosaic zenith-strip MAD x median Omega_eff (CP:134-148). v2 has no cleaned-V mosaic, so
     #   THERMNOI is absent, exactly as today (PUSHED-MOSAIC-V2-TAPER-WIDEBAND); --generation v3 has one (conform_v3.thermnoi)
@@ -221,7 +222,8 @@ class mosaic_conform(_Section):
     RULED = {'VARIANTS': 'R-JYBEAM-TOKEN-AND-MOSAIC-V2-PUSH-TAPER-ONLY',
              'BASE_PROC': ('DOC', 'R-JYBEAM-TOKEN-AND-MOSAIC-V2-PUSH-TAPER-ONLY'),
              'APPARENT_DROP_PROC': 'R-JYBEAM-TOKEN-AND-MOSAIC-V2-PUSH-TAPER-ONLY',
-             'LST_TOKEN': 'DOC'}
+             'LST_TOKEN': 'DOC',
+             'HEADER_VALIDATE': 'R-GREGG-20261121-THREE-DECISIONS-APPROVED'}
 
 
 class mosaic_v5(_Section):
