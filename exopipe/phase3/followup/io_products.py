@@ -35,29 +35,28 @@ def product_name(cand, scope, stokes, proc, epoch_iso, date_range=None,
 
 
 def _stamp(path, cand, scope, stokes, proc, start, end, inttime, beam, ebeam,
-           validate=True, **flags):
+           **flags):
+    """Stamp the full standard header on `path` and validate it. A header that fails is REFUSED: the file is removed
+    and the error raised (gates refuse, never warn). Production degraded to an unvalidated stamp and printed a warning,
+    which left a non-conformant FITS in the dossier. Each caller catches the error and prints its own line
+    (dossier.py: conformant FITS / burst all-sky), which the investigate step reads as a failed sub-product
+    (steps/followup.py _SWALLOWED, gate G30), so one candidate's refusal never stops the batch."""
     try:
         write_standard_header(
             path, scope=scope, stokes=stokes, start=start, end=end,
             inttime_s=inttime, time_basis='phase2', beam=beam, ebeam=ebeam,
-            p2run='PROD', validate=validate,
+            p2run='PROD', validate=True,
             extra={'CANDID': (cand.cand_id[:68], 'candinv candidate id'),
                    'CANDRANK': (int(cand.rank), 'top50 rank')},
             **flags)
-        return True
     except Exception as e:
-        # Don't let one header failure kill a 50-candidate batch; degrade to
-        # an unvalidated stamp and flag it loudly.
-        if validate:
-            try:
-                write_standard_header(
-                    path, scope=scope, stokes=stokes, start=start, end=end,
-                    inttime_s=inttime, time_basis='phase2', beam=beam,
-                    ebeam=ebeam, p2run='PROD', validate=False, **flags)
-            except Exception:
-                pass
-        print(f'  [io] WARN header stamp non-conformant for {os.path.basename(path)}: {e}')
-        return False
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+        raise RuntimeError(f'{os.path.basename(path)}: standard header refused, file removed '
+                           f'({str(e).strip()[:300]})') from e
+    return True
 
 
 # --- all-sky conformant copy ------------------------------------------------
