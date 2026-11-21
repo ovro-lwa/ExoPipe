@@ -11,6 +11,7 @@
   tess         fake TESS script: done / no sector (exit 3) / SIMBAD failure (G9)
   investigate  the package in-process: G11 on an empty synthetic bundle; G13 when the package config was imported with
                other paths; dossier writers of the package -> the followup_* content tests (column constants checked);
+               a cutout whose header fails the standard is refused (raised, no file left);
                the package's SCRATCH_DIR is the op's own scratch directory under --work
   t5_scratch   every tempfile.mkdtemp of followup/snapshots.py takes dir=C.SCRATCH_DIR; a fresh interpreter takes
                CANDINV_SCRATCH_DIR (snapshot_spectrum makes its temp dir there and removes it) and keeps production's
@@ -488,6 +489,18 @@ def test_investigate():
     assert cut, 'the package cutout writer failed on a synthetic all-sky image'
     res = validate.run('followup_fits', cut)
     assert res[0]['passed'] and res[0]['value'] == [161, 161], res
+    # a header that fails the standard (here no time block) is refused: the writer raises and leaves no file, where
+    # production wrote the cutout with an unvalidated header and only printed a warning (another epoch, so another name)
+    before = set(os.listdir(cdir))
+    try:
+        IO.write_cutout(src, cdir, c, '23MHz', 'V', ['dewarped', 'aligned', 'msub', 'ssub'], c.ra, c.dec,
+                        ('2024-12-31T09:00:00', None, 3600.0), beam=(0.5, 0.4, 10.0), ebeam=(0.5, 0.4, 10.0),
+                        dewarped=True, aligned=True, msub=True, ssub=True)
+    except RuntimeError as e:
+        assert 'standard header refused, file removed' in str(e) and 'incomplete time block' in str(e), e
+    else:
+        raise AssertionError('a cutout whose header fails the standard was written')
+    assert set(os.listdir(cdir)) == before, sorted(set(os.listdir(cdir)) ^ before)
 
 
 def test_t5_scratch():
