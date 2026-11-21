@@ -412,10 +412,12 @@ def stage_snapshot_cutouts(run, args):
     planets = bool(getattr(args, 'planets', False))
     items = snapshot_items(args)
     samples = run_samples(targets, planets)
-    K.plan(run, '[cutouts] %d (night cell, band) units -> %s (generation %s); samples %s%s; engines in place '
-                '(phase3_snapshot_search.py / phase3_snapshot_group_search.py --cutouts-from-cubes, site PYTHON[%s])'
+    K.plan(run, '[cutouts] %d (night cell, band) units -> %s (generation %s); samples %s%s; engines %s, site PYTHON[%s]'
            % (len(items), root, K.cfg().photometry.GENERATION if root == K.cfg().photometry.CUTOUT_ROOT else 'not served',
               ','.join(samples), ' (ad hoc: %s)' % ', '.join('%s=%s' % t for t in targets) if targets else '',
+              ('subbands lib/photometry/stamp_engine.py (the stamp method, reference %s), widebands in place '
+               '(phase3_snapshot_group_search.py --cutouts-from-cubes)' % K.cfg().photometry_cutouts.STAMP_REFERENCE_ROOT
+               if targets else 'in place (phase3_snapshot_search.py / phase3_snapshot_group_search.py --cutouts-from-cubes)'),
               K.python_key('snapshot', 'cutouts_subband')))
     try:
         gate_write_roots(run, args, 'cutouts', [root], targets, {'cutout root': root}, cells=sorted({cl for cl, _ in items}))
@@ -575,6 +577,11 @@ def _regen_counts(line):
     return {'V': m.group(1), 'I': m.group(2)}, m.group(3) or ''
 
 
+def stamp_record(cell, band):
+    """The generation's flux-scale record of a (cell, subband) the stamp engine reads its reference from."""
+    return os.path.join(K.cfg().photometry_cutouts.STAMP_REFERENCE_ROOT, '_fluxscale', band, '%s_%s_fluxscale.json' % (cell, band))
+
+
 def snapshot_unit(run, args, cell, band, root, targets, planets, samples, cubes):
     from exopipe.phase3.lib.photometry import tests_cutouts as TC
     c = K.cfg()
@@ -583,7 +590,9 @@ def snapshot_unit(run, args, cell, band, root, targets, planets, samples, cubes)
     sfx = tag_suffix(targets)
     name = 'cutouts.%s.%s%s' % (cell, band, sfx)
     allcubes = cubes['V'] + cubes['I']
-    inputs = sorted(allcubes) + [p for _, p in targets] + ([] if targets else list(K.sample_paths().values()))
+    stamp = bool(targets) and not is_wideband(band)        # ad hoc targets on a subband: the stamp method (STAMP_REFERENCE_ROOT)
+    inputs = (sorted(allcubes) + [p for _, p in targets] + ([] if targets else list(K.sample_paths().values()))
+              + ([stamp_record(cell, band)] if stamp else []))
     admitted = cutout_admitted(cell, band)
     if K.run_resume_ok(run, name, admitted, {'inputs_listing_sha1': listing_sha1(inputs), 'cutout_root': root}):
         return run.units[-1:]
@@ -612,9 +621,15 @@ def snapshot_unit(run, args, cell, band, root, targets, planets, samples, cubes)
         outcome = {}
         members = {}
         if not is_wideband(band):
-            argv = ['--lst', lst, '--date', date, '--subband', band, '--stokes', 'VI', '--mode', 'median', '--out', eout,
-                    '--cutouts-from-cubes']
-            res, text = K.call(u, 'cutouts_subband', argv, 'snapshot', 'cutouts_subband', run, 'cutouts_%s_%s.log' % (cell, band),
+            if stamp:       # the stamp engine re-cuts the reference and refuses unless it equals the generation's file
+                key, mark = 'cutouts_stamp', cc.STAMP_DONE
+                argv = ['--code-root', os.path.dirname(K.engine('cutouts_subband')), '--ref-root', cc.STAMP_REFERENCE_ROOT,
+                        '--cell', cell, '--band', band, '--out', stage]
+            else:
+                key, mark = 'cutouts_subband', cc.REGEN_DONE_SUBBAND
+                argv = ['--lst', lst, '--date', date, '--subband', band, '--stokes', 'VI', '--mode', 'median', '--out', eout,
+                        '--cutouts-from-cubes']
+            res, text = K.call(u, key, argv, 'snapshot', key, run, 'cutouts_%s_%s.log' % (cell, band),
                                env_extra=env, threads=args.threads)
             if res.rc == cc.REGEN_EXCLUDED_RC or '\nEXCLUDED:' in '\n' + text:
                 remove_staging(stage)
@@ -625,14 +640,23 @@ def snapshot_unit(run, args, cell, band, root, targets, planets, samples, cubes)
                 raise NoInput(why)
             if res.refused:          # the engine's own refusal (e.g. a cube repeating integrations without the search's frame
                 u.refuse('C-ENGINE: %s (staging kept: %s)' % (res.reason, stage))   # list): this unit, not the run
-            done = [ln for ln in text.splitlines() if cc.REGEN_DONE_SUBBAND in ln]
+            done = [ln for ln in text.splitlines() if mark in ln]
             if res.rc != 0 or not done:
-                raise RuntimeError('phase3_snapshot_search.py --cutouts-from-cubes exit %d without a %r line (staging kept: '
-                                   '%s): %s' % (res.rc, cc.REGEN_DONE_SUBBAND.strip(), stage, res.tail[-600:]))
+                raise RuntimeError('%s exit %d without a %r line (staging kept: %s): %s' % (
+                    'stamp_engine.py' if stamp else 'phase3_snapshot_search.py --cutouts-from-cubes', res.rc, mark.strip(), stage,
+                    res.tail[-600:]))
             counts, refused = _regen_counts(done[-1])
             outcome = {S: counts.get(S) for S in 'VI'}
             if refused:
                 u.note('the search refused (night rule): %s' % refused)
+            if stamp:       # the reference cutouts the engine reproduced (one per Stokes)
+                parity = [ln.strip() for ln in text.splitlines() if ln.startswith('STAMP-PARITY ')]
+                if len(parity) != 2:
+                    u.refuse('C-ENGINE: the stamp engine reported %d parity checks, 2 expected (staging kept: %s)' % (
+                        len(parity), stage))
+                for ln in parity:
+                    u.add_input(ln.rsplit('(', 1)[-1].rstrip(')'))
+                u.meta['stamp_parity'] = parity
         else:
             for S in 'VI':                       # V then I: the I run reuses the member admissions the V run wrote
                 argv = ['--lst', lst, '--date', date, '--stokes', S, '--out', eout, '--cutouts-from-cubes', band]

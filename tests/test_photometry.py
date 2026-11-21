@@ -46,7 +46,10 @@ products are only READ.
   5-sigma source fail; wideband: the weights' '%.6g' rounding passes the exact bound 5e-6 x (A + |S|), fails without it and
   with the stack-magnitude bound); one file per key (stale time stamp, orphan; CM2); the snapshot cutouts stage end to end
   through a FAKE engine running the REAL writer on synthetic consolidated cubes (done, manifest, --resume, in-place re-run,
-  C-STALE and --fresh quarantine, C-IDENTITY before placement, C-EXCLUDED, C-CELLS, C-ROOT); the deep and 10-minute tier
+  C-STALE and --fresh quarantine, C-IDENTITY before placement, C-EXCLUDED, C-CELLS, C-ROOT); ad hoc targets on a subband
+  through the stamp engine's seam (a FAKE stamp engine running the REAL writer: its arguments, identity, the parity reports and
+  reference inputs recorded; its exclusion, its refusal, a missing parity report; no --targets keeps the regeneration
+  engine); the deep and 10-minute tier
   cutouts (the REAL tool's cell_job on synthetic residuals) and cutmeasure (the REAL tier forced tool) end to end, a named
   sample subset and an ad-hoc tag (ADHOC, measured since 2026-11-20); ad-hoc
   target lists (the REAL stage 1 on ADHOC cutouts; PHOT-ADHOC gates); stage selection (cutouts only when named; sub-LST).
@@ -2031,6 +2034,62 @@ def setup_fake_regen(excluded=(), corrupt=False, refuse=(), crash=()):
     FAKES['cutouts_subband'] = fp
 
 
+FAKE_STAMP = r'''#!/usr/bin/env python
+"""FAKE stamp_engine.py for tests/test_photometry.py (the stamp engine's seam): writes its argv and ad hoc set to stamp_argv.json;
+fake_params.json 'stamp_excluded' cells exit 3 (EXCLUDED:), 'stamp_refuse' cells refuse (a failed parity, exit 2),
+'stamp_one_parity' cells report one parity check; otherwise the REAL writer (clv15 phase3_snapshot_cutouts.write_cutouts) on the
+synthetic cube into --out, V then I, a STAMP-PARITY line per Stokes and the STAMP-CUTOUTS line."""
+import argparse, json, os, sys
+sys.path.insert(0, '/lustre/gh/main/clv15')
+import numpy as np
+from astropy.io import fits
+D = os.path.dirname(os.path.abspath(__file__))
+P = json.load(open(os.path.join(D, 'fake_params.json')))
+ap = argparse.ArgumentParser()
+for k in ('--code-root', '--ref-root', '--cell', '--band', '--out'):
+    ap.add_argument(k, required=True)
+a = ap.parse_args()
+json.dump(dict(vars(a), samples=os.environ.get('P3_SNAP_CUTOUT_SAMPLES')), open(os.path.join(D, 'stamp_argv.json'), 'w'))
+lst, date = a.cell.split('_', 1)
+if a.cell in P.get('stamp_excluded', []):
+    print("EXCLUDED: %s %s %s carries verdict 'exclude' - REFUSING to cut (no output written)" % (lst, date, a.band))
+    raise SystemExit(3)
+if a.cell in P.get('stamp_refuse', []):
+    print('REFUSED: V: PARITY with generation 6 FAILED for (fake): pixels: max |difference| 1')
+    raise SystemExit(2)
+import phase3_snapshot_cutouts as CUT
+n = {}
+for S in ('V', 'I'):
+    p = os.path.join(os.environ['P3_SNAP_CUBE_ROOT'], a.cell, '%s_%s_%s_flowcube.fits' % (a.cell, a.band, S))
+    with fits.open(p, memmap=False) as h:
+        cube = np.array(h['FRAMES'].data, np.float32)
+        t = h['FRAME_TABLE'].data
+        tss = [str(x) for x in t['ts']]
+        hdrs = [fits.Header.fromstring(str(x), sep='\n') for x in t['header']]
+    model = np.median(cube, axis=0).astype(np.float32)
+    meta = [dict(ts=ts, date_obs=str(hd['DATE-OBS'])) for ts, hd in zip(tss, hdrs)]
+    z = np.zeros(cube.shape[1:], np.float32)
+    n[S] = CUT.write_cutouts(cube, model, meta, [True] * len(tss), hdrs[0], z, z, lst, date, a.band, S, root=a.out)
+    if not (S == 'I' and a.cell in P.get('stamp_one_parity', [])):
+        print('STAMP-PARITY %s %s: equal to generation 6 (%s)' % (
+            a.band, S, os.path.join(a.ref_root, 'LPT', a.band, 'REF', 'REF_%s_%s.fits' % (a.cell, S))), flush=True)
+print('STAMP-CUTOUTS %s %s %s: V %s I %s' % (lst, date, a.band, n['V'], n['I']), flush=True)
+'''
+
+
+def setup_fake_stamp(excluded=(), refuse=(), one_parity=()):
+    p = os.path.join(FAKE_DIR, 'fake_params.json')
+    prm = json.load(open(p)) if os.path.exists(p) else {}
+    prm.update(stamp_excluded=list(excluded), stamp_refuse=list(refuse), stamp_one_parity=list(one_parity))
+    json.dump(prm, open(p, 'w'))
+    fp = os.path.join(FAKE_DIR, os.path.basename(CFG.photometry.ENGINE_V2['cutouts_stamp']))
+    open(fp, 'w').write(FAKE_STAMP)
+    FAKES['cutouts_stamp'] = fp
+    a = os.path.join(FAKE_DIR, 'stamp_argv.json')
+    if os.path.exists(a):
+        os.remove(a)
+
+
 CUT_OUT = os.path.join(TMP, 'cut_out')
 CUT_ROOT = os.path.join(CUT_OUT, 'photometry_genT')
 CUT_CELL = '18h_2025-04-13'
@@ -2276,6 +2335,77 @@ def test_engine_refusal_carry_on():
           'refused units (C-ENGINE, exit 2), the second one run after the first - no crash of the run',
           rc == 2 and len(recs) == 2 and all(s == 'refused' and 'C-ENGINE' in why and 'REFUSED' in why
                                              for s, why in st.values()), (rc, st, txt[-600:]))
+
+
+def test_cutouts_stamp():
+    """Ad hoc targets on a subband: the stamp engine (photometry.ENGINE_V2['cutouts_stamp']; Gregg 2026-11-21, R-GREGG-20261121-
+    THREE-DECISIONS-APPROVED item 2) through its seam - a FAKE stamp engine that runs the REAL writer on the synthetic cubes - with
+    the step's own checks (identity with the cube, manifest, placement); its exclusion (exit 3), its refusal (a failed parity)
+    and a missing parity report; a run without --targets keeps the regeneration engine."""
+    from exopipe.phase3.lib.photometry import steps_cutouts as SC
+    setup_fake_regen()
+    setup_fake_stamp()
+    ref = os.path.join(TMP, 'stamp_ref')
+    rec_path = os.path.join(ref, '_fluxscale', CUT_SB, '%s_%s_fluxscale.json' % (CUT_CELL, CUT_SB))
+    os.makedirs(os.path.dirname(rec_path), exist_ok=True)
+    with open(rec_path, 'w') as f:
+        f.write('{}')
+    common = ['photometry'] + CUT_COMMON + ['--set', 'photometry_cutouts.STAMP_REFERENCE_ROOT=%s' % ref,
+                                            '--cells', '%s_%s' % (CUT_CELL, CUT_SB)]
+    # without --targets: the regeneration engine, the stamp engine not run; its HWJ objects give the ad hoc list
+    out0 = os.path.join(TMP, 'stamp_default')
+    rc, txt = step(common + ['--cutout-root', os.path.join(out0, 'photometry_genT'), '--out', out0])
+    objs = sorted(os.listdir(os.path.join(out0, 'photometry_genT', 'HWJ', CUT_SB))) \
+        if os.path.isdir(os.path.join(out0, 'photometry_genT', 'HWJ', CUT_SB)) else []
+    check('stamp: a run without --targets cuts with the regeneration engine (the stamp engine not run; %d HWJ objects)'
+          % len(objs), rc == 0 and objs and not os.path.exists(os.path.join(FAKE_DIR, 'stamp_argv.json')), txt[-800:])
+    if not objs:
+        return
+    ent = [r for r in csv.DictReader(open(os.path.join(CFG.paths.CLV15_ROOT, CFG.photometry.SAMPLE_FILES['HWJ']),
+                                          encoding='utf-8-sig')) if T.safe_name(r['common_name']) == objs[0]][0]
+    adhoc = os.path.join(TMP, 'stamp_adhoc.csv')
+    with open(adhoc, 'w') as f:
+        f.write('name,ra,dec\n%s,%s,%s\n' % (ent['common_name'], ent['ra_current'], ent['dec_current']))
+    unit = 'cutouts.%s.%s%s' % (CUT_CELL, CUT_SB, SC.tag_suffix([('ADHOC', adhoc)]))
+
+    def run(tag, **fake):
+        setup_fake_stamp(**fake)
+        out = os.path.join(TMP, 'stamp_%s' % tag)
+        root = os.path.join(out, 'photometry_genT')
+        rc, txt = step(common + ['--targets', 'ADHOC=%s' % adhoc, '--cutout-root', root, '--out', out])
+        argv = os.path.join(FAKE_DIR, 'stamp_argv.json')
+        return (rc, txt, records(out).get(unit, {}), json.load(open(argv)) if os.path.exists(argv) else {},
+                sorted(glob.glob(os.path.join(root, '*', CUT_SB, '*', '*.fits'))), root)
+
+    rc, txt, rec, argv, files, root = run('ok')
+    tests = {t['name']: t['passed'] for t in rec.get('tests', [])}
+    par = (rec.get('meta') or {}).get('stamp_parity') or []
+    refs = [os.path.join(ref, 'LPT', CUT_SB, 'REF', 'REF_%s_%s.fits' % (CUT_CELL, S)) for S in 'VI']
+    inp = rec.get('inputs') or {}
+    check('stamp: --targets on a subband runs the stamp engine (--ref-root = STAMP_REFERENCE_ROOT, --code-root = the regeneration '
+          'engine\'s root, --out = the unit\'s staging directory, the ad hoc set in its environment): unit done, the V and I '
+          'cutouts of the ad hoc target placed, identity V / I with the cube pass, both parity reports kept, the flux-scale record '
+          'and the two reference cutouts recorded as inputs',
+          rc == 0 and rec.get('status') == 'done' and argv.get('ref_root') == ref
+          and argv.get('code_root') == os.path.dirname(FAKES['cutouts_subband']) and argv.get('cell') == CUT_CELL
+          and argv.get('band') == CUT_SB and str(argv.get('out', '')).startswith(os.path.join(root, '_staging'))
+          and argv.get('samples') == 'ADHOC=%s' % adhoc
+          and [os.path.basename(f) for f in files] and all('/ADHOC/' in f for f in files) and len(files) == 2
+          and tests.get('photometry_cutout_manifest.I1_identity_V') and tests.get('photometry_cutout_manifest.I1_identity_I')
+          and len(par) == 2 and os.path.abspath(rec_path) in inp and all(os.path.abspath(r) in inp for r in refs),
+          (rc, rec.get('status'), str(rec.get('reason'))[:300], argv, files, tests, par, txt[-800:]))
+    rc, txt, rec, argv, files, root = run('excluded', excluded=[CUT_CELL])
+    check('stamp: the engine\'s exclusion (exit 3): the unit has no input (C-EXCLUDED, exit 3), nothing placed',
+          rc == 3 and 'C-EXCLUDED' in str(rec.get('reason')) and not files, (rc, rec.get('reason'), txt[-600:]))
+    rc, txt, rec, argv, files, root = run('refuse', refuse=[CUT_CELL])
+    check('stamp: the engine\'s refusal (a failed parity, exit 2): the unit refused (C-ENGINE, exit 2), nothing placed',
+          rc == 2 and rec.get('status') == 'refused' and 'C-ENGINE' in str(rec.get('reason'))
+          and 'PARITY' in str(rec.get('reason')) and not files, (rc, rec.get('status'), rec.get('reason'), txt[-600:]))
+    rc, txt, rec, argv, files, root = run('oneparity', one_parity=[CUT_CELL])
+    check('stamp: one parity report instead of two: the unit refused (C-ENGINE, exit 2), nothing placed',
+          rc == 2 and rec.get('status') == 'refused' and '1 parity checks' in str(rec.get('reason')) and not files,
+          (rc, rec.get('status'), rec.get('reason'), txt[-600:]))
+    setup_fake_stamp()
 
 
 def test_in_place_whole_cells():
@@ -2919,6 +3049,7 @@ def main():
     test_one_file_per_key()
     test_cutouts_snapshot()
     test_engine_refusal_carry_on()
+    test_cutouts_stamp()
     test_in_place_whole_cells()
     test_cutouts_tiers()
     test_sigterm_rollback()
