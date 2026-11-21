@@ -1196,7 +1196,7 @@ def _chain(d):
 
     def cav(tl, variant, scope, out_dir, pbeff_mosaic, nside=None):
         mp, tp = (os.path.join(out_dir, x) for x in CV.names(variant, scope, 128))
-        _hpx(mp, np.zeros(12), NSIDE=1)          # 12 pixels: NSIDE 1 (the name keeps 128; the validator checks 12 NSIDE^2)
+        _hpx(mp, np.zeros(12 * 128 ** 2, np.float32), NSIDE=128)   # a full NSIDE-128 map, as its name says (caveat.py:120)
         with open(tp, 'w', newline='') as f:
             f.write('lst,kind,staged,sigma_apparent\r\n' + ''.join(f'{t["lst"]},hybrid,{t["path"]},0.2\r\n' for t in tl))
         return dict(map=mp, table=tp, n_hybrid=len(tl), n_taper_only=0, taper_only=[], test={'verdict': 'pass'})

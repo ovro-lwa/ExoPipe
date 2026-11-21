@@ -18,7 +18,7 @@ from logs. Read-only on sources; writes only under archive_staging/.
 import os, sys, csv, shutil
 # 2026-10-13 (refactor chat, verified): this import had been inserted INSIDE the docstring by ecc6557, so coadd_root was undefined
 # and mode 'wb' raised NameError at CANON. ('wb' covers 00h-22h because the July 2026 v1 mosaic masters had no 23h; 'wb2' covers 24.)
-from exopipe.phase3.config import coadd_root
+from exopipe.phase3.config import CFG, coadd_root
 import numpy as np
 from astropy.io import fits
 from astropy.time import Time
@@ -26,12 +26,6 @@ from astropy.time import Time
 from exopipe.phase3.lib.mosaic import coadd_jysr as mcj
 from exopipe.phase3.core.products import build_name, write_standard_header, append_provenance_table
 
-
-def _header_validate():
-    """mosaic_conform.HEADER_VALIDATE (decision C-08, Gregg 2026-11-21: every mosaic product validated; production CP:163
-    writes validate=False)."""
-    from exopipe.phase3.config import CFG
-    return CFG.mosaic_conform.HEADER_VALIDATE
 
 def main():
     MODE = sys.argv[1]
@@ -161,15 +155,24 @@ def main():
 
     report = {'staged': 0, 'failed': []}
 
+    # every product validated at write (mosaic_conform.HEADER_VALIDATE, decision C-08, Gregg 2026-11-21; production CP:163 writes
+    # validate=False); a product that fails is removed from the staging tree, never left half-stamped
+    header_validate = CFG.mosaic_conform.HEADER_VALIDATE
+
     def stamp(dst, scope, stokes, prov, t0, t1, itt, beam, extra, pbcorr=True):
-        write_standard_header(dst, scope=scope, stokes=stokes,
-                              start=Time(t0, format='mjd').isot if t0 else None,
-                              end=Time(t1, format='mjd').isot if t1 else None,
-                              inttime_s=itt or None, time_basis='mosaic-constituents',
-                              beam=beam, thermnoi=THERM.get(scope),
-                              pbcorr=pbcorr, extra=extra, validate=_header_validate())
-        append_provenance_table(dst, [{k: v for k, v in r.items() if not k.startswith('_')}
-                                      for r in prov])
+        try:
+            write_standard_header(dst, scope=scope, stokes=stokes,
+                                  start=Time(t0, format='mjd').isot if t0 else None,
+                                  end=Time(t1, format='mjd').isot if t1 else None,
+                                  inttime_s=itt or None, time_basis='mosaic-constituents',
+                                  beam=beam, thermnoi=THERM.get(scope),
+                                  pbcorr=pbcorr, extra=extra, validate=header_validate)
+            append_provenance_table(dst, [{k: v for k, v in r.items() if not k.startswith('_')}
+                                          for r in prov])
+        except Exception:
+            if os.path.exists(dst):
+                os.remove(dst)
+            raise
 
     for stem0, product, stokes, taper, robust, baseproc in PRODUCTS:
         for band in SCOPES:

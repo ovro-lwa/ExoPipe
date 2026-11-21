@@ -222,7 +222,8 @@ class mosaic_conform(_Section):
     RULED = {'VARIANTS': 'R-JYBEAM-TOKEN-AND-MOSAIC-V2-PUSH-TAPER-ONLY',
              'BASE_PROC': ('DOC', 'R-JYBEAM-TOKEN-AND-MOSAIC-V2-PUSH-TAPER-ONLY'),
              'APPARENT_DROP_PROC': 'R-JYBEAM-TOKEN-AND-MOSAIC-V2-PUSH-TAPER-ONLY',
-             'LST_TOKEN': 'DOC'}
+             'LST_TOKEN': 'DOC',
+             'HEADER_VALIDATE': 'R-GREGG-20261121-THREE-DECISIONS-APPROVED'}
 
 
 class mosaic_v5(_Section):

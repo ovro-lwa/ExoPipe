@@ -128,6 +128,8 @@ def _healpix_shape(h1, report):
     A map with INDXSCHM = 'IMPLICIT' (the default) must hold all 12 NSIDE^2 pixels; NSIDE must be a power of two and ORDERING
     RING or NESTED."""
     nside = h1.get('NSIDE')
+    if isinstance(nside, float) and nside.is_integer():      # an integral value written as a float card
+        nside = int(nside)
     ordering = str(h1.get('ORDERING', '')).strip().upper()
     tform = str(h1.get('TFORM1', '')).strip()
     digits = ''.join(itertools.takewhile(str.isdigit, tform))
@@ -169,26 +171,29 @@ def validate_header(fits_path, level='standard', logger_in=None):
     log = logger_in or logger
     report = HeaderReport(fits_path)
 
-    # Headers only: the shape comes from the NAXISn cards and the pixels are never read; the file must hold the data its headers
-    # declare (data end <= file size). A HEALPix map keeps its standard header in HDU 0, which has no data, and its pixels in a
-    # binary table in HDU 1 (PIXTYPE = 'HEALPIX'); its data check is that table's (decision C-08 of the mosaic spec, Gregg
-    # 2026-11-21).
+    # Headers only: the shape comes from the NAXISn cards and the pixels are never read; the file must hold the data every HDU's
+    # header declares (FITS: |BITPIX|/8 x GCOUNT x (PCOUNT + NAXIS1 x ... x NAXISn) bytes from the HDU's data start), except a
+    # compressed file (gzip / bzip2 / zip), whose size on disk is not the FITS stream's. A HEALPix map keeps its standard header
+    # in HDU 0, which has no data, and its pixels in a binary table in HDU 1 (PIXTYPE = 'HEALPIX'); its data check is that
+    # table's (decision C-08 of the mosaic spec, Gregg 2026-11-21).
     healpix = None
-    data_end = None
+    ends = []
     try:
         with fits.open(fits_path, lazy_load_hdus=True) as hdul:
             hdr = hdul[0].header
             naxis = int(hdr.get('NAXIS', 0) or 0)
             shape = tuple(int(hdr.get(f'NAXIS{i}', 0) or 0) for i in range(naxis, 0, -1))
-            if naxis and 0 not in shape:
-                data_end = (hdul.fileinfo(0)['datLoc']
-                            + abs(int(hdr.get('BITPIX', 8))) // 8 * int(np.prod(shape, dtype=np.int64)))
-            elif len(hdul) > 1:
+            if not naxis and len(hdul) > 1:
                 h1 = hdul[1].header
                 if h1.get('XTENSION') == 'BINTABLE' and str(h1.get('PIXTYPE', '')).strip().upper() == 'HEALPIX':
                     healpix = h1.copy()
-                    data_end = (hdul.fileinfo(1)['datLoc'] + int(h1.get('NAXIS1', 0) or 0) * int(h1.get('NAXIS2', 0) or 0)
-                                + int(h1.get('PCOUNT', 0) or 0))
+            compressed = getattr(hdul.fileinfo(0)['file'], 'compression', None)
+            for i, hdu in enumerate(hdul if not compressed else ()):
+                h = hdu.header
+                nax = int(h.get('NAXIS', 0) or 0)
+                n = int(np.prod([int(h.get(f'NAXIS{k}', 0) or 0) for k in range(1, nax + 1)], dtype=np.int64)) if nax else 0
+                nbytes = abs(int(h.get('BITPIX', 8))) // 8 * int(h.get('GCOUNT', 1) or 1) * (int(h.get('PCOUNT', 0) or 0) + n)
+                ends.append((hdul.fileinfo(i)['datLoc'] + nbytes, i))
     except Exception as e:
         report.errors.append(f"Cannot open FITS file: {e}")
         return report
@@ -202,9 +207,9 @@ def validate_header(fits_path, level='standard', logger_in=None):
         report.errors.append("No data in primary HDU")
         return report
     size = os.path.getsize(fits_path)
-    if data_end is not None and data_end > size:
-        report.errors.append(f"Data truncated: the file has {size} bytes, its "
-                             f"{'HDU 1 table' if healpix is not None else 'primary data'} ends at byte {data_end}")
+    end, hdu_no = max(ends or [(0, 0)])
+    if end > size:
+        report.errors.append(f"Data truncated: the file has {size} bytes, the data of HDU {hdu_no} end at byte {end}")
         return report
 
     ndim = len(shape)

@@ -105,6 +105,27 @@ def main():
     r = validate_header(p)
     check('HEALPix: truncated table refused', not r.ok and any('truncated' in e for e in r.errors), r.errors)
 
+    healpix(p, nside=4)
+    with fits.open(p, mode='update', memmap=False) as h:
+        h[1].header['NSIDE'] = 4.0
+    r = validate_header(p)
+    check('HEALPix NSIDE 4.0 (an integral float card): valid', r.ok and r.keywords_found.get('SHAPE') == '(192,)', r.errors)
+    image(p)
+    with fits.open(p, mode='append', memmap=False) as h:
+        h.append(fits.BinTableHDU.from_columns([fits.Column(name='X', format='D', array=np.arange(2000.0))], name='PROVENANCE'))
+    with open(p, 'r+b') as f:
+        f.truncate(os.path.getsize(p) - 2880 * 2)
+    r = validate_header(p)
+    check('image with a PROVENANCE table cut short: refused (every HDU is checked)', not r.ok
+          and any('truncated' in e and 'HDU 1' in e for e in r.errors), r.errors)
+    import gzip
+    image(p)
+    with open(p, 'rb') as f, gzip.open(p + '.gz', 'wb') as g:
+        g.write(f.read())
+    r = validate_header(p + '.gz')
+    check('a gzip-compressed image: valid (its size on disk is not the FITS stream\'s)', r.ok, r.errors)
+    os.remove(p + '.gz')
+
     healpix(p, nside=1, pixtype='OTHER')
     r = validate_header(p)
     check('empty primary + non-HEALPix table: No data in primary HDU', r.errors == ['No data in primary HDU'], r.errors)
