@@ -659,8 +659,13 @@ def test_cube_dither_seed_comes_from_the_data():
             assert first_blank is False or int(z1) == 1, z1
             assert pixels(w[0]) == pixels(w[1]), 'two writes of the same frames differ in their decoded pixels'
             assert len(b1) > 0 and (first_blank or b1 == b2), 'two writes of the same frames differ in the FRAMES data unit'
+            noise = os.path.join(d, tag + 'noise')         # the search's noise tables: rescale stamps IMGRMS/THERMNOI from them
+            os.makedirs(noise)
+            for st in ('I', 'V'):
+                with open(os.path.join(noise, 'noise_18MHz_%s_median.csv' % st), 'w') as fh:
+                    fh.write('ts,admitted\n' + ''.join('20241219_0400%02d,1\n' % (10 * k) for k in range(n)))
             for o in ('r1', 'r2'):
-                CU.rescale(argparse.Namespace(cube=w[0], fluxscal=0.75, out=os.path.join(d, tag + o)))
+                CU.rescale(argparse.Namespace(cube=w[0], fluxscal=0.75, out=os.path.join(d, tag + o), noise_dir=noise))
             r1, r2 = (os.path.join(d, tag + o, os.path.basename(w[0])) for o in ('r1', 'r2'))
             assert unit(r1, 'FRAMES')[1] == unit(r2, 'FRAMES')[1] and pixels(r1) == pixels(r2), \
                 'two rescales of the same cube differ in ZDITHER0 or in their decoded pixels'
