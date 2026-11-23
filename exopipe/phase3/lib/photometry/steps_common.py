@@ -62,17 +62,31 @@ def gate_env():
                       'launchers; unset them - every engine input is a flag or a config key)' % (', '.join(bad), pre))
 
 
-def sample_paths():
+def samples_measured(tier):
+    """The samples ``tier`` measures (photometry.SAMPLES_MEASURED[tier]: snapshot HWJ, 10pc, LPT; deep and sub-LST HWJ, 10pc)."""
+    return tuple(cfg().photometry.SAMPLES_MEASURED[tier])
+
+
+def samples_cut(tier):
+    """The samples ``tier``'s cutouts hold: photometry.SAMPLES_CUT, the one writer list every cutter takes (HWJ, 10pc, LPT),
+    the same for every tier."""
+    return tuple(cfg().photometry.SAMPLES_CUT)
+
+
+def sample_paths(tier, cut=False):
+    """{sample: list path} of the samples ``tier`` measures, or (cut=True) of the samples its cutters read."""
     c = cfg()
-    return {t: os.path.join(c.paths.CLV15_ROOT, c.photometry.SAMPLE_FILES[t]) for t in c.photometry.SAMPLES_MEASURED}
+    return {t: os.path.join(c.paths.CLV15_ROOT, c.photometry.SAMPLE_FILES[t])
+            for t in (samples_cut(tier) if cut else samples_measured(tier))}
 
 
-def gate_samples():
-    """PHOT-SAMPLE-PIN: each measured sample list must be the file config pins (sha1). The engines read these files by
-    literal path; a rebuilt list needs a config update (B-58 lean shape, pure: same files, same values)."""
+def gate_samples(tier, cut=False):
+    """PHOT-SAMPLE-PIN: each sample list ``tier`` measures - or with cut=True (a cutouts stage) each list its cutters read -
+    must be the file config pins (sha1). The engines read these files by literal path; a rebuilt list needs a config update
+    (B-58 lean shape, pure: same files, same values)."""
     c = cfg()
     out = {}
-    for t, p in sample_paths().items():
+    for t, p in sample_paths(tier, cut=cut).items():
         if not os.path.exists(p):
             raise Refusal('PHOT-SAMPLE-PIN: sample list %s missing (%s)' % (t, p))
         h = sha1_file(p)

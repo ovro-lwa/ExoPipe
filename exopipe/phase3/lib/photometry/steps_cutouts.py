@@ -68,13 +68,13 @@ def is_wideband(band):
     return band in ('Red', 'Green', 'Blue')
 
 
-def run_samples(targets, planets):
-    """The sample directories a cutout run writes: the ad-hoc tags (+ the planets with --planets), else the measured samples
-    and the planets (phase3_snapshot_cutouts._samples / _planets)."""
+def run_samples(targets, planets, tier):
+    """The sample directories a cutout run writes: the ad-hoc tags (+ the planets with --planets), else the samples ``tier``'s
+    cutters write (photometry.SAMPLES_CUT, every tier) and the planets (phase3_snapshot_cutouts._samples / _planets)."""
     ph = K.cfg().photometry
     if targets:
         return [t for t, _ in targets] + ([ph.PLANET_SAMPLE] if planets else [])
-    return list(ph.SAMPLES_MEASURED) + [ph.PLANET_SAMPLE]
+    return list(K.samples_cut(tier)) + [ph.PLANET_SAMPLE]
 
 
 def tag_suffix(targets):
@@ -411,7 +411,7 @@ def stage_snapshot_cutouts(run, args):
     root = K.cutout_root(args)
     planets = bool(getattr(args, 'planets', False))
     items = snapshot_items(args)
-    samples = run_samples(targets, planets)
+    samples = run_samples(targets, planets, 'snapshot')
     K.plan(run, '[cutouts] %d (night cell, band) units -> %s (generation %s); samples %s%s; engines %s, site PYTHON[%s]'
            % (len(items), root, K.cfg().photometry.GENERATION if root == K.cfg().photometry.CUTOUT_ROOT else 'not served',
               ','.join(samples), ' (ad hoc: %s)' % ', '.join('%s=%s' % t for t in targets) if targets else '',
@@ -591,7 +591,8 @@ def snapshot_unit(run, args, cell, band, root, targets, planets, samples, cubes)
     name = 'cutouts.%s.%s%s' % (cell, band, sfx)
     allcubes = cubes['V'] + cubes['I']
     stamp = bool(targets) and not is_wideband(band)        # ad hoc targets on a subband: the stamp method (STAMP_REFERENCE_ROOT)
-    inputs = (sorted(allcubes) + [p for _, p in targets] + ([] if targets else list(K.sample_paths().values()))
+    lists = [p for _, p in targets] or list(K.sample_paths('snapshot', cut=True).values())
+    inputs = (sorted(allcubes) + lists
               + [r for r in [stamp_record(cell, band)] if stamp and os.path.isfile(r)])
     admitted = cutout_admitted(cell, band)
     if K.run_resume_ok(run, name, admitted, {'inputs_listing_sha1': listing_sha1(inputs), 'cutout_root': root}):
@@ -872,7 +873,7 @@ def stage_tier_cutouts(run, args):
     targets = K.adhoc_targets(args)
     root = K.cutout_root(args)
     planets = bool(getattr(args, 'planets', False))
-    samples = run_samples(targets, planets)
+    samples = run_samples(targets, planets, tier)
     try:
         gate_tier_run(args)
         gate_tier_host(tier)
@@ -904,7 +905,7 @@ def tier_unit(run, args, tier, cell, root, targets, planets, samples):
     lst, band = cell.split('_', 1)
     sfx = tag_suffix(targets)
     name = 'cutouts.%s.%s%s' % (token, cell, sfx)
-    inputs = tier_inputs(tier, cell) + [p for _, p in targets] + ([] if targets else list(K.sample_paths().values()))
+    inputs = tier_inputs(tier, cell) + ([p for _, p in targets] or list(K.sample_paths(tier, cut=True).values()))
     if K.run_resume_ok(run, name, ['%s:%s' % (token, cell)], {'inputs_listing_sha1': listing_sha1(inputs), 'cutout_root': root}):
         return run.units[-1:]
     with run.unit(name, tier=tier, stage='cutouts', cell=cell, cutout_root=root, samples=samples,

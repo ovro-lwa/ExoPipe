@@ -1,5 +1,6 @@
-"""`exopipe3 photometry --tier snapshot`: target photometry of the HWJ and 10 pc samples on the photometry cutouts of the
-served generation (photometry.CUTOUT_ROOT; 10-s frames and 1-minute blocks), then the evaluation of every measured cell.
+"""`exopipe3 photometry --tier snapshot`: target photometry of the snapshot samples (photometry.SAMPLES_MEASURED['snapshot']:
+HWJ, 10 pc, LPT) on the photometry cutouts of the served generation (photometry.CUTOUT_ROOT; 10-s frames and 1-minute
+blocks), then the evaluation of every measured cell.
 
 Stages (photometry.STAGES['snapshot']): cutouts (only when named: the 10-s cutouts regenerated from the consolidated flow
 cubes into a generation root, lib/photometry/steps_cutouts.py) -> measure (one unit per night cell; stage 1 written to
@@ -102,10 +103,9 @@ def gate_full(args):
 def cell_files(cell, root, index, band, samples=None):
     """The engine's own selection (snapshot_forced_phot.cell_files, :218-225) for one band: the cutouts of the measured
     samples (or an ad-hoc target set's tags) for this cell-hour."""
-    c = K.cfg()
     lst, date = cell.split('_', 1)
     pat = '_%s_%sT' % (lst, date.replace('-', ''))
-    smp = tuple(samples or c.photometry.SAMPLES_MEASURED)
+    smp = tuple(samples or K.samples_measured('snapshot'))
     if index and os.path.exists(index):
         out = [os.path.join(root, l.strip()) for l in open(index) if pat in l and l.split('/')[0] in smp]
         out = [p for p in out if os.path.relpath(p, root).split('/')[1] == band]
@@ -155,12 +155,50 @@ def unit_name(cell, bands):
 # stage measure (snapshot_forced_phot.py per band)
 # ---------------------------------------------------------------------------------------------------------------------
 
+def engine_samples(path):
+    """The SAMPLES default of the snapshot measure engine at ``path``, read from its source without running it (as
+    tests/test_photometry.py test_mirrors reads it): the module-level SAMPLES literal, or the default branch of its ad-hoc
+    switch (`<P3_SNAP_CUTOUT_SAMPLES tags> if os.environ.get(...) else <tuple>`, 2026-10-28). None without such a literal."""
+    import ast
+    try:
+        body = ast.parse(open(path).read()).body
+    except (OSError, SyntaxError, ValueError):
+        return None
+    val = None
+    for node in body:
+        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == 'SAMPLES' for t in node.targets):
+            v = node.value.orelse if isinstance(node.value, ast.IfExp) else node.value
+            try:
+                val = ast.literal_eval(v)
+            except ValueError:
+                val = None
+    return tuple(val) if isinstance(val, (tuple, list)) and val and all(isinstance(x, str) for x in val) else None
+
+
+def gate_engine_samples():
+    """PHOT-ENGINE-SAMPLES: the snapshot measure engine the run executes (K.engine('measure_snapshot'): the one hit among the
+    site LEGACY_CODE_ROOTS) must know every sample the step names to it (--samples = photometry.SAMPLES_MEASURED['snapshot']).
+    An older engine refuses the flag in every band (REFUSING: --samples ...), which the step would record as a measure failure
+    of each cell; this refuses once, before any cell runs."""
+    p = K.engine('measure_snapshot')
+    got = engine_samples(p)
+    want = K.samples_measured('snapshot')
+    if got is None:
+        raise Refusal('PHOT-ENGINE-SAMPLES: engine %s has no readable SAMPLES literal (a tuple, or the default of its '
+                      'P3_SNAP_CUTOUT_SAMPLES switch)' % p)
+    lack = [t for t in want if t not in got]
+    if lack:
+        raise Refusal("PHOT-ENGINE-SAMPLES: engine %s SAMPLES %s lacks %s (photometry.SAMPLES_MEASURED['snapshot'] = %s)"
+                      % (p, ','.join(got), ','.join(lack), ','.join(want)))
+    return got
+
+
 def stage_measure(run, args):
     c = K.cfg()
     m = c.photometry_measure
     root = cutout_root(args)
     targets = K.adhoc_targets(args)
-    samples = [t for t, _ in targets] or list(c.photometry.SAMPLES_MEASURED)
+    samples = [t for t, _ in targets] or list(K.samples_measured('snapshot'))
     items, _ = select_cells(args, c.paths.SNAPSHOT_FLEET_OUT)
     stage1 = stage1_root(run)
     man_name = args.manifest_name or m.MANIFEST_NAME
@@ -171,6 +209,8 @@ def stage_measure(run, args):
               args.band_procs or m.BAND_PROCS['snapshot'], K.python_key('snapshot')))
     try:
         K.gate_adhoc_roots(targets, {'stage-1 root': stage1})
+        if not targets:             # an ad-hoc set: the engine takes its tags from P3_SNAP_CUTOUT_SAMPLES (K.adhoc_env)
+            gate_engine_samples()
     except Refusal as e:
         if run.dry_run:
             K.would_refuse(run, 'measure', str(e))
@@ -216,12 +256,12 @@ def measure_cell(run, args, cell, bands, files, root, stage1, man_name, targets=
         u.meta['bands_no_cutout'] = [b for b in bands if not files[b]]
         if not withc:
             raise NoInput('SM-NOCUT: no %s cutout for %s in %d bands under %s' % (
-                '/'.join(t for t, _ in targets) or 'HWJ/10pc', cell, len(bands), root))
+                '/'.join(t for t, _ in targets) or '/'.join(K.samples_measured('snapshot')), cell, len(bands), root))
         full = list(bands) == list(c.photometry.SNAPSHOT_BANDS)
         mpath = os.path.join(dst, man_name)
         if not full and man_name == m.MANIFEST_NAME and os.path.exists(mpath):
             u.refuse('SM-SUBSET: a band subset would overwrite the full-band manifest %s; give --manifest-name' % mpath)
-        for p in ([p for _, p in targets] or K.sample_paths().values()):
+        for p in ([p for _, p in targets] or K.sample_paths('snapshot').values()):
             u.add_input(p)
         for b in withc:
             gp = os.path.join(c.catalog_snapshot.MASTER_CATALOGS, 'master_R075_%s_%s.gaul.csv' % (lst, b))
@@ -241,10 +281,11 @@ def measure_cell(run, args, cell, bands, files, root, stage1, man_name, targets=
 
         def one(b):
             # an ad-hoc target set: the engine reads it from P3_SNAP_CUTOUT_SAMPLES and measures its tags (--samples TAG,
-            # forced_adhoc_20261028/stage1_when_done_20261028.sh:10-11)
+            # forced_adhoc_20261028/stage1_when_done_20261028.sh:10-11); else the snapshot samples of config, named (the
+            # engine's default since 2026-11-18, mirror-tested; an engine without one of them: PHOT-ENGINE-SAMPLES above)
             argv = [cell, os.path.join(work, 'b_%s' % b), '--bands', b, '--root', root] + (
                 ['--index', os.path.abspath(args.index)] if args.index else []) + (
-                ['--samples', ','.join(t for t, _ in targets)] if targets else [])
+                ['--samples', ','.join(t for t, _ in targets) or ','.join(K.samples_measured('snapshot'))])
             res, text = K.call(u, 'measure_snapshot', argv, 'snapshot', 'snapshot_measure', run,
                                'measure_%s_%s.log' % (cell, b), env_extra=K.adhoc_env(targets), threads=args.threads)
             out[b] = (res, text)
@@ -473,8 +514,9 @@ def stage_evaluate(run, args):
     c = K.cfg()
     ev = c.photometry_evaluate
     if getattr(args, 'targets', None):
-        raise Refusal('PHOT-ADHOC: the evaluation is defined on the HWJ / 10 pc samples (thresholds from their controls, '
-                      'survey size); an ad-hoc target set is measured, not evaluated (production: adhoc_report_20261028.py)')
+        raise Refusal('PHOT-ADHOC: the evaluation is defined on the snapshot samples %s (photometry.SAMPLES_MEASURED; '
+                      'thresholds from their controls, survey size); an ad-hoc target set is measured, not evaluated '
+                      '(production: adhoc_report_20261028.py)' % ', '.join(K.samples_measured('snapshot')))
     stage1 = os.path.abspath(args.stage1) if args.stage1 else stage1_root(run)
     kinds = [k.strip() for k in (args.kinds or ','.join(ev.KINDS['snapshot'])).split(',') if k.strip()]
     badk = [k for k in kinds if k not in ev.KINDS['snapshot']]

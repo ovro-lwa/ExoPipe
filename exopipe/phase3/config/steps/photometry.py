@@ -97,14 +97,27 @@ class photometry(_Section):
                                                  # 20261025.OLD_ROOT - the steps always pass their root) and, on 2026-11-03,
                                                  # still the root the LIVE fleet's per-hour search writes (review F1)
     # ---- samples (pinned inputs: Gregg's lists, read only). File names under paths.CLV15_ROOT; the engines read the same files
-    #      by literal path (deep_forced_phot.py:87-88; phase3_snapshot_cutouts.py:33-35 via snapshot_forced_phot.py:52-57)
-    SAMPLE_FILES = {'HWJ': 'Hot_Warm_Jupiters.csv', '10pc': '10pc.csv'}
+    #      by literal path (deep_forced_phot.py:87-88; phase3_snapshot_cutouts.py:34-35 via snapshot_forced_phot.py:52-57)
+    SAMPLE_FILES = {'HWJ': 'Hot_Warm_Jupiters.csv', '10pc': '10pc.csv', 'LPT': 'LPTs.csv'}
     SAMPLE_SHA1 = {'HWJ': 'ede4fe33ec4e2686dfff9a0c69b54a8113b1a842',      # sha1 read 2026-10-13: 77 rows (list rebuilt 2026-09-26,
-                   '10pc': '63b4dcf71b28bdefb2be0b19e7e5591f90ac89ea'}     # HWJ-LIST-CUT-TO-THE-ELEVATION-RULING-AND-HD-20782-REMOVED); 292 rows
+                   '10pc': '63b4dcf71b28bdefb2be0b19e7e5591f90ac89ea',     # HWJ-LIST-CUT-TO-THE-ELEVATION-RULING-AND-HD-20782-REMOVED); 292 rows
+                   'LPT': 'a02537b1cc587b4c20aa30d5da171d5ede2f9dcb'}      # sha1 read 2026-11-23: 20 rows (long-period transients)
     SAMPLE_COLUMNS = ('common_name', 'ra_current', 'dec_current')         # name, RA deg, Dec deg (current epoch); deep_forced_phot.py:89
     SAMPLE_ENCODING = 'utf-8-sig'                                          # deep_forced_phot.py:88 (10pc.csv carries a BOM)
-    SAMPLES_MEASURED = ('HWJ', '10pc')                                     # MIRROR deep_forced_phot.py:87, snapshot_forced_phot.py:45,
-                                                                           # deep_forced_eval.py:93 (R-FORCED-PHOTOMETRY-ELEMENTS-APPROVED-V-FAINT-PARENT-ENTRIES)
+    # LPT (long-period transients) since 2026-11-18: R-GREGG-20261118-GEN6-WITH-LPTS-SAMPLE-WIRED, "Approve gen6 with the LPTs
+    # included". Two lists (sublst = the 10-minute tier cutouts):
+    # CUT = the samples every tier's cutouts hold: the one writer list, phase3_snapshot_cutouts.SAMPLES, which every cutter
+    # takes through CUT._targets() - the 10-s write_cutouts, its --cutouts-from-cubes regeneration and the deep / 10-minute
+    # tier tool (photometry_tier_cutouts_20261025.py:123) - and what the cutout name checks expect (C-NAMES, one file per key,
+    # the cutout manifests); LPT in every tier
+    SAMPLES_CUT = ('HWJ', '10pc', 'LPT')                                   # MIRROR phase3_snapshot_cutouts.py:34-35 SAMPLES
+    # MEASURED = the samples a tier's measure engines are given and its stage 1 must hold. The deep engines name no LPT; the
+    # deep and 10-minute LPT forced photometry of 2026-11-18 is a separate dated script
+    # (phase3/forced_lpt_20261118/lpt_forced_20261118.py, DONE-20261118-LPT-FORCED-PHOTOMETRY-DEEP-10MIN-STAGE-A): a later
+    # port item
+    SAMPLES_MEASURED = {'snapshot': ('HWJ', '10pc', 'LPT'),                # MIRROR snapshot_forced_phot.py:61-62 SAMPLES default
+                        'deep': ('HWJ', '10pc'),                           # MIRROR deep_forced_phot.py:87, deep_forced_eval.py:93
+                        'sublst': ('HWJ', '10pc')}                         # (R-FORCED-PHOTOMETRY-ELEMENTS-APPROVED-V-FAINT-PARENT-ENTRIES)
     # known lists nothing measures today (B-58): file name under paths.CLV15_ROOT, or None when omitted by ruling
     SAMPLES_NOT_MEASURED = {'25pc': '25pc.csv',                            # 4,277 rows; no engine reads it
                             'flare_ucd': 'flare_ucd.csv',                  # 7,626 rows, 13-star pinned supplement (FIX-FLARE-UCD-DROPPED-ROWS)
@@ -155,14 +168,17 @@ class photometry(_Section):
     ENV_FORBIDDEN_PREFIXES = ('P3S', 'DEEP_FORCED_', 'SF_', 'FORCED_TEST_', 'SUBLST_', 'P3_PHOT_ROOT', 'P3_SNAP_CUTOUT_')
                                     # P3_PHOT_ROOT (snapshot_forced_phot.py ROOT, 2026-10-25, 43eaf17) and P3_SNAP_CUTOUT_SAMPLES /
                                     # _PLANETS (the measured samples, 2026-10-28, c4fa0e3) are the in-place engine's switches: the
-                                    # step passes --root itself and measures SAMPLES_MEASURED only
+                                    # step passes --root itself and measures SAMPLES_MEASURED[tier] only
     LOG_TAIL_LINES = 40             # engine log lines kept in a refused unit's reason / record (orchestration only)
-    PROTECTED_KEYS = ('SAMPLE_FILES', 'SAMPLE_SHA1', 'SAMPLE_COLUMNS', 'SAMPLE_ENCODING', 'SAMPLES_MEASURED',
+    PROTECTED_KEYS = ('SAMPLE_FILES', 'SAMPLE_SHA1', 'SAMPLE_COLUMNS', 'SAMPLE_ENCODING', 'SAMPLES_MEASURED', 'SAMPLES_CUT',
                       'SAMPLES_NOT_MEASURED', 'CURRENT_LIST_ONLY', 'OUT_ROOT', 'ENGINE', 'ENV_FORBIDDEN_PREFIXES',
                       'TIERS_WITH_ENGINE', 'RETIRED_CUTOUT_ROOTS', 'ENGINE_PYTHON_BY_KEY', 'TIER_FORCED_SAMPLES',
                       'PLANET_SAMPLE', 'ADHOC_ENV', 'ADHOC_PLANETS_ENV', 'ENGINE_V2')
-    RULED = {'SAMPLES_MEASURED': 'R-FORCED-PHOTOMETRY-ELEMENTS-APPROVED-V-FAINT-PARENT-ENTRIES',
-             'SAMPLE_FILES': 'HWJ-LIST-CUT-TO-THE-ELEVATION-RULING-AND-HD-20782-REMOVED',
+    RULED = {'SAMPLES_MEASURED': ('R-FORCED-PHOTOMETRY-ELEMENTS-APPROVED-V-FAINT-PARENT-ENTRIES',
+                                  'R-GREGG-20261118-GEN6-WITH-LPTS-SAMPLE-WIRED'),
+             'SAMPLES_CUT': 'R-GREGG-20261118-GEN6-WITH-LPTS-SAMPLE-WIRED',
+             'SAMPLE_FILES': ('HWJ-LIST-CUT-TO-THE-ELEVATION-RULING-AND-HD-20782-REMOVED',
+                              'R-GREGG-20261118-GEN6-WITH-LPTS-SAMPLE-WIRED'),
              'SNAPSHOT_BANDS': ('INCIDENT-SNAP-FULL-CUTOUTS-EQUAL-RED-62-CELLS',
                                 'INCIDENT-SNAPSHOT-FORCED-PHOTOMETRY-RAN-WITHOUT-WIDEBAND'),
              'SAMPLES_NOT_MEASURED': ('R-P3S2-PAGE-STANDARDS', 'FIX-FLARE-UCD-DROPPED-ROWS')}

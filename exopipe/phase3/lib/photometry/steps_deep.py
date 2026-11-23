@@ -1,4 +1,5 @@
-"""`exopipe3 photometry --tier deep`: target photometry of the HWJ and 10 pc samples on the SEARCHED deep frames of a run.
+"""`exopipe3 photometry --tier deep`: target photometry of the deep samples (photometry.SAMPLES_MEASURED['deep']: HWJ, 10 pc)
+on the SEARCHED deep frames of a run.
 
 Stages (photometry.STAGES['deep']): frames -> stage -> measure -> evaluate. Each stage reads ONLY the files the previous
 stage's record lists (DESIGN 11.5). The deep TIER cutouts and their forced measurement (cutouts, cutmeasure: one cube per
@@ -495,7 +496,7 @@ def stage_measure(run, args):
             K.plan(run, '[measure]   ... %d more shard units' % (len(shards) - 4))
         return []
     os.makedirs(outd, exist_ok=True)
-    samples = list(K.sample_paths().values())
+    samples = list(K.sample_paths('deep').values())
     pinned = [m.PARENT_TABLES['deep'], m.SOLAR_AUDIT['deep'], c.paths.DATA_DECISIONS]
 
     def one(s):

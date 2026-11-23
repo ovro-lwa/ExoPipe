@@ -1,5 +1,6 @@
-"""exopipe3 photometry - photometry of the input samples (Hot/Warm Jupiters, 10 pc) at their catalogue positions, with the
-12-control local-empirical null, the a-priori bright-source screen, control-derived thresholds and completeness.
+"""exopipe3 photometry - photometry of the input samples (Hot/Warm Jupiters, 10 pc; the snapshot tier also the long-period
+transients, photometry.SAMPLES_MEASURED) at their catalogue positions, with the 12-control local-empirical null, the a-priori
+bright-source screen, control-derived thresholds and completeness.
 
     exopipe3 photometry --tier deep --run P3S5 --parent-dir DIR --out /fast/gh/refactor_scratch/phot/Run_P3S5   (campaign)
     exopipe3 photometry --tier deep --run P3S5 --parent-dir DIR --epochs 04h_2025-10-14 --out ...                (one hour)
@@ -92,7 +93,7 @@ Failure modes (exit 2 = refused, the gate named in the record; 3 = nothing to do
 import importlib
 import sys
 
-SUMMARY = 'photometry of input samples (HWJ, 10 pc; flare/UCD and 25 pc listed, not measured): deep and snapshot'
+SUMMARY = 'photometry of input samples (HWJ, 10 pc; snapshot also LPT; flare/UCD and 25 pc listed, not measured): deep and snapshot'
 TIERS = ('deep', 'snapshot', 'sublst')
 SELECTORS = ('tier', 'cells', 'scopes', 'stokes', 'run_label', 'exclude_cells', 'epochs')
 CONFIG = ('photometry', 'photometry_frames', 'photometry_measure', 'photometry_evaluate', 'photometry_cutouts',
@@ -125,7 +126,7 @@ def add_arguments(p):
     cu.add_argument('--tier-out', metavar='DIR', help='cutmeasure: the tier forced root of every sample (default '
                                                       'photometry.TIER_FORCED_ROOTS, per sample as served)')
     cu.add_argument('--targets', metavar='TAG=CSV[,TAG=CSV]',
-                    help='an AD-HOC target set replacing the HWJ / 10 pc lists for cutouts, snapshot measure and the '
+                    help='an AD-HOC target set replacing the named sample lists for cutouts, snapshot measure and the '
                          'deep / 10-minute cutmeasure (passed to the engines as P3_SNAP_CUTOUT_SAMPLES; columns '
                          'common_name|name, ra_current|ra, dec_current|dec); never into a served root (give --cutout-root / '
                          '--out, and --tier-out for cutmeasure); not evaluated')
@@ -173,7 +174,7 @@ def run(args, run):
     from exopipe.phase3.lib.photometry import steps_common as K
     K.gate_tier(args.tier, args.stages)
     K.gate_env()
-    K.gate_samples()
+    K.gate_samples(args.tier)
     c = K.cfg()
     m = c.photometry_measure
     if args.tier == 'deep':
@@ -188,6 +189,8 @@ def run(args, run):
     try:
         flag_overrides(args, c)
         stages = K.resolve_stages(args, args.tier)
+        if 'cutouts' in stages and not getattr(args, 'targets', None):
+            K.gate_samples(args.tier, cut=True)        # the cutters read photometry.SAMPLES_CUT (LPT in every tier)
         gate_adhoc_stages(args, stages)
         gate_in_place_stages(args, stages)
         K.plan(run, 'photometry --tier %s: stages %s; out %s%s' % (args.tier, ','.join(stages), run.out_root,
@@ -211,7 +214,8 @@ ADHOC_STAGES = {'snapshot': ('cutouts', 'measure'), 'deep': ('cutouts', 'cutmeas
 def gate_adhoc_stages(args, stages):
     """PHOT-ADHOC: an ad-hoc target set (--targets, --planets) applies to the cutouts and the measurement on them (the engines
     read P3_SNAP_CUTOUT_SAMPLES); the deep frame-table chain reads the pinned lists by literal path and the evaluation is
-    defined on the HWJ / 10 pc samples - selecting one of those with --targets refuses."""
+    defined on the tier's measured samples (photometry.SAMPLES_MEASURED[tier]) - selecting one of those with --targets
+    refuses."""
     from exopipe.phase3.core import record
     if not (getattr(args, 'targets', None) or getattr(args, 'planets', False)):
         return
