@@ -25,6 +25,8 @@ data_decisions.csv, the flow cubes carry FRAMES and FRAME_TABLE (frame headers w
   - durable records: atomic_write_json(durable=True) fsyncs (file and directory), the default does not; a record write that
     raises OSError, or a ValueError of a record that cannot be serialized, ends the unit 'error' (exit 1), leaves NO record
     (an earlier done record removed), and a resumed run re-runs the unit.
+The flux-scale gate, its re-check and the generation checks (C-FLUXSCALE, C-GENCHECK) are stubbed to pass here (the synthetic
+cubes carry no FSAPPLD): tests/test_photometry_cube_gate.py and tests/test_photometry.py test them.
 Scratch: a fresh directory under $EXOPIPE3_TEST_SCRATCH, else the system temp directory, removed at exit.
 Run: python tests/test_photometry_writer_safety.py
 """
@@ -264,6 +266,8 @@ class Env:
                           (CFG.site, 'PYTHON', dict(CFG.site.PYTHON, py36=sys.executable, default=sys.executable)),
                           (CFG.site, 'LEGACY_CODE_ROOTS', [self.code]),
                           (CFG.photometry_cutouts, 'GROUP_EXCLUSION_ROOT', self.prod),
+                          (SC, 'fluxscale_gate', lambda *a: {}), (SC, 'fluxscale_recheck', lambda *a: ([], [])),
+                          (SC, 'generation_checks', lambda *a: None),
                           (K, 'engine', self.engine), (TC, 'identity_subband', self.identity)):
             self.saved.append((obj, k, getattr(obj, k)))
             setattr(obj, k, v)

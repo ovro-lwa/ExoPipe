@@ -46,10 +46,11 @@ products are only READ.
   5-sigma source fail; wideband: the weights' '%.6g' rounding passes the exact bound 5e-6 x (A + |S|), fails without it and
   with the stack-magnitude bound); one file per key (stale time stamp, orphan; CM2); the snapshot cutouts stage end to end
   through a FAKE engine running the REAL writer on synthetic consolidated cubes (done, manifest, --resume, in-place re-run,
-  C-STALE and --fresh quarantine, C-IDENTITY before placement, C-EXCLUDED, C-CELLS, C-ROOT); ad hoc targets on a subband
-  through the stamp engine's seam (a FAKE stamp engine running the REAL writer: its arguments, identity, the parity reports and
-  reference inputs recorded; its exclusion, its refusal, a missing parity report; no --targets keeps the regeneration
-  engine); the deep and 10-minute tier
+  C-STALE and --fresh quarantine, C-IDENTITY before placement, C-FLUXSCALE before the engine and again before placement,
+  C-GENCHECK before placement, the flux-scale record placed with the cutouts, C-EXCLUDED, C-CELLS, C-ROOT); ad hoc targets on
+  a subband through the stamp engine's seam (a FAKE stamp engine running the REAL writer: its arguments, identity, the parity
+  reports and reference inputs recorded; its exclusion, its refusal, a missing parity report; no --targets keeps the
+  regeneration engine); the deep and 10-minute tier
   cutouts (the REAL tool's cell_job on synthetic residuals) and cutmeasure (the REAL tier forced tool) end to end, a named
   sample subset and an ad-hoc tag (ADHOC, measured since 2026-11-20); ad-hoc
   target lists (the REAL stage 1 on ADHOC cutouts; PHOT-ADHOC gates); stage selection (cutouts only when named; sub-LST).
@@ -1942,6 +1943,28 @@ def test_cutout_ports():
 # ---------------------------------------------------------------------------------------------------------------------
 
 CUBES = os.path.join(TMP, 'cubes')
+CUT_OPS = os.path.join(TMP, 'cut_ops')   # paths.OPS_ROOT of the cutouts runs: the rescale records of the synthetic cubes
+_N_REC = [0]
+
+
+def record_cube(path, fs=1.0):
+    """A rescale RESULTS row of a synthetic flow cube that carries FSAPPLD ``fs`` (the flux-scale gate, lib/photometry/
+    fluxscale.py, passes it), each row newer than the last; the generation-5 comparison job list empty (check (b) applies to
+    no unit here: tests/test_photometry_cube_gate.py tests it)."""
+    fx = CFG.photometry_fluxscale
+    d = os.path.join(CUT_OPS, fx.RESCALE_RESULTS_DIR)
+    os.makedirs(d, exist_ok=True)
+    open(os.path.join(CUT_OPS, fx.GEN5_JOBS), 'a').close()
+    p = os.path.join(d, 'RESULTS_test.csv')
+    new = not os.path.exists(p)
+    _N_REC[0] += 1
+    with open(p, 'a', newline='') as f:
+        w = csv.writer(f)
+        if new:
+            w.writerow(['utc', 'cube', 'fsappld', 'md5_new', 'md5_frame_units', 'quarantine', 'worst_pixel_over_noise'])
+        w.writerow(['2026-11-23T00:00:00.%06dZ' % _N_REC[0], path, '%.6f' % fs, '', '', '', ''])
+
+
 CUT_SB = '64MHz'
 WB_GROUP, WB_SBS = 'Blue', ('64MHz', '69MHz', '73MHz')
 NPX_C, CD_C, NT_C = 300, 0.05, 6                 # cube pixels, deg / pixel, frames
@@ -1980,7 +2003,9 @@ def make_cube(cell, sb, stokes, seed, scale=1.0, offset=0.0, n=NPX_C, nt=NT_C):
     tab = fits.BinTableHDU.from_columns([fits.Column(name='ts', format='15A', array=np.array(ts)),
                                          fits.Column(name='header', format='%dA' % max(len(x) for x in hdrs),
                                                      array=np.array(hdrs))], name='FRAME_TABLE')
-    fits.HDUList([fits.PrimaryHDU(), fits.ImageHDU(frames, name='FRAMES'), tab]).writeto(p, overwrite=True)
+    fits.HDUList([fits.PrimaryHDU(header=fits.Header([('FSAPPLD', 1.0)])), fits.ImageHDU(frames, name='FRAMES'),
+                  tab]).writeto(p, overwrite=True)
+    record_cube(p)
     return p, frames, ts
 
 
@@ -2125,7 +2150,8 @@ FAKE_REGEN = r'''#!/usr/bin/env python
 """FAKE phase3_snapshot_search.py --cutouts-from-cubes for tests/test_photometry.py: the synthetic consolidated cube of the cell /
 subband (P3_SNAP_CUBE_ROOT), the hour-median model, every frame admitted, identity screens - then the REAL writer
 (clv15 phase3_snapshot_cutouts.write_cutouts) into P3_SNAP_CUTOUT_ROOT, V then I, and the regeneration's CUTOUTS-REGEN line.
-fake_params.json: 'excluded' cells exit 3 (EXCLUDED:), 'corrupt' shifts plane 1 of every written cutout by one pixel, 'refuse'
+fake_params.json: 'excluded' cells exit 3 (EXCLUDED:), 'corrupt' shifts plane 1 of every written cutout by one pixel, 'touch'
+cells move the V cube's mtime 10 s on once cut (a cube changed during the cut), 'refuse'
 cells raise the engine's REFUSED (a cube repeating integrations without the search's frame list), 'crash' cells fail without a
 refusal, 'night' cells write nothing and exit 0 with the done line of a night-rule refusal of both Stokes. Importable (the step's
 probe (cutouts_probe.py) imports it as the engines' reader): DATA_DECISIONS and excluded_subbands read the exclusion list as the real
@@ -2209,6 +2235,10 @@ def main():
             for f in glob.glob(os.path.join(root, '*', a.subband, '*', '*_%s.fits' % S)):
                 with fits.open(f, mode='update') as h:
                     h[0].data[1] = np.roll(h[0].data[1], 1, axis=1)
+    if cell in P.get('touch', []):
+        p = os.path.join(os.environ['P3_SNAP_CUBE_ROOT'], cell, '%s_%s_V_flowcube.fits' % (cell, a.subband))
+        st = os.stat(p)
+        os.utime(p, ns=(st.st_atime_ns, st.st_mtime_ns + 10 ** 10))
     print('2026-11-02 00:00:00,000 INFO CUTOUTS-REGEN %s %s %s: V %s I %s' % (a.lst, a.date, a.subband, n['V'], n['I']), flush=True)
 
 
@@ -2217,15 +2247,18 @@ if __name__ == '__main__':
 '''
 
 
-def setup_fake_regen(excluded=(), corrupt=False, refuse=(), crash=(), night=()):
+def setup_fake_regen(excluded=(), corrupt=False, refuse=(), crash=(), night=(), touch=()):
     p = os.path.join(FAKE_DIR, 'fake_params.json')
     prm = json.load(open(p)) if os.path.exists(p) else {}
     prm.update(excluded=list(excluded), corrupt=corrupt, refuse=list(refuse), crash=list(crash), night=list(night),
-               data_decisions=CFG.paths.DATA_DECISIONS)
+               touch=list(touch), data_decisions=CFG.paths.DATA_DECISIONS)
     json.dump(prm, open(p, 'w'))
     fp = os.path.join(FAKE_DIR, CFG.photometry.ENGINE['cutouts_subband'])
     open(fp, 'w').write(FAKE_REGEN)
     FAKES['cutouts_subband'] = fp
+    cut = os.path.join(FAKE_DIR, 'phase3_snapshot_cutouts.py')    # the code root's writer module, whose md5 the flux-scale
+    if not os.path.lexists(cut):                                   # record carries: the REAL writer the fake imports (clv15
+        os.symlink(os.path.join(CFG.paths.CLV15_ROOT, 'phase3_snapshot_cutouts.py'), cut)   # first on its sys.path)
 
 
 FAKE_STAMP = r'''#!/usr/bin/env python
@@ -2294,7 +2327,8 @@ def setup_fake_stamp(excluded=(), refuse=(), one_parity=(), noref=(), night=()):
 CUT_OUT = os.path.join(TMP, 'cut_out')
 CUT_ROOT = os.path.join(CUT_OUT, 'photometry_genT')
 CUT_CELL = '18h_2025-04-13'
-CUT_COMMON = ['--tier', 'snapshot', '--stages', 'cutouts', '--cores', 'none', '--set', 'paths.SNAPSHOT_CUBES_ROOT=%s' % CUBES]
+CUT_COMMON = ['--tier', 'snapshot', '--stages', 'cutouts', '--cores', 'none', '--set', 'paths.SNAPSHOT_CUBES_ROOT=%s' % CUBES,
+              '--set', 'paths.OPS_ROOT=%s' % CUT_OPS]
 
 
 def root_state(root):
@@ -2337,18 +2371,24 @@ def test_cutouts_snapshot():
           and not os.path.exists(CUT_OUT), txt)
     rc, txt = step(argv)
     rec = records(CUT_OUT).get(unit, {})
-    man = [o['path'] for o in rec.get('outputs', [])]
+    man = [o['path'] for o in rec.get('outputs', []) if o['class'] == 'photometry_cutout_manifest']
+    fsr = [o['path'] for o in rec.get('outputs', []) if o['class'] == 'photometry_fluxscale_record']
     tests = {t['name']: t['passed'] for t in rec.get('tests', [])}
     files = sorted(glob.glob(os.path.join(CUT_ROOT, '*', CUT_SB, '*', '*.fits')))
-    check('cutouts (FAKE engine + the REAL writer on synthetic cubes): unit done, %d cutouts placed, the manifest written, '
-          'the staged files fsynced at their header-implied size and as many as the engine counted (W1 / W2), identity V / I '
-          'pass, CM1 / CM2 pass on the STAGED files before placement and again once placed, the staging directory removed'
-          % len(files),
-          rc == 0 and rec.get('status') == 'done' and len(man) == 1 and files and all(tests.values())
+    check('cutouts (FAKE engine + the REAL writer on synthetic cubes): unit done, %d cutouts placed, the manifest and the '
+          'flux-scale record written, the staged files fsynced at their header-implied size and as many as the engine counted '
+          '(W1 / W2), identity V / I pass, CM1 / CM2 pass on the STAGED files before placement and again once placed, checks '
+          '(a) and (c) and the record\'s FS1 pass, the staging directory removed' % len(files),
+          rc == 0 and rec.get('status') == 'done' and len(man) == 1 and len(fsr) == 1 and os.path.isfile(fsr[0]) and files
+          and all(tests.values())
           and set(tests) >= {'photometry_cutout_manifest.I1_identity_V', 'photometry_cutout_manifest.I1_identity_I',
                              'photometry_cutout_manifest.CM1_files', 'photometry_cutout_manifest.CM2_one_per_key',
                              'photometry_cutout_manifest.CM1_files_staged', 'photometry_cutout_manifest.CM2_one_per_key_staged',
-                             'photometry_cutout_manifest.W1_fsync_size', 'photometry_cutout_manifest.W2_count'}
+                             'photometry_cutout_manifest.W1_fsync_size', 'photometry_cutout_manifest.W2_count',
+                             'photometry_cutout_manifest.GA_fluxscale_record_V',
+                             'photometry_cutout_manifest.GA_fluxscale_record_I',
+                             'photometry_cutout_manifest.GC_targets_V', 'photometry_cutout_manifest.GC_targets_I',
+                             'photometry_fluxscale_record.fs1_record'}
           and not os.path.exists(os.path.join(CUT_ROOT, CFG.photometry_cutouts.STAGING_SUBDIR)), (rc, rec.get('reason'), tests,
                                                                                                   txt[-1500:]))
     rows = TC.read_manifest(man[0])[1] if man else []
@@ -2367,9 +2407,10 @@ def test_cutouts_snapshot():
     rc, txt = step(argv)
     rows2 = TC.read_manifest(man[0])[1]
     qr = new_rows(q0, quarantine_rows(CUT_ROOT))
-    check('a re-run replaces the unit\'s files (same names: no stale time stamp), done - each file it replaces (%d cutouts and '
-          'the unit manifest) moved to the quarantine first with its sha256, never overwritten (review F2)' % len(h0),
-          rc == 0 and sorted(r['file'] for r in rows2) == sorted(h0) and len(qr) == len(h0) + 1
+    check('a re-run replaces the unit\'s files (same names: no stale time stamp), done - each file it replaces (%d cutouts, '
+          'the unit manifest and the flux-scale record) moved to the quarantine first with its sha256, never overwritten '
+          '(review F2)' % len(h0),
+          rc == 0 and sorted(r['file'] for r in rows2) == sorted(h0) and len(qr) == len(h0) + 2
           and all(r['reason'].startswith('replaced by %s' % unit) for r in qr)
           and sorted(r['sha256'] for r in qr) == sorted(s0.values()), (txt[-800:], len(qr)))
     # a stale time stamp of a written key (the 12h 2024-12-31 defect) and an orphan: refused, then quarantined with --fresh
@@ -2442,6 +2483,53 @@ def test_cutouts_snapshot():
           and len(moved) == len(back) == len(before) and sorted(r['sha256'] for r in back) == sorted(before.values())
           and stg and len(glob.glob(os.path.join(stg, '*', CUT_SB, '*', '*.fits'))) == len(h0)
           and rec.get('meta', {}).get('placement_undone', {}).get('problems') == [], (rec.get('reason'), len(moved), len(back)))
+    # C-FLUXSCALE BEFORE the engine (lib/photometry/fluxscale.py, gen6_cube_gate_DRAFT.py): the V cube's newest rescale record
+    # names another factor than its FSAPPLD card - the dry run names the refusal; the run refuses (exit 2) with the engine not
+    # started (no staging directory), the root byte-identical
+    before = root_state(CUT_ROOT)
+    q0 = quarantine_rows(CUT_ROOT)
+    vcube = os.path.join(CUBES, CUT_CELL, '%s_%s_V_flowcube.fits' % (CUT_CELL, CUT_SB))
+    record_cube(vcube, fs=1.5)
+    try:
+        rc_d, txt_d = step(argv + ['--dry-run'])
+        rc, txt = step(argv)
+    finally:
+        record_cube(vcube)
+    rec = records(CUT_OUT).get(unit, {})
+    check('C-FLUXSCALE before the engine: FSAPPLD 1.0 against a rescale record of 1.5 - the dry run says the unit would '
+          'refuse; the run refuses it (exit 2), the engine not started (no staging directory), the root byte-identical, '
+          'nothing quarantined', rc_d == 0 and 'would refuse C-FLUXSCALE' in txt_d and '1 of 1 unit(s) would refuse' in txt_d
+          and rc == 2 and 'C-FLUXSCALE' in rec.get('reason', '') and 'the engine not started' in rec.get('reason', '')
+          and 'FSAPPLD 1.000000 != recorded 1.500000' in rec.get('reason', '') and not rec.get('meta', {}).get('staging')
+          and before == root_state(CUT_ROOT) and not new_rows(q0, quarantine_rows(CUT_ROOT)), (rec.get('reason'), txt_d[-600:]))
+    # ... and AFTER the cut, before placement: the V cube changes while the engine cuts (its mtime) - refused, nothing placed
+    setup_fake_regen(touch=[CUT_CELL])
+    try:
+        rc, txt = step(argv)
+    finally:
+        setup_fake_regen()
+    rec = records(CUT_OUT).get(unit, {})
+    stg = rec.get('meta', {}).get('staging')
+    check('C-FLUXSCALE re-check after the cut: a cube changed during the cut (mtime) refuses the unit before placement (exit '
+          '2) - the root byte-identical, nothing quarantined, the staging directory kept with the new files',
+          rc == 2 and 'C-FLUXSCALE' in rec.get('reason', '') and 'changed' in rec.get('reason', '')
+          and before == root_state(CUT_ROOT) and not new_rows(q0, quarantine_rows(CUT_ROOT))
+          and stg and len(glob.glob(os.path.join(stg, '*', CUT_SB, '*', '*.fits'))) == len(h0), (rec.get('reason'), txt[-600:]))
+    # C-GENCHECK: a content check of the regeneration failing on the STAGED cutouts (check (c), forced) - refused before
+    # placement
+    from exopipe.phase3.lib.photometry import tests_fluxscale as TF
+    real_c = TF.check_c
+    TF.check_c = lambda *a, **k: (False, 0, 'test: forced failure of check (c)')
+    try:
+        rc, txt = step(argv)
+    finally:
+        TF.check_c = real_c
+    rec = records(CUT_OUT).get(unit, {})
+    stg = rec.get('meta', {}).get('staging')
+    check('C-GENCHECK: check (c) failing on the staged cutouts refuses the unit before placement (exit 2) - the root '
+          'byte-identical, nothing quarantined, the staging directory kept', rc == 2 and 'C-GENCHECK' in rec.get('reason', '')
+          and 'GC_targets_' in rec.get('reason', '') and before == root_state(CUT_ROOT)
+          and not new_rows(q0, quarantine_rows(CUT_ROOT)) and stg and os.path.isdir(stg), (rec.get('reason'), txt[-600:]))
     # review F8: a regeneration that writes nothing for its (cell, band) - here the engine's data_decisions refusal - while the
     # root still holds that (cell, band)'s files: they are not the current regeneration's
     setup_fake_regen(excluded=[CUT_CELL])
@@ -2493,8 +2581,10 @@ def make_dup_cube(cubes, cell, sb, stokes, seed):
     tab = fits.BinTableHDU.from_columns([fits.Column(name='ts', format='15A', array=np.array(ts)),
                                          fits.Column(name='header', format='%dA' % max(len(x) for x in hdrs),
                                                      array=np.array(hdrs))], name='FRAME_TABLE')
-    fits.HDUList([fits.PrimaryHDU(), fits.ImageHDU(frames, name='FRAMES'), tab]).writeto(
-        os.path.join(d, '%s_%s_%s_flowcube.fits' % (cell, sb, stokes)), overwrite=True)
+    p = os.path.join(d, '%s_%s_%s_flowcube.fits' % (cell, sb, stokes))
+    fits.HDUList([fits.PrimaryHDU(header=fits.Header([('FSAPPLD', 1.0)])), fits.ImageHDU(frames, name='FRAMES'),
+                  tab]).writeto(p, overwrite=True)
+    record_cube(p)
 
 
 def test_engine_refusal_carry_on():
@@ -2547,8 +2637,8 @@ def test_engine_refusal_carry_on():
     fake = FAKES.pop('cutouts_subband')
     try:
         rc, txt = step(['photometry', '--tier', 'snapshot', '--stages', 'cutouts', '--cores', 'none', '--set',
-                        'paths.SNAPSHOT_CUBES_ROOT=%s' % cubes, '--cells', cells, '--cutout-root',
-                        os.path.join(TMP, 'f3_real', 'root'), '--out', out])
+                        'paths.SNAPSHOT_CUBES_ROOT=%s' % cubes, '--set', 'paths.OPS_ROOT=%s' % CUT_OPS, '--cells', cells,
+                        '--cutout-root', os.path.join(TMP, 'f3_real', 'root'), '--out', out])
     finally:
         FAKES['cutouts_subband'] = fake
     recs = records(out)
@@ -2678,7 +2768,7 @@ def test_in_place_whole_cells():
     index = os.path.join(base, 'index.txt')
     open(index, 'w').close()
     argv = ['photometry', '--tier', 'snapshot', '--stages', 'cutouts,measure', '--in-place', '--out', served_out, '--work',
-            WORK, '--cores', 'none', '--set', 'paths.SNAPSHOT_CUBES_ROOT=%s' % CUBES]
+            WORK, '--cores', 'none', '--set', 'paths.SNAPSHOT_CUBES_ROOT=%s' % CUBES, '--set', 'paths.OPS_ROOT=%s' % CUT_OPS]
 
     def placed():
         return sorted(glob.glob(os.path.join(served_cut, '*', '*', '*', '*.fits')))
@@ -3268,7 +3358,8 @@ def test_adhoc_and_selection(objs):
     # review F4: the snapshot cutouts write the served generation only --in-place, the measure stage chained into the served
     # stage 1 (the served roots patched to scratch here)
     served_out = os.path.join(TMP, 'served_snap_out')
-    snap = ['photometry', '--tier', 'snapshot', '--cores', 'none', '--set', 'paths.SNAPSHOT_CUBES_ROOT=%s' % CUBES, '--cells',
+    snap = ['photometry', '--tier', 'snapshot', '--cores', 'none', '--set', 'paths.SNAPSHOT_CUBES_ROOT=%s' % CUBES, '--set',
+            'paths.OPS_ROOT=%s' % CUT_OPS, '--cells',
             CUT_CELL, '--work', WORK, '--dry-run']        # a whole cell: --in-place regenerates whole cells (N1)
     with patched(CFG.photometry, CUTOUT_ROOT=served_tmp, OUT_ROOT=dict(CFG.photometry.OUT_ROOT, snapshot=served_out)):
         for extra, what in ((['--stages', 'cutouts', '--out', served_out], 'into the served cutout root without --in-place'),

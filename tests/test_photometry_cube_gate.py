@@ -15,6 +15,8 @@ records in a scratch directory (no cluster data):
             is checked, an excluded member is not read and not gated
   (a)(b)(c)(w)  each passes on a consistent unit and fails on the defect it exists for; the flux-scale record's content test
   sample    the generation-5 comparison sample: md5 order per LST hour, eligibility, generation membership
+  step      the wideband side of lib/photometry/steps_cutouts.py: the member gate, its re-check after the cut and check (w)
+            refuse the unit (C-FLUXSCALE, C-GENCHECK); the subband side runs end to end in tests/test_photometry.py
 Run: python tests/test_photometry_cube_gate.py
 """
 import contextlib
@@ -35,6 +37,7 @@ from exopipe.phase3.config import CFG                                    # noqa:
 from exopipe.phase3.lib.photometry import fluxscale as FS               # noqa: E402
 from exopipe.phase3.lib.photometry import tests_fluxscale as TF         # noqa: E402
 from exopipe.phase3.lib.photometry import tests_cutouts as TC           # noqa: E402
+from exopipe.phase3.core.record import Refusal                           # noqa: E402
 
 warnings.filterwarnings('ignore')
 from astropy.utils import iers                                          # noqa: E402
@@ -362,6 +365,7 @@ def run(base, ops, cubes):
           why)
     ok, why, info = FS.check_wideband(CELL, 'Blue', ex=Ex({('00h', s, '2022-09-26') for s in CFG.instrument.SUBBAND_BANDS['Blue']}))
     check('wideband: no member to read -> REFUSED', not ok and 'no member subband' in why[0], why)
+    test_step_wideband(base, ex)
 
     check('regen_text: the log time stamp is cut, a line without one is kept',
           FS.regen_text(regen) == 'INFO CUTOUTS-REGEN 00h 2022-09-26 55MHz: V 3 I 3'
@@ -480,6 +484,78 @@ def test_check_c(base):
           '-> PASS' % el, ok and el > 20, det)
     ok, nobj, det = TF.check_c([], cts, hj, (80, 80), lists={}, planets=('jupiter', 'saturn'))
     check('(c): the planet without its file -> FAIL', not ok and 'Jupiter' in det, det)
+
+
+class Unit:
+    """The parts of core.record.Unit the cutouts step's gate functions use: refuse (raises Refusal), check, failed_tests,
+    meta."""
+    def __init__(self):
+        self.tests, self.meta = [], {}
+
+    def refuse(self, reason):
+        raise Refusal(reason)
+
+    def check(self, name, passed, value=None, detail='', cls=None, path=None):
+        self.tests.append(dict(name=name, passed=bool(passed), value=value, detail=detail))
+
+    def failed_tests(self):
+        return [t for t in self.tests if not t['passed']]
+
+
+def refused(fn, *a):
+    """The refusal text of fn(*a), or None when it does not refuse."""
+    try:
+        fn(*a)
+    except Refusal as e:
+        return str(e)
+    return None
+
+
+def test_step_wideband(base, ex):
+    """The wideband side of the step's wiring (lib/photometry/steps_cutouts.py): the member gate before the group search, its
+    re-check before placement, check (w) before placement - each refuses the unit (C-FLUXSCALE, C-GENCHECK)."""
+    from exopipe.phase3.lib.photometry import steps_cutouts as SC
+    r = refused(SC.fluxscale_gate, Unit(), CELL, 'Blue', ex)
+    check('step: the wideband member gate refuses before the group search (C-FLUXSCALE, the engine not started, the member '
+          'named)', r and r.startswith('C-FLUXSCALE') and '73MHz I: no FSAPPLD' in r and 'the engine not started' in r, r)
+    ex2 = Ex({('00h', '64MHz', '2022-09-26'), ('00h', '73MHz', '2022-09-26')})
+    u = Unit()
+    before = SC.fluxscale_gate(u, CELL, 'Blue', ex2)
+    check('step: every member read passes -> the gate returns the member cubes (the re-check compares them), the record\'s '
+          'meta names them', sorted(before) == ['69MHz', '78MHz', '82MHz'] and u.meta.get('fluxscale'), u.meta)
+    stage = os.path.join(base, 'wb_stage')
+    out = SC.fluxscale_recheck(Unit(), CELL, 'Blue', os.path.join(base, 'wb_root'), stage, before, None, ex2)
+    check('step: the member re-check after the cut, nothing changed -> no refusal, no flux-scale record (widebands have none)',
+          out == ([], []), out)
+    p = FS.cube_path(CELL, '78MHz', 'V')
+    st = os.stat(p)
+    os.utime(p, ns=(st.st_atime_ns, st.st_mtime_ns + 10 ** 9))
+    try:
+        r = refused(SC.fluxscale_recheck, Unit(), CELL, 'Blue', os.path.join(base, 'wb_root'), stage, before, None, ex2)
+    finally:
+        os.utime(p, ns=(st.st_atime_ns, st.st_mtime_ns))
+    check('step: a member cube changed during the cut (mtime) -> C-FLUXSCALE before placement, the member named',
+          r and r.startswith('C-FLUXSCALE') and '78MHz' in r and 'changed' in r, r)
+    rels = ['HWJ/Blue/X/X_00h_2022-09-26_Blue_V.fits', 'HWJ/Blue/X/X_00h_2022-09-26_Blue_I.fits']
+
+    class W:
+        def __init__(self, res):
+            self.res = res
+
+        def result(self):
+            return self.res
+    good, bad = W((True, 1e-7, 'ok')), W((False, 0.3, 'weights off by 30%'))
+    args = (CELL, 'Blue', stage, rels, None, False, ex2, before, {})
+    u = Unit()
+    r = refused(SC.generation_checks, u, *args, {'V': good, 'I': good})
+    check('step: (w) passing for both Stokes -> no refusal, GW_weights_V / _I recorded',
+          r is None and [t['name'].split('.')[-1] for t in u.tests] == ['GW_weights_V', 'GW_weights_I'], (r, u.tests))
+    r = refused(SC.generation_checks, Unit(), *args, {'V': good, 'I': bad})
+    check('step: (w) failing for one Stokes -> C-GENCHECK before placement, the check named', r and r.startswith('C-GENCHECK')
+          and 'GW_weights_I' in r and 'weights off by 30%' in r, r)
+    r = refused(SC.generation_checks, Unit(), *args, {'V': good})
+    check('step: a Stokes cut without its weight check -> C-GENCHECK (never a silent pass)', r and r.startswith('C-GENCHECK')
+          and 'no weight check ran' in r, r)
 
 
 def test_check_w(base):

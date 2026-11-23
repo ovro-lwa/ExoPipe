@@ -365,12 +365,13 @@ def generation_job(cell, sb, rec=None, ex=None, cube_root=None):
             and all(os.path.normpath(p) in rec for p in paths) and _manifest_complete(cell, cube_root))
 
 
-def gen5_sample(jobs=None, per_lst=None, cube_root=None, ex=None):
+def gen5_sample(jobs=None, per_lst=None, cube_root=None, ex=None, lsts=None):
     """[(cell, subband)] of check (b) (gen6_gen5_sample_DRAFT.py): per LST hour, the first ``per_lst`` (GEN5_SAMPLE_PER_LST)
     jobs in md5('<cell>_<subband>') order that are generation-5 jobs (GEN5_JOBS) and generation jobs - ``jobs`` when given,
     else generation_job() - and whose generation-5 input was the frame-unit cube now in the quarantine Run: generation 5's
     done marker of the job exists, and both Stokes have a RESULTS record naming a quarantine original that exists and is
-    older (mtime) than the marker. stat calls and the cube MANIFEST only; no cube is read."""
+    older (mtime) than the marker. stat calls and the cube MANIFEST only; no cube is read. ``lsts``: only these LST hours (a
+    unit asks for its own: the sample of an hour does not depend on the other hours)."""
     c, fx = _cfg(), _fx()
     per_lst = fx.GEN5_SAMPLE_PER_LST if per_lst is None else per_lst
     rec = records()
@@ -388,6 +389,8 @@ def gen5_sample(jobs=None, per_lst=None, cube_root=None, ex=None):
         by.setdefault(cell[:3], []).append((hashlib.md5(('%s_%s' % (cell, sb)).encode()).hexdigest(), cell, sb))
     out = []
     for lst in sorted(by):
+        if lsts is not None and lst not in lsts:
+            continue
         n = 0
         for _, cell, sb in sorted(by[lst]):
             if n >= per_lst:
