@@ -97,17 +97,17 @@ class Enumeration:
 
     def __init__(self):
         self.units, self.excluded, self.held, self.cells = [], [], [], []
-        self.cube_root, self.n_cube_dirs, self.n_complete, self.engine_read = None, 0, 0, False
+        self.cube_root, self.n_cube_dirs, self.n_scoped, self.n_complete, self.engine_read = None, 0, 0, 0, False
 
     def to_dict(self):
-        return dict(cube_root=self.cube_root, n_cube_dirs=self.n_cube_dirs, n_complete=self.n_complete,
+        return dict(cube_root=self.cube_root, n_cube_dirs=self.n_cube_dirs, n_scoped=self.n_scoped, n_complete=self.n_complete,
                     engine_read=self.engine_read, cells=self.cells, units=[list(u) for u in self.units],
                     excluded=self.excluded, held=self.held)
 
     @classmethod
     def from_dict(cls, d):
         e = cls()
-        for k in ('cube_root', 'n_cube_dirs', 'n_complete', 'engine_read', 'cells', 'excluded', 'held'):
+        for k in ('cube_root', 'n_cube_dirs', 'n_scoped', 'n_complete', 'engine_read', 'cells', 'excluded', 'held'):
             setattr(e, k, d.get(k, getattr(e, k)))
         e.units = [tuple(u) for u in d.get('units', [])]
         return e
@@ -169,6 +169,7 @@ def enumerate_units(cells=None, cube_root=None, rec=None, ex=None, engine_exclud
     present = cube_cells(root)
     e.n_cube_dirs = len(present)
     todo = present if cells is None else [c for c in cells if c in set(present)]
+    e.n_scoped = len(todo)
     for c in ([] if cells is None else [c for c in cells if c not in set(present)]):
         e.held.append(dict(cell=c, subband='*', reason='no cube directory under %s' % root))
     wb = kind_bands('wb')
@@ -484,11 +485,11 @@ def start(run, args):
     camp = Campaign(gen, enum, pin)
     ok, text, vals = camp.space_fn()
     K.plan(run, '[campaign] generation %s: cutouts %s, stage 1 %s; %d units (%d subband, %d wideband) in %d cells; %d '
-                '(cell, subband) excluded, %d held; %d of %d cube directories COMPLETE; engine reader %s; %d engine files '
-                'pinned; space: %s' % (gen, root, os.path.join(run.out_root, stage1_dir()), len(enum.units),
+                '(cell, subband) excluded, %d held; %d of the %d cube directories in scope COMPLETE (%d under the cube root); '
+                'engine reader %s; %d engine files pinned; space: %s' % (gen, root, os.path.join(run.out_root, stage1_dir()), len(enum.units),
                                        sum(kind_of(b) == 'sb' for _, b in enum.units),
                                        sum(kind_of(b) == 'wb' for _, b in enum.units), len(enum.cells), len(enum.excluded),
-                                       len(enum.held), enum.n_complete, enum.n_cube_dirs,
+                                       len(enum.held), enum.n_complete, enum.n_scoped, enum.n_cube_dirs,
                                        'read' if enum.engine_read else 'not read (dry run)', len(pin.files), text))
     if not ok:
         if run.dry_run:
@@ -515,6 +516,15 @@ def latest_record(out_root, gen):
         return None
     with open(os.path.join(d, names[-1])) as f:
         return json.load(f)
+
+
+def units_changed(started, units, cells=None):
+    """(added, removed): the units of a check's enumeration against a campaign start record, over the cells both scopes
+    cover (the record's ``scope``, the check's ``cells``; None = every cell)."""
+    scope = started.get('scope')
+    then = {tuple(u) for u in started['enumeration']['units'] if cells is None or u[0] in cells}
+    now = {tuple(u) for u in units if (scope is None or u[0] in scope) and (cells is None or u[0] in cells)}
+    return sorted(now - then), sorted(then - now)
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -728,11 +738,10 @@ def main(argv=None):
     ok, counts, problems = check(out, enum, stage1, a.retest)
     started = latest_record(out, gen)
     if started is not None:
-        su = {tuple(u) for u in started['enumeration']['units'] if cells is None or u[0] in cells}
-        now = set(enum.units)
-        if su != now:
+        added, removed = units_changed(started, enum.units, cells)
+        if added or removed:
             print('UNITS CHANGED since the campaign start record %s: %d added (e.g. %s), %d removed (e.g. %s)' % (
-                started.get('run_id'), len(now - su), sorted(now - su)[:3], len(su - now), sorted(su - now)[:3]), flush=True)
+                started.get('run_id'), len(added), added[:3], len(removed), removed[:3]), flush=True)
     print('GENERATION %s; cutouts %s; records %s; stage 1 %s' % (gen, cutout_root(), out, stage1 or 'not checked'))
     print('COUNTS %s' % json.dumps(counts, sort_keys=True))
     for p in problems[:a.max_problems]:

@@ -225,8 +225,10 @@ def test_enumeration(W):
     check('without the engine\'s reader (the read-only listing of the check): core/exclusions alone decides (27 MHz a unit)',
           (A, '27MHz') in e2.units and not e2.engine_read, e2.units)
     e3 = W.enum(cells=[A, '05h_2025-01-09'])
-    check('--cells narrows the campaign; a named cell without a cube directory is held',
-          {c for c, _ in e3.units} == {A} and any(h['cell'] == '05h_2025-01-09' for h in e3.held), (e3.units, e3.held))
+    check('--cells narrows the campaign; a named cell without a cube directory is held; the plan counts the cube directories '
+          'in scope (1) apart from those under the root (3)',
+          {c for c, _ in e3.units} == {A} and any(h['cell'] == '05h_2025-01-09' for h in e3.held)
+          and (e3.n_scoped, e3.n_cube_dirs, e.n_scoped) == (1, 3, 3), (e3.units, e3.held, e3.n_scoped, e3.n_cube_dirs))
     eng = dict(W.engine)
     del eng['01h_2025-01-06']
     e4 = raises(CP.enumerate_units, None, W.root, W.rec, W.ex, eng, W.complete)
@@ -627,6 +629,11 @@ def test_check(d):
         check('the check command exits 0 complete, 1 incomplete', rc == 0 and rc2 == 1, (rc, rc2))
     finally:
         P.undo()
+    started = dict(scope=[c1], enumeration=dict(units=[[c1, '41MHz'], [c1, 'Red']]))
+    now = [(c1, '41MHz'), (c1, '46MHz'), (c2, '41MHz')]
+    ch = (CP.units_changed(started, now), CP.units_changed(dict(started, scope=None), now, cells=[c1]))
+    check('units changed: compared over the cells both scopes cover (a cell outside the start record\'s scope is no change)',
+          ch == (([(c1, '46MHz')], [(c1, 'Red')]), ([(c1, '46MHz')], [(c1, 'Red')])), ch)
 
 
 def test_start(W, d):
