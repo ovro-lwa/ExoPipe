@@ -434,7 +434,7 @@ def pick_templates():
     """{(sample, band): object dir} - one CURRENT target per sample with I and V cutouts in every band of SNAP_BANDS for
     the real cell, high in the sky (>= 45 deg at the cell's LST) and >= 20 deg from every A-team source."""
     from astropy.io import fits
-    cur = T.current_safe_names()
+    cur = T.current_safe_names('snapshot')
     out = {}
     for smp in ('HWJ', '10pc'):        # the synthetic cell's templates (the served generation 5 holds no LPT cutout)
         objs = None
@@ -659,11 +659,10 @@ def test_mirrors():
           and L.get('ROOT_DEFAULT') == ph.RETIRED_CUTOUT_ROOTS[0] and L.get('MERGE_ARCMIN') == cu.MERGE_ARCMIN
           and 'lat=%s * u.deg, lon=%s * u.deg, height=%s * u.m' % pl in cs and 'key = (body, ts[:12])' in cs
           and cu.PLANET_EPHEM_QUANTUM_MIN == 10
-          and sorted(ph.SAMPLES_CUT) == sorted(ph.TIERS_WITH_ENGINE)
-          and all(L.get('SAMPLES') == tuple((t, ph.SAMPLE_FILES[t]) for t in ph.SAMPLES_CUT[tr]) for tr in ph.SAMPLES_CUT))
+          and L.get('SAMPLES') == tuple((t, ph.SAMPLE_FILES[t]) for t in ph.SAMPLES_CUT))
     check('mirror phase3_snapshot_cutouts.py (cutout side, floor, planets, the retired default root, planet site, 10-minute '
-          'ephemeris, the one-object merge radius, the sample lists = the cutout samples of every tier and their files; the '
-          'tier tool cuts them too, photometry_tier_cutouts_20261025.py:123)', ok, (L.get('SAMPLES'), ph.SAMPLES_CUT))
+          'ephemeris, the one-object merge radius, the sample lists = photometry.SAMPLES_CUT and their files: the one writer '
+          'list, which the tier tool cuts too, photometry_tier_cutouts_20261025.py:123)', ok, (L.get('SAMPLES'), ph.SAMPLES_CUT))
     L = mod_literals(os.path.join(CLV, 'phase3_snapshot_astro.py'))
     rep = {k: v for k, v in (L.get('BAND_REP_FREQ') or {}).items() if k != 'Full'}
     ok = (L.get('FWHM_ARCMIN') == ev.SNAPSHOT_FWHM_ARCMIN and rep == ev.SNAPSHOT_BAND_REP_MHZ
@@ -744,6 +743,61 @@ def test_ports():
 # 3. gates (run level and deep frames)
 # ---------------------------------------------------------------------------------------------------------------------
 
+OLD_SNAP_ENGINE = r'''#!/usr/bin/env python3
+"""FAKE snapshot_forced_phot.py of before 2026-11-18 for tests/test_photometry.py: its SAMPLES default lacks LPT, so it refuses
+--samples HWJ,10pc,LPT in every band. The step must refuse before running it (PHOT-ENGINE-SAMPLES): a run leaves a marker."""
+import os, sys
+SAMPLES = (tuple(x.split('=', 1)[0] for x in os.environ['P3_SNAP_CUTOUT_SAMPLES'].split(',') if '=' in x)
+           if os.environ.get('P3_SNAP_CUTOUT_SAMPLES') else ('HWJ', '10pc'))
+open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'engine_ran'), 'a').write(' '.join(sys.argv) + '\n')
+sys.exit('REFUSING: --samples HWJ,10pc,LPT: each must be one of HWJ,10pc,SolarSystem')
+'''
+
+
+def test_engine_samples_gate():
+    """PHOT-ENGINE-SAMPLES (review F1 of PR 149): the snapshot measure engine the run executes must name every sample the step
+    passes (--samples = photometry.SAMPLES_MEASURED['snapshot']); an engine of before 2026-11-18 refuses the run once, before
+    any cell runs, instead of failing every band as a measure failure."""
+    real = REAL_ENGINE('measure_snapshot')
+    got = KS.engine_samples(real)
+    check('PHOT-ENGINE-SAMPLES: the SAMPLES default of the engine the run executes (%s), read from its source, is %s and '
+          'holds the snapshot measured list' % (real, got), got == ('HWJ', '10pc', 'LPT') and KS.gate_engine_samples() == got,
+          got)
+    d = os.path.join(FAKE_DIR, 'old_snap_engine')
+    os.makedirs(d, exist_ok=True)
+    fp = os.path.join(d, CFG.photometry.ENGINE['measure_snapshot'])
+    open(fp, 'w').write(OLD_SNAP_ENGINE)
+    marker = os.path.join(d, 'engine_ran')
+    out = os.path.join(TMP, 'engine_samples')
+    FAKES['measure_snapshot'] = fp
+    try:
+        base = ['photometry'] + SNAP_COMMON + ['--stages', 'measure', '--cells', SYN_SNAP_CELL, '--out', out,
+                                               '--work', os.path.join(TMP, 'work_engine_samples')]
+        rc_d, txt_d = step(base + ['--dry-run'])
+        rc, txt = step(base)
+        recs = records(out)
+        check('PHOT-ENGINE-SAMPLES: an engine whose SAMPLES default lacks LPT refuses the snapshot measure before any cell '
+              '(exit 2, dry run too; "engine <path> SAMPLES HWJ,10pc lacks LPT"); the engine never ran, no measure unit recorded',
+              rc == 2 and rc_d == 2 and all('PHOT-ENGINE-SAMPLES' in t_ and 'engine %s SAMPLES HWJ,10pc lacks LPT' % fp in t_
+                                            for t_ in (txt, txt_d))
+              and not os.path.exists(marker) and not any(k.startswith('measure.') for k in recs),
+              (rc, rc_d, sorted(recs), os.path.exists(marker), txt[-600:], txt_d[-600:]))
+        rc, txt = step(base + ['--targets', 'ADHOC=%s' % tier_hwj_list(), '--dry-run'])
+        check('PHOT-ENGINE-SAMPLES does not apply to an ad-hoc set (--targets: the engine takes its tags from '
+              'P3_SNAP_CUTOUT_SAMPLES; dry run planned, exit 0)', rc == 0 and '[measure]   unit' in txt
+              and 'PHOT-ENGINE-SAMPLES' not in txt, (rc, txt[-600:]))
+        open(fp, 'w').write('import os\nSAMPLES = tuple(os.environ.get("X", "HWJ").split(","))\n')
+        try:
+            KS.gate_engine_samples()
+            msg = None
+        except record.Refusal as e:
+            msg = str(e)
+        check('PHOT-ENGINE-SAMPLES: an engine without a readable SAMPLES literal refuses', msg is not None
+              and 'PHOT-ENGINE-SAMPLES' in msg and 'no readable SAMPLES literal' in msg, msg)
+    finally:
+        FAKES.pop('measure_snapshot', None)
+
+
 def test_gates():
     out = os.path.join(TMP, 'gates')
     os.environ['SF_BANDS'] = 'Red'
@@ -794,6 +848,16 @@ def test_gates():
     check('PHOT-SAMPLE-PIN: a mismatched LPT pin leaves the deep and sub-LST measurement alone (they measure no LPT: %s) and '
           'refuses their cutouts (the cutters read LPTs.csv: %s)' % (got, gcut),
           got == {'deep': ['10pc', 'HWJ'], 'sublst': ['10pc', 'HWJ']} and gcut == {'deep': True, 'sublst': True}, (got, gcut))
+    hashed = []
+    with patched(K, sha1_file=lambda p_, _f=K.sha1_file: hashed.append(os.path.basename(p_)) or _f(p_)):
+        K.gate_samples('deep')
+        n_m = sorted(hashed)
+        del hashed[:]
+        K.gate_samples('deep', cut=True)
+    check('PHOT-SAMPLE-PIN: the plain gate hashes the measured lists, cut=True the cut lists only, each once (deep: %s; cut: '
+          '%s)' % (n_m, sorted(hashed)), n_m == ['10pc.csv', 'Hot_Warm_Jupiters.csv']
+          and sorted(hashed) == ['10pc.csv', 'Hot_Warm_Jupiters.csv', 'LPTs.csv'], (n_m, hashed))
+    test_engine_samples_gate()
     rc, txt = step(['photometry', '--tier', 'deep', '--stages', 'bogus', '--src-run', SRC, '--out', out, '--cores', 'none'])
     check('an unknown stage name is an error (exit 1)', rc == 1 and 'unknown stage' in txt, txt)
     base = ['photometry', '--tier', 'deep', '--stages', 'frames', '--cells', '10h_46MHz', '--cores', 'none',
@@ -1777,7 +1841,7 @@ def test_cutout_ports():
     CUT = importlib.import_module('phase3_snapshot_cutouts')
     CUT._TARGETS = None
     prod = sorted((t, CUT.safe_name(n), ra, dec) for t, n, ra, dec in CUT._targets())
-    mine = sorted((t, T.safe_name(n), ra, dec) for t, n, ra, dec in T.sample_targets())
+    mine = sorted((t, T.safe_name(n), ra, dec) for t, n, ra, dec in T.sample_targets('snapshot'))
     tagged = sorted(n for t, n, _, _ in mine if '_J' in n and 'Unknown' in n)
     check('port: tests.sample_targets = phase3_snapshot_cutouts._targets on the real lists, distinct objects of one name '
           'J-tagged (8f2126b; %d entries, %d J-tagged)' % (len(prod), len(tagged)), prod == mine and len(tagged) >= 2,
@@ -1792,7 +1856,7 @@ def test_cutout_ports():
     finally:
         os.environ.pop(CFG.photometry.ADHOC_ENV, None)
         CUT._TARGETS = None
-    mine = sorted(T.sample_targets(lists={'ADHOC': adhoc}))
+    mine = sorted(T.sample_targets('snapshot', lists={'ADHOC': adhoc}))
     check('port: an ad-hoc list (name / ra / dec columns, a name given to two objects 30 arcmin apart, an unparsable row) is '
           'read as the writer reads it', prod == mine and len(mine) == 3 and mine[0][1].startswith('Star A J'), (prod, mine))
     # one frame per integration (phase3_snapshot_search.flowcube_frame_index), the tool's box, the regen test's rrms
@@ -2803,9 +2867,8 @@ def tier_cut_samples(adhoc):
         for tier, token in (('deep', 'deep'), ('sublst', '10min')):
             rc, txt, u, files = run(tier, token, token)
             check('tier %s (%s) cutouts without --targets, the tool cutting an LPT target besides HWJ: done, the LPT file '
-                  'passes the name check (samples %s = photometry.SAMPLES_CUT[%s] + the planets; no C-NAMES) and is placed '
-                  'with the HWJ files (I and V: 2 LPT, 4 HWJ)' % (tier, token, ','.join(u.get('meta', {}).get('samples') or []),
-                                                                   tier),
+                  'passes the name check (samples %s = photometry.SAMPLES_CUT + the planets; no C-NAMES) and is placed with '
+                  'the HWJ files (I and V: 2 LPT, 4 HWJ)' % (tier, token, ','.join(u.get('meta', {}).get('samples') or [])),
                   rc == 0 and u.get('status') == 'done' and 'C-NAMES' not in txt and len(files['LPT']) == 2
                   and len(files['HWJ']) == 4 and 'LPT' in (u.get('meta', {}).get('samples') or []),
                   (rc, u.get('status'), u.get('reason'), files, txt[-1200:]))
