@@ -486,3 +486,56 @@ class photometry_phase2(_Section):
                       'SOLAR_SYSTEM_BODIES', 'EPHEMERIS', 'WIDEBAND_NOMINAL_MHZ', 'FLUXCHECK_SEARCH_RADIUS_DEG',
                       'FLUXCHECK_MIN_ELEVATION_DEG', 'FLUXCHECK_SITE', 'FLUXCHECK_PIVOT_MHZ')
     RULED = {'FIT_SIGMA_THRESHOLD': 'B-01', 'DETECTION_SIGMA': 'B-03'}
+
+
+class photometry_fluxscale(_Section):
+    """The FLUX-SCALE GATE of the 10-s cutout regeneration from the rescaled flow cubes and its content checks (lib/photometry/
+    fluxscale.py, tests_fluxscale.py; ported from the generation-6 drivers exopipe_ops/gen6_20261117/gen6_cube_gate_DRAFT.py,
+    gen6_wb_regen_DRAFT.sh :42-45, gen6_cutout_regen_test_DRAFT.py (a)(b)(c), gen6_gen5_sample_DRAFT.py and gen6_wb_test_DRAFT.py
+    (w); FINDING-20261112-FORCED-SNAPSHOT-PHOTOMETRY-FRAME-UNITS, RESULT-20261117-GEN6-PROBE-CUTOUTS-FROM-RESCALED-CUBES).
+    A (cell, subband) is cut only when each Stokes cube carries the HDU-0 card FSAPPLD (the hour-band flux factor divided out of
+    its pixels), that FSAPPLD equals the factor RECORDED for the cube within FSAPPLD_TOL, and the V and I factors agree within it:
+    the record is the cube's newest row (by utc) in the rescale RESULTS_<host>.csv files of RESCALE_RESULTS_DIR, else its 'done'
+    row with a factor in the newest rescale plan (RESCALE_PLAN_RE) that lists it; no record refuses. A wideband group is cut only
+    when every member subband it reads passes the same check. After placement the cubes are checked again (same path, size,
+    mtime, FSAPPLD) and the flux-scale record <root>/SIDECAR_SUBDIR/<sb>/<cell>_<sb>_fluxscale.json is written (the stamp engine
+    reads it, stamp_engine.fluxscale_record). Paths of the ops records are relative to paths.OPS_ROOT."""
+    FSAPPLD_TOL = 2e-6                 # |FSAPPLD - recorded| and |V - I| bound (clv15 phase3_snapshot_cube.py:197-199,
+                                       # snapshot_cube_rescale.py:125; gen6_cube_gate_DRAFT.py TOL)
+    STOKES = ('V', 'I')                # the cubes of one (cell, subband)
+    RESCALE_RESULTS_DIR = 'snapshot_cube_rescale_results'     # relative to paths.OPS_ROOT; one directory, listed (never walked)
+    RESCALE_RESULTS_RE = r'^RESULTS_.+\.csv$'                 # one file per host that ran snapshot_cube_rescale.py
+    RESCALE_PLAN_RE = r'^snapshot_cube_rescale_plan_2026.*\.csv$'   # in paths.OPS_ROOT; names sort by date (a newer plan wins)
+    HEADER_CHUNK = 65536               # bytes per positioned header read (INCIDENT-20261117-GEN6-GATE-DRYRUN-LUSTRE-READAHEAD-460GB:
+                                       # astropy's sequential header reads let the Lustre client read ahead ~67 MB per cube)
+    HEADER_MAX_CHUNKS = 50             # a header longer than this many chunks is unreadable
+    SIDECAR_SUBDIR = '_fluxscale'      # MIRROR stamp_engine.fluxscale_record (not a sample name: no reader globs it)
+    # ---- check (b): comparison with generation 5 on a deterministic sample (gen6_gen5_sample_DRAFT.py): per LST hour the first
+    #      GEN5_SAMPLE_PER_LST (cell, subband) in md5('<cell>_<subband>') order that are generation jobs (both cubes, cell MANIFEST
+    #      COMPLETE, a record for both, not excluded) AND generation-5 jobs, whose generation-5 done marker exists and whose two
+    #      cubes have a RESULTS record naming a quarantine original older than that marker (generation 5 cut the frame-unit cube
+    #      that was later rescaled)
+    GEN5_ROOT = '/lustre/pipeline/exopipe/phase3/photometry_gen5'           # read-only comparison input
+    GEN5_JOBS = 'snapshot_cutout_regen_20261025_jobs.txt'                  # relative to paths.OPS_ROOT ('CELL SUBBAND' lines)
+    GEN5_DONE_DIR = 'snapshot_cutout_regen_20261025_claims/done'           # relative to paths.OPS_ROOT (<cell>_<subband> markers)
+    GEN5_SAMPLE_PER_LST = 2
+    GEN5_SLOPE_TOL = 0.002             # median per-plane least-squares slope new/gen5 x FSAPPLD within 1 +- this (probe: median
+                                       # 0.999936, range 0.998484-1.001161)
+    SAMPLES_NEW_SINCE_GEN5 = ('LPT',)  # samples generation 5 never cut: no check (b) for them
+    CUBE_MANIFEST = 'MANIFEST.txt'     # <cube root>/<cell>/MANIFEST.txt; a generation job needs a line starting COMPLETE_PREFIX
+    COMPLETE_PREFIX = 'COMPLETE'
+    # ---- check (w): the wideband member weights recomputed independently (gen6_wb_test_DRAFT.py W_SAMPLE, W_TOL): on
+    #      WEIGHT_SAMPLE_FRAMES wideband frames spread over the hour, every member row's weight = 1 / (F x central rms^2) of the
+    #      member frame (F = the member cube's HDU-0 FSAPPLD; the rms is 1.4826 x MAD over the central RMS_CENTRAL_FRAC of the
+    #      frame area, NaN below RMS_MIN_PIXELS finite pixels, after the identity dewarp) within WEIGHT_REL_TOL (the table
+    #      carries 6 significant digits)
+    WEIGHT_SAMPLE_FRAMES = 12
+    WEIGHT_REL_TOL = 2e-5
+    RMS_CENTRAL_FRAC = 0.25            # MIRROR phase3_snapshot_search.central_rms frac
+    RMS_MIN_PIXELS = 1000              # MIRROR phase3_snapshot_search.central_rms
+    PROTECTED_KEYS = ('FSAPPLD_TOL', 'STOKES', 'RESCALE_RESULTS_DIR', 'RESCALE_RESULTS_RE', 'RESCALE_PLAN_RE', 'SIDECAR_SUBDIR',
+                      'GEN5_ROOT', 'GEN5_JOBS', 'GEN5_DONE_DIR', 'SAMPLES_NEW_SINCE_GEN5', 'RMS_CENTRAL_FRAC', 'RMS_MIN_PIXELS')
+    RULED = {'WEIGHT_REL_TOL': 'R-GREGG-20261118-WIDEBAND-WEIGHTS-ON-RESCALED-CUBES-KEEP-RULING',
+             'WEIGHT_SAMPLE_FRAMES': 'R-GREGG-20261118-WIDEBAND-WEIGHTS-ON-RESCALED-CUBES-KEEP-RULING',
+             'SAMPLES_NEW_SINCE_GEN5': 'R-GREGG-20261118-GEN6-WITH-LPTS-SAMPLE-WIRED',
+             'FSAPPLD_TOL': 'RESULT-20261117-GEN6-PROBE-CUTOUTS-FROM-RESCALED-CUBES'}
