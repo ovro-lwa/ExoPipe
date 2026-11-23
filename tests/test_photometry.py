@@ -1801,6 +1801,7 @@ def test_cutout_mirrors():
     gs = open(os.path.join(CLV, 'phase3_snapshot_group_search.py')).read()
     cs = open(os.path.join(CLV, 'phase3_snapshot_cutouts.py')).read()
     fp = open(os.path.join(OPS, 'snapshot_forced_phot.py')).read()
+    ps = open(os.path.join(os.path.dirname(HERE), 'exopipe', 'phase3', CFG.photometry.ENGINE_V2['cutouts_probe'])).read()
     texts = [(ss, 'log.info("%sV %%s I %%s%%s"' % cc.REGEN_DONE_SUBBAND.replace('REGEN ', 'REGEN %s %s %s: ')),
              (ss, 'raise SystemExit(%d)' % cc.REGEN_EXCLUDED_RC),
              (ss, 'CUBE_ROOT = os.environ.get("P3_SNAP_CUBE_ROOT", "%s")' % CFG.paths.SNAPSHOT_CUBES_ROOT),
@@ -1811,11 +1812,49 @@ def test_cutout_mirrors():
              (cs, 'env = os.environ.get("%s", "")' % ph.ADHOC_ENV),
              (cs, 'os.environ.get("%s") == "1"' % ph.ADHOC_PLANETS_ENV),
              (cs, 'jobs.append(("%s", body.capitalize(), pos))' % ph.PLANET_SAMPLE),
-             (fp, "os.environ['%s'].split(',')" % ph.ADHOC_ENV)]
+             (fp, "os.environ['%s'].split(',')" % ph.ADHOC_ENV),
+             (cs, 'fits.HDUList([fits.PrimaryHDU(out, header=h), tab]).writeto(fn, overwrite=True)'),     # CUTOUT_HDUS = 2
+             (ss, 'DATA_DECISIONS = "%s"' % CFG.paths.DATA_DECISIONS),
+             (ss, 'def excluded_subbands(lst, date, path=DATA_DECISIONS):'),
+             (ss, 'if args.subband in excluded_subbands(args.lst, args.date):'),
+             (gs, 'excl = excluded_subbands(lst, date)\n    members = [sb for sb in GROUPS[group] if sb not in excl]'),
+             # the writer counts list entries, a file per <sample>/<band>/<safe name> (check_counts' multiplicities)
+             (cs, 'd = os.path.join(root, tag, band, safe_name(nm)); os.makedirs(d, exist_ok=True)'),
+             (cs, '.writeto(fn, overwrite=True)\n        written += 1\n'),
+             (cs, 'def _targets():'),
+             # the writer's view test, which cutouts_probe.py inview restates (EngineReads.in_view): its mid-time, WCS and grid,
+             # the elevation and pixel-range cuts; its header from the frame headers of the flow cube
+             (cs, 'from phase3_snapshot_search import lst_deg_at, ts_to_epoch_seconds'),
+             (cs, 'w = WCS(hdr).celestial'),
+             (cs, 'nt, ny, nx = cube.shape'),
+             (cs, 'times = [ts_to_epoch_seconds(m["ts"]) for m in meta]\n    lst_mid = lst_deg_at(0.5 * (min(times) + max(times)))'),
+             (cs, 'for tag, nm, ra, dec in _targets():\n        if _elevation(ra, dec, lst_mid) < MIN_EL_DEG:\n            continue\n'
+                  '        px, py = w.all_world2pix(ra, dec, 0)\n        if not (np.isfinite(px) and np.isfinite(py)) or not '
+                  '(0 <= px < nx and 0 <= py < ny):\n            continue\n        jobs.append((tag, nm, [(ra, dec)] * nt))'),
+             (cs, '"ts", format="15A", array=np.array([m["ts"] for m in meta])'),
+             (ss, 'hdrs = [fits.Header.fromstring(str(x), sep="\\n") for x in tab["header"]]'),
+             (ss, 'cube = np.array(h["FRAMES"].data, dtype=np.float32)'),
+             (ss, 'return cube, meta, hdrs[k0]'),
+             (ps, 'if CUT._elevation(ra, dec, lst_mid) < CUT.MIN_EL_DEG:\n                            continue\n'
+                  '                        px, py = w.all_world2pix(ra, dec, 0)\n                        if not (np.isfinite(px) and '
+                  'np.isfinite(py)) or not (0 <= px < nx and 0 <= py < ny):'),
+             (ps, 'lst_mid = lst_deg_at(0.5 * (min(t) + max(t)))'),
+             # the group search's deep-rule reader (EngineReads: --group-reader-root = photometry_cutouts.GROUP_EXCLUSION_ROOT)
+             (gs, 'sys.path.insert(0, "%s")\n    from exopipe.phase3.coadd_full_pipeline import load_exclusions, is_excluded\n'
+                  '    if is_excluded(lst, group, date, load_exclusions(scope=_excl_scope(lst, date))):' % cc.GROUP_EXCLUSION_ROOT),
+             (ps, 'ex = CF.load_exclusions(scope=scope)'),
+             (ps, "'verdicts': {s: bool(CF.is_excluded(lst, s, date, ex)) for s in a.scopes}"),
+             (ps, 'scopes.setdefault(GS._excl_scope(lst, date), []).append(cell)')]
     miss = [t for s_, t in texts if t not in s_]
     check('mirror the regeneration engines and the ad-hoc switches: CUTOUTS-REGEN / -WIDEBAND lines, exit 3 on exclusion, the '
           'cube and search-output roots (= paths.SNAPSHOT_CUBES_ROOT / SNAPSHOT_FLEET_OUT, passed explicitly), the required '
-          'root, P3_SNAP_CUTOUT_SAMPLES / _PLANETS in the writer and stage 1, the planet sample name', not miss, miss)
+          'root, P3_SNAP_CUTOUT_SAMPLES / _PLANETS in the writer and stage 1, the planet sample name; the writer\'s two HDUs '
+          '(photometry_cutouts.CUTOUT_HDUS = %d), the engines\' reads cutouts_probe.py takes (excluded_subbands of '
+          'paths.DATA_DECISIONS, the subband main\'s exit 3 and the wideband\'s member list; the group search\'s deep-rule reader '
+          'under photometry_cutouts.GROUP_EXCLUSION_ROOT; _targets, a file per sample / band / safe name, each entry in view '
+          'counted; the writer\'s view test the probe restates, its mid-time from TIMES ts, its WCS from the cube\'s frame '
+          'headers and its grid from FRAMES)' % cc.CUTOUT_HDUS,
+          not miss and cc.CUTOUT_HDUS == 2, miss)
     rt = open(os.path.join(OPS, 'snapshot_cutout_regen_20261025_test.py')).read()
     Lr = mod_literals(os.path.join(OPS, 'snapshot_cutout_regen_20261025_test.py'))
     check('mirror snapshot_cutout_regen_20261025_test.py (the content test the identity check ports): TOL, 2 x eps32, the '
@@ -2088,62 +2127,101 @@ subband (P3_SNAP_CUBE_ROOT), the hour-median model, every frame admitted, identi
 (clv15 phase3_snapshot_cutouts.write_cutouts) into P3_SNAP_CUTOUT_ROOT, V then I, and the regeneration's CUTOUTS-REGEN line.
 fake_params.json: 'excluded' cells exit 3 (EXCLUDED:), 'corrupt' shifts plane 1 of every written cutout by one pixel, 'refuse'
 cells raise the engine's REFUSED (a cube repeating integrations without the search's frame list), 'crash' cells fail without a
-refusal, 'night' cells write nothing and exit 0 with the done line of a night-rule refusal of both Stokes."""
-import argparse, glob, json, os, sys
+refusal, 'night' cells write nothing and exit 0 with the done line of a night-rule refusal of both Stokes. Importable (the step's
+probe (cutouts_probe.py) imports it as the engines' reader): DATA_DECISIONS and excluded_subbands read the exclusion list as the real
+reader does (fake_params.json 'data_decisions'), so its rows agree with core/exclusions and 'excluded' tests the engine's exit 3;
+ts_to_epoch_seconds and lst_deg_at are the real module's (the writer's view test)."""
+import argparse, csv, glob, json, os, sys
 sys.path.insert(0, '/lustre/gh/main/clv15')
 import numpy as np
 from astropy.io import fits
 P = json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fake_params.json')))
-ap = argparse.ArgumentParser()
-for k in ('--lst', '--date', '--subband', '--stokes', '--mode', '--out'):
-    ap.add_argument(k)
-ap.add_argument('--cutouts-from-cubes', action='store_true')
-a = ap.parse_args()
-cell = '%s_%s' % (a.lst, a.date)
-if cell in P.get('excluded', []):
-    print("EXCLUDED: %s %s %s carries verdict 'exclude' - REFUSING to search (no output written)" % (a.lst, a.date, a.subband))
-    raise SystemExit(3)
-if cell in P.get('refuse', []):
-    raise RuntimeError("REFUSED: the %s %s %s V cube repeats 1 integrations and the search's frame list (fake) is missing"
-                       % (a.lst, a.date, a.subband))
-if cell in P.get('crash', []):
-    raise ValueError('fake engine crash: no refusal text')
-if cell in P.get('night', []):
-    # the REAL engine's done line when the night rule refuses both Stokes (phase3_snapshot_search.regen_cutouts :1419-1420, the
-    # NightRuleRefused text :1553-1554; generation 6, e.g. 18h 2025-10-15 32MHz in exopipe_ops/gen6_20261117/
-    # gen6_cutout_regen_lwacalim05.log): no cutout written, exit 0
-    why = ['REFUSED (night rule): no frame of %s %s %s %s passes (Sun above the horizon, or twilight in a band the solar audit '
-           'flags)' % (a.lst, a.date, a.subband, S) for S in ('V', 'I')]
-    print('2026-11-21 13:31:59,000 INFO CUTOUTS-REGEN %s %s %s: V None I None; refused: %s'
-          % (a.lst, a.date, a.subband, '; '.join(why)), flush=True)
-    raise SystemExit(0)
-import phase3_snapshot_cutouts as CUT
-root = os.environ['P3_SNAP_CUTOUT_ROOT']
-os.makedirs(a.out, exist_ok=True)
-n = {}
-for S in ('V', 'I'):
-    p = os.path.join(os.environ['P3_SNAP_CUBE_ROOT'], cell, '%s_%s_%s_flowcube.fits' % (cell, a.subband, S))
-    with fits.open(p) as h:
-        cube = np.array(h['FRAMES'].data, np.float32)
-        t = h['FRAME_TABLE'].data
-        tss = [str(x) for x in t['ts']]
-        hdrs = [fits.Header.fromstring(str(x), sep='\n') for x in t['header']]
-    model = np.median(cube, axis=0).astype(np.float32)
-    meta = [dict(ts=ts, date_obs=str(hd['DATE-OBS'])) for ts, hd in zip(tss, hdrs)]
-    z = np.zeros(cube.shape[1:], np.float32)
-    n[S] = CUT.write_cutouts(cube, model, meta, [True] * len(tss), hdrs[0], z, z, a.lst, a.date, a.subband, S, root=root)
-    if P.get('corrupt'):
-        for f in glob.glob(os.path.join(root, '*', a.subband, '*', '*_%s.fits' % S)):
-            with fits.open(f, mode='update') as h:
-                h[0].data[1] = np.roll(h[0].data[1], 1, axis=1)
-print('2026-11-02 00:00:00,000 INFO CUTOUTS-REGEN %s %s %s: V %s I %s' % (a.lst, a.date, a.subband, n['V'], n['I']), flush=True)
+DATA_DECISIONS = P.get('data_decisions')
+_CLV15_SS = []
+
+
+def excluded_subbands(lst, date, path=DATA_DECISIONS):
+    with open(path) as f:
+        return {r['subband'].strip() for r in csv.DictReader(f) if r['lst'].strip() == lst and r['date'].strip() == date
+                and r['verdict'].strip() == 'exclude'}
+
+
+def _clv15_search():
+    # the real clv15 phase3_snapshot_search: the module the real writer imports its times from in this fake's own process
+    # (sys.path[0] = clv15 there), loaded under another name for the probe, which imports this file as phase3_snapshot_search
+    if not _CLV15_SS:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('clv15_phase3_snapshot_search', '/lustre/gh/main/clv15/phase3_snapshot_search.py')
+        m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m)
+        _CLV15_SS.append(m)
+    return _CLV15_SS[0]
+
+
+def ts_to_epoch_seconds(ts):
+    return _clv15_search().ts_to_epoch_seconds(ts)
+
+
+def lst_deg_at(t):
+    return _clv15_search().lst_deg_at(t)
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    for k in ('--lst', '--date', '--subband', '--stokes', '--mode', '--out'):
+        ap.add_argument(k)
+    ap.add_argument('--cutouts-from-cubes', action='store_true')
+    a = ap.parse_args()
+    cell = '%s_%s' % (a.lst, a.date)
+    if cell in P.get('excluded', []):
+        print("EXCLUDED: %s %s %s carries verdict 'exclude' - REFUSING to search (no output written)" % (a.lst, a.date, a.subband))
+        raise SystemExit(3)
+    if cell in P.get('refuse', []):
+        raise RuntimeError("REFUSED: the %s %s %s V cube repeats 1 integrations and the search's frame list (fake) is missing"
+                           % (a.lst, a.date, a.subband))
+    if cell in P.get('crash', []):
+        raise ValueError('fake engine crash: no refusal text')
+    if cell in P.get('night', []):
+        # the REAL engine's done line when the night rule refuses both Stokes (phase3_snapshot_search.regen_cutouts :1419-1420, the
+        # NightRuleRefused text :1553-1554; generation 6, e.g. 18h 2025-10-15 32MHz in exopipe_ops/gen6_20261117/
+        # gen6_cutout_regen_lwacalim05.log): no cutout written, exit 0
+        why = ['REFUSED (night rule): no frame of %s %s %s %s passes (Sun above the horizon, or twilight in a band the solar audit '
+               'flags)' % (a.lst, a.date, a.subband, S) for S in ('V', 'I')]
+        print('2026-11-21 13:31:59,000 INFO CUTOUTS-REGEN %s %s %s: V None I None; refused: %s'
+              % (a.lst, a.date, a.subband, '; '.join(why)), flush=True)
+        raise SystemExit(0)
+    import phase3_snapshot_cutouts as CUT
+    root = os.environ['P3_SNAP_CUTOUT_ROOT']
+    os.makedirs(a.out, exist_ok=True)
+    n = {}
+    for S in ('V', 'I'):
+        p = os.path.join(os.environ['P3_SNAP_CUBE_ROOT'], cell, '%s_%s_%s_flowcube.fits' % (cell, a.subband, S))
+        with fits.open(p) as h:
+            cube = np.array(h['FRAMES'].data, np.float32)
+            t = h['FRAME_TABLE'].data
+            tss = [str(x) for x in t['ts']]
+            hdrs = [fits.Header.fromstring(str(x), sep='\n') for x in t['header']]
+        model = np.median(cube, axis=0).astype(np.float32)
+        meta = [dict(ts=ts, date_obs=str(hd['DATE-OBS'])) for ts, hd in zip(tss, hdrs)]
+        z = np.zeros(cube.shape[1:], np.float32)
+        n[S] = CUT.write_cutouts(cube, model, meta, [True] * len(tss), hdrs[0], z, z, a.lst, a.date, a.subband, S, root=root)
+        if P.get('corrupt'):
+            for f in glob.glob(os.path.join(root, '*', a.subband, '*', '*_%s.fits' % S)):
+                with fits.open(f, mode='update') as h:
+                    h[0].data[1] = np.roll(h[0].data[1], 1, axis=1)
+    print('2026-11-02 00:00:00,000 INFO CUTOUTS-REGEN %s %s %s: V %s I %s' % (a.lst, a.date, a.subband, n['V'], n['I']), flush=True)
+
+
+if __name__ == '__main__':
+    main()
 '''
 
 
 def setup_fake_regen(excluded=(), corrupt=False, refuse=(), crash=(), night=()):
     p = os.path.join(FAKE_DIR, 'fake_params.json')
     prm = json.load(open(p)) if os.path.exists(p) else {}
-    prm.update(excluded=list(excluded), corrupt=corrupt, refuse=list(refuse), crash=list(crash), night=list(night))
+    prm.update(excluded=list(excluded), corrupt=corrupt, refuse=list(refuse), crash=list(crash), night=list(night),
+               data_decisions=CFG.paths.DATA_DECISIONS)
     json.dump(prm, open(p, 'w'))
     fp = os.path.join(FAKE_DIR, CFG.photometry.ENGINE['cutouts_subband'])
     open(fp, 'w').write(FAKE_REGEN)
@@ -2263,12 +2341,14 @@ def test_cutouts_snapshot():
     tests = {t['name']: t['passed'] for t in rec.get('tests', [])}
     files = sorted(glob.glob(os.path.join(CUT_ROOT, '*', CUT_SB, '*', '*.fits')))
     check('cutouts (FAKE engine + the REAL writer on synthetic cubes): unit done, %d cutouts placed, the manifest written, '
-          'identity V / I pass, CM1 / CM2 pass on the STAGED files before placement and again once placed, the staging '
-          'directory removed' % len(files),
+          'the staged files fsynced at their header-implied size and as many as the engine counted (W1 / W2), identity V / I '
+          'pass, CM1 / CM2 pass on the STAGED files before placement and again once placed, the staging directory removed'
+          % len(files),
           rc == 0 and rec.get('status') == 'done' and len(man) == 1 and files and all(tests.values())
           and set(tests) >= {'photometry_cutout_manifest.I1_identity_V', 'photometry_cutout_manifest.I1_identity_I',
                              'photometry_cutout_manifest.CM1_files', 'photometry_cutout_manifest.CM2_one_per_key',
-                             'photometry_cutout_manifest.CM1_files_staged', 'photometry_cutout_manifest.CM2_one_per_key_staged'}
+                             'photometry_cutout_manifest.CM1_files_staged', 'photometry_cutout_manifest.CM2_one_per_key_staged',
+                             'photometry_cutout_manifest.W1_fsync_size', 'photometry_cutout_manifest.W2_count'}
           and not os.path.exists(os.path.join(CUT_ROOT, CFG.photometry_cutouts.STAGING_SUBDIR)), (rc, rec.get('reason'), tests,
                                                                                                   txt[-1500:]))
     rows = TC.read_manifest(man[0])[1] if man else []

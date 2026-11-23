@@ -290,7 +290,8 @@ def call(u, key, args, tier, env_name, run, log_name, env_extra=None, threads=No
     """Run engine ``key`` with ``args`` in a child process (core/legacy.run): site interpreter of the tier, cwd = the
     engine's own root (production `cd $OPS`), inherited P3_* cleared, config environment, parity guard inherited, the
     child's code fingerprint added to the unit record AND every fingerprinted file added as an input (so --resume notices an
-    edit of an in-place module, spec blocker 21). Returns (result, the log text of this call)."""
+    edit of an in-place module, spec blocker 21). ``u`` None: a call outside any unit (once per stage); the caller adds the
+    fingerprint to the units it serves. Returns (result, the log text of this call)."""
     from exopipe.phase3.core import legacy
     script = engine(key)
     env = engine_env(env_name, threads)
@@ -300,10 +301,11 @@ def call(u, key, args, tier, env_name, run, log_name, env_extra=None, threads=No
     off = os.path.getsize(log) if os.path.exists(log) else 0
     res = legacy.run(script, args, python=python_key(tier, key), env=env, cwd=os.path.dirname(script), log=log, unit=u,
                      tail_lines=cfg().photometry.LOG_TAIL_LINES)
-    for f in sorted(res.fingerprint or {}):
-        if os.path.isfile(f):
-            u.add_input(f)
-    u.add_input(script)
+    if u is not None:
+        for f in sorted(res.fingerprint or {}):
+            if os.path.isfile(f):
+                u.add_input(f)
+        u.add_input(script)
     with open(log, 'rb') as fh:
         fh.seek(off)
         text = fh.read().decode('utf-8', 'replace')

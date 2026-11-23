@@ -377,7 +377,7 @@ def mark_injected(run):
     p = os.path.join(run.out_root, '_records', INJECTED_DIR, f'{run.run_id}.json')
     atomic_write_json(p, {'run_id': run.run_id, 'step': run.step, 'argv': run.argv, 'injected': run.injected,
                           'host': run.host, 'pid': run.pid, 'user': getpass.getuser(), 'started': run.started,
-                          'out': os.path.abspath(run.out_root)})
+                          'out': os.path.abspath(run.out_root)}, durable=True)
     return p
 
 
@@ -411,12 +411,31 @@ def injected_runs(path):
     return out
 
 
-def atomic_write_json(path, obj):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+def atomic_write_json(path, obj, durable=False):
+    """Write ``obj`` as JSON to ``path`` atomically: a temporary file beside it, renamed over ``path`` (on any exception the
+    temporary file is removed and the exception propagates). ``durable`` (the unit and run records): the temporary file is
+    flushed and fsynced before the rename and the directory fsynced after it (core/fitsio.fsync_fd / fsync_path), so an
+    OSError reports a record that is not on disk - a Lustre eviction discards dirty pages, and an error that reaches only the
+    page cache is reported by fsync (FINDING-20261122-CUTOUT-WRITER-DISCARDED-PAGES-PASS-AS-DONE)."""
+    from exopipe.phase3.core.fitsio import fsync_fd, fsync_path
+    d = os.path.dirname(path)
+    os.makedirs(d, exist_ok=True)
     tmp = f'{path}.tmp.{os.getpid()}'
-    with open(tmp, 'w') as f:
-        json.dump(obj, f, indent=1, sort_keys=True, default=str)
-    os.replace(tmp, path)
+    try:
+        with open(tmp, 'w') as f:
+            json.dump(obj, f, indent=1, sort_keys=True, default=str)
+            if durable:
+                f.flush()
+                fsync_fd(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    if durable:
+        fsync_path(d)
 
 
 def _jsonable_ctx(ctx):
@@ -553,7 +572,7 @@ class Run:
                                   reason=getattr(self, 'run_reason', None), **extra,
                                   units=[{'unit': u.name, 'status': u.status, 'reason': u.reason,
                                           'n_planned': len(u.planned), 'n_refused_items': len(u.refused_items)}
-                                         for u in self.units]))
+                                         for u in self.units]), durable=True)
         return p
 
 
@@ -721,7 +740,7 @@ class UnitRecord:
             key, detail = refs[0]
             self.status, self.reason = 'refused', (f'{fallback.refusal_text(key, detail)} - REFUSED (caught before the '
                                                    f'unit; {len(refs)} refusal(s) in the unit)')
-            self.write()
+            self._write_outcome()
             return etype is not None
         if etype is None:
             self.status, self.reason = self._final_status()
@@ -734,7 +753,12 @@ class UnitRecord:
         else:
             self.status, self.reason = 'error', ''.join(traceback.format_exception_only(etype, exc)).strip()
             self.notes.append(''.join(traceback.format_exception(etype, exc, tb))[-4000:])
-        self.write()
+        try:
+            self._write_outcome()   # an unwritable record: status error, no record left, the exception propagates
+        except BaseException:
+            if etype is not None and not issubclass(etype, Exception):
+                return False        # KeyboardInterrupt / SystemExit keep propagating (the unit is error, no record left)
+            raise
         return etype is not None and issubclass(etype, (Refusal, NoInput))   # swallow gate outcomes, not errors
 
     def to_dict(self):
@@ -766,7 +790,30 @@ class UnitRecord:
     def write(self):
         if self.run.dry_run:
             return
-        atomic_write_json(record_path(self.run.out_root, self.run.step, self.name), self.to_dict())
+        atomic_write_json(record_path(self.run.out_root, self.run.step, self.name), self.to_dict(), durable=True)
+
+    def _write_outcome(self):
+        """Write the record of the unit's outcome (``__exit__``). When the write fails - any exception: an OSError of the
+        disk, an eviction or the quota, a ValueError of a record that cannot be serialized, an interrupt - the unit ends
+        'error' (the run exits 1), NO record of the unit is left at its path (neither this outcome nor an earlier run's: a
+        done record there would be adopted by --resume), so a resumed run re-runs the unit, and the exception propagates."""
+        from exopipe.phase3.core.fitsio import fsync_path
+        try:
+            self.write()
+        except BaseException as e:
+            was = f'{self.status}: {self.reason}' if self.reason else str(self.status)
+            self.status, self.reason = 'error', (f'RECORD-WRITE: the record of this unit could not be written '
+                                                 f'({type(e).__name__}: {e}); its outcome was {was} - no record left, a '
+                                                 f'resumed run re-runs the unit')
+            p = record_path(self.run.out_root, self.run.step, self.name)
+            try:
+                os.unlink(p)
+                fsync_path(os.path.dirname(p))
+            except FileNotFoundError:
+                pass
+            except OSError as e2:
+                self.reason += f'; the record path {p} could not be cleared ({e2})'
+            raise
 
 
 def resume_check(out_root, step, unit, inputs=None, admitted=None, cfg_hash=None, retest=True):
