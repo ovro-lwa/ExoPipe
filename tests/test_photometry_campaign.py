@@ -22,7 +22,7 @@ synthetic exclusion list, synthetic unit records, stub engine files and a stub `
     measured); a ready kind is measured into its kind's manifest with the campaign gate; the campaign's cutouts outcome
     never stops its measure stage (run_tier);
   - the wiring: steps_cutouts lists the campaign's units, runs the campaign gate first in each unit (before C-NOCUBE) and
-    the pin after each unit;
+    the pin after each unit; its dry run lists a unit without a cube as C-NOCUBE before any flux-scale verdict;
   - measure_cell: the gate runs first in the unit; a kind manifest is rewritten unless it holds rows of another band
     (SM-SUBSET);
   - the complete-when check: a done record passes only with its required checks (by band kind: GP, GA + fs1 + the
@@ -615,6 +615,23 @@ def test_wiring(W, d):
               'stops the campaign (CP-PIN after it) - every later unit refuses before it starts', len(units) == len(e.units)
               and seen == sorted(e.units)[:2] and all(x[1] == 'refused' and x[2] == 'CP-PIN' for x in st[2:])
               and camp.stopped.startswith('CP-PIN'), st)
+        # the dry run in snapshot_unit's order: a unit without a cube is no input (C-NOCUBE) before any flux-scale verdict
+        cube = {'V': ['/c/v.fits'], 'I': ['/c/i.fits']}
+        P.set(SC, 'snapshot_cubes', lambda c, b: nocube if b == WB[0] else cube)
+        P.set(SC, 'fluxscale_dry', lambda cell, band, ex: 'would refuse C-FLUXSCALE: stub')
+        camp_d = CP.Campaign('gen6', e, None, space_fn=lambda: (True, 'ok', {}))
+        P.set(CP, 'start', lambda run_, args_: setattr(args_, 'photometry_campaign', camp_d) or camp_d)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            dry_units = SC.stage_snapshot_cutouts(run_of(os.path.join(d, 'out_wire3'), dry_run=True), campaign_args())
+        txt = buf.getvalue()
+        nwb = sum(1 for _, b in e.units if b == WB[0])
+        lines = [x for x in txt.splitlines() if ' unit cutouts.' in x]
+        check('the dry run: a unit without a cube is listed no input C-NOCUBE, not by its flux-scale verdict (%d of %d units); '
+              'the summary counts them apart' % (nwb, len(e.units)), dry_units == [] and len(lines) == len(e.units)
+              and all(('no input C-NOCUBE' in x) == ('.%s:' % WB[0] in x) for x in lines)
+              and ('%d of %d unit(s) would refuse; %d without a cube (C-NOCUBE)' % (len(e.units) - nwb, len(e.units), nwb)) in txt,
+              txt[-700:])
     finally:
         P.undo()
 

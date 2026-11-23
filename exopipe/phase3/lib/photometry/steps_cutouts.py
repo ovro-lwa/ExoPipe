@@ -485,7 +485,7 @@ def stage_snapshot_cutouts(run, args):
         raise
     units = []
     reads, gen5 = None, Gen5Samples()     # once per stage: the engines' reads, the generation-5 sample of each hour
-    dry_ex, gate_refused = None, 0
+    dry_ex, gate_refused, dry_nocube = None, 0, 0
     if run.dry_run and items:          # the flux-scale gate's verdicts, headers only (no engine runs in a dry run)
         from exopipe.phase3.core import exclusions
         try:
@@ -496,9 +496,13 @@ def stage_snapshot_cutouts(run, args):
         cubes = snapshot_cubes(cell, band)
         if not run.dry_run and reads is None:      # once per stage: the engines' target list and exclusion reads, every cell
             reads = EngineReads(run, [cl for cl, _ in items], targets, planets, sorted({b for _, b in items if is_wideband(b)}))
-        if run.dry_run:
-            verdict = fluxscale_dry(cell, band, dry_ex)
-            gate_refused += verdict.startswith('would refuse')
+        if run.dry_run:            # in snapshot_unit's order: no cube ends the unit (C-NOCUBE) before the flux-scale gate
+            if not cubes['V'] or not cubes['I']:
+                verdict = 'no input C-NOCUBE (no consolidated flow cube, %s)' % ('V' if not cubes['V'] else 'I')
+                dry_nocube += 1
+            else:
+                verdict = fluxscale_dry(cell, band, dry_ex)
+                gate_refused += verdict.startswith('would refuse')
             K.plan(run, '[cutouts]   unit cutouts.%s.%s%s: cubes V %d, I %d; %s' % (cell, band, tag_suffix(targets),
                                                                                  len(cubes['V']), len(cubes['I']), verdict))
             continue
@@ -510,7 +514,8 @@ def stage_snapshot_cutouts(run, args):
                 camp.after(x)
         units += done
     if run.dry_run and items:
-        K.plan(run, '[cutouts] flux-scale gate (headers only): %d of %d unit(s) would refuse' % (gate_refused, len(items)))
+        K.plan(run, '[cutouts] flux-scale gate (headers only): %d of %d unit(s) would refuse; %d without a cube (C-NOCUBE)'
+                    % (gate_refused, len(items), dry_nocube))
     return units
 
 
