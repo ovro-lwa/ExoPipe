@@ -100,7 +100,9 @@ def tag_suffix(targets):
     return ('.' + '+'.join(t for t, _ in targets)) if targets else ''
 
 
-def listing_sha1(paths):
+def listing_sha1(paths, extra=''):
+    """sha1 of (path, size, mtime_ns) of each path, then of ``extra`` (a text the identity adds: a snapshot unit's resolved
+    rescale records, rescale_identity)."""
     h = hashlib.sha1()
     for p in sorted(paths):
         try:
@@ -108,7 +110,24 @@ def listing_sha1(paths):
             h.update(('%s\t%d\t%d\n' % (p, st.st_size, st.st_mtime_ns)).encode())
         except OSError:
             h.update(('%s\tmissing\n' % p).encode())
+    if extra:
+        h.update(extra.encode())
     return h.hexdigest()
+
+
+def rescale_identity(cubes):
+    """({cube: resolved rescale record | None}, digest text) of the flow cubes a snapshot unit reads (fluxscale.resolved:
+    each cube's record by the row it was resolved from - RESULTS file and line, utc, fsappld; or plan file and line, status,
+    factor). The unit's resume identity for the flux-scale gate (review of PR 153, finding 3, follow-up): a newer row of one
+    of its cubes, or a plan row of one changing status, re-runs the unit on --resume; a row appended for another cube does
+    not (whole record files as inputs re-ran every unit of a generation on any rescale run). Records that cannot be read:
+    ({}, 'unreadable: ...'), never a done unit's identity (the gate then refuses C-FLUXSCALE)."""
+    from exopipe.phase3.lib.photometry import fluxscale as FS
+    try:
+        res = FS.resolved(sorted(cubes))
+    except (FS.RecordsError, OSError) as e:
+        return {}, 'rescale records unreadable: %s: %s' % (type(e).__name__, e)
+    return res, json.dumps(res, sort_keys=True)
 
 
 def staging_dir(root, run, key):
@@ -1037,20 +1056,21 @@ def snapshot_unit(run, args, cell, band, root, targets, planets, samples, cubes,
     allcubes = cubes['V'] + cubes['I']
     stamp = bool(targets) and not is_wideband(band)        # ad hoc targets on a subband: the stamp method (STAMP_REFERENCE_ROOT)
     lists = [p for _, p in targets] or list(K.sample_paths('snapshot', cut=True).values())
-    rescale = FS.record_files()          # the rescale records the flux-scale gate compares against (RESULTS, plans): a changed
-    inputs = (sorted(allcubes) + lists   # or a new record file re-gates the unit on --resume; the unit record names them
-              + [r for r in [stamp_record(cell, band)] if stamp and os.path.isfile(r)] + rescale[0] + rescale[1])
+    inputs = (sorted(allcubes) + lists
+              + [r for r in [stamp_record(cell, band)] if stamp and os.path.isfile(r)])
+    rescale, rescale_text = rescale_identity(allcubes)   # each cube's resolved rescale record (not the record files): a
+    lsha = listing_sha1(inputs, rescale_text)            # change to one re-gates the unit on --resume; the inputs name it
     ex = exclusions.for_tier('snapshot', fresh=True)     # the unit's one read: its resume identity and its verdict
     admitted = cutout_admitted(cell, band, ex)
-    if K.run_resume_ok(run, name, admitted, {'inputs_listing_sha1': listing_sha1(inputs), 'cutout_root': root}):
+    if K.run_resume_ok(run, name, admitted, {'inputs_listing_sha1': lsha, 'cutout_root': root}):
         return run.units[-1:]
     with run.unit(name, tier='snapshot', stage='cutouts', cell=cell, band=band, cutout_root=root, samples=samples,
-                  targets=['%s=%s' % t for t in targets], planets=planets, inputs_listing_sha1=listing_sha1(inputs)) as u:
+                  targets=['%s=%s' % t for t in targets], planets=planets, inputs_listing_sha1=lsha) as u:
         if not cubes['V'] or not cubes['I']:
             raise NoInput('C-NOCUBE: no consolidated flow cube of %s %s (%s) under %s' % (
                 cell, band, 'V' if not cubes['V'] else 'I', c.paths.SNAPSHOT_CUBES_ROOT))
         for p in inputs + [c.search_snapshot.SOLAR_AUDIT]:      # data_decisions: through the admitted set (exclusions read live)
-            u.add_input(p)
+            u.add_input(p, {'rescale_record': rescale[p]} if p in rescale else None)
         for S in 'VI':
             for sb in (c.instrument.SUBBAND_BANDS.get(band, ()) if is_wideband(band) else (band,)):
                 nz = os.path.join(c.paths.SNAPSHOT_FLEET_OUT, cell, 'noise_%s_%s_median.csv' % (sb, S))

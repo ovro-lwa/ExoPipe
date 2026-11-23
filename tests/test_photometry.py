@@ -2408,14 +2408,63 @@ def test_cutouts_snapshot():
           rc == 0 and ': skipped (' in txt, txt[-800:])
     vcube = os.path.join(CUBES, CUT_CELL, '%s_%s_V_flowcube.fits' % (CUT_CELL, CUT_SB))
     results = os.path.join(CUT_OPS, CFG.photometry_fluxscale.RESCALE_RESULTS_DIR, 'RESULTS_test.csv')
+    plan = os.path.join(CUT_OPS, 'snapshot_cube_rescale_plan_2026test.csv')
+
+    def vrecord():
+        return ((records(CUT_OUT).get(unit, {}).get('inputs') or {}).get(vcube) or {}).get('rescale_record')
+    # the unit's resume identity is the RESOLVED record of each cube it reads, never the whole record files (review of
+    # PR 153, finding 3, follow-up): (i) a row for another cube, (ii) a newer row of its cube, (iii) its plan row's status
     with patched(record, git_commit=lambda path: 'abc1234'):
-        record_cube(vcube)                      # a newer rescale RESULTS row of the V cube (the same factor)
+        record_cube(os.path.join(CUBES, 'another_cell', 'another_cube_V_flowcube.fits'))
+        rc, txt = step(argv + ['--resume'])
+    check('--resume after a rescale RESULTS row appended for ANOTHER cube (review of PR 153, finding 3, follow-up): the unit '
+          'is skipped (its cubes\' resolved records unchanged; the record files are not its inputs)',
+          rc == 0 and ': skipped (' in txt and results not in (records(CUT_OUT).get(unit, {}).get('inputs') or {}), txt[-800:])
+    n_res = sum(1 for _ in open(results))
+    with patched(record, git_commit=lambda path: 'abc1234'):
+        record_cube(vcube)                      # a newer rescale RESULTS row of the V cube (the same factor, same cube bytes)
+        rc, txt = step(argv + ['--resume'])
+    rec, vr = records(CUT_OUT).get(unit, {}), vrecord()
+    check('--resume after a newer rescale RESULTS row of the unit\'s V cube, the cube\'s bytes unchanged (review of PR 153, '
+          'finding 3): the unit is not skipped (inputs_listing_sha1 changed), it re-runs through the gate and is done; its '
+          'record names the V cube\'s resolved record, the new row (%s:%d)' % (os.path.basename(results), n_res + 1),
+          rc == 0 and 'resume %s: not skipped (inputs_listing_sha1 changed)' % unit in txt and ': skipped (' not in txt
+          and rec.get('status') == 'done'
+          and 'photometry_fluxscale_record.fs1_record' in {t['name'] for t in rec.get('tests', [])}
+          and (vr or {}).get('row') == '%s:%d' % (results, n_res + 1) and vr.get('source') == 'rescale-results'
+          and abs(vr.get('factor', 0) - 1.0) < 1e-9, (txt[-800:], vr))
+    # (iii) the V cube's record from a plan: its RESULTS rows renamed in place (the other rows keep their line numbers)
+    shutil.copy2(results, results + '.orig')
+    lines = open(results).read().splitlines(True)
+    with open(results + '.tmp', 'w') as f:
+        f.writelines([lines[0]] + [ln.replace(vcube, vcube + '.elsewhere') for ln in lines[1:]])
+    os.replace(results + '.tmp', results)
+
+    def write_plan(status):
+        with open(plan + '.tmp', 'w', newline='') as f:
+            w = csv.writer(f)
+            w.writerow(['cube', 'cell', 'subband', 'stokes', 'status', 'bytes', 'factor'])
+            w.writerow([vcube, CUT_CELL, CUT_SB, 'V', status, '0', '1.000000'])
+        os.replace(plan + '.tmp', plan)
+    with patched(record, git_commit=lambda path: 'abc1234'):
+        write_plan('done')
+        rc, txt = step(argv + ['--resume'])
+        rec, vr = records(CUT_OUT).get(unit, {}), vrecord()
+        ok1 = (rc == 0 and 'resume %s: not skipped (inputs_listing_sha1 changed)' % unit in txt and rec.get('status') == 'done'
+               and vr == {'source': 'plan-native', 'row': '%s:2' % plan, 'status': 'done', 'factor': 1.0})
+        rc, txt0 = step(argv + ['--resume'])
+        ok2 = rc == 0 and ': skipped (' in txt0
+        write_plan('failed')
         rc, txt = step(argv + ['--resume'])
     rec = records(CUT_OUT).get(unit, {})
-    check('--resume after a newer rescale RESULTS row (review of PR 153, finding 3): the record files are the unit\'s inputs - '
-          'the unit is not skipped, it re-runs through the gate and is done; its record names the RESULTS file',
-          rc == 0 and 'resume %s: not skipped' % unit in txt and ': skipped (' not in txt and rec.get('status') == 'done'
-          and results in rec.get('inputs', {}), (txt[-800:], sorted(rec.get('inputs', {}))[-3:]))
+    check('--resume after the plan row of the unit\'s V cube changes status (done -> failed; review of PR 153, finding 3, '
+          'follow-up): with its record from the plan the unit re-ran (done, its record names the plan row) and a second '
+          '--resume skipped it; after the status change it is not skipped, it re-runs and the gate refuses it (C-FLUXSCALE, '
+          'no rescale record) before the engine', ok1 and ok2 and rc == 2 and 'resume %s: not skipped' % unit in txt
+          and rec.get('status') == 'refused' and 'C-FLUXSCALE' in (rec.get('reason') or '')
+          and 'no rescale record' in (rec.get('reason') or ''), (ok1, ok2, rc, rec.get('reason'), txt[-800:]))
+    os.replace(results + '.orig', results)
+    os.remove(plan)
     s0, q0 = root_state(CUT_ROOT), quarantine_rows(CUT_ROOT)
     rc, txt = step(argv)
     rows2 = TC.read_manifest(man[0])[1]

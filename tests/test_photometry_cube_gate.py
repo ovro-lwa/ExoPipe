@@ -241,7 +241,8 @@ def run(base, ops, cubes):
     check('records: a newer plan\'s "done" factor (1.05) overrides the older plan\'s (1.3) -> PASS, plan-native',
           ok and info['V']['record'] == dict(source='plan-native', factor=1.05,
                                              plan='snapshot_cube_rescale_plan_20261115_wave1.csv',
-                                             row='%s:3' % os.path.join(ops, 'snapshot_cube_rescale_plan_20261115_wave1.csv')),
+                                             row='%s:3' % os.path.join(ops, 'snapshot_cube_rescale_plan_20261115_wave1.csv'),
+                                             status='done'),
           (why, info))
     ok, why, info = gate('18MHz')
     check('records: of two RESULTS rows the newest by utc wins (1.07, file RESULTS_hostA) over the row of a file later in '
@@ -590,8 +591,8 @@ def records_error():
 
 
 def test_review(base, ops, rows_a, rows_b, ex):
-    """PR 153 review findings 1, 4, 5, 6, 8, 9, 10 (2 and 3 run end to end in tests/test_photometry.py, 5's reader in
-    tests/test_photometry_writer_safety.py)."""
+    """PR 153 review findings 1, 3 (the resume identity), 4, 5, 6, 8, 9, 10 (2 and 3 also run end to end in
+    tests/test_photometry.py, 5's reader in tests/test_photometry_writer_safety.py)."""
     from exopipe.phase3.lib.photometry import steps_cutouts as SC
     rdir = os.path.join(ops, 'snapshot_cube_rescale_results')
     z, y = os.path.join(rdir, 'RESULTS_hostZ.csv'), os.path.join(rdir, 'RESULTS_hostY.csv')
@@ -754,6 +755,36 @@ def test_review(base, ops, rows_a, rows_b, ex):
           'stage\'s draw', len(calls) == 2 and g.calls == 2 and got[0] is got[1]
           and [c['lsts'] for c in calls] == [['00h'], ['01h']] and u.meta.get('generation5_sample') is True, (calls, u.meta))
     check('one cube-path helper (review 10): fluxscale.cube_path is tests_cutouts.cube_path', FS.cube_path is TC.cube_path)
+    # ---- 3 (follow-up): a unit's resume identity is the RESOLVED record of each cube it reads, not the record files
+    pid = os.path.join(ops, 'snapshot_cube_rescale_plan_20261121_identity.csv')
+    nv, ghost = cp('55MHz', 'V'), os.path.join(base, 'identity_test_V_flowcube.fits')    # ghost: no record anywhere yet
+    tz = '2026-11-30T00:00:00Z'                                                         # newer than every fixture row
+    cubes = [nv, ghost]
+    with record_file(z, RES_COLS, [good]):
+        r0, d0 = SC.rescale_identity(cubes)
+        write_csv(z, RES_COLS, [good, result_row(cp('78MHz', 'I'), 1.2, tz)])
+        r1, d1 = SC.rescale_identity(cubes)
+        write_csv(z, RES_COLS, [good, result_row(cp('78MHz', 'I'), 1.2, tz), result_row(nv, 1.05, tz)])
+        r2, d2 = SC.rescale_identity(cubes)
+        with record_file(pid, PLAN_COLS, [[ghost, CELL, '99MHz', 'V', 'done', 1, '1.05']]):
+            r3, d3 = SC.rescale_identity(cubes)
+            write_csv(pid, PLAN_COLS, [[ghost, CELL, '99MHz', 'V', 'failed', 1, '1.05']])
+            r4, d4 = SC.rescale_identity(cubes)
+        write_csv(z, RES_COLS, [good, good[:2] + ['abc'] + good[3:]])
+        r5, d5 = SC.rescale_identity(cubes)
+    check('resume identity (review 3, follow-up): a RESULTS row appended for ANOTHER cube (78 MHz I) leaves the unit\'s '
+          'identity unchanged (no re-run on --resume)', r1 == r0 and d1 == d0 and r0[ghost] is None, (r0, r1))
+    check('resume identity (review 3, follow-up): a newer RESULTS row of the unit\'s cube (55 MHz V, the same factor) changes '
+          'it (a re-run): the record names that row (<file>:<line>, utc, fsappld); the other cube\'s unchanged',
+          d2 != d0 and r2[nv] == {'source': 'rescale-results', 'row': '%s:4' % z, 'utc': tz, 'factor': 1.05}
+          and r2[ghost] == r0[ghost], r2)
+    check('resume identity (review 3, follow-up): a plan "done" row for the cube names the plan row, status and factor; the '
+          'row changing status (done -> failed) changes the identity (a re-run: the gate then finds no record)',
+          r3[ghost] == {'source': 'plan-native', 'row': '%s:2' % pid, 'status': 'done', 'factor': 1.05} and r4[ghost] is None
+          and d3 != d2 and d4 != d3, (r3, r4))
+    check('resume identity (review 3, follow-up): records that cannot be read -> no resolved records and a text no done unit '
+          'carries (the gate refuses C-FLUXSCALE)', r5 == {} and d5.startswith('rescale records unreadable: RecordsError: no '
+                                                                               'rescale record readable: %s:3' % z), d5)
     setup_records(ops, None, {'hostA': rows_a, 'hostB': rows_b}, {})
 
 

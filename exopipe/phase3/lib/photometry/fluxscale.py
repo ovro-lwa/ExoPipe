@@ -136,7 +136,7 @@ def records():
             k = os.path.normpath(r['cube'])
             if r['status'] == 'done' and r['factor'].strip():
                 rec[k] = dict(source='plan-native', factor=_factor(p, line, 'factor', r['factor']), plan=os.path.basename(p),
-                              row='%s:%d' % (p, line))
+                              row='%s:%d' % (p, line), status=r['status'])
             elif k in rec and rec[k]['source'] == 'plan-native':
                 del rec[k]
     res = {}
@@ -177,6 +177,23 @@ def records():
 
 def record_of(path, rec=None):
     return (records() if rec is None else rec).get(os.path.normpath(path))
+
+
+RESOLVED_KEYS = ('source', 'row', 'rows', 'utc', 'factor', 'status')
+
+
+def resolved(paths):
+    """{cube path: its resolved rescale record | None} of ``paths``: the record the gate compares each cube against, by the
+    row it was resolved from - a RESULTS row (source rescale-results, row <file>:<line>, utc, factor = its fsappld), a plan
+    row (plan-native, row <plan>:<line>, status, factor) or every tied row of an ambiguous record - never the whole record
+    files: a unit's resume identity (lib/photometry/steps_cutouts.rescale_identity), which a row appended for another cube
+    leaves unchanged. RecordsError / OSError propagate."""
+    rec = records()
+    out = {}
+    for p in paths:
+        r = record_of(p, rec)
+        out[p] = None if r is None else {k: r[k] for k in RESOLVED_KEYS if k in r}
+    return out
 
 
 # ---------------------------------------------------------------------------------------------------------------------
