@@ -377,7 +377,7 @@ def mark_injected(run):
     p = os.path.join(run.out_root, '_records', INJECTED_DIR, f'{run.run_id}.json')
     atomic_write_json(p, {'run_id': run.run_id, 'step': run.step, 'argv': run.argv, 'injected': run.injected,
                           'host': run.host, 'pid': run.pid, 'user': getpass.getuser(), 'started': run.started,
-                          'out': os.path.abspath(run.out_root)})
+                          'out': os.path.abspath(run.out_root)}, durable=True)
     return p
 
 
@@ -411,28 +411,22 @@ def injected_runs(path):
     return out
 
 
-def fsync_dir(path):
-    """fsync a directory (a rename or unlink in it made durable). OSError propagates."""
-    fd = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-
-
-def atomic_write_json(path, obj):
-    """Write ``obj`` as JSON to ``path`` atomically AND durably: a temporary file beside it is written, flushed and fsynced,
-    renamed over ``path``, and the directory is fsynced. Any OSError propagates (the temporary file removed): the caller
-    never takes an unwritten record for a written one - a Lustre eviction discards dirty pages, and an error that reaches
-    only the page cache is reported by fsync (FINDING-20261122-CUTOUT-WRITER-DISCARDED-PAGES-PASS-AS-DONE)."""
+def atomic_write_json(path, obj, durable=False):
+    """Write ``obj`` as JSON to ``path`` atomically: a temporary file beside it, renamed over ``path`` (on any exception the
+    temporary file is removed and the exception propagates). ``durable`` (the unit and run records): the temporary file is
+    flushed and fsynced before the rename and the directory fsynced after it (core/fitsio.fsync_fd / fsync_path), so an
+    OSError reports a record that is not on disk - a Lustre eviction discards dirty pages, and an error that reaches only the
+    page cache is reported by fsync (FINDING-20261122-CUTOUT-WRITER-DISCARDED-PAGES-PASS-AS-DONE)."""
+    from exopipe.phase3.core.fitsio import fsync_fd, fsync_path
     d = os.path.dirname(path)
     os.makedirs(d, exist_ok=True)
     tmp = f'{path}.tmp.{os.getpid()}'
     try:
         with open(tmp, 'w') as f:
             json.dump(obj, f, indent=1, sort_keys=True, default=str)
-            f.flush()
-            os.fsync(f.fileno())
+            if durable:
+                f.flush()
+                fsync_fd(f.fileno())
         os.replace(tmp, path)
     except BaseException:
         try:
@@ -440,7 +434,8 @@ def atomic_write_json(path, obj):
         except OSError:
             pass
         raise
-    fsync_dir(d or '.')
+    if durable:
+        fsync_path(d)
 
 
 def _jsonable_ctx(ctx):
@@ -577,7 +572,7 @@ class Run:
                                   reason=getattr(self, 'run_reason', None), **extra,
                                   units=[{'unit': u.name, 'status': u.status, 'reason': u.reason,
                                           'n_planned': len(u.planned), 'n_refused_items': len(u.refused_items)}
-                                         for u in self.units]))
+                                         for u in self.units]), durable=True)
         return p
 
 
@@ -759,8 +754,8 @@ class UnitRecord:
             self.status, self.reason = 'error', ''.join(traceback.format_exception_only(etype, exc)).strip()
             self.notes.append(''.join(traceback.format_exception(etype, exc, tb))[-4000:])
         try:
-            self._write_outcome()   # an unwritable record: status error, no record left, the OSError propagates
-        except OSError:
+            self._write_outcome()   # an unwritable record: status error, no record left, the exception propagates
+        except BaseException:
             if etype is not None and not issubclass(etype, Exception):
                 return False        # KeyboardInterrupt / SystemExit keep propagating (the unit is error, no record left)
             raise
@@ -795,23 +790,25 @@ class UnitRecord:
     def write(self):
         if self.run.dry_run:
             return
-        atomic_write_json(record_path(self.run.out_root, self.run.step, self.name), self.to_dict())
+        atomic_write_json(record_path(self.run.out_root, self.run.step, self.name), self.to_dict(), durable=True)
 
     def _write_outcome(self):
-        """Write the record of the unit's outcome (``__exit__``). When it cannot be written (OSError: the disk, an eviction,
-        the quota), the unit ends 'error' (the run exits 1), NO record of the unit is left at its path - neither this outcome
-        nor an earlier run's (a done record there would be adopted by --resume) - so a resumed run re-runs the unit, and the
-        OSError propagates."""
+        """Write the record of the unit's outcome (``__exit__``). When the write fails - any exception: an OSError of the
+        disk, an eviction or the quota, a ValueError of a record that cannot be serialized, an interrupt - the unit ends
+        'error' (the run exits 1), NO record of the unit is left at its path (neither this outcome nor an earlier run's: a
+        done record there would be adopted by --resume), so a resumed run re-runs the unit, and the exception propagates."""
+        from exopipe.phase3.core.fitsio import fsync_path
         try:
             self.write()
-        except OSError as e:
+        except BaseException as e:
             was = f'{self.status}: {self.reason}' if self.reason else str(self.status)
-            self.status, self.reason = 'error', (f'RECORD-WRITE: the record of this unit could not be written ({e}); its '
-                                                 f'outcome was {was} - no record left, a resumed run re-runs the unit')
+            self.status, self.reason = 'error', (f'RECORD-WRITE: the record of this unit could not be written '
+                                                 f'({type(e).__name__}: {e}); its outcome was {was} - no record left, a '
+                                                 f'resumed run re-runs the unit')
             p = record_path(self.run.out_root, self.run.step, self.name)
             try:
                 os.unlink(p)
-                fsync_dir(os.path.dirname(p))
+                fsync_path(os.path.dirname(p))
             except FileNotFoundError:
                 pass
             except OSError as e2:

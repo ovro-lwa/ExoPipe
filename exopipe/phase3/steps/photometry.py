@@ -83,14 +83,15 @@ Failure modes (exit 2 = refused, the gate named in the record; 3 = nothing to do
   --in-place without its measurement chained, or - snapshot - over a band subset, another manifest name, an --index, or a
   cell the chained measure does not select), C-RUN (--src-run other than the tier tool's deep run), C-NOCUBE / C-EXCLUDED /
   C-NOCUT (exit 3 per unit; C-STALE when the root still holds that (cell, band)'s files; a snapshot C-EXCLUDED before any
-  engine starts), PHOT-EXCL-FILE / PHOT-EXCL-READERS (snapshot: the engines' exclusion reader failed, read another file, or
-  disagrees with core/exclusions), C-ENGINE (the engine refused the unit), C-NAMES, C-WRITE (a staged file whose fsync fails
-  or whose on-disk size is not the size its headers imply), C-COUNT (snapshot: the staged files per Stokes do not account
-  for the engine's count), C-IDENTITY, C-CONTENT / CM-CONTENT (the staged products' content tests), C-STALE (--fresh), C-PLACE (a
-  failure while placing: every move undone), PHOT-ADHOC (an ad-hoc set into or under a served root, or with frames / stage /
-  deep measure / evaluate), INJECTED-RUN GUARD (an injected run writing a root outside scratch). A unit that errors is
-  recorded and the stage goes on with the next unit (exit 1 at the end). Ctrl-C or SIGTERM (cli.Terminated) during a
-  placement undoes it (the unit recorded 'interrupted'); the run then stops.
+  engine starts), PHOT-EXCL-FILE / PHOT-EXCL-READERS (snapshot: an engine's exclusion reader failed, read another file, or
+  disagrees with core/exclusions), C-ENGINE (the engine refused the unit; the group search did not build the wideband),
+  C-NAMES, C-WRITE (a staged file whose fsync fails, whose on-disk size is not the size its headers imply, or that holds a
+  hole), C-COUNT (snapshot: the staged files per Stokes do not account for the engine's count), C-IDENTITY, C-CONTENT /
+  CM-CONTENT (the staged products' content tests), C-STALE (--fresh), C-PLACE (a failure while placing: every move undone),
+  PHOT-ADHOC (an ad-hoc set into or under a served root, or with frames / stage / deep measure / evaluate), INJECTED-RUN
+  GUARD (an injected run writing a root outside scratch). A unit that errors is recorded and the stage goes on with the next
+  unit (exit 1 at the end). Ctrl-C or SIGTERM (cli.Terminated) during a placement undoes it (the unit recorded
+  'interrupted'); the run then stops.
   Any failing content test refuses its unit.
 """
 import importlib

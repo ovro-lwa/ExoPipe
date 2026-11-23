@@ -8,8 +8,9 @@ Stage cutouts, one unit per item:
             phase3_snapshot_search.py --cutouts-from-cubes (subbands, V then I) / phase3_snapshot_group_search.py
             --cutouts-from-cubes GROUP (widebands, per Stokes V then I), as snapshot_cutout_regen_20261025.sh :26-32 and
             snapshot_cutout_regen_wb_20261025.sh :27-41 ran them. An excluded (cell, band) ends with no input BEFORE any
-            engine starts (engine_probe: core/exclusions decides; the engines' own reader, read by cutouts_probe.py, must
-            read the same rows, else the unit is refused - B-38 c, PHOT-EXCL-READERS / PHOT-EXCL-FILE); the engines' exit 3
+            engine starts (exclusion_verdict: core/exclusions decides; the engines' own readers, read by cutouts_probe.py
+            once per stage, must read the same bytes and agree, else the unit is refused - B-38 c, PHOT-EXCL-READERS /
+            PHOT-EXCL-FILE); the engines' exit 3
             (data_decisions) stays a second line. Units cutouts.<cell>.<band>.
   deep, sublst  per <LST>_<band>: photometry_tier_cutouts_20261025.py --tier deep|10min --cells <LST>_<band> in place (the
             tier residuals: deep Run_P3S5 iresid / vresid, 10-minute tenmin_root_x2 windows). Units cutouts.<deep|10min>.<cell>.
@@ -20,9 +21,10 @@ Stage cutmeasure (deep, sublst), one unit per (tier, LST, root): photometry_tier
 Every unit writes through a STAGING directory of its own on the root's filesystem (<root>/_staging/<run id>/<unit>/, the
 engine's output root), then:
   0. the write itself (FINDING-20261122-CUTOUT-WRITER-DISCARDED-PAGES-PASS-AS-DONE; settle_staged, check_counts): every staged
-     FITS file fsynced and its on-disk size equal to the size its headers imply (C-WRITE), then - 10 s - the files per Stokes
-     accounting for the engine's reported count (list entries sharing one file name counted as the writer counts them), a
-     positive count without files included (C-COUNT). A failure refuses the unit, nothing placed;
+     FITS file fsynced, its on-disk size equal to the size its headers imply and holding no hole (C-WRITE), then - 10 s - the
+     files per Stokes accounting for the engine's reported count (list entries sharing one file name counted as the writer
+     counts the ones in its view), a positive count without files included (C-COUNT). A failure refuses the unit, nothing
+     placed;
   1. identity of each staged cutout with its source (unit checks): 10 s = the regeneration's content test against the cube
      (tests_cutouts.identity_subband / identity_wideband, the wideband rebuild bounded by the weights' stored precision x
      (A + |S|)); tiers = one plane per file re-cut from its source frame (tier_recut). A failure refuses the unit before
@@ -434,15 +436,18 @@ def stage_snapshot_cutouts(run, args):
             return []
         raise
     units = []
+    reads = None
     for cell, band in items:
         cubes = snapshot_cubes(cell, band)
+        if not run.dry_run and reads is None:      # once per stage: the engines' target list and exclusion reads, every cell
+            reads = EngineReads(run, [cl for cl, _ in items], targets, planets, sorted({b for _, b in items if is_wideband(b)}))
         if run.dry_run:
             K.plan(run, '[cutouts]   unit cutouts.%s.%s%s: cubes V %d, I %d' % (cell, band, tag_suffix(targets),
                                                                              len(cubes['V']), len(cubes['I'])))
             continue
         units += run_unit(run, 'cutouts.%s.%s%s' % (cell, band, tag_suffix(targets)),
                           dict(tier='snapshot', stage='cutouts', cell=cell, band=band, cutout_root=root),
-                          snapshot_unit, run, args, cell, band, root, targets, planets, samples, cubes)
+                          snapshot_unit, run, args, cell, band, root, targets, planets, samples, cubes, reads)
     return units
 
 
@@ -559,13 +564,14 @@ def gate_in_place_whole_cells(args, cells):
                                                                     c.paths.SNAPSHOT_FLEET_OUT))
 
 
-def cutout_admitted(cell, band):
-    """The unit's resume identity under the exclusions (core.exclusions, read live): '<cell>:<band>' unless the regeneration
-    refuses the (cell, band) - a subband by its own row (phase3_snapshot_search.main :1824-1827), a wideband by the deep rule
-    (regen_group_cutouts :467-470) - plus, for a wideband, '<cell>:<member>' of every member subband it keeps (it drops the
-    excluded ones, :472-473). A new exclusion changes the set, so --resume re-runs the unit."""
+def cutout_admitted(cell, band, ex=None):
+    """The unit's resume identity under the exclusions (core.exclusions; ``ex`` the unit's own fresh read, else the process
+    read): '<cell>:<band>' unless the regeneration refuses the (cell, band) - a subband by its own row
+    (phase3_snapshot_search.main :1824-1827), a wideband by the deep rule (regen_group_cutouts :467-470) - plus, for a
+    wideband, '<cell>:<member>' of every member subband it keeps (it drops the excluded ones, :472-473). A new exclusion
+    changes the set, so --resume re-runs the unit."""
     from exopipe.phase3.core import exclusions
-    ex = exclusions.for_tier('snapshot')
+    ex = ex or exclusions.for_tier('snapshot')
     lst, date = cell.split('_', 1)
     if ex.is_excluded(lst, band, date):
         return []
@@ -576,51 +582,155 @@ def cutout_admitted(cell, band):
     return sorted(out)
 
 
-def engine_probe(u, run, cell, band, targets, planets):
-    """The engines' own reads, BEFORE an engine starts (FINDING-20261122-CUTOUT-WRITER-DISCARDED-PAGES-PASS-AS-DONE), taken by
-    cutouts_probe.py in a child process under their interpreter and environment (the ad hoc set included). Returns (excluded,
-    multiple):
-    - excluded: the unit's exclusion verdict (spec photometry.md B-38 decision c and PHOT-EXCL-FILE). core/exclusions (the
-      snapshot tier's per-night read; a missing or unreadable file refuses, C-09) decides by its rule - a subband by its own
-      row; a wideband by any member subband but 18 MHz (exclusions.SUBBAND_ONLY) or [PERBAND] rows, or its own row. The
-      engines' reader (phase3_snapshot_search.excluded_subbands) must read the same file and the same rows of the band and of
-      its member subbands; any disagreement, or a reader that fails, refuses the unit (PHOT-EXCL-READERS, PHOT-EXCL-FILE);
-    - multiple: {'<sample>/<object>': entries} of the writer's targets (phase3_snapshot_cutouts._targets) that share one file
-      name; check_counts holds the staged files to the engine's count through it."""
+def file_key(rel):
+    """'<sample>/<object>' of a staged cutout '<sample>/<band>/<object>/<file>' (the writer's target name key)."""
+    p = rel.split('/')
+    return '%s/%s' % (p[0], p[2])
+
+
+class EngineReads:
+    """The 10-s cutout engines' own reads (FINDING-20261122-CUTOUT-WRITER-DISCARDED-PAGES-PASS-AS-DONE), taken by
+    cutouts_probe.py in a child process under their interpreter and environment (the ad hoc set included): ONE call per stage
+    ('run' mode, before any engine starts) for the writer's target list and the exclusion readers of every night cell - the
+    subband engine's (excluded_subbands) and, when the stage has a wideband, the group search's deep-rule reader
+    (coadd_full_pipeline, config photometry_cutouts.GROUP_EXCLUSION_ROOT); a cell is read again when the unit's own read of
+    data_decisions.csv finds other bytes than the probe read (verdict). Per unit, after its engine, only when a staged cutout's
+    name is shared by more than one list entry: 'inview' mode (in_view) - it needs the unit's staged TIMES and cube frame
+    headers. Each unit takes the calls' code fingerprints as inputs (attach)."""
+
+    def __init__(self, run, cells, targets, planets, widebands):
+        self.run, self.targets, self.planets = run, targets, planets
+        c = K.cfg()
+        self.scopes = sorted({s for b in widebands for s in [b] + list(c.instrument.SUBBAND_BANDS.get(b, ()))})
+        self.code_root = os.path.dirname(K.engine('cutouts_subband'))
+        self.error = None
+        self.multiple, self.target_meta, self.cells, self.calls, self.inputs = {}, {}, {}, [], set()
+        if widebands and os.path.dirname(K.engine('cutouts_wideband')) != self.code_root:
+            self.error = ('PHOT-EXCL-FILE: the subband and wideband engines live in different code roots (%s, %s); the probe '
+                          'reads one' % (self.code_root, os.path.dirname(K.engine('cutouts_wideband'))))
+            return
+        self.error = self._probe(sorted(set(cells)))
+
+    def _call(self, argv, log, u=None):
+        res, text = K.call(u, 'cutouts_probe', argv, 'snapshot', 'cutouts_probe', self.run, log,
+                           env_extra=K.adhoc_env(self.targets, self.planets))
+        if u is None:
+            self.inputs |= {f for f in (res.fingerprint or {}) if os.path.isfile(f)} | {K.engine('cutouts_probe')}
+            self.calls.append({'argv': argv[:6] + (['...'] if len(argv) > 6 else []), 'rc': res.rc, 'log': res.log})
+        return res, text
+
+    def _probe(self, cells):
+        """One 'run' call for ``cells``; their records into self.cells. Returns the failure (refusal text) or None."""
+        argv = ['run', '--code-root', self.code_root]
+        if self.scopes:
+            argv += ['--group-reader-root', K.cfg().photometry_cutouts.GROUP_EXCLUSION_ROOT, '--scopes'] + self.scopes
+        try:
+            res, text = self._call(argv + ['--cells'] + cells, 'cutouts_probe_run.log')
+        except Exception as e:     # noqa: BLE001 - the reads not taken: the units refuse (PHOT-EXCL-FILE), the stage goes on
+            return ('PHOT-EXCL-FILE: the engines\' reads (cutouts_probe.py) could not be taken (%s: %s)'
+                    % (type(e).__name__, e))
+        tl = [json.loads(ln.split(TARGETS_MARK, 1)[1]) for ln in text.splitlines() if ln.startswith(TARGETS_MARK)]
+        recs = [json.loads(ln.split(EXCL_MARK, 1)[1]) for ln in text.splitlines() if ln.startswith(EXCL_MARK)]
+        if res.rc != 0 or len(tl) != 1 or sorted(r.get('cell') for r in recs) != cells:
+            return ('PHOT-EXCL-FILE: the engines\' reads in %s (cutouts_probe.py: their writer\'s target list, their '
+                    'exclusion readers) failed (exit %d, %d target line(s), %d of %d cells): %s'
+                    % (self.code_root, res.rc, len(tl), len(recs), len(cells), res.tail[-600:]))
+        self.multiple = dict(tl[0]['multiple'])
+        self.target_meta = tl[0]
+        self.cells.update({r['cell']: r for r in recs})
+        return None
+
+    def attach(self, u):
+        for f in sorted(self.inputs):
+            u.add_input(f)
+        u.meta['engine_reads'] = {'calls': self.calls, 'targets': self.target_meta}
+
+    def cell(self, cell, sha1):
+        """The probe's record of ``cell``, read again once when its data_decisions bytes (sha1) are not ``sha1``."""
+        rec = self.cells.get(cell)
+        if rec is not None and 'error' not in rec and rec.get('sha1') != sha1:
+            err = self._probe([cell])
+            if err:
+                self.cells[cell] = {'cell': cell, 'error': err}
+            rec = self.cells.get(cell)
+        return rec
+
+    def in_view(self, u, cell, band, stage, rels, cubes):
+        """{Stokes: {key: entries of that shared name write_cutouts' view test passes}} for the staged cutouts whose name more
+        than one list entry shares ({} when none); refuses the unit (C-COUNT) when the read fails or is ambiguous."""
+        shared = sorted({file_key(r) for r in rels if file_key(r) in self.multiple})
+        if not shared:
+            return {}
+        lst, date = cell.split('_', 1)
+        times = ['%s=%s' % (S, os.path.join(stage, sorted(r for r in rels if r.endswith('_%s.fits' % S))[0]))
+                 for S in 'VI' if any(r.endswith('_%s.fits' % S) for r in rels)]
+        argv = (['inview', '--code-root', self.code_root, '--lst', lst, '--date', date, '--times'] + times + ['--cubes']
+                + ['%s=%s' % (S, p) for S in 'VI' for p in cubes.get(S, [])] + ['--keys'] + shared)
+        res, text = self._call(argv, 'cutouts_inview_%s_%s.log' % (cell, band), u)
+        got = [json.loads(ln.split(INVIEW_MARK, 1)[1]) for ln in text.splitlines() if ln.startswith(INVIEW_MARK)]
+        if res.rc != 0 or len(got) != 1:
+            u.refuse('C-COUNT: the writer\'s view of the target names %s shared by list entries could not be read '
+                     '(cutouts_probe.py inview exit %d, %d result line(s); staging kept: %s): %s'
+                     % (', '.join(shared), res.rc, len(got), stage, res.tail[-600:]))
+        u.meta['shared_in_view'] = got[0]
+        amb = ['%s %s' % (S, k) for S, v in sorted(got[0].items()) for k, n in sorted(v['in_view'].items()) if n is None]
+        if amb:
+            u.refuse('C-COUNT: the cube frames\' geometries disagree on how many entries of %s are in the writer\'s view (%s) - '
+                     'no count the files can be held to (staging kept: %s)' % ('; '.join(amb), got[0], stage))
+        return {S: v['in_view'] for S, v in got[0].items()}
+
+
+TARGETS_MARK, EXCL_MARK, INVIEW_MARK = 'ENGINE-TARGETS ', 'ENGINE-EXCLUSIONS ', 'ENGINE-INVIEW '
+
+
+def exclusion_verdict(u, reads, ex, cell, band):
+    """The unit's exclusion verdict, BEFORE an engine starts (spec photometry.md B-38 decision c and PHOT-EXCL-FILE). ``ex``
+    is the unit's one fresh read of data_decisions (core/exclusions, the snapshot tier's per-night read; a missing or
+    unreadable file refuses, C-09), the same read as its resume identity (cutout_admitted); it decides by its rule - a
+    subband by its own row; a wideband by any member subband but 18 MHz (exclusions.SUBBAND_ONLY) or [PERBAND] rows, or its
+    own row. Every engine reader the unit's engine uses (EngineReads) must read the same file, the same bytes, and agree: the
+    subband engine's excluded_subbands on the rows of the band and its member subbands, and for a wideband the group
+    search's deep-rule reader on the band's verdict and its members' rows. A reader that fails or reads another file refuses
+    (PHOT-EXCL-FILE), a disagreement refuses (PHOT-EXCL-READERS). True when the (cell, band) is excluded."""
     from exopipe.phase3.core import exclusions
     c = K.cfg()
     lst, date = cell.split('_', 1)
-    ex = exclusions.for_tier('snapshot', fresh=True)
     own = ex.of(lst, date)
-    engine_key = 'cutouts_wideband' if is_wideband(band) else 'cutouts_subband'
-    code_root = os.path.dirname(K.engine(engine_key))
-    res, text = K.call(u, 'cutouts_probe', ['--code-root', code_root, '--lst', lst, '--date', date], 'snapshot',
-                       'cutouts_probe', run, 'cutouts_probe_%s_%s.log' % (cell, band), env_extra=K.adhoc_env(targets, planets))
-    got = {}
-    for mark in ('ENGINE-EXCLUSIONS ', 'ENGINE-TARGETS '):
-        lines = [ln.split(mark, 1)[1] for ln in text.splitlines() if ln.startswith(mark)]
-        if res.rc != 0 or len(lines) != 1:
-            u.refuse('PHOT-EXCL-FILE: the engines\' reads in %s (cutouts_probe.py: their exclusion reader '
-                     'phase3_snapshot_search.excluded_subbands, their writer\'s target list) failed for %s %s (exit %d, %d %r '
-                     'line(s)) - the engine not started: %s' % (code_root, lst, date, res.rc, len(lines), mark.strip(),
-                                                                res.tail[-600:]))
-        got[mark.strip()] = json.loads(lines[0])
-    eng, tgt = got['ENGINE-EXCLUSIONS'], got['ENGINE-TARGETS']
-    if os.path.realpath(eng['path']) != os.path.realpath(own.path):
+    if reads.error:
+        u.refuse(reads.error + ' - the engine not started')
+    reads.attach(u)
+    got = reads.cell(cell, own.fingerprint()['sha1'])
+    if got is None or 'error' in got:
+        u.refuse('PHOT-EXCL-FILE: the engines\' exclusion readers failed for %s (%s) - the engine not started'
+                 % (cell, (got or {}).get('error', 'no record of the cell')))
+    if is_wideband(band) and 'group_reader' not in got:
+        u.refuse('PHOT-EXCL-FILE: the group search\'s exclusion reader was not read for %s - the engine not started' % cell)
+    paths =[got['path']] + ([got['group_reader']['path']] if is_wideband(band) else [])
+    other = [p for p in paths if os.path.realpath(p) != os.path.realpath(own.path)]
+    if other:
         u.refuse('PHOT-EXCL-FILE: the engines read the exclusion list %s, core/exclusions %s (paths.DATA_DECISIONS) - one list '
-                 'for both readers; the engine not started' % (eng['path'], own.path))
+                 'for every reader; the engine not started' % (', '.join(other), own.path))
+    if got['sha1'] != own.fingerprint()['sha1']:
+        u.refuse('PHOT-EXCL-FILE: %s changed between the engines\' read (sha1 %s) and core/exclusions\' (sha1 %s), read again '
+                 '- the engine not started' % (own.path, got['sha1'], own.fingerprint()['sha1']))
     norm = exclusions._norm_scope
-    engine_rows = {norm(s) for s in eng['excluded']}
-    scopes = [band] + list(c.instrument.SUBBAND_BANDS.get(band, ()))
-    differ = ['%s (core %s, engine %s)' % (s, (lst, norm(s), date) in own.rows, norm(s) in engine_rows) for s in scopes
-              if ((lst, norm(s), date) in own.rows) != (norm(s) in engine_rows)]
-    if differ:
-        u.refuse('PHOT-EXCL-READERS: the readers of %s disagree on %s %s (B-38: the step refuses on disagreement) - excluded by '
-                 'row: %s; the engine not started' % (own.path, lst, date, '; '.join(differ)))
+    members = list(c.instrument.SUBBAND_BANDS.get(band, ()))
+    row = {s: (lst, norm(s), date) in own.rows for s in [band] + members}
+    ss_rows = {norm(s) for s in got['excluded']}
+    differ = ['%s (core %s, excluded_subbands %s)' % (s, row[s], norm(s) in ss_rows) for s in [band] + members
+              if row[s] != (norm(s) in ss_rows)]
     verdict = ex.is_excluded(lst, band, date)
-    u.meta['exclusions'] = {'path': own.path, 'scope': own.scope, 'engine_excluded': eng['excluded'], 'excluded': verdict}
-    u.meta['engine_targets'] = {'module': tgt['module'], 'n_targets': tgt['n_targets'], 'multiple': tgt['multiple']}
-    return verdict, dict(tgt['multiple'])
+    if is_wideband(band):
+        gv = got['group_reader']['verdicts']
+        want = dict({s: row[s] for s in members}, **{band: verdict})      # the band by the rule, a member by its row
+        differ += ['%s (core %s, the group search\'s is_excluded %s)' % (s, want[s], gv.get(s)) for s in [band] + members
+                   if gv.get(s) != want[s]]
+    if differ:
+        u.refuse('PHOT-EXCL-READERS: the readers of %s disagree on %s %s (B-38: the step refuses on disagreement) - excluded: '
+                 '%s; the engine not started' % (own.path, lst, date, '; '.join(differ)))
+    u.meta['exclusions'] = {'path': own.path, 'scope': own.scope, 'sha1': got['sha1'], 'engine_excluded': got['excluded'],
+                            'group_reader': got.get('group_reader') if is_wideband(band) else None, 'excluded': verdict}
+    return verdict
 
 
 def _regen_counts(line):
@@ -631,15 +741,16 @@ def _regen_counts(line):
     return {'V': m.group(1), 'I': m.group(2)}, m.group(3) or ''
 
 
-def expected_files(n):
-    """The number of cutout files an engine's count for one Stokes promises: an integer as written; 'None' (the subband
-    engine: the night rule refused that Stokes), 'excluded' (the group search's exit 3), 'no-members' text ('no member cube -
+def expected_files(n, wideband=False):
+    """The number of cutout files an engine's count for one Stokes promises: an integer as written; 'None' of the SUBBAND
+    engine (the night rule refused that Stokes), 'excluded' (the group search's exit 3), 'no-members' text ('no member cube -
     nothing to build') or a night-rule 'refused: ...' of the group search: 0. Anything else ('FAILED: ...', 'REFUSED: ...', a
-    count missing from the done line) is None: no count the files can be held to."""
+    count missing from the done line, the group search's 'None': the group was not built) is None: no count the files can
+    be held to."""
     s = str(n).strip()
     if re.fullmatch(r'\d+', s):
         return int(s)
-    if s in ('None', 'excluded') or s.startswith('no member cube') or s.startswith('refused: '):
+    if (s == 'None' and not wideband) or s == 'excluded' or s.startswith('no member cube') or s.startswith('refused: '):
         return 0
     return None
 
@@ -647,22 +758,22 @@ def expected_files(n):
 def settle_staged(u, stage, rels, what, hdus=None):
     """W1, every staged cutout BEFORE its content tests (FINDING-20261122-CUTOUT-WRITER-DISCARDED-PAGES-PASS-AS-DONE: a Lustre
     eviction discarded the writer's dirty pages, the writer (no fsync, no size check) left cutouts cut short at 24 MiB and the
-    unit was taken as done): fsync each file (an error the writer never saw is reported here), its on-disk size equal to the
-    size its headers imply (and ``hdus`` HDUs, when given), then its cached pages dropped, so the content tests read the disk
-    (core/fitsio.settle_fits). Any failure refuses the unit, nothing placed (C-WRITE)."""
+    unit was taken as done): per file, on one descriptor, an fsync (an error the writer never saw is reported here), its
+    on-disk size equal to the size its headers imply (and ``hdus`` HDUs, when given), no hole, then its cached pages dropped,
+    so the content tests read the disk (core/fitsio.settle_fits; photometry_cutouts.SETTLE_WORKERS threads). Any failure
+    refuses the unit, nothing placed (C-WRITE)."""
+    from concurrent.futures import ThreadPoolExecutor
     from exopipe.phase3.core import fitsio
+    with ThreadPoolExecutor(max_workers=K.cfg().photometry_cutouts.SETTLE_WORKERS) as pool:
+        got = list(pool.map(lambda r: fitsio.settle_fits(os.path.join(stage, r)), rels))
     bad = []
-    for r in rels:
-        p = os.path.join(stage, r)
-        why = fitsio.settle_fits(p)
-        if why is None and hdus is not None:
-            nhdu = fitsio.fits_implied_size(p)[1]
-            if nhdu != hdus:
-                why = '%d HDU(s), %d expected' % (nhdu, hdus)
+    for r, (why, nhdu) in zip(rels, got):
+        if why is None and hdus is not None and nhdu != hdus:
+            why = '%d HDU(s), %d expected' % (nhdu, hdus)
         if why:
             bad.append('%s: %s' % (r, why))
     u.check('photometry_cutout_manifest.W1_fsync_size', not bad, len(bad),
-            '%d of %d staged cutouts fsynced, their on-disk size = the size their headers imply%s%s'
+            '%d of %d staged cutouts fsynced, their on-disk size = the size their headers imply%s, no hole%s'
             % (len(rels) - len(bad), len(rels), ' (%d HDUs)' % hdus if hdus is not None else '',
                ('; FAIL %s' % '; '.join(bad[:5])) if bad else ''), cls='photometry_cutout_manifest')
     if bad:
@@ -670,25 +781,25 @@ def settle_staged(u, stage, rels, what, hdus=None):
                  % (len(bad), len(rels), what, stage, '; '.join(bad[:5])))
 
 
-def check_counts(u, stage, rels, band, outcome, multiple=None):
+def check_counts(u, stage, rels, band, outcome, in_view=None):
     """W2: the files staged per Stokes account for the count the engine's done line reported (expected_files), a positive
-    count with no file included (a count the files cannot be held to refuses). The writer counts target-list entries, not
-    files: entries sharing one name within MERGE_ARCMIN are one object and one file, written once per entry (each counted), so
-    a staged file accounts for ``multiple['<sample>/<object>']`` (engine_probe) of the count, else 1. Else the unit is refused,
-    nothing placed (C-COUNT)."""
-    multiple = multiple or {}
+    count with no file included (a count the files cannot be held to refuses). The writer counts list entries in its view, not
+    files: entries sharing one name within MERGE_ARCMIN are one object and one file, written once per entry in view (each
+    counted), so a staged file of a shared name accounts for ``in_view[S][key]`` of the count (EngineReads.in_view: the
+    entries that pass the writer's view test), any other file for 1. Else the unit is refused, nothing placed (C-COUNT)."""
+    in_view = in_view or {}
     bad, got = [], {}
     for S in 'VI':
         mine = [r for r in rels if r.endswith('_%s.fits' % S)]
         n = len(mine)
-        entries = sum(multiple.get('/'.join(r.split('/')[0:3:2]), 1) for r in mine)    # <sample>/<band>/<object>/<file>
-        want = expected_files(outcome.get(S))
+        entries = sum(in_view.get(S, {}).get(file_key(r), 1) for r in mine)
+        want = expected_files(outcome.get(S), is_wideband(band))
         got[S] = (outcome.get(S), n, entries)
         if want is None or want != entries:
             bad.append('%s: engine reported %r, %d file(s) staged%s' % (
-                S, outcome.get(S), n, ' (%d list entries)' % entries if entries != n else ''))
+                S, outcome.get(S), n, ' (%d list entries in view)' % entries if entries != n else ''))
     u.check('photometry_cutout_manifest.W2_count', not bad, len(bad),
-            'staged cutouts per Stokes account for the engine\'s count (files/list entries): %s%s' % (
+            'staged cutouts per Stokes account for the engine\'s count (files/list entries in view): %s%s' % (
                 ', '.join('%s %s/%d/%d' % (S, v, n, e) for S, (v, n, e) in sorted(got.items())),
                 ('; FAIL %s' % '; '.join(bad)) if bad else ''), cls='photometry_cutout_manifest')
     if bad:
@@ -701,7 +812,10 @@ def stamp_record(cell, band):
     return os.path.join(K.cfg().photometry_cutouts.STAMP_REFERENCE_ROOT, '_fluxscale', band, '%s_%s_fluxscale.json' % (cell, band))
 
 
-def snapshot_unit(run, args, cell, band, root, targets, planets, samples, cubes):
+def snapshot_unit(run, args, cell, band, root, targets, planets, samples, cubes, reads=None):
+    """One (night cell, band) of the snapshot cutouts stage. ``reads``: the stage's EngineReads (None: the unit's own, of its
+    cell)."""
+    from exopipe.phase3.core import exclusions
     from exopipe.phase3.lib.photometry import tests_cutouts as TC
     c = K.cfg()
     cc = c.photometry_cutouts
@@ -713,7 +827,8 @@ def snapshot_unit(run, args, cell, band, root, targets, planets, samples, cubes)
     lists = [p for _, p in targets] or list(K.sample_paths('snapshot', cut=True).values())
     inputs = (sorted(allcubes) + lists
               + [r for r in [stamp_record(cell, band)] if stamp and os.path.isfile(r)])
-    admitted = cutout_admitted(cell, band)
+    ex = exclusions.for_tier('snapshot', fresh=True)     # the unit's one read: its resume identity and its verdict
+    admitted = cutout_admitted(cell, band, ex)
     if K.run_resume_ok(run, name, admitted, {'inputs_listing_sha1': listing_sha1(inputs), 'cutout_root': root}):
         return run.units[-1:]
     with run.unit(name, tier='snapshot', stage='cutouts', cell=cell, band=band, cutout_root=root, samples=samples,
@@ -730,8 +845,10 @@ def snapshot_unit(run, args, cell, band, root, targets, planets, samples, cubes)
                     u.add_input(nz)
         u.set_admitted(admitted)
         mrels = unit_manifest_rels('10s', '%s_%s' % (cell, band), sfx)
-        excluded, multiple = engine_probe(u, run, cell, band, targets, planets)   # before any engine starts; the engines'
-        if excluded:                                                              # exit 3 (below) is the second line
+        if reads is None:
+            reads = EngineReads(run, [cell], targets, planets, [band] if is_wideband(band) else [])
+        if exclusion_verdict(u, reads, ex, cell, band):     # before any engine starts; the engines' exit 3 (below) is the
+                                                             # second line
             why = ('C-EXCLUDED: %s %s is excluded in data_decisions (core/exclusions, the snapshot tier\'s read; the engines\' '
                    'reader reads the same rows) - no engine started' % (cell, band))
             nothing_written(u, run, root, '10s', cell, band, samples, why, mrels)
@@ -815,6 +932,10 @@ def snapshot_unit(run, args, cell, band, root, targets, planets, samples, cubes)
                                                                         res.tail[-600:]))
                 m = re.search(r': (\S+) cutout cubes', done[-1])
                 outcome[S] = m.group(1) if m else done[-1].split(': ', 1)[-1].strip()
+                if outcome[S] == 'None':     # run_group_search returned no result for the group: not built (too few frames)
+                    u.refuse('C-ENGINE: the group search did not build %s of %s (%s): its done line reports None cutout cubes '
+                             '(no result for the group, e.g. too few frames) - no count the files can be held to (staging kept: '
+                             '%s)' % (band, cell, S, stage))
                 mp = os.path.join(eout, 'wideband_members_%s.csv' % S)
                 if os.path.exists(mp):
                     members[S] = mp
@@ -830,7 +951,8 @@ def snapshot_unit(run, args, cell, band, root, targets, planets, samples, cubes)
             u.refuse('C-NAMES: the engine wrote files that are no cutout of samples %s: %s (staging kept: %s)' % (
                 ','.join(samples), TC._fmt(other), stage))
         settle_staged(u, stage, rels, '%s %s' % (cell, band), cc.CUTOUT_HDUS)   # W1: fsync, size = header-implied (C-WRITE)
-        check_counts(u, stage, rels, band, outcome, multiple)   # W2: files per Stokes = the engine's count (C-COUNT), before C-NOCUT
+        check_counts(u, stage, rels, band, outcome, reads.in_view(u, cell, band, stage, rels, cubes))   # W2 (C-COUNT), before
+                                                                                                         # C-NOCUT
         if not rels:
             remove_staging(stage)
             u.meta['staging'] = None

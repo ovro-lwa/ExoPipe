@@ -1801,6 +1801,7 @@ def test_cutout_mirrors():
     gs = open(os.path.join(CLV, 'phase3_snapshot_group_search.py')).read()
     cs = open(os.path.join(CLV, 'phase3_snapshot_cutouts.py')).read()
     fp = open(os.path.join(OPS, 'snapshot_forced_phot.py')).read()
+    ps = open(os.path.join(os.path.dirname(HERE), 'exopipe', 'phase3', CFG.photometry.ENGINE_V2['cutouts_probe'])).read()
     texts = [(ss, 'log.info("%sV %%s I %%s%%s"' % cc.REGEN_DONE_SUBBAND.replace('REGEN ', 'REGEN %s %s %s: ')),
              (ss, 'raise SystemExit(%d)' % cc.REGEN_EXCLUDED_RC),
              (ss, 'CUBE_ROOT = os.environ.get("P3_SNAP_CUBE_ROOT", "%s")' % CFG.paths.SNAPSHOT_CUBES_ROOT),
@@ -1820,14 +1821,39 @@ def test_cutout_mirrors():
              # the writer counts list entries, a file per <sample>/<band>/<safe name> (check_counts' multiplicities)
              (cs, 'd = os.path.join(root, tag, band, safe_name(nm)); os.makedirs(d, exist_ok=True)'),
              (cs, '.writeto(fn, overwrite=True)\n        written += 1\n'),
-             (cs, 'def _targets():')]
+             (cs, 'def _targets():'),
+             # the writer's view test, which cutouts_probe.py inview restates (EngineReads.in_view): its mid-time, WCS and grid,
+             # the elevation and pixel-range cuts; its header from the frame headers of the flow cube
+             (cs, 'from phase3_snapshot_search import lst_deg_at, ts_to_epoch_seconds'),
+             (cs, 'w = WCS(hdr).celestial'),
+             (cs, 'nt, ny, nx = cube.shape'),
+             (cs, 'times = [ts_to_epoch_seconds(m["ts"]) for m in meta]\n    lst_mid = lst_deg_at(0.5 * (min(times) + max(times)))'),
+             (cs, 'for tag, nm, ra, dec in _targets():\n        if _elevation(ra, dec, lst_mid) < MIN_EL_DEG:\n            continue\n'
+                  '        px, py = w.all_world2pix(ra, dec, 0)\n        if not (np.isfinite(px) and np.isfinite(py)) or not '
+                  '(0 <= px < nx and 0 <= py < ny):\n            continue\n        jobs.append((tag, nm, [(ra, dec)] * nt))'),
+             (cs, '"ts", format="15A", array=np.array([m["ts"] for m in meta])'),
+             (ss, 'hdrs = [fits.Header.fromstring(str(x), sep="\\n") for x in tab["header"]]'),
+             (ss, 'cube = np.array(h["FRAMES"].data, dtype=np.float32)'),
+             (ss, 'return cube, meta, hdrs[k0]'),
+             (ps, 'if CUT._elevation(ra, dec, lst_mid) < CUT.MIN_EL_DEG:\n                            continue\n'
+                  '                        px, py = w.all_world2pix(ra, dec, 0)\n                        if not (np.isfinite(px) and '
+                  'np.isfinite(py)) or not (0 <= px < nx and 0 <= py < ny):'),
+             (ps, 'lst_mid = lst_deg_at(0.5 * (min(t) + max(t)))'),
+             # the group search's deep-rule reader (EngineReads: --group-reader-root = photometry_cutouts.GROUP_EXCLUSION_ROOT)
+             (gs, 'sys.path.insert(0, "%s")\n    from exopipe.phase3.coadd_full_pipeline import load_exclusions, is_excluded\n'
+                  '    if is_excluded(lst, group, date, load_exclusions(scope=_excl_scope(lst, date))):' % cc.GROUP_EXCLUSION_ROOT),
+             (ps, 'ex = CF.load_exclusions(scope=scope)'),
+             (ps, "'verdicts': {s: bool(CF.is_excluded(lst, s, date, ex)) for s in a.scopes}"),
+             (ps, 'scopes.setdefault(GS._excl_scope(lst, date), []).append(cell)')]
     miss = [t for s_, t in texts if t not in s_]
     check('mirror the regeneration engines and the ad-hoc switches: CUTOUTS-REGEN / -WIDEBAND lines, exit 3 on exclusion, the '
           'cube and search-output roots (= paths.SNAPSHOT_CUBES_ROOT / SNAPSHOT_FLEET_OUT, passed explicitly), the required '
           'root, P3_SNAP_CUTOUT_SAMPLES / _PLANETS in the writer and stage 1, the planet sample name; the writer\'s two HDUs '
           '(photometry_cutouts.CUTOUT_HDUS = %d), the engines\' reads cutouts_probe.py takes (excluded_subbands of '
-          'paths.DATA_DECISIONS, the subband main\'s exit 3 and the wideband\'s member list; _targets, a file per sample / band / '
-          'safe name, each entry counted)' % cc.CUTOUT_HDUS,
+          'paths.DATA_DECISIONS, the subband main\'s exit 3 and the wideband\'s member list; the group search\'s deep-rule reader '
+          'under photometry_cutouts.GROUP_EXCLUSION_ROOT; _targets, a file per sample / band / safe name, each entry in view '
+          'counted; the writer\'s view test the probe restates, its mid-time from TIMES ts, its WCS from the cube\'s frame '
+          'headers and its grid from FRAMES)' % cc.CUTOUT_HDUS,
           not miss and cc.CUTOUT_HDUS == 2, miss)
     rt = open(os.path.join(OPS, 'snapshot_cutout_regen_20261025_test.py')).read()
     Lr = mod_literals(os.path.join(OPS, 'snapshot_cutout_regen_20261025_test.py'))
@@ -2103,19 +2129,41 @@ fake_params.json: 'excluded' cells exit 3 (EXCLUDED:), 'corrupt' shifts plane 1 
 cells raise the engine's REFUSED (a cube repeating integrations without the search's frame list), 'crash' cells fail without a
 refusal, 'night' cells write nothing and exit 0 with the done line of a night-rule refusal of both Stokes. Importable (the step's
 probe (cutouts_probe.py) imports it as the engines' reader): DATA_DECISIONS and excluded_subbands read the exclusion list as the real
-reader does (fake_params.json 'data_decisions'), so its rows agree with core/exclusions and 'excluded' tests the engine's exit 3."""
+reader does (fake_params.json 'data_decisions'), so its rows agree with core/exclusions and 'excluded' tests the engine's exit 3;
+ts_to_epoch_seconds and lst_deg_at are the real module's (the writer's view test)."""
 import argparse, csv, glob, json, os, sys
 sys.path.insert(0, '/lustre/gh/main/clv15')
 import numpy as np
 from astropy.io import fits
 P = json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fake_params.json')))
 DATA_DECISIONS = P.get('data_decisions')
+_CLV15_SS = []
 
 
 def excluded_subbands(lst, date, path=DATA_DECISIONS):
     with open(path) as f:
         return {r['subband'].strip() for r in csv.DictReader(f) if r['lst'].strip() == lst and r['date'].strip() == date
                 and r['verdict'].strip() == 'exclude'}
+
+
+def _clv15_search():
+    # the real clv15 phase3_snapshot_search: the module the real writer imports its times from in this fake's own process
+    # (sys.path[0] = clv15 there), loaded under another name for the probe, which imports this file as phase3_snapshot_search
+    if not _CLV15_SS:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('clv15_phase3_snapshot_search', '/lustre/gh/main/clv15/phase3_snapshot_search.py')
+        m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m)
+        _CLV15_SS.append(m)
+    return _CLV15_SS[0]
+
+
+def ts_to_epoch_seconds(ts):
+    return _clv15_search().ts_to_epoch_seconds(ts)
+
+
+def lst_deg_at(t):
+    return _clv15_search().lst_deg_at(t)
 
 
 def main():

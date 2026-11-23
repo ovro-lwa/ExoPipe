@@ -143,8 +143,8 @@ class photometry(_Section):
               'cutmeasure_tier': 'photometry_tier_forced_20261026.py'}  # --root --out --tier --lsts --samples (9b0ca31, fa17f4c, 4a96529)
     # ---- engines of the v2 package (a path under exopipe/phase3/, run as a child process like the in-place engines): the ad hoc
     #      10-s subband cutouts by the stamp method (photometry_cutouts.STAMP_REFERENCE_ROOT; Gregg 2026-11-21); the 10-s cutout
-    #      engines' own reads before an engine starts - their data_decisions.csv reader (B-38 decision c) and the writer's target
-    #      list (steps_cutouts.engine_probe)
+    #      engines' own reads (steps_cutouts.EngineReads): before any engine starts, their data_decisions.csv readers (B-38
+    #      decision c) and the writer's target list; after a unit's engine, the writer's view of target names shared by entries
     ENGINE_V2 = {'cutouts_stamp': 'lib/photometry/stamp_engine.py', 'cutouts_probe': 'lib/photometry/cutouts_probe.py'}
     ENGINE_PYTHON = {'deep': 'default', 'snapshot': 'py36'}
     # the interpreter of each cutout engine (core/legacy.run), where it is not its tier's: the 10-s regeneration ran under the
@@ -394,6 +394,10 @@ class photometry_cutouts(_Section):
     TIMES_COLUMNS = ('ts', 'date_obs', 'admitted', 'global_rms_jyb', 'ra_deg', 'dec_deg', 'target_x', 'target_y')   # :211-218
     HEADER_CARDS = ('OBJECT', 'SAMPLE', 'LST', 'DATE', 'BAND', 'STOKES', 'CELL', 'UTCSTART', 'TARGRA', 'TARGDEC', 'CUTDEG')  # :205-208
     CUTOUT_HDUS = 2                    # HDUs of one 10-s cutout file, the cube and TIMES (write_cutouts); MIRROR :223
+    SETTLE_WORKERS = 4                 # threads settling the staged cutouts (steps_cutouts.settle_staged: fsync, size, holes)
+    # the production package the group search imports its deep-rule exclusion reader from (coadd_full_pipeline.load_exclusions /
+    # is_excluded; phase3_snapshot_group_search.regen_group_cutouts :488-490, MIRROR); cutouts_probe.py reads it the same way
+    GROUP_EXCLUSION_ROOT = '/lustre/gh/main/exopipe'
     # ---- the tier cutouts (photometry_tier_cutouts_20261025.py, MIRROR): file tier token per step tier, the TIMES columns (the
     #      5th is 'searched' for 10min, 'deep_refused' for deep: :189-199), the header cards (:181-188), the REFERENCE extension
     #      of fixed targets (:201-203), and the inputs the tool reads by literal path (:46-48; the step refuses --src-run / --run
@@ -450,7 +454,7 @@ class photometry_cutouts(_Section):
     MANIFEST_HASH_FILES = 8            # files per manifest whose sha256 the content test recomputes (all sizes are checked)
     TIER_RECUT_SEED = 20261025         # photometry_tier_cutouts_20261025.content_test :214 (one random plane per file)
     PROTECTED_KEYS = ('CUT_DEG', 'MIN_EL_DEG', 'MERGE_ARCMIN', 'PLANETS', 'PLANET_EPHEM_QUANTUM_MIN', 'PLANET_SITE',
-                      'STAMP_REFERENCE_ROOT', 'STAMP_DONE', 'STAMP_NO_REFERENCE_RC', 'CUTOUT_HDUS',
+                      'STAMP_REFERENCE_ROOT', 'STAMP_DONE', 'STAMP_NO_REFERENCE_RC', 'CUTOUT_HDUS', 'GROUP_EXCLUSION_ROOT',
                       'TIMES_COLUMNS', 'HEADER_CARDS', 'TIER_TOKEN', 'TIER_TIMES_COLUMNS', 'TIER_HEADER_CARDS', 'TIER_DEEP_RUN',
                       'TIER_TENMIN_ROOT', 'TIER_TENMIN_SEARCH', 'REGEN_DONE_SUBBAND', 'REGEN_DONE_WIDEBAND', 'REGEN_EXCLUDED_RC',
                       'IDENTITY_TOL', 'EPS32_FACTOR', 'WEIGHT_REL_PRECISION', 'TIER_RECUT_SEED')
