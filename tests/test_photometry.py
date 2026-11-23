@@ -659,10 +659,11 @@ def test_mirrors():
           and L.get('ROOT_DEFAULT') == ph.RETIRED_CUTOUT_ROOTS[0] and L.get('MERGE_ARCMIN') == cu.MERGE_ARCMIN
           and 'lat=%s * u.deg, lon=%s * u.deg, height=%s * u.m' % pl in cs and 'key = (body, ts[:12])' in cs
           and cu.PLANET_EPHEM_QUANTUM_MIN == 10
-          and L.get('SAMPLES') == tuple((t, ph.SAMPLE_FILES[t]) for t in ph.SAMPLES_MEASURED['snapshot']))
+          and sorted(ph.SAMPLES_CUT) == sorted(ph.TIERS_WITH_ENGINE)
+          and all(L.get('SAMPLES') == tuple((t, ph.SAMPLE_FILES[t]) for t in ph.SAMPLES_CUT[tr]) for tr in ph.SAMPLES_CUT))
     check('mirror phase3_snapshot_cutouts.py (cutout side, floor, planets, the retired default root, planet site, 10-minute '
-          'ephemeris, the one-object merge radius, the sample lists = the snapshot samples and their files)', ok,
-          (L.get('SAMPLES'), ph.SAMPLES_MEASURED['snapshot']))
+          'ephemeris, the one-object merge radius, the sample lists = the cutout samples of every tier and their files; the '
+          'tier tool cuts them too, photometry_tier_cutouts_20261025.py:123)', ok, (L.get('SAMPLES'), ph.SAMPLES_CUT))
     L = mod_literals(os.path.join(CLV, 'phase3_snapshot_astro.py'))
     rep = {k: v for k, v in (L.get('BAND_REP_FREQ') or {}).items() if k != 'Full'}
     ok = (L.get('FWHM_ARCMIN') == ev.SNAPSHOT_FWHM_ARCMIN and rep == ev.SNAPSHOT_BAND_REP_MHZ
@@ -767,10 +768,12 @@ def test_gates():
     check('a MIRROR key cannot be overridden (the engine keeps its own literal; exit 2)', rc == 2 and 'REFUSED' in txt, txt)
     CFG.reset()
     got = {t: sorted(K.gate_samples(t)) for t in CFG.photometry.TIERS_WITH_ENGINE}
-    check('PHOT-SAMPLE-PIN: the lists each tier measures match their pinned sha1 today (%s; snapshot + LPT, '
-          'R-GREGG-20261118-GEN6-WITH-LPTS-SAMPLE-WIRED)' % got,
+    gcut = {t: sorted(K.gate_samples(t, cut=True)) for t in CFG.photometry.TIERS_WITH_ENGINE}
+    check('PHOT-SAMPLE-PIN: the lists each tier measures (%s; snapshot + LPT, R-GREGG-20261118-GEN6-WITH-LPTS-SAMPLE-WIRED) '
+          'and the lists its cutters read (%s) match their pinned sha1 today' % (got, gcut),
           got == {'snapshot': ['10pc', 'HWJ', 'LPT'], 'deep': ['10pc', 'HWJ'], 'sublst': ['10pc', 'HWJ']}
-          and sorted(CFG.photometry.SAMPLES_MEASURED) == sorted(CFG.photometry.TIERS_WITH_ENGINE), got)
+          and gcut == {t: ['10pc', 'HWJ', 'LPT'] for t in got}
+          and sorted(CFG.photometry.SAMPLES_MEASURED) == sorted(CFG.photometry.TIERS_WITH_ENGINE), (got, gcut))
     pins = dict(CFG.photometry.SAMPLE_SHA1)
     for tier, bad in (('deep', '10pc'), ('snapshot', '10pc'), ('snapshot', 'LPT')):
         with patched(CFG.photometry, SAMPLE_SHA1=dict(pins, **{bad: 'f' * 40})):
@@ -782,8 +785,15 @@ def test_gates():
         check('PHOT-SAMPLE-PIN: the %s list with a sha1 that differs from its pin refuses the %s tier' % (bad, tier), ok)
     with patched(CFG.photometry, SAMPLE_SHA1=dict(pins, LPT='f' * 40)):
         got = {t: sorted(K.gate_samples(t)) for t in ('deep', 'sublst')}
-    check('PHOT-SAMPLE-PIN: the LPT pin binds the snapshot tier only (deep and sub-LST measure no LPT: %s)' % got,
-          got == {'deep': ['10pc', 'HWJ'], 'sublst': ['10pc', 'HWJ']}, got)
+        gcut = {}
+        for t in ('deep', 'sublst'):
+            try:
+                gcut[t] = sorted(K.gate_samples(t, cut=True))
+            except record.Refusal as e:
+                gcut[t] = 'PHOT-SAMPLE-PIN' in str(e) and 'LPT' in str(e)
+    check('PHOT-SAMPLE-PIN: a mismatched LPT pin leaves the deep and sub-LST measurement alone (they measure no LPT: %s) and '
+          'refuses their cutouts (the cutters read LPTs.csv: %s)' % (got, gcut),
+          got == {'deep': ['10pc', 'HWJ'], 'sublst': ['10pc', 'HWJ']} and gcut == {'deep': True, 'sublst': True}, (got, gcut))
     rc, txt = step(['photometry', '--tier', 'deep', '--stages', 'bogus', '--src-run', SRC, '--out', out, '--cores', 'none'])
     check('an unknown stage name is an error (exit 1)', rc == 1 and 'unknown stage' in txt, txt)
     base = ['photometry', '--tier', 'deep', '--stages', 'frames', '--cells', '10h_46MHz', '--cores', 'none',
@@ -1264,6 +1274,26 @@ def test_negative():
     bad_s = T.stage1_cell((SYN_SNAP_CELL, 'sb', os.path.join(SNAP_OUT, S1), os.path.dirname(proto)))[0]
     check('negative S fails: a searched band (82 MHz, 40 cutout cubes) without stage 1, and stage 1 older than its search '
           'runinfo', any('without stage 1' in b for b in bad_s) and any('older than its search' in b for b in bad_s), bad_s)
+    # S over the snapshot tier's measured samples (photometry.SAMPLES_MEASURED['snapshot'], LPT since 2026-11-18): a cell whose
+    # manifest lists ok LPT cutouts of 64 MHz I without forced_LPT_64MHz_I.npz fails; with it, the cell passes
+    s1c, s1p = os.path.join(NEG, 's1_lpt'), os.path.join(NEG, 'proto_lpt')
+    os.makedirs(os.path.join(s1c, SYN_SNAP_CELL))
+    os.makedirs(os.path.join(s1p, SYN_SNAP_CELL))
+    ri = os.path.join(s1p, SYN_SNAP_CELL, 'runinfo_64MHz_I_median.json')
+    json.dump({'photometry_cutout_cubes': 40}, open(ri, 'w'))
+    os.utime(ri, (time.time() - 3600, time.time() - 3600))
+    with open(os.path.join(s1c, SYN_SNAP_CELL, 'forced_manifest.csv'), 'w', newline='') as f:
+        w = csv.writer(f)
+        w.writerow(['file', 'status'])
+        w.writerows([['/c/%s/64MHz/Obj_%s/Obj_%s_64MHz_I.fits' % (s_, s_, s_), 'ok'] for s_ in ('HWJ', '10pc', 'LPT')])
+    for s_ in ('HWJ', '10pc'):
+        open(os.path.join(s1c, SYN_SNAP_CELL, 'forced_%s_64MHz_I.npz' % s_), 'wb').close()
+    bad_l = T.stage1_cell((SYN_SNAP_CELL, 'sb', s1c, s1p))[0]
+    open(os.path.join(s1c, SYN_SNAP_CELL, 'forced_LPT_64MHz_I.npz'), 'wb').close()
+    good_l = T.stage1_cell((SYN_SNAP_CELL, 'sb', s1c, s1p))[0]
+    check('negative S fails: a stage-1 cell whose manifest lists ok LPT cutouts (64 MHz I) without forced_LPT_64MHz_I.npz '
+          '(the HWJ and 10 pc files present); with the LPT file it passes',
+          bad_l == ['measured sample without its stage-1 file %s LPT 64MHz I' % SYN_SNAP_CELL] and good_l == [], (bad_l, good_l))
     cut = sorted(p for p in glob.glob(os.path.join(CUTS, 'HWJ', '64MHz', '*', '*_I.fits'))
                  if '/Not_A_Current_Target/' not in p)[-1]      # (that copy's OBJECT card names the real target: C3 fails)
     ok, bad = all_pass('photometry_cutout', cut)
@@ -2557,6 +2587,8 @@ input roots DEEP / TROOT / SB pointed at the test's synthetic tree and p3s2_fram
 import argparse, importlib.util, json, os, sys
 sys.path.insert(0, '/lustre/gh/main/clv15'); sys.path.insert(0, '/lustre/gh/main/exopipe_ops')
 P = json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fake_params.json')))
+if P.get('tier_samples'):       # tier_cut_samples: the writer's lists narrowed in this process only (the tool's own switch)
+    os.environ['P3_SNAP_CUTOUT_SAMPLES'] = P['tier_samples']
 spec = importlib.util.spec_from_file_location('ptc', P['tier_tool'])
 M = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(M)
@@ -2687,6 +2719,7 @@ def test_cutouts_tiers():
                         '--dry-run'])
         check('C-RUN: --src-run naming another run than the tier tool reads refuses', rc == 2 and 'C-RUN' in txt, txt[-600:])
         tier_review_fixes(adhoc, root, tout, out)
+        tier_cut_samples(adhoc)
         root_ad = os.path.join(TMP, 'tier_out', 'photometry_genT_adhoc')
         # an ad-hoc tag that is no named sample (ADHOC) is cut AND measured by the real tier tools, into its own cutout root
         # (the checks above count the files of `root`) and the shared tier forced root (port queue of
@@ -2738,6 +2771,54 @@ def test_cutouts_tiers():
               and [r for r in rows2 if '/HWJ/' in r['file']] == hwj_rows and [r for r in rows2 if '/ADHOC/' in r['file']] == ad_rows
               and sum('/ADHOC2/' in r['file'] and r['status'] == 'ok' for r in rows2) == 4,
               (rc, m2.get('reason'), mt2, len(ad_rows), len(rows2), txt[-1500:]))
+
+
+def tier_cut_samples(adhoc):
+    """The samples a tier's cutouts hold (photometry.SAMPLES_CUT: LPT in every tier since 2026-11-18). The tier tool cuts the
+    writer's lists (CUT._targets(), photometry_tier_cutouts_20261025.py:123), so a deep / 10-minute cutouts run without
+    --targets places LPT files (no C-NAMES), while a sample directory outside the list still refuses. The REAL tool's cell_job
+    on the synthetic residuals, the writer's lists narrowed in the tool's process (fake_params.json tier_samples ->
+    P3_SNAP_CUTOUT_SAMPLES) to the two HWJ rows of the ad-hoc list and one synthetic LPT entry inside the image; the caller
+    patches the tier input roots."""
+    lpt = os.path.join(TMP, 'tier_lpt.csv')
+    with open(lpt, 'w') as f:
+        f.write('common_name,ra_current,dec_current\nTest LPT J1816+59,274.0,59.0\n')
+    pj = os.path.join(FAKE_DIR, 'fake_params.json')
+
+    def narrow(v):
+        prm = json.load(open(pj))
+        prm['tier_samples'] = v
+        json.dump(prm, open(pj, 'w'))
+
+    def run(tier, token, label):
+        root, o = os.path.join(TMP, 'tier_out', 'photometry_cut_%s' % label), os.path.join(TMP, 'tier_out', 'cut_%s' % label)
+        rc, txt = step(['photometry', '--tier', tier, '--stages', 'cutouts', '--cells', TIER_CELL, '--cutout-root', root,
+                        '--out', o, '--cores', 'none'])
+        u = records(o).get('cutouts.%s.%s' % (token, TIER_CELL), {})
+        files = {s: sorted(glob.glob(os.path.join(root, s, '64MHz', '*', '*_18h_%s_[IV].fits' % token)))
+                 for s in ('HWJ', 'LPT', 'XYZ')}
+        return rc, txt, u, files
+    try:
+        narrow('HWJ=%s,LPT=%s' % (adhoc, lpt))
+        for tier, token in (('deep', 'deep'), ('sublst', '10min')):
+            rc, txt, u, files = run(tier, token, token)
+            check('tier %s (%s) cutouts without --targets, the tool cutting an LPT target besides HWJ: done, the LPT file '
+                  'passes the name check (samples %s = photometry.SAMPLES_CUT[%s] + the planets; no C-NAMES) and is placed '
+                  'with the HWJ files (I and V: 2 LPT, 4 HWJ)' % (tier, token, ','.join(u.get('meta', {}).get('samples') or []),
+                                                                   tier),
+                  rc == 0 and u.get('status') == 'done' and 'C-NAMES' not in txt and len(files['LPT']) == 2
+                  and len(files['HWJ']) == 4 and 'LPT' in (u.get('meta', {}).get('samples') or []),
+                  (rc, u.get('status'), u.get('reason'), files, txt[-1200:]))
+        narrow('HWJ=%s,XYZ=%s' % (adhoc, lpt))
+        rc, txt, u, files = run('deep', 'deep', 'xyz')
+        check('tier deep cutouts whose tool writes a sample directory outside photometry.SAMPLES_CUT (XYZ) refuse C-NAMES; '
+              'nothing placed', rc != 0 and u.get('status') == 'refused' and 'C-NAMES' in str(u.get('reason'))
+              and 'XYZ/' in str(u.get('reason')) and not any(files.values()),
+              (rc, u.get('status'), u.get('reason'), files, txt[-800:]))
+    finally:
+        prm = json.load(open(pj))
+        prm.pop('tier_samples', None)
+        json.dump(prm, open(pj, 'w'))
 
 
 def tier_review_fixes(adhoc, root, tout, out):
