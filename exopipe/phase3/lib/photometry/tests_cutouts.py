@@ -258,11 +258,14 @@ def _hdr_ok(ch, band, stokes, cell, lst, sample):
             and str(ch.get('LST')) == lst and str(ch.get('SAMPLE')) == sample)
 
 
-def identity_subband(files, cell, band, stokes, cube_root=None, search_out=None):
+def identity_subband(files, cell, band, stokes, cube_root=None, search_out=None, frame_info=None):
     """[(file, passed, value, detail)] of each subband cutout against its consolidated flow cube (the regeneration test's
     non-wideband branch, :142-216): times = the cube's frame list; header = path and cube; identity: R_k = cube_k[box] -
     cutout_k is one image in every plane (minus the hour-median model) - max |R_k - median_k R_k| - 2 eps32 (|cube| + |model|)
-    <= IDENTITY_TOL x the cutout's robust rms; a planet: R of consecutive admitted planes agree where their boxes overlap."""
+    <= IDENTITY_TOL x the cutout's robust rms; a planet: R of consecutive admitted planes agree where their boxes overlap.
+    ``frame_info`` (a dict, optional) receives what the cube read gave - cts (the frames cut), h0 (the first valid frame
+    header), shape (ny, nx), fsappld (HDU-0 FSAPPLD or None) - for the flux-scale checks (tests_fluxscale.check_c), so the cube
+    is read once."""
     import numpy as np
     from astropy.io import fits
     from astropy.wcs import WCS
@@ -275,6 +278,7 @@ def identity_subband(files, cell, band, stokes, cube_root=None, search_out=None)
         t = h['FRAME_TABLE'].data
         cts = [str(x) for x in t['ts']]
         hdrs = [fits.Header.fromstring(str(x), sep='\n') for x in t['header']]
+        fs = h[0].header.get('FSAPPLD')
     ix = frame_index(lst, date, band, stokes, cts, hdrs, search_out)
     if len(ix) != len(cts):
         cube = np.ascontiguousarray(cube[ix])
@@ -285,10 +289,12 @@ def identity_subband(files, cell, band, stokes, cube_root=None, search_out=None)
     h0 = hdrs[k0]
     w0 = WCS(h0).celestial
     ny, nx = cube.shape[1:]
+    if frame_info is not None:
+        frame_info.update(cts=list(cts), h0=h0, shape=(ny, nx), fsappld=None if fs is None else float(fs))
     out = []
     for f in files:
         sample = os.path.abspath(f).split('/')[-4]
-        with fits.open(f) as hf:
+        with fits.open(f, memmap=False) as hf:
             cut = np.asarray(hf[0].data, dtype=np.float32)
             ch = hf[0].header
             T = hf['TIMES'].data
@@ -337,11 +343,13 @@ def identity_subband(files, cell, band, stokes, cube_root=None, search_out=None)
     return out
 
 
-def wideband_stack(cell, stokes, members_csv, group, files, cube_root=None, search_out=None):
+def wideband_stack(cell, stokes, members_csv, group, files, cube_root=None, search_out=None, member_hook=None):
     """The group frame the group search formed, rebuilt inside each file's box from the member cubes and the job's member
     table (wideband_members_<S>.csv: per wideband frame ts, each member's subband, frame ts and weight): stack_k = sum w x
     nan_to_num(member frame) / sum w, and A_k = sum w |member| / sum w (the rounding bound) - the regeneration test's
-    wideband_stack (:39-91), written out. Returns (ts list, {file: stack}, {file: (n, origins)}, {file: A})."""
+    wideband_stack (:39-91), written out. Returns (ts list, {file: stack}, {file: (n, origins)}, {file: A}).
+    ``member_hook(subband, FSAPPLD or None, cube, {member ts: cube frame index}, rows)`` is called once per member cube while
+    it is in memory (tests_fluxscale.WeightCheck, check (w))."""
     import numpy as np
     from astropy.io import fits
     from astropy.wcs import WCS
@@ -362,7 +370,7 @@ def wideband_stack(cell, stokes, members_csv, group, files, cube_root=None, sear
     w0 = WCS(h0).celestial
     boxes = {}
     for f in files:
-        with fits.open(f) as hf:
+        with fits.open(f, memmap=False) as hf:
             ch = hf[0].header
             T = hf['TIMES'].data
             n = hdu_shape(hf[0])[1]
@@ -381,8 +389,11 @@ def wideband_stack(cell, stokes, members_csv, group, files, cube_root=None, sear
     for sb in subs:
         with fits.open(cube_path(cell, sb, stokes, cube_root), memmap=False) as h:
             cube = np.array(h['FRAMES'].data, dtype=np.float32)
+            F = h[0].header.get('FSAPPLD')
         mix = orig[sb]
         ny, nx = cube.shape[1:]
+        if member_hook is not None:
+            member_hook(sb, F, cube, mix, rows)
         for r in rows:
             if r['subband'] != sb:
                 continue
@@ -431,18 +442,19 @@ def wideband_identity(cut, S_, A_, moving, origins=None, rel=None):
         return float(np.nanmax(dev)) / rms if rms > 0 and np.isfinite(dev).any() else float('nan')
 
 
-def identity_wideband(files, cell, group, stokes, members_csv, cube_root=None, search_out=None):
+def identity_wideband(files, cell, group, stokes, members_csv, cube_root=None, search_out=None, member_hook=None):
     """[(file, passed, value, detail)] of each wideband cutout against the stack rebuilt from its member cubes (the
-    regeneration test's wideband branch, :105-141, with the exact first-order bound of bd8bf26)."""
+    regeneration test's wideband branch, :105-141, with the exact first-order bound of bd8bf26). ``member_hook``: see
+    wideband_stack."""
     import numpy as np
     from astropy.io import fits
     cc = _cfg().photometry_cutouts
     lst = cell.split('_', 1)[0]
-    tss, stacks, boxes, mabs = wideband_stack(cell, stokes, members_csv, group, files, cube_root, search_out)
+    tss, stacks, boxes, mabs = wideband_stack(cell, stokes, members_csv, group, files, cube_root, search_out, member_hook)
     out = []
     for f in files:
         sample = os.path.abspath(f).split('/')[-4]
-        with fits.open(f) as hf:
+        with fits.open(f, memmap=False) as hf:
             cut = np.asarray(hf[0].data, dtype=np.float32)
             ch = hf[0].header
             T = hf['TIMES'].data
@@ -483,7 +495,7 @@ def tier_recut(files, root=None):
     for fn in files:
         rel = os.path.relpath(fn, root) if root else os.path.basename(fn)
         rnd = random.Random('%d:%s' % (seed, rel))
-        with fits.open(fn) as hf:
+        with fits.open(fn, memmap=False) as hf:
             cube = hf[0].data
             T = hf['TIMES'].data
             i = rnd.randrange(len(T))
