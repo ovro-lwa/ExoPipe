@@ -101,9 +101,10 @@ Failure modes (exit 2 = refused, the gate named in the record; 3 = nothing to do
   cannot be read: rescale records, the subband engine's exclusion reader), CP-SPACE (quota headroom - bytes or files - or
   free space below a floor, or unreadable: at the start the campaign does not start; before a unit that unit and every later
   one refuse), CP-PIN (an engine file changed since the campaign start, or a unit ran another version: that unit and every
-  later one refuse), CP-WIRE (the campaign's cutouts stage is not wired in this tree); stage 1 per cell and band kind: SM-HELD
-  (a cutouts unit of the kind refused, failed, without a record, or a held subband: only that cell's kind waits), SM-NOBAND
-  (no input: every unit of the kind terminal and none wrote a cutout - the outcome 'no wideband' / 'no subband' recorded).
+  later one refuse); stage 1 per cell and band kind: SM-HELD (a cutouts unit of the kind refused, failed, without a record,
+  or a held subband: only that cell's kind waits; a unit whose inputs a gate refused - C-FLUXSCALE before the engine - is a
+  GAP: the kind's stage 1 is not run, and the complete-when check lists it, COMPLETE with N gaps), SM-NOBAND (no input:
+  every unit of the kind terminal and none wrote a cutout - the outcome 'no wideband' / 'no subband' recorded).
   Any failing content test refuses its unit.
 """
 import importlib

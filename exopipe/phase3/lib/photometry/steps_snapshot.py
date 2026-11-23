@@ -722,9 +722,6 @@ def zone_flags(run, args, stage1, tag, done_kinds):
 
 def _stage_cutouts(run, args):
     from exopipe.phase3.lib.photometry import steps_cutouts as SC
-    if getattr(args, 'campaign', False) and not getattr(SC, 'CAMPAIGN_UNITS', False):
-        raise Refusal('CP-WIRE: the cutouts stage of a campaign (its unit list, code pin, space gate and I/O guard per unit) is '
-                      'not wired into steps_cutouts in this tree - run the campaign\'s measure stage only')
     return SC.stage_snapshot_cutouts(run, args)
 
 

@@ -28,7 +28,9 @@ Scratch: a fresh directory under $EXOPIPE3_TEST_SCRATCH, else the system temp di
 Run: python tests/test_photometry_campaign.py
 """
 import argparse
+import contextlib
 import csv
+import io
 import json
 import os
 import pwd
@@ -143,9 +145,6 @@ def test_args():
     check('CP-STAGES: a campaign with the evaluation (stage 2) refuses', e is not None and 'CP-STAGES' in e, e)
     e = raises(CP.scope_cells, campaign_args(cells='00h_2025-01-05_55MHz'))
     check('CP-SCOPE: a band-suffixed cell refuses (a campaign covers whole cells)', e is not None and 'CP-SCOPE' in e, e)
-    e = raises(SS._stage_cutouts, None, campaign_args())
-    check('CP-WIRE: the campaign\'s cutouts stage refuses while steps_cutouts does not list its units', e is not None
-          and 'CP-WIRE' in e, e)
     from exopipe.phase3.steps import photometry as SP
     ap = argparse.ArgumentParser()
     SP.add_arguments(ap)
@@ -418,8 +417,44 @@ def test_readiness(d):
           R[(Y, 'wb')])
     check('held: a missing record (55 MHz of %s)' % Z, R[(Z, 'sb')][0] == 'held' and 'no record' in R[(Z, 'sb')][1], R[(Z, 'sb')])
     zw = R[(Z, 'wb')][1]
-    check('held: C-NOCUBE, an error, and a wideband C-NOCUT whose count \'None\' (group not built) promises no file count',
-          R[(Z, 'wb')][0] == 'held' and 'C-NOCUBE' in zw and 'error' in zw and 'Red' in zw, zw)
+    check('held: an error and a wideband C-NOCUT whose count \'None\' (group not built) promises no file count; a C-NOCUBE '
+          '(a no-input gap) holds nothing', R[(Z, 'wb')][0] == 'held' and 'C-NOCUBE' not in zw and 'error' in zw
+          and 'Red' in zw, zw)
+    # gaps (R-GREGG-20261027-...-LEVEL-REFUSALS-STAY-GAPS-...): a gate that refused the INPUTS
+    W = '03h_2025-01-08'
+    eg = CP.Enumeration()
+    eg.units = [(W, b) for b in ['41MHz', '55MHz'] + WB]
+    eg.cells = [W]
+    write_rec(out, 'cutouts.%s.41MHz' % W, 'refused', 'C-FLUXSCALE: %s 41MHz: V: no FSAPPLD - the engine not started' % W)
+    write_rec(out, 'cutouts.%s.55MHz' % W, 'done')
+    write_rec(out, 'cutouts.%s.Red' % W, 'done')
+    write_rec(out, 'cutouts.%s.Green' % W, 'no-input', 'C-NOCUBE: no consolidated flow cube of %s Green (V)' % W)
+    write_rec(out, 'cutouts.%s.Blue' % W, 'refused', 'C-FLUXSCALE: the member cubes of %s Blue fail the gate or changed since '
+              'the check before the engine - nothing placed (staging kept: /s): x' % W)
+    sts = {b: CP.unit_state(out, W, b)[0] for b in ['41MHz', 'Green', 'Blue']}
+    check('gap classes: C-FLUXSCALE before the engine = a refused gap; C-NOCUBE = a no-input gap; C-FLUXSCALE after the cut '
+          '(nothing placed) = incomplete', sts == {'41MHz': 'gap', 'Green': 'gap-noinput', 'Blue': 'held'}, sts)
+    rg = (CP.readiness(out, eg, W, 'sb'), CP.readiness(out, eg, W, 'wb'))
+    check('readiness: a refused gap holds its cell\'s kind as a gap (stage 1 not run); a non-gap refusal holds it as '
+          'incomplete', rg[0][0] == 'gap' and 'C-FLUXSCALE' in rg[0][1] and rg[1][0] == 'held' and 'Blue' in rg[1][1], rg)
+    write_rec(out, 'cutouts.%s.Blue' % W, 'done')
+    check('readiness: a no-input gap (C-NOCUBE) does not hold - the kind is measured from the bands with cutouts',
+          CP.readiness(out, eg, W, 'wb')[0] == 'ready', CP.readiness(out, eg, W, 'wb'))
+    for b in ('Red', 'Blue'):
+        write_rec(out, 'cutouts.%s.%s' % (W, b), 'no-input', 'C-EXCLUDED: x')
+    check('readiness: every wideband excluded or a no-input gap -> \'no wideband\'',
+          CP.readiness(out, eg, W, 'wb')[0] == 'no wideband', CP.readiness(out, eg, W, 'wb'))
+    rf = 'C-FLUXSCALE: %s 41MHz: V: no FSAPPLD - the engine not started' % W
+    P = Patch()
+    try:
+        P.set(CFG.photometry_campaign, 'GAP_REFUSED', {})
+        check('the gap classes are config (photometry_campaign.GAP_REFUSED, ruled): without them the C-FLUXSCALE unit is '
+              'incomplete', CP.gap_kind('refused', rf) is None and CP.unit_state(out, W, '41MHz')[0] == 'held')
+    finally:
+        P.undo()
+    check('gap_kind: only the status the class names (a no-input C-FLUXSCALE, a refused C-NOCUBE are no gaps)',
+          CP.gap_kind('refused', rf) == 'refused' and CP.gap_kind('no-input', rf) is None
+          and CP.gap_kind('refused', 'C-NOCUBE: x') is None and CP.gap_kind('no-input', 'C-NOCUBE: x') == 'no-input')
     e.held = [dict(cell=X, subband='64MHz', reason='only the Stokes V cube')]
     check('held: a subband held at enumeration holds the cell\'s subbands, not its widebands',
           CP.readiness(out, e, X, 'sb')[0] == 'held' and CP.readiness(out, e, X, 'wb')[0] == 'ready')
@@ -460,6 +495,12 @@ def test_readiness(d):
               (rw['status'], rw['meta'].get('outcome'), rw['reason']))
         check('a held cell does not hold its neighbor (%s measured; %s and %s held)' % (X, Y, Z),
               rz['status'] == 'refused' and len(calls) == 2, (rz['status'], calls))
+        camp_g = CP.Campaign('gen6', eg, None, space_fn=lambda: (True, 'ok', {}), sleep=lambda s: None)
+        CP.stage1_cell(run, argparse.Namespace(), camp_g, W, 'sb', root, st1)
+        rgw = record.load_record(out, 'photometry', SS.unit_name(W, SB))
+        check('SM-HELD for a gap: the subband stage 1 of %s is not run, its record refused naming the gap' % W,
+              len(calls) == 2 and rgw['status'] == 'refused' and rgw['reason'].startswith('SM-HELD') and 'gaps' in rgw['reason']
+              and 'C-FLUXSCALE' in rgw['reason'], rgw['reason'])
     finally:
         P.undo()
     # run_tier: the campaign's cutouts never stop its measure stage
@@ -475,6 +516,70 @@ def test_readiness(d):
         SS.run_tier(run, argparse.Namespace(scopes=None, cells=None, in_place=False), ['cutouts', 'measure'])
         check('run_tier: with --campaign a refused cutouts unit does not stop the measure stage (readiness holds its cell); '
               'without, it does (stop_after)', seen == ['measure'], seen)
+    finally:
+        P.undo()
+
+
+def test_wiring(W, d):
+    """steps_cutouts under --campaign: the campaign's unit list, its gate first in each unit, its pin after each unit."""
+    from exopipe.phase3.core import exclusions
+    from exopipe.phase3.lib.photometry import steps_cutouts as SC
+    out = os.path.join(d, 'out_wire')
+    e = W.enum()
+    P = Patch()
+    try:
+        P.set(CP, 'io_guard_raised', lambda: None)
+        args = campaign_args(photometry_campaign=CP.Campaign('gen6', e, None, space_fn=lambda: (True, 'ok', {})))
+        check('snapshot_items: the started campaign\'s own units, subbands before widebands within a cell',
+              SC.snapshot_items(args) == sorted(e.units) and SC.snapshot_items(args)[-1][1] in WB
+              and all(not (a[0] == b[0] and a[1] in WB and b[1] not in WB)
+                      for a, b in zip(SC.snapshot_items(args), SC.snapshot_items(args)[1:])), SC.snapshot_items(args))
+        # the real unit: the gate is its first act (an empty cube list would otherwise end it C-NOCUBE)
+        P.set(K, 'sample_paths', lambda *a, **k: {'HWJ': '/x/HWJ.csv'})
+        P.set(SC, 'rescale_identity', lambda cubes: ({}, ''))
+        P.set(SC, 'listing_sha1', lambda *a, **k: 'x')
+        P.set(SC, 'cutout_admitted', lambda *a, **k: [])
+        P.set(exclusions, 'for_tier', lambda *a, **k: W.ex)
+        run = run_of(out)
+        A = '00h_2025-01-05'
+        nocube = {'V': [], 'I': []}
+        low = CP.Campaign('gen6', e, None, space_fn=lambda: (False, 'quota low', {}))
+        SC.snapshot_unit(run, campaign_args(photometry_campaign=low), A, '41MHz', '/r', [], False, ['HWJ'], nocube)
+        r1 = record.load_record(out, 'photometry', 'cutouts.%s.41MHz' % A)
+        ok_camp = CP.Campaign('gen6', e, None, space_fn=lambda: (True, 'ok', {}))
+        SC.snapshot_unit(run, campaign_args(photometry_campaign=ok_camp), A, '27MHz', '/r', [], False, ['HWJ'], nocube)
+        r2 = record.load_record(out, 'photometry', 'cutouts.%s.27MHz' % A)
+        check('snapshot_unit under a campaign: the campaign gate runs first (CP-SPACE refuses before the cube check); a passing '
+              'gate goes on (C-NOCUBE), the record names the campaign', r1['status'] == 'refused'
+              and r1['reason'].startswith('CP-SPACE: quota low') and r2['status'] == 'no-input'
+              and r2['reason'].startswith('C-NOCUBE') and r2['meta'].get('campaign') == 'gen6', (r1['reason'], r2['reason']))
+        # the stage loop: the campaign's units in order, the pin after each unit
+        code = os.path.join(d, 'code_wire')
+        os.makedirs(code, exist_ok=True)
+        eng = os.path.join(code, 'engine.py')
+        open(eng, 'w').write('x = 1\n')
+        camp = CP.Campaign('gen6', e, CP.CodePin([eng]), space_fn=lambda: (True, 'ok', {}))
+        seen = []
+
+        def stub_unit(run_, args_, cell, band, *a):
+            with run_.unit('cutouts.%s.%s' % (cell, band)) as u:
+                args_.photometry_campaign.gate(u)
+                seen.append((cell, band))
+                u.meta['legacy_code'] = {eng: 'f' * 12 if len(seen) == 2 else K.code_sha12(eng)}
+            return run_.units[-1:]
+        P.set(CP, 'start', lambda run_, args_: setattr(args_, 'photometry_campaign', camp) or camp)
+        P.set(SC, 'gate_write_roots', lambda *a, **k: None)
+        P.set(SC, 'run_samples', lambda *a: ['HWJ'])
+        P.set(SC, 'snapshot_cubes', lambda c, b: nocube)
+        P.set(SC, 'EngineReads', lambda *a, **k: None)
+        P.set(SC, 'snapshot_unit', stub_unit)
+        run2 = run_of(os.path.join(d, 'out_wire2'))
+        units = SC.stage_snapshot_cutouts(run2, campaign_args())
+        st = [(u.name, u.status, (u.reason or '')[:6]) for u in units]
+        check('the cutouts stage under --campaign: every enumerated unit in order; a unit that ran another engine version '
+              'stops the campaign (CP-PIN after it) - every later unit refuses before it starts', len(units) == len(e.units)
+              and seen == sorted(e.units)[:2] and all(x[1] == 'refused' and x[2] == 'CP-PIN' for x in st[2:])
+              and camp.stopped.startswith('CP-PIN'), st)
     finally:
         P.undo()
 
@@ -525,9 +630,12 @@ def test_measure_cell(d):
 
 # ---------------------------------------------------------------------------------------------------------------------
 
-def done_rec(out, root, cell, band, files, counts, drop=()):
-    """A done cutouts record (the checks a placed unit records), its manifest listing ``files`` (relative to root)."""
+def done_rec(out, root, cell, band, files, counts, drop=(), gen5=False, no_fs=False):
+    """A done cutouts record (the checks a placed unit records), its manifest listing ``files`` (relative to root); a subband
+    also its flux-scale record (``no_fs``: not recorded); ``gen5``: a unit of the generation-5 comparison sample."""
     from exopipe.phase3.lib.photometry import tests_cutouts as TC
+    cc = CFG.photometry_campaign
+    kind = 'wb' if band in WB else 'sb'
     mp = os.path.join(root, '_manifest', '10s', '%s_%s.csv' % (cell, band))
     rows = []
     for rel in files:
@@ -535,11 +643,19 @@ def done_rec(out, root, cell, band, files, counts, drop=()):
         rows.append(dict(file=rel, sha256='0' * 64, bytes=os.path.getsize(p), sample=rel.split('/')[0],
                          object=rel.split('/')[2], stokes=rel[-6]))
     TC.write_manifest(mp, rows)
-    names = [n for n in CFG.photometry_campaign.COMPLETE_CHECKS] + [
-        n.format(stokes=S) for S in 'VI' if counts[S] not in ('0', 'None') for n in CFG.photometry_campaign.COMPLETE_STOKES_CHECKS]
+    cut = [S for S in 'VI' if counts[S] not in ('0', 'None')]
+    names = (list(cc.COMPLETE_CHECKS) + list(cc.COMPLETE_KIND_CHECKS[kind])
+             + [n.format(stokes=S) for S in cut for n in cc.COMPLETE_STOKES_CHECKS[kind]]
+             + [n.format(stokes=S) for S in cut for n in cc.COMPLETE_GEN5_CHECKS if gen5 and kind == 'sb'])
     tests = [dict(name=n, passed=True) for n in names if n not in drop]
-    write_rec(out, 'cutouts.%s.%s' % (cell, band), 'done', meta={'engine_outcome': counts, 'cutout_root': root},
-              tests=tests, outputs=[dict(path=mp, **{'class': 'photometry_cutout_manifest'}, ctx={'root': root})])
+    outputs = [dict(path=mp, **{'class': 'photometry_cutout_manifest'}, ctx={'root': root})]
+    if kind == 'sb' and not no_fs:
+        fp = os.path.join(root, '_fluxscale', band, '%s_%s_fluxscale.json' % (cell, band))
+        os.makedirs(os.path.dirname(fp), exist_ok=True)
+        open(fp, 'w').write('{}')
+        outputs.append(dict(path=fp, **{'class': 'photometry_fluxscale_record'}))
+    write_rec(out, 'cutouts.%s.%s' % (cell, band), 'done', meta={'engine_outcome': counts, 'cutout_root': root,
+                                                                 'generation5_sample': gen5}, tests=tests, outputs=outputs)
 
 
 def test_check(d):
@@ -595,29 +711,29 @@ def test_check(d):
         open(os.path.join(st1, c, man), 'w').write('file,status,ring_beams,n_ctl\n/x/HWJ/Red/T0/T0_I.fits,ok,4.00,4\n')
         write_rec(out2, SS.unit_name(c, list(CP.kind_bands(k))), 'done', meta={'bands_done': list(CP.kind_bands(k))})
     write_rec(out2, SS.unit_name(c2, WB), 'no-input', 'SM-NOBAND: no wideband', meta={'outcome': 'no wideband'})
-    ok, counts, probs = CP.check(out2, e, st1)
+    ok, counts, probs, gaps = CP.check(out2, e, st1)
     check('check: every unit terminal, stage 1 done per kind or \'no wideband\' -> complete', ok and counts['done'] == 3
           and counts['none'] == 5 and counts.get('stage1_no_wideband') == 1 and counts.get('stage1_done') == 3,
           (counts, probs))
     write_rec(out2, 'cutouts.%s.Green' % c1, 'refused', 'C-WRITE: short')
-    ok, counts, probs = CP.check(out2, e, st1)
+    ok, counts, probs, gaps = CP.check(out2, e, st1)
     check('check: a refused unit is incomplete (unlike gen6\'s GATE-REFUSED) and its cell\'s wideband stage 1 is held',
           not ok and counts['incomplete'] == 1 and any(p.startswith('cutouts.%s.Green' % c1) and 'C-WRITE' in p for p in probs)
           and any('stage 1 %s wb held' % c1 in p for p in probs), (counts, probs))
     write_rec(out2, 'cutouts.%s.Green' % c1, 'no-input', 'C-EXCLUDED: x')
     os.remove(os.path.join(st1, c1, 'forced_manifest.csv'))
-    ok, _, probs = CP.check(out2, e, st1)
+    ok, _, probs, gaps = CP.check(out2, e, st1)
     check('check: a done stage-1 record whose manifest is gone is incomplete', not ok and any('no manifest' in p for p in probs),
           probs)
     open(os.path.join(st1, c1, 'forced_manifest.csv'), 'w').write('file,status,ring_beams,n_ctl\n/x/HWJ/41MHz/T0/T0_I.fits,'
                                                                   'REFUSED: x,4.00,4\n')
-    ok, _, probs = CP.check(out2, e, st1)
+    ok, _, probs, gaps = CP.check(out2, e, st1)
     check('check: a stage-1 manifest with a REFUSED row fails MM2: incomplete', not ok and any('REFUSED' in p for p in probs),
           probs)
     open(os.path.join(st1, c1, 'forced_manifest.csv'), 'w').write('file,status,ring_beams,n_ctl\n/x/HWJ/41MHz/T0/T0_I.fits,ok,'
                                                                   '4.00,4\n')
     e.held = [dict(cell=c1, subband='64MHz', reason='only the Stokes V cube')]
-    ok, _, probs = CP.check(out2, e, st1)
+    ok, _, probs, gaps = CP.check(out2, e, st1)
     check('check: a held (cell, subband) is incomplete', not ok and any('held at enumeration' in p for p in probs), probs)
     e.held = []
     P = Patch()
@@ -634,6 +750,61 @@ def test_check(d):
     ch = (CP.units_changed(started, now), CP.units_changed(dict(started, scope=None), now, cells=[c1]))
     check('units changed: compared over the cells both scopes cover (a cell outside the start record\'s scope is no change)',
           ch == (([(c1, '46MHz')], [(c1, 'Red')]), ([(c1, '46MHz')], [(c1, 'Red')])), ch)
+    # the generation checks (#153) a done record must carry, by band kind
+    out4 = os.path.join(d, 'out_chk4')
+    cases = [('GP', '41MHz', dict(drop=('photometry_cutout_manifest.GP_cubes_unchanged',)), 'GP_cubes_unchanged not recorded'),
+             ('GA', '41MHz', dict(drop=('photometry_cutout_manifest.GA_fluxscale_record_I',)), 'GA_fluxscale_record_I not'),
+             ('GC', '41MHz', dict(drop=('photometry_cutout_manifest.GC_targets_V',)), 'GC_targets_V not recorded'),
+             ('fs1', '41MHz', dict(drop=('photometry_fluxscale_record.fs1_record',)), 'fs1_record not recorded'),
+             ('fs output', '41MHz', dict(no_fs=True), '0 photometry_fluxscale_record outputs'),
+             ('GB', '41MHz', dict(gen5=True, drop=('photometry_cutout_manifest.GB_generation5_V',)), 'GB_generation5_V not'),
+             ('GW', 'Red', dict(drop=('photometry_cutout_manifest.GW_weights_I',)), 'GW_weights_I not recorded')]
+    for tag, b, kw, want in cases:
+        done_rec(out4, root, cell, b, rels[b], {'V': '1', 'I': '1'}, **kw)
+        probs = CP.check_done(record.load_record(out4, 'photometry', 'cutouts.%s.%s' % (cell, b)), b)
+        check('check_done: %s missing from a done %s record is a problem' % (tag, 'wideband' if b in WB else 'subband'),
+              any(want in p for p in probs), probs)
+    done_rec(out4, root, cell, '41MHz', rels['41MHz'], {'V': '1', 'I': '1'}, gen5=True)
+    done_rec(out4, root, cell, 'Red', rels['Red'], {'V': '1', 'I': '1'})
+    probs = [CP.check_done(record.load_record(out4, 'photometry', 'cutouts.%s.%s' % (cell, b)), b) for b in ('41MHz', 'Red')]
+    check('check_done: a subband of the generation-5 sample with GA/GB/GC, fs1 and its flux-scale record, a wideband with GW, '
+          'pass (no flux-scale record asked of a wideband)', probs == [[], []], probs)
+    # GAPS: refused by an input gate -> COMPLETE with N gaps (exit 0); an output or content refusal -> INCOMPLETE (exit 1)
+    write_rec(out2, 'cutouts.%s.Red' % c1, 'done')
+    done_rec(out2, root, c1, 'Red', rels['Red'], {'V': '1', 'I': '1'})
+    fsr = 'C-FLUXSCALE: %s Red: Blue member 64MHz V: FSAPPLD 1.02 off its record 0.98 - the engine not started' % c1
+    write_rec(out2, 'cutouts.%s.Red' % c1, 'refused', fsr)
+    ok, counts, probs, gaps = CP.check(out2, e, st1)
+    check('check: a unit refused by the flux-scale gate before the engine is a GAP - complete, listed with its code and reason; '
+          'its cell\'s wideband stage 1 is not run, a gap too', ok and counts['gap'] == 1 and probs == []
+          and any(g.startswith('cutouts.%s.Red: refused C-FLUXSCALE' % c1) for g in gaps)
+          and any(g.startswith('stage 1 %s wb not run' % c1) for g in gaps), (counts, probs, gaps))
+    write_rec(out2, 'cutouts.%s.Green' % c2, 'no-input', 'C-NOCUBE: no consolidated flow cube of %s Green (V)' % c2)
+    ok, counts, probs, gaps = CP.check(out2, e, st1)
+    check('check: a C-NOCUBE unit is a gap that holds nothing (%s\'s widebands stay \'no wideband\')' % c2,
+          ok and counts['gap'] == 2 and counts.get('stage1_no_wideband') == 1, (counts, probs, gaps))
+    P = Patch()
+    try:
+        P.set(CP, 'enumerate_units', lambda cells=None, *a, **k: e)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = CP.main(['check', '--out', out2])
+        txt = buf.getvalue()
+        check('the check command: COMPLETE with N gaps, exit 0, a GAP line per gap', rc == 0
+              and 'COMPLETE with 3 gaps' in txt and txt.count('\nGAP ') + txt.startswith('GAP ') == 3, (rc, txt[-600:]))
+        for code in ('C-GENCHECK: (b) failed - nothing placed', 'C-WRITE: short', 'C-COUNT: x', 'C-IDENTITY: x', 'C-PLACE: x',
+                     'C-CONTENT: x', 'C-ENGINE: x', 'C-STALE: x', 'CP-SPACE: low - not started',
+                     'C-FLUXSCALE: the member cubes of x fail the gate or changed - nothing placed (staging kept: s)'):
+            write_rec(out2, 'cutouts.%s.Red' % c1, 'refused', code)
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = CP.main(['check', '--out', out2])
+            check('the check command: a unit refused %s is INCOMPLETE (exit 1), not a gap' % code.split(':')[0]
+                  + (' (after the cut)' if 'member cubes' in code else ''),
+                  rc == 1 and 'INCOMPLETE' in buf.getvalue() and 'PROBLEM cutouts.%s.Red' % c1 in buf.getvalue(),
+                  (rc, buf.getvalue()[-400:]))
+    finally:
+        P.undo()
 
 
 def test_start(W, d):
@@ -687,6 +858,7 @@ def main():
         test_pin(d)
         test_io_guard(d)
         test_readiness(d)
+        test_wiring(W, d)
         test_measure_cell(d)
         test_check(d)
         test_start(W, d)

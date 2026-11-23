@@ -21,17 +21,24 @@ refactor_20261012/plan/GEN6_PORT_PLAN_20261123.md pull request 4):
                      (the filesystem_summary line of `lfs df`), before each unit (gen6_space_ok.sh). Below a floor, or unreadable:
                      the unit refuses and every later one (CP-SPACE).
   io_guard_wait()    the recorders' I/O guard: wait while it is raised, before each unit and each stage-1 cell (a yield).
+  gap_kind()         GAPS (R-GREGG-20261027-LSRECON-SCALE-BOUND-0P5-2P0-LEVEL-REFUSALS-STAY-GAPS-55MHZ-06H-R0-N-MINUS-1, verbatim
+                     "Refusals by the large-scale level test stay refused, as gaps, never forced"): a unit whose inputs a gate
+                     refused (photometry_campaign.GAP_REFUSED: C-FLUXSCALE before the engine) or that found no input by a gap
+                     code (GAP_NOINPUT: C-NOCUBE) is terminal and listed - never rerun into a pass by an override.
   readiness()        per cell and band kind (subbands 'sb', widebands 'wb'): stage 1 runs only when every cutouts unit of the kind
-                     has a terminal record - done, or no input for a known reason (C-EXCLUDED; C-NOCUT whose engine counts all
-                     promise no file: the night rule, nothing in view). A refused, failed or missing unit, or a held subband,
-                     HOLDS THAT CELL'S KIND ONLY (SM-HELD); the other cells go on. A kind whose units all wrote nothing ends
-                     with the outcome 'no wideband' / 'no subband' (SM-NOBAND, no input; nothing measured) - not done, not
-                     failed (gen6_stage1_wb_no_wideband_20261122.py: 01h, 02h, 04h, 08h of 2024-12-26).
+                     has a terminal record - done, no input for a known reason (C-EXCLUDED; C-NOCUT whose engine counts all
+                     promise no file: the night rule, nothing in view), or a no-input gap. A failed, missing or non-gap refused
+                     unit, or a held subband, HOLDS THAT CELL'S KIND ONLY (SM-HELD, incomplete); the other cells go on. A
+                     refused gap holds it too (SM-HELD), as a gap: the kind's stage 1 is not run. A kind whose units all wrote
+                     nothing ends with the outcome 'no wideband' / 'no subband' (SM-NOBAND, no input; nothing measured) - not
+                     done, not failed (gen6_stage1_wb_no_wideband_20261122.py: 01h, 02h, 04h, 08h of 2024-12-26).
   check()            the campaign's complete-when content test, one command anyone can run (read only):
                      python -m exopipe.phase3.lib.photometry.campaign check --out <snapshot forced root> [--cells ...]
-                     every enumerated unit has a done record whose recorded checks passed and whose manifest's files exist with
-                     their sizes (--retest: the manifest's content tests run again), or a terminal no-input record; every
-                     cell's stage 1 per kind is done (manifest tests MM1 + MM2) or 'no <kind>'.
+                     every enumerated unit has a done record whose required checks passed (COMPLETE_* of the band kind) and
+                     whose manifest's files exist with their sizes (--retest: its outputs' content tests run again), a terminal
+                     no-input record, or a gap; every cell's stage 1 per kind is done (manifest tests MM1 + MM2), 'no <kind>' or
+                     not run for a gap. Exit 0 "COMPLETE" / "COMPLETE with N gaps" (each a GAP line: unit, code, reason), 1
+                     INCOMPLETE (PROBLEM lines), 2 cannot check.
 """
 import argparse
 import json
@@ -531,10 +538,25 @@ def units_changed(started, units, cells=None):
 # stage-1 readiness per cell and band kind
 # ---------------------------------------------------------------------------------------------------------------------
 
+def gap_kind(status, reason):
+    """'refused' / 'no-input' when a unit's outcome is a recorded GAP (photometry_campaign.GAP_REFUSED / GAP_NOINPUT: a gate
+    refused its inputs; R-GREGG-20261027-LSRECON-SCALE-BOUND-0P5-2P0-LEVEL-REFUSALS-STAY-GAPS-55MHZ-06H-R0-N-MINUS-1), else
+    None."""
+    cc = _cc()
+    code = reason.split(':', 1)[0].strip()
+    if status == 'refused' and code in cc.GAP_REFUSED and (cc.GAP_REFUSED[code] is None or cc.GAP_REFUSED[code] in reason):
+        return 'refused'
+    if status == 'no-input' and code in cc.GAP_NOINPUT:
+        return 'no-input'
+    return None
+
+
 def unit_state(out_root, cell, band):
-    """(state, text) of the cutouts unit of (cell, band) from its record: 'done'; 'none' - no input for a known reason
-    (C-EXCLUDED; C-NOCUT whose engine counts all promise no file); 'held' - anything else (no record, refused, error, another
-    no-input reason such as C-NOCUBE)."""
+    """(state, text) of the cutouts unit of (cell, band) from its record: 'done'; 'none' - no cutout by a data decision or the
+    engine's outcome (C-EXCLUDED; C-NOCUT whose engine counts all promise no file, the night rule among them); 'gap' - a gate
+    refused its inputs (gap_kind 'refused': holds its cell's stage 1 of the band kind); 'gap-noinput' - no input by a gap code
+    (C-NOCUBE: holds nothing); 'held' - anything else, incomplete (no record, an error, an output or content refusal, an
+    operational refusal, another no-input reason)."""
     from exopipe.phase3.lib.photometry import steps_cutouts as SC
     name = 'cutouts.%s.%s' % (cell, band)
     rec = record.load_record(out_root, 'photometry', name)
@@ -543,6 +565,9 @@ def unit_state(out_root, cell, band):
     st, why = rec.get('status'), (rec.get('reason') or '').strip()
     if st == 'done':
         return 'done', name
+    gap = gap_kind(st, why)
+    if gap:
+        return 'gap' if gap == 'refused' else 'gap-noinput', '%s: %s %s' % (name, st, why[:400])
     if st == 'no-input':
         if why.startswith('C-EXCLUDED'):
             return 'none', '%s: excluded' % name
@@ -555,8 +580,10 @@ def unit_state(out_root, cell, band):
 
 def readiness(out_root, enum, cell, kind):
     """(outcome, detail) of the stage 1 of ``cell`` for band kind ``kind``: 'ready'; 'held' (a unit of the kind not terminal,
-    or - subbands - a held subband); 'no subband' / 'no wideband' (every unit of the kind terminal and none wrote a cutout);
-    'empty' (the campaign has no unit of the kind in the cell)."""
+    or - subbands - a held subband: incomplete); 'gap' (every unit terminal, but a gate refused the inputs of one or more -
+    the stage 1 of the kind is not run, a gap itself); 'no subband' / 'no wideband' (every unit of the kind terminal and none
+    wrote a cutout, no refused gap among them); 'empty' (the campaign has no unit of the kind in the cell). A no-input gap
+    (C-NOCUBE) holds nothing: the stage 1 measures the bands that have cutouts."""
     bands = enum.bands_of(cell, kind)
     held = ['%s %s: held at enumeration (%s)' % (h['cell'], h['subband'], h['reason'])
             for h in (enum.held_of(cell) if kind == 'sb' else [])]
@@ -566,7 +593,10 @@ def readiness(out_root, enum, cell, kind):
     held += [t for s, t in states if s == 'held']
     if held:
         return 'held', '; '.join(held)
-    if all(s == 'none' for s, _ in states):
+    gaps = [t for s, t in states if s == 'gap']
+    if gaps:
+        return 'gap', '; '.join(gaps)
+    if all(s in ('none', 'gap-noinput') for s, _ in states):
         return 'no %s' % KIND_NAME[kind], '; '.join(t for _, t in states)
     return 'ready', '%d %s units terminal (%d done)' % (len(states), KIND_NAME[kind], sum(s == 'done' for s, _ in states))
 
@@ -591,6 +621,9 @@ def stage1_cell(run, args, camp, cell, kind, root, stage1):
                   campaign=camp.generation, outcome=outcome) as u:
         if outcome == 'held':
             u.refuse('SM-HELD: the stage 1 of %s (%s) waits for its cutouts units - %s' % (cell, KIND_NAME[kind], detail[:900]))
+        if outcome == 'gap':
+            u.refuse('SM-HELD: the stage 1 of %s (%s) is not run - a gate refused the inputs of its cutouts units (gaps, never '
+                     'forced): %s' % (cell, KIND_NAME[kind], detail[:900]))
         raise NoInput('SM-NOBAND: %s - every %s unit of %s is terminal and none wrote a cutout: %s'
                       % (outcome, KIND_NAME[kind], cell, detail[:900]))
     return run.units[-1:]
@@ -601,36 +634,48 @@ def stage1_cell(run, args, camp, cell, kind, root, stage1):
 # ---------------------------------------------------------------------------------------------------------------------
 
 def check_done(rec, band, retest=False):
-    """Problems of a done cutouts record: a failed recorded test; a required check (photometry_campaign.COMPLETE_CHECKS, and
-    COMPLETE_STOKES_CHECKS per Stokes the engine counted cutouts for) not recorded; an engine count no file count can be held
-    to; not exactly one cutout manifest; a manifest row whose file is missing or has another size; a Stokes with a positive
-    engine count and no row. ``retest``: the manifest's content tests run again."""
+    """Problems of a done cutouts record: a failed recorded test; a required check not recorded (photometry_campaign.
+    COMPLETE_CHECKS, COMPLETE_KIND_CHECKS of the band kind, COMPLETE_STOKES_CHECKS per Stokes the engine counted cutouts for,
+    COMPLETE_GEN5_CHECKS per such Stokes of a subband of the generation-5 comparison sample); an engine count no file count can
+    be held to; not exactly one output of each class of COMPLETE_OUTPUTS, or one missing; a manifest row whose file is missing
+    or has another size; a Stokes with a positive engine count and no row. ``retest``: every required output's content tests
+    run again."""
     from exopipe.phase3.core import validate
     from exopipe.phase3.lib.photometry import steps_cutouts as SC
     from exopipe.phase3.lib.photometry import tests_cutouts as TC
     cc = _cc()
+    kind = kind_of(band)
     bad = []
     tests = rec.get('tests') or []
     failed = [t['name'] for t in tests if not t.get('passed') and not t.get('waived')]
     if failed:
         bad.append('failed tests %s' % failed[:5])
     passed = {t['name'] for t in tests if t.get('passed')}
-    bad += ['check %s not recorded' % n for n in cc.COMPLETE_CHECKS if n not in passed]
-    out = (rec.get('meta') or {}).get('engine_outcome') or {}
-    want = {S: SC.expected_files(out.get(S), kind_of(band) == 'wb') for S in STOKES}
+    meta = rec.get('meta') or {}
+    out = meta.get('engine_outcome') or {}
+    want = {S: SC.expected_files(out.get(S), kind == 'wb') for S in STOKES}
     bad += ['engine count %s %r promises no file count' % (S, out.get(S)) for S in STOKES if want[S] is None]
+    need = list(cc.COMPLETE_CHECKS) + list(cc.COMPLETE_KIND_CHECKS[kind])
     for S in STOKES:
         if want[S]:
-            bad += ['check %s not recorded' % n.format(stokes=S) for n in cc.COMPLETE_STOKES_CHECKS
-                    if n.format(stokes=S) not in passed]
-    mans = [o for o in rec.get('outputs') or [] if o.get('class') == 'photometry_cutout_manifest']
-    if len(mans) != 1:
-        return bad + ['%d cutout manifests recorded (one expected)' % len(mans)]
+            need += [n.format(stokes=S) for n in cc.COMPLETE_STOKES_CHECKS[kind]]
+            if kind == 'sb' and meta.get('generation5_sample'):
+                need += [n.format(stokes=S) for n in cc.COMPLETE_GEN5_CHECKS]
+    bad += ['check %s not recorded' % n for n in need if n not in passed]
+    outs = {}
+    for o in rec.get('outputs') or []:
+        outs.setdefault(o.get('class'), []).append(o)
+    for cls in cc.COMPLETE_OUTPUTS[kind]:
+        if len(outs.get(cls, [])) != 1:
+            bad.append('%d %s outputs recorded (one expected)' % (len(outs.get(cls, [])), cls))
+        elif not os.path.isfile(outs[cls][0]['path']):
+            bad.append('%s %s missing' % (cls, outs[cls][0]['path']))
+    mans = outs.get('photometry_cutout_manifest') or []
+    if len(mans) != 1 or not os.path.isfile(mans[0]['path']):
+        return bad
     o = mans[0]
     ctx = o.get('ctx') or {}
-    root = ctx.get('root') or (rec.get('meta') or {}).get('cutout_root')
-    if not os.path.isfile(o['path']):
-        return bad + ['manifest %s missing' % o['path']]
+    root = ctx.get('root') or meta.get('cutout_root')
     _, rows = TC.read_manifest(o['path'])
     per = {S: 0 for S in STOKES}
     miss = []
@@ -648,18 +693,25 @@ def check_done(rec, band, retest=False):
         bad.append('%d of %d manifest files missing or of another size (e.g. %s)' % (len(miss), len(rows), miss[0]))
     bad += ['Stokes %s: engine count %s, no file in the manifest' % (S, out.get(S)) for S in STOKES if want[S] and not per[S]]
     if retest:
-        bad += ['%s: %s' % (t['name'], t['detail']) for t in validate.run(o['class'], o['path'], **ctx) if not t['passed']]
+        for cls in cc.COMPLETE_OUTPUTS[kind]:
+            for x in outs.get(cls, [])[:1]:
+                if os.path.isfile(x['path']):
+                    bad += ['%s: %s' % (t['name'], t['detail']) for t in validate.run(x['class'], x['path'], **(x.get('ctx') or {}))
+                            if not t['passed']]
     return bad
 
 
 def check_stage1(out_root, stage1, enum, cell, kind):
     """(state, problem or '') of the stage 1 of (cell, kind): 'done' (a done measure record of the kind's bands, its manifest
-    passing MM1 + MM2), 'no <kind>' (its SM-NOBAND record), 'empty', or incomplete."""
+    passing MM1 + MM2), 'no <kind>' (its SM-NOBAND record), 'gap' (not run: a gate refused the inputs of a cutouts unit of
+    the kind; the text names them - a gap, not a problem), 'empty', or incomplete."""
     from exopipe.phase3.lib.photometry import steps_snapshot as SS
     from exopipe.phase3.lib.photometry import tests as T
     outcome, detail = readiness(out_root, enum, cell, kind)
     if outcome == 'empty':
         return 'empty', ''
+    if outcome == 'gap':
+        return 'gap', 'stage 1 %s %s not run: %s' % (cell, kind, detail[:400])
     if outcome == 'held':
         return 'held', 'stage 1 %s %s held: %s' % (cell, kind, detail[:300])
     name = SS.unit_name(cell, list(kind_bands(kind)))
@@ -684,18 +736,24 @@ def check_stage1(out_root, stage1, enum, cell, kind):
 
 
 def check(out_root, enum, stage1=None, retest=False):
-    """(complete, counts, problems) of a campaign: every unit of ``enum`` terminal (done records pass check_done), no held
-    (cell, subband), and - with ``stage1`` - every cell's stage 1 per kind done or 'no <kind>'."""
-    counts = {'units': len(enum.units), 'done': 0, 'none': 0, 'incomplete': 0, 'held_enumeration': len(enum.held)}
+    """(complete, counts, problems, gaps) of a campaign: every unit of ``enum`` terminal - done (its record passes check_done),
+    no cutout ('none'), or a GAP (a gate refused its inputs: listed, never a problem) - no (cell, subband) held at the unit
+    list (its inputs never tested), and - with ``stage1`` - every cell's stage 1 per kind done, 'no <kind>' or not run for a
+    gap. Complete = no problem; the gaps are reported beside it."""
+    counts = {'units': len(enum.units), 'done': 0, 'none': 0, 'gap': 0, 'incomplete': 0, 'held_enumeration': len(enum.held)}
     problems = ['held at enumeration: %s %s (%s)' % (h['cell'], h['subband'], h['reason']) for h in enum.held]
+    gaps = []
     for cell, band in enum.units:
         state, text = unit_state(out_root, cell, band)
         if state == 'done':
             bad = check_done(record.load_record(out_root, 'photometry', 'cutouts.%s.%s' % (cell, band)), band, retest)
             if bad:
                 state, text = 'incomplete', 'cutouts.%s.%s: done record, but %s' % (cell, band, '; '.join(bad)[:600])
-        counts[state if state in ('done', 'none') else 'incomplete'] += 1
-        if state not in ('done', 'none'):
+        key = {'done': 'done', 'none': 'none', 'gap': 'gap', 'gap-noinput': 'gap'}.get(state, 'incomplete')
+        counts[key] += 1
+        if key == 'gap':
+            gaps.append(text)
+        elif key == 'incomplete':
             problems.append(text)
     if stage1:
         for cell in enum.cells:
@@ -704,20 +762,21 @@ def check(out_root, enum, stage1=None, retest=False):
                 key = 'stage1_%s' % st.replace(' ', '_')
                 counts[key] = counts.get(key, 0) + 1
                 if why:
-                    problems.append(why)
-    return not problems, counts, problems
+                    (gaps if st == 'gap' else problems).append(why)
+    return not problems, counts, problems, gaps
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(prog='python -m exopipe.phase3.lib.photometry.campaign',
                                  description='The complete-when content test of a cutout-generation campaign (read only).')
     sub = ap.add_subparsers(dest='cmd')
-    c = sub.add_parser('check', help='every unit terminal and its files present; stage 1 per cell and kind done or no <kind>')
+    c = sub.add_parser('check', help='every unit terminal (done with its files present, no cutout, or a gap); stage 1 per cell '
+                       'and kind done, no <kind>, or not run for a gap')
     c.add_argument('--out', required=True, help='the campaign\'s --out (records under <out>/_records/photometry)')
     c.add_argument('--cells', help='night cells <LST>_<date> (comma list, patterns, @FILE); default every cube directory')
     c.add_argument('--generation', help='default photometry_campaign.GENERATION')
-    c.add_argument('--retest', action='store_true', help='run every done unit\'s manifest content tests again (reads every '
-                   'listed cutout)')
+    c.add_argument('--retest', action='store_true', help='run the content tests of every done unit\'s manifest and flux-scale '
+                   'record again (reads every listed cutout)')
     c.add_argument('--no-stage1', action='store_true', help='check the cutouts units only')
     c.add_argument('--max-problems', type=int, default=200, help='problem lines printed (default 200)')
     a = ap.parse_args(argv)
@@ -735,7 +794,7 @@ def main(argv=None):
         return 2
     out = os.path.abspath(a.out)
     stage1 = None if a.no_stage1 else os.path.join(out, stage1_dir())
-    ok, counts, problems = check(out, enum, stage1, a.retest)
+    ok, counts, problems, gaps = check(out, enum, stage1, a.retest)
     started = latest_record(out, gen)
     if started is not None:
         added, removed = units_changed(started, enum.units, cells)
@@ -744,11 +803,16 @@ def main(argv=None):
                 started.get('run_id'), len(added), added[:3], len(removed), removed[:3]), flush=True)
     print('GENERATION %s; cutouts %s; records %s; stage 1 %s' % (gen, cutout_root(), out, stage1 or 'not checked'))
     print('COUNTS %s' % json.dumps(counts, sort_keys=True))
+    for g in gaps:
+        print('GAP %s' % g)
     for p in problems[:a.max_problems]:
         print('PROBLEM %s' % p)
     if len(problems) > a.max_problems:
         print('... %d more problems' % (len(problems) - a.max_problems))
-    print('COMPLETE' if ok else 'INCOMPLETE: %d problems' % len(problems), flush=True)
+    if not ok:
+        print('INCOMPLETE: %d problems%s' % (len(problems), ' (and %d gaps)' % len(gaps) if gaps else ''), flush=True)
+    else:
+        print('COMPLETE with %d gaps' % len(gaps) if gaps else 'COMPLETE', flush=True)
     return 0 if ok else 1
 
 

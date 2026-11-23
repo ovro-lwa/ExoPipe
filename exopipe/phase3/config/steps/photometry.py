@@ -503,10 +503,33 @@ class photometry_campaign(_Section):
     IO_GUARD_ALERT_FILE = '{ops}/io_guard_ALERT'
     IO_GUARD_POLL_S = 60
     # ---- the complete-when content test (campaign.check; gen6_complete_check_20261122.py): the checks a done cutouts record
-    #      must carry as passed, and per Stokes the engine counted cutouts for ({stokes} = V, I)
+    #      must carry as passed - every unit; per band kind (sb subband, wb wideband); per Stokes the engine counted cutouts for
+    #      ({stokes} = V, I); a subband of the generation-5 comparison sample (meta generation5_sample) per such Stokes - and the
+    #      outputs it must hold, exactly one of each class (steps_cutouts: W1/W2 settle and count, I1 identity, CM1/CM2 the
+    #      manifest, GP the cubes unchanged inside the placement, GA/GB/GC/GW the generation checks, fs1 the flux-scale record)
     COMPLETE_CHECKS = ('photometry_cutout_manifest.W1_fsync_size', 'photometry_cutout_manifest.W2_count',
-                       'photometry_cutout_manifest.CM1_files', 'photometry_cutout_manifest.CM2_one_per_key')
-    COMPLETE_STOKES_CHECKS = ('photometry_cutout_manifest.I1_identity_{stokes}',)
+                       'photometry_cutout_manifest.CM1_files', 'photometry_cutout_manifest.CM2_one_per_key',
+                       'photometry_cutout_manifest.GP_cubes_unchanged')
+    COMPLETE_KIND_CHECKS = {'sb': ('photometry_cutout_manifest.GA_fluxscale_record_V', 'photometry_cutout_manifest.GA_fluxscale_record_I',
+                                   'photometry_fluxscale_record.fs1_record'),
+                            'wb': ()}
+    COMPLETE_STOKES_CHECKS = {'sb': ('photometry_cutout_manifest.I1_identity_{stokes}', 'photometry_cutout_manifest.GC_targets_{stokes}'),
+                              'wb': ('photometry_cutout_manifest.I1_identity_{stokes}', 'photometry_cutout_manifest.GW_weights_{stokes}')}
+    COMPLETE_GEN5_CHECKS = ('photometry_cutout_manifest.GB_generation5_{stokes}',)
+    COMPLETE_OUTPUTS = {'sb': ('photometry_cutout_manifest', 'photometry_fluxscale_record'), 'wb': ('photometry_cutout_manifest',)}
+    # ---- GAPS (R-GREGG-20261027-LSRECON-SCALE-BOUND-0P5-2P0-LEVEL-REFUSALS-STAY-GAPS-55MHZ-06H-R0-N-MINUS-1, verbatim
+    #      "Refusals by the large-scale level test stay refused, as gaps, never forced"): a unit whose INPUTS a gate refused is a
+    #      recorded gap - terminal, listed by the complete-when check (COMPLETE with N gaps), never rerun into a pass. Refused
+    #      (status refused) by these codes, the reason holding the text given (None: any): the gap holds its cell's stage 1 of
+    #      that band kind (C-FLUXSCALE before the engine: a cube not rescaled, off its rescale record, V != I, records
+    #      unreadable). No input by these codes: a gap that holds nothing (C-NOCUBE: a flow cube gone since the unit list). Every
+    #      other refusal (output and content checks C-WRITE C-COUNT C-NAMES C-IDENTITY C-GENCHECK C-CONTENT C-PLACE C-STALE, the
+    #      flux-scale re-checks after the cut, C-ENGINE, PHOT-EXCL-*, CP-*), an error or a missing record is incomplete.
+    #      C-EXCLUDED and C-NOCUT whose engine counts promise no file (the night rule) are no gaps: terminal, no cutout
+    GAP_REFUSED = {'C-FLUXSCALE': 'the engine not started'}
+    GAP_NOINPUT = ('C-NOCUBE',)
+    RULED = {'GAP_REFUSED': 'R-GREGG-20261027-LSRECON-SCALE-BOUND-0P5-2P0-LEVEL-REFUSALS-STAY-GAPS-55MHZ-06H-R0-N-MINUS-1',
+             'GAP_NOINPUT': 'R-GREGG-20261027-LSRECON-SCALE-BOUND-0P5-2P0-LEVEL-REFUSALS-STAY-GAPS-55MHZ-06H-R0-N-MINUS-1'}
 
 
 class photometry_phase2(_Section):

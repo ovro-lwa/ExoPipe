@@ -431,8 +431,13 @@ def snapshot_universe():
 
 def snapshot_items(args):
     """[(cell, band)] of --cells / --epochs night cells (<LST>_<date>[_<band>], patterns over the cube store), the bands of
-    photometry.SNAPSHOT_BANDS (--scopes narrows), minus --exclude-cells. C-CELLS: a regeneration names its cells."""
+    photometry.SNAPSHOT_BANDS (--scopes narrows), minus --exclude-cells. C-CELLS: a regeneration names its cells. A campaign
+    (--campaign, started: args.photometry_campaign): the campaign's own unit list (campaign.enumerate_units), subbands before
+    widebands within a cell."""
     from exopipe.phase3.lib.photometry import steps_snapshot as KS
+    camp = getattr(args, 'photometry_campaign', None)
+    if camp is not None:
+        return sorted(camp.enum.units)
     spec = ','.join(x for x in (args.cells, getattr(args, 'epochs', None)) if x)
     if not spec:
         raise Refusal('C-CELLS: a cutout regeneration names its night cells (--cells / --epochs; patterns over %s, e.g. '
@@ -457,6 +462,8 @@ def snapshot_cubes(cell, band):
 
 
 def stage_snapshot_cutouts(run, args):
+    from exopipe.phase3.lib.photometry import campaign as CP
+    camp = CP.start(run, args) if getattr(args, 'campaign', False) else None   # the campaign's units, pin, space, I/O guard
     targets = K.adhoc_targets(args)
     root = K.cutout_root(args)
     planets = bool(getattr(args, 'planets', False))
@@ -495,9 +502,13 @@ def stage_snapshot_cutouts(run, args):
             K.plan(run, '[cutouts]   unit cutouts.%s.%s%s: cubes V %d, I %d; %s' % (cell, band, tag_suffix(targets),
                                                                                  len(cubes['V']), len(cubes['I']), verdict))
             continue
-        units += run_unit(run, 'cutouts.%s.%s%s' % (cell, band, tag_suffix(targets)),
-                          dict(tier='snapshot', stage='cutouts', cell=cell, band=band, cutout_root=root),
-                          snapshot_unit, run, args, cell, band, root, targets, planets, samples, cubes, reads, gen5)
+        done = run_unit(run, 'cutouts.%s.%s%s' % (cell, band, tag_suffix(targets)),
+                        dict(tier='snapshot', stage='cutouts', cell=cell, band=band, cutout_root=root),
+                        snapshot_unit, run, args, cell, band, root, targets, planets, samples, cubes, reads, gen5)
+        if camp is not None:
+            for x in done:              # the unit's engine children: their code joins the campaign's pin, or stops it (CP-PIN)
+                camp.after(x)
+        units += done
     if run.dry_run and items:
         K.plan(run, '[cutouts] flux-scale gate (headers only): %d of %d unit(s) would refuse' % (gate_refused, len(items)))
     return units
@@ -1064,8 +1075,12 @@ def snapshot_unit(run, args, cell, band, root, targets, planets, samples, cubes,
     admitted = cutout_admitted(cell, band, ex)
     if K.run_resume_ok(run, name, admitted, {'inputs_listing_sha1': lsha, 'cutout_root': root}):
         return run.units[-1:]
+    camp = getattr(args, 'photometry_campaign', None)
     with run.unit(name, tier='snapshot', stage='cutouts', cell=cell, band=band, cutout_root=root, samples=samples,
                   targets=['%s=%s' % t for t in targets], planets=planets, inputs_listing_sha1=lsha) as u:
+        if camp is not None:
+            u.meta['campaign'] = camp.generation
+            camp.gate(u)                # the recorders' I/O guard (a wait), the code pin and the space (CP-PIN, CP-SPACE)
         if not cubes['V'] or not cubes['I']:
             raise NoInput('C-NOCUBE: no consolidated flow cube of %s %s (%s) under %s' % (
                 cell, band, 'V' if not cubes['V'] else 'I', c.paths.SNAPSHOT_CUBES_ROOT))
