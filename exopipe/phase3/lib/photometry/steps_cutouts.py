@@ -69,12 +69,12 @@ def is_wideband(band):
 
 
 def run_samples(targets, planets, tier):
-    """The sample directories a cutout run writes: the ad-hoc tags (+ the planets with --planets), else the samples ``tier``
-    measures and the planets (phase3_snapshot_cutouts._samples / _planets)."""
+    """The sample directories a cutout run writes: the ad-hoc tags (+ the planets with --planets), else the samples ``tier``'s
+    cutters write (photometry.SAMPLES_CUT[tier]) and the planets (phase3_snapshot_cutouts._samples / _planets)."""
     ph = K.cfg().photometry
     if targets:
         return [t for t, _ in targets] + ([ph.PLANET_SAMPLE] if planets else [])
-    return list(K.samples_measured(tier)) + [ph.PLANET_SAMPLE]
+    return list(K.samples_cut(tier)) + [ph.PLANET_SAMPLE]
 
 
 def tag_suffix(targets):
@@ -591,7 +591,8 @@ def snapshot_unit(run, args, cell, band, root, targets, planets, samples, cubes)
     name = 'cutouts.%s.%s%s' % (cell, band, sfx)
     allcubes = cubes['V'] + cubes['I']
     stamp = bool(targets) and not is_wideband(band)        # ad hoc targets on a subband: the stamp method (STAMP_REFERENCE_ROOT)
-    inputs = (sorted(allcubes) + [p for _, p in targets] + ([] if targets else list(K.sample_paths('snapshot').values()))
+    lists = [p for _, p in targets] or list(K.sample_paths('snapshot', cut=True).values())
+    inputs = (sorted(allcubes) + lists
               + [r for r in [stamp_record(cell, band)] if stamp and os.path.isfile(r)])
     admitted = cutout_admitted(cell, band)
     if K.run_resume_ok(run, name, admitted, {'inputs_listing_sha1': listing_sha1(inputs), 'cutout_root': root}):
@@ -904,7 +905,7 @@ def tier_unit(run, args, tier, cell, root, targets, planets, samples):
     lst, band = cell.split('_', 1)
     sfx = tag_suffix(targets)
     name = 'cutouts.%s.%s%s' % (token, cell, sfx)
-    inputs = tier_inputs(tier, cell) + [p for _, p in targets] + ([] if targets else list(K.sample_paths(tier).values()))
+    inputs = tier_inputs(tier, cell) + ([p for _, p in targets] or list(K.sample_paths(tier, cut=True).values()))
     if K.run_resume_ok(run, name, ['%s:%s' % (token, cell)], {'inputs_listing_sha1': listing_sha1(inputs), 'cutout_root': root}):
         return run.units[-1:]
     with run.unit(name, tier=tier, stage='cutouts', cell=cell, cutout_root=root, samples=samples,

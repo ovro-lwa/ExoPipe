@@ -104,10 +104,20 @@ class photometry(_Section):
                    'LPT': 'a02537b1cc587b4c20aa30d5da171d5ede2f9dcb'}      # sha1 read 2026-11-23: 20 rows (long-period transients)
     SAMPLE_COLUMNS = ('common_name', 'ra_current', 'dec_current')         # name, RA deg, Dec deg (current epoch); deep_forced_phot.py:89
     SAMPLE_ENCODING = 'utf-8-sig'                                          # deep_forced_phot.py:88 (10pc.csv carries a BOM)
-    # the samples each tier measures (sublst = the 10-minute tier cutouts). Snapshot + LPT since 2026-11-18
-    # (R-GREGG-20261118-GEN6-WITH-LPTS-SAMPLE-WIRED, "Approve gen6 with the LPTs included"); the deep engines name no LPT
-    SAMPLES_MEASURED = {'snapshot': ('HWJ', '10pc', 'LPT'),                # MIRROR snapshot_forced_phot.py:61-62 SAMPLES default,
-                                                                           # phase3_snapshot_cutouts.py:34-35 SAMPLES
+    # LPT (long-period transients) since 2026-11-18: R-GREGG-20261118-GEN6-WITH-LPTS-SAMPLE-WIRED, "Approve gen6 with the LPTs
+    # included". Two lists per tier (sublst = the 10-minute tier cutouts):
+    # CUT = the samples a tier's cutouts hold: what the cutters write and what the cutout name checks expect (C-NAMES, one file
+    # per key, the cutout manifests). Every cutter takes the writer's list, phase3_snapshot_cutouts.SAMPLES through
+    # CUT._targets() - the 10-s write_cutouts, its --cutouts-from-cubes regeneration and photometry_tier_cutouts_20261025.py:123
+    # - so LPT in every tier
+    SAMPLES_CUT = {'snapshot': ('HWJ', '10pc', 'LPT'),                     # MIRROR phase3_snapshot_cutouts.py:34-35 SAMPLES
+                   'deep': ('HWJ', '10pc', 'LPT'),
+                   'sublst': ('HWJ', '10pc', 'LPT')}
+    # MEASURED = the samples a tier's measure engines are given and its stage 1 must hold. The deep engines name no LPT; the
+    # deep and 10-minute LPT forced photometry of 2026-11-18 is a separate dated script
+    # (phase3/forced_lpt_20261118/lpt_forced_20261118.py, DONE-20261118-LPT-FORCED-PHOTOMETRY-DEEP-10MIN-STAGE-A): a later
+    # port item
+    SAMPLES_MEASURED = {'snapshot': ('HWJ', '10pc', 'LPT'),                # MIRROR snapshot_forced_phot.py:61-62 SAMPLES default
                         'deep': ('HWJ', '10pc'),                           # MIRROR deep_forced_phot.py:87, deep_forced_eval.py:93
                         'sublst': ('HWJ', '10pc')}                         # (R-FORCED-PHOTOMETRY-ELEMENTS-APPROVED-V-FAINT-PARENT-ENTRIES)
     # known lists nothing measures today (B-58): file name under paths.CLV15_ROOT, or None when omitted by ruling
@@ -162,12 +172,13 @@ class photometry(_Section):
                                     # _PLANETS (the measured samples, 2026-10-28, c4fa0e3) are the in-place engine's switches: the
                                     # step passes --root itself and measures SAMPLES_MEASURED[tier] only
     LOG_TAIL_LINES = 40             # engine log lines kept in a refused unit's reason / record (orchestration only)
-    PROTECTED_KEYS = ('SAMPLE_FILES', 'SAMPLE_SHA1', 'SAMPLE_COLUMNS', 'SAMPLE_ENCODING', 'SAMPLES_MEASURED',
+    PROTECTED_KEYS = ('SAMPLE_FILES', 'SAMPLE_SHA1', 'SAMPLE_COLUMNS', 'SAMPLE_ENCODING', 'SAMPLES_MEASURED', 'SAMPLES_CUT',
                       'SAMPLES_NOT_MEASURED', 'CURRENT_LIST_ONLY', 'OUT_ROOT', 'ENGINE', 'ENV_FORBIDDEN_PREFIXES',
                       'TIERS_WITH_ENGINE', 'RETIRED_CUTOUT_ROOTS', 'ENGINE_PYTHON_BY_KEY', 'TIER_FORCED_SAMPLES',
                       'PLANET_SAMPLE', 'ADHOC_ENV', 'ADHOC_PLANETS_ENV', 'ENGINE_V2')
     RULED = {'SAMPLES_MEASURED': ('R-FORCED-PHOTOMETRY-ELEMENTS-APPROVED-V-FAINT-PARENT-ENTRIES',
                                   'R-GREGG-20261118-GEN6-WITH-LPTS-SAMPLE-WIRED'),
+             'SAMPLES_CUT': 'R-GREGG-20261118-GEN6-WITH-LPTS-SAMPLE-WIRED',
              'SAMPLE_FILES': ('HWJ-LIST-CUT-TO-THE-ELEVATION-RULING-AND-HD-20782-REMOVED',
                               'R-GREGG-20261118-GEN6-WITH-LPTS-SAMPLE-WIRED'),
              'SNAPSHOT_BANDS': ('INCIDENT-SNAP-FULL-CUTOUTS-EQUAL-RED-62-CELLS',

@@ -67,17 +67,25 @@ def samples_measured(tier):
     return tuple(cfg().photometry.SAMPLES_MEASURED[tier])
 
 
-def sample_paths(tier):
+def samples_cut(tier):
+    """The samples ``tier``'s cutouts hold (photometry.SAMPLES_CUT[tier]: the cutters' list, HWJ, 10pc, LPT in every tier)."""
+    return tuple(cfg().photometry.SAMPLES_CUT[tier])
+
+
+def sample_paths(tier, cut=False):
+    """{sample: list path} of the samples ``tier`` measures, or (cut=True) of the samples its cutters read."""
     c = cfg()
-    return {t: os.path.join(c.paths.CLV15_ROOT, c.photometry.SAMPLE_FILES[t]) for t in samples_measured(tier)}
+    return {t: os.path.join(c.paths.CLV15_ROOT, c.photometry.SAMPLE_FILES[t])
+            for t in (samples_cut(tier) if cut else samples_measured(tier))}
 
 
-def gate_samples(tier):
-    """PHOT-SAMPLE-PIN: each sample list ``tier`` measures must be the file config pins (sha1). The engines read these files
-    by literal path; a rebuilt list needs a config update (B-58 lean shape, pure: same files, same values)."""
+def gate_samples(tier, cut=False):
+    """PHOT-SAMPLE-PIN: each sample list ``tier`` measures - and with cut=True (a cutouts stage) each list its cutters read -
+    must be the file config pins (sha1). The engines read these files by literal path; a rebuilt list needs a config update
+    (B-58 lean shape, pure: same files, same values)."""
     c = cfg()
     out = {}
-    for t, p in sample_paths(tier).items():
+    for t, p in dict(sample_paths(tier), **(sample_paths(tier, cut=True) if cut else {})).items():
         if not os.path.exists(p):
             raise Refusal('PHOT-SAMPLE-PIN: sample list %s missing (%s)' % (t, p))
         h = sha1_file(p)

@@ -1181,8 +1181,10 @@ def zone_rows(ev, stage1, max_cells=None, procs=1):
 
 
 def stage1_cell(task):
-    """S of ONE evaluated cell (port of test_snapshot_forced_reserve.stage1_cell, :423-459)."""
+    """S of ONE evaluated cell (port of test_snapshot_forced_reserve.stage1_cell, :423-459), over the samples the snapshot tier
+    measures (photometry.SAMPLES_MEASURED['snapshot'], LPT since 2026-11-18; production :445-450 still names 10pc and HWJ only)."""
     cell, kind, root, proto = task
+    smps = tuple(_cfg().photometry.SAMPLES_MEASURED['snapshot'])
     bad, nband, nfile, nnocut = [], 0, 0, 0
     man = []
     for mp_ in glob.glob(os.path.join(root, cell, 'forced_manifest*.csv')):
@@ -1196,9 +1198,9 @@ def stage1_cell(task):
             ncut = int(json.load(open(ri)).get('photometry_cutout_cubes', -1))
         except (ValueError, TypeError):
             ncut = -1
-        npz = [p for p in (os.path.join(root, cell, 'forced_%s_%s_%s.npz' % (s_, b, st)) for s_ in ('10pc', 'HWJ'))
+        npz = [p for p in (os.path.join(root, cell, 'forced_%s_%s_%s.npz' % (s_, b, st)) for s_ in smps)
                if os.path.exists(p)]
-        for smp in ('10pc', 'HWJ'):
+        for smp in smps:
             if any(('/%s/%s/' % (smp, b)) in f and f.endswith('_%s.fits' % st) for f in man) and \
                     not os.path.exists(os.path.join(root, cell, 'forced_%s_%s_%s.npz' % (smp, b, st))):
                 bad.append('measured sample without its stage-1 file %s %s %s %s' % (cell, smp, b, st))

@@ -126,7 +126,7 @@ def add_arguments(p):
     cu.add_argument('--tier-out', metavar='DIR', help='cutmeasure: the tier forced root of every sample (default '
                                                       'photometry.TIER_FORCED_ROOTS, per sample as served)')
     cu.add_argument('--targets', metavar='TAG=CSV[,TAG=CSV]',
-                    help='an AD-HOC target set replacing the HWJ / 10 pc lists for cutouts, snapshot measure and the '
+                    help='an AD-HOC target set replacing the named sample lists for cutouts, snapshot measure and the '
                          'deep / 10-minute cutmeasure (passed to the engines as P3_SNAP_CUTOUT_SAMPLES; columns '
                          'common_name|name, ra_current|ra, dec_current|dec); never into a served root (give --cutout-root / '
                          '--out, and --tier-out for cutmeasure); not evaluated')
@@ -189,6 +189,8 @@ def run(args, run):
     try:
         flag_overrides(args, c)
         stages = K.resolve_stages(args, args.tier)
+        if 'cutouts' in stages and not getattr(args, 'targets', None):
+            K.gate_samples(args.tier, cut=True)        # the cutters read photometry.SAMPLES_CUT[tier] (LPT in every tier)
         gate_adhoc_stages(args, stages)
         gate_in_place_stages(args, stages)
         K.plan(run, 'photometry --tier %s: stages %s; out %s%s' % (args.tier, ','.join(stages), run.out_root,
