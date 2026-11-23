@@ -105,14 +105,12 @@ class photometry(_Section):
     SAMPLE_COLUMNS = ('common_name', 'ra_current', 'dec_current')         # name, RA deg, Dec deg (current epoch); deep_forced_phot.py:89
     SAMPLE_ENCODING = 'utf-8-sig'                                          # deep_forced_phot.py:88 (10pc.csv carries a BOM)
     # LPT (long-period transients) since 2026-11-18: R-GREGG-20261118-GEN6-WITH-LPTS-SAMPLE-WIRED, "Approve gen6 with the LPTs
-    # included". Two lists per tier (sublst = the 10-minute tier cutouts):
-    # CUT = the samples a tier's cutouts hold: what the cutters write and what the cutout name checks expect (C-NAMES, one file
-    # per key, the cutout manifests). Every cutter takes the writer's list, phase3_snapshot_cutouts.SAMPLES through
-    # CUT._targets() - the 10-s write_cutouts, its --cutouts-from-cubes regeneration and photometry_tier_cutouts_20261025.py:123
-    # - so LPT in every tier
-    SAMPLES_CUT = {'snapshot': ('HWJ', '10pc', 'LPT'),                     # MIRROR phase3_snapshot_cutouts.py:34-35 SAMPLES
-                   'deep': ('HWJ', '10pc', 'LPT'),
-                   'sublst': ('HWJ', '10pc', 'LPT')}
+    # included". Two lists (sublst = the 10-minute tier cutouts):
+    # CUT = the samples every tier's cutouts hold: the one writer list, phase3_snapshot_cutouts.SAMPLES, which every cutter
+    # takes through CUT._targets() - the 10-s write_cutouts, its --cutouts-from-cubes regeneration and the deep / 10-minute
+    # tier tool (photometry_tier_cutouts_20261025.py:123) - and what the cutout name checks expect (C-NAMES, one file per key,
+    # the cutout manifests); LPT in every tier
+    SAMPLES_CUT = ('HWJ', '10pc', 'LPT')                                   # MIRROR phase3_snapshot_cutouts.py:34-35 SAMPLES
     # MEASURED = the samples a tier's measure engines are given and its stage 1 must hold. The deep engines name no LPT; the
     # deep and 10-minute LPT forced photometry of 2026-11-18 is a separate dated script
     # (phase3/forced_lpt_20261118/lpt_forced_20261118.py, DONE-20261118-LPT-FORCED-PHOTOMETRY-DEEP-10MIN-STAGE-A): a later

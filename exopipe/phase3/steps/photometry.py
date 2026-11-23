@@ -190,7 +190,7 @@ def run(args, run):
         flag_overrides(args, c)
         stages = K.resolve_stages(args, args.tier)
         if 'cutouts' in stages and not getattr(args, 'targets', None):
-            K.gate_samples(args.tier, cut=True)        # the cutters read photometry.SAMPLES_CUT[tier] (LPT in every tier)
+            K.gate_samples(args.tier, cut=True)        # the cutters read photometry.SAMPLES_CUT (LPT in every tier)
         gate_adhoc_stages(args, stages)
         gate_in_place_stages(args, stages)
         K.plan(run, 'photometry --tier %s: stages %s; out %s%s' % (args.tier, ','.join(stages), run.out_root,
@@ -214,7 +214,8 @@ ADHOC_STAGES = {'snapshot': ('cutouts', 'measure'), 'deep': ('cutouts', 'cutmeas
 def gate_adhoc_stages(args, stages):
     """PHOT-ADHOC: an ad-hoc target set (--targets, --planets) applies to the cutouts and the measurement on them (the engines
     read P3_SNAP_CUTOUT_SAMPLES); the deep frame-table chain reads the pinned lists by literal path and the evaluation is
-    defined on the HWJ / 10 pc samples - selecting one of those with --targets refuses."""
+    defined on the tier's measured samples (photometry.SAMPLES_MEASURED[tier]) - selecting one of those with --targets
+    refuses."""
     from exopipe.phase3.core import record
     if not (getattr(args, 'targets', None) or getattr(args, 'planets', False)):
         return

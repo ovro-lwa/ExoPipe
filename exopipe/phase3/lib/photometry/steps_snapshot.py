@@ -155,6 +155,44 @@ def unit_name(cell, bands):
 # stage measure (snapshot_forced_phot.py per band)
 # ---------------------------------------------------------------------------------------------------------------------
 
+def engine_samples(path):
+    """The SAMPLES default of the snapshot measure engine at ``path``, read from its source without running it (as
+    tests/test_photometry.py test_mirrors reads it): the module-level SAMPLES literal, or the default branch of its ad-hoc
+    switch (`<P3_SNAP_CUTOUT_SAMPLES tags> if os.environ.get(...) else <tuple>`, 2026-10-28). None without such a literal."""
+    import ast
+    try:
+        body = ast.parse(open(path).read()).body
+    except (OSError, SyntaxError, ValueError):
+        return None
+    val = None
+    for node in body:
+        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == 'SAMPLES' for t in node.targets):
+            v = node.value.orelse if isinstance(node.value, ast.IfExp) else node.value
+            try:
+                val = ast.literal_eval(v)
+            except ValueError:
+                val = None
+    return tuple(val) if isinstance(val, (tuple, list)) and val and all(isinstance(x, str) for x in val) else None
+
+
+def gate_engine_samples():
+    """PHOT-ENGINE-SAMPLES: the snapshot measure engine the run executes (K.engine('measure_snapshot'): the one hit among the
+    site LEGACY_CODE_ROOTS) must know every sample the step names to it (--samples = photometry.SAMPLES_MEASURED['snapshot']).
+    An older engine refuses the flag in every band (REFUSING: --samples ...), which the step would record as a measure failure
+    of each cell; this refuses once, before any cell runs."""
+    p = K.engine('measure_snapshot')
+    got = engine_samples(p)
+    want = K.samples_measured('snapshot')
+    if got is None:
+        raise Refusal('PHOT-ENGINE-SAMPLES: engine %s has no readable SAMPLES literal (a tuple, or the default of its '
+                      'P3_SNAP_CUTOUT_SAMPLES switch)' % p)
+    lack = [t for t in want if t not in got]
+    if lack:
+        raise Refusal("PHOT-ENGINE-SAMPLES: engine %s SAMPLES %s lacks %s (photometry.SAMPLES_MEASURED['snapshot'] = %s)"
+                      % (p, ','.join(got), ','.join(lack), ','.join(want)))
+    return got
+
+
 def stage_measure(run, args):
     c = K.cfg()
     m = c.photometry_measure
@@ -171,6 +209,8 @@ def stage_measure(run, args):
               args.band_procs or m.BAND_PROCS['snapshot'], K.python_key('snapshot')))
     try:
         K.gate_adhoc_roots(targets, {'stage-1 root': stage1})
+        if not targets:             # an ad-hoc set: the engine takes its tags from P3_SNAP_CUTOUT_SAMPLES (K.adhoc_env)
+            gate_engine_samples()
     except Refusal as e:
         if run.dry_run:
             K.would_refuse(run, 'measure', str(e))
@@ -242,7 +282,7 @@ def measure_cell(run, args, cell, bands, files, root, stage1, man_name, targets=
         def one(b):
             # an ad-hoc target set: the engine reads it from P3_SNAP_CUTOUT_SAMPLES and measures its tags (--samples TAG,
             # forced_adhoc_20261028/stage1_when_done_20261028.sh:10-11); else the snapshot samples of config, named (the
-            # engine's default since 2026-11-18, mirror-tested; an engine without one of them refuses the flag)
+            # engine's default since 2026-11-18, mirror-tested; an engine without one of them: PHOT-ENGINE-SAMPLES above)
             argv = [cell, os.path.join(work, 'b_%s' % b), '--bands', b, '--root', root] + (
                 ['--index', os.path.abspath(args.index)] if args.index else []) + (
                 ['--samples', ','.join(t for t, _ in targets) or ','.join(K.samples_measured('snapshot'))])
@@ -474,8 +514,9 @@ def stage_evaluate(run, args):
     c = K.cfg()
     ev = c.photometry_evaluate
     if getattr(args, 'targets', None):
-        raise Refusal('PHOT-ADHOC: the evaluation is defined on the HWJ / 10 pc samples (thresholds from their controls, '
-                      'survey size); an ad-hoc target set is measured, not evaluated (production: adhoc_report_20261028.py)')
+        raise Refusal('PHOT-ADHOC: the evaluation is defined on the snapshot samples %s (photometry.SAMPLES_MEASURED; '
+                      'thresholds from their controls, survey size); an ad-hoc target set is measured, not evaluated '
+                      '(production: adhoc_report_20261028.py)' % ', '.join(K.samples_measured('snapshot')))
     stage1 = os.path.abspath(args.stage1) if args.stage1 else stage1_root(run)
     kinds = [k.strip() for k in (args.kinds or ','.join(ev.KINDS['snapshot'])).split(',') if k.strip()]
     badk = [k for k in kinds if k not in ev.KINDS['snapshot']]

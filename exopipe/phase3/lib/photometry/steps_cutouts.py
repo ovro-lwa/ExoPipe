@@ -70,7 +70,7 @@ def is_wideband(band):
 
 def run_samples(targets, planets, tier):
     """The sample directories a cutout run writes: the ad-hoc tags (+ the planets with --planets), else the samples ``tier``'s
-    cutters write (photometry.SAMPLES_CUT[tier]) and the planets (phase3_snapshot_cutouts._samples / _planets)."""
+    cutters write (photometry.SAMPLES_CUT, every tier) and the planets (phase3_snapshot_cutouts._samples / _planets)."""
     ph = K.cfg().photometry
     if targets:
         return [t for t, _ in targets] + ([ph.PLANET_SAMPLE] if planets else [])

@@ -86,13 +86,19 @@ def _jtag(ra, dec):
     return 'J%02d%02d%s%02d%02d' % (m // 60, m % 60, '-' if dec < 0 else '+', dm // 60, dm % 60)
 
 
+def _samples_measured(tier):
+    """The samples ``tier`` measures (steps_common.samples_measured: photometry.SAMPLES_MEASURED[tier])."""
+    from exopipe.phase3.lib.photometry import steps_common
+    return steps_common.samples_measured(tier)
+
+
 def _sep_arcmin(a, b):
     r1, d1, r2, d2 = (math.radians(float(x)) for x in (a[0], a[1], b[0], b[1]))
     s = math.sin((d2 - d1) / 2) ** 2 + math.cos(d1) * math.cos(d2) * math.sin((r2 - r1) / 2) ** 2
     return math.degrees(2 * math.asin(min(1.0, math.sqrt(s)))) * 60.0
 
 
-def sample_targets(tags=None, lists=None, writer_names=True, tier='snapshot'):
+def sample_targets(tier, tags=None, lists=None, writer_names=True):
     """[(tag, name, ra, dec)] of the sample lists ``tier`` measures (photometry.SAMPLES_MEASURED[tier]; the snapshot tier's are
     the cutout writer's lists) or of ``tags`` (or of ``lists`` {tag: csv path}, an ad-hoc target set), read the
     way the cutout writer reads them (phase3_snapshot_cutouts._targets, :55-87: common_name|name|Name; ra_current|ra|RA; rows
@@ -103,7 +109,7 @@ def sample_targets(tags=None, lists=None, writer_names=True, tier='snapshot'):
     c = _cfg()
     if lists is None:
         lists = {tag: os.path.join(c.paths.CLV15_ROOT, c.photometry.SAMPLE_FILES[tag])
-                 for tag in (tags or c.photometry.SAMPLES_MEASURED[tier])}
+                 for tag in (tags or _samples_measured(tier))}
     out = []
     for tag, p in lists.items():
         with open(p, encoding=c.photometry.SAMPLE_ENCODING) as f:
@@ -129,8 +135,8 @@ def sample_targets(tags=None, lists=None, writer_names=True, tier='snapshot'):
     return out
 
 
-def current_safe_names(lists=None):
-    return {(t, safe_name(n)) for t, n, _, _ in sample_targets(lists=lists)}
+def current_safe_names(tier, lists=None):
+    return {(t, safe_name(n)) for t, n, _, _ in sample_targets(tier, lists=lists)}
 
 
 def node_local_elsewhere(path):
@@ -562,7 +568,7 @@ def _list_positions():
     (deep_forced_phot.py:86-89 floats of ra_current / dec_current); a row prints them to 5 decimals (:288), and the 10 pc
     list carries up to 9, so a re-measurement at the printed position differs by the rounding (0.04 arcsec)."""
     out = {}
-    for tag, nm, ra, dec in sample_targets(writer_names=False, tier='deep'):
+    for tag, nm, ra, dec in sample_targets('deep', writer_names=False):
         out.setdefault((tag, nm), []).append((ra, dec))
     return out
 
@@ -1184,7 +1190,7 @@ def stage1_cell(task):
     """S of ONE evaluated cell (port of test_snapshot_forced_reserve.stage1_cell, :423-459), over the samples the snapshot tier
     measures (photometry.SAMPLES_MEASURED['snapshot'], LPT since 2026-11-18; production :445-450 still names 10pc and HWJ only)."""
     cell, kind, root, proto = task
-    smps = tuple(_cfg().photometry.SAMPLES_MEASURED['snapshot'])
+    smps = _samples_measured('snapshot')
     bad, nband, nfile, nnocut = [], 0, 0, 0
     man = []
     for mp_ in glob.glob(os.path.join(root, cell, 'forced_manifest*.csv')):
@@ -1562,9 +1568,9 @@ def n5(path, targets=None, **ctx):
     bad = []
     if mt['band'] not in c.photometry.SNAPSHOT_BANDS:
         bad.append('band %s not measured (photometry.SNAPSHOT_BANDS)' % mt['band'])
-    if mt['smp'] not in (list(lists) if lists else c.photometry.SAMPLES_MEASURED['snapshot']):
+    if mt['smp'] not in (list(lists) if lists else _samples_measured('snapshot')):
         bad.append('sample %s not measured' % mt['smp'])
-    cur = current_safe_names(lists)
+    cur = current_safe_names('snapshot', lists)
     names = [str(n) for n in _npz(path)['names']]
     off = [n for n in names if (mt['smp'], n) not in cur]
     if off:
