@@ -6,12 +6,17 @@ RESCALED-CUBES requirement (2)) so a cutout generation runs in v2 alone:
 
   records()       {cube path: record}: the cube's newest row by utc in the rescale RESULTS_<host>.csv files ('rescale-results',
                   the cubes snapshot_cube_rescale.py rewrote), else its 'done' row with a factor in the newest rescale plan that
-                  lists it ('plan-native', a cube written already scaled); no RESULTS row at all -> RecordsError
+                  lists it ('plan-native', a cube written already scaled); no RESULTS row at all, or a malformed row (a
+                  missing column, a utc that is not ISO, a non-numeric factor) -> RecordsError naming <file>:<line>; two newest
+                  rows of one cube with other factors, or a newest row without a factor -> the cube's record names the
+                  problem and the gate refuses that cube
   check()         one (cell, subband): every Stokes cube carries HDU-0 FSAPPLD, FSAPPLD = its record within FSAPPLD_TOL, and the
                   V and I factors agree within it -> (ok, reasons, info)
   check_wideband() the member subbands of a wideband group the group search reads (not excluded, with a cube): each existing
                   Stokes cube against its record, V = I where both exist
-  changed()       the cube identity (path, FSAPPLD, size, mtime_ns) of two checks differs: the cube changed between them
+  changed()       the cube identity (path, FSAPPLD, size, mtime_ns, inode, ctime_ns - fstat of the descriptor the header
+                  is read from) of two checks differs: the cube changed between them
+  recheck()       the gate again plus changed() against an earlier check, for a subband or a wideband's member set
   write_sidecar() after placement: check again, refuse unless every cube equals the pre-cut check, then write the flux-scale
                   record <root>/_fluxscale/<sb>/<cell>_<sb>_fluxscale.json (atomic), the file the stamp engine reads
   gen5_sample()   the deterministic (cell, subband) sample of content check (b) (comparison with generation 5)
@@ -23,13 +28,17 @@ READAHEAD-460GB: astropy's header-only fits.open cost ~67 MB per cube).
 import csv
 import hashlib
 import json
+import math
 import os
 import re
 import time
 
+from exopipe.phase3.lib.photometry.tests_cutouts import cube_path      # noqa: F401 - one cube-path helper for both modules
+
 
 class RecordsError(Exception):
-    """The rescale records cannot be read (no RESULTS row): the gate cannot run - every unit it guards refuses."""
+    """The rescale records cannot be read (no RESULTS row, a malformed row): the gate cannot run - every unit it guards
+    refuses."""
 
 
 def _cfg():
@@ -39,11 +48,6 @@ def _cfg():
 
 def _fx():
     return _cfg().photometry_fluxscale
-
-
-def cube_path(cell, sb, stokes, cube_root=None):
-    root = cube_root or _cfg().paths.SNAPSHOT_CUBES_ROOT
-    return os.path.join(root, cell, '%s_%s_%s_flowcube.fits' % (cell, sb, stokes))
 
 
 def sidecar_path(root, cell, sb):
@@ -67,41 +71,105 @@ def record_files():
 
 
 _REC = {}            # {signature of the record files: records}
+_UTC = re.compile(r'^(\d{4})-(\d\d)-(\d\d)T(\d\d):(\d\d):(\d\d)(\.\d+)?Z$')     # snapshot_cube_rescale.py: %Y-%m-%dT%H:%M:%SZ
+RESULTS_COLUMNS = ('utc', 'cube', 'fsappld')
+PLAN_COLUMNS = ('cube', 'status', 'factor')
+
+
+def _malformed(p, line, what):
+    return RecordsError('no rescale record readable: %s:%d (%s)' % (p, line, what))
+
+
+def _factor(p, line, col, s):
+    """A recorded factor: a finite positive number, else RecordsError naming <file>:<line>."""
+    try:
+        x = float(s)
+    except ValueError:
+        raise _malformed(p, line, '%s %r is not a number' % (col, s))
+    if not (math.isfinite(x) and x > 0):
+        raise _malformed(p, line, '%s %r is not a finite positive factor' % (col, s))
+    return x
+
+
+def _rows(p, need):
+    """(line, row) of a record CSV; RecordsError naming <file>:<line> for a missing column, a short or a long row."""
+    with open(p, newline='') as f:
+        rd = csv.DictReader(f)
+        miss = [c for c in need if c not in (rd.fieldnames or ())]
+        if miss:
+            raise _malformed(p, 1, 'no column %s in the header %s' % (', '.join(miss), rd.fieldnames))
+        for r in rd:
+            if None in r or None in r.values():
+                raise _malformed(p, rd.line_num, '%d fields, the header has %d' % (
+                    len([v for k, v in r.items() if k is not None and v is not None]) + len(r.get(None) or ()),
+                    len(rd.fieldnames)))
+            yield rd.line_num, r
+
+
+def _signature(files):
+    out = []
+    for p in files:
+        st = os.stat(p)
+        out.append((p, st.st_size, st.st_mtime_ns, st.st_ino))
+    return tuple(out)
 
 
 def records():
-    """{normalized cube path: dict(source, factor, md5_new, quarantine, utc, results | plan)}; RESULTS rows win over plan rows.
-    Plans in name order (a newer plan overrides an older one; a newer plan's row that is not 'done' removes an older plan's
-    record of the cube). RESULTS: the newest row by utc of each cube (a tie keeps the first, files in name order). Read again
-    when a record file changes (size or mtime)."""
+    """{normalized cube path: dict(source, factor, md5_new, quarantine, utc, results | plan, row)}; RESULTS rows win over plan
+    rows. Plans in name order (a newer plan overrides an older one; a newer plan's row that is not 'done' removes an older
+    plan's record of the cube). RESULTS: the newest row by utc of each cube; rows of one cube sharing its newest utc with
+    other factors make its record source 'ambiguous' (factor None, 'rows' naming each <file>:<line>; the gate refuses the
+    cube). Every row is validated: a missing column, a short or long row, an empty cube, a utc that is not
+    snapshot_cube_rescale.py's ISO time, an empty or non-numeric factor of a RESULTS row or of a plan's 'done' row ->
+    RecordsError naming <file>:<line> (snapshot_cube_rescale.py appends a RESULTS row only for a cube it rewrote, after the
+    rewrite, always with its factor: a row without one is no record). Parsed once per signature of the record files (path,
+    size, mtime_ns, inode); read again when one changes, so a re-check sees a record changed since the check."""
     res_files, plan_files = record_files()
-    sig = tuple((p, os.stat(p).st_size, os.stat(p).st_mtime_ns) for p in res_files + plan_files)
+    sig = _signature(res_files + plan_files)
     if sig in _REC:
         return _REC[sig]
     rec = {}
     for p in plan_files:
-        with open(p, newline='') as f:
-            for r in csv.DictReader(f):
-                k = os.path.normpath(r.get('cube') or '')
-                if r.get('status') == 'done' and r.get('factor'):
-                    rec[k] = dict(source='plan-native', factor=float(r['factor']), plan=os.path.basename(p))
-                elif k in rec and rec[k]['source'] == 'plan-native':
-                    del rec[k]
+        for line, r in _rows(p, PLAN_COLUMNS):
+            if not r['cube'].strip():
+                raise _malformed(p, line, 'no cube')
+            k = os.path.normpath(r['cube'])
+            if r['status'] == 'done' and r['factor'].strip():
+                rec[k] = dict(source='plan-native', factor=_factor(p, line, 'factor', r['factor']), plan=os.path.basename(p),
+                              row='%s:%d' % (p, line))
+            elif k in rec and rec[k]['source'] == 'plan-native':
+                del rec[k]
     res = {}
     for p in res_files:
-        with open(p, newline='') as f:
-            for r in csv.DictReader(f):
-                if not r.get('cube') or not r.get('fsappld'):
-                    continue
-                k = os.path.normpath(r['cube'])
-                if k not in res or r['utc'] > res[k]['utc']:
-                    res[k] = dict(source='rescale-results', factor=float(r['fsappld']), md5_new=r.get('md5_new', ''),
-                                  quarantine=r.get('quarantine', ''), utc=r['utc'], results=os.path.basename(p))
+        for line, r in _rows(p, RESULTS_COLUMNS):
+            if not r['cube'].strip():
+                raise _malformed(p, line, 'no cube')
+            m = _UTC.match(r['utc'].strip())
+            if not m:
+                raise _malformed(p, line, 'utc %r is not an ISO UTC time YYYY-MM-DDThh:mm:ss[.f]Z' % r['utc'])
+            if not r['fsappld'].strip():
+                raise _malformed(p, line, 'no fsappld: snapshot_cube_rescale.py writes a RESULTS row only after it rewrote '
+                                          'the cube, always with its factor')
+            fs = _factor(p, line, 'fsappld', r['fsappld'])
+            key = tuple(int(x) for x in m.groups()[:6]) + (float(m.group(7) or 0),)
+            k, row = os.path.normpath(r['cube']), '%s:%d' % (p, line)
+            old = res.get(k)
+            if old is None or key > old['_key']:
+                res[k] = dict(source='rescale-results', factor=fs, md5_new=r.get('md5_new') or '',
+                              quarantine=r.get('quarantine') or '', utc=r['utc'], results=os.path.basename(p), row=row,
+                              _key=key, _tie=['%s fsappld %s' % (row, r['fsappld'])])
+            elif key == old['_key']:
+                old['_tie'].append('%s fsappld %s' % (row, r['fsappld']))
+                if fs != old['factor']:
+                    old['_ambiguous'] = True
     if not res:
         raise RecordsError('no rescale RESULTS rows in %s (%d files matching %s): the flux-scale gate cannot run without its '
                            'records' % (os.path.join(_cfg().paths.OPS_ROOT, _fx().RESCALE_RESULTS_DIR), len(res_files),
                                         _fx().RESCALE_RESULTS_RE))
-    rec.update(res)
+    for k, d in res.items():
+        tie, amb = d.pop('_tie'), d.pop('_ambiguous', False)
+        d.pop('_key')
+        rec[k] = dict(source='ambiguous', factor=None, utc=d['utc'], rows=tie) if amb else d
     _REC.clear()
     _REC[sig] = rec
     return rec
@@ -148,11 +216,13 @@ def _data_bytes(h):
 
 
 def read_cube_header(path):
-    """dict(fsappld = HDU-0 FSAPPLD or None, nframes = HDU-0 NFRAMES, size, mtime_ns, frames_shape = the FRAMES extension's
-    (NAXIS3, NAXIS2, NAXIS1), ZNAXISn when tile-compressed): HDU 0, then each extension header in turn until EXTNAME FRAMES."""
-    st = os.stat(path)
+    """dict(fsappld = HDU-0 FSAPPLD or None, nframes = HDU-0 NFRAMES, size, mtime_ns, ino, ctime_ns, frames_shape = the
+    FRAMES extension's (NAXIS3, NAXIS2, NAXIS1), ZNAXISn when tile-compressed): HDU 0, then each extension header in turn
+    until EXTNAME FRAMES. size, mtime_ns, ino and ctime_ns are fstat of the descriptor the header is read from (a cube
+    replaced between a stat and the open cannot pair one file's header with another's identity)."""
     fd = os.open(path, os.O_RDONLY)
     try:
+        st = os.fstat(fd)
         try:
             os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_RANDOM)
         except (AttributeError, OSError):
@@ -170,7 +240,7 @@ def read_cube_header(path):
                 break
             off += n + _data_bytes(h)
         return dict(fsappld=None if fs is None else float(fs), nframes=h0.get('NFRAMES'), size=st.st_size,
-                    mtime_ns=st.st_mtime_ns, frames_shape=list(shape))
+                    mtime_ns=st.st_mtime_ns, ino=st.st_ino, ctime_ns=st.st_ctime_ns, frames_shape=list(shape))
     finally:
         os.close(fd)
 
@@ -196,14 +266,17 @@ def check_cube(path, stokes, rec):
         reasons.append('%s: no FSAPPLD (frame-unit cube)' % stokes)
     if r is None:
         reasons.append("%s: no rescale record (neither RESULTS row nor plan 'done' row)" % stokes)
-    if fs is not None and r is not None and abs(fs - r['factor']) > tol:
+    elif r['source'] == 'ambiguous':
+        reasons.append('%s: ambiguous rescale record: %d RESULTS rows share the newest utc %s with other factors (%s)'
+                       % (stokes, len(r['rows']), r['utc'], '; '.join(r['rows'])))
+    elif fs is not None and not abs(fs - r['factor']) <= tol:          # not <=: a NaN FSAPPLD fails
         reasons.append('%s: FSAPPLD %.6f != recorded %.6f (%s)' % (stokes, fs, r['factor'], r['source']))
     return d, reasons
 
 
 def _v_equals_i(info, prefix=''):
     fv, fi = (info.get(S, {}).get('fsappld') for S in ('V', 'I'))
-    if fv is not None and fi is not None and abs(fv - fi) > _fx().FSAPPLD_TOL:
+    if fv is not None and fi is not None and not abs(fv - fi) <= _fx().FSAPPLD_TOL:
         return ['%sV FSAPPLD %.6f != I FSAPPLD %.6f (one factor per hour-band)' % (prefix, fv, fi)]
     return []
 
@@ -232,14 +305,19 @@ def members_read(cell, group, cube_root=None, ex=None):
             and any(os.path.exists(cube_path(cell, sb, S, cube_root)) for S in _fx().STOKES)]
 
 
-def check_wideband(cell, group, cube_root=None, ex=None):
+def check_wideband(cell, group, cube_root=None, ex=None, members=None):
     """(ok, reasons, info {member: {Stokes: dict}}) of the member cubes a wideband group reads: each existing Stokes cube of
-    every member (members_read) against its record, V = I where both exist. gen6_wb_regen_DRAFT.sh gated only the members of
-    its subband job list (both cubes, a record, not excluded): a member with one Stokes cube, or none recorded, went
-    unchecked into the group search; here every cube the search reads is checked."""
+    every member against its record, V = I where both exist. ``members``: the group search's own member list (the step takes
+    it from the engine's readers, cutouts_probe.py, after it agreed with core/exclusions'), those with a cube; default
+    members_read (core/exclusions'). gen6_wb_regen_DRAFT.sh gated only the members of its subband job list (both cubes, a
+    record, not excluded): a member with one Stokes cube, or none recorded, went unchecked into the group search; here every
+    cube the search reads is checked."""
     rec = records()
     reasons, info = [], {}
-    members = members_read(cell, group, cube_root, ex)
+    if members is None:
+        members = members_read(cell, group, cube_root, ex)
+    else:
+        members = [sb for sb in members if any(os.path.exists(cube_path(cell, sb, S, cube_root)) for S in _fx().STOKES)]
     if not members:
         return False, ['%s: no member subband with a cube that is not excluded' % group], info
     for sb in members:
@@ -254,11 +332,31 @@ def check_wideband(cell, group, cube_root=None, ex=None):
     return not reasons, reasons, info
 
 
-IDENTITY_KEYS = ('path', 'fsappld', 'size', 'mtime_ns')
+IDENTITY_KEYS = ('path', 'fsappld', 'size', 'mtime_ns', 'ino', 'ctime_ns')
+
+
+def is_group(band):
+    return band in _cfg().instrument.SUBBAND_BANDS
+
+
+def recheck(cell, band, before, cube_root=None, ex=None, members=None):
+    """(ok, reasons, info): the gate again on the cubes of ``before`` (an earlier check's info) and changed() against it - a
+    subband: check() of the Stokes of ``before``; a wideband: check_wideband() of ``members`` (as the earlier check), every
+    member of either check compared (a member cube that appeared or vanished is a change). Raises RecordsError."""
+    if is_group(band):
+        ok, why, after = check_wideband(cell, band, cube_root, ex, members)
+        why = why + ['%s %s' % (sb, x) for sb in sorted(set(before) | set(after))
+                     for x in changed(before.get(sb) or {}, after.get(sb) or {})]
+    else:
+        ok, why, after = check(cell, band, cube_root, stokes=tuple(before))
+        why = why + changed(before, after)
+    return not why, why, after
 
 
 def changed(before, after):
-    """[reason] for each Stokes whose cube identity (path, FSAPPLD, size, mtime_ns) differs between two checks' info."""
+    """[reason] for each Stokes whose cube identity (IDENTITY_KEYS: path, FSAPPLD, size, mtime_ns, inode, ctime_ns) differs
+    between two checks' info. The inode and ctime see a cube replaced by a copy of the same size with its mtime copied
+    (cp -p, shutil.copy2, rsync -t)."""
     out = []
     for S in sorted(set(before) | set(after)):
         b, a = before.get(S) or {}, after.get(S) or {}
@@ -314,9 +412,9 @@ class SidecarRefused(Exception):
 
 
 def write_sidecar(root, cell, sb, before, regen_line, code_root, cube_root=None):
-    """Check the cubes again; refuse (SidecarRefused, nothing written) unless the gate still passes and every cube's path,
-    FSAPPLD, size and mtime_ns equal ``before`` (the info of the check made before the cut); then write the flux-scale
-    record atomically (fsync, rename). Returns its path."""
+    """Check the cubes again; refuse (SidecarRefused, nothing written) unless the gate still passes and every cube's identity
+    (IDENTITY_KEYS) equals ``before`` (the info of the check made before the cut); then write the flux-scale record
+    atomically (fsync, rename). Returns its path."""
     ok, reasons, info = check(cell, sb, cube_root, stokes=tuple(before))
     if not ok:
         raise SidecarRefused('the flux-scale gate now fails: ' + '; '.join(reasons))

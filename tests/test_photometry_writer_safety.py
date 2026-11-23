@@ -162,9 +162,14 @@ def _targets():
 '''
 
 FAKE_GS = r'''"""FAKE phase3_snapshot_group_search.py of tests/test_photometry_writer_safety.py: appends its argv to calls.jsonl, writes
-nothing, prints the wideband done line with params 'wb_count' (default 0) cutout cubes. Importable: _excl_scope ('snapshot')."""
+nothing, prints the wideband done line with params 'wb_count' (default 0) cutout cubes. Importable: _excl_scope ('snapshot'),
+excluded_subbands (the fake search's, as the real module imports it) and GROUPS (params 'gs_groups', else
+instrument.SUBBAND_BANDS: 'gs_groups' is a group search reading other members - a disagreeing reader)."""
 import json, os, sys
 HERE = os.path.dirname(os.path.abspath(__file__))
+from phase3_snapshot_search import excluded_subbands      # noqa: F401 - regen_group_cutouts :494 calls it by this name
+_P = json.load(open(os.path.join(HERE, 'params.json')))
+GROUPS = _P.get('gs_groups') or {b: [m + 'MHz' for m in ms] for b, ms in _P['wb_subs'].items()}
 
 
 def _excl_scope(lst, date):
@@ -266,8 +271,9 @@ class Env:
                           (CFG.site, 'PYTHON', dict(CFG.site.PYTHON, py36=sys.executable, default=sys.executable)),
                           (CFG.site, 'LEGACY_CODE_ROOTS', [self.code]),
                           (CFG.photometry_cutouts, 'GROUP_EXCLUSION_ROOT', self.prod),
+                          (CFG.paths, 'OPS_ROOT', os.path.join(self.d, 'ops')),     # no rescale records: the gate is stubbed
                           (SC, 'fluxscale_gate', lambda *a: {}), (SC, 'fluxscale_recheck', lambda *a: ([], [])),
-                          (SC, 'generation_checks', lambda *a: None),
+                          (SC, 'generation_checks', lambda *a: None), (SC, 'fluxscale_in_place', lambda *a: (lambda: None)),
                           (K, 'engine', self.engine), (TC, 'identity_subband', self.identity)):
             self.saved.append((obj, k, getattr(obj, k)))
             setattr(obj, k, v)
@@ -577,6 +583,21 @@ def test_exclusion_gate(E):
     run, u, root, _ = E.run(RED_18_CELL, 'Red', 'wb_none')
     check('the group search reports None cutout cubes for Red (not built): refused C-ENGINE naming the group, exit 2',
           u.status == 'refused' and 'C-ENGINE' in u.reason and 'did not build Red' in u.reason and run.exit_code() == 2,
+          (u.status, u.reason))
+    check('the group search\'s member list of Red (its GROUPS without its excluded_subbands, read by the probe) agrees with '
+          'core/exclusions\' and is the list the flux-scale gate checks (u.meta exclusions.engine_members): 18 MHz dropped',
+          (u.meta.get('exclusions') or {}).get('engine_members') == ['23MHz', '27MHz', '32MHz', '36MHz'],
+          u.meta.get('exclusions'))
+    E.params(gs_groups={'Red': ['18MHz', '23MHz', '27MHz', '32MHz'], 'Green': [], 'Blue': []})
+    run, u, root, _ = E.run(RED_18_CELL, 'Red', 'gs_members')
+    check('the group search reads another member list of Red (36 MHz missing: a disagreeing reader): refused PHOT-EXCL-READERS '
+          'naming both lists, the engine never started (review of PR 153, finding 5)', u.status == 'refused'
+          and 'PHOT-EXCL-READERS' in u.reason and 'the members of Red' in u.reason and "'36MHz'" in u.reason
+          and E.calls() == [], (u.status, u.reason))
+    E.params(gs_groups={'Green': [], 'Blue': []})
+    run, u, root, _ = E.run(RED_18_CELL, 'Red', 'gs_nogroup')
+    check('the group search has no group Red: refused PHOT-EXCL-READERS, the engine never started', u.status == 'refused'
+          and 'PHOT-EXCL-READERS' in u.reason and 'the group search has no group Red' in u.reason and E.calls() == [],
           (u.status, u.reason))
     # one probe call per stage serves every unit; a cell is probed again when data_decisions changed after the probe
     E.params(write={'V': 2, 'I': 2}, count={'V': 2, 'I': 2})

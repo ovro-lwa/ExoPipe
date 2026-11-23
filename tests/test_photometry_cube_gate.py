@@ -17,6 +17,11 @@ records in a scratch directory (no cluster data):
   sample    the generation-5 comparison sample: md5 order per LST hour, eligibility, generation membership
   step      the wideband side of lib/photometry/steps_cutouts.py: the member gate, its re-check after the cut and check (w)
             refuse the unit (C-FLUXSCALE, C-GENCHECK); the subband side runs end to end in tests/test_photometry.py
+  review    (PR 153) a malformed record row refuses naming <file>:<line> (gate, dry run, in-place check); a tie at the newest
+            utc with other factors is ambiguous (refused), a fractional utc orders by time; the cube identity carries the
+            inode and ctime (a same-size copy with its mtime copied is a change); the wideband gate checks the engine's member
+            list; the member cubes re-checked inside the placement transaction (a change undoes it); the generation-5 sample
+            drawn once per hour per stage; records() cached by the record files' signature; one cube-path helper
 Run: python tests/test_photometry_cube_gate.py
 """
 import contextlib
@@ -235,7 +240,9 @@ def run(base, ops, cubes):
     ok, why, info = gate('23MHz')
     check('records: a newer plan\'s "done" factor (1.05) overrides the older plan\'s (1.3) -> PASS, plan-native',
           ok and info['V']['record'] == dict(source='plan-native', factor=1.05,
-                                             plan='snapshot_cube_rescale_plan_20261115_wave1.csv'), (why, info))
+                                             plan='snapshot_cube_rescale_plan_20261115_wave1.csv',
+                                             row='%s:3' % os.path.join(ops, 'snapshot_cube_rescale_plan_20261115_wave1.csv')),
+          (why, info))
     ok, why, info = gate('18MHz')
     check('records: of two RESULTS rows the newest by utc wins (1.07, file RESULTS_hostA) over the row of a file later in '
           'name order (1.05, older) -> PASS', ok and FS.record_of(cp('18MHz', 'V'), rec)['factor'] == 1.07
@@ -366,6 +373,7 @@ def run(base, ops, cubes):
     ok, why, info = FS.check_wideband(CELL, 'Blue', ex=Ex({('00h', s, '2022-09-26') for s in CFG.instrument.SUBBAND_BANDS['Blue']}))
     check('wideband: no member to read -> REFUSED', not ok and 'no member subband' in why[0], why)
     test_step_wideband(base, ex)
+    test_review(base, ops, rows_a, rows_b, ex)
 
     check('regen_text: the log time stamp is cut, a line without one is kept',
           FS.regen_text(regen) == 'INFO CUTOUTS-REGEN 00h 2022-09-26 55MHz: V 3 I 3'
@@ -487,10 +495,13 @@ def test_check_c(base):
 
 
 class Unit:
-    """The parts of core.record.Unit the cutouts step's gate functions use: refuse (raises Refusal), check, failed_tests,
-    meta."""
+    """The parts of core.record.Unit the cutouts step's gate functions and its placement transaction use: refuse (raises
+    Refusal), check, failed_tests, meta, outputs, note, name."""
     def __init__(self):
-        self.tests, self.meta = [], {}
+        self.tests, self.meta, self.outputs, self.notes, self.name = [], {}, [], [], 'cutouts.test'
+
+    def note(self, text):
+        self.notes.append(text)
 
     def refuse(self, reason):
         raise Refusal(reason)
@@ -556,6 +567,194 @@ def test_step_wideband(base, ex):
     r = refused(SC.generation_checks, Unit(), *args, {'V': good})
     check('step: a Stokes cut without its weight check -> C-GENCHECK (never a silent pass)', r and r.startswith('C-GENCHECK')
           and 'no weight check ran' in r, r)
+
+
+@contextlib.contextmanager
+def record_file(path, cols, rows):
+    """A rescale record file present for the block, removed after it."""
+    write_csv(path, cols, rows)
+    try:
+        yield path
+    finally:
+        os.remove(path)
+
+
+def records_error():
+    try:
+        FS.records()
+    except FS.RecordsError as e:
+        return str(e)
+    except Exception as e:                       # noqa: BLE001 - any other exception is the defect under test
+        return 'NOT A RecordsError: %s: %s' % (type(e).__name__, e)
+    return None
+
+
+def test_review(base, ops, rows_a, rows_b, ex):
+    """PR 153 review findings 1, 4, 5, 6, 8, 9, 10 (2 and 3 run end to end in tests/test_photometry.py, 5's reader in
+    tests/test_photometry_writer_safety.py)."""
+    from exopipe.phase3.lib.photometry import steps_cutouts as SC
+    rdir = os.path.join(ops, 'snapshot_cube_rescale_results')
+    z, y = os.path.join(rdir, 'RESULTS_hostZ.csv'), os.path.join(rdir, 'RESULTS_hostY.csv')
+    t0 = '2026-11-14T10:00:00Z'
+    good = result_row(cp('55MHz', 'V'), 1.05, t0)
+    # ---- 4 / 9: a malformed row -> RecordsError naming <file>:<line>
+    for what, cols, rows, want in (
+            ('a non-numeric fsappld', RES_COLS, [good, good[:2] + ['abc'] + good[3:]],
+             "%s:3 (fsappld 'abc' is not a number)" % z),
+            ('an empty fsappld (no writer writes one: snapshot_cube_rescale.py appends a row only after it rewrote the cube, '
+             'always with its factor)', RES_COLS, [good[:2] + [''] + good[3:]], '%s:2 (no fsappld' % z),
+            ('a NaN fsappld', RES_COLS, [good[:2] + ['nan'] + good[3:]], "%s:2 (fsappld 'nan' is not a finite positive" % z),
+            ('an empty utc', RES_COLS, [[''] + good[1:]], "%s:2 (utc '' is not an ISO UTC time" % z),
+            ('a utc that is not ISO', RES_COLS, [['yesterday'] + good[1:]], "%s:2 (utc 'yesterday'" % z),
+            ('a short row', RES_COLS, [good, good[:3]], '%s:3 (3 fields, the header has 7)' % z),
+            ('no utc column', RES_COLS[1:], [good[1:]], '%s:1 (no column utc' % z),
+            ('an empty cube', RES_COLS, [good[:1] + [''] + good[2:]], '%s:2 (no cube)' % z)):
+        with record_file(z, cols, rows):
+            e = records_error()
+        check('records (review 4/9): %s -> RecordsError "no rescale record readable: <file>:<line>"' % what,
+              e is not None and ('no rescale record readable: ' + want) in e, (e, want))
+    plan = os.path.join(ops, 'snapshot_cube_rescale_plan_20261120_bad.csv')
+    with record_file(plan, PLAN_COLS, [[cp('27MHz', 'V'), CELL, '27MHz', 'V', 'done', 1, 'x']]):
+        e = records_error()
+    check('records (review 4): a plan\'s "done" row with a non-numeric factor -> RecordsError naming the plan and its line',
+          e is not None and "no rescale record readable: %s:2 (factor 'x' is not a number)" % plan in e, e)
+    with record_file(z, RES_COLS, [good, good[:2] + ['abc'] + good[3:]]):
+        r = refused(SC.fluxscale_gate, Unit(), CELL, '55MHz', ex)
+        dry = SC.fluxscale_dry(CELL, '55MHz', ex)
+        u = Unit()
+        SC.fluxscale_in_place(u, CELL, '55MHz', {}, ex)()
+    check('step (review 4): a malformed record row refuses the unit before the engine (C-FLUXSCALE naming <file>:<line>)',
+          r and r.startswith('C-FLUXSCALE: no rescale record readable: %s:3' % z) and 'the engine not started' in r, r)
+    check('dry run (review 4): the malformed row reported for the unit (would refuse C-FLUXSCALE, <file>:<line>), no crash',
+          dry.startswith('would refuse C-FLUXSCALE: no rescale record readable: %s:3' % z), dry)
+    check('in-place check (review 4): records unreadable during placement -> the check fails (the placement is undone), no '
+          'crash', [t['passed'] for t in u.tests] == [False] and 'RecordsError' in u.tests[0]['detail'], u.tests)
+    # ---- 9: a tie at the newest utc
+    tn = '2026-11-16T00:00:00Z'
+    with record_file(z, RES_COLS, [result_row(cp('55MHz', 'V'), 1.05, tn)]), \
+            record_file(y, RES_COLS, [result_row(cp('55MHz', 'V'), 1.06, tn)]):
+        ok, why, info = FS.check(CELL, '55MHz')
+        dry = SC.fluxscale_dry(CELL, '55MHz', ex)
+    check('records (review 9): two RESULTS rows of one cube share the newest utc with other factors (1.05, 1.06) -> the cube '
+          'refused as ambiguous, both <file>:<line> named', not ok and len(why) == 1 and 'V: ambiguous rescale record' in why[0]
+          and '%s:2 fsappld 1.060000' % y in why[0] and '%s:2 fsappld 1.050000' % z in why[0]
+          and info['V']['record']['source'] == 'ambiguous' and 'ambiguous' in dry, (why, dry))
+    with record_file(z, RES_COLS, [result_row(cp('55MHz', 'V'), 1.05, tn)]), \
+            record_file(y, RES_COLS, [result_row(cp('55MHz', 'V'), 1.05, tn)]):
+        ok, why, _ = FS.check(CELL, '55MHz')
+    check('records (review 9): a tie with the same factor -> PASS', ok, why)
+    with record_file(z, RES_COLS, [result_row(cp('55MHz', 'V'), 1.05, tn),
+                                   result_row(cp('55MHz', 'V'), 1.05, '2026-11-17T00:00:00Z')]), \
+            record_file(y, RES_COLS, [result_row(cp('55MHz', 'V'), 1.06, tn)]):
+        ok, why, info = FS.check(CELL, '55MHz')
+    check('records (review 9): a newer row after a tie decides -> PASS on the newest', ok
+          and info['V']['record']['utc'] == '2026-11-17T00:00:00Z', why)
+    with record_file(z, RES_COLS, [result_row(cp('55MHz', 'V'), 1.06, '2026-11-16T00:00:00Z')]), \
+            record_file(y, RES_COLS, [result_row(cp('55MHz', 'V'), 1.05, '2026-11-16T00:00:00.500000Z')]):
+        ok, why, info = FS.check(CELL, '55MHz')
+    check('records (review 9): rows order by time, not by text (00:00:00.5Z is newer than 00:00:00Z; as text it sorts first) '
+          '-> the 1.05 row wins, PASS', ok and info['V']['record']['factor'] == 1.05, why)
+    # ---- 8: records() parsed once per signature of the record files
+    r1, r2 = FS.records(), FS.records()
+    with record_file(z, RES_COLS, [good]):
+        r3 = FS.records()
+    check('records (review 8): parsed once while the record files are unchanged (the same object), again when one changes',
+          r1 is r2 and r3 is not r1, (id(r1), id(r2), id(r3)))
+    # ---- 6: the identity carries the inode and the ctime (fstat of the descriptor the header is read from)
+    ok, why, bef = FS.check(CELL, '55MHz')
+    p = cp('55MHz', 'V')
+    tmp = p + '.copy'
+    shutil.copy2(p, tmp)
+    os.replace(tmp, p)
+    ok2, why2, aft = FS.check(CELL, '55MHz')
+    ch = FS.changed(bef, aft)
+    try:
+        FS.write_sidecar(os.path.join(base, 'root6'), CELL, '55MHz', bef, 'x', os.path.join(base, 'code'))
+        err = None
+    except FS.SidecarRefused as e:
+        err = str(e)
+    check('identity (review 6): the V cube replaced by a copy of the same size with its mtime copied (cp -p) -> a change '
+          '(inode, ctime), the flux-scale record refused', ok and ok2 and aft['V']['size'] == bef['V']['size']
+          and aft['V']['mtime_ns'] == bef['V']['mtime_ns'] and aft['V']['ino'] == os.stat(p).st_ino
+          and any('V cube ino changed' in x for x in ch) and err and 'V cube ino changed' in err, (ch, err))
+    # ---- 5: the wideband gate checks the engine's member list
+    mem = ['69MHz', '78MHz', '82MHz']
+    ok, why, info = FS.check_wideband(CELL, 'Blue', ex=ex, members=mem)
+    check('wideband (review 5): the engine\'s member list without 73 MHz -> its frame-unit I cube not gated, PASS on '
+          'exactly those members', ok and sorted(info) == mem, (why, sorted(info)))
+    ok, why, _ = FS.check_wideband(CELL, 'Blue', ex=ex, members=['64MHz'] + mem)
+    check('wideband (review 5): the engine\'s member list with 64 MHz (core: excluded) -> its frame-unit cube gated, REFUSED',
+          not ok and '64MHz V: no FSAPPLD (frame-unit cube)' in why and all(x.startswith('64MHz V: ') for x in why), why)
+    u = Unit()
+    before = SC.fluxscale_gate(u, CELL, 'Blue', ex, mem)
+    check('step (review 5): fluxscale_gate gates the members it is given (the engine\'s), not core\'s list',
+          sorted(before) == mem, sorted(before))
+    # ---- 1: the member cubes re-checked INSIDE the placement transaction
+    root, stage = os.path.join(base, 'tx_root'), os.path.join(base, 'tx_stage')
+    os.makedirs(stage)
+    rels = ['HWJ/Blue/X/a.fits', 'HWJ/Blue/X/b.fits']
+
+    def staged():
+        for r in rels:
+            os.makedirs(os.path.dirname(os.path.join(stage, r)), exist_ok=True)
+            with open(os.path.join(stage, r), 'w') as f:
+                f.write(r)
+        return [(os.path.join(stage, r), r) for r in rels]
+    u = Unit()
+    pairs = staged()
+    SC.placement(u, None, root, pairs, SC.fluxscale_in_place(u, CELL, 'Blue', before, ex, mem), 'test')
+    check('placement (review 1): the member cubes unchanged -> placed, GP_cubes_unchanged passed inside the transaction',
+          all(os.path.isfile(os.path.join(root, r)) for r in rels)
+          and [(t['name'].split('.')[-1], t['passed']) for t in u.tests] == [('GP_cubes_unchanged', True)], u.tests)
+    shutil.rmtree(root)
+    w = os.path.join(rdir, 'RESULTS_hostW.csv')
+    for what, act, sign in (('replaced by a same-size copy with its mtime copied (78 MHz V)', 'copy', '78MHz V cube ino changed'),
+                            ('appearing (69 MHz I, a member\'s other Stokes)', 'stokes', '69MHz I cube path changed'),
+                            ('appearing for a member that had none (64 MHz V, rescaled and recorded: it passes the gate)',
+                             'member', '64MHz V cube path changed')):
+        q = {'copy': cp('78MHz', 'V'), 'stokes': cp('69MHz', 'I'), 'member': cp('64MHz', 'V')}[act]
+        mem_ = mem + ['64MHz'] if act == 'member' else mem
+        if act == 'member':
+            os.rename(q, q + '.aside')                         # no 64 MHz cube at the check before the engine
+        before = SC.fluxscale_gate(Unit(), CELL, 'Blue', ex, mem_)
+        u = Unit()
+        pairs = staged()
+        chk = SC.fluxscale_in_place(u, CELL, 'Blue', before, ex, mem_)
+
+        def outputs():
+            if act == 'copy':
+                shutil.copy2(q, q + '.copy')
+                os.replace(q + '.copy', q)
+            else:
+                write_cube(q, 1.05)
+                write_csv(w, RES_COLS, [result_row(q, 1.05, t0)])
+            chk()
+        r = refused(SC.placement, u, None, root, pairs, outputs, 'test')
+        if act != 'copy':
+            os.remove(q)
+            os.remove(w)
+        if act == 'member':
+            os.rename(q + '.aside', q)
+        check('placement (review 1): a member cube %s during the placement -> C-PLACE, every move undone (the files back in '
+              'the staging directory, none in the root)' % what, r and r.startswith('C-PLACE') and 'GP_cubes_unchanged' in r
+              and all(os.path.isfile(a) for a, _ in pairs) and not any(os.path.exists(os.path.join(root, x)) for x in rels)
+              and u.meta.get('placement_undone', {}).get('placed') == 2 and sign in u.tests[0]['detail']
+              and (act != 'member' or '64MHz' not in before), (r, u.meta, u.tests))
+    # ---- 8: the generation-5 sample drawn once per LST hour per stage
+    calls, real = [], FS.gen5_sample
+    FS.gen5_sample = lambda **k: calls.append(k) or [('00h_2022-09-26', '55MHz')]
+    try:
+        g = SC.Gen5Samples()
+        got = [g.of('00h', ex), g.of('00h', ex), g.of('01h', ex)]
+        u = Unit()
+        refused(SC.generation_checks, u, CELL, '55MHz', stage, [], None, False, ex, {}, {}, {}, g)
+    finally:
+        FS.gen5_sample = real
+    check('gen5 sample (review 8): drawn once per LST hour in a stage (2 draws for 3 asks of 2 hours); a unit takes the '
+          'stage\'s draw', len(calls) == 2 and g.calls == 2 and got[0] is got[1]
+          and [c['lsts'] for c in calls] == [['00h'], ['01h']] and u.meta.get('generation5_sample') is True, (calls, u.meta))
+    check('one cube-path helper (review 10): fluxscale.cube_path is tests_cutouts.cube_path', FS.cube_path is TC.cube_path)
+    setup_records(ops, None, {'hostA': rows_a, 'hostB': rows_b}, {})
 
 
 def test_check_w(base):

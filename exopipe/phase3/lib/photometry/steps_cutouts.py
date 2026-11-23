@@ -13,9 +13,11 @@ Stage cutouts, one unit per item:
             PHOT-EXCL-FILE); the engines' exit 3
             (data_decisions) stays a second line. Then, before any engine starts, the FLUX-SCALE GATE (C-FLUXSCALE,
             fluxscale_gate; gen6_cube_gate_DRAFT.py): every cube the engine reads - a subband's V and I, a wideband's
-            member cubes the group search reads - carries FSAPPLD equal to its rescale record, V = I. After the cut (step 1
-            below) the cubes are checked again, unchanged, and a subband's flux-scale record is staged (fluxscale_recheck;
-            placed with the cutouts, its test FS1 inside the placement), then the generation checks (a) record = cube,
+            member cubes of the group search's own member list (read by cutouts_probe.py; it must equal core/exclusions',
+            PHOT-EXCL-READERS) - carries FSAPPLD equal to its rescale record, V = I. After the cut (step 1 below) the cubes
+            are checked again, unchanged, and a subband's flux-scale record is staged (fluxscale_recheck; placed with the
+            cutouts, its test FS1 and the cubes' identity check inside the placement, fluxscale_in_place), then the
+            generation checks (a) record = cube,
             (b) = generation 5 / FSAPPLD on its comparison sample, (c) the writer's target set, (w) wideband weights =
             1 / (FSAPPLD rms^2) refuse the unit on failure (C-GENCHECK, generation_checks). Units cutouts.<cell>.<band>.
   deep, sublst  per <LST>_<band>: photometry_tier_cutouts_20261025.py --tier deep|10min --cells <LST>_<band> in place (the
@@ -283,13 +285,15 @@ def staged_tests(u, cls, path, **ctx):
     return bad
 
 
-def place_unit(u, run, root, stage, rels, token, key, band, samples, mrel, ctx, extra=(), extra_outputs=()):
+def place_unit(u, run, root, stage, rels, token, key, band, samples, mrel, ctx, extra=(), extra_outputs=(), in_place=()):
     """Steps 2 to 4 of the module docstring for the cutouts of one unit (``rels``, relative to the staging directory and the
     root alike): one file per key (C-STALE: refuse, or quarantine with --fresh), the unit's manifest written in the staging
     directory (<stage>/<mrel>) and its class tests run on the staged files (C-CONTENT), then the placement transaction with the
     class tests on the placed manifest. ``extra``: more (staged path, relative path) pairs placed with the cutouts (the wideband
     member tables beside the manifest, the flux-scale record); ``extra_outputs`` [(placed path, class)]: recorded with their
-    class tests once placed, inside the transaction (the flux-scale record, FS1). Returns the placed manifest's path."""
+    class tests once placed, inside the transaction (the flux-scale record, FS1); ``in_place``: callables run after them,
+    inside the transaction, each recording unit checks (a failure undoes the placement: the cubes unchanged,
+    fluxscale_in_place). Returns the placed manifest's path."""
     from exopipe.phase3.lib.photometry import tests_cutouts as TC
     cls = 'photometry_cutout_manifest'
     stale, orphan = TC.superseded(root, token, key, band, samples, rels)
@@ -323,6 +327,8 @@ def place_unit(u, run, root, stage, rels, token, key, band, samples, mrel, ctx, 
         u.add_output(manifest_path, cls, root=root, samples=samples, **ctx)
         for p, c_ in extra_outputs:
             u.add_output(p, c_)
+        for fn in in_place:
+            fn()
     moved = placement(u, run, root, pairs, outputs,
                       'replaced by %s (%s)' % (u.name, run.run_id), aside=stale + orphan,
                       aside_reason='superseded by %s (%s)' % (u.name, run.run_id))
@@ -452,7 +458,7 @@ def stage_snapshot_cutouts(run, args):
             return []
         raise
     units = []
-    reads = None
+    reads, gen5 = None, Gen5Samples()     # once per stage: the engines' reads, the generation-5 sample of each hour
     dry_ex, gate_refused = None, 0
     if run.dry_run and items:          # the flux-scale gate's verdicts, headers only (no engine runs in a dry run)
         from exopipe.phase3.core import exclusions
@@ -472,7 +478,7 @@ def stage_snapshot_cutouts(run, args):
             continue
         units += run_unit(run, 'cutouts.%s.%s%s' % (cell, band, tag_suffix(targets)),
                           dict(tier='snapshot', stage='cutouts', cell=cell, band=band, cutout_root=root),
-                          snapshot_unit, run, args, cell, band, root, targets, planets, samples, cubes, reads)
+                          snapshot_unit, run, args, cell, band, root, targets, planets, samples, cubes, reads, gen5)
     if run.dry_run and items:
         K.plan(run, '[cutouts] flux-scale gate (headers only): %d of %d unit(s) would refuse' % (gate_refused, len(items)))
     return units
@@ -628,6 +634,7 @@ class EngineReads:
     def __init__(self, run, cells, targets, planets, widebands):
         self.run, self.targets, self.planets = run, targets, planets
         c = K.cfg()
+        self.widebands = sorted(set(widebands))
         self.scopes = sorted({s for b in widebands for s in [b] + list(c.instrument.SUBBAND_BANDS.get(b, ()))})
         self.code_root = os.path.dirname(K.engine('cutouts_subband'))
         self.error = None
@@ -650,7 +657,8 @@ class EngineReads:
         """One 'run' call for ``cells``; their records into self.cells. Returns the failure (refusal text) or None."""
         argv = ['run', '--code-root', self.code_root]
         if self.scopes:
-            argv += ['--group-reader-root', K.cfg().photometry_cutouts.GROUP_EXCLUSION_ROOT, '--scopes'] + self.scopes
+            argv += (['--group-reader-root', K.cfg().photometry_cutouts.GROUP_EXCLUSION_ROOT, '--scopes'] + self.scopes
+                     + ['--groups'] + self.widebands)
         try:
             res, text = self._call(argv + ['--cells'] + cells, 'cutouts_probe_run.log')
         except Exception as e:     # noqa: BLE001 - the reads not taken: the units refuse (PHOT-EXCL-FILE), the stage goes on
@@ -717,8 +725,11 @@ def exclusion_verdict(u, reads, ex, cell, band):
     subband by its own row; a wideband by any member subband but 18 MHz (exclusions.SUBBAND_ONLY) or [PERBAND] rows, or its
     own row. Every engine reader the unit's engine uses (EngineReads) must read the same file, the same bytes, and agree: the
     subband engine's excluded_subbands on the rows of the band and its member subbands, and for a wideband the group
-    search's deep-rule reader on the band's verdict and its members' rows. A reader that fails or reads another file refuses
-    (PHOT-EXCL-FILE), a disagreement refuses (PHOT-EXCL-READERS). True when the (cell, band) is excluded."""
+    search's deep-rule reader on the band's verdict and its members' rows, and the group search's member list
+    (regen_group_cutouts: GROUPS[band] without excluded_subbands) = core/exclusions' (instrument.SUBBAND_BANDS[band] not
+    excluded) - the flux-scale gate checks the cubes of exactly that list (u.meta['exclusions']['engine_members']). A reader
+    that fails or reads another file refuses (PHOT-EXCL-FILE), a disagreement refuses (PHOT-EXCL-READERS). True when the
+    (cell, band) is excluded."""
     from exopipe.phase3.core import exclusions
     c = K.cfg()
     lst, date = cell.split('_', 1)
@@ -730,8 +741,9 @@ def exclusion_verdict(u, reads, ex, cell, band):
     if got is None or 'error' in got:
         u.refuse('PHOT-EXCL-FILE: the engines\' exclusion readers failed for %s (%s) - the engine not started'
                  % (cell, (got or {}).get('error', 'no record of the cell')))
-    if is_wideband(band) and 'group_reader' not in got:
-        u.refuse('PHOT-EXCL-FILE: the group search\'s exclusion reader was not read for %s - the engine not started' % cell)
+    if is_wideband(band) and ('group_reader' not in got or band not in (got.get('group_members') or {})):
+        u.refuse('PHOT-EXCL-FILE: the group search\'s exclusion reader or its member list of %s was not read for %s - the '
+                 'engine not started' % (band, cell))
     paths =[got['path']] + ([got['group_reader']['path']] if is_wideband(band) else [])
     other = [p for p in paths if os.path.realpath(p) != os.path.realpath(own.path)]
     if other:
@@ -752,11 +764,17 @@ def exclusion_verdict(u, reads, ex, cell, band):
         want = dict({s: row[s] for s in members}, **{band: verdict})      # the band by the rule, a member by its row
         differ += ['%s (core %s, the group search\'s is_excluded %s)' % (s, want[s], gv.get(s)) for s in [band] + members
                    if gv.get(s) != want[s]]
+        em = got['group_members'][band]
+        cm = [s for s in members if not ex.is_excluded(lst, s, date)]
+        if em is None or sorted(norm(s) for s in em) != sorted(norm(s) for s in cm):
+            differ.append('the members of %s (core/exclusions %s, the group search %s)' % (
+                band, cm, 'has no group %s' % band if em is None else em))
     if differ:
         u.refuse('PHOT-EXCL-READERS: the readers of %s disagree on %s %s (B-38: the step refuses on disagreement) - excluded: '
                  '%s; the engine not started' % (own.path, lst, date, '; '.join(differ)))
     u.meta['exclusions'] = {'path': own.path, 'scope': own.scope, 'sha1': got['sha1'], 'engine_excluded': got['excluded'],
-                            'group_reader': got.get('group_reader') if is_wideband(band) else None, 'excluded': verdict}
+                            'group_reader': got.get('group_reader') if is_wideband(band) else None, 'excluded': verdict,
+                            'engine_members': got['group_members'][band] if is_wideband(band) else None}
     return verdict
 
 
@@ -840,17 +858,19 @@ def _fs_brief(info, band):
     return {sb: one(d) for sb, d in sorted(info.items())} if is_wideband(band) else one(info)
 
 
-def fluxscale_gate(u, cell, band, ex):
+def fluxscale_gate(u, cell, band, ex, members=None):
     """C-FLUXSCALE, after the exclusion verdict and BEFORE any engine starts (gen6_cube_gate_DRAFT.py; the member gate of
     gen6_wb_regen_DRAFT.sh :42-45; lib/photometry/fluxscale.py): every flow cube the unit's engine reads is a rescaled cube -
     FSAPPLD present, equal to its rescale record within photometry_fluxscale.FSAPPLD_TOL (the newest RESULTS row, else the
-    newest plan's 'done' row) and V = I. A subband: its own V and I cubes; a wideband: every member cube the group search
-    reads (fluxscale.members_read: a member not excluded in ``ex`` with a cube). Headers only (positioned reads). A failure,
-    or rescale records that cannot be read, refuses the unit. Returns the check's cube identities (the re-check after the cut
-    compares them)."""
+    newest plan's 'done' row) and V = I. A subband: its own V and I cubes; a wideband: every cube of ``members``, the group
+    search's own member list (exclusion_verdict: the engine's readers through cutouts_probe.py, refused unless it equals
+    core/exclusions'), those with a cube (default: fluxscale.members_read, core/exclusions'). Headers only (positioned
+    reads). A failure, or rescale records that cannot be read (a malformed row: <file>:<line>), refuses the unit. Returns the
+    check's cube identities (the re-checks after the cut and inside the placement compare them)."""
     from exopipe.phase3.lib.photometry import fluxscale as FS
     try:
-        ok, why, info = FS.check_wideband(cell, band, ex=ex) if is_wideband(band) else FS.check(cell, band)
+        ok, why, info = (FS.check_wideband(cell, band, ex=ex, members=members) if is_wideband(band)
+                         else FS.check(cell, band))
     except (FS.RecordsError, OSError) as e:                          # OSError: a rescale record file unreadable
         u.refuse('C-FLUXSCALE: %s - the engine not started' % e)
     u.meta['fluxscale'] = _fs_brief(info, band)
@@ -859,21 +879,20 @@ def fluxscale_gate(u, cell, band, ex):
     return info
 
 
-def fluxscale_recheck(u, cell, band, root, stage, before, regen_line, ex):
-    """C-FLUXSCALE, after the cut and BEFORE placement: the cubes checked again - the gate still passes and every cube's path,
-    FSAPPLD, size and mtime equal ``before`` (the check before the engine). A subband's flux-scale record (the stamp engine's
-    sidecar <root>/_fluxscale/<subband>/<cell>_<subband>_fluxscale.json: the cubes as checked, the engine's result line
-    ``regen_line``, the code) is then written into the staging directory (fluxscale.write_sidecar: re-check, fsync, rename)
-    and placed with the cutouts; its content test (FS1: every listed cube is the cube now) runs on the placed record inside
-    the placement transaction, so a cube changed during placement undoes it. A failure refuses the unit, nothing placed.
+def fluxscale_recheck(u, cell, band, root, stage, before, regen_line, ex, members=None):
+    """C-FLUXSCALE, after the cut and BEFORE placement: the cubes checked again - the gate still passes and every cube's
+    identity (fluxscale.IDENTITY_KEYS) equals ``before`` (the check before the engine; a wideband's ``members`` as then). A
+    subband's flux-scale record (the stamp engine's sidecar <root>/_fluxscale/<subband>/<cell>_<subband>_fluxscale.json: the
+    cubes as checked, the engine's result line ``regen_line``, the code) is then written into the staging directory
+    (fluxscale.write_sidecar: re-check, fsync, rename) and placed with the cutouts; its content test (FS1: every listed cube
+    is the cube now) and the cubes' identity check (fluxscale_in_place, subbands and widebands alike) run inside the
+    placement transaction, so a cube changed during placement undoes it. A failure refuses the unit, nothing placed.
     Returns (extra (staged path, relative path) pairs, [(placed path, class)])."""
     from exopipe.phase3.lib.photometry import fluxscale as FS
     try:
         if is_wideband(band):
-            ok, why, after = FS.check_wideband(cell, band, ex=ex)
-            why = why + ['%s %s' % (sb, x) for sb in sorted(set(before) | set(after))
-                         for x in FS.changed(before.get(sb) or {}, after.get(sb) or {})]
-            if not ok or why:
+            ok, why, _ = FS.recheck(cell, band, before, ex=ex, members=members)
+            if not ok:
                 u.refuse('C-FLUXSCALE: the member cubes of %s %s fail the gate or changed since the check before the engine - '
                          'nothing placed (staging kept: %s): %s' % (cell, band, stage, '; '.join(why)[:900]))
             return [], []
@@ -884,15 +903,55 @@ def fluxscale_recheck(u, cell, band, root, stage, before, regen_line, ex):
     return [(sp, rel)], [(os.path.join(root, rel), 'photometry_fluxscale_record')]
 
 
-def generation_checks(u, cell, band, stage, rels, targets, planets, ex, before, frame_info, weights):
+def fluxscale_in_place(u, cell, band, before, ex, members=None):
+    """C-FLUXSCALE inside the placement transaction (place_unit ``in_place``): a callable that checks every cube of ``before``
+    again once the files are placed - the gate passes and each cube's identity (fluxscale.IDENTITY_KEYS: path, FSAPPLD,
+    size, mtime_ns, inode, ctime_ns) equals the check before the engine; a wideband: every member cube of ``members`` (a
+    member cube that appeared or vanished is a change). A unit check photometry_cutout_manifest.GP_cubes_unchanged: a
+    failure (or records that cannot be read) undoes the placement (C-PLACE) and refuses the unit."""
+    from exopipe.phase3.lib.photometry import fluxscale as FS
+    cls = 'photometry_cutout_manifest'
+
+    def check():
+        try:
+            ok, why, _ = FS.recheck(cell, band, before, ex=ex, members=members)
+        except (FS.RecordsError, OSError) as e:
+            ok, why = False, ['%s: %s' % (type(e).__name__, e)]
+        n = sum(len(v) for v in before.values()) if is_wideband(band) else len(before)
+        u.check('%s.GP_cubes_unchanged' % cls, ok, len(why),
+                ('%d cube(s) unchanged since the check before the engine and on their records' % n) if ok else
+                'C-FLUXSCALE: a cube changed or fails the gate since the check before the engine: %s' % '; '.join(why)[:600],
+                cls=cls)
+    return check
+
+
+class Gen5Samples:
+    """The generation-5 comparison sample of check (b) (fluxscale.gen5_sample) of each LST hour, drawn once per stage: per
+    unit it read GEN5_JOBS again and tested the hour's generation jobs again (stat calls and cube MANIFESTs). A failed read
+    is not kept (the next unit of the hour reads again)."""
+
+    def __init__(self):
+        self.by_lst, self.calls = {}, 0
+
+    def of(self, lst, ex):
+        """{(cell, subband)} of hour ``lst``; raises OSError / fluxscale.RecordsError."""
+        from exopipe.phase3.lib.photometry import fluxscale as FS
+        if lst not in self.by_lst:
+            self.calls += 1
+            self.by_lst[lst] = set(FS.gen5_sample(ex=ex, lsts=[lst]))
+        return self.by_lst[lst]
+
+
+def generation_checks(u, cell, band, stage, rels, targets, planets, ex, before, frame_info, weights, gen5=None):
     """C-GENCHECK: the content checks of a regeneration from the rescaled cubes, on the STAGED cutouts after their identity
     test and the staged flux-scale record, before placement (gen6_cutout_regen_test_DRAFT.py (a)(b)(c), gen6_gen5_sample_
     DRAFT.py, gen6_wb_test_DRAFT.py (w); lib/photometry/tests_fluxscale.py). Each a unit check of class
     photometry_cutout_manifest; any failure refuses the unit, nothing placed.
       subband   (a) each Stokes: the staged flux-scale record = the cube (FSAPPLD, path, size, mtime);
-                (b) a (cell, subband) of the generation-5 comparison sample (fluxscale.gen5_sample of its LST hour; the default
-                    samples only), each Stokes cut: every file = its generation-5 file / FSAPPLD (median per-plane slope within
-                    1 +- photometry_fluxscale.GEN5_SLOPE_TOL), the same NaN pattern and TIMES, the same file set (samples new
+                (b) a (cell, subband) of the generation-5 comparison sample (fluxscale.gen5_sample of its LST hour, drawn
+                    once per stage: ``gen5``, the stage's Gen5Samples; the default samples only), each Stokes cut: every
+                    file = its generation-5 file / FSAPPLD (median per-plane slope within 1 +- photometry_fluxscale.
+                    GEN5_SLOPE_TOL), the same NaN pattern and TIMES, the same file set (samples new
                     since generation 5 aside);
                 (c) each Stokes cut: one file per distinct target, and the targets = those the writer selects (elevation at
                     the cube's mid-time, inside the frame; the run's lists and planets) - ``frame_info`` from the identity test;
@@ -914,7 +973,7 @@ def generation_checks(u, cell, band, stage, rels, targets, planets, ex, before, 
         sample5 = False
         if not targets:
             try:
-                sample5 = (cell, band) in FS.gen5_sample(ex=ex, lsts=[lst])
+                sample5 = (cell, band) in (gen5 or Gen5Samples()).of(lst, ex)
             except (OSError, FS.RecordsError) as e:
                 u.refuse('C-GENCHECK: the generation-5 comparison sample of %s cannot be read (%s) - nothing placed (staging '
                          'kept: %s)' % (lst, e, stage))
@@ -964,10 +1023,11 @@ def stamp_record(cell, band):
     return os.path.join(K.cfg().photometry_cutouts.STAMP_REFERENCE_ROOT, '_fluxscale', band, '%s_%s_fluxscale.json' % (cell, band))
 
 
-def snapshot_unit(run, args, cell, band, root, targets, planets, samples, cubes, reads=None):
+def snapshot_unit(run, args, cell, band, root, targets, planets, samples, cubes, reads=None, gen5=None):
     """One (night cell, band) of the snapshot cutouts stage. ``reads``: the stage's EngineReads (None: the unit's own, of its
-    cell)."""
+    cell); ``gen5``: the stage's Gen5Samples (None: the unit's own)."""
     from exopipe.phase3.core import exclusions
+    from exopipe.phase3.lib.photometry import fluxscale as FS
     from exopipe.phase3.lib.photometry import tests_cutouts as TC
     c = K.cfg()
     cc = c.photometry_cutouts
@@ -977,8 +1037,9 @@ def snapshot_unit(run, args, cell, band, root, targets, planets, samples, cubes,
     allcubes = cubes['V'] + cubes['I']
     stamp = bool(targets) and not is_wideband(band)        # ad hoc targets on a subband: the stamp method (STAMP_REFERENCE_ROOT)
     lists = [p for _, p in targets] or list(K.sample_paths('snapshot', cut=True).values())
-    inputs = (sorted(allcubes) + lists
-              + [r for r in [stamp_record(cell, band)] if stamp and os.path.isfile(r)])
+    rescale = FS.record_files()          # the rescale records the flux-scale gate compares against (RESULTS, plans): a changed
+    inputs = (sorted(allcubes) + lists   # or a new record file re-gates the unit on --resume; the unit record names them
+              + [r for r in [stamp_record(cell, band)] if stamp and os.path.isfile(r)] + rescale[0] + rescale[1])
     ex = exclusions.for_tier('snapshot', fresh=True)     # the unit's one read: its resume identity and its verdict
     admitted = cutout_admitted(cell, band, ex)
     if K.run_resume_ok(run, name, admitted, {'inputs_listing_sha1': listing_sha1(inputs), 'cutout_root': root}):
@@ -997,6 +1058,8 @@ def snapshot_unit(run, args, cell, band, root, targets, planets, samples, cubes,
                     u.add_input(nz)
         u.set_admitted(admitted)
         mrels = unit_manifest_rels('10s', '%s_%s' % (cell, band), sfx)
+        if not is_wideband(band):          # the unit's placed flux-scale record: superseded too when the unit writes nothing
+            mrels.append(os.path.relpath(FS.sidecar_path(root, cell, band), root))
         if reads is None:
             reads = EngineReads(run, [cell], targets, planets, [band] if is_wideband(band) else [])
         if exclusion_verdict(u, reads, ex, cell, band):     # before any engine starts; the engines' exit 3 (below) is the
@@ -1005,7 +1068,8 @@ def snapshot_unit(run, args, cell, band, root, targets, planets, samples, cubes,
                    'reader reads the same rows) - no engine started' % (cell, band))
             nothing_written(u, run, root, '10s', cell, band, samples, why, mrels)
             raise NoInput(why)
-        fsbefore = fluxscale_gate(u, cell, band, ex)        # C-FLUXSCALE: every cube the engine reads rescaled, on its record
+        emembers = (u.meta.get('exclusions') or {}).get('engine_members')   # a wideband: the group search's members
+        fsbefore = fluxscale_gate(u, cell, band, ex, emembers)  # C-FLUXSCALE: every cube the engine reads rescaled, on its record
         stage = staging_dir(root, run, '%s_%s%s' % (cell, band, sfx))
         u.meta['staging'] = stage
         eout = os.path.join(stage, '_engine_out')
@@ -1145,13 +1209,14 @@ def snapshot_unit(run, args, cell, band, root, targets, planets, samples, cubes,
             u.refuse('C-IDENTITY: %s (staging kept: %s)' % ('; '.join(t['detail'] for t in u.failed_tests())[:600], stage))
         # 1b. the cubes unchanged since the gate and, for a subband, the staged flux-scale record (C-FLUXSCALE); the generation
         #     checks (a)(b)(c)(w) on the staged files (C-GENCHECK)
-        fs_pairs, fs_outputs = fluxscale_recheck(u, cell, band, root, stage, fsbefore, regen_line, ex)
-        generation_checks(u, cell, band, stage, rels, targets, planets, ex, fsbefore, finfo, wchecks)
+        fs_pairs, fs_outputs = fluxscale_recheck(u, cell, band, root, stage, fsbefore, regen_line, ex, emembers)
+        generation_checks(u, cell, band, stage, rels, targets, planets, ex, fsbefore, finfo, wchecks, gen5)
         # 2-4. one file per key, the manifest and its content tests on the staged files, the placement transaction (with the
         #      flux-scale record and its content test FS1)
         extra = [(members[S], mrels[1 + 'VI'.index(S)]) for S in sorted(members)]   # beside the manifest: the member tables
         place_unit(u, run, root, stage, rels, '10s', cell, band, samples, mrels[0],   # a wideband is rebuilt from
-                   {'cell': cell, 'band': band}, extra + fs_pairs, fs_outputs)
+                   {'cell': cell, 'band': band}, extra + fs_pairs, fs_outputs,
+                   [fluxscale_in_place(u, cell, band, fsbefore, ex, emembers)])
         for S, (_, rel) in zip(sorted(members), extra):
             u.meta.setdefault('members', {})[S] = os.path.join(root, rel)
         remove_staging(stage)

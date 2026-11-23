@@ -12,8 +12,10 @@ run (once per stage, BEFORE any engine starts; --cells: every night cell of the 
       a subband in phase3_snapshot_search.main (exit 3) and drops the excluded member subbands of a wideband in
       regen_group_cutouts; with --group-reader-root, the group search's deep-rule reader as regen_group_cutouts calls it
       (:488-490: that root first on sys.path, coadd_full_pipeline.load_exclusions(scope=_excl_scope(lst, date)) then
-      is_excluded) for every name of --scopes: {path, module, scope, verdicts}. A reader that fails reports the cell's error;
-      the step refuses its units (PHOT-EXCL-FILE, ruling C-09: both readers).
+      is_excluded) for every name of --scopes: {path, module, scope, verdicts}; and 'group_members' {group: the members
+      regen_group_cutouts reads (:494-495: GROUPS[group] without excluded_subbands(lst, date)), or null when the group search
+      has no such group} for every name of --groups. A reader that fails reports the cell's error; the step refuses its units
+      (PHOT-EXCL-FILE, ruling C-09: both readers).
 
 inview (once per unit after its engine, when a staged cutout's name is shared by more than one list entry; --keys):
   'ENGINE-INVIEW ' + JSON {Stokes: {in_view: {key: n or null}, geometries, grids, frames}}: per shared name, how many of
@@ -89,6 +91,12 @@ def run_mode(a):
                             recs[cell]['group_reader'] = {
                                 'path': CF.DECISIONS_CSV, 'module': os.path.abspath(CF.__file__), 'scope': scope,
                                 'verdicts': {s: bool(CF.is_excluded(lst, s, date, ex)) for s in a.scopes}}
+                for cell in a.cells:
+                    if 'error' not in recs[cell]:
+                        lst, date = cell.split('_', 1)
+                        excl = GS.excluded_subbands(lst, date)          # regen_group_cutouts :494-495, the engine's own names
+                        recs[cell]['group_members'] = {
+                            g: [sb for sb in GS.GROUPS[g] if sb not in excl] if g in GS.GROUPS else None for g in a.groups}
             except Exception as e:
                 for cell in a.cells:
                     recs[cell] = {'cell': cell, 'error': 'the group search\'s reader (%s): %s: %s' % (
@@ -162,6 +170,7 @@ def main(argv=None):
     ap.add_argument('--cells', nargs='*', default=[])
     ap.add_argument('--group-reader-root')
     ap.add_argument('--scopes', nargs='*', default=[])
+    ap.add_argument('--groups', nargs='*', default=[])
     ap.add_argument('--lst')
     ap.add_argument('--date')
     ap.add_argument('--times', nargs='*', default=[], help='S=<staged cutout> per Stokes')

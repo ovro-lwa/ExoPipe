@@ -1845,7 +1845,10 @@ def test_cutout_mirrors():
                   '    if is_excluded(lst, group, date, load_exclusions(scope=_excl_scope(lst, date))):' % cc.GROUP_EXCLUSION_ROOT),
              (ps, 'ex = CF.load_exclusions(scope=scope)'),
              (ps, "'verdicts': {s: bool(CF.is_excluded(lst, s, date, ex)) for s in a.scopes}"),
-             (ps, 'scopes.setdefault(GS._excl_scope(lst, date), []).append(cell)')]
+             (ps, 'scopes.setdefault(GS._excl_scope(lst, date), []).append(cell)'),
+             # the group search's member list the probe restates (regen_group_cutouts :494-495)
+             (ps, 'excl = GS.excluded_subbands(lst, date)'),
+             (ps, 'g: [sb for sb in GS.GROUPS[g] if sb not in excl] if g in GS.GROUPS else None for g in a.groups}')]
     miss = [t for s_, t in texts if t not in s_]
     check('mirror the regeneration engines and the ad-hoc switches: CUTOUTS-REGEN / -WIDEBAND lines, exit 3 on exclusion, the '
           'cube and search-output roots (= paths.SNAPSHOT_CUBES_ROOT / SNAPSHOT_FLEET_OUT, passed explicitly), the required '
@@ -2403,6 +2406,16 @@ def test_cutouts_snapshot():
         rc, txt = step(argv + ['--resume'])
     check('--resume (clean tree): the unit is skipped (inputs, cutout root, outputs unchanged)',
           rc == 0 and ': skipped (' in txt, txt[-800:])
+    vcube = os.path.join(CUBES, CUT_CELL, '%s_%s_V_flowcube.fits' % (CUT_CELL, CUT_SB))
+    results = os.path.join(CUT_OPS, CFG.photometry_fluxscale.RESCALE_RESULTS_DIR, 'RESULTS_test.csv')
+    with patched(record, git_commit=lambda path: 'abc1234'):
+        record_cube(vcube)                      # a newer rescale RESULTS row of the V cube (the same factor)
+        rc, txt = step(argv + ['--resume'])
+    rec = records(CUT_OUT).get(unit, {})
+    check('--resume after a newer rescale RESULTS row (review of PR 153, finding 3): the record files are the unit\'s inputs - '
+          'the unit is not skipped, it re-runs through the gate and is done; its record names the RESULTS file',
+          rc == 0 and 'resume %s: not skipped' % unit in txt and ': skipped (' not in txt and rec.get('status') == 'done'
+          and results in rec.get('inputs', {}), (txt[-800:], sorted(rec.get('inputs', {}))[-3:]))
     s0, q0 = root_state(CUT_ROOT), quarantine_rows(CUT_ROOT)
     rc, txt = step(argv)
     rows2 = TC.read_manifest(man[0])[1]
@@ -2483,6 +2496,29 @@ def test_cutouts_snapshot():
           and len(moved) == len(back) == len(before) and sorted(r['sha256'] for r in back) == sorted(before.values())
           and stg and len(glob.glob(os.path.join(stg, '*', CUT_SB, '*', '*.fits'))) == len(h0)
           and rec.get('meta', {}).get('placement_undone', {}).get('problems') == [], (rec.get('reason'), len(moved), len(back)))
+    # C-FLUXSCALE INSIDE the placement transaction (review of PR 153, finding 1): the V cube replaced by a copy of the same
+    # size with its mtime copied while the files are placed - the flux-scale record's FS1 (path, size, mtime) cannot see it;
+    # the cubes' identity check (inode, ctime) fails and every move is undone
+    before = root_state(CUT_ROOT)
+    vcube = os.path.join(CUBES, CUT_CELL, '%s_%s_V_flowcube.fits' % (CUT_CELL, CUT_SB))
+    real_place = SC.place
+
+    def place_then_copy(root_, pairs, placed, created):
+        real_place(root_, pairs, placed, created)
+        shutil.copy2(vcube, vcube + '.copy')
+        os.replace(vcube + '.copy', vcube)
+    SC.place = place_then_copy
+    try:
+        rc, txt = step(argv)
+    finally:
+        SC.place = real_place
+    rec = records(CUT_OUT).get(unit, {})
+    tests = {t['name']: t['passed'] for t in rec.get('tests', [])}
+    check('C-PLACE: the V cube replaced by a same-size copy with its mtime copied during the placement - FS1 passes, the cubes\' '
+          'identity check inside the transaction (GP_cubes_unchanged: inode, ctime) fails: the placement undone (exit 2), the '
+          'root byte-identical', rc == 2 and 'C-PLACE' in rec.get('reason', '') and 'GP_cubes_unchanged' in rec.get('reason', '')
+          and 'V cube ino changed' in rec.get('reason', '') and tests.get('photometry_fluxscale_record.fs1_record') is True
+          and before == root_state(CUT_ROOT), (rec.get('reason'), tests, txt[-600:]))
     # C-FLUXSCALE BEFORE the engine (lib/photometry/fluxscale.py, gen6_cube_gate_DRAFT.py): the V cube's newest rescale record
     # names another factor than its FSAPPLD card - the dry run names the refusal; the run refuses (exit 2) with the engine not
     # started (no staging directory), the root byte-identical
@@ -2544,10 +2580,13 @@ def test_cutouts_snapshot():
     rec = records(CUT_OUT).get(unit, {})
     qr = new_rows(q0, quarantine_rows(CUT_ROOT))
     mfile = os.path.join(CUT_ROOT, CFG.photometry_cutouts.MANIFEST_SUBDIR, '10s', '%s_%s.csv' % (CUT_CELL, CUT_SB))
-    check('C-EXCLUDED --fresh: the files and the unit\'s earlier manifest (which lists them) move to the quarantine with their '
-          'sha256 and the unit has no input (exit 3) - the engine\'s data_decisions refusal is an outcome, never a failure',
+    sfile = os.path.join(CUT_ROOT, CFG.photometry_fluxscale.SIDECAR_SUBDIR, CUT_SB, '%s_%s_fluxscale.json' % (CUT_CELL, CUT_SB))
+    check('C-EXCLUDED --fresh: the files, the unit\'s earlier manifest (which lists them) and its flux-scale record (review of '
+          'PR 153, finding 2) move to the quarantine with their sha256 and the unit has no input (exit 3) - the engine\'s '
+          'data_decisions refusal is an outcome, never a failure',
           rc == 3 and 'C-EXCLUDED' in rec.get('reason', '') and not any(map(os.path.exists, left))
-          and not os.path.exists(mfile) and len(qr) == len(left) + 1, (rec.get('reason'), len(qr), txt[-600:]))
+          and not os.path.exists(mfile) and not os.path.exists(sfile) and len(qr) == len(left) + 2
+          and any(r['moved_from'] == sfile for r in qr), (rec.get('reason'), len(qr), txt[-600:]))
     rc, txt = step(argv)
     why = records(CUT_OUT).get(unit, {}).get('reason', '')
     check('C-EXCLUDED with nothing of it left in the root: no input (exit 3)', rc == 3 and 'C-EXCLUDED' in why

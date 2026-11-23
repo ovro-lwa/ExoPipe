@@ -294,7 +294,7 @@ def identity_subband(files, cell, band, stokes, cube_root=None, search_out=None,
     out = []
     for f in files:
         sample = os.path.abspath(f).split('/')[-4]
-        with fits.open(f) as hf:
+        with fits.open(f, memmap=False) as hf:
             cut = np.asarray(hf[0].data, dtype=np.float32)
             ch = hf[0].header
             T = hf['TIMES'].data
@@ -370,7 +370,7 @@ def wideband_stack(cell, stokes, members_csv, group, files, cube_root=None, sear
     w0 = WCS(h0).celestial
     boxes = {}
     for f in files:
-        with fits.open(f) as hf:
+        with fits.open(f, memmap=False) as hf:
             ch = hf[0].header
             T = hf['TIMES'].data
             n = hdu_shape(hf[0])[1]
@@ -454,7 +454,7 @@ def identity_wideband(files, cell, group, stokes, members_csv, cube_root=None, s
     out = []
     for f in files:
         sample = os.path.abspath(f).split('/')[-4]
-        with fits.open(f) as hf:
+        with fits.open(f, memmap=False) as hf:
             cut = np.asarray(hf[0].data, dtype=np.float32)
             ch = hf[0].header
             T = hf['TIMES'].data
@@ -495,7 +495,7 @@ def tier_recut(files, root=None):
     for fn in files:
         rel = os.path.relpath(fn, root) if root else os.path.basename(fn)
         rnd = random.Random('%d:%s' % (seed, rel))
-        with fits.open(fn) as hf:
+        with fits.open(fn, memmap=False) as hf:
             cube = hf[0].data
             T = hf['TIMES'].data
             i = rnd.randrange(len(T))
