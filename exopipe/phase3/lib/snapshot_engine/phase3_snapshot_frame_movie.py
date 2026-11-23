@@ -74,13 +74,13 @@ def load_staged(sb):
                  % (len(nod), sb, nod[0]))
     fl = sorted((integration_label(dob[f]), f) for _, f in fl)
     ts = [t for t, _ in fl]
-    d = np.squeeze(fits.getdata(fl[0][1])).astype(np.float32)
+    d = np.squeeze(fits.getdata(fl[0][1], memmap=False)).astype(np.float32)
     ny, nx = d.shape; b = max(1, int(round(nx / float(a.size)))); ny2, nx2 = ny // b, nx // b
     cube = np.empty((len(fl), ny2, nx2), np.float32)
     cube[0] = np.nanmean(d[:ny2 * b, :nx2 * b].reshape(ny2, b, nx2, b), axis=(1, 3))
 
     def _one(i):
-        d = np.squeeze(fits.getdata(fl[i][1])).astype(np.float32)
+        d = np.squeeze(fits.getdata(fl[i][1], memmap=False)).astype(np.float32)
         cube[i] = np.nanmean(d[:ny2 * b, :nx2 * b].reshape(ny2, b, nx2, b), axis=(1, 3))
 
     if MOVIE_THREADS > 1 and len(fl) > 2:

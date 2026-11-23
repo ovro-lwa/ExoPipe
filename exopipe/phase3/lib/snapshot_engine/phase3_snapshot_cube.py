@@ -785,7 +785,7 @@ class Cube(object):
     def __init__(self, path):
         from astropy.io import fits
         self.path = path
-        self.h = fits.open(path, memmap=False)     # never memory-map a Lustre file (R-GREGG-20261117-NO-MMAP-OF-LUSTRE-FILES-READ-OR-WRITE)
+        self.h = fits.open(path, memmap=False)      # never memory-map (Gregg 2026-11-17); FLOW sliced with .section
         t = self.h["FRAME_TABLE"].data
         self.timestamps = [s.strip() if isinstance(s, str) else s.decode().strip() for s in t["ts"]]
         self._idx = {ts: i for i, ts in enumerate(self.timestamps)}
@@ -825,7 +825,7 @@ class Cube(object):
             return None
         i = self._idx[ts]
         fh = self.h["FLOW"].header
-        q = np.asarray(self.h["FLOW"].section[i])   # FLOW is a plain int16 ImageHDU: one frame read, no memory map (Lustre rule 11-17)
+        q = np.asarray(self.h["FLOW"].section[i])      # one frame's flow (plain HDU), not the whole extension
         f = q.astype(np.float32) * float(fh.get("FLOWSCAL", FLOW_SCALE))
         f[q == int(fh.get("FLOWNULL", FLOW_BLANK))] = np.nan
         return None if np.isnan(f).all() else f
@@ -959,7 +959,7 @@ def rescale(a):
     fits.HDUList(hdus).writeto(tmp, overwrite=True, checksum=True)
 
     def steps(path):     # per tile (= frame): the quantization step ZSCALE, and whether the tile is stored losslessly
-        with fits.open(path, disable_image_compression=True, memmap=False) as hz:   # no memory map (Lustre rule 11-17)
+        with fits.open(path, disable_image_compression=True, memmap=False) as hz:
             t = hz["FRAMES"].data
             gz = t["GZIP_COMPRESSED_DATA"] if "GZIP_COMPRESSED_DATA" in t.columns.names else [()] * len(t)
             return np.asarray(t["ZSCALE"], dtype=np.float64), np.array([len(g) > 0 for g in gz])

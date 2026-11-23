@@ -153,10 +153,11 @@ def dewarp_frame(data, screen_x, screen_y, coords=None):
 
 def accumulate(nt, sb_frames, sb_match, sb_adm, sb_screens, grid_of, group_of, full_ok, ref_list, sb_dsec, ref_dob,
                cubes, wsums, nsubs, nthreads, chunk_frames, t0, per_instant):
-    """Add every admitted member frame, weighted 1/rms^2, into its wideband cube(s) (cubes[g][t], wsums[g][t], nsubs[g][t], in
-    place) and return the member rows in production's append order.
+    """Add every admitted member frame, weighted 1/(F rms^2) (F = the frame header's FSAPPLD, 1 without it: the wideband weights on
+    rescaled members, clv15 1985fc8), into its wideband cube(s) (cubes[g][t], wsums[g][t], nsubs[g][t], in place) and return the
+    member rows in production's append order.
 
-    per_instant False = PRODUCTION'S LOOP, unchanged (clv15 be63765 :299-338): workers read and dewarp the frames of a chunk
+    per_instant False = PRODUCTION'S LOOP, unchanged (clv15 1985fc8 :298-348): workers read and dewarp the frames of a chunk
     subband after subband, and this thread adds them.  It is the default (P3_SNAP_GROUP_THREADS = 0) and the only order used
     when the frames come from member cubes (regen_group_cutouts swaps read_frame for a reader that keeps two cubes in memory and
     must be read member after member).
@@ -179,7 +180,7 @@ def accumulate(nt, sb_frames, sb_match, sb_adm, sb_screens, grid_of, group_of, f
         adm = sb_adm[sb]
         if adm and not adm.get(ts, False):
             return None
-        data, _ = read_frame(path)
+        data, fhdr = read_frame(path)
         if data.shape != grid_of[group_of[sb]]:
             log.warning("%s frame %s has grid %s, wideband %s expects %s — dropped",
                         sb, ts, data.shape, group_of[sb], grid_of[group_of[sb]])
@@ -196,7 +197,17 @@ def accumulate(nt, sb_frames, sb_match, sb_adm, sb_screens, grid_of, group_of, f
         rms = central_rms(dw)
         if not (np.isfinite(rms) and rms > 0):
             return None
-        return sb, t, dw, 1.0 / rms ** 2
+        # WIDEBAND WEIGHTS ON RESCALED MEMBERS (Gregg 2026-11-12 R-GREGG-20261112-FLUXSCAL-NO-BSCALE-PIPELINE-WRITES-PIXELS-WIDEBAND-
+        # WEIGHTED-MEAN (3) "inverse-variance weighted mean of the member subbands' factors, as the wideband was formed"; kept 2026-11-18
+        # R-GREGG-20261118-WIDEBAND-WEIGHTS-ON-RESCALED-CUBES-KEEP-RULING "Approved"): a member whose pixels carry the flux factor
+        # FSAPPLD = F divided out (rescaled cube, y = x / F) keeps its FRAME-UNIT weight w_x = 1/rms_x^2 = 1/(F rms_y)^2, and the
+        # wideband is sum(w_x x) / sum(w_x F) = sum(u y) / sum(u) with u = w_x F = 1 / (F rms_y^2).  A frame-unit member (no FSAPPLD,
+        # the Phase-1 frames of the live search) has F = 1: weight 1/rms^2 as before.
+        # PORT (refactor, 2026-11-23): production's statements (clv15 1985fc8 _run_group_search._one), here in the _one both orders share
+        fs = float(fhdr.get("FSAPPLD", 1.0)) if fhdr is not None else 1.0
+        if not (np.isfinite(fs) and fs > 0):
+            raise RuntimeError("%s member frame %s: FSAPPLD %r is not a positive factor - REFUSING" % (sb, ts, fs))
+        return sb, t, dw, 1.0 / (fs * rms ** 2)
 
     if not per_instant:
         member_rows = []
@@ -507,7 +518,13 @@ class _FlowCubeFrames:
             from astropy.io import fits
             with fits.open(self._path(sb), memmap=False) as h:
                 t = h["FRAME_TABLE"].data
-                self.tab[sb] = ([str(x) for x in t["ts"]], [fits.Header.fromstring(str(x), sep="\n") for x in t["header"]])
+                hdrs = [fits.Header.fromstring(str(x), sep="\n") for x in t["header"]]
+                # a rescaled cube's factor (primary FSAPPLD) travels with each frame's header: the wideband weights read it
+                # (run_group_search._one; 2026-11-18 wideband weights on rescaled cubes)
+                if "FSAPPLD" in h[0].header:
+                    for x in hdrs:
+                        x["FSAPPLD"] = float(h[0].header["FSAPPLD"])
+                self.tab[sb] = ([str(x) for x in t["ts"]], hdrs)
         return self.tab[sb]
 
     def discover(self, lst, date, sb, stage_root=None, **kw):
