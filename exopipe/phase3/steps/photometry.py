@@ -11,6 +11,9 @@ bright-source screen, control-derived thresholds and completeness.
     exopipe3 photometry --tier sublst --stages cutouts,cutmeasure --cells 08h_46MHz --cutout-root NEW --tier-out NEWF --out ...
     exopipe3 photometry --tier snapshot --stages cutouts,measure --cells 18h_2025-05-05 --in-place          (served, in place)
     exopipe3 photometry --tier snapshot --stages cutouts,measure --targets ADHOC=list.csv --cutout-root R --out O (ad hoc)
+    exopipe3 photometry --tier snapshot --campaign --out ...        (a new cutout generation and its stage 1: lib/photometry/
+                                                                     campaign.py, generation photometry_campaign.GENERATION)
+    python -m exopipe.phase3.lib.photometry.campaign check --out ... (the campaign's complete-when content test, read only)
 
 Per hour vs intermittent (DESIGN 12): per hour, --epochs <LST>_<date> measures ONE night of one LST hour - deep: the
 frames, stage and measure stages over every band of that LST, restricted to that night (the Stokes V 3x noise gate still
@@ -92,6 +95,15 @@ Failure modes (exit 2 = refused, the gate named in the record; 3 = nothing to do
   GUARD (an injected run writing a root outside scratch). A unit that errors is recorded and the stage goes on with the next
   unit (exit 1 at the end). Ctrl-C or SIGTERM (cli.Terminated) during a placement undoes it (the unit recorded
   'interrupted'); the run then stops.
+  campaign (--campaign): CP-SCOPE (a flag a campaign does not take: --cutout-root, --stage1, --scopes, --index,
+  --manifest-name, --targets, --planets, --in-place; a band-suffixed cell; another tier), CP-STAGES (a stage other than
+  cutouts, measure), CP-GEN (photometry_campaign.GENERATION not a generation name or the served one), CP-ENUM (the unit list
+  cannot be read: rescale records, the subband engine's exclusion reader), CP-SPACE (quota headroom - bytes or files - or
+  free space below a floor, or unreadable: at the start the campaign does not start; before a unit that unit and every later
+  one refuse), CP-PIN (an engine file changed since the campaign start, or a unit ran another version: that unit and every
+  later one refuse), CP-WIRE (the campaign's cutouts stage is not wired in this tree); stage 1 per cell and band kind: SM-HELD
+  (a cutouts unit of the kind refused, failed, without a record, or a held subband: only that cell's kind waits), SM-NOBAND
+  (no input: every unit of the kind terminal and none wrote a cutout - the outcome 'no wideband' / 'no subband' recorded).
   Any failing content test refuses its unit.
 """
 import importlib
@@ -101,7 +113,7 @@ SUMMARY = 'photometry of input samples (HWJ, 10 pc; snapshot also LPT; flare/UCD
 TIERS = ('deep', 'snapshot', 'sublst')
 SELECTORS = ('tier', 'cells', 'scopes', 'stokes', 'run_label', 'exclude_cells', 'epochs')
 CONFIG = ('photometry', 'photometry_frames', 'photometry_measure', 'photometry_evaluate', 'photometry_cutouts',
-          'photometry_phase2', 'catalog_snapshot', 'runner')
+          'photometry_phase2', 'photometry_campaign', 'catalog_snapshot', 'runner')
 WRITES = True
 _TIER_MODULES = {'deep': 'exopipe.phase3.lib.photometry.steps_deep', 'snapshot': 'exopipe.phase3.lib.photometry.steps_snapshot',
                  'sublst': 'exopipe.phase3.lib.photometry.steps_cutouts'}
@@ -142,6 +154,11 @@ def add_arguments(p):
                          '<cell>_<band>, --scopes, --manifest-name or --index; deep / sublst: --stages cutouts,cutmeasure '
                          'without --tier-out)')
     s = p.add_argument_group('snapshot tier')
+    s.add_argument('--campaign', action='store_true',
+                   help='cutouts + measure of a NEW generation (photometry_campaign.GENERATION; its cutout root and stage-1 '
+                        'directory derive from it): the units listed from the flow cubes, the engine code pinned, space and '
+                        'the I/O guard checked before each unit, each cell\'s stage 1 per band kind once its cutouts units '
+                        'are terminal (lib/photometry/campaign.py). --cells / --epochs narrow it to whole night cells')
     s.add_argument('--index', metavar='FILE', help='measure: listing of cutout paths relative to --cutout-root')
     s.add_argument('--band-procs', type=int, help='measure: band processes at once in a cell (default '
                                                   'photometry_measure.BAND_PROCS[snapshot] = 8)')
@@ -192,7 +209,12 @@ def run(args, run):
                               c.catalog_snapshot.CURVE_CONSTANTS])
     try:
         flag_overrides(args, c)
+        if getattr(args, 'campaign', False) and not (args.stages or args.stage_from or args.stage_until):
+            args.stages = 'cutouts,measure'            # a campaign's stages (CP-STAGES refuses others)
         stages = K.resolve_stages(args, args.tier)
+        if getattr(args, 'campaign', False):
+            from exopipe.phase3.lib.photometry import campaign as CP
+            CP.gate_args(args, stages)
         if 'cutouts' in stages and not getattr(args, 'targets', None):
             K.gate_samples(args.tier, cut=True)        # the cutters read photometry.SAMPLES_CUT (LPT in every tier)
         gate_adhoc_stages(args, stages)
