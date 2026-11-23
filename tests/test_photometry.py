@@ -436,7 +436,7 @@ def pick_templates():
     from astropy.io import fits
     cur = T.current_safe_names()
     out = {}
-    for smp in CFG.photometry.SAMPLES_MEASURED:
+    for smp in ('HWJ', '10pc'):        # the synthetic cell's templates (the served generation 5 holds no LPT cutout)
         objs = None
         for b in SNAP_BANDS:
             have = {os.path.basename(os.path.dirname(p)) for p in
@@ -569,7 +569,7 @@ def test_mirrors():
              "open('%s')" % m.SOLAR_AUDIT['deep'], 'np.arange(0, 24, %s)' % m.JUPITER_TRACK['deep']['step_h'],
              '+ %s) + 12) %% 24) - 12)' % m.JUPITER_TRACK['deep']['lst_centre_offset_h'],
              '.alt.deg >= %d' % m.JUPITER_TRACK['deep']['min_el_deg'],
-             "(('HWJ', '%s'), ('10pc', '%s'))" % (ph.SAMPLE_FILES['HWJ'], ph.SAMPLE_FILES['10pc']),
+             repr(tuple((t, ph.SAMPLE_FILES[t]) for t in ph.SAMPLES_MEASURED['deep'])),
              "encoding='%s'" % ph.SAMPLE_ENCODING, "Time(h['DATE-OBS']), Time(h['DATE-END'])"]
     miss = [t for t in texts if t not in src]
     check('mirror deep_forced_phot.py in-code literals (edge, stamp, fit / size gate, injections, PB floor, day / twilight, '
@@ -606,7 +606,8 @@ def test_mirrors():
     texts = ['np.arange(%s, %s, %s)' % (lo_, round(hi_ + 0.01, 2), st_), "ATEAM = {'I': %s, 'V': %s}; MOON = %s" % (
         m.ATEAM_RADIUS_DEG['deep']['I'], m.ATEAM_RADIUS_DEG['deep']['V'], m.MOON_RADIUS_DEG['deep']),
         'for t in %r:' % (ev.COMPLETENESS_T['deep'],), 'for A in %r]' % (ev.COMPLETENESS_A['deep'],),
-        'tt.snr.abs() >= %d' % ev.LIST_SNR, 'dpi=%d' % ev.PNG_DPI['deep'], "for smp in ('HWJ', '10pc'):"]
+        'tt.snr.abs() >= %d' % ev.LIST_SNR, 'dpi=%d' % ev.PNG_DPI['deep'],
+        'for smp in %r:' % (tuple(ph.SAMPLES_MEASURED['deep']),)]
     JUP = mod_literals(os.path.join(OPS, 'deep_forced_eval.py')).get('JUP')
     miss = [t for t in texts if t not in de] + (['JUP'] if JUP != m.JUPITER_RADIUS_DEG['deep'] else [])
     check('mirror deep_forced_eval.py (threshold grid, A-team / Moon / Jupiter, completeness, list S/N, plot)', not miss, miss)
@@ -614,7 +615,8 @@ def test_mirrors():
     L = mod_literals(sp)
     sps = open(sp).read()
     want = {'ROOT': ph.RETIRED_CUTOUT_ROOTS[0], 'MCAT': CFG.catalog_snapshot.MASTER_CATALOGS,
-            'SAMPLES': tuple(ph.SAMPLES_MEASURED), 'STAMP': m.STAMP_PX, 'NCTL': m.N_CONTROLS, 'RING_BEAMS': m.RING_BEAMS,
+            'SAMPLES': tuple(ph.SAMPLES_MEASURED['snapshot']), 'STAMP': m.STAMP_PX, 'NCTL': m.N_CONTROLS,
+            'RING_BEAMS': m.RING_BEAMS,
             'AVOID_BEAMS': m.AVOID_BEAMS, 'AVOID_JY': m.AVOID_JY, 'MIN_STAMP_FRAC': m.MIN_STAMP_FRAC['snapshot'],
             'EDGE_PX': m.EDGE_PX['snapshot']}
     got = {k: L.get(k) for k in want}
@@ -656,9 +658,11 @@ def test_mirrors():
     ok = (L.get('CUT_DEG') == cu.CUT_DEG and L.get('MIN_EL_DEG') == cu.MIN_EL_DEG and L.get('PLANETS') == cu.PLANETS
           and L.get('ROOT_DEFAULT') == ph.RETIRED_CUTOUT_ROOTS[0] and L.get('MERGE_ARCMIN') == cu.MERGE_ARCMIN
           and 'lat=%s * u.deg, lon=%s * u.deg, height=%s * u.m' % pl in cs and 'key = (body, ts[:12])' in cs
-          and cu.PLANET_EPHEM_QUANTUM_MIN == 10)
+          and cu.PLANET_EPHEM_QUANTUM_MIN == 10
+          and L.get('SAMPLES') == tuple((t, ph.SAMPLE_FILES[t]) for t in ph.SAMPLES_MEASURED['snapshot']))
     check('mirror phase3_snapshot_cutouts.py (cutout side, floor, planets, the retired default root, planet site, 10-minute '
-          'ephemeris, the one-object merge radius)', ok)
+          'ephemeris, the one-object merge radius, the sample lists = the snapshot samples and their files)', ok,
+          (L.get('SAMPLES'), ph.SAMPLES_MEASURED['snapshot']))
     L = mod_literals(os.path.join(CLV, 'phase3_snapshot_astro.py'))
     rep = {k: v for k, v in (L.get('BAND_REP_FREQ') or {}).items() if k != 'Full'}
     ok = (L.get('FWHM_ARCMIN') == ev.SNAPSHOT_FWHM_ARCMIN and rep == ev.SNAPSHOT_BAND_REP_MHZ
@@ -762,15 +766,24 @@ def test_gates():
                                                     '--set', 'photometry_measure.RING_BEAMS=3.0'])
     check('a MIRROR key cannot be overridden (the engine keeps its own literal; exit 2)', rc == 2 and 'REFUSED' in txt, txt)
     CFG.reset()
-    paths = K.gate_samples()
-    check('PHOT-SAMPLE-PIN: the measured lists match their pinned sha1 today (%s)' % sorted(paths), len(paths) == 2)
-    with patched(CFG.photometry, SAMPLE_SHA1={'HWJ': 'ede4fe33ec4e2686dfff9a0c69b54a8113b1a842', '10pc': 'f' * 40}):
-        try:
-            K.gate_samples()
-            ok = False
-        except record.Refusal as e:
-            ok = 'PHOT-SAMPLE-PIN' in str(e) and '10pc' in str(e)
-    check('PHOT-SAMPLE-PIN: a list whose sha1 differs from its pin refuses', ok)
+    got = {t: sorted(K.gate_samples(t)) for t in CFG.photometry.TIERS_WITH_ENGINE}
+    check('PHOT-SAMPLE-PIN: the lists each tier measures match their pinned sha1 today (%s; snapshot + LPT, '
+          'R-GREGG-20261118-GEN6-WITH-LPTS-SAMPLE-WIRED)' % got,
+          got == {'snapshot': ['10pc', 'HWJ', 'LPT'], 'deep': ['10pc', 'HWJ'], 'sublst': ['10pc', 'HWJ']}
+          and sorted(CFG.photometry.SAMPLES_MEASURED) == sorted(CFG.photometry.TIERS_WITH_ENGINE), got)
+    pins = dict(CFG.photometry.SAMPLE_SHA1)
+    for tier, bad in (('deep', '10pc'), ('snapshot', '10pc'), ('snapshot', 'LPT')):
+        with patched(CFG.photometry, SAMPLE_SHA1=dict(pins, **{bad: 'f' * 40})):
+            try:
+                K.gate_samples(tier)
+                ok = False
+            except record.Refusal as e:
+                ok = 'PHOT-SAMPLE-PIN' in str(e) and bad in str(e)
+        check('PHOT-SAMPLE-PIN: the %s list with a sha1 that differs from its pin refuses the %s tier' % (bad, tier), ok)
+    with patched(CFG.photometry, SAMPLE_SHA1=dict(pins, LPT='f' * 40)):
+        got = {t: sorted(K.gate_samples(t)) for t in ('deep', 'sublst')}
+    check('PHOT-SAMPLE-PIN: the LPT pin binds the snapshot tier only (deep and sub-LST measure no LPT: %s)' % got,
+          got == {'deep': ['10pc', 'HWJ'], 'sublst': ['10pc', 'HWJ']}, got)
     rc, txt = step(['photometry', '--tier', 'deep', '--stages', 'bogus', '--src-run', SRC, '--out', out, '--cores', 'none'])
     check('an unknown stage name is an error (exit 1)', rc == 1 and 'unknown stage' in txt, txt)
     base = ['photometry', '--tier', 'deep', '--stages', 'frames', '--cells', '10h_46MHz', '--cores', 'none',
