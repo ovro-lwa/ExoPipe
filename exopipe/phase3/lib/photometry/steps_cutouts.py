@@ -62,9 +62,11 @@ Gates: C-ROOT (gate_write_root: a retired generation never; a production root wh
 INJECTED-RUN GUARD on every root a stage writes (core/injected.check), C-INPLACE (the served roots only with --in-place, the
 measurement chained, snapshot over whole cells; gate_in_place), C-CELLS (a regeneration names its items; a named tier cell
 the tool does not know), C-HOST (the tier tool's inputs not readable on this host), C-RUN (the tier tool reads one deep run),
-C-FLUXSCALE (snapshot: a cube the engine reads not rescaled, off its rescale record, V != I, no rescale record readable, or a
-cube changed between the gate and placement), C-GENCHECK (snapshot: a generation check (a)(b)(c)(w) failed), PHOT-ADHOC (an
-ad-hoc target set into or under a served root, or for evaluate), PHOT-FULL (snapshot Full).
+C-FLUXSCALE (snapshot: a cube the engine reads not rescaled, off its rescale record, V != I, without a rescale record, or a
+cube changed between the gate and placement), C-FLUXSCALE-READ (snapshot, before the engine: the rescale records or a cube
+header cannot be read - operational, retryable; never a campaign gap), C-GENCHECK (snapshot: a generation check
+(a)(b)(c)(w) failed), PHOT-ADHOC (an ad-hoc target set into or under a served root, or for evaluate), PHOT-FULL (snapshot
+Full).
 """
 import csv
 import glob
@@ -900,18 +902,29 @@ def fluxscale_gate(u, cell, band, ex, members=None):
     newest plan's 'done' row) and V = I. A subband: its own V and I cubes; a wideband: every cube of ``members``, the group
     search's own member list (exclusion_verdict: the engine's readers through cutouts_probe.py, refused unless it equals
     core/exclusions'), those with a cube (default: fluxscale.members_read, core/exclusions'). Headers only (positioned
-    reads). A failure, or rescale records that cannot be read (a malformed row: <file>:<line>), refuses the unit. Returns the
-    check's cube identities (the re-checks after the cut and inside the placement compare them)."""
+    reads). A VERDICT on the cubes refuses C-FLUXSCALE (a campaign gap: photometry_campaign.GAP_REFUSED); rescale records
+    that cannot be read (a malformed row: <file>:<line>; a file unreadable) or a cube header that cannot be read refuse
+    C-FLUXSCALE-READ - operational, retryable, never a gap (READ_REFUSAL). Returns the check's cube identities (the re-checks
+    after the cut and inside the placement compare them)."""
     from exopipe.phase3.lib.photometry import fluxscale as FS
     try:
         ok, why, info = (FS.check_wideband(cell, band, ex=ex, members=members) if is_wideband(band)
                          else FS.check(cell, band))
     except (FS.RecordsError, OSError) as e:                          # OSError: a rescale record file unreadable
-        u.refuse('C-FLUXSCALE: %s - the engine not started' % e)
+        u.refuse(READ_REFUSAL % e)
     u.meta['fluxscale'] = _fs_brief(info, band)
+    unread = [w for w in why if UNREADABLE_HEADER in w]
+    if unread:
+        u.refuse(READ_REFUSAL % ('%s %s: %s' % (cell, band, '; '.join(unread)[:900])))
     if not ok:
         u.refuse('C-FLUXSCALE: %s %s: %s - the engine not started' % (cell, band, '; '.join(why)[:900]))
     return info
+
+
+# The flux-scale gate's operational refusal (records or a header unreadable): its own code, so a campaign never counts it as a
+# gap (campaign.gap_kind keys on the code); the reason fluxscale.check_cube gives an unreadable header.
+READ_REFUSAL = 'C-FLUXSCALE-READ: %s - the engine not started; operational (the records or a header unreadable), retryable, not a gap'
+UNREADABLE_HEADER = ': header unreadable ('
 
 
 def fluxscale_recheck(u, cell, band, root, stage, before, regen_line, ex, members=None):
@@ -1038,8 +1051,8 @@ def generation_checks(u, cell, band, stage, rels, targets, planets, ex, before, 
 
 def fluxscale_dry(cell, band, ex):
     """The flux-scale gate's verdict of a unit in a dry run, headers only (gen6_cube_gate_DRAFT.py --dry-run): 'excluded (no
-    engine)', 'flux-scale gate pass' or 'would refuse C-FLUXSCALE: <reasons>'. ``ex``: the stage's exclusion read, or the
-    text of its failure."""
+    engine)', 'flux-scale gate pass', 'would refuse C-FLUXSCALE: <reasons>' or 'would refuse C-FLUXSCALE-READ: ...'.
+    ``ex``: the stage's exclusion read, or the text of its failure."""
     from exopipe.phase3.lib.photometry import fluxscale as FS
     lst, date = cell.split('_', 1)
     if isinstance(ex, str):
@@ -1049,7 +1062,10 @@ def fluxscale_dry(cell, band, ex):
     try:
         ok, why, _ = FS.check_wideband(cell, band, ex=ex) if is_wideband(band) else FS.check(cell, band)
     except (FS.RecordsError, OSError) as e:
-        return 'would refuse C-FLUXSCALE: %s' % e
+        return 'would refuse %s' % (READ_REFUSAL % e)
+    unread = [w for w in why if UNREADABLE_HEADER in w]
+    if unread:
+        return 'would refuse %s' % (READ_REFUSAL % '; '.join(unread)[:400])
     return 'flux-scale gate pass' if ok else 'would refuse C-FLUXSCALE: %s' % '; '.join(why)[:400]
 
 
@@ -1078,9 +1094,12 @@ def snapshot_unit(run, args, cell, band, root, targets, planets, samples, cubes,
     lsha = listing_sha1(inputs, rescale_text)            # change to one re-gates the unit on --resume; the inputs name it
     ex = exclusions.for_tier('snapshot', fresh=True)     # the unit's one read: its resume identity and its verdict
     admitted = cutout_admitted(cell, band, ex)
-    if K.run_resume_ok(run, name, admitted, {'inputs_listing_sha1': lsha, 'cutout_root': root}):
-        return run.units[-1:]
     camp = getattr(args, 'photometry_campaign', None)
+    if camp is not None and run.resume and camp.stale(run, name):   # another run's record, or another engine version: cut again
+        print('resume %s: not skipped (its record is not this campaign\'s, or its engine code is not the pin\'s)' % name,
+              flush=True)
+    elif K.run_resume_ok(run, name, admitted, {'inputs_listing_sha1': lsha, 'cutout_root': root}):
+        return run.units[-1:]
     with run.unit(name, tier='snapshot', stage='cutouts', cell=cell, band=band, cutout_root=root, samples=samples,
                   targets=['%s=%s' % t for t in targets], planets=planets, inputs_listing_sha1=lsha) as u:
         if camp is not None:

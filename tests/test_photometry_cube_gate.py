@@ -624,10 +624,12 @@ def test_review(base, ops, rows_a, rows_b, ex):
         dry = SC.fluxscale_dry(CELL, '55MHz', ex)
         u = Unit()
         SC.fluxscale_in_place(u, CELL, '55MHz', {}, ex)()
-    check('step (review 4): a malformed record row refuses the unit before the engine (C-FLUXSCALE naming <file>:<line>)',
-          r and r.startswith('C-FLUXSCALE: no rescale record readable: %s:3' % z) and 'the engine not started' in r, r)
-    check('dry run (review 4): the malformed row reported for the unit (would refuse C-FLUXSCALE, <file>:<line>), no crash',
-          dry.startswith('would refuse C-FLUXSCALE: no rescale record readable: %s:3' % z), dry)
+    check('step (review 4): a malformed record row refuses the unit before the engine (C-FLUXSCALE-READ - operational, '
+          'retryable, not a gap - naming <file>:<line>)',
+          r and r.startswith('C-FLUXSCALE-READ: no rescale record readable: %s:3' % z) and 'the engine not started' in r
+          and 'not a gap' in r, r)
+    check('dry run (review 4): the malformed row reported for the unit (would refuse C-FLUXSCALE-READ, <file>:<line>), no '
+          'crash', dry.startswith('would refuse C-FLUXSCALE-READ: no rescale record readable: %s:3' % z), dry)
     check('in-place check (review 4): records unreadable during placement -> the check fails (the placement is undone), no '
           'crash', [t['passed'] for t in u.tests] == [False] and 'RecordsError' in u.tests[0]['detail'], u.tests)
     # ---- 9: a tie at the newest utc

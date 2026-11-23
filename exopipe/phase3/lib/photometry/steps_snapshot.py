@@ -215,9 +215,25 @@ def stage_measure_campaign(run, args):
 
 
 def manifest_bands(path):
-    """The bands of a stage-1 manifest's rows (the directory above each cutout's object directory: <sample>/<band>/<object>/)."""
-    with open(path, newline='') as f:
-        return {(r.get('file') or '').split('/')[-3] for r in csv.DictReader(f) if (r.get('file') or '').count('/') >= 3}
+    """The bands of a stage-1 manifest's rows (the directory above each cutout's object directory: <sample>/<band>/<object>/),
+    read with the manifest tests' own reader (tests._manifest_rows, as MM1 reads it). None when the manifest cannot be parsed
+    for its bands - unreadable, a header other than photometry_measure.MANIFEST_HEADER, a row whose file names no snapshot
+    band (photometry.SNAPSHOT_BANDS) at that place: the caller refuses SM-SUBSET, never reads it as an empty set."""
+    from exopipe.phase3.lib.photometry import tests as T
+    c = K.cfg()
+    try:
+        cols, rows = T._manifest_rows(path)
+    except (OSError, UnicodeDecodeError, csv.Error):
+        return None
+    if cols != c.photometry_measure.MANIFEST_HEADER.split(','):
+        return None
+    known, out = set(c.photometry.SNAPSHOT_BANDS), set()
+    for r in rows:
+        parts = (r.get('file') or '').split('/')
+        if len(parts) < 4 or parts[-3] not in known:
+            return None
+        out.add(parts[-3])
+    return out
 
 
 def stage_measure(run, args):
@@ -293,9 +309,14 @@ def measure_cell(run, args, cell, bands, files, root, stage1, man_name, targets=
                 '/'.join(t for t, _ in targets) or '/'.join(K.samples_measured('snapshot')), cell, len(bands), root))
         full = list(bands) == list(c.photometry.SNAPSHOT_BANDS)
         mpath = os.path.join(dst, man_name)
-        if not full and man_name == m.MANIFEST_NAME and os.path.exists(mpath) and not (
-                kind_manifest and manifest_bands(mpath) <= set(bands)):
-            u.refuse('SM-SUBSET: a band subset would overwrite the full-band manifest %s; give --manifest-name' % mpath)
+        if not full and man_name == m.MANIFEST_NAME and os.path.exists(mpath):
+            mb = manifest_bands(mpath) if kind_manifest else set()
+            if kind_manifest and mb is None:
+                u.refuse('SM-SUBSET: the manifest %s cannot be parsed for its bands (unreadable, another header than '
+                         'photometry_measure.MANIFEST_HEADER, or a row naming no snapshot band) - a band subset would '
+                         'overwrite it; nothing measured' % mpath)
+            if not (kind_manifest and mb <= set(bands)):
+                u.refuse('SM-SUBSET: a band subset would overwrite the full-band manifest %s; give --manifest-name' % mpath)
         for p in ([p for _, p in targets] or K.sample_paths('snapshot').values()):
             u.add_input(p)
         for b in withc:

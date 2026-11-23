@@ -100,9 +100,10 @@ Failure modes (exit 2 = refused, the gate named in the record; 3 = nothing to do
   cutouts, measure), CP-GEN (photometry_campaign.GENERATION not a generation name or the served one), CP-ENUM (the unit list
   cannot be read: rescale records, the subband engine's exclusion reader), CP-SPACE (quota headroom - bytes or files - or
   free space below a floor, or unreadable: at the start the campaign does not start; before a unit that unit and every later
-  one refuse), CP-PIN (an engine file changed since the campaign start, or a unit ran another version: that unit and every
-  later one refuse); stage 1 per cell and band kind: SM-HELD (a cutouts unit of the kind refused, failed, without a record,
-  or a held subband: only that cell's kind waits; a unit whose inputs a gate refused - C-FLUXSCALE before the engine - is a
+  one refuse), CP-PIN (an engine file changed since the campaign start, or since the pin of the campaign this --out holds -
+  a later invocation continues it only with the same engine code and cutout root (CP-GEN), unless --new-campaign -, or a unit
+  ran another version: that unit is recorded refused and every later one refuses); stage 1 per cell and band kind: SM-HELD
+  (a cutouts unit of the kind refused, failed, without a record, or a held subband: only that cell's kind waits; a unit whose inputs a gate refused - C-FLUXSCALE before the engine - is a
   GAP: the kind's stage 1 is not run, and the complete-when check lists it, COMPLETE with N gaps), SM-NOBAND (no input:
   every unit of the kind terminal and none wrote a cutout - the outcome 'no wideband' / 'no subband' recorded).
   Any failing content test refuses its unit.
@@ -113,8 +114,10 @@ import sys
 SUMMARY = 'photometry of input samples (HWJ, 10 pc; snapshot also LPT; flare/UCD and 25 pc listed, not measured): deep and snapshot'
 TIERS = ('deep', 'snapshot', 'sublst')
 SELECTORS = ('tier', 'cells', 'scopes', 'stokes', 'run_label', 'exclude_cells', 'epochs')
+# The step's resume hash (cli.step_sections). photometry_campaign is not in it: its knobs are operational (space floors,
+# timeouts, the I/O guard) and its GENERATION changes the roots, which every unit records as its inputs and outputs.
 CONFIG = ('photometry', 'photometry_frames', 'photometry_measure', 'photometry_evaluate', 'photometry_cutouts',
-          'photometry_phase2', 'photometry_fluxscale', 'photometry_campaign', 'catalog_snapshot', 'runner')
+          'photometry_phase2', 'photometry_fluxscale', 'catalog_snapshot', 'runner')
 WRITES = True
 _TIER_MODULES = {'deep': 'exopipe.phase3.lib.photometry.steps_deep', 'snapshot': 'exopipe.phase3.lib.photometry.steps_snapshot',
                  'sublst': 'exopipe.phase3.lib.photometry.steps_cutouts'}
@@ -160,6 +163,10 @@ def add_arguments(p):
                         'directory derive from it): the units listed from the flow cubes, the engine code pinned, space and '
                         'the I/O guard checked before each unit, each cell\'s stage 1 per band kind once its cutouts units '
                         'are terminal (lib/photometry/campaign.py). --cells / --epochs narrow it to whole night cells')
+    s.add_argument('--new-campaign', action='store_true',
+                   help='with --campaign: start a new campaign under this --out although one is recorded there with another '
+                        'engine pin or cutout root (without it such an invocation refuses, CP-PIN / CP-GEN); its check then '
+                        'calls every unit done under the old pin incomplete, and the run cuts them again')
     s.add_argument('--index', metavar='FILE', help='measure: listing of cutout paths relative to --cutout-root')
     s.add_argument('--band-procs', type=int, help='measure: band processes at once in a cell (default '
                                                   'photometry_measure.BAND_PROCS[snapshot] = 8)')
@@ -216,6 +223,8 @@ def run(args, run):
         if getattr(args, 'campaign', False):
             from exopipe.phase3.lib.photometry import campaign as CP
             CP.gate_args(args, stages)
+        elif getattr(args, 'new_campaign', False):
+            raise record.Refusal('CP-SCOPE: --new-campaign starts a new campaign: it needs --campaign')
         if 'cutouts' in stages and not getattr(args, 'targets', None):
             K.gate_samples(args.tier, cut=True)        # the cutters read photometry.SAMPLES_CUT (LPT in every tier)
         gate_adhoc_stages(args, stages)

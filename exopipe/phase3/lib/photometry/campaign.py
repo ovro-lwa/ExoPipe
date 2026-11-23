@@ -16,7 +16,11 @@ refactor_20261012/plan/GEN6_PORT_PLAN_20261123.md pull request 4):
                      group search refuses an excluded or member-less group itself, gen6_wb_regen_DRAFT.sh).
   CodePin            the engine code pinned at the campaign start (gen6_cutout_regen_DRAFT.sh :40, :51-53): sha1 of the engines and
                      the files beside them; the modules each engine child imported join the pin when first seen (the unit
-                     records' legacy_code). A change refuses that unit and every later one (CP-PIN).
+                     records' legacy_code). The pin lives in the campaign start record (rewritten as files join it); a later
+                     invocation under the same --out (--resume among them) continues that campaign only with the same cutout
+                     root and engine code, else it refuses (CP-GEN, CP-PIN) unless --new-campaign starts a new one. A unit
+                     whose children ran another version than the pin (or two, 'mixed:') is recorded refused CP-PIN (not a
+                     gap: it holds its cell) and the campaign stops; a unit recorded under another pin is cut again.
   space()            the run user's quota headroom (bytes and files, `lfs quota -q -u <user>`) and the file system's free space
                      (the filesystem_summary line of `lfs df`), before each unit (gen6_space_ok.sh). Below a floor, or unreadable:
                      the unit refuses and every later one (CP-SPACE).
@@ -34,18 +38,24 @@ refactor_20261012/plan/GEN6_PORT_PLAN_20261123.md pull request 4):
                      done, not failed (gen6_stage1_wb_no_wideband_20261122.py: 01h, 02h, 04h, 08h of 2024-12-26).
   check()            the campaign's complete-when content test, one command anyone can run (read only):
                      python -m exopipe.phase3.lib.photometry.campaign check --out <snapshot forced root> [--cells ...]
-                     every enumerated unit has a done record whose required checks passed (COMPLETE_* of the band kind) and
-                     whose manifest's files exist with their sizes (--retest: its outputs' content tests run again), a terminal
-                     no-input record, or a gap; every cell's stage 1 per kind is done (manifest tests MM1 + MM2), 'no <kind>' or
-                     not run for a gap. Exit 0 "COMPLETE" / "COMPLETE with N gaps" (each a GAP line: unit, code, reason), 1
-                     INCOMPLETE (PROBLEM lines), 2 cannot check.
+                     against the newest start record under --out (its generation, cutout root and pin), enumerating with both
+                     exclusion readers as the campaign does: every enumerated unit has a record of THIS campaign (meta campaign
+                     and cutout_root; a record of another run under the same --out is incomplete) that is done - its required
+                     checks passed (COMPLETE_* of the band kind), its manifest's files exist with their sizes (--retest: its
+                     outputs' content tests run again), its children's code is the pin's -, a terminal no-input record, or a
+                     gap; every cell's stage 1 per kind is done from the cutouts the cell holds now (the measure record's
+                     cutout listing digest; a re-cut since is incomplete) with manifest tests MM1 + MM2, 'no <kind>' or not
+                     run for a gap. Exit 0 "COMPLETE with N gaps (E excluded, R night-rule refused, Z with no cutout; not
+                     gaps)" (each gap a GAP line: unit, code, reason), 1 INCOMPLETE (PROBLEM lines), 2 cannot check.
 """
 import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 
 from exopipe.phase3.core import record
@@ -153,11 +163,12 @@ def cube_cells(cube_root):
     return out
 
 
-def enumerate_units(cells=None, cube_root=None, rec=None, ex=None, engine_excluded=None, complete=None):
-    """The campaign's Enumeration. ``cells``: restrict to these night cells (a named cell without a cube directory is held);
+def enumerate_units(cells=None, cube_root=None, rec=None, ex=None, engine_excluded=None, complete=None, present=None):
+    """The campaign's Enumeration. ``present``: the cube directories (cube_cells, listed once by the caller; default listed
+    here). ``cells``: restrict to these night cells (a named cell without a cube directory is held);
     ``rec``: the rescale records {cube path: record} (default fluxscale.records()); ``ex``: the exclusion read (default
     core/exclusions.for_tier('snapshot', fresh=True)); ``engine_excluded``: {cell: subbands the subband engine's reader
-    excludes} (cutouts_probe.py; None: not read - core/exclusions alone, the read-only listing of check());
+    excludes} (cutouts_probe.py; None: not read - core/exclusions alone, a dry run's listing; start() and check() read it);
     ``complete``: cell -> its cube MANIFEST has a COMPLETE line (default fluxscale._manifest_complete)."""
     from exopipe.phase3.core import exclusions
     root = cube_root or K.cfg().paths.SNAPSHOT_CUBES_ROOT
@@ -173,7 +184,7 @@ def enumerate_units(cells=None, cube_root=None, rec=None, ex=None, engine_exclud
     ex = ex or exclusions.for_tier('snapshot', fresh=True)
     e = Enumeration()
     e.cube_root, e.engine_read = root, engine_excluded is not None
-    present = cube_cells(root)
+    present = cube_cells(root) if present is None else list(present)
     e.n_cube_dirs = len(present)
     todo = present if cells is None else [c for c in cells if c in set(present)]
     e.n_scoped = len(todo)
@@ -400,16 +411,17 @@ class Campaign:
     once a cutouts unit ran (its child fingerprints join the pin). A pin change or low space stops the campaign: that unit
     and every later one refuse."""
 
-    def __init__(self, gen, enum, pin, space_fn=None, sleep=time.sleep):
+    def __init__(self, gen, enum, pin, space_fn=None, sleep=time.sleep, root=None):
         self.generation, self.enum, self.pin = gen, enum, pin
+        self.cutout_root = root or cutout_root()
         self.space_fn, self.sleep = space_fn or space, sleep
         self.stopped = None
-        self.record_path = None
+        self.record_path, self.record = None, None      # the start record this invocation wrote (its pin kept current)
 
     def refusal(self):
-        io_guard_wait(self.sleep)
-        if self.stopped:
+        if self.stopped:                # a stopped campaign refuses at once (no I/O-guard wait first)
             return '%s (campaign stopped earlier in this run)' % self.stopped
+        io_guard_wait(self.sleep)
         ch = self.pin.changed() if self.pin is not None else []
         if ch:
             self.stopped = 'CP-PIN: the engine code changed since the campaign started: %s' % '; '.join(ch[:5])
@@ -426,22 +438,97 @@ class Campaign:
             u.refuse(r + ' - not started')
 
     def after(self, u):
+        """Once a cutouts unit ran: its children's code fingerprint joins the pin (a file first seen; the start record is
+        rewritten so a later invocation and the check see it). A unit whose children ran another version than the pin, or two
+        ('mixed:'), does not stay done: its record is refused CP-PIN (incomplete, it holds its cell) and the campaign stops."""
         if self.pin is None:
             return
+        n0 = len(self.pin.files)
         bad = self.pin.absorb((u.meta or {}).get('legacy_code'))
-        if bad and not self.stopped:
-            self.stopped = 'CP-PIN: %s ran another engine version than the campaign pinned: %s' % (u.name, '; '.join(bad[:5]))
+        if len(self.pin.files) != n0 and self.record_path:
+            self.record['pin'] = dict(self.pin.files)
+            record.atomic_write_json(self.record_path, self.record, durable=True)
+        if bad:
+            why = 'CP-PIN: %s ran another engine version than the campaign pinned: %s' % (u.name, '; '.join(bad[:5]))
+            refuse_after(u, why)
+            if not self.stopped:
+                self.stopped = why
+
+    def stale(self, run, name):
+        """True when the existing record of unit ``name`` is not this campaign's (belongs) or its children's code is not the
+        pin's (code_mismatch): such a unit is cut again, never resumed."""
+        rec = record.load_record(run.out_root, run.step, name)
+        if rec is None:
+            return False
+        return (not belongs(rec, (self.generation, self.cutout_root))
+                or bool(code_mismatch(self.pin.files if self.pin is not None else {}, (rec.get('meta') or {}).get('legacy_code'))))
 
 
-def scope_cells(args):
+def refuse_after(u, why):
+    """Rewrite the closed unit ``u``'s record as refused ``why`` (its earlier outcome kept in its notes)."""
+    run = u.run
+    rec = record.load_record(run.out_root, run.step, u.name)
+    if rec is not None:
+        rec['notes'] = list(rec.get('notes') or []) + ['%s %s - refused after the unit by the campaign: %s' % (
+            rec.get('status'), (rec.get('reason') or '')[:200], why[:300])]
+        rec['status'], rec['reason'] = 'refused', why
+        record.atomic_write_json(record.record_path(run.out_root, run.step, u.name), rec, durable=True)
+    u.status, u.reason = 'refused', why
+
+
+def belongs(rec, ident):
+    """True when a unit record is this campaign's: ``ident`` (generation, cutout root) equals its meta's campaign and
+    cutout_root. A record of another run under the same --out (a served-generation regeneration, --in-place, another root)
+    is not."""
+    meta = rec.get('meta') or {}
+    return (meta.get('campaign') == ident[0]
+            and os.path.normpath(str(meta.get('cutout_root') or '')) == os.path.normpath(ident[1]))
+
+
+def code_mismatch(pin, fingerprint):
+    """How a unit's children's code fingerprint {file: sha1[:12]} (its record's legacy_code) differs from the campaign pin:
+    a file in two versions ('mixed:'), in another version, or not in the pin."""
+    bad = []
+    for f, h in sorted((fingerprint or {}).items()):
+        f = os.path.abspath(f)
+        if str(h).startswith('mixed:'):
+            bad.append('%s ran in two versions (%s)' % (f, h))
+        elif f not in pin:
+            bad.append('%s (%s) is not in the campaign pin' % (f, h))
+        elif pin[f] != h:
+            bad.append('%s: pinned %s, the unit ran %s' % (f, pin[f], h))
+    return bad
+
+
+def continue_refusal(prior, root, pin):
+    """Why this invocation cannot continue the campaign of start record ``prior`` under the same --out (None when it can):
+    another cutout root (CP-GEN), or engine code other than its pin - a pinned file changed, or a file pinned now that it
+    did not pin (CP-PIN). A campaign's units come from one engine version; --new-campaign starts a new one."""
+    rid = prior.get('run_id')
+    if os.path.normpath(str(prior.get('cutout_root') or '')) != os.path.normpath(root):
+        return ('CP-GEN: campaign %s of generation %s writes %s; this invocation\'s cutout root is %s - a new campaign under '
+                'this --out takes --new-campaign' % (rid, prior.get('generation'), prior.get('cutout_root'), root))
+    old = prior.get('pin') or {}
+    bad = ['%s: pinned %s, now %s' % (f, h, K.code_sha12(f) or 'unreadable') for f, h in sorted(old.items())
+           if K.code_sha12(f) != h]
+    bad += ['%s (%s) pinned now, not by campaign %s' % (f, h, rid) for f, h in sorted(pin.files.items()) if f not in old]
+    if bad:
+        return ('CP-PIN: the engine code differs from the pin of campaign %s (started %s): %s - its units come from one engine '
+                'version; a new campaign under this --out takes --new-campaign (its check then calls every unit done under '
+                'the old pin incomplete, and the run cuts them again)' % (rid, prior.get('started'), '; '.join(bad[:5])))
+    return None
+
+
+def scope_cells(args, present=None):
     """The night cells named by --cells / --epochs (<LST>_<date>; a band suffix refuses: a campaign covers whole cells), minus
-    --exclude-cells; None when none is named (every cube directory)."""
+    --exclude-cells; None when none is named (every cube directory). ``present``: the cube directories (patterns expand over
+    them; default listed here). A named cell without a cube directory stays in the scope: the enumeration holds it."""
     from exopipe.phase3.core import cells as C
     spec = ','.join(x for x in (getattr(args, 'cells', None), getattr(args, 'epochs', None)) if x)
     if not spec:
         return None
     root = K.cfg().paths.SNAPSHOT_CUBES_ROOT
-    uni = cube_cells(root) if os.path.isdir(root) else []
+    uni = list(present) if present is not None else (cube_cells(root) if os.path.isdir(root) else [])
     out = []
     for it in C.expand(spec, universe=uni, kind='night cell'):
         lst, date, sb = C.parse_night_cell(it)
@@ -487,22 +574,38 @@ def start(run, args):
         if not run.dry_run:
             raise
         K.would_refuse(run, 'campaign', str(e))
-    cells = scope_cells(args)
+    croot = K.cfg().paths.SNAPSHOT_CUBES_ROOT
+    present = cube_cells(croot)         # listed once: the scope's patterns, the engine reader's cells, the enumeration
+    cells = scope_cells(args, present)
     eng = None
-    if not run.dry_run:
-        listed = cells if cells is not None else cube_cells(K.cfg().paths.SNAPSHOT_CUBES_ROOT)
-        eng = engine_exclusions(run, listed) if listed else {}
-    enum = enumerate_units(cells, engine_excluded=eng)
+    if not run.dry_run:                 # the engine's reader probes only cells with a cube directory (a named one without is held)
+        have = set(present)
+        probe = [c for c in (cells if cells is not None else present) if c in have]
+        eng = engine_exclusions(run, probe) if probe else {}
+    enum = enumerate_units(cells, engine_excluded=eng, present=present)
     pin = CodePin(pin_files())
-    camp = Campaign(gen, enum, pin)
+    prior = latest_record(run.out_root, gen)
+    new = bool(getattr(args, 'new_campaign', False))
+    cont = None
+    if prior is not None and not new:   # a later invocation continues the campaign under this --out: same root, same pin
+        why = continue_refusal(prior, root, pin)
+        if why and not run.dry_run:
+            raise Refusal(why)
+        if why:
+            K.would_refuse(run, 'campaign', why)
+        else:
+            pin.files, cont = dict(prior.get('pin') or {}), prior.get('run_id')
+    camp = Campaign(gen, enum, pin, root=root)
     ok, text, vals = camp.space_fn()
+    which = ('continues campaign %s' % cont if cont else
+             'a new campaign over %s (--new-campaign)' % prior.get('run_id') if prior and new else 'a new campaign')
     K.plan(run, '[campaign] generation %s: cutouts %s, stage 1 %s; %d units (%d subband, %d wideband) in %d cells; %d '
                 '(cell, subband) excluded, %d held; %d of the %d cube directories in scope COMPLETE (%d under the cube root); '
-                'engine reader %s; %d engine files pinned; space: %s' % (gen, root, os.path.join(run.out_root, stage1_dir()), len(enum.units),
-                                       sum(kind_of(b) == 'sb' for _, b in enum.units),
-                                       sum(kind_of(b) == 'wb' for _, b in enum.units), len(enum.cells), len(enum.excluded),
-                                       len(enum.held), enum.n_complete, enum.n_scoped, enum.n_cube_dirs,
-                                       'read' if enum.engine_read else 'not read (dry run)', len(pin.files), text))
+                'engine reader %s; %d engine files pinned (%s); space: %s' % (
+                    gen, root, os.path.join(run.out_root, stage1_dir()), len(enum.units),
+                    sum(kind_of(b) == 'sb' for _, b in enum.units), sum(kind_of(b) == 'wb' for _, b in enum.units),
+                    len(enum.cells), len(enum.excluded), len(enum.held), enum.n_complete, enum.n_scoped, enum.n_cube_dirs,
+                    'read' if enum.engine_read else 'not read (dry run)', len(pin.files), which, text))
     if not ok:
         if run.dry_run:
             K.would_refuse(run, 'campaign', 'CP-SPACE: %s' % text)
@@ -512,10 +615,11 @@ def start(run, args):
         d = os.path.join(run.out_root, '_records', run.step, _cc().RECORD_SUBDIR)
         os.makedirs(d, exist_ok=True)
         camp.record_path = os.path.join(d, '%s_%s.json' % (gen, run.run_id))
-        record.atomic_write_json(camp.record_path, dict(
-            run.header(), generation=gen, cutout_root=root, stage1=os.path.join(run.out_root, stage1_dir()),
-            started=record.utcnow(), user=run_user(), host=K.hostname(), scope=cells, pin=pin.files, space=vals,
-            enumeration=enum.to_dict()), durable=True)
+        camp.record = dict(run.header(), generation=gen, cutout_root=root, stage1=os.path.join(run.out_root, stage1_dir()),
+                           started=record.utcnow(), user=run_user(), host=K.hostname(), scope=cells, pin=dict(pin.files),
+                           space=vals, continues=cont, new_campaign_over=(prior.get('run_id') if prior and new else None),
+                           enumeration=enum.to_dict())
+        record.atomic_write_json(camp.record_path, camp.record, durable=True)
     args.photometry_campaign = camp
     return camp
 
@@ -556,17 +660,38 @@ def gap_kind(status, reason):
     return None
 
 
-def unit_state(out_root, cell, band):
+NONE_TAGS = ('excluded', 'night rule', 'no cutout')
+
+
+def _none_tag(band, out):
+    """Why a C-NOCUT unit whose counts promise no file has none: 'excluded' (the group search's exit 3), 'night rule' (the
+    subband engine's 'None', the group search's 'refused: ...'), else 'no cutout' (a count 0, no member cube)."""
+    vals = [str(out.get(S)).strip() for S in STOKES]
+    if 'excluded' in vals:
+        return 'excluded'
+    if any((v == 'None' and kind_of(band) == 'sb') or v.startswith('refused: ') for v in vals):
+        return 'night rule'
+    return 'no cutout'
+
+
+def unit_state(out_root, cell, band, ident):
     """(state, text) of the cutouts unit of (cell, band) from its record: 'done'; 'none' - no cutout by a data decision or the
-    engine's outcome (C-EXCLUDED; C-NOCUT whose engine counts all promise no file, the night rule among them); 'gap' - a gate
-    refused its inputs (gap_kind 'refused': holds its cell's stage 1 of the band kind); 'gap-noinput' - no input by a gap code
-    (C-NOCUBE: holds nothing); 'held' - anything else, incomplete (no record, an error, an output or content refusal, an
-    operational refusal, another no-input reason)."""
+    engine's outcome (C-EXCLUDED; C-NOCUT whose engine counts all promise no file, the night rule among them; the text after
+    '<unit>: ' starts with its NONE_TAGS tag); 'gap' - a gate refused its inputs (gap_kind 'refused': holds its cell's stage 1
+    of the band kind); 'gap-noinput' - no input by a gap code (C-NOCUBE: holds nothing); 'held' - anything else, incomplete
+    (no record, a record of another run than this campaign - ``ident`` (generation, cutout root), belongs -, an error, an
+    output or content refusal, an operational refusal, another no-input reason)."""
     from exopipe.phase3.lib.photometry import steps_cutouts as SC
     name = 'cutouts.%s.%s' % (cell, band)
     rec = record.load_record(out_root, 'photometry', name)
     if rec is None:
         return 'held', '%s: no record' % name
+    if not belongs(rec, ident):
+        meta = rec.get('meta') or {}
+        return 'held', ('%s: a record of another run, not this campaign\'s (%s %s, campaign %s, cutout root %s; this campaign '
+                        '%s, %s)' % (
+            name, rec.get('status'), (rec.get('reason') or '')[:80], meta.get('campaign'), meta.get('cutout_root'), ident[0],
+            ident[1]))
     st, why = rec.get('status'), (rec.get('reason') or '').strip()
     if st == 'done':
         return 'done', name
@@ -575,26 +700,27 @@ def unit_state(out_root, cell, band):
         return 'gap' if gap == 'refused' else 'gap-noinput', '%s: %s %s' % (name, st, why[:400])
     if st == 'no-input':
         if why.startswith('C-EXCLUDED'):
-            return 'none', '%s: excluded' % name
+            return 'none', '%s: excluded (%s)' % (name, why[:120])
         out = (rec.get('meta') or {}).get('engine_outcome') or {}
         if why.startswith('C-NOCUT') and out and all(SC.expected_files(out.get(S), kind_of(band) == 'wb') == 0
                                                     for S in STOKES):
-            return 'none', '%s: no cutout (engine counts V %s, I %s)' % (name, out.get('V'), out.get('I'))
+            return 'none', '%s: %s (engine counts V %s, I %s)' % (name, _none_tag(band, out), out.get('V'), out.get('I'))
     return 'held', '%s: %s %s' % (name, st, why[:240])
 
 
-def readiness(out_root, enum, cell, kind):
+def readiness(out_root, enum, cell, kind, ident):
     """(outcome, detail) of the stage 1 of ``cell`` for band kind ``kind``: 'ready'; 'held' (a unit of the kind not terminal,
     or - subbands - a held subband: incomplete); 'gap' (every unit terminal, but a gate refused the inputs of one or more -
     the stage 1 of the kind is not run, a gap itself); 'no subband' / 'no wideband' (every unit of the kind terminal and none
     wrote a cutout, no refused gap among them); 'empty' (the campaign has no unit of the kind in the cell). A no-input gap
-    (C-NOCUBE) holds nothing: the stage 1 measures the bands that have cutouts."""
+    (C-NOCUBE) holds nothing: the stage 1 measures the bands that have cutouts. ``ident``: (generation, cutout root) of the
+    campaign (unit_state)."""
     bands = enum.bands_of(cell, kind)
     held = ['%s %s: held at enumeration (%s)' % (h['cell'], h['subband'], h['reason'])
             for h in (enum.held_of(cell) if kind == 'sb' else [])]
     if not bands and not held:
         return 'empty', 'no %s unit in %s' % (KIND_NAME[kind], cell)
-    states = [unit_state(out_root, cell, b) for b in bands]
+    states = [unit_state(out_root, cell, b, ident) for b in bands]
     held += [t for s, t in states if s == 'held']
     if held:
         return 'held', '; '.join(held)
@@ -612,7 +738,7 @@ def stage1_cell(run, args, camp, cell, kind, root, stage1):
     from exopipe.phase3.lib.photometry import steps_snapshot as SS
     bands = list(kind_bands(kind))
     name = SS.unit_name(cell, bands)
-    outcome, detail = readiness(run.out_root, camp.enum, cell, kind)
+    outcome, detail = readiness(run.out_root, camp.enum, cell, kind, (camp.generation, root))
     if outcome == 'empty':
         return []
     man = _cc().STAGE1_MANIFEST[kind]
@@ -638,13 +764,13 @@ def stage1_cell(run, args, camp, cell, kind, root, stage1):
 # complete-when content test
 # ---------------------------------------------------------------------------------------------------------------------
 
-def check_done(rec, band, retest=False):
+def check_done(rec, band, retest=False, pin=None):
     """Problems of a done cutouts record: a failed recorded test; a required check not recorded (photometry_campaign.
     COMPLETE_CHECKS, COMPLETE_KIND_CHECKS of the band kind, COMPLETE_STOKES_CHECKS per Stokes the engine counted cutouts for,
     COMPLETE_GEN5_CHECKS per such Stokes of a subband of the generation-5 comparison sample); an engine count no file count can
     be held to; not exactly one output of each class of COMPLETE_OUTPUTS, or one missing; a manifest row whose file is missing
-    or has another size; a Stokes with a positive engine count and no row. ``retest``: every required output's content tests
-    run again."""
+    or has another size; a Stokes with a positive engine count and no row; with ``pin`` (the campaign's, {file: sha1[:12]}),
+    children's code other than the pin (code_mismatch). ``retest``: every required output's content tests run again."""
     from exopipe.phase3.core import validate
     from exopipe.phase3.lib.photometry import steps_cutouts as SC
     from exopipe.phase3.lib.photometry import tests_cutouts as TC
@@ -667,6 +793,8 @@ def check_done(rec, band, retest=False):
             if kind == 'sb' and meta.get('generation5_sample'):
                 need += [n.format(stokes=S) for n in cc.COMPLETE_GEN5_CHECKS]
     bad += ['check %s not recorded' % n for n in need if n not in passed]
+    if pin is not None:
+        bad += ['engine code: %s' % x for x in code_mismatch(pin, meta.get('legacy_code'))[:3]]
     outs = {}
     for o in rec.get('outputs') or []:
         outs.setdefault(o.get('class'), []).append(o)
@@ -706,13 +834,15 @@ def check_done(rec, band, retest=False):
     return bad
 
 
-def check_stage1(out_root, stage1, enum, cell, kind):
-    """(state, problem or '') of the stage 1 of (cell, kind): 'done' (a done measure record of the kind's bands, its manifest
-    passing MM1 + MM2), 'no <kind>' (its SM-NOBAND record), 'gap' (not run: a gate refused the inputs of a cutouts unit of
-    the kind; the text names them - a gap, not a problem), 'empty', or incomplete."""
+def check_stage1(out_root, stage1, enum, cell, kind, ident):
+    """(state, problem or '') of the stage 1 of (cell, kind): 'done' (a done measure record of the kind's bands, measured
+    from the cutouts the cell holds now - the record's cutout_listing_sha1 equals the listing's, as measure_cell's resume
+    compares it -, its manifest passing MM1 + MM2), 'no <kind>' (its SM-NOBAND record), 'gap' (not run: a gate refused the
+    inputs of a cutouts unit of the kind; the text names them - a gap, not a problem), 'empty', or incomplete (a re-cut
+    since stage 1 among them: the next run measures it again)."""
     from exopipe.phase3.lib.photometry import steps_snapshot as SS
     from exopipe.phase3.lib.photometry import tests as T
-    outcome, detail = readiness(out_root, enum, cell, kind)
+    outcome, detail = readiness(out_root, enum, cell, kind, ident)
     if outcome == 'empty':
         return 'empty', ''
     if outcome == 'gap':
@@ -730,6 +860,12 @@ def check_stage1(out_root, stage1, enum, cell, kind):
         return 'missing', 'stage 1 %s %s: outcome %s, record %s %s' % (cell, kind, outcome, rec.get('status'), meta.get('outcome'))
     if rec.get('status') != 'done' or not set(kind_bands(kind)) <= set(meta.get('bands_done') or []):
         return 'missing', 'stage 1 %s %s: record %s (%s)' % (cell, kind, rec.get('status'), (rec.get('reason') or '')[:200])
+    files = [p for b in kind_bands(kind) for p in SS.cell_files(cell, ident[1], None, b)]
+    lsha = SS.listing_sha1(files) if files else ''
+    if os.path.normpath(str(meta.get('cutout_root') or '')) != os.path.normpath(ident[1]) \
+            or meta.get('cutout_listing_sha1') != lsha:
+        return 'missing', ('stage 1 %s %s: measured from other cutouts than the cell holds now under %s (re-cut since; %d '
+                           'cutouts now) - the next run measures it again' % (cell, kind, ident[1], len(files)))
     mp = os.path.join(stage1, cell, _cc().STAGE1_MANIFEST[kind])
     if not os.path.isfile(mp):
         return 'missing', 'stage 1 %s %s: no manifest %s' % (cell, kind, mp)
@@ -740,18 +876,26 @@ def check_stage1(out_root, stage1, enum, cell, kind):
     return 'done', ''
 
 
-def check(out_root, enum, stage1=None, retest=False):
-    """(complete, counts, problems, gaps) of a campaign: every unit of ``enum`` terminal - done (its record passes check_done),
-    no cutout ('none'), or a GAP (a gate refused its inputs: listed, never a problem) - no (cell, subband) held at the unit
-    list (its inputs never tested), and - with ``stage1`` - every cell's stage 1 per kind done, 'no <kind>' or not run for a
-    gap. Complete = no problem; the gaps are reported beside it."""
+def check(out_root, enum, started, stage1=None, retest=False):
+    """(complete, counts, problems, gaps) of a campaign whose start record is ``started`` (its generation, cutout root and
+    pin): every unit of ``enum`` terminal - done (this campaign's record, passing check_done with the pin), no cutout
+    ('none': counted by NONE_TAGS tag), or a GAP (a gate refused its inputs: listed, never a problem) - no (cell, subband)
+    held at the unit list (its inputs never tested, a disagreement of the two exclusion readers among them), and - with
+    ``stage1`` - every cell's stage 1 per kind done, 'no <kind>' or not run for a gap. Complete = no problem; the gaps are
+    reported beside it."""
+    ident = (started['generation'], started['cutout_root'])
+    pin = dict(started.get('pin') or {})
     counts = {'units': len(enum.units), 'done': 0, 'none': 0, 'gap': 0, 'incomplete': 0, 'held_enumeration': len(enum.held)}
+    counts.update({'none_%s' % t.replace(' ', '_'): 0 for t in NONE_TAGS})
     problems = ['held at enumeration: %s %s (%s)' % (h['cell'], h['subband'], h['reason']) for h in enum.held]
     gaps = []
     for cell, band in enum.units:
-        state, text = unit_state(out_root, cell, band)
+        state, text = unit_state(out_root, cell, band, ident)
+        if state == 'none':
+            tag = text.split(': ', 1)[1]
+            counts['none_%s' % next(t for t in NONE_TAGS if tag.startswith(t)).replace(' ', '_')] += 1
         if state == 'done':
-            bad = check_done(record.load_record(out_root, 'photometry', 'cutouts.%s.%s' % (cell, band)), band, retest)
+            bad = check_done(record.load_record(out_root, 'photometry', 'cutouts.%s.%s' % (cell, band)), band, retest, pin)
             if bad:
                 state, text = 'incomplete', 'cutouts.%s.%s: done record, but %s' % (cell, band, '; '.join(bad)[:600])
         key = {'done': 'done', 'none': 'none', 'gap': 'gap', 'gap-noinput': 'gap'}.get(state, 'incomplete')
@@ -763,7 +907,7 @@ def check(out_root, enum, stage1=None, retest=False):
     if stage1:
         for cell in enum.cells:
             for kind in ('sb', 'wb'):
-                st, why = check_stage1(out_root, stage1, enum, cell, kind)
+                st, why = check_stage1(out_root, stage1, enum, cell, kind, ident)
                 key = 'stage1_%s' % st.replace(' ', '_')
                 counts[key] = counts.get(key, 0) + 1
                 if why:
@@ -784,29 +928,44 @@ def main(argv=None):
                    'record again (reads every listed cutout)')
     c.add_argument('--no-stage1', action='store_true', help='check the cutouts units only')
     c.add_argument('--max-problems', type=int, default=200, help='problem lines printed (default 200)')
+    c.add_argument('--work', help='directory of the engine exclusion reader\'s child log (default a temporary directory, '
+                   'removed afterwards; nothing is written under --out)')
     a = ap.parse_args(argv)
     if a.cmd != 'check':
         ap.print_help()
         return 2
     if a.generation:
         K.cfg().set('photometry_campaign.GENERATION', a.generation, source='--generation')
+    out = os.path.abspath(a.out)
     try:
         gen = generation()
-        cells = scope_cells(argparse.Namespace(cells=a.cells, epochs=None, exclude_cells=None))
-        enum = enumerate_units(cells)
+        started = latest_record(out, gen)
+        if started is None:
+            raise Refusal('no campaign start record of generation %s under %s' % (gen, os.path.join(
+                out, '_records', 'photometry', _cc().RECORD_SUBDIR)))
+        present = cube_cells(K.cfg().paths.SNAPSHOT_CUBES_ROOT)
+        cells = scope_cells(argparse.Namespace(cells=a.cells, epochs=None, exclude_cells=None), present)
+        have = set(present)
+        probe = [c for c in (cells if cells is not None else present) if c in have]
+        work = a.work or tempfile.mkdtemp(prefix='campaign_check_', dir=os.environ.get('TMPDIR') or None)
+        try:                            # both exclusion readers, as the campaign enumerates (a disagreement holds)
+            run = record.Run('photometry', ['campaign check'] + list(sys.argv[1:] if argv is None else argv), work, K.cfg())
+            eng = engine_exclusions(run, probe) if probe else {}
+        finally:
+            if not a.work:
+                shutil.rmtree(work, ignore_errors=True)
+        enum = enumerate_units(cells, engine_excluded=eng, present=present)
     except Refusal as e:
         print('CANNOT CHECK: %s' % e, flush=True)
         return 2
-    out = os.path.abspath(a.out)
     stage1 = None if a.no_stage1 else os.path.join(out, stage1_dir())
-    ok, counts, problems, gaps = check(out, enum, stage1, a.retest)
-    started = latest_record(out, gen)
-    if started is not None:
-        added, removed = units_changed(started, enum.units, cells)
-        if added or removed:
-            print('UNITS CHANGED since the campaign start record %s: %d added (e.g. %s), %d removed (e.g. %s)' % (
-                started.get('run_id'), len(added), added[:3], len(removed), removed[:3]), flush=True)
-    print('GENERATION %s; cutouts %s; records %s; stage 1 %s' % (gen, cutout_root(), out, stage1 or 'not checked'))
+    ok, counts, problems, gaps = check(out, enum, started, stage1, a.retest)
+    added, removed = units_changed(started, enum.units, cells)
+    if added or removed:
+        print('UNITS CHANGED since the campaign start record %s: %d added (e.g. %s), %d removed (e.g. %s)' % (
+            started.get('run_id'), len(added), added[:3], len(removed), removed[:3]), flush=True)
+    print('GENERATION %s; campaign %s (started %s); cutouts %s; records %s; stage 1 %s' % (
+        gen, started.get('run_id'), started.get('started'), started.get('cutout_root'), out, stage1 or 'not checked'))
     print('COUNTS %s' % json.dumps(counts, sort_keys=True))
     for g in gaps:
         print('GAP %s' % g)
@@ -814,11 +973,18 @@ def main(argv=None):
         print('PROBLEM %s' % p)
     if len(problems) > a.max_problems:
         print('... %d more problems' % (len(problems) - a.max_problems))
-    if not ok:
-        print('INCOMPLETE: %d problems%s' % (len(problems), ' (and %d gaps)' % len(gaps) if gaps else ''), flush=True)
-    else:
-        print('COMPLETE with %d gaps' % len(gaps) if gaps else 'COMPLETE', flush=True)
+    print(summary(ok, counts, problems, gaps), flush=True)
     return 0 if ok else 1
+
+
+def summary(ok, counts, problems, gaps):
+    """The complete-when line: COMPLETE or INCOMPLETE (problems), the gaps, and the units without a cutout counted by why
+    (excluded, the night rule's refusal, another zero count) - none of them a gap."""
+    none = '%d excluded, %d night-rule refused, %d with no cutout; not gaps' % (
+        counts.get('none_excluded', 0), counts.get('none_night_rule', 0), counts.get('none_no_cutout', 0))
+    if not ok:
+        return 'INCOMPLETE: %d problems, %d gaps (%s)' % (len(problems), len(gaps), none)
+    return 'COMPLETE with %d gaps (%s)' % (len(gaps), none)
 
 
 if __name__ == '__main__':

@@ -521,8 +521,9 @@ class photometry_campaign(_Section):
     #      "Refusals by the large-scale level test stay refused, as gaps, never forced"): a unit whose INPUTS a gate refused is a
     #      recorded gap - terminal, listed by the complete-when check (COMPLETE with N gaps), never rerun into a pass. Refused
     #      (status refused) by these codes, the reason holding the text given (None: any): the gap holds its cell's stage 1 of
-    #      that band kind (C-FLUXSCALE before the engine: a cube not rescaled, off its rescale record, V != I, records
-    #      unreadable). No input by these codes: a gap that holds nothing (C-NOCUBE: a flow cube gone since the unit list). Every
+    #      that band kind (C-FLUXSCALE before the engine: a verdict on the cubes - not rescaled, off its rescale record, V != I,
+    #      an ambiguous record, no record; C-FLUXSCALE-READ, records or a header unreadable, is operational and no gap).
+    #      No input by these codes: a gap that holds nothing (C-NOCUBE: a flow cube gone since the unit list). Every
     #      other refusal (output and content checks C-WRITE C-COUNT C-NAMES C-IDENTITY C-GENCHECK C-CONTENT C-PLACE C-STALE, the
     #      flux-scale re-checks after the cut, C-ENGINE, PHOT-EXCL-*, CP-*), an error or a missing record is incomplete.
     #      C-EXCLUDED and C-NOCUT whose engine counts promise no file (the night rule) are no gaps: terminal, no cutout
