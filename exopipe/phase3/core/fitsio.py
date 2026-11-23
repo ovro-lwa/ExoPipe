@@ -43,6 +43,100 @@ def write_fits(path, data, header=None, overwrite=False):
     return path
 
 
+FITS_BLOCK = 2880                   # bytes, the FITS logical record
+
+
+def fits_implied_size(path):
+    """(bytes, HDUs) the headers of a FITS file imply: per HDU its header blocks plus its data (|BITPIX|/8 x GCOUNT x
+    (PCOUNT + NAXIS1 x ... x NAXISn)) rounded up to 2880, the header blocks read with ordinary reads (never a memory map, never
+    the data). The walk stops at the file's on-disk size, so a file cut short implies MORE bytes than it holds. Raises
+    ValueError when a header is cut short, a required card is missing, or the bytes after an HDU do not start another HDU
+    (bytes beyond the last HDU)."""
+    size = os.path.getsize(path)
+    off = n = 0
+    with open(path, 'rb') as f:
+        while off < size:
+            f.seek(off)
+            cards, nblk, end = {}, 0, False
+            while not end:
+                blk = f.read(FITS_BLOCK)
+                if len(blk) < FITS_BLOCK:
+                    raise ValueError(f'HDU {n}: the header is cut short at byte {off + nblk * FITS_BLOCK + len(blk)} of {size}')
+                if nblk == 0:
+                    first = blk[:8].decode('ascii', 'replace').strip()
+                    if first != ('SIMPLE' if n == 0 else 'XTENSION'):
+                        raise ValueError(f'{size - off} byte(s) at byte {off} after HDU {n - 1} do not start an HDU (first '
+                                         f'keyword {first!r})' if n else f'not a FITS file (first keyword {first!r})')
+                nblk += 1
+                for i in range(0, FITS_BLOCK, 80):
+                    card = blk[i:i + 80].decode('ascii', 'replace')
+                    key = card[:8].strip()
+                    if key == 'END':
+                        end = True
+                        break
+                    if card[8:10] == '= ' and (key in ('BITPIX', 'PCOUNT', 'GCOUNT', 'GROUPS') or key.startswith('NAXIS')):
+                        cards[key] = card[10:].split('/', 1)[0].strip()
+            try:
+                bitpix, naxis = abs(int(cards['BITPIX'])), int(cards['NAXIS'])
+                dims = [int(cards[f'NAXIS{i}']) for i in range(1, naxis + 1)]
+                pcount, gcount = int(cards.get('PCOUNT', 0)), int(cards.get('GCOUNT', 1))
+            except (KeyError, ValueError) as e:
+                raise ValueError(f'HDU {n}: header card {e} missing or not an integer') from None
+            if n == 0 and cards.get('GROUPS') == 'T' and dims and dims[0] == 0:
+                dims = dims[1:]                                     # random groups: NAXIS1 = 0 is not an axis
+            nel = 1
+            for d in dims:
+                nel *= d
+            data = bitpix // 8 * gcount * (pcount + nel) if naxis else 0
+            off += nblk * FITS_BLOCK + -(-data // FITS_BLOCK) * FITS_BLOCK
+            n += 1
+    return off, n
+
+
+def fsync_path(path):
+    """fsync a written file by path (open read-only, fsync, close). OSError propagates: Linux reports a writeback error the
+    writer never saw (pages a Lustre eviction discarded) to the next fsync of the file, a new descriptor's included."""
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def drop_cache(path):
+    """Ask the kernel to drop a file's cached pages (POSIX_FADV_DONTNEED), so a later read is of what the disk holds, not of
+    pages still in memory. Advice only: no outcome depends on it, a failure is ignored."""
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+    except (OSError, AttributeError):
+        pass
+    finally:
+        os.close(fd)
+
+
+def settle_fits(path):
+    """None when a freshly written FITS file is on disk whole: fsync it (an OSError is a failed write), then its on-disk size
+    must equal the size its headers imply (fits_implied_size: a file cut short or with bytes beyond its last HDU fails), then
+    its cached pages are dropped (drop_cache) so the caller's content tests read the disk. Else the reason (a string)."""
+    try:
+        fsync_path(path)
+    except OSError as e:
+        return f'fsync failed ({e})'
+    try:
+        size = os.path.getsize(path)
+        implied, nhdu = fits_implied_size(path)
+    except (OSError, ValueError) as e:
+        return f'size check failed ({e})'
+    if size != implied:
+        return f'{size} bytes on disk != {implied} bytes its {nhdu} HDU header(s) imply ({size - implied:+d})'
+    drop_cache(path)
+    return None
+
+
 def read_image(path, cache=True):
     """(data 2-D float32/64 as stored, header, celestial WCS) of a FITS image; leading axes of length 1 squeezed."""
     import numpy as np
