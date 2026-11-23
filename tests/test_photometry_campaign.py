@@ -5,7 +5,7 @@ synthetic exclusion list, synthetic unit records, stub engine files and a stub `
   - the generation: both roots derive from photometry_campaign.GENERATION; the served generation or a bad name refuses
     (CP-GEN); --campaign routes the cutout root (steps_common.cutout_root) and the stage-1 root (steps_snapshot.stage1_root);
     the flags a campaign does not take refuse (CP-SCOPE), so do stages other than cutouts and measure (CP-STAGES); the
-    campaign's cutouts stage refuses until wired (CP-WIRE); the step parses --campaign;
+    step parses --campaign; the production cutout root refuses in the refactor window (C-ROOT), reported by a dry run;
   - the enumeration: cube directories one level down, subbands with both Stokes cubes; excluded by core/exclusions OR the
     subband engine's reader; held on a disagreement of the two, one Stokes cube, no MANIFEST COMPLETE line, no rescale
     record; the widebands of every cell with a subband unit, none for a cell without;
@@ -15,15 +15,21 @@ synthetic exclusion list, synthetic unit records, stub engine files and a stub `
     bytes, quota files, free bytes) refuses below it (CP-SPACE), sticky; a limit of 0 is no limit; an unreadable read
     refuses; at the start a low read refuses the campaign and writes no start record;
   - the I/O guard: the host's stop file with an io_guard line, or the alert file, makes a unit wait; other stop lines do not;
-  - stage-1 readiness: done / C-EXCLUDED / C-NOCUT with no-file counts are terminal; refused (e.g. the generation check),
-    error, no record, C-NOCUBE, a C-NOCUT whose counts promise files, a held subband hold ONLY their cell's kind (SM-HELD);
-    all units without a cutout -> 'no wideband' (SM-NOBAND, no input, nothing measured); a ready kind is measured into its
-    kind's manifest with the campaign gate; the campaign's cutouts outcome never stops its measure stage (run_tier);
+  - stage-1 readiness: done / C-EXCLUDED / C-NOCUT with no-file counts are terminal; a no-input gap (C-NOCUBE) holds
+    nothing; a refused gap (C-FLUXSCALE before the engine) holds its cell's kind as a gap (SM-HELD, stage 1 not run); any
+    other refusal (e.g. the generation check), an error, no record, a C-NOCUT whose counts promise files, a held subband
+    hold ONLY their cell's kind (SM-HELD); all units without a cutout -> 'no wideband' (SM-NOBAND, no input, nothing
+    measured); a ready kind is measured into its kind's manifest with the campaign gate; the campaign's cutouts outcome
+    never stops its measure stage (run_tier);
+  - the wiring: steps_cutouts lists the campaign's units, runs the campaign gate first in each unit (before C-NOCUBE) and
+    the pin after each unit;
   - measure_cell: the gate runs first in the unit; a kind manifest is rewritten unless it holds rows of another band
     (SM-SUBSET);
-  - the complete-when check: a done record passes only with its required checks, its manifest's files present with their
-    sizes and a file per Stokes with a positive engine count; stage 1 per kind done (MM1 + MM2) or 'no <kind>'; the command
-    exits 0 complete, 1 incomplete.
+  - the complete-when check: a done record passes only with its required checks (by band kind: GP, GA + fs1 + the
+    flux-scale record, GC, GB for the generation-5 sample, GW), its manifest's files present with their sizes and a file
+    per Stokes with a positive engine count; stage 1 per kind done (MM1 + MM2) or 'no <kind>'; gaps (input-gate refusals,
+    ruled) are listed and complete ("COMPLETE with N gaps", exit 0); output or content refusals, errors and missing records
+    are incomplete (exit 1).
 Scratch: a fresh directory under $EXOPIPE3_TEST_SCRATCH, else the system temp directory, removed at exit.
 Run: python tests/test_photometry_campaign.py
 """
@@ -827,6 +833,21 @@ def test_start(W, d):
         e = raises(CP.start, run_of(out), args)
         check('C-ROOT: in the refactor window (paths.PRODUCTION_WRITES False) the campaign refuses its production cutout root',
               e is not None and 'C-ROOT' in e, e)
+        Q = Patch()
+        try:
+            Q.set(CP, 'enumerate_units', lambda cells=None, engine_excluded=None: W.enum(engine=False))
+            run_d = run_of(os.path.join(d, 'out_start_dry'), dry_run=True)
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                camp_d = CP.start(run_d, campaign_args())
+            check('C-ROOT in a dry run: reported as the refusal the run would raise (exit 2), the campaign still listed, '
+                  'nothing written', camp_d is not None and any('C-ROOT' in w for w in run_d.photometry_would_refuse)
+                  and '[campaign] generation gen6' in buf.getvalue() and camp_d.record_path is None
+                  and not os.path.exists(os.path.join(d, 'out_start_dry', '_records', 'photometry', '_campaign')),
+                  (getattr(run_d, 'photometry_would_refuse', None),
+                                                                              buf.getvalue()[-300:]))
+        finally:
+            Q.undo()
         P.set(CFG.photometry_campaign, 'CUTOUT_ROOT_FMT', os.path.join(d, 'photometry_{generation}'))
         run = run_of(out)
         camp = CP.start(run, args)

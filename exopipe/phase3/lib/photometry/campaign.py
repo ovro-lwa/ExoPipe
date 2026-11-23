@@ -481,7 +481,12 @@ def start(run, args):
         return camp
     gen = generation()
     root = cutout_root()
-    K.gate_write_root(root, 'the campaign cutout root')
+    try:
+        K.gate_write_root(root, 'the campaign cutout root')
+    except Refusal as e:            # a dry run reports it (exit 2) and still lists the campaign
+        if not run.dry_run:
+            raise
+        K.would_refuse(run, 'campaign', str(e))
     cells = scope_cells(args)
     eng = None
     if not run.dry_run:
