@@ -924,7 +924,7 @@ def load_warp_screen(lst, date, subband):
         "%s_%s_%s_warp_screen.fits" % (date, lst, subband)))
     if not pats:
         return None, None
-    with fits.open(sorted(pats)[-1]) as h:
+    with fits.open(sorted(pats)[-1], memmap=False) as h:
         return (h["SCREEN_X"].data.astype(np.float32),
                 h["SCREEN_Y"].data.astype(np.float32))
 
@@ -935,7 +935,7 @@ def master_in_raw_frame(master_path, snap_hdr, screen_x, screen_y,
     on the snapshot grid.  Raw-frame pixel q sees the sky that dewarping
     would place at p ~ q - screen(q); we sample the master there.
     """
-    mdata = np.squeeze(fits.getdata(master_path)).astype(np.float32)
+    mdata = np.squeeze(fits.getdata(master_path, memmap=False)).astype(np.float32)
     mhdr = fits.getheader(master_path)
     wsnap = WCS(snap_hdr).celestial
     wmast = WCS(mhdr).celestial
@@ -1217,7 +1217,7 @@ def pb_value(subband, tbin, x, y, snap_shape):
     key = (subband, tbin)
     if key not in _PB_CACHE:
         p = os.path.join(PB_LIBRARY, "PB_%s_bin%d.fits" % (subband, tbin))
-        _PB_CACHE[key] = (np.squeeze(fits.getdata(p)).astype(np.float32)
+        _PB_CACHE[key] = (np.squeeze(fits.getdata(p, memmap=False)).astype(np.float32)
                           if os.path.exists(p) else None)
     pb = _PB_CACHE[key]
     if pb is None:
@@ -1778,7 +1778,7 @@ def run_minute_tier_only(lst, date, subband, stokes, mode, out_dir, stage_root=N
                                             info.get("flow_registered"), subband, st, mode, flow_applies(subband)))
         thresh = float(info["thresh"])
         cube, meta, hdr0 = load_cube(fl, nthreads=nthreads)
-        model = np.squeeze(fits.getdata(mpath)).astype(np.float32)
+        model = np.squeeze(fits.getdata(mpath, memmap=False)).astype(np.float32)
         if model.shape != cube.shape[1:]:
             raise RuntimeError("REFUSED (--tier1min-only): model %s is %s, frames are %s" % (mpath, model.shape, cube.shape[1:]))
         admitted = np.array([r["admitted"] == "1" for r in nrows], dtype=bool)

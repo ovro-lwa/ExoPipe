@@ -45,10 +45,32 @@ The pin (PIN_COMMIT / PIN_BLOBS below)
   bound of half the tile step, step no coarser than archived / F, lossless tiles bit-exact; replaces the fixed 0.05
   worst-pixel limit), ported 2026-11-17. This directory's copy is production's file at 5142b5c except for four no-memory-map
   lines (R-GREGG-20261117-NO-MMAP-OF-LUSTRE-FILES-READ-OR-WRITE: the module-level switch, memmap=False twice, Cube.flow
-  reading one frame through .section); no other pinned file changed between the two commits. PIN_BLOBS holds the
-  git blob id of every ported file at that commit. Production keeps moving: tests/test_snapshot_engine.py reports every pinned
-  file production has changed since (one explicit failure naming what to port), as tests/production_pin.py does for the ops
-  ports. Moving the pin is a port round.
+  reading one frame through .section); no other pinned file changed between the two commits.
+  clv15 1985fc8 (2026-11-18) = 5142b5c plus production's three commits of 2026-11-18 to pinned files, ported 2026-11-23:
+  6e4febe (phase3_snapshot_cutouts.py: SAMPLES gains ('LPT', 'LPTs.csv'); Gregg 2026-11-18 "Approve gen6 with the LPTs
+  included"), dfb75ea (no memory map: memmap=False written out on four reads of phase3_snapshot_search.py and two of
+  phase3_snapshot_frame_movie.py; production's phase3_snapshot_cube.py lines were already here, and that copy is now
+  production's file at 1985fc8 plus the two module-switch lines) and 1985fc8 (phase3_snapshot_group_search.py: wideband
+  weights on rescaled members, R-GREGG-20261118-WIDEBAND-WEIGHTS-ON-RESCALED-CUBES-KEEP-RULING: a member is weighted
+  1/(F rms^2), F = its frame header's FSAPPLD, which _FlowCubeFrames copies from the cube's primary; a factor that is not
+  positive and finite refuses; here in accumulate()'s _one, which production's loop and the per-instant speed-up share, so the
+  speed-up is kept). No other pinned file changed between the two commits, and clv15 HEAD (84139b6 on 2026-11-23) holds the
+  same blobs. PROVEN 2026-11-23 on real data: production's wideband cutout regeneration (clv15 HEAD,
+  phase3_snapshot_group_search.py --cutouts-from-cubes Red, 00h 2025-09-06 Stokes I, member cubes rescaled with FSAPPLD
+  0.956-1.049) and this directory's copy (search threads 6) wrote the same 12 output files - 11 byte-identical, the outcome
+  record differing only in its 'written' time - and the same 162 cutout files (HWJ 38, 10 pc 119, LPT 2, planets 3),
+  byte-identical after blanking the one DATE-CRE card; the pre-port copy (v2 b9ad9bf) on the same job differed (member weights
+  in the ratio 1/FSAPPLD per subband within 6.6e-6, no LPT files, the data of every common cutout). The cutout target lists
+  equal production's _targets() (389 entries: 77 HWJ, 292 10 pc, 20 LPT). The memory-map lines change no read: Cube.flow
+  (.section) equals an ordinary seek-and-read of the FLOW plane, and a PB library file and a warp screen read with
+  memmap=False equal the earlier default read of a node-local copy. tests/test_snapshot_engine.py adds the weight form, its
+  refusal and the member-cube reader's factor. The review of PR 151 added two refusals production lacks, so this copy differs
+  from production only on malformed input: an FSAPPLD that is not a number refuses like a non-positive one (production raised
+  a bare ValueError), and _FlowCubeFrames refuses a frame header whose own FSAPPLD is not the cube's (production overwrote it).
+  test_production_pin also checks the cutout sample lists against photometry.SAMPLE_SHA1.
+  PIN_BLOBS holds the git blob id of every ported file at the pin commit. Production keeps moving: tests/test_snapshot_engine.py
+  reports every pinned file production has changed since (one explicit failure naming what to port), as tests/production_pin.py
+  does for the ops ports. Moving the pin is a port round.
 
 Still run or imported IN PLACE (not ported; resolved through the legacy clv15 root placed LAST on sys.path, or by an absolute path
 in the engine itself):
@@ -62,14 +84,14 @@ This module itself is import-safe and holds only the pin; nothing here is import
 """
 
 CLV15_REPO = '/lustre/gh/main/clv15'
-PIN_COMMIT = '5142b5c7d75cd1d51229397a6083e9db7a3838a3'
+PIN_COMMIT = '1985fc80d3b2b04b20105bf93471c51c44af3add'
 PIN_BLOBS = {
-    'phase3_snapshot_search.py': '292ad2dd79a5ac0d8d0b1c041534366d356de13b',
-    'phase3_snapshot_group_search.py': '860b42e94cc6073596583997d416a3d4a83ffc24',
-    'phase3_snapshot_cutouts.py': '5c6fa63521b581e27d31524c6aec819fc779de9d',
+    'phase3_snapshot_search.py': 'aec1a4b61cb3541c488ce5ef8e9170f0c8f313d3',
+    'phase3_snapshot_group_search.py': '51675633dd061a13a10b6eb2ecfdbcc5fb7a4b48',
+    'phase3_snapshot_cutouts.py': 'c6eba30d0f783670744abeb79b8daa8d5361de86',
     'phase3_snapshot_lightcurves.py': '8f669f5504115267a7b9551e06b0a120bf36e8c4',
-    'phase3_snapshot_cube.py': '9bd02c950dad57c02471fb1649f24c62a88682c9',
-    'phase3_snapshot_frame_movie.py': '709a9448ddb2ba218754ee88347696e32ecef965',
+    'phase3_snapshot_cube.py': '719edc7b41fd2a7c36c9ab832ce51e1c29375c15',
+    'phase3_snapshot_frame_movie.py': '7e38901d7bbb5801576518e9c4925a23ae681c58',
     'phase3_snapshot_flow_movie.py': '0407eb749f1e2fd34329d9f41a4ad8a40873572c',
     'phase3_snapshot_flow.py': 'ff7c35eb50ce120a71a68cf4f94f4ca19b0e21be',
     'phase3_snapshot_regrid.py': '9a0ef18f1d2568ed9d57ed8dc227217e8dfa3069',

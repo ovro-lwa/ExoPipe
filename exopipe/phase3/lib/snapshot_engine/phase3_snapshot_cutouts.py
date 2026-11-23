@@ -31,12 +31,14 @@ CUT_DEG = 5.0
 MIN_EL_DEG = 20.0          # targets considered when above this at the cell's mid-time (the search domain is 30)
 MERGE_ARCMIN = 1.0         # list entries sharing one name within this are one object (one cutout file)
 ROOT_DEFAULT = "/lustre/pipeline/exopipe/phase3/photometry"
-SAMPLES = (("HWJ", "Hot_Warm_Jupiters.csv"), ("10pc", "10pc.csv"))
+SAMPLES = (("HWJ", "Hot_Warm_Jupiters.csv"), ("10pc", "10pc.csv"),
+           ("LPT", "LPTs.csv"))   # 2026-11-18 Gregg: "Approve gen6 with the LPTs included" (long-period transients, common_name/ra_current/dec_current)
 PLANETS = ("jupiter", "saturn", "uranus", "neptune")
-# PORT (refactor, 2026-11-11): production reads the two target lists BESIDE THE SCRIPT (clv15/10pc.csv, clv15/Hot_Warm_Jupiters.csv)
-# and skips a list that is not there.  This copy lives in the refactor, without the lists beside it, so it reads them from
-# P3_SNAP_SAMPLES_DIR (default: production's directory, the same two files) and REFUSES when a default list is missing: a skipped
-# list would write the planets only and read as "no target in the field" (found 2026-11-11 on a copy of the engine without them).
+# PORT (refactor, 2026-11-11): production reads the default target lists BESIDE THE SCRIPT (clv15/Hot_Warm_Jupiters.csv,
+# clv15/10pc.csv and, since clv15 6e4febe of 2026-11-18, clv15/LPTs.csv) and skips a list that is not there.  This copy lives in
+# the refactor, without the lists beside it, so it reads them from P3_SNAP_SAMPLES_DIR (default: production's directory, the same
+# files) and REFUSES when a default list is missing: a skipped list would write the planets only and read as "no target in the
+# field" (found 2026-11-11 on a copy of the engine without them).
 SAMPLES_DIR = os.environ.get("P3_SNAP_SAMPLES_DIR", "/lustre/gh/main/clv15")
 _TARGETS = None
 _EPH = {}

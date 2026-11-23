@@ -14,11 +14,16 @@ the same property on synthetic inputs, so CI catches a change that breaks it:
      flooded frame; Stokes I and V;
   3. highpass_blocks(): identical bytes for every DETECT_THREADS value;
   4. admission_table(): identical rows and flags for every DETECT_THREADS value (the night rule is stubbed: no ephemeris here);
-  5. the cutout target lists: a missing DEFAULT list refuses (production skipped it: a copy of the engine without the lists
-     wrote the planets only), in _targets() and in check_default_lists(), which the searches call before any work;
+  5. the cutout target lists: the default lists are production's three (HWJ, 10 pc, LPT since clv15 6e4febe); a missing
+     DEFAULT list refuses (production skipped it: a copy of the engine without the lists wrote the planets only), in _targets()
+     and in check_default_lists(), which the searches call before any work;
   6. the wideband accumulation: the per-instant order (P3_SNAP_GROUP_THREADS > 0) gives the cubes, weight sums, member counts
      and member rows of production's loop, bit for bit, for several chunk sizes and thread counts, with screens, NaN regions,
-     refused and unmatched frames, a blank frame and a frame on the wrong grid; with and without a Full group;
+     refused and unmatched frames, a blank frame and a frame on the wrong grid, members with and without a flux factor
+     FSAPPLD; with and without a Full group. In both orders a member's weight is 1/(F rms^2) (clv15 1985fc8: the wideband is
+     the ruling's sum(w_x x) / sum(w_x F) in frame units, recomputed from the frames), F = 1 without the card, and a factor
+     that is not positive and finite refuses; the member-cube reader of the wideband cutout regeneration copies the cube's
+     FSAPPLD into every frame header;
   7. write_cutouts(): the same cutout cubes and tables for every DETECT_THREADS value (fixed targets on and off the frame edge);
   8. the frame movies: a subband's binned cube is the same for every P3_SNAP_MOVIE_THREADS value;
   9. the flowed-frame cube writer: the cube and the NaN mask it hands to the compression, the blank flags and the frame count
@@ -28,13 +33,15 @@ the same property on synthetic inputs, so CI catches a change that breaks it:
      two writes and two rescales of the same input are identical byte for byte, and rescale's in-place division stores the
      bytes of the earlier form;
  11. cluster only (the clv15 repository present): every ported file's pinned blob is the blob of the pin commit, and the files
-     production has changed since the pin are listed in ONE failure that names what to port. Without clv15 this prints
-     UNTESTED-PRODUCTION and does not fail.
+     production has changed since the pin are listed in ONE failure that names what to port, together with every cutout
+     sample list (clv15 Hot_Warm_Jupiters.csv, 10pc.csv, LPTs.csv) whose sha1 is not the one photometry.SAMPLE_SHA1 pins.
+     Without clv15 this prints UNTESTED-PRODUCTION and does not fail.
 Run: python tests/test_snapshot_engine.py   (or under pytest). On the cluster run it ALSO under the engine's own interpreter
 (site PYTHON['py36'], numpy 1.19.2): numpy's result dtype for an all-NaN first row differs between numpy versions, and a row
 median with the wrong rule is caught only where the engine actually runs (mutation-checked 2026-11-11: results applied out
 of order, a refused frame left admitted, the wrong dtype rule - each fails here).
 """
+import hashlib
 import importlib
 import os
 import subprocess
@@ -204,26 +211,43 @@ def test_a_missing_default_target_list_refuses():
                 assert 'REFUSED' in str(e) and 'P3_SNAP_SAMPLES_DIR' in str(e)
             else:
                 raise AssertionError('a missing default target list was skipped instead of refused')
-            for fn in ('Hot_Warm_Jupiters.csv', '10pc.csv'):          # both present: read, no refusal
+            # the default lists are production's three (clv15 6e4febe, 2026-11-18: LPT added)
+            assert tuple(SC.SAMPLES) == (('HWJ', 'Hot_Warm_Jupiters.csv'), ('10pc', '10pc.csv'), ('LPT', 'LPTs.csv')), SC.SAMPLES
+            for fn in ('Hot_Warm_Jupiters.csv', '10pc.csv'):          # the LPT list still missing: refused, by its name
                 with open(os.path.join(d, fn), 'w') as f:
                     f.write('name,ra,dec\nA,10.0,20.0\n')
             SC._TARGETS = None
-            assert [t[1] for t in SC._targets()] == ['A', 'A']
+            try:
+                SC._targets()
+            except RuntimeError as e:
+                assert 'REFUSED' in str(e) and 'LPTs.csv' in str(e) and '(LPT)' in str(e), str(e)
+            else:
+                raise AssertionError('a missing LPT list was skipped instead of refused')
+            with open(os.path.join(d, 'LPTs.csv'), 'w') as f:           # production's LPT columns
+                f.write('common_name,ra_current,dec_current\nL,12.0,22.0\n')
+            SC._TARGETS = None                                           # all three present: read, no refusal
+            assert [(t[0], t[1]) for t in SC._targets()] == [('HWJ', 'A'), ('10pc', 'A'), ('LPT', 'L')], SC._targets()
         finally:
             SC.SAMPLES_DIR, SC._TARGETS = keep[0], keep[1]
             if keep[2] is not None:
                 os.environ['P3_SNAP_CUTOUT_SAMPLES'] = keep[2]
 
 
+# each subband's frame header (k = its index in the world): None (a reader without headers), no FSAPPLD card (a frame-unit
+# member: F = 1), or a rescaled cube's factor FSAPPLD = F, as _FlowCubeFrames copies it into every frame header (clv15 1985fc8)
+_ACCUM_FS = {0: None, 1: {}, 2: 0.32, 3: 0.79, 4: 1.04, 5: 0.83, 6: 1.21}
+
+
 def _accum_world(full):
-    """Synthetic member frames for accumulate(): two groups on different grids (or one grid and a Full group)."""
+    """Synthetic member frames for accumulate(): two groups on different grids (or one grid and a Full group); the members carry
+    the headers of _ACCUM_FS."""
     rng = np.random.RandomState(21)
     nt = 30
     red, green = list(GS.GROUPS['Red']), list(GS.GROUPS['Green'])[:2]
     # frames of 80 px or more: central_rms needs 1,000 finite pixels in the central quarter (smaller frames are all dropped)
     shape_of = {sb: (80, 80) for sb in red}
     shape_of.update({sb: ((80, 80) if full else (96, 96)) for sb in green})
-    frames, sb_frames, sb_match, sb_adm, sb_screens, sb_dsec = {}, {}, {}, {}, {}, {}
+    frames, sb_frames, sb_match, sb_adm, sb_screens, sb_dsec, hdrs = {}, {}, {}, {}, {}, {}, {}
     for k, sb in enumerate(red + green):
         fl = []
         for j in range(nt):
@@ -238,6 +262,9 @@ def _accum_world(full):
         if k == 2:
             frames['%s:%d' % (sb, 9)] = rng.standard_normal((12, 12)).astype(np.float32)                                # wrong grid
         sb_frames[sb] = fl
+        fs = _ACCUM_FS[k]
+        for _, key in fl:
+            hdrs[key] = fs if fs is None or isinstance(fs, dict) else {'FSAPPLD': fs}
         m = np.arange(nt)
         m[(np.arange(nt) + k) % 13 == 0] = -1                                    # unmatched instants
         sb_match[sb] = m
@@ -250,7 +277,7 @@ def _accum_world(full):
     if full:
         grid_of['Full'] = (80, 80)
     ref_list = sb_frames[red[0]]
-    return dict(nt=nt, frames=frames, sb_frames=sb_frames, sb_match=sb_match, sb_adm=sb_adm, sb_screens=sb_screens,
+    return dict(nt=nt, frames=frames, hdrs=hdrs, sb_frames=sb_frames, sb_match=sb_match, sb_adm=sb_adm, sb_screens=sb_screens,
                 grid_of=grid_of, group_of=group_of, ref_list=ref_list, sb_dsec=sb_dsec, ref_dob=sb_dsec[red[0]][1])
 
 
@@ -259,7 +286,7 @@ def _accumulate(w, full, per_instant, threads, chunk):
     wsums = {g: np.zeros(w['nt'], dtype=np.float64) for g in w['grid_of']}
     nsubs = {g: np.zeros(w['nt'], dtype=int) for g in w['grid_of']}
     keep = GS.read_frame, GS.GROUP_THREADS, GS.log.level
-    GS.read_frame = lambda key: (w['frames'][key], None)
+    GS.read_frame = lambda key: (w['frames'][key], w['hdrs'][key])
     GS.GROUP_THREADS = threads
     GS.log.setLevel(100)                                         # the wrong-grid warning is expected
     try:
@@ -285,6 +312,100 @@ def test_wideband_accumulation_per_instant_equals_production_loop():
                 prod = ref if chunk == 24 else _accumulate(w, full, False, 0, chunk)
                 assert got[0] == prod[0], f'cubes / weight sums / member counts differ (Full {full}, chunk {chunk}, threads {threads})'
                 assert got[1] == prod[1], f'member rows differ or are in another order (Full {full}, chunk {chunk}, threads {threads})'
+
+
+def test_wideband_weights_on_rescaled_members():
+    """clv15 1985fc8 (R-GREGG-20261118-WIDEBAND-WEIGHTS-ON-RESCALED-CUBES-KEEP-RULING): a member whose frame header carries
+    FSAPPLD = F (a rescaled cube: pixels y = x / F) is weighted 1/(F rms_y^2), so the wideband (cube / weight sum) is the
+    ruling's form sum(w_x x) / sum(w_x F) with x = F y and w_x = 1/rms_x^2, recomputed here from the frames; a member without
+    the card or without a header has F = 1 (weight 1/rms^2, as before); a factor that is not positive and finite refuses.
+    Both orders (production's loop and the per-instant speed-up)."""
+    w = _accum_world(False)
+    key_of = {(sb, ts): key for sb, fl in w['sb_frames'].items() for ts, key in fl}
+    t_of = {ts: t for t, (ts, _) in enumerate(w['ref_list'])}
+    k_of = {sb: k for k, sb in enumerate(w['sb_frames'])}
+    for per_instant, threads in ((False, 0), (True, 3)):
+        packed, rows = _accumulate(w, False, per_instant, threads, 24)
+        arr = {g: (np.frombuffer(c, np.float32).reshape((w['nt'],) + w['grid_of'][g]), np.frombuffer(s, np.float64))
+               for g, c, s, _ in packed}
+        members, moved = {}, 0
+        for g, ref_ts, sb, mts, _, _, wgt in rows:
+            key = key_of[(sb, mts)]
+            fs = (w['hdrs'][key] or {}).get('FSAPPLD', 1.0)
+            dw = GS.dewarp_frame(w['frames'][key], *w['sb_screens'][sb])
+            rms_y = GS.central_rms(dw)
+            assert abs(wgt * fs * rms_y ** 2 - 1.0) < 1e-12, f'{sb} weight {wgt} is not 1/(F rms^2), F {fs}'
+            if fs != 1.0:
+                moved += abs(wgt * rms_y ** 2 - 1.0) > 1e-3        # the superseded weight 1/rms_y^2 differs
+            else:
+                assert wgt == 1.0 / rms_y ** 2, f'{sb} (F = 1) weight changed from 1/rms^2'
+            members.setdefault((g, t_of[ref_ts]), []).append((dw, fs))
+        assert moved > 50 and {k_of[sb] for _, _, sb, *_ in rows} >= set(_ACCUM_FS), 'the world no longer exercises the factors'
+        worst = 0.0
+        for (g, t), mem in members.items():
+            num, den = np.zeros(w['grid_of'][g], np.float64), 0.0
+            for dw, fs in mem:
+                x = dw * np.float32(fs)                                # frame units
+                wx = 1.0 / GS.central_rms(x) ** 2
+                num += np.nan_to_num(x, nan=0.0) * wx
+                den += wx * fs
+            ref = num / den
+            got = arr[g][0][t] / np.float32(arr[g][1][t])
+            tol = 64 * np.finfo(np.float32).eps * float(np.max(np.abs(ref)))
+            worst = max(worst, float(np.max(np.abs(got - ref))) / tol)
+        assert len(members) > 20 and worst < 1, f'the wideband is not the ruling form (worst {worst:.2f} of the float32 tolerance)'
+        for bad in (0.0, -0.5, float('nan'), float('inf'), 'abc', None):        # not a positive number: refused by name
+            w2 = dict(w, hdrs=dict(w['hdrs']))
+            for key in [key for sb, fl in w['sb_frames'].items() if k_of[sb] == 3 for _, key in fl]:
+                w2['hdrs'][key] = {'FSAPPLD': bad}
+            try:
+                _accumulate(w2, False, per_instant, threads, 24)
+            except RuntimeError as e:
+                sb3 = [sb for sb in w['sb_frames'] if k_of[sb] == 3][0]
+                assert 'FSAPPLD %r is not a positive factor - REFUSING' % bad in str(e) and sb3 in str(e), str(e)
+            else:
+                raise AssertionError(f'FSAPPLD {bad} was accepted (per_instant {per_instant})')
+
+
+def test_member_cube_reader_carries_the_factor():
+    """clv15 1985fc8: the member-cube reader of the wideband cutout regeneration (_FlowCubeFrames) copies the cube's primary
+    FSAPPLD into every frame header it returns, so accumulate() weights rescaled members by 1/(F rms^2); a cube without the card
+    leaves the frame headers without it (F = 1). Review of PR 151 (refusals only, production overwrote): a frame header that
+    already carries the cube's factor is copied as before; one that carries another factor, or one that is not a number,
+    refuses naming both values."""
+    from astropy.io import fits
+    with tempfile.TemporaryDirectory() as d:
+        cell = '04h_2024-12-19'
+        os.makedirs(os.path.join(d, cell))
+        own_of = {'27MHz': 0.32 * (1 + 1e-12), '32MHz': 0.5, '36MHz': 'abc'}      # the frame headers' own FSAPPLD (frame 1)
+        for sb, fs in (('18MHz', 0.32), ('23MHz', None), ('27MHz', 0.32), ('32MHz', 0.32), ('36MHz', 0.32)):
+            ts = ['20241219_0600%02d' % (10 * i) for i in range(3)]
+            hdr = [fits.Card('DATE-OBS', '2024-12-19T06:00:%02d.0' % (10 * i)).image.rstrip() for i in range(3)]
+            if sb in own_of:
+                hdr[1] += '\n' + fits.Card('FSAPPLD', own_of[sb]).image.rstrip()
+            ph = fits.PrimaryHDU()
+            if fs is not None:
+                ph.header['FSAPPLD'] = fs
+            tab = fits.BinTableHDU.from_columns([fits.Column(name='ts', format='20A', array=ts),
+                                                 fits.Column(name='header', format='200A', array=hdr)], name='FRAME_TABLE')
+            fits.HDUList([ph, fits.ImageHDU(np.zeros((3, 4, 4), np.float32), name='FRAMES'), tab]).writeto(
+                os.path.join(d, cell, '%s_%s_I_flowcube.fits' % (cell, sb)))
+        src = GS._FlowCubeFrames('04h', '2024-12-19', ['18MHz', '23MHz', '27MHz', '32MHz', '36MHz'], 'I')
+        src.root = d
+        for sb, theirs in (('32MHz', 0.5), ('36MHz', 'abc')):
+            try:
+                src.discover('04h', '2024-12-19', sb)
+            except RuntimeError as e:
+                assert ('REFUSING' in str(e) and '20241219_060010' in str(e) and repr(theirs) in str(e) and '0.32' in str(e)), str(e)
+            else:
+                raise AssertionError(f'{sb}: a frame header FSAPPLD {theirs!r} against the cube\'s 0.32 was overwritten, not refused')
+        for sb, want in (('18MHz', 0.32), ('23MHz', None), ('27MHz', 0.32)):
+            keys = [k for _, k in src.discover('04h', '2024-12-19', sb)['I']]
+            assert len(keys) == 3, keys
+            for k in keys:
+                frame, h = src.read(k)
+                assert frame.shape == (4, 4) and str(h['DATE-OBS']).startswith('2024-12-19T06:00:')
+                assert h.get('FSAPPLD') == want, f'{sb} frame header FSAPPLD {h.get("FSAPPLD")!r}, the cube says {want!r}'
 
 
 def _cutout_tree(threads, root, lists):
@@ -355,7 +476,15 @@ def test_check_default_lists_refuses_before_any_work():
                 raise AssertionError('one default list missing: check_default_lists did not refuse')
             with open(os.path.join(d, '10pc.csv'), 'w') as f:
                 f.write('name,ra,dec\nB,11.0,21.0\n')
-            SC.check_default_lists()                               # both present: no refusal
+            try:
+                SC.check_default_lists()
+            except RuntimeError as e:
+                assert 'REFUSED' in str(e) and 'LPTs.csv' in str(e)
+            else:
+                raise AssertionError('the LPT list missing: check_default_lists did not refuse')
+            with open(os.path.join(d, 'LPTs.csv'), 'w') as f:
+                f.write('common_name,ra_current,dec_current\nL,12.0,22.0\n')
+            SC.check_default_lists()                               # all three present: no refusal
             os.environ['P3_SNAP_CUTOUT_SAMPLES'] = 'X=/nonexistent/list.csv'
             SC.check_default_lists()                               # an ad-hoc set is not checked here, as before
         finally:
@@ -572,14 +701,28 @@ def test_production_pin():
         if live and live != b:
             n = len(git('log', '--oneline', f'{PIN.PIN_COMMIT}..HEAD', '--', f).splitlines())
             drift.append(f'{f} ({n} commit(s) since the pin{"" if n else "; uncommitted change"})')
-    assert not drift, ('production changed ported engine files since the pin (clv15 %s): %s - port them and move the pin'
+    # the sample lists the cutouts read from clv15 (SC.SAMPLES) are inputs, not code: each must be the file the v2 photometry
+    # config pins (photometry.SAMPLE_FILES / SAMPLE_SHA1, which the photometry step's PHOT-SAMPLE-PIN gate also checks)
+    from exopipe.phase3.config.steps.photometry import photometry as PH
+    for tag, fn in SC.SAMPLES:
+        if PH.SAMPLE_FILES.get(tag) != fn or tag not in PH.SAMPLE_SHA1:
+            drift.append(f'sample list {fn} ({tag}): photometry.SAMPLE_FILES pins {PH.SAMPLE_FILES.get(tag)!r}')
+            continue
+        p = os.path.join(repo, fn)
+        h = hashlib.sha1(open(p, 'rb').read()).hexdigest() if os.path.exists(p) else 'missing'
+        if h != PH.SAMPLE_SHA1[tag]:
+            drift.append(f'sample list {fn} ({tag}: sha1 {h[:12]}, photometry.SAMPLE_SHA1 {PH.SAMPLE_SHA1[tag][:12]})')
+    assert not drift, ('production changed ported engine files or sample lists since the pin (clv15 %s): %s - port them and '
+                       'move the pin (a changed list: update photometry.SAMPLE_SHA1 once the list is accepted)'
                        % (PIN.PIN_COMMIT[:7], '; '.join(drift)))
 
 
 TESTS = [test_row_medians_equal_numpy, test_detect_is_the_serial_loop_for_every_thread_count,
          test_highpass_is_identical_for_every_thread_count, test_admission_is_identical_for_every_thread_count,
          test_a_missing_default_target_list_refuses, test_check_default_lists_refuses_before_any_work,
-         test_wideband_accumulation_per_instant_equals_production_loop, test_cutouts_are_identical_for_every_thread_count,
+         test_wideband_accumulation_per_instant_equals_production_loop, test_wideband_weights_on_rescaled_members,
+         test_member_cube_reader_carries_the_factor,
+         test_cutouts_are_identical_for_every_thread_count,
          test_movie_frames_binned_identically_for_every_thread_count, test_cube_writer_arrays_equal_the_stacked_form,
          test_cube_dither_seed_comes_from_the_data, test_production_pin]
 
