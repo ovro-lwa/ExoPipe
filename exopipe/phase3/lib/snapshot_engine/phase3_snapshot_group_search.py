@@ -17,7 +17,8 @@ whose FILE-NAME time was nearest within 12 s, and old file names drift from the 
 and 14h 2025-04-21) is read from the staged copy, DEWARPED
 with that subband's own warp screen (differential ionospheric refraction
 across a group is what smears an undewarped coadd), weighted by
-1/central-rms^2, and accumulated into its group cube AND the Full cube —
+1/(FSAPPLD central-rms^2) (FSAPPLD = 1 without the card: the Phase-1 frames; clv15 1985fc8), and accumulated into its group cube
+AND the Full cube —
 each frame is read and dewarped exactly once.
 
 Because group frames are dewarped, candidate positions need no warp
@@ -204,8 +205,14 @@ def accumulate(nt, sb_frames, sb_match, sb_adm, sb_screens, grid_of, group_of, f
         # wideband is sum(w_x x) / sum(w_x F) = sum(u y) / sum(u) with u = w_x F = 1 / (F rms_y^2).  A frame-unit member (no FSAPPLD,
         # the Phase-1 frames of the live search) has F = 1: weight 1/rms^2 as before.
         # PORT (refactor, 2026-11-23): production's statements (clv15 1985fc8 _run_group_search._one), here in the _one both orders share
-        fs = float(fhdr.get("FSAPPLD", 1.0)) if fhdr is not None else 1.0
-        if not (np.isfinite(fs) and fs > 0):
+        # REVIEW (PR 151, 2026-11-23): a card that is not a number refuses with the same message (production raised a bare
+        # ValueError / TypeError from float()); a valid factor takes production's arithmetic unchanged
+        fs = fhdr.get("FSAPPLD", 1.0) if fhdr is not None else 1.0
+        try:
+            fs = float(fs)
+        except (TypeError, ValueError):
+            pass                                  # refused just below, by subband and frame
+        if not (isinstance(fs, float) and np.isfinite(fs) and fs > 0):
             raise RuntimeError("%s member frame %s: FSAPPLD %r is not a positive factor - REFUSING" % (sb, ts, fs))
         return sb, t, dw, 1.0 / (fs * rms ** 2)
 
@@ -522,8 +529,25 @@ class _FlowCubeFrames:
                 # a rescaled cube's factor (primary FSAPPLD) travels with each frame's header: the wideband weights read it
                 # (run_group_search._one; 2026-11-18 wideband weights on rescaled cubes)
                 if "FSAPPLD" in h[0].header:
-                    for x in hdrs:
-                        x["FSAPPLD"] = float(h[0].header["FSAPPLD"])
+                    # REVIEW (PR 151, 2026-11-23): production overwrites every frame header's FSAPPLD with the cube's. Here a frame
+                    # header that already carries a factor other than the cube's (beyond 1e-9 relative), or a factor that is not a
+                    # number, REFUSES instead of being overwritten; equal or absent -> copied as production does
+                    fs = h[0].header["FSAPPLD"]
+                    try:
+                        fs = float(fs)
+                    except (TypeError, ValueError):
+                        raise RuntimeError("%s: primary FSAPPLD %r is not a number - REFUSING" % (self._path(sb), fs))
+                    for ts, x in zip(t["ts"], hdrs):
+                        if "FSAPPLD" in x:
+                            own = x["FSAPPLD"]
+                            try:
+                                same = abs(float(own) - fs) <= 1e-9 * abs(fs)
+                            except (TypeError, ValueError):
+                                same = False
+                            if not same:
+                                raise RuntimeError("%s frame %s: its header's FSAPPLD %r differs from the cube's FSAPPLD %r - REFUSING"
+                                                   % (self._path(sb), str(ts).strip(), own, fs))
+                        x["FSAPPLD"] = fs
                 self.tab[sb] = ([str(x) for x in t["ts"]], hdrs)
         return self.tab[sb]
 
@@ -562,8 +586,8 @@ class _FlowCubeFrames:
 def regen_group_cutouts(lst, date, group, stokes, out_dir):
     """WIDEBAND PHOTOMETRY CUTOUTS FROM THE CURRENT CUBES (2026-10-25; Gregg: "Forced photometry is also approved - HWJ and 10pc, then
     solar system planets"; ledger PREAMBLE-LAUNCHED-PHOTOMETRY-CUTOUT-REGEN-GEN5-20261025, second step): run_group_search's own path -
-    the deep exclusion rule, excluded members dropped, pairing by integration, dewarp (identity: flowed frames), 1/rms^2 weights,
-    _search_one_stokes - for ONE band group, with the member frames read from the consolidated subband flow cubes instead of the staged
+    the deep exclusion rule, excluded members dropped, pairing by integration, dewarp (identity: flowed frames), 1/(FSAPPLD rms^2)
+    weights (the member cube's factor; 1 without the card), _search_one_stokes - for ONE band group, with the member frames read from the consolidated subband flow cubes instead of the staged
     Phase-1 frames, each member's admission recomputed from its own V cube by the search's admission_table (what run_search writes as
     admission_<sb>.csv and the group search reads), then stops after the cutouts (P3_SNAP_CUTOUTS_ONLY).  Never an injected run.
     Returns 'excluded' | 'refused: <why>' | the number of cutout cubes written."""

@@ -64,7 +64,10 @@ The pin (PIN_COMMIT / PIN_BLOBS below)
   equal production's _targets() (389 entries: 77 HWJ, 292 10 pc, 20 LPT). The memory-map lines change no read: Cube.flow
   (.section) equals an ordinary seek-and-read of the FLOW plane, and a PB library file and a warp screen read with
   memmap=False equal the earlier default read of a node-local copy. tests/test_snapshot_engine.py adds the weight form, its
-  refusal and the member-cube reader's factor.
+  refusal and the member-cube reader's factor. The review of PR 151 added two refusals production lacks, so this copy differs
+  from production only on malformed input: an FSAPPLD that is not a number refuses like a non-positive one (production raised
+  a bare ValueError), and _FlowCubeFrames refuses a frame header whose own FSAPPLD is not the cube's (production overwrote it).
+  test_production_pin also checks the cutout sample lists against photometry.SAMPLE_SHA1.
   PIN_BLOBS holds the git blob id of every ported file at the pin commit. Production keeps moving: tests/test_snapshot_engine.py
   reports every pinned file production has changed since (one explicit failure naming what to port), as tests/production_pin.py
   does for the ops ports. Moving the pin is a port round.

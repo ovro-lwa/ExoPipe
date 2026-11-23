@@ -33,13 +33,15 @@ the same property on synthetic inputs, so CI catches a change that breaks it:
      two writes and two rescales of the same input are identical byte for byte, and rescale's in-place division stores the
      bytes of the earlier form;
  11. cluster only (the clv15 repository present): every ported file's pinned blob is the blob of the pin commit, and the files
-     production has changed since the pin are listed in ONE failure that names what to port. Without clv15 this prints
-     UNTESTED-PRODUCTION and does not fail.
+     production has changed since the pin are listed in ONE failure that names what to port, together with every cutout
+     sample list (clv15 Hot_Warm_Jupiters.csv, 10pc.csv, LPTs.csv) whose sha1 is not the one photometry.SAMPLE_SHA1 pins.
+     Without clv15 this prints UNTESTED-PRODUCTION and does not fail.
 Run: python tests/test_snapshot_engine.py   (or under pytest). On the cluster run it ALSO under the engine's own interpreter
 (site PYTHON['py36'], numpy 1.19.2): numpy's result dtype for an all-NaN first row differs between numpy versions, and a row
 median with the wrong rule is caught only where the engine actually runs (mutation-checked 2026-11-11: results applied out
 of order, a refused frame left admitted, the wrong dtype rule - each fails here).
 """
+import hashlib
 import importlib
 import os
 import subprocess
@@ -352,14 +354,15 @@ def test_wideband_weights_on_rescaled_members():
             tol = 64 * np.finfo(np.float32).eps * float(np.max(np.abs(ref)))
             worst = max(worst, float(np.max(np.abs(got - ref))) / tol)
         assert len(members) > 20 and worst < 1, f'the wideband is not the ruling form (worst {worst:.2f} of the float32 tolerance)'
-        for bad in (0.0, -0.5, float('nan'), float('inf')):
+        for bad in (0.0, -0.5, float('nan'), float('inf'), 'abc', None):        # not a positive number: refused by name
             w2 = dict(w, hdrs=dict(w['hdrs']))
             for key in [key for sb, fl in w['sb_frames'].items() if k_of[sb] == 3 for _, key in fl]:
                 w2['hdrs'][key] = {'FSAPPLD': bad}
             try:
                 _accumulate(w2, False, per_instant, threads, 24)
             except RuntimeError as e:
-                assert 'FSAPPLD' in str(e) and 'REFUSING' in str(e), str(e)
+                sb3 = [sb for sb in w['sb_frames'] if k_of[sb] == 3][0]
+                assert 'FSAPPLD %r is not a positive factor - REFUSING' % bad in str(e) and sb3 in str(e), str(e)
             else:
                 raise AssertionError(f'FSAPPLD {bad} was accepted (per_instant {per_instant})')
 
@@ -367,14 +370,19 @@ def test_wideband_weights_on_rescaled_members():
 def test_member_cube_reader_carries_the_factor():
     """clv15 1985fc8: the member-cube reader of the wideband cutout regeneration (_FlowCubeFrames) copies the cube's primary
     FSAPPLD into every frame header it returns, so accumulate() weights rescaled members by 1/(F rms^2); a cube without the card
-    leaves the frame headers without it (F = 1)."""
+    leaves the frame headers without it (F = 1). Review of PR 151 (refusals only, production overwrote): a frame header that
+    already carries the cube's factor is copied as before; one that carries another factor, or one that is not a number,
+    refuses naming both values."""
     from astropy.io import fits
     with tempfile.TemporaryDirectory() as d:
         cell = '04h_2024-12-19'
         os.makedirs(os.path.join(d, cell))
-        for sb, fs in (('18MHz', 0.32), ('23MHz', None)):
+        own_of = {'27MHz': 0.32 * (1 + 1e-12), '32MHz': 0.5, '36MHz': 'abc'}      # the frame headers' own FSAPPLD (frame 1)
+        for sb, fs in (('18MHz', 0.32), ('23MHz', None), ('27MHz', 0.32), ('32MHz', 0.32), ('36MHz', 0.32)):
             ts = ['20241219_0600%02d' % (10 * i) for i in range(3)]
-            hdr = ['DATE-OBS= \'2024-12-19T06:00:%02d.0\'' % (10 * i) for i in range(3)]
+            hdr = [fits.Card('DATE-OBS', '2024-12-19T06:00:%02d.0' % (10 * i)).image.rstrip() for i in range(3)]
+            if sb in own_of:
+                hdr[1] += '\n' + fits.Card('FSAPPLD', own_of[sb]).image.rstrip()
             ph = fits.PrimaryHDU()
             if fs is not None:
                 ph.header['FSAPPLD'] = fs
@@ -382,9 +390,16 @@ def test_member_cube_reader_carries_the_factor():
                                                  fits.Column(name='header', format='200A', array=hdr)], name='FRAME_TABLE')
             fits.HDUList([ph, fits.ImageHDU(np.zeros((3, 4, 4), np.float32), name='FRAMES'), tab]).writeto(
                 os.path.join(d, cell, '%s_%s_I_flowcube.fits' % (cell, sb)))
-        src = GS._FlowCubeFrames('04h', '2024-12-19', ['18MHz', '23MHz'], 'I')
+        src = GS._FlowCubeFrames('04h', '2024-12-19', ['18MHz', '23MHz', '27MHz', '32MHz', '36MHz'], 'I')
         src.root = d
-        for sb, want in (('18MHz', 0.32), ('23MHz', None)):
+        for sb, theirs in (('32MHz', 0.5), ('36MHz', 'abc')):
+            try:
+                src.discover('04h', '2024-12-19', sb)
+            except RuntimeError as e:
+                assert ('REFUSING' in str(e) and '20241219_060010' in str(e) and repr(theirs) in str(e) and '0.32' in str(e)), str(e)
+            else:
+                raise AssertionError(f'{sb}: a frame header FSAPPLD {theirs!r} against the cube\'s 0.32 was overwritten, not refused')
+        for sb, want in (('18MHz', 0.32), ('23MHz', None), ('27MHz', 0.32)):
             keys = [k for _, k in src.discover('04h', '2024-12-19', sb)['I']]
             assert len(keys) == 3, keys
             for k in keys:
@@ -686,7 +701,19 @@ def test_production_pin():
         if live and live != b:
             n = len(git('log', '--oneline', f'{PIN.PIN_COMMIT}..HEAD', '--', f).splitlines())
             drift.append(f'{f} ({n} commit(s) since the pin{"" if n else "; uncommitted change"})')
-    assert not drift, ('production changed ported engine files since the pin (clv15 %s): %s - port them and move the pin'
+    # the sample lists the cutouts read from clv15 (SC.SAMPLES) are inputs, not code: each must be the file the v2 photometry
+    # config pins (photometry.SAMPLE_FILES / SAMPLE_SHA1, which the photometry step's PHOT-SAMPLE-PIN gate also checks)
+    from exopipe.phase3.config.steps.photometry import photometry as PH
+    for tag, fn in SC.SAMPLES:
+        if PH.SAMPLE_FILES.get(tag) != fn or tag not in PH.SAMPLE_SHA1:
+            drift.append(f'sample list {fn} ({tag}): photometry.SAMPLE_FILES pins {PH.SAMPLE_FILES.get(tag)!r}')
+            continue
+        p = os.path.join(repo, fn)
+        h = hashlib.sha1(open(p, 'rb').read()).hexdigest() if os.path.exists(p) else 'missing'
+        if h != PH.SAMPLE_SHA1[tag]:
+            drift.append(f'sample list {fn} ({tag}: sha1 {h[:12]}, photometry.SAMPLE_SHA1 {PH.SAMPLE_SHA1[tag][:12]})')
+    assert not drift, ('production changed ported engine files or sample lists since the pin (clv15 %s): %s - port them and '
+                       'move the pin (a changed list: update photometry.SAMPLE_SHA1 once the list is accepted)'
                        % (PIN.PIN_COMMIT[:7], '; '.join(drift)))
 
 
