@@ -62,17 +62,22 @@ def gate_env():
                       'launchers; unset them - every engine input is a flag or a config key)' % (', '.join(bad), pre))
 
 
-def sample_paths():
+def samples_measured(tier):
+    """The samples ``tier`` measures (photometry.SAMPLES_MEASURED[tier]: snapshot HWJ, 10pc, LPT; deep and sub-LST HWJ, 10pc)."""
+    return tuple(cfg().photometry.SAMPLES_MEASURED[tier])
+
+
+def sample_paths(tier):
     c = cfg()
-    return {t: os.path.join(c.paths.CLV15_ROOT, c.photometry.SAMPLE_FILES[t]) for t in c.photometry.SAMPLES_MEASURED}
+    return {t: os.path.join(c.paths.CLV15_ROOT, c.photometry.SAMPLE_FILES[t]) for t in samples_measured(tier)}
 
 
-def gate_samples():
-    """PHOT-SAMPLE-PIN: each measured sample list must be the file config pins (sha1). The engines read these files by
-    literal path; a rebuilt list needs a config update (B-58 lean shape, pure: same files, same values)."""
+def gate_samples(tier):
+    """PHOT-SAMPLE-PIN: each sample list ``tier`` measures must be the file config pins (sha1). The engines read these files
+    by literal path; a rebuilt list needs a config update (B-58 lean shape, pure: same files, same values)."""
     c = cfg()
     out = {}
-    for t, p in sample_paths().items():
+    for t, p in sample_paths(tier).items():
         if not os.path.exists(p):
             raise Refusal('PHOT-SAMPLE-PIN: sample list %s missing (%s)' % (t, p))
         h = sha1_file(p)

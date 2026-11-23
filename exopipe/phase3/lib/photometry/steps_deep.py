@@ -495,7 +495,7 @@ def stage_measure(run, args):
             K.plan(run, '[measure]   ... %d more shard units' % (len(shards) - 4))
         return []
     os.makedirs(outd, exist_ok=True)
-    samples = list(K.sample_paths().values())
+    samples = list(K.sample_paths('deep').values())
     pinned = [m.PARENT_TABLES['deep'], m.SOLAR_AUDIT['deep'], c.paths.DATA_DECISIONS]
 
     def one(s):

@@ -1,5 +1,6 @@
-"""exopipe3 photometry - photometry of the input samples (Hot/Warm Jupiters, 10 pc) at their catalogue positions, with the
-12-control local-empirical null, the a-priori bright-source screen, control-derived thresholds and completeness.
+"""exopipe3 photometry - photometry of the input samples (Hot/Warm Jupiters, 10 pc; the snapshot tier also the long-period
+transients, photometry.SAMPLES_MEASURED) at their catalogue positions, with the 12-control local-empirical null, the a-priori
+bright-source screen, control-derived thresholds and completeness.
 
     exopipe3 photometry --tier deep --run P3S5 --parent-dir DIR --out /fast/gh/refactor_scratch/phot/Run_P3S5   (campaign)
     exopipe3 photometry --tier deep --run P3S5 --parent-dir DIR --epochs 04h_2025-10-14 --out ...                (one hour)
@@ -92,7 +93,7 @@ Failure modes (exit 2 = refused, the gate named in the record; 3 = nothing to do
 import importlib
 import sys
 
-SUMMARY = 'photometry of input samples (HWJ, 10 pc; flare/UCD and 25 pc listed, not measured): deep and snapshot'
+SUMMARY = 'photometry of input samples (HWJ, 10 pc; snapshot also LPT; flare/UCD and 25 pc listed, not measured): deep and snapshot'
 TIERS = ('deep', 'snapshot', 'sublst')
 SELECTORS = ('tier', 'cells', 'scopes', 'stokes', 'run_label', 'exclude_cells', 'epochs')
 CONFIG = ('photometry', 'photometry_frames', 'photometry_measure', 'photometry_evaluate', 'photometry_cutouts',
@@ -173,7 +174,7 @@ def run(args, run):
     from exopipe.phase3.lib.photometry import steps_common as K
     K.gate_tier(args.tier, args.stages)
     K.gate_env()
-    K.gate_samples()
+    K.gate_samples(args.tier)
     c = K.cfg()
     m = c.photometry_measure
     if args.tier == 'deep':

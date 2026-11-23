@@ -92,8 +92,9 @@ def _sep_arcmin(a, b):
     return math.degrees(2 * math.asin(min(1.0, math.sqrt(s)))) * 60.0
 
 
-def sample_targets(tags=None, lists=None, writer_names=True):
-    """[(tag, name, ra, dec)] of the measured sample lists (or of ``lists`` {tag: csv path}, an ad-hoc target set), read the
+def sample_targets(tags=None, lists=None, writer_names=True, tier='snapshot'):
+    """[(tag, name, ra, dec)] of the sample lists ``tier`` measures (photometry.SAMPLES_MEASURED[tier]; the snapshot tier's are
+    the cutout writer's lists) or of ``tags`` (or of ``lists`` {tag: csv path}, an ad-hoc target set), read the
     way the cutout writer reads them (phase3_snapshot_cutouts._targets, :55-87: common_name|name|Name; ra_current|ra|RA; rows
     whose RA/Dec do not parse are left out), with its naming of DISTINCT OBJECTS SHARING A NAME (clv15 8f2126b): entries of
     one (tag, safe name) more than photometry_cutouts.MERGE_ARCMIN apart each take the name plus their J-tag ('Gaia DR3
@@ -102,7 +103,7 @@ def sample_targets(tags=None, lists=None, writer_names=True):
     c = _cfg()
     if lists is None:
         lists = {tag: os.path.join(c.paths.CLV15_ROOT, c.photometry.SAMPLE_FILES[tag])
-                 for tag in (tags or c.photometry.SAMPLES_MEASURED)}
+                 for tag in (tags or c.photometry.SAMPLES_MEASURED[tier])}
     out = []
     for tag, p in lists.items():
         with open(p, encoding=c.photometry.SAMPLE_ENCODING) as f:
@@ -561,7 +562,7 @@ def _list_positions():
     (deep_forced_phot.py:86-89 floats of ra_current / dec_current); a row prints them to 5 decimals (:288), and the 10 pc
     list carries up to 9, so a re-measurement at the printed position differs by the rounding (0.04 arcsec)."""
     out = {}
-    for tag, nm, ra, dec in sample_targets(writer_names=False):
+    for tag, nm, ra, dec in sample_targets(writer_names=False, tier='deep'):
         out.setdefault((tag, nm), []).append((ra, dec))
     return out
 
@@ -1559,7 +1560,7 @@ def n5(path, targets=None, **ctx):
     bad = []
     if mt['band'] not in c.photometry.SNAPSHOT_BANDS:
         bad.append('band %s not measured (photometry.SNAPSHOT_BANDS)' % mt['band'])
-    if mt['smp'] not in (list(lists) if lists else c.photometry.SAMPLES_MEASURED):
+    if mt['smp'] not in (list(lists) if lists else c.photometry.SAMPLES_MEASURED['snapshot']):
         bad.append('sample %s not measured' % mt['smp'])
     cur = current_safe_names(lists)
     names = [str(n) for n in _npz(path)['names']]
