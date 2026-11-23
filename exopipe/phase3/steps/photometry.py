@@ -114,7 +114,7 @@ SUMMARY = 'photometry of input samples (HWJ, 10 pc; snapshot also LPT; flare/UCD
 TIERS = ('deep', 'snapshot', 'sublst')
 SELECTORS = ('tier', 'cells', 'scopes', 'stokes', 'run_label', 'exclude_cells', 'epochs')
 CONFIG = ('photometry', 'photometry_frames', 'photometry_measure', 'photometry_evaluate', 'photometry_cutouts',
-          'photometry_phase2', 'photometry_campaign', 'catalog_snapshot', 'runner')
+          'photometry_phase2', 'photometry_fluxscale', 'photometry_campaign', 'catalog_snapshot', 'runner')
 WRITES = True
 _TIER_MODULES = {'deep': 'exopipe.phase3.lib.photometry.steps_deep', 'snapshot': 'exopipe.phase3.lib.photometry.steps_snapshot',
                  'sublst': 'exopipe.phase3.lib.photometry.steps_cutouts'}

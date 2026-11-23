@@ -30,6 +30,8 @@ synthetic exclusion list, synthetic unit records, stub engine files and a stub `
     per Stokes with a positive engine count; stage 1 per kind done (MM1 + MM2) or 'no <kind>'; gaps (input-gate refusals,
     ruled) are listed and complete ("COMPLETE with N gaps", exit 0); output or content refusals, errors and missing records
     are incomplete (exit 1).
+  - the resume hash: the step's CONFIG holds every section of config/steps/photometry.py (photometry_fluxscale and
+    photometry_campaign among them); a value change in either changes the hash.
 Scratch: a fresh directory under $EXOPIPE3_TEST_SCRATCH, else the system temp directory, removed at exit.
 Run: python tests/test_photometry_campaign.py
 """
@@ -135,6 +137,33 @@ def campaign_args(**kw):
              planets=False, in_place=False, campaign=True, cells=None, epochs=None, exclude_cells=None)
     a.update(kw)
     return argparse.Namespace(**a)
+
+
+def test_resume_hash():
+    """The step's resume hash (record.Run.config_hash over config.step_sections of the step's CONFIG) covers every section of
+    config/steps/photometry.py - the flux-scale gate's (#153) and the campaign's among them: a changed tolerance or floor makes
+    --resume redo the units."""
+    import importlib
+    import inspect
+    from exopipe.phase3 import config
+    from exopipe.phase3.config.steps import photometry as PC
+    step = importlib.import_module('exopipe.phase3.steps.photometry')
+    secs = config.step_sections(step)
+    mine = sorted(n for n, o in vars(PC).items() if inspect.isclass(o) and o.__module__ == PC.__name__
+                  and issubclass(o, config._Section) and o is not config._Section)
+    check('the photometry step declares every section of config/steps/photometry.py (its resume hash covers them)',
+          mine and all(n in secs for n in mine), (mine, secs))
+    P = Patch()
+    try:
+        for sec, key, val in (('photometry_fluxscale', 'FSAPPLD_TOL', 3e-6), ('photometry_campaign', 'QUOTA_MIN_FREE_FILES', 7)):
+            h0 = CFG.hash(secs)
+            P.set(getattr(CFG, sec), key, val)
+            h1 = CFG.hash(secs)
+            P.undo()
+            check('a change to %s.%s changes the photometry step\'s resume hash (%s -> %s), restored after' % (sec, key, h0, h1),
+                  h1 != h0 and CFG.hash(secs) == h0)
+    finally:
+        P.undo()
 
 
 def test_args():
@@ -872,6 +901,7 @@ def main():
     d = tempfile.mkdtemp(prefix='test_photometry_campaign_', dir=base)
     try:
         test_generation(d)
+        test_resume_hash()
         test_args()
         W = World(d)
         test_enumeration(W)
