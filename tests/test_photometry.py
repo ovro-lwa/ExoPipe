@@ -1994,7 +1994,7 @@ subband (P3_SNAP_CUBE_ROOT), the hour-median model, every frame admitted, identi
 (clv15 phase3_snapshot_cutouts.write_cutouts) into P3_SNAP_CUTOUT_ROOT, V then I, and the regeneration's CUTOUTS-REGEN line.
 fake_params.json: 'excluded' cells exit 3 (EXCLUDED:), 'corrupt' shifts plane 1 of every written cutout by one pixel, 'refuse'
 cells raise the engine's REFUSED (a cube repeating integrations without the search's frame list), 'crash' cells fail without a
-refusal."""
+refusal, 'night' cells write nothing and exit 0 with the done line of a night-rule refusal of both Stokes."""
 import argparse, glob, json, os, sys
 sys.path.insert(0, '/lustre/gh/main/clv15')
 import numpy as np
@@ -2014,6 +2014,15 @@ if cell in P.get('refuse', []):
                        % (a.lst, a.date, a.subband))
 if cell in P.get('crash', []):
     raise ValueError('fake engine crash: no refusal text')
+if cell in P.get('night', []):
+    # the REAL engine's done line when the night rule refuses both Stokes (phase3_snapshot_search.regen_cutouts :1419-1420, the
+    # NightRuleRefused text :1553-1554; generation 6, e.g. 18h 2025-10-15 32MHz in exopipe_ops/gen6_20261117/
+    # gen6_cutout_regen_lwacalim05.log): no cutout written, exit 0
+    why = ['REFUSED (night rule): no frame of %s %s %s %s passes (Sun above the horizon, or twilight in a band the solar audit '
+           'flags)' % (a.lst, a.date, a.subband, S) for S in ('V', 'I')]
+    print('2026-11-21 13:31:59,000 INFO CUTOUTS-REGEN %s %s %s: V None I None; refused: %s'
+          % (a.lst, a.date, a.subband, '; '.join(why)), flush=True)
+    raise SystemExit(0)
 import phase3_snapshot_cutouts as CUT
 root = os.environ['P3_SNAP_CUTOUT_ROOT']
 os.makedirs(a.out, exist_ok=True)
@@ -2037,10 +2046,10 @@ print('2026-11-02 00:00:00,000 INFO CUTOUTS-REGEN %s %s %s: V %s I %s' % (a.lst,
 '''
 
 
-def setup_fake_regen(excluded=(), corrupt=False, refuse=(), crash=()):
+def setup_fake_regen(excluded=(), corrupt=False, refuse=(), crash=(), night=()):
     p = os.path.join(FAKE_DIR, 'fake_params.json')
     prm = json.load(open(p)) if os.path.exists(p) else {}
-    prm.update(excluded=list(excluded), corrupt=corrupt, refuse=list(refuse), crash=list(crash))
+    prm.update(excluded=list(excluded), corrupt=corrupt, refuse=list(refuse), crash=list(crash), night=list(night))
     json.dump(prm, open(p, 'w'))
     fp = os.path.join(FAKE_DIR, CFG.photometry.ENGINE['cutouts_subband'])
     open(fp, 'w').write(FAKE_REGEN)
@@ -2336,6 +2345,25 @@ def test_engine_refusal_carry_on():
               rc == rc_want and a.get('status') == st_want and code in str(a.get('reason')) + ' '.join(a.get('notes', []))
               and b.get('status') == 'done' and placed and all(TC._header_cell(p) == cell2 for p in placed),
               (rc, a.get('status'), str(a.get('reason'))[:300], b.get('status'), txt[-800:]))
+    # the night rule refusing both Stokes: the engine exits 0 having written nothing, its done line in the production form
+    # ('V None I None; refused: REFUSED (night rule): ...; REFUSED (night rule): ...') - a unit with no input (C-NOCUT),
+    # never a done record
+    setup_fake_regen(night=[CUT_CELL])
+    out = os.path.join(TMP, 'f3_night')
+    root = os.path.join(out, 'photometry_genT')
+    rc, txt = step(['photometry'] + CUT_COMMON + ['--cells', '%s_%s' % (CUT_CELL, CUT_SB), '--cutout-root', root, '--out', out])
+    recs = records(out)
+    a = recs.get('cutouts.%s.%s' % (CUT_CELL, CUT_SB), {})
+    notes = ' '.join(a.get('notes', []))
+    check('the night-rule refusal of both Stokes (the engine\'s done line "V None I None; refused: REFUSED (night rule) '
+          '..."): the unit has no input (C-NOCUT, exit 3), the refusal kept in its notes, outcome V/I None, nothing placed, '
+          'no done record',
+          rc == 3 and a.get('status') == 'no-input' and 'C-NOCUT' in str(a.get('reason'))
+          and 'the search refused (night rule): REFUSED (night rule)' in notes
+          and a.get('meta', {}).get('engine_outcome') == {'V': 'None', 'I': 'None'}
+          and not glob.glob(os.path.join(root, '*', CUT_SB, '*', '*.fits'))
+          and not [n for n, r in recs.items() if r.get('status') == 'done'],
+          (rc, {n: (r.get('status'), str(r.get('reason'))[:200]) for n, r in recs.items()}, notes[:300], txt[-800:]))
     setup_fake_regen()
     cubes = os.path.join(TMP, 'f3_real', 'cubes')
     for cl in (CUT_CELL, cell2):
