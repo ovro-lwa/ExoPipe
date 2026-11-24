@@ -321,6 +321,35 @@ def test_a_night_pass_never_writes_an_lst_wide_directory():
     assert TS.night_meta(type('C', (), {'night': None})()) == {}
 
 
+def test_a_delta_catalog_is_tested_against_the_selection_its_build_read():
+    """A night's delta build rebuilds a touched identity from every member it has, so its catalog directory holds earlier
+    nights' members that the night's own selected_<key>.csv (the directory's sibling) lacks. The content test
+    source_catalog takes the build's selection (ctx selection, which _build_delta passes); a named selection that is absent
+    fails. Seen on real data 2026-11-24 (17h, night 2025-05-08): 3 Stokes I subband members and 6 Stokes I wideband
+    members of earlier nights."""
+    from exopipe.phase3.lib.catalog import tests as CT
+    U = tmp('delta_selection')
+    d = os.path.join(U, 'source_catalogs_noveto_I_sb')
+    early, new = f'I1_{LST}_2025-04-14T01_23MHz_0680', f'I1_{LST}_{NIGHT}T03_23MHz_0001'
+    wcsv(os.path.join(d, '23MHz_sources_survivors.csv'), ['source_id', 'best_snr', 'ra', 'dec', 'stokes', 'promotion'],
+         [['J1700+3000', '9.0', '255.0', '30.0', 'I', '']])
+    wcsv(os.path.join(d, '23MHz_source_members.csv'), ['source_id', 'band', 'cand_id'],
+         [['J1700+3000', '23MHz', early], ['J1700+3000', '23MHz', new]])
+    hdr = ['cand_id', 'stokes', 'lst', 'band', 'date']
+    wcsv(os.path.join(U, 'selected_I_sb.csv'), hdr, [[new, 'I', LST, '23MHz', f'{NIGHT}T03']])          # the night's own rows
+    B = os.path.join(U, '_side', 'delta_noveto')
+    wcsv(os.path.join(B, 'selected_I_sb.csv'), hdr, [[early, 'I', LST, '23MHz', '2025-04-14T01'],         # the build's input
+                                                    [new, 'I', LST, '23MHz', f'{NIGHT}T03']])
+    none = type('X', (), {'is_excluded': staticmethod(lambda *a: False)})()
+    with Patch((CT, '_excl', lambda tier=None: none)):
+        ok, _, why = CT.source_catalogue_dir(d)
+        assert not ok and '1 members not in selected_I_sb.csv' in why, why
+        ok, n, why = CT.source_catalogue_dir(d, selection=os.path.join(B, 'selected_I_sb.csv'))
+        assert ok and n == 1, why
+        ok, _, why = CT.source_catalogue_dir(d, selection=os.path.join(B, 'absent.csv'))
+        assert not ok and 'absent' in why, why
+
+
 def test_the_per_hour_chain_runs_the_ten_minute_catalog_pages_and_serve():
     from exopipe.phase3.core import runner
     steps = runner.chain_steps('epoch')

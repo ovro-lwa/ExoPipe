@@ -2021,13 +2021,13 @@ def _build_delta(ctx, s, plan, tag):
                 refuse(f'S-G18 delta build {L} {k} ({tag}): content test failed: {detail}')
             os.remove(f'{d}/{DELTA_STARTED}')
             DB.write_inputs(d, L, k, tag, FL, nights, asm['digest'][k])
-            built.append(d)
+            built.append((d, os.path.join(B, DB.SELECTED.format(key=k))))
     if not built:
         raise _record().NoInput(f'night {ctx.night} ({tag}): no delta build owed in any hour or key')
     ctx.log.say(f'delta source catalogs ({tag}) complete: {len(built)} key(s) in '
-                f'{len({os.path.dirname(d) for d in built})} hour(s)')
-    for d in built:
-        s.out(d, 'source_catalog', run_dir=U)
+                f'{len({os.path.dirname(d) for d, _ in built})} hour(s)')
+    for d, sel in built:                           # members are rows of the BUILD's selection: a touched identity keeps its
+        s.out(d, 'source_catalog', run_dir=U, selection=sel)   # earlier nights' members (not rows of the night's own file)
 
 
 def st_view(ctx, s, plan):
