@@ -633,21 +633,26 @@ def test_the_stack_of_a_member_subband_ends_no_input():
 def test_the_per_hour_chain_names_the_ten_minute_stages_in_order():
     """runner.CHAINS['epoch']: the 10-minute tier of ONE night is the list line + stack + arm A, the x2-aligned residual,
     the wideband groups + the tree entry, then the search and the catalog - each stage named (the tier's defaults are the
-    stack alone and the LST-wide refine), each a stage the step knows, in the tier's own order."""
+    stack alone and the LST-wide refine), each a stage the step knows, in the tier's own order; its pages and serve come
+    last, after the deep tier's, before the archive push."""
     from exopipe.phase3.core import runner
     from exopipe.phase3.steps import flow as FLOW
     steps = runner.chain_steps('epoch')
     ten = [(i, a) for i, a in enumerate(steps) if '--tier' in a and a[a.index('--tier') + 1] == 'sublst']
-    assert [a[0] for _, a in ten] == ['frames', 'flow', 'frames', 'search', 'catalog'], [a[:3] for _, a in ten]
-    assert [i for i, _ in ten] == list(range(ten[0][0], ten[0][0] + 5)), 'the 10-minute steps are consecutive'
+    assert [a[0] for _, a in ten] == ['frames', 'flow', 'frames', 'search', 'catalog', 'pages', 'serve'], \
+        [a[:3] for _, a in ten]
+    assert [i for i, _ in ten[:5]] == list(range(ten[0][0], ten[0][0] + 5)), 'the 10-minute night steps are consecutive'
+    assert [a[0] for a in steps[ten[5][0] - 2:]] == ['pages', 'serve', 'pages', 'serve', 'archive'], steps[ten[5][0] - 2:]
+    assert all('--tier' not in a for a in steps[ten[5][0] - 2:ten[5][0]]), 'the deep pages and serve come first'
     assert all(a[a.index('--epochs') + 1] == '{item}' for _, a in ten)
+    assert '--incremental' in ten[4][1]
 
     def stages(a):
         return a[a.index('--stages') + 1].split(',') if '--stages' in a else None
 
     got = [stages(a) for _, a in ten]
     assert got == [['nonmember-list', 'stack', 'nonmember'], ['refine-nonmember'], ['wideband', 'tree-nonmember'], None,
-                   None], got
+                   None, None, None], got
     S = CFG.frames_sublst
     for st in (got[0], got[2]):
         args = argparse.Namespace(stages=','.join(st), from_stage=None, until_stage=None)
@@ -660,14 +665,14 @@ def test_the_per_hour_chain_names_the_ten_minute_stages_in_order():
 def test_the_per_hour_chain_makes_the_night_cubes_before_the_ten_minute_tier():
     """Gregg 2026-11-13: the 10-minute stack reads the night's 10-second cubes (G-S02), so CHAINS['epoch'] runs snapshot
     frames, snapshot flow and `frames --tier snapshot --stages cube,movies` before the 10-minute steps, the rest of the
-    snapshot steps after them, and pages / serve / archive last."""
+    snapshot steps after them, and pages / serve (deep, then 10-minute) / archive last."""
     from exopipe.phase3.core import runner
     steps = [a[:a.index('--epochs')] if '--epochs' in a else a for a in runner.chain_steps('epoch')]
 
     def tier(a):
         return a[a.index('--tier') + 1] if '--tier' in a else None
 
-    ten = [i for i, a in enumerate(steps) if tier(a) == 'sublst']
+    ten = [i for i, a in enumerate(steps) if tier(a) == 'sublst' and a[0] not in ('pages', 'serve')]
     snap = [(i, a) for i, a in enumerate(steps) if tier(a) == 'snapshot']
     before = [a for i, a in snap if i < ten[0]]
     after = [a for i, a in snap if i > ten[-1]]
@@ -675,7 +680,7 @@ def test_the_per_hour_chain_makes_the_night_cubes_before_the_ten_minute_tier():
                       ['frames', '--tier', 'snapshot', '--stages', 'cube,movies']], before
     assert [a[0] for a in after] == ['search', 'curves', 'catalog', 'forced'], after
     assert all(i < ten[0] for i, a in enumerate(steps) if tier(a) == 'deep')
-    assert [a[0] for a in steps[snap[-1][0] + 1:]] == ['pages', 'serve', 'archive'], steps[snap[-1][0] + 1:]
+    assert [a[0] for a in steps[snap[-1][0] + 1:]] == ['pages', 'serve', 'pages', 'serve', 'archive'], steps[snap[-1][0] + 1:]
     T = CFG.frames_snapshot
     args = argparse.Namespace(stages='cube,movies', from_stage=None, until_stage=None)
     assert FT.requested_stages(args, T.ORDER, T.DEFAULT_STAGES) == ['cube', 'movies']    # known, in pipeline order
