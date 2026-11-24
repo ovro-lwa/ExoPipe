@@ -38,9 +38,10 @@ Asserts:
     readiness finds the verify record under the run's own --out (<out>/review/<name>); the pointer test fails on a missing
     pointer, one naming the run itself or another view, and a view without its count table; the sidecar test fails on a panel
     without its sidecar, a sidecar naming another view (the served generation-5 state) and a run without
-    scintillation_index.csv; the TESS test (snapshot_forced_tess) fails on a repeated cand_id, one not on the page, a
-    simultaneous row without its sector, a status outside the vocabulary, no header line, no rows, and a tool summary that is
-    missing or disagrees with the rows or the page's cand_ids.
+    scintillation_index.csv. TESS runs through the shared helper (lib/serve/tess.coverage: its interpreter key, --no-refresh in
+    a parity run, a stale orbit table refused before any tool, the counts from the call's own summary line, none refusing);
+    its content test tess_rows (class tess_coverage) passes on a forced run and fails on counts that disagree with the rows or
+    the run's master_catalog.csv, a cand_id outside that catalogue and no catalogue; failing, it refuses the page only.
 Scratch: a fresh directory under $EXOPIPE3_TEST_SCRATCH, else the system temp directory, removed at exit.
 Run: python tests/test_photometry_snapshot_stage2.py
 """
@@ -459,6 +460,9 @@ class _Unit:
     def refuse_item(self, path, reason, gate=None):
         self.refused_items.append((path, reason, gate))
 
+    def check(self, name, passed, value=None, detail='', cls=None, path=None):
+        self.tests.append(dict(name=name, passed=bool(passed), value=value, detail=detail, cls=cls, path=path))
+
     def note(self, n):
         self.notes.append(n)
 
@@ -511,10 +515,14 @@ def pctx_tree(d, name='Run_SNAPFORCED_V10s_gen6', view_name='Run_SNAPCOMB_202611
                 'cand_id,stokes,lst,date,band,ra,dec,epoch_start,epoch_end,status,sector,camera,ccd,column,row\r\n'
                 '%s,V,00h,2025-09-03,23MHz,62.25,46.67,2025-09-03T09:57:08,2025-09-03T09:57:18,simultaneous,96,1,2,100,200\r\n'
                 % cids[0])
-    with open(os.path.join(R, 'tess_coverage.log'), 'w') as f:
-        f.write('%s/tess_coverage.csv: 2 detections (frame times the cell noise tables (10s, 1min)); orbit table cached; V '
-                'simultaneous: 1; V no epoch time: 1; written 1 (left out, page says not computed: 1)\n' % R)
+    with open(os.path.join(R, 'master_catalog.csv'), 'w') as f:      # a forced run's catalogue: the page's cand_ids
+        f.write('cand_id,stokes,lst,date,band\n' + ''.join('%s,V,00h,2025-09-03,23MHz\n' % c for c in cids))
     return V, R, png
+
+
+# tess_coverage.py's summary line for <run>/tess_coverage.csv (:286-290), as the fake tool prints it: run, written, left out
+TESS_LINE = ('%s/tess_coverage.csv: 2 detections (frame times the cell noise tables (10s, 1min)); orbit table cached; V '
+             'simultaneous: 1; V no epoch time: 1; written %d (left out, page says not computed: %d)')
 
 
 def bsf_npz(R, tier='forced', stokes='V', cadence='10s'):
@@ -613,40 +621,32 @@ def test_forced_page_context(d):
     os.rename(sc, sc + '.x')
     check('content tests: a panel without its sidecar fails', not tests(view=V)['sidecar_per_panel']['passed'])
     os.rename(sc + '.x', sc)
-    # the TESS table (tess_coverage.py --from-candidates) against the page's rows and the tool's own summary
-    tp, tl = os.path.join(R, 'tess_coverage.csv'), os.path.join(R, 'tess_coverage.log')
-    tkeep, lkeep = open(tp).read(), open(tl).read()
+    # the TESS table (tess_coverage.py --from-candidates) against the run's master_catalog.csv and the tool's own counts:
+    # content test tess_rows (class tess_coverage), as lib/serve/tess.coverage records it
+    tp, mc = os.path.join(R, 'tess_coverage.csv'), os.path.join(R, 'master_catalog.csv')
+    tkeep, mkeep = open(tp).read(), open(mc).read()
 
-    def tess(**ctx):
-        return validate.run('snapshot_forced_tess', tp, **ctx)[0]
+    def tess(**kw):
+        return validate.run('tess_coverage', tp, **dict(dict(written=1, left_out=1), **kw))[0]
     t = tess()
-    check('TESS content test: one row per written cand_id of the page, statuses and sector/camera/CCD, the tool\'s summary '
-          '(written 1, left out 1 = 2 cand_ids on the page) agrees', t['passed'] and t['value'] == 1, t)
-    for what, txt, log, key in (
-            ('a repeated cand_id', tkeep + tkeep.splitlines(True)[-1], lkeep, 'repeated'),
-            ('a cand_id not on the page', tkeep.replace('095708_J0409', '095700_J0409'), lkeep, 'not on the page'),
-            ('a simultaneous row without its sector', tkeep.replace(',96,1,2,', ',,1,2,'), lkeep, 'without sector'),
-            ('a status outside the vocabulary', tkeep.replace('simultaneous', 'maybe'), lkeep, 'statuses'),
-            ('no header comment line', tkeep.split('\n', 1)[1], lkeep, 'header comment'),
-            ('the summary\'s written count not the rows', tkeep, lkeep.replace('written 1 (', 'written 2 ('), 'summary says'),
-            ('written + left out not the page\'s cand_ids', tkeep, lkeep.replace('computed: 1)', 'computed: 0)'), 'summary says'),
-            ('no summary line', tkeep, lkeep + 'Traceback: x\n', 'not the tool'),
-            ('no rows', ''.join(tkeep.splitlines(True)[:2]), lkeep.replace('written 1 (left out, page says not computed: 1)',
-                                                                           'written 0 (left out, page says not computed: 2)'),
-             'no rows')):
+    check('TESS content test on a forced run: one row written, one cand_id left out, of its master_catalog.csv (the page\'s '
+          'cand_ids) passes', t['passed'] and t['value'] == 1, t)
+    for what, kw, txt, cat, key in (
+            ('the tool\'s written count not the rows', dict(written=2), tkeep, mkeep, 'the tool wrote 2'),
+            ('a left-out count not the catalogue\'s cand_ids without a row', dict(left_out=0), tkeep, mkeep, 'left out 0'),
+            ('a cand_id outside the run\'s master_catalog.csv', {}, tkeep.replace('095708_J0409', '095700_J0409'), mkeep,
+             'not in master_catalog.csv'),
+            ('no master_catalog.csv', {}, tkeep, None, 'to test the rows against')):
         with open(tp, 'w') as f:
             f.write(txt)
-        with open(tl, 'w') as f:
-            f.write(log)
-        t = tess()
-        check('TESS content test: %s fails' % what, not t['passed'] and key in str(t['detail']), t)
-    os.remove(tl)
-    with open(tp, 'w') as f:
-        f.write(tkeep)
-    t = tess()
-    check('TESS content test: no tess_coverage.log (no tool summary) fails', not t['passed'] and 'not the tool' in t['detail'], t)
-    with open(tl, 'w') as f:
-        f.write(lkeep)
+        if cat is None:
+            os.remove(mc)
+        t = tess(**kw)
+        check('TESS content test on a forced run: %s fails' % what, not t['passed'] and key in str(t['detail']), t)
+        with open(tp, 'w') as f:
+            f.write(tkeep)
+        with open(mc, 'w') as f:
+            f.write(mkeep)
     bp = os.path.join(R, 'bright_source_filter.npz')
     b = {x['name'].split('.')[1]: x for x in validate.run('bright_source_filter', bp, tier='forced', stokes='V', cadence='10s')}
     check('bright-source filter content tests on the forced tier\'s npz (tier forced, the page\'s Stokes and cadence) pass',
@@ -654,15 +654,22 @@ def test_forced_page_context(d):
     # page_context: the four page inputs in production's form and order (bd07263), then the files and the content tests
     calls = []
     fail = {}
+    tess_counts = [1, 1]          # written, left out on the fake tool's summary line; empty: it prints none
 
     def fake_run(name, args=(), cwd=None, python='default', env=None, **k):
-        calls.append((name, [str(a) for a in args], cwd, python, (env or {}).get('NUMPY_MADVISE_HUGEPAGE')))
-        return _Res(ok=name not in fail, tail='last line of ' + name)
+        a = [str(x) for x in args]
+        calls.append((name, a, cwd, python, (env or {}).get('NUMPY_MADVISE_HUGEPAGE')))
+        tail = 'last line of ' + name
+        if name == 'tess_coverage':
+            tail = TESS_LINE % (a[1], *tess_counts) if tess_counts else 'Traceback: x'
+        return _Res(ok=name not in fail, tail=tail)
     plan = argparse.Namespace(parity=False, out=d, forced_view=V)
     pg = argparse.Namespace(key='forced-V-10s', run_name=os.path.basename(R), root_src=R, root=R, stokes='V', kind='10s')
-    from exopipe.phase3.lib.pages import common as pcommon
-    saved = (scripts.run, forced.paired_view, pcommon.interpreter_or_none)
+    from exopipe.phase3.lib.pages import common as pcommon, tess_orbits
+    from exopipe.phase3.lib.serve import tess as stess
+    saved = (scripts.run, forced.paired_view, pcommon.interpreter_or_none, tess_orbits.stale_for_reader, stess.orbit_table)
     scripts.run = fake_run
+    stess.orbit_table = lambda: os.path.join(d, 'TESS_orbit_times.csv')     # beside the tool, which CI's site lacks
     pcommon.interpreter_or_none = lambda key: sys.executable      # the site's TESS interpreter need not be on this host
     try:
         u = _Unit()
@@ -672,25 +679,25 @@ def test_forced_page_context(d):
         want = [('scintillation_index', [R, '--tier', S.SNAPSHOT_FILTER_TIER], cw, 'default', '0'),
                 ('bright_source_filter', [R, '--tier', 'forced', '--workers', '6'], cw, 'default', '0'),
                 ('page_context_snapshot', [R, '--served-from', V, '--workers', '4'], cw, 'default', '0'),
-                ('tess_coverage', ['--run', R, '--from-candidates'], cw, 'tess', None)]
+                ('tess_coverage', ['--run', R, '--from-candidates'], cw, CFG.pages_deep.TESS_PYTHON, None)]
         check('page inputs: scintillation_index.py RUN --tier snapshot, bright_source_filter_precompute.py RUN --tier forced '
               '--workers 6, page_context_snapshot.py RUN --served-from VIEW --workers 4, tess/tess_coverage.py --run RUN '
-              '--from-candidates (site PYTHON tess), all from /tmp: production\'s runner, its form and order (exopipe_ops bd07263)',
-              calls == want and cw == '/tmp', calls)
-        check('page inputs: the scintillation table, the bright-source filter (tier forced, the page\'s Stokes and cadence), '
-              'the run (its view) and the TESS table recorded, each tool noted',
-              u.outputs == [(os.path.join(R, 'scintillation_index.csv'), 'scintillation_index', {'tier': S.SNAPSHOT_FILTER_TIER}),
+              '--from-candidates (lib/serve/tess.coverage: site PYTHON[pages_deep.TESS_PYTHON]), all from /tmp: production\'s '
+              'runner, its form and order (exopipe_ops bd07263)', calls == want and cw == '/tmp', calls)
+        check('page inputs: the TESS table (the tool\'s own counts), the scintillation table, the bright-source filter (tier '
+              'forced, the page\'s Stokes and cadence) and the run (its view) recorded, each tool noted',
+              u.outputs == [(os.path.join(R, 'tess_coverage.csv'), 'tess_coverage', {'written': 1, 'left_out': 1}),
+                            (os.path.join(R, 'scintillation_index.csv'), 'scintillation_index', {'tier': S.SNAPSHOT_FILTER_TIER}),
                             (os.path.join(R, 'bright_source_filter.npz'), 'bright_source_filter',
                              {'tier': 'forced', 'stokes': 'V', 'cadence': '10s'}),
-                            (R, 'snapshot_forced_page_context', {'view': V}),
-                            (os.path.join(R, 'tess_coverage.csv'), 'snapshot_forced_tess', {})] and len(u.notes) == 4,
-              (u.outputs, u.notes))
+                            (R, 'snapshot_forced_page_context', {'view': V})] and len(u.notes) == 4
+              and u.meta['tess_coverage_pages'] == {pg.key: {'written': 1, 'left_out': 1}}, (u.outputs, u.notes, u.meta))
         names = [t['name'] for t in u.tests]
         check('page inputs: each content test runs once (through add_output only), all passed',
               names and len(names) == len(set(names)) and all(t['passed'] for t in u.tests)
               and {'snapshot_forced_page_context.frame_counts_pointer', 'snapshot_forced_page_context.sidecar_per_panel',
                    'bright_source_filter.arrays_consistent', 'bright_source_filter.parents_current',
-                   'snapshot_forced_tess.rows_from_candidates', 'scintillation_index.table_matches_definition'}
+                   'tess_coverage.tess_rows', 'scintillation_index.table_matches_definition'}
               <= set(names), names)
         del calls[:]
         pcommon.interpreter_or_none = lambda key: None
@@ -707,14 +714,42 @@ def test_forced_page_context(d):
         fail.clear()
         fail['tess_coverage'] = 1
         r = raises(forced.page_context, _Unit(), plan, pg, R, V)
-        check('page inputs: a failed tess_coverage.py refuses the page', r is not None and 'tess_coverage.py' in r, r)
+        check('page inputs: a failed tess_coverage.py refuses the page', r is not None and 'tess_coverage.py' in r
+              and 'old entry kept' in r, r)
         fail.clear()
-        for f_, cls in (('bright_source_filter.npz', 'bright_source_filter'), ('tess_coverage.csv', 'snapshot_forced_tess')):
-            fp = os.path.join(R, f_)
-            os.rename(fp, fp + '.x')
-            r = raises(forced.page_context, _Unit(), plan, pg, R, V)
-            check('page inputs: no %s after the tools refuses the page' % f_, r is not None and f_ in r and 'lacks' in r, r)
-            os.rename(fp + '.x', fp)
+        tess_counts[:] = []
+        r = raises(forced.page_context, _Unit(), plan, pg, R, V)
+        check('page inputs: no summary line for the run\'s tess_coverage.csv in the tool\'s output refuses the page',
+              r is not None and 'no summary line' in r and 'old entry kept' in r, r)
+        tess_counts[:] = [1, 1]
+        fp = os.path.join(R, 'bright_source_filter.npz')
+        os.rename(fp, fp + '.x')
+        r = raises(forced.page_context, _Unit(), plan, pg, R, V)
+        check('page inputs: no bright_source_filter.npz after the tools refuses the page',
+              r is not None and 'bright_source_filter.npz' in r and 'lacks' in r, r)
+        os.rename(fp + '.x', fp)
+        fp = os.path.join(R, 'tess_coverage.csv')
+        os.rename(fp, fp + '.x')
+        u = _Unit()
+        r = raises(forced.page_context, u, plan, pg, R, V)
+        check('page inputs: no tess_coverage.csv after the tool refuses the page (its content test), the file a refused item',
+              r is not None and 'tess_rows' in r and [x[0] for x in u.refused_items] == [fp], (r, u.refused_items))
+        os.rename(fp + '.x', fp)
+        # a parity serve: --no-refresh (it never writes the shared orbit table), the table reaching now; a stale one refuses first
+        pplan = argparse.Namespace(parity=True, out=d, forced_view=V)
+        tess_orbits.stale_for_reader = lambda table, now=None: None
+        del calls[:]
+        u = _Unit()
+        forced.page_context(u, pplan, pg, R, V)
+        check('page inputs, parity serve: tess_coverage.py with --no-refresh, the orbit table recorded as reaching now',
+              calls[-1][:2] == ('tess_coverage', ['--run', R, '--from-candidates', '--no-refresh'])
+              and 'serve.tess_orbit_table_reaches_now' in [t['name'] for t in u.tests], (calls[-1], [t['name'] for t in u.tests]))
+        tess_orbits.stale_for_reader = lambda table, now=None: 'ends 2026-01-01, before now'
+        del calls[:]
+        r = raises(forced.page_context, _Unit(), pplan, pg, R, V)
+        check('page inputs, parity serve: an orbit table that does not reach now refuses the page before any tool runs',
+              r is not None and 'orbit table' in r and 'ends 2026-01-01' in r and calls == [], (r, calls))
+        tess_orbits.stale_for_reader = saved[3]
         bsf_npz(R, tier='snapshot')
         u = _Unit()
         r = raises(forced.page_context, u, plan, pg, R, V)
@@ -722,12 +757,13 @@ def test_forced_page_context(d):
               'recorded as a refused item', r is not None and 'arrays_consistent' in r
               and [x[0] for x in u.refused_items] == [os.path.join(R, 'bright_source_filter.npz')], (r, u.refused_items))
         bsf_npz(R)
-        with open(tl, 'w') as f:
-            f.write(lkeep.replace('computed: 1)', 'computed: 0)'))
-        r = raises(forced.page_context, _Unit(), plan, pg, R, V)
-        check('page inputs: a TESS table failing its content test refuses the page', r is not None and 'rows_from_candidates' in r, r)
-        with open(tl, 'w') as f:
-            f.write(lkeep)
+        tess_counts[:] = [2, 1]
+        u = _Unit()
+        r = raises(forced.page_context, u, plan, pg, R, V)
+        check('page inputs: a TESS table failing its content test (the tool says written 2, the file has 1 row) refuses the '
+              'page, the table recorded as a refused item', r is not None and 'tess_rows' in r
+              and [x[0] for x in u.refused_items] == [os.path.join(R, 'tess_coverage.csv')], (r, u.refused_items))
+        tess_counts[:] = [1, 1]
         sj = os.path.join(R, 'scintillation_index.json')
         sk = open(sj).read()
         with open(sj, 'w') as f:
@@ -814,7 +850,7 @@ def test_forced_page_context(d):
         finally:
             register.registry_dir = sv
     finally:
-        scripts.run, forced.paired_view, pcommon.interpreter_or_none = saved
+        scripts.run, forced.paired_view, pcommon.interpreter_or_none, tess_orbits.stale_for_reader, stess.orbit_table = saved
 
 
 def main():

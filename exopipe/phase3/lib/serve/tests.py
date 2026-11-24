@@ -15,7 +15,6 @@ is read-only (verify may run it on production files). Registered with @content_t
                      page_context_snapshot.py's frame counts and sidecars; every served frame admitted by its search)
   snapshot_forced_page_context  frame_counts_pointer, sidecar_per_panel  (a snapshot forced-photometry run;
                      page_context_snapshot.py --served-from VIEW: the pointer to its view and every panel's sidecar from it)
-  snapshot_forced_tess  rows_from_candidates  (<run>/tess_coverage.csv of tess_coverage.py --from-candidates on a forced run)
   detections_index   manifest_current, folders_cover_catalogs, records_current  (<run>/page_index/manifest.json;
                      build_detections_index.py)
   stopped_page       not_listening                           (record of `serve --stop`)
@@ -1257,69 +1256,6 @@ def forced_sidecar_per_panel(path, view=None, **ctx):
     if other:
         return False, sum(other.values()), f'{sum(other.values())} sidecars do not read "{want}": {dict(other.most_common(3))}'
     return True, 0, f'{detail}; every sidecar names {os.path.basename(os.path.realpath(v))}'
-
-
-TESS_COLUMNS = ('cand_id', 'stokes', 'lst', 'date', 'band', 'ra', 'dec', 'epoch_start', 'epoch_end', 'status', 'sector', 'camera',
-                'ccd', 'column', 'row')                                    # tess_coverage.py cols (:283)
-TESS_SUMMARY = re.compile(r'; written (\d+) \(left out, page says not computed: (\d+)\)\s*$')   # its last line (:286-290)
-
-
-@content_test('snapshot_forced_tess')
-def rows_from_candidates(path, log=None, **ctx):
-    """<run>/tess_coverage.csv of tess/tess_coverage.py --run RUN --from-candidates on a snapshot forced run (the page runner's
-    fourth page input, exopipe_ops bd07263): the tool's header comment line and columns; one row per cand_id, each a cand_id of
-    the rows the page shows (<run>/candidates/*/*/detections.csv, Stokes pages_deep.TESS_STOKES); every status in
-    pages_deep.TESS_STATUSES and a simultaneous row with its sector, camera and CCD; and the tool's own summary, the last line
-    of ``log`` (default tess_coverage.log beside the file), agrees: written = the rows, written + left out = those cand_ids.
-    No row fails: every page row would read 'not computed'."""
-    from exopipe.phase3.config import CFG
-    D = CFG.pages_deep
-    run = os.path.dirname(os.path.abspath(path))
-    try:
-        with open(path, newline='') as f:
-            first = f.readline()
-            rd = csv.DictReader(f)
-            head, rows = tuple(rd.fieldnames or ()), list(rd)
-    except OSError as e:
-        return False, None, f'tess_coverage.csv: {e}'
-    if not first.startswith('# tess_coverage.py'):
-        return False, None, 'no tess_coverage.py header comment line'
-    if head != TESS_COLUMNS:
-        return False, None, f'columns {head}'
-    want = set(D.TESS_STOKES.split(','))
-    cands = set()
-    for p in glob.glob(os.path.join(run, 'candidates', '*', '*', 'detections.csv')):
-        cands.update(r['cand_id'] for r in _rows(p) if r.get('stokes') in want and r.get('cand_id'))
-    ids = [r['cand_id'] for r in rows]
-    bad = []
-    if not rows:
-        bad.append(f'no rows ({len(cands)} cand_ids on the page)')
-    if len(ids) != len(set(ids)):
-        bad.append(f'{len(ids) - len(set(ids))} repeated cand_ids')
-    if set(ids) - cands:
-        bad.append(f'{len(set(ids) - cands)} cand_ids not on the page (e.g. {sorted(set(ids) - cands)[0]})')
-    st = Counter(r.get('status') for r in rows)
-    if set(st) - set(D.TESS_STATUSES):
-        bad.append(f'statuses {sorted(set(st) - set(D.TESS_STATUSES))}')
-    nos = [r['cand_id'] for r in rows if r.get('status') == 'simultaneous' and not (r.get('sector') and r.get('camera')
-                                                                                     and r.get('ccd'))]
-    if nos:
-        bad.append(f'{len(nos)} simultaneous rows without sector, camera and CCD')
-    lp = log or os.path.join(run, 'tess_coverage.log')
-    try:
-        with open(lp) as f:
-            last = ([x for x in f.read().splitlines() if x.strip()] or [''])[-1]
-    except OSError as e:
-        last = f'({e})'
-    m = TESS_SUMMARY.search(last)
-    if not m:
-        bad.append(f'the last line of {lp} is not the tool\'s summary: {last[-160:]!r}')
-    elif int(m.group(1)) != len(rows) or int(m.group(1)) + int(m.group(2)) != len(cands):
-        bad.append(f'the summary says written {m.group(1)}, left out {m.group(2)}; the file has {len(rows)} rows of '
-                   f'{len(cands)} cand_ids on the page')
-    return not bad, len(rows), ('; '.join(bad) if bad else
-                                f'{len(rows)} rows of {len(cands)} cand_ids on the page ({int(m.group(2))} left out by the tool, '
-                                f'page says not computed): ' + ', '.join(f'{k} {v}' for k, v in sorted(st.items())))
 
 
 def _pidx(path):

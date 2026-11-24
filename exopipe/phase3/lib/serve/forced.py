@@ -143,41 +143,47 @@ def page_context(u, plan, pg, D, view):
          and D/frame_counts.json naming VIEW, whose frame_counts_<S>_<tier>.csv.gz the n_i_epoch / n_v_epoch sliders read
          (R-GREGG-20261114-NEPOCH-SLIDERS-PER-FRAME; production's review_filters.py refuses a forced page without it since
          exopipe_ops 5889086);
-      4. tess/tess_coverage.py --run D --from-candidates under the site PYTHON['tess'] - D/tess_coverage.csv, one row per cand_id
-         of the page's candidates/*/*/detections.csv. The orbit table is read as the snapshot serve's TESS stage reads it
-         (pages_deep.TESS_REFRESH_IN_READER True = production: the tool refreshes it; False: --no-refresh, and a table that does
-         not reach now refuses first). Production's arguments; PR 166's lib/serve/tess.py, once merged, is the one TESS helper.
-    What only reads comes first (the TESS interpreter, the orbit table). Each tool through snapshot_copy._step (the snapshot
-    serve's tool-run helper; a failure raises Refusal for this page). Then serve.FORCED_PAGE_CONTEXT_REQUIRED must exist and
-    every content test pass, each run once through page_output - classes scintillation_index, bright_source_filter (tier
-    forced, the page's Stokes and cadence), snapshot_forced_page_context (view = VIEW: the pointer and every panel's sidecar
-    from it) and snapshot_forced_tess - else Refusal: the page keeps its entry (production's runner tests the same files: every
-    sidecar names VIEW, frame_counts.json names VIEW, the filter files not empty)."""
-    from exopipe.phase3.lib.pages import common as pcommon
+      4. tess/tess_coverage.py --run D --from-candidates - D/tess_coverage.csv, one row per cand_id of the page's
+         candidates/*/*/detections.csv - through lib/serve/tess.coverage, the one TESS helper of the deep, snapshot and 10-minute
+         serves: the site PYTHON[pages_deep.TESS_PYTHON], the reader's arguments (--stokes from pages_deep.TESS_STOKES, --no-refresh
+         in a parity run or with pages_deep.TESS_REFRESH_IN_READER False, the table then reaching now), and the written / left-out
+         counts from this call's own summary line, which content test tess_rows (class tess_coverage) holds the rows to, against
+         the run's master_catalog.csv (on a forced run the page's cand_ids: equal on all 8 forced runs checked 2026-11-24).
+    What only reads comes first (the TESS interpreter, the orbit table). Steps 1-3 through snapshot_copy._step (the snapshot
+    serve's tool-run helper; a failure raises Refusal for this page), step 4 through tess.coverage (the same). Then
+    serve.FORCED_PAGE_CONTEXT_REQUIRED must exist and every content test pass, each run once through add_output (page_output,
+    page_tests) - classes tess_coverage, scintillation_index, bright_source_filter (tier forced, the page's Stokes and cadence)
+    and snapshot_forced_page_context (view = VIEW: the pointer and every panel's sidecar from it) - else Refusal: the page keeps
+    its entry (production's runner tests the same files: every sidecar names VIEW, frame_counts.json names VIEW, the filter
+    files not empty)."""
+    from exopipe.phase3.lib.pages import common as pcommon, tess_orbits
+    from exopipe.phase3.lib.serve import tess
     from exopipe.phase3.lib.serve.snapshot_copy import NOHUGE, _parity_cache, _step
     C = _CFG()
     S, TD = C.serve, C.pages_deep
-    if not pcommon.interpreter_or_none('tess'):
-        raise Refusal("TESS coverage: the site PYTHON['tess'] interpreter is not on this host - old entry kept")
-    if not TD.TESS_REFRESH_IN_READER:
-        from exopipe.phase3.lib.pages import tess_orbits
-        table = os.path.join(os.path.dirname(scripts.path('tess_coverage')), 'TESS_orbit_times.csv')
-        why = tess_orbits.stale_for_reader(table)
-        if why:
-            raise Refusal(f'TESS coverage: the orbit table {table} {why} - the refresh step (python -m exopipe.phase3.lib.pages.'
-                          f'tess_orbits) has not kept it current - old entry kept')
+    parity = bool(getattr(plan, 'parity', False))
+    if not pcommon.interpreter_or_none(TD.TESS_PYTHON):
+        raise Refusal(f"TESS coverage: the site PYTHON[{TD.TESS_PYTHON!r}] interpreter is not on this host - old entry kept")
+    table = tess.orbit_table()
+    why = tess_orbits.reader_args(table, parity=parity)[1]
+    if why:
+        raise Refusal(f'TESS coverage: the orbit table {table} {why} - the reader runs with --no-refresh and the refresh step '
+                      f'(python -m exopipe.phase3.lib.pages.tess_orbits) has not kept it current - old entry kept')
     sci = [D, '--tier', S.SNAPSHOT_FILTER_TIER]
     cache = _parity_cache(plan, 'scintillation_table_index.json')
     if cache:
         sci += ['--cache', cache]
     steps = (('scintillation_index', sci, NOHUGE, 'default'),
              ('bright_source_filter', [D, '--tier', S.FORCED_BRIGHT_TIER, '--workers', S.FORCED_BRIGHT_WORKERS], NOHUGE, 'default'),
-             ('page_context_snapshot', [D, '--served-from', view, '--workers', S.FORCED_PAGE_CONTEXT_WORKERS], NOHUGE, 'default'),
-             ('tess_coverage', ['--run', D, '--from-candidates'] + ([] if TD.TESS_REFRESH_IN_READER else ['--no-refresh']), None,
-              'tess'))
+             ('page_context_snapshot', [D, '--served-from', view, '--workers', S.FORCED_PAGE_CONTEXT_WORKERS], NOHUGE, 'default'))
     for name, a, env, py in steps:
         _step(u, name, a, os.path.join(D, f'{name}.log'), cwd=S.SNAPSHOT_STEP_CWD, env=env, python=py, what=f'(page {pg.key}) ',
               where=D, after='old entry kept')
+    n0 = len(u.tests)
+    written, left_out = tess.coverage(u, D, ['--from-candidates'], os.path.join(D, 'tess_coverage.log'), cwd=S.SNAPSHOT_STEP_CWD,
+                                      after=f'page {pg.key}: old entry kept', parity=parity)
+    u.meta.setdefault('tess_coverage_pages', {})[pg.key] = dict(written=written, left_out=left_out)
+    page_tests(u, pg, n0, os.path.join(D, 'tess_coverage.csv'), 'tess_coverage')
     miss = [f for f in S.FORCED_PAGE_CONTEXT_REQUIRED if not os.path.exists(os.path.join(D, f))]
     if miss:
         raise Refusal(f'{D} lacks {", ".join(miss)} after the page inputs - old entry kept')
@@ -185,7 +191,6 @@ def page_context(u, plan, pg, D, view):
     page_output(u, pg, os.path.join(D, 'bright_source_filter.npz'), 'bright_source_filter', tier=S.FORCED_BRIGHT_TIER,
                 stokes=pg.stokes, cadence=pg.kind)
     page_output(u, pg, D, 'snapshot_forced_page_context', view=view)
-    page_output(u, pg, os.path.join(D, 'tess_coverage.csv'), 'snapshot_forced_tess')
 
 
 def page_output(u, pg, path, cls, what=None, **ctx):
@@ -194,6 +199,12 @@ def page_output(u, pg, path, cls, what=None, **ctx):
     tests and the other pages go on), then Refusal (the page keeps its entry)."""
     n0 = len(u.tests)
     u.add_output(path, cls, **ctx)
+    page_tests(u, pg, n0, path, cls, what)
+
+
+def page_tests(u, pg, n0, path, cls, what=None):
+    """The tests recorded in ``u`` since its n0-th (the content tests of ``path``, recorded by page_output or by a shared helper
+    such as tess.coverage): a failure refuses page ``pg`` only, as page_output says."""
     bad = [t for t in u.tests[n0:] if not t['passed'] and not t.get('waived')]
     if bad:
         why = '; '.join(f'{t["name"]} ({str(t.get("detail") or t.get("value") or "")[:300]})' for t in bad[:3])
