@@ -292,6 +292,22 @@ def test_site_content():
         r = dict(rec, cards=rec['cards'][1:], n_events=len(rec['cards']) - 1)
         json.dump(r, open(os.path.join(b, 'page_record.json'), 'w'))
     broken('a missing event', drop_card)
+
+    def via_links(b, to=None):
+        # the script records its literal ev_dir paths: links (tier_pages.TCtx.eval_links) to the evaluations, or elsewhere
+        ln = os.path.join(b, 'links')
+        os.makedirs(ln)
+        r = json.loads(json.dumps(rec))
+        for k, v in sorted(evs.items()):
+            os.symlink(to or v, os.path.join(ln, k.replace('|', '_')))
+            r['inputs']['evals'][k] = os.path.join(ln, k.replace('|', '_'))
+        json.dump(r, open(os.path.join(b, 'page_record.json'), 'w'))
+    b = os.path.join(TMP, 'site_links')
+    shutil.copytree(site, b)
+    via_links(b)
+    ok, d = _passes('forced_tier_site', os.path.join(b, 'page_record.json'), evals=evs)
+    check('forced_tier_site passes a site that read its evaluations through links to them (review F7)', ok, d)
+    broken('evaluations read through links to another directory', lambda b: via_links(b, to=TMP))
     broken('a broken panel', lambda b: _png(os.path.join(b, 'panels', rec['cards'][0]['name'] + '.png'), n=100))
     broken('a panel off the page', lambda b: open(os.path.join(b, 'index.html'), 'w').write('<html></html>'))
 

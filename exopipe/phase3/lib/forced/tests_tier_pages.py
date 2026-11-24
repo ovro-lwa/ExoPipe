@@ -107,9 +107,12 @@ def tier_site(path, evals=None, samples=None, **ctx):
     names = [c.get('name') for c in cards]
     if len(set(names)) != len(names):
         bad.append('%d repeated card names' % (len(names) - len(set(names))))
-    # the evaluations the build read are the configured ones (EVAL_DIRS mirrors the script's ev_dir)
+    # the evaluations the build read are the configured ones (EVAL_DIRS mirrors the script's ev_dir). The script names them
+    # by its literal ev_dir, so evaluations named from other samples are read through links (tier_pages.TCtx.eval_links):
+    # compared by the directory they resolve to
     evs = {tuple(k.split('|')): v for k, v in ((rec.get('inputs') or {}).get('evals') or {}).items()}
-    if evs != want_evs:
+    real = lambda d: {k: os.path.realpath(v) for k, v in d.items()}
+    if real(evs) != real(want_evs):
         bad.append('the site read evaluations %s, configured %s' % (sorted(evs.items()), sorted(want_evs.items())))
     # the events: exactly the clean rows at or above their Gaussian thresholds in those files, recomputed here
     want = {_key(r) for r in selected_events(t, want_evs, samples)}
