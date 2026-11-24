@@ -807,7 +807,8 @@ def switch_stage(run, plan, state):
             flow.build_page_index(u, v.run)                # no publish marker on a version nobody reads yet
             rec = versions.seal(v, required=seal_required(plan, state, v.run), checks=[('page_index_current', index_check)],
                                 note=f'serve --tier sublst {u.name}')
-            u.note(f'version {v.vid} sealed: {rec["n_files"]} files, {rec["n_bytes"]} bytes (manifest walk {rec["walk_s"]} s)')
+            u.note(f'version {v.vid} sealed: {rec["n_files"]} files, {rec["n_bytes"]} bytes (manifest walk {rec["walk_s"]} s; '
+                   f'{rec["n_hashed"]} files, {rec["hashed_bytes"]} bytes hashed in {rec["hash_s"]} s)')
             # the old run the catch-up reads: the parity source, the version U names, or the legacy directory it adopts
             cur = versions.served(plan.U)
             old = src if plan.parity else (cur.run if cur is not None else
@@ -848,7 +849,8 @@ def switch_stage(run, plan, state):
                        f'among the newest versions; versions.seal_adopted gives it one')
             else:
                 u.note(f'the adopted legacy run {sw["adopted"].vid} given its manifest: {arec["n_files"]} files, '
-                       f'{arec["n_bytes"]} bytes (walk {arec["walk_s"]} s) - it can be switched back to')
+                       f'{arec["n_bytes"]} bytes (walk {arec["walk_s"]} s; {arec["n_hashed"]} files, '
+                       f'{arec["hashed_bytes"]} bytes hashed in {arec["hash_s"]} s) - it can be switched back to')
                 u.add_output(sw['adopted'].path('VERSION.json'), 'run_version_adopted')
         for J in S.SUBLST_JOURNALS:
             j = os.path.join(plan.U, J, 'judgements.jsonl')

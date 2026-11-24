@@ -17,8 +17,9 @@ LAYOUT (name = basename(U); R = the VERSIONS ROOT, <dir>/<name><serve.RUN_VERSIO
                            page_context_tenmin.py - sees the name it always saw.
   R/<vid>/BUILDING.json    begin(): who builds it (pid, process start, host, UTC)
   R/<vid>/MANIFEST.tsv     seal(): every file and link of the run - kind (f / l), relative path, size in bytes, mtime in ns,
-                           link target - sorted by path; but the REVIEW STATE the pages and the serve append to while the version
-                           is served (serve.RUN_VERSIONS_MUTABLE, recorded in VERSION.json: the judgement journals, the run's
+                           link target, the file's sha256 (CONTENT; empty when not hashed) - sorted by path; but the
+                           REVIEW STATE the pages and the serve append to while the version is served
+                           (serve.RUN_VERSIONS_MUTABLE, recorded in VERSION.json: the judgement journals, the run's
                            incremental.log, the page index's DIRTY marker, a publish marker), so a version stays verifiable
                            after it was served
   R/<vid>/VERSION.json     seal(), written LAST and atomically: THE COMPLETION RECORD (name, version, sealed UTC, file and byte
@@ -64,6 +65,17 @@ or builder on another node is never taken for gone while it runs, and a dead one
 only after a renewal of that path in flight has ended (its temporary file removed; the caller then removes or moves the
 directory), waiting for it outside the lock: a slow fsync delays only the stop of its own path.
 
+CONTENT. Names, sizes, modification times or markers never prove completion: the content test reads content. The seal
+hashes (sha256) every file of a text type (serve.RUN_VERSIONS_HASH_TEXT: queues, catalogs, page indexes, pages, records) and
+every other file up to serve.RUN_VERSIONS_HASH_SMALL_BYTES (16 MiB) not of a binary type - every file the seal's checks read
+among them - and of the BINARIES (serve.RUN_VERSIONS_HASH_BINARY types - the panels - of any size, and any other file over
+16 MiB) all (serve.RUN_VERSIONS_HASH_LARGE 'all') or their stable sample only ('sample'). The stable sample: the binaries whose
+path's sha256 falls in the first serve.RUN_VERSIONS_SAMPLE_FRACTION (2%) of its range, at least serve.RUN_VERSIONS_SAMPLE_MIN
+(20) of them (all when fewer). The rules are recorded in VERSION.json (hash_rules), so a later content test applies the seal's.
+verify() without the seal's record (the content tests) walks the run and re-hashes every file that is not a binary, the
+sample of the binaries and every file whose size or mtime differs from the manifest; a file whose content differs, or one
+changed with no hash to compare, fails it, as does any file missing or added.
+
 OWED CATCH-UP. A switch is followed by the catch-up of the journal lines written on the old version (sublst_build). If that
 fails after the switch, owe_catchup() records it (R/CATCHUP_OWED.json: the old and new versions, the marks); until
 catchup_done() removes it, begin(), place() and switch() of U refuse and retention keeps the old version. The sub-LST serve
@@ -97,7 +109,7 @@ import time
 
 from exopipe.phase3.core.record import Refusal
 
-FORMAT = 1
+FORMAT = 2                         # 2: MANIFEST.tsv carries each file's sha256 and VERSION.json its hash_rules (CONTENT)
 _VID_RE = re.compile(r'^\d{8}T\d{6}Z(-\d+)?(-adopted)?$')
 _BAD_NAME = re.compile(r'[\t\n\r]')
 
@@ -493,16 +505,95 @@ def walk(run, mutable=()):
 
 
 def _manifest_text(entries):
-    return ''.join(f'{k}\t{rel}\t{size}\t{mt}\t{tgt}\n' for k, rel, size, mt, tgt in entries)
+    return ''.join(f'{k}\t{rel}\t{size}\t{mt}\t{tgt}\t{sha}\n' for k, rel, size, mt, tgt, sha in entries)
 
 
 def _read_manifest(path):
     out = []
     with open(path, newline='\n') as f:
         for ln in f:
-            k, rel, size, mt, tgt = ln.rstrip('\n').split('\t')
-            out.append((k, rel, int(size), int(mt), tgt))
+            k, rel, size, mt, tgt, sha = ln.rstrip('\n').split('\t')
+            out.append((k, rel, int(size), int(mt), tgt, sha))
     return out
+
+
+def hash_rules():
+    """The CONTENT rules of a new seal (from the serve configuration), recorded in its VERSION.json."""
+    S = _S()
+    large = str(S.RUN_VERSIONS_HASH_LARGE)
+    if large not in ('all', 'sample'):
+        raise Refusal(f'serve.RUN_VERSIONS_HASH_LARGE = {large!r}: not all or sample')
+    return {'small_bytes': int(S.RUN_VERSIONS_HASH_SMALL_BYTES), 'text': [str(x).lower() for x in S.RUN_VERSIONS_HASH_TEXT],
+            'binary': [str(x).lower() for x in S.RUN_VERSIONS_HASH_BINARY], 'large': large,
+            'sample_fraction': float(S.RUN_VERSIONS_SAMPLE_FRACTION), 'sample_min': int(S.RUN_VERSIONS_SAMPLE_MIN)}
+
+
+def is_small(rel, size, rules):
+    """A file every content test re-hashes (not a binary): one of the rules' text types, or up to its small_bytes and not of
+    one of its binary types."""
+    low = rel.lower()
+    return low.endswith(tuple(rules['text'])) or (size <= rules['small_bytes'] and not low.endswith(tuple(rules['binary'])))
+
+
+def large_sample(rels, rules):
+    """The stable sample of the binaries ``rels`` (relative paths): those whose path's sha256 falls in the first
+    sample_fraction of its range, topped up to sample_min by the smallest path hashes (all of them when fewer). It depends
+    only on the paths, so the seal and every later content test choose the same files."""
+    keyed = sorted((hashlib.sha256(r.encode()).hexdigest(), r) for r in rels)
+    cut = int(rules['sample_fraction'] * 16 ** 16)
+    n = max(sum(1 for k, _ in keyed if int(k[:16], 16) < cut), min(rules['sample_min'], len(keyed)))
+    return {r for _, r in keyed[:n]}
+
+
+def sha256_file(p):
+    """sha256 of the file ``p``: ordinary 1 MiB reads, never a memory map."""
+    d = hashlib.sha256()
+    with open(p, 'rb') as f:
+        while True:
+            b = f.read(1 << 20)
+            if not b:
+                return d.hexdigest()
+            d.update(b)
+
+
+def _manifest(run, mutable, rules, what):
+    """(entries with their sha256, statistics): the walk of ``run`` and the sha256 of every file the rules hash (CONTENT).
+    Refusal when a hashed file changed (size or mtime) or vanished while it was read."""
+    t0 = time.time()
+    entries = walk(run, mutable)
+    walk_s = time.time() - t0
+    files = [e for e in entries if e[0] == 'f']
+    large = [e[1] for e in files if not is_small(e[1], e[2], rules)]
+    todo = {e[1] for e in files if is_small(e[1], e[2], rules)}
+    todo |= set(large) if rules['large'] == 'all' else large_sample(large, rules)
+    out, n, nb = [], 0, 0
+    t1 = time.time()
+    for e in entries:
+        sha = ''
+        if e[0] == 'f' and e[1] in todo:
+            p = os.path.join(run, e[1])
+            try:
+                sha = sha256_file(p)
+                st = os.lstat(p)
+            except FileNotFoundError:
+                raise Refusal(f'{p} vanished while {what} read it - not sealed') from None
+            if (st.st_size, st.st_mtime_ns) != (e[2], e[3]):
+                raise Refusal(f'{p} changed while {what} read it (size or modification time) - not sealed')
+            n, nb = n + 1, nb + e[2]
+        out.append(tuple(e) + (sha,))
+    return out, {'walk_s': round(walk_s, 1), 'hash_s': round(time.time() - t1, 1), 'n_hashed': n, 'hashed_bytes': nb,
+                 'n_binaries': len(large), 'n_binaries_hashed': sum(1 for r in large if r in todo)}
+
+
+def _write_manifest(v, entries):
+    text = _manifest_text(entries).encode()
+    mpath = v.path('MANIFEST.tsv')
+    with open(mpath + '.part', 'wb') as f:
+        f.write(text)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(mpath + '.part', mpath)
+    return hashlib.sha256(text).hexdigest()
 
 
 def seal(v, required=(), checks=(), note=''):
@@ -535,34 +626,28 @@ def seal(v, required=(), checks=(), note=''):
         results.append({'name': name, 'passed': bool(ok), 'detail': str(detail)[:500]})
         if not ok:
             raise Refusal(f'version {v.vid} of {v.name}: content check {name} failed ({str(detail)[:400]}) - not sealed')
-    t0 = time.time()
-    mutable = list(_S().RUN_VERSIONS_MUTABLE)
-    entries = walk(v.run, mutable)
+    mutable, rules = list(_S().RUN_VERSIONS_MUTABLE), hash_rules()
+    entries, stats = _manifest(v.run, mutable, rules, 'the seal')
     if not any(e[0] == 'f' for e in entries):
         raise Refusal(f'version {v.vid} of {v.name}: the run directory holds no file - not sealed')
-    text = _manifest_text(entries).encode()
-    mpath = v.path('MANIFEST.tsv')
-    with open(mpath + '.part', 'wb') as f:
-        f.write(text)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(mpath + '.part', mpath)
     rec = {'format': FORMAT, 'name': v.name, 'version': v.vid, 'state': 'sealed', 'sealed_utc': _utc(),
            'sealed_by': me(note), 'builder': v.builder(), 'n_files': sum(1 for e in entries if e[0] == 'f'),
            'n_links': sum(1 for e in entries if e[0] == 'l'), 'n_bytes': sum(e[2] for e in entries),
-           'manifest': 'MANIFEST.tsv', 'manifest_sha256': hashlib.sha256(text).hexdigest(), 'mutable': mutable, 'required': req,
-           'checks': results, 'walk_s': round(time.time() - t0, 1)}
+           'manifest': 'MANIFEST.tsv', 'manifest_sha256': _write_manifest(v, entries), 'mutable': mutable, 'required': req,
+           'checks': results, 'hash_rules': rules, **stats}
     renew_stop(v.path('BUILDING.json'))
     _atomic_json(v.path('VERSION.json'), rec)
     return rec
 
 
-def verify(v, record=None):
+def verify(v, record=None, stats=None):
     """(ok, detail): ``v`` holds a completion record of this format and name, its manifest's sha256 is the recorded one, and
-    the run on disk is exactly its manifest (every file present with its size and mtime, every link with its target, nothing
-    added; the record's mutable paths left out). One walk of the run - unless ``record`` is the record seal() returned to the
-    caller (its walk made the manifest): then the record on disk must equal it and the manifest match it, and the run is
-    not walked again."""
+    the run on disk is its manifest IN CONTENT (CONTENT): every file and link present, nothing added (the record's mutable
+    paths left out), every link's target, and the sha256 re-read of every file not a binary, of the stable sample of the
+    binaries and of every file whose size or mtime differs from the manifest; a file changed without a hash to compare fails.
+    One walk and those reads - unless ``record`` is the record seal() returned to the caller (its walk and reads made the
+    manifest): then the record on disk must equal it and the manifest match it, and the run is not read again. ``stats``
+    (a dict) receives the counts and the bytes read."""
     rec = v.record()
     if rec is None:
         return False, f'version {v.vid}: no completion record {v.path("VERSION.json")} (not sealed: a build not finished)'
@@ -581,20 +666,52 @@ def verify(v, record=None):
         if record != rec:
             return False, f'version {v.vid}: the completion record on disk is not the one its seal returned'
         return True, (f'version {v.vid}: {rec.get("n_files")} files, {rec.get("n_bytes")} bytes, sealed {rec.get("sealed_utc")} '
-                      f'by this process (its manifest walk of {rec.get("walk_s")} s; not walked again)')
-    want = _read_manifest(mpath)
+                      f'by this process (its manifest walk of {rec.get("walk_s")} s and {rec.get("hashed_bytes")} bytes '
+                      f'hashed; not read again)')
+    rules = rec.get('hash_rules')
+    if not isinstance(rules, dict):
+        return False, f'version {v.vid}: its record holds no hash_rules (CONTENT) - its content cannot be tested'
     try:
+        want = _read_manifest(mpath)
         have = walk(v.run, rec.get('mutable') or ())
-    except (OSError, Refusal) as e:
-        return False, f'version {v.vid}: run unreadable ({e})'
-    if have == want:
-        return True, f'version {v.vid}: {rec.get("n_files")} files, {rec.get("n_bytes")} bytes as sealed {rec.get("sealed_utc")}'
+    except (OSError, ValueError, Refusal) as e:
+        return False, f'version {v.vid}: manifest or run unreadable ({e})'
     w, h = {e[1]: e for e in want}, {e[1]: e for e in have}
     missing = sorted(set(w) - set(h))
     added = sorted(set(h) - set(w))
-    changed = sorted(p for p in set(w) & set(h) if w[p] != h[p])
-    return False, (f'version {v.vid}: the run differs from its manifest - {len(missing)} missing (e.g. {missing[:3]}), '
-                   f'{len(added)} added (e.g. {added[:3]}), {len(changed)} changed (e.g. {changed[:3]})')
+    common = sorted(set(w) & set(h))
+    links = [p for p in common if w[p][0] != h[p][0] or (w[p][0] == 'l' and w[p][4] != h[p][4])]
+    files = [p for p in common if w[p][0] == 'f' and h[p][0] == 'f']
+    meta = {p for p in files if w[p][2:4] != h[p][2:4]}
+    small = {p for p in files if is_small(p, w[p][2], rules)}
+    large = [p for p, e in w.items() if e[0] == 'f' and not is_small(p, e[2], rules)]
+    sample = large_sample(large, rules) & set(files)
+    todo = sorted(small | sample | meta)
+    nohash = [p for p in todo if not w[p][5]]
+    differ, nbytes, t0 = [], 0, time.time()
+    for p in todo:
+        if not w[p][5]:
+            continue
+        try:
+            got = sha256_file(os.path.join(v.run, p))
+        except OSError as e:
+            return False, f'version {v.vid}: {p} unreadable ({e})'
+        nbytes += h[p][2]
+        if got != w[p][5]:
+            differ.append(p)
+    st = {'n_files': len(files), 'n_rehashed': len(todo) - len(nohash), 'bytes_read': nbytes, 'n_small': len(small),
+          'n_binaries': len(large), 'n_sample': len(sample), 'n_meta_changed': len(meta), 'hash_s': round(time.time() - t0, 1)}
+    if stats is not None:
+        stats.update(st)
+    if missing or added or links or differ or nohash:
+        return False, (f'version {v.vid}: the run differs from its manifest - {len(missing)} missing (e.g. {missing[:3]}), '
+                       f'{len(added)} added (e.g. {added[:3]}), {len(links)} links changed (e.g. {links[:3]}), '
+                       f'{len(differ)} with other content (sha256; e.g. {differ[:3]}), {len(nohash)} changed in size or '
+                       f'modification time with no sha256 to compare (e.g. {nohash[:3]})')
+    return True, (f'version {v.vid}: {len(files)} files and the links as sealed {rec.get("sealed_utc")}; content re-read '
+                  f'(sha256): {len(small)} files not binaries, {len(sample)} of {len(large)} binaries (the stable '
+                  f'sample), {len(meta)} with a changed size or modification time (same content) - {st["n_rehashed"]} files, '
+                  f'{nbytes} bytes')
 
 
 # ---- the switch -------------------------------------------------------------------------------------------------------
@@ -678,30 +795,23 @@ def _adopt(U, R):
 
 
 def seal_adopted(v, note=''):
-    """Give the adopted version ``v`` its manifest: a walk of its run, MANIFEST.tsv, then its record rewritten (atomically) as
-    state 'sealed' with the adoption kept (adopted_utc, adopted_by, adopted_from, pointer_was_link). Afterwards verify() and
-    switch() treat it as any sealed version. The adoption required a run holding a file; one holding only review state (the
-    mutable paths) gets an empty manifest. Refusal for a version not in state 'adopted'. Returns the record."""
+    """Give the adopted version ``v`` its manifest: a walk of its run and the sha256 of its files (CONTENT), MANIFEST.tsv,
+    then its record rewritten (atomically) as state 'sealed' with the adoption kept (adopted_utc, adopted_by, adopted_from,
+    pointer_was_link). Afterwards verify() and switch() treat it as any sealed version. The adoption required a run holding a
+    file; one holding only review state (the mutable paths) gets an empty manifest. Refusal for a version not in state
+    'adopted'. Returns the record."""
     _guard(v.run, 'the seal of')
     old = v.record() or {}
     if old.get('state') != 'adopted' or old.get('version') != v.vid:
         raise Refusal(f'version {v.vid}: state {old.get("state")!r}, not adopted - not sealed as adopted')
-    t0 = time.time()
-    mutable = list(_S().RUN_VERSIONS_MUTABLE)
-    entries = walk(v.run, mutable)
-    text = _manifest_text(entries).encode()
-    mpath = v.path('MANIFEST.tsv')
-    with open(mpath + '.part', 'wb') as f:
-        f.write(text)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(mpath + '.part', mpath)
+    mutable, rules = list(_S().RUN_VERSIONS_MUTABLE), hash_rules()
+    entries, stats = _manifest(v.run, mutable, rules, 'the seal of the adopted run')
     rec = {k: old[k] for k in ('adopted_utc', 'adopted_by', 'adopted_from', 'pointer_was_link') if k in old}
     rec.update({'format': FORMAT, 'name': v.name, 'version': v.vid, 'state': 'sealed', 'adopted': True, 'sealed_utc': _utc(),
                 'sealed_by': me(note), 'builder': None, 'n_files': sum(1 for e in entries if e[0] == 'f'),
                 'n_links': sum(1 for e in entries if e[0] == 'l'), 'n_bytes': sum(e[2] for e in entries),
-                'manifest': 'MANIFEST.tsv', 'manifest_sha256': hashlib.sha256(text).hexdigest(), 'mutable': mutable,
-                'required': [], 'checks': [], 'walk_s': round(time.time() - t0, 1)})
+                'manifest': 'MANIFEST.tsv', 'manifest_sha256': _write_manifest(v, entries), 'mutable': mutable,
+                'required': [], 'checks': [], 'hash_rules': rules, **stats})
     _atomic_json(v.path('VERSION.json'), rec)
     return rec
 

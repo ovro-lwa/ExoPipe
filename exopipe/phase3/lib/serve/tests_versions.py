@@ -1,9 +1,10 @@
 """Content tests of the run versions and their retention (lib/serve/versions.py). Read only.
 
   run_version_placed  placed (BUILDING.json of a version placed from a build directory: its run directory holds the build)
-  run_version   sealed_complete (the run on disk walked again and compared with MANIFEST.tsv - every file's size and
-                modification time, every link's target, nothing added; mutable review state left out - and the manifest's
-                sha256 with the record's: always a walk, never the record checked against itself),
+  run_version   sealed_complete (the run's CONTENT against MANIFEST.tsv, versions.verify: every file and link present,
+                nothing added, mutable review state left out, every link's target, and the sha256 re-read of every small or
+                text file, of the stable sample of the large files and of every file whose size or modification time
+                differs - never names, sizes, times or the record checked against itself),
                 switched_to (the pointer's log records the switch to this version)
   run_version_adopted  adopted_sealed (an adopted legacy run given its manifest, recorded as adopted at a switch)
   retire_plan   plan_consistent (a dry run never plans the served or a kept version; an applied plan's versions are gone and
@@ -44,21 +45,23 @@ def placed(path, placed_from=None, **ctx):
 
 @content_test('run_version')
 def sealed_complete(path, **ctx):
-    """VERSION.json is a sealed completion record, its manifest's sha256 is the recorded one, and the run on disk is exactly
-    MANIFEST.tsv (versions.verify without a record: the run walked again - every file's size and modification time, every
-    link's target, nothing added). The record is never only compared with itself."""
+    """VERSION.json is a sealed completion record, its manifest's sha256 is the recorded one, and the run on disk is
+    MANIFEST.tsv in content (versions.verify without a record: the run walked, every small or text file, the stable sample of
+    the large ones and every file changed in size or time re-hashed against the manifest's sha256). The value: the bytes
+    re-read. The record is never only compared with itself."""
     from exopipe.phase3.lib.serve import versions
     v, rec = _version(path)
     if rec.get('state') != 'sealed':
         return False, rec.get('state'), f'state {rec.get("state")!r}, not sealed'
-    ok, detail = versions.verify(v)
-    return ok, rec.get('n_files'), detail
+    st = {}
+    ok, detail = versions.verify(v, stats=st)
+    return ok, st.get('bytes_read'), detail
 
 
 @content_test('run_version_adopted')
 def adopted_sealed(path, **ctx):
     """An adopted legacy run given its manifest (versions.seal_adopted): state sealed, adopted, its run walked again and equal
-    to MANIFEST.tsv (versions.verify), and R/POINTER_LOG.jsonl records its adoption."""
+    to MANIFEST.tsv in content (versions.verify: CONTENT), and R/POINTER_LOG.jsonl records its adoption."""
     from exopipe.phase3.lib.serve import versions
     v, rec = _version(path)
     if rec.get('state') != 'sealed' or not rec.get('adopted'):

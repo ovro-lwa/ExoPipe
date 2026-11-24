@@ -45,6 +45,10 @@ lib/serve/sublst_build.py): data-free, plain checks, runnable with python, under
    a lock that cannot be opened a refusal naming its owner; another host's record without a lease is alive, a lease dead
    only after twice its length, renewals fsynced outside the renewer lock; adoption rolled back on a failure before U
    points at the new version; the content test walks the run against MANIFEST.tsv.
+13. Content: MANIFEST.tsv holds the sha256 of every file not a binary and of the binaries' stable sample (2%, at least 20,
+   by the path's hash); the content test re-hashes those and every file changed in size or time - a changed content with
+   size and time kept fails, a touched file passes, a changed binary without a hash fails; 'all' hashes every binary; a
+   file written during the seal refuses it.
 """
 import contextlib
 import fcntl
@@ -1281,6 +1285,127 @@ def test_review_round2():
     os.chmod(p6, 0o664)
 
 
+# ---- 13. content: the manifest's sha256 and the content test's re-reads (PR 155, coordinator on finding 9) -----------------
+def test_content_hashes():
+    d = f'{TMP}/content'
+    U = f'{d}/Run_C'
+    os.makedirs(d)
+    S = CFG.serve
+    v = versions.begin(U)
+    write(f'{v.run}/queue.txt', 'J1\nJ2\n')
+    write(f'{v.run}/cat/x.csv', 'source_id\nJ1\n')
+    write(f'{v.run}/cand/a.key', 'k')
+    pngs = [f'panels/p{i:03d}.png' for i in range(100)]
+    for i, rel in enumerate(pngs):
+        write(f'{v.run}/{rel}', f'png {i:03d}')
+    rec = versions.seal(v)
+    want = {e[1]: e for e in versions._read_manifest(v.path('MANIFEST.tsv'))}
+    sample = versions.large_sample(pngs, rec['hash_rules'])
+    check('the record carries the hash rules (16 MiB, the text and binary types, binaries sampled at the seal: 2%, at least '
+          '20)',
+          rec['hash_rules']['small_bytes'] == 16 * 1024 * 1024 and '.csv' in rec['hash_rules']['text']
+          and '.png' in rec['hash_rules']['binary'] and rec['hash_rules']['large'] == 'sample'
+          and rec['hash_rules']['sample_fraction'] == 0.02 and rec['hash_rules']['sample_min'] == 20, rec['hash_rules'])
+    check('MANIFEST.tsv: the sha256 of every file not a binary (queue, CSV, key), of the binaries only their stable sample',
+          all(want[r][5] == hashlib.sha256(open(f'{v.run}/{r}', 'rb').read()).hexdigest()
+              for r in ('queue.txt', 'cat/x.csv', 'cand/a.key'))
+          and {r for r in pngs if want[r][5]} == sample and len(sample) == 20
+          and all(want[r][5] == hashlib.sha256(open(f'{v.run}/{r}', 'rb').read()).hexdigest() for r in sample)
+          and rec['n_hashed'] == 23 and rec['n_binaries'] == 100 and rec['n_binaries_hashed'] == 20, (len(sample), rec))
+    many = [f'panels/{i:05d}.png' for i in range(5000)]
+    s1, s2 = versions.large_sample(many, rec['hash_rules']), versions.large_sample(list(reversed(many)), rec['hash_rules'])
+    check('the stable sample: chosen by the path\'s hash (the same in any order), about 2% of many (5000 -> 60-140), at least '
+          '20, all of fewer', s1 == s2 and 60 <= len(s1) <= 140
+          and len(versions.large_sample(many[:30], rec['hash_rules'])) == 20
+          and versions.large_sample(many[:7], rec['hash_rules']) == set(many[:7]), len(s1))
+    st = {}
+    ok, detail = versions.verify(v, stats=st)
+    nb = sum(os.path.getsize(f'{v.run}/{r}') for r in ['queue.txt', 'cat/x.csv', 'cand/a.key'] + sorted(sample))
+    check('the content test re-reads every file not a binary and the sample: its bytes read counted', ok
+          and st['n_rehashed'] == 23 and st['bytes_read'] == nb and st['n_sample'] == 20, (detail, st))
+
+    def same_meta(rel, fn):
+        p = f'{v.run}/{rel}'
+        s0 = os.stat(p)
+        fn(p)
+        os.utime(p, ns=(s0.st_atime_ns, s0.st_mtime_ns))
+        assert os.path.getsize(p) == s0.st_size
+    same_meta('queue.txt', lambda p: write(p, 'J1\nJ3\n'))
+    ok, detail = versions.verify(v)
+    check('a file whose content changed with its size and modification time kept fails the content test (sha256)',
+          not ok and 'other content' in detail and 'queue.txt' in detail, detail)
+    why = refuses(versions.switch, U, v)
+    check('... and refuses the switch without the seal\'s record', why and 'differs from its manifest' in why, why)
+    same_meta('queue.txt', lambda p: write(p, 'J1\nJ2\n'))
+    os.utime(f'{v.run}/cat/x.csv')
+    ok, detail = versions.verify(v)
+    check('a file only touched (its modification time changed, the same content): re-hashed, passes', ok
+          and '1 with a changed size or modification time (same content)' in detail, detail)
+    sampled, other = sorted(sample)[0], sorted(set(pngs) - sample)[0]
+    same_meta(sampled, lambda p: write(p, 'PNG 000'))
+    ok, detail = versions.verify(v)
+    check('a binary of the sample whose content changed (size and time kept) fails the content test', not ok
+          and sampled in detail, detail)
+    write(f'{v.run}/{sampled}', 'png ' + sampled[-7:-4])
+    os.utime(f'{v.run}/{sampled}', ns=(want[sampled][3], want[sampled][3]))
+    same_meta(other, lambda p: write(p, 'PNG ' + other[-7:-4]))
+    st = {}
+    ok, detail = versions.verify(v, stats=st)
+    check('a binary outside the sample whose content changed with its size and time kept is not re-read (the sample\'s '
+          'limit: 2% of the binaries per test)', ok and st['n_rehashed'] == 23, (detail, st))
+    os.utime(f'{v.run}/{other}')
+    ok, detail = versions.verify(v)
+    check('a binary outside the sample whose modification time changed has no sha256 to compare (sample-only seal): fails',
+          not ok and 'no sha256 to compare' in detail and other in detail, detail)
+    write(f'{v.run}/{other}', 'png ' + other[-7:-4])
+    # the seal's 'all': every binary hashed; a changed size or time is then re-hashed and judged by content
+    real = S.RUN_VERSIONS_HASH_LARGE, S.RUN_VERSIONS_HASH_SMALL_BYTES
+    S.RUN_VERSIONS_HASH_LARGE, S.RUN_VERSIONS_HASH_SMALL_BYTES = 'all', 100
+    try:
+        w = versions.begin(U)
+        write(f'{w.run}/big.dat', 'x' * 200)             # over small_bytes, not a text type: a binary
+        write(f'{w.run}/big.csv', 'y' * 200)             # a text type: re-hashed whatever its size
+        for rel in pngs:
+            write(f'{w.run}/{rel}', 'png')
+        rw = versions.seal(w)
+        mw = {e[1]: e for e in versions._read_manifest(w.path('MANIFEST.tsv'))}
+        check('RUN_VERSIONS_HASH_LARGE all: every binary hashed at the seal; a non-text file over small_bytes is a binary, a '
+              'text file of any size is not', all(mw[r][5] for r in pngs) and rw['n_binaries'] == 101
+              and mw['big.dat'][5] and not versions.is_small('big.dat', 200, rw['hash_rules'])
+              and versions.is_small('big.csv', 200, rw['hash_rules']), rw)
+        os.utime(f'{w.run}/{other}')
+        ok1, d1 = versions.verify(w)
+        write(f'{w.run}/{other}', 'PNG')
+        ok2, d2 = versions.verify(w)
+        check('... a binary outside the sample whose time changed is re-hashed: the same content passes, another fails',
+              ok1 and not ok2 and other in d2, (d1, d2))
+    finally:
+        S.RUN_VERSIONS_HASH_LARGE, S.RUN_VERSIONS_HASH_SMALL_BYTES = real
+    # a file written while the seal reads it: refused, nothing written
+    x = versions.begin(U)
+    write(f'{x.run}/q.txt', 'a')
+    real_sha = versions.sha256_file
+
+    def writing(p):
+        r = real_sha(p)
+        with open(p, 'a') as f:
+            f.write('more')
+        return r
+    versions.sha256_file = writing
+    try:
+        why = refuses(versions.seal, x)
+    finally:
+        versions.sha256_file = real_sha
+    check('a file that changes while the seal reads it: the seal refuses, no manifest or record written',
+          why and 'changed while the seal read it' in why and x.record() is None
+          and not os.path.exists(x.path('MANIFEST.tsv')), why)
+    rec_old = dict(rec)
+    rec_old.pop('hash_rules')
+    versions._atomic_json(v.path('VERSION.json'), rec_old)
+    ok, detail = versions.verify(v)
+    check('a record without hash rules: the content cannot be tested - fails', not ok and 'hash_rules' in detail, detail)
+
+
 def main():
     shutil.rmtree(TMP, ignore_errors=True)
     os.makedirs(TMP)
@@ -1297,6 +1422,7 @@ def main():
         test_review_findings()
         test_coalescer_wired()
         test_review_round2()
+        test_content_hashes()
     finally:
         shutil.rmtree(TMP, ignore_errors=True)
     print(f'{N[0] - len(FAILS)} of {N[0]} checks passed')

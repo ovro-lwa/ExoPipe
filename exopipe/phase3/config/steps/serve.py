@@ -64,6 +64,26 @@ class serve(_Section):
                                             # page-index rebuilds in place on the served version (flow.build_page_index: its
                                             # DIRTY marker, build_detections_index.mark_run_dirty, and its repair); the seal
                                             # still requires the index current (sublst_build.index_check)
+    # what a seal hashes and the content test re-reads (lib/serve/versions.py CONTENT): names, sizes, modification times or
+    # markers never prove completion; the content test reads content (Gregg's rule; the coordinator, PR 155 review of finding 9)
+    RUN_VERSIONS_HASH_SMALL_BYTES = 16 * 1024 * 1024   # bytes (16 MiB): a file up to this size that is not a binary type, and
+    RUN_VERSIONS_HASH_TEXT = ('.csv', '.json', '.jsonl', '.html', '.htm', '.txt', '.tsv', '.js', '.css', '.md', '.xml', '.yaml',
+                              '.yml', '.log')   # a file of these types whatever its size (queues, catalogs, page indexes,
+                                            # pages, records) is hashed at the seal and re-hashed by every content test
+    RUN_VERSIONS_HASH_BINARY = ('.png', '.jpg', '.jpeg', '.gif', '.webp', '.pdf', '.npz', '.npy', '.fits', '.fit', '.fz', '.h5',
+                                '.hdf5', '.gz', '.zip', '.tar')   # the binaries - these types of any size, and any other file
+                                            # over 16 MiB not of a text type: the content test re-hashes their stable sample.
+                                            # Run_SLSTB 2026-11-24: 49,593 .png panels (11.859 GB of its 12.215 GB, none over
+                                            # 0.83 MiB) and 1 .npz; the rest 0.35 GB in 48,537 files
+    RUN_VERSIONS_HASH_LARGE = 'sample'      # the seal hashes of the binaries: 'sample' (their stable sample only) or 'all'.
+                                            # 'sample': hashing all of Run_SLSTB's 12.2 GB read about 9 MB/s from /data07
+                                            # (4.0 GB in about 7.5 min), about 25 min - over twice its seal walk (76 s). With
+                                            # 'sample' a publish of it read 583.8 MB at the seal (48,537 files not binaries and
+                                            # 977 of 49,594 binaries: 241.9 s, cold) and the same 583.8 MB in its content test
+                                            # (4.1 s, warm): 1.17 GB of its 12.2 GB
+    RUN_VERSIONS_SAMPLE_FRACTION = 0.02     # the stable sample of the binaries: those whose path's sha256 falls in the first
+    RUN_VERSIONS_SAMPLE_MIN = 20            # 2% of its range, at least 20 files (all when fewer); plus, in the content test,
+                                            # every file whose size or modification time differs from the manifest
     RUN_VERSIONS_LEASE_S = 600              # s: a holder's or builder's lease (lib/serve/versions.py LEASES): one on another node
                                             # counts as alive until its lease, renewed every quarter lease while it runs, expires
     COALESCE_SLOT_DIR = '.coalesce'         # the coalescing builder's slot inside a run's versions root (lib/serve/coalesce.py)
