@@ -276,12 +276,12 @@ def last_line(text, pattern):
     return hits[-1] if hits else ''
 
 
-def call(ctx, s, target, args, python='default', env=None, log=None, cwd=None):
+def call(ctx, s, target, args, python='default', env=None, log=None, cwd=None, timeout=None):
     """core/legacy.run of one in-place script (the ONE child runner, refactor chat decision 1); the call is recorded on the
-    stage's unit. Returns the LegacyResult."""
+    stage's unit. ``timeout`` (s): the call's limit (production's `timeout`), none by default. Returns the LegacyResult."""
     from exopipe.phase3.core import legacy
     os.makedirs(os.path.dirname(log), exist_ok=True)
-    return legacy.run(target, args, python=python, env=env or {}, cwd=cwd, log=log, unit=s.u)
+    return legacy.run(target, args, python=python, env=env or {}, cwd=cwd, log=log, unit=s.u, timeout=timeout)
 
 
 def need_ok(res, what, pattern=None, say=None):

@@ -736,6 +736,23 @@ class catalog_snapshot(_Section):
     INC_PHASES_DEFAULT = ('cell', 'associate')            # --inc-phase default; the associate phase refuses every hour, so the
                                                           # per-hour chain item stops at this step and is never complete [step]
     INC_CHAIN_TIMEOUT_H = 36                              # h per chain pass; snapshot_cell_prestage.sh:62 PRESTAGE_TIMEOUT 36h [step]
+    INC_FORCED_STATE_DIR = '/lustre/gh/main/exopipe_ops/snapshot_forced_state'   # forced photometry stage 1 markers done/<cell>,
+                                                          # failed/<cell>, claims/<cell> (read only; gate SI-G8); prestage.sh:55 FST,
+                                                          # :61, :83; snapshot_cell_prefit.sh:74, :115-121 (Gregg 2026-10-04) [step]
+    INC_HOLD_LISTS = ('/lustre/gh/main/exopipe_ops/snapshot_rechain_b2_cells.txt',
+                      '/lustre/gh/main/exopipe_ops/snapshot_batch/prefit_hold_cells.txt')   # cells no per-cell stage takes
+                                                          # (with BATCH_DIR/rechain_active/*.cells; gate SI-G4);
+                                                          # snapshot_cell_prefit.sh:36 PREFIT_PROTECT default, :77, :112 [step]
+    INC_FRAMETIME_CLAIMS = '/lustre/gh/main/exopipe_ops/snapshot_frametime_claims'   # a claim <cell>/ without 'done' holds the
+                                                          # cell (frame-time catch-up running; gate SI-G4); snapshot_cell_prefit.sh:81 [step]
+    INC_CURVE_CONSTANTS_RESTORE = '/lustre/gh/main/clv15/snapshot_curve_constants_restore_only_linear_20261104.json'   # THE
+                                                          # RESTORE-ONLY 3-D GATE table passed to every chain call (as the batch
+                                                          # Ctx passes the approval marker's CURVE_CONSTANTS_RESTORE): the table
+                                                          # all 70 markers since the 2026-11-04 wave name; None = no table;
+                                                          # missing or empty refuses (gate SI-G11, as P-G21) [step]
+    INC_STORE_REPAIR_ROUNDS = 2                           # store repair rounds before the prefit loop; snapshot_cell_prefit.sh:144 [step]
+    INC_OWNERLESS_CLAIM_STALE_S = 600                     # s: a claim directory without its owner file older than this is stale
+                                                          # (its writer died between mkdir and the owner write) and is released [step]
     RULED = {'STORE_FLOOR': 'R-SNAP-STORE-FLOOR-8-SIGMA',          # 8 -> 7 by Gregg 2026-09-22 "Use floor 7" (no own ledger row found)
              'SINGLETON_FLOOR': 'R-SNAP-SINGLETON-FLOOR-10-SIGMA',
              'GHOST_DATES': 'RULINGS-GREGG-20261007-STATUS-ANSWERS',
