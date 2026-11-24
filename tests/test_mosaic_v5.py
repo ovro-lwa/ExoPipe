@@ -126,6 +126,13 @@ def _patched(*triples):
             setattr(o, a, val)
 
 
+def _pinned_union(par):
+    """(section, key, value) pinning the scratch parent union `par`: its MANIFEST.md5 written now, its md5 the one pin of the digest
+    gate (core/manifest.verify_union)."""
+    from exopipe.phase3.core import manifest as MFS
+    return (CFG.paths, 'PARENT_UNION_MANIFEST_MD5', {'test-union': MFS.write_manifest(par, os.path.join(par, MFS.MANIFEST))[1]})
+
+
 @contextlib.contextmanager
 def _fake_module(name, mod):
     """A stand-in for module `name` (sys.modules and its package's attribute), restored after."""
@@ -744,7 +751,7 @@ def test_config_pkcorr_content_equal_production():
     assert (K.ROUNDS, K.MIN_ROUNDS, K.REC_MIN, K.REC_MAX, K.MAP_TOL) == (5, 3, 0.5, 1.2, 1e-6)                 # MP 148-158, 167
     assert (T.N_SOURCES, T.DEC_MIN, T.ISOLATION_BEAMS, T.APERTURE_BEAMS) == (200, -30.0, 5.0, 2.0)             # MT 24, 27-48, 114, 202
     assert (T.MIN_SOURCES, T.MED_TOL, T.FRAC5_MIN) == (20, 0.01, 0.90) and not hasattr(T, 'PROV_BYTES')        # MT 137; TEST 2: v5
-    assert T.PARENTS == '/lustre/gh/main/phase3/deep_parent_catalogs_union_20261118T0130'                     # MT 201; B15
+    assert T.PARENTS is None and CFG.paths.PARENT_UNION == '/lustre/gh/main/phase3/deep_parent_catalogs_union_20261118T0130'  # MT 201; B15
     assert T.RULED == {'DEC_MIN': 'R-GREGG-20261016-MOSAIC-DEC-MIN-30'} and K.RULED == {'DEC_START': 'R-GREGG-20261016-MOSAIC-DEC-MIN-30'}
     decs, ra = PK.nodes()
     assert np.array_equal(decs, np.arange(-30.0, 89.0, 2.0)) and len(decs) == 60
@@ -900,7 +907,7 @@ def test_content_unit():
         par = os.path.join(d, 'parents')
         os.makedirs(par)
         open(os.path.join(par, 'master_R075_00h_Blue.gaul.csv'), 'w').write('# none\n')
-        with _patched((CFG.mosaic_coadd, 'NSIDE', 1), (CFG.mosaic_content, 'PARENTS', par)):
+        with _patched((CFG.mosaic_coadd, 'NSIDE', 1), (CFG.mosaic_content, 'PARENTS', par), _pinned_union(par)):
             out = _coadded(d)
             work = os.path.join(d, 'work')
             P = v5.paths(out, 'Blue', 'R075')
@@ -939,6 +946,18 @@ def test_content_unit():
                     _fake_module('exopipe.phase3.lib.mosaic.coadd_jysr', eng), _patched((CT, 'run', fake_run)):
                 u = _unit(out, 'content', v5.content_unit, work)
             assert u.status == 'refused' and 'no parent catalog' in u.reason, (u.status, u.reason)
+            # the digest gate: a catalog changed after its MANIFEST.md5 (M4), a file the manifest does not list (M3), an unpinned
+            # manifest (M2), no manifest (M1) - each refuses before TEST 1 runs
+            cat = os.path.join(par, 'master_R075_00h_Blue.gaul.csv')
+            for change, check in ((lambda: open(cat, 'a').write('# changed\n'), 'M4'),
+                                  (lambda: open(os.path.join(par, 'master_R075_01h_Blue.gaul.csv'), 'w').write('# new\n'), 'M3'),
+                                  (lambda: open(os.path.join(par, 'MANIFEST.md5'), 'a').write('\n'), 'M2'),
+                                  (lambda: os.remove(os.path.join(par, 'MANIFEST.md5')), 'M1')):
+                change()
+                del calls[:]
+                with _fake_module('exopipe.phase3.lib.mosaic.coadd_jysr', eng), _patched((CT, 'run', fake_run)):
+                    u = _unit(out, 'content', v5.content_unit, work)
+                assert u.status == 'refused' and f'digest gate: {check}' in u.reason and not calls, (check, u.status, u.reason)
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
@@ -1239,7 +1258,7 @@ def _chain(d):
     with _fake_module('exopipe.phase3.lib.mosaic.coadd_jysr', eng), _no_content_tests(), _fake_module(
             'exopipe.phase3.lib.mosaic.band_products', bp), _patched(
             (CV, 'caveat_map', cav), (MF, 'fill_file', fill_file), (MF, 'fill_jybeam_file', fill_jybeam_file), (PK, 'run_band', run_band),
-            (PK, 'read_map', _hpx_read), (CT, 'run', ct_run), (CFG.mosaic_content, 'PARENTS', par)):
+            (PK, 'read_map', _hpx_read), (CT, 'run', ct_run), (CFG.mosaic_content, 'PARENTS', par), _pinned_union(par)):
         for st, fn, a in (('pkcorr', v5.pkcorr_unit, (work,)), ('caveat', v5.caveat_unit, ()), ('fill', v5.fill_unit, ()),
                           ('render', v5.render_unit, (work,)), ('content', v5.content_unit, (work,))):
             u = _unit(out, st, fn, *a)

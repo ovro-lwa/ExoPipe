@@ -64,6 +64,8 @@ jobs:
         run: python tests/test_photometry_cube_gate.py
       - name: hybrid route PR-1 (config sections, unit plan, stage gates, token-card rule, CLI skeleton refusals)
         run: python tests/test_hybrid_config.py
+      - name: parent-catalog union (one config value for the current union; MANIFEST.md5 digest gate M1-M4; hybrid recon reader)
+        run: python tests/test_parent_union_gate.py
       - name: hybrid route PR-2 (stack stage - rebuild test, offsets, hybrid filter, membership, Phase 1 choice, unit items, content tests)
         run: python tests/test_hybrid_stack.py
       - name: hybrid route PR-3 (recon + wideband - config constants, record content tests, convergence cascade, refusals)

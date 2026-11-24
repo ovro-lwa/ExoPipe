@@ -721,7 +721,6 @@ def pkcorr_unit(u, scope, job, out, work):
 def content_unit(u, scope, job, out, work):
     """Stokes I: TEST 1 at the bright cataloged sources (content.run); Stokes V: TEST 1R at random positions (content.run_random); both
     domains, then TEST 2 (the files read = the tile list's, at the md5s verified in this unit)."""
-    import glob
     from exopipe.phase3.core import fitsio
     from exopipe.phase3.lib.mosaic import content as CT
     from exopipe.phase3.lib.mosaic import tests_v3, tests_v5  # noqa: F401
@@ -736,12 +735,7 @@ def content_unit(u, scope, job, out, work):
     try:
         _link_tree(t, scope, job, sd)
         if job.product == 'I':
-            parents = C.mosaic_content.PARENTS
-            pat = f'master_R075_*_{scope}.gaul.csv'
-            cats = sorted(os.path.basename(x) for x in glob.glob(os.path.join(glob.escape(parents), pat)))
-            if not cats:
-                u.refuse(f'{scope} {job.label}: no parent catalog {pat} in mosaic_content.PARENTS {parents} - REFUSED')
-            u.meta['parents'] = {'dir': parents, 'n_catalogs': len(cats)}
+            parents, _cats = CT.parent_catalogs(u, scope, job.label, C)
             rep = CT.run(maps, sd, job.variant, scope, parents)
         else:
             rep = CT.run_random(maps, sd, job.variant, scope, product=job.product)

@@ -1186,6 +1186,22 @@ def striation_paths(args, out, cell):
     return installed, archive_run, os.path.join(out, cell), cache
 
 
+def _striation_parents(u, lst, sc):
+    """The parents catalog the striation measures read: masters_striation.PARENTS (None = paths.PARENT_UNION), after the digest
+    gate (core/manifest.verify_union on that one catalog; FINDING-20261118-PARENT-UNION-OTHER-STEPS-AND-NO-MANIFEST). Refuses."""
+    from exopipe.phase3.core import manifest as MF
+    from exopipe.phase3.lib.masters import striation as SR
+    c = _cfg()
+    pdir = MF.parent_union(c.masters_striation.PARENTS, c)
+    pcsv = SR.parents_csv(pdir, lst, sc)
+    try:
+        gate = MF.verify_union(pdir, MF.union_pins(c), names=[os.path.basename(pcsv)])
+    except MF.ManifestRefusal as e:
+        u.refuse(f'parent union digest gate: {e}')
+    u.meta['parents'] = {k: gate[k] for k in ('dir', 'union', 'manifest_md5')}
+    return pcsv
+
+
 def striation(cell, args, run, out, ran_now):
     """The selected variants of the cell's deep Stokes I master with the earth-fixed striations removed (sky restored from
     LSTs L+-1..3); products in <out>/<cell>/ named with masters_striation.TAG (production layout {out}/{lst}_{band}/).
@@ -1201,6 +1217,7 @@ def striation(cell, args, run, out, ran_now):
                           f'is the product)')
         installed, archive_run, dest, cache = striation_paths(args, out, cell)
         IP.refuse_production_write(dest, 'striation')
+        pcsv = _striation_parents(u, lst, sc)
         info_all, mine = {}, []
         try:
             for v in variants:
@@ -1210,7 +1227,7 @@ def striation(cell, args, run, out, ran_now):
                     corr, model, cov = B.correct(lst)
                     B.trim(SR.nb(lst, k) for k in range(-4, 5))      # memory: the window this target read
                     c = B.cell(lst)
-                    info = SR.measures(c, corr, model, cov, SR.parents_csv(s.PARENTS, lst, sc))
+                    info = SR.measures(c, corr, model, cov, pcsv)
                     written = SR.write_products(c, corr, model, dest, info, archive_run, s.ARCHIVE_PBCORR_TOL, s.TAG,
                                                 win=B.win, pass1_win=B.pass1_win)
                 except SR.StriationRefusal as e:
@@ -1219,7 +1236,7 @@ def striation(cell, args, run, out, ran_now):
                 for k in range(-4, 5):                    # what the target read (pass 1 of L+-1..3 reads L+-4), cached or not
                     n = SR.nb(lst, k)
                     u.add_input(SR.master_path(installed, n, sc, v)); u.add_input(SR.pb_path(installed, n, sc, v))
-                u.add_input(SR.parents_csv(s.PARENTS, lst, sc))
+                u.add_input(pcsv)
                 fails = SR.content_test(c, written, info, s.REF_CEILING)
                 info_all[v] = dict(info, pass1_from_cache=B.pass1_from_cache, content_test='FAIL' if fails else 'PASS')
                 u.meta['striation'] = info_all
@@ -1594,6 +1611,7 @@ def _plan_simple(stage):
                 gates.append(f'--deep-variants {unknown}: not a variant this stage rebuilds (one of {VARIANT_NAMES})')
             lines.append(f'in place: coadd.rebuild_variants_from_record(variants={vks})')
         elif stage == 'striation':
+            from exopipe.phase3.core import manifest as MF
             from exopipe.phase3.lib.masters import deep_inplace as IP, striation as SR
             ms = s.masters_striation
             try:
@@ -1615,8 +1633,14 @@ def _plan_simple(stage):
                     for p in (SR.master_path(installed, n, sc, v), SR.pb_path(installed, n, sc, v)):
                         if not os.path.isfile(p):
                             gates.append(f'{v}: input {p} missing')
-                if not os.path.isfile(SR.parents_csv(ms.PARENTS, lst, sc)):
-                    gates.append(f'{v}: parents catalog {SR.parents_csv(ms.PARENTS, lst, sc)} missing')
+                pdir = MF.parent_union(ms.PARENTS, s)
+                if not os.path.isfile(SR.parents_csv(pdir, lst, sc)):
+                    gates.append(f'{v}: parents catalog {SR.parents_csv(pdir, lst, sc)} missing')
+                else:
+                    try:
+                        MF.verify_union(pdir, MF.union_pins(s), names=[os.path.basename(SR.parents_csv(pdir, lst, sc))])
+                    except MF.ManifestRefusal as e:
+                        gates.append(f'{v}: parent union digest gate: {e}')
                 try:
                     names = SR.product_names(_plan_cell(lst, sc, v), archive_run, ms.TAG)
                     ex = [n for n in names.values() if os.path.exists(os.path.join(dest, n))]

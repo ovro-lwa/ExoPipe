@@ -116,6 +116,13 @@ def _patched(*triples):
             setattr(o, a, val)
 
 
+def _pinned_union(par):
+    """(section, key, value) pinning the scratch parent union `par`: its MANIFEST.md5 written now, its md5 the one pin of the digest
+    gate (core/manifest.verify_union)."""
+    from exopipe.phase3.core import manifest as MFS
+    return (CFG.paths, 'PARENT_UNION_MANIFEST_MD5', {'test-union': MFS.write_manifest(par, os.path.join(par, MFS.MANIFEST))[1]})
+
+
 @contextlib.contextmanager
 def _fake_module(name, mod):
     pkg, _, attr = name.rpartition('.')
@@ -722,7 +729,7 @@ def test_pkcorr_and_content_units():
         par = os.path.join(d, 'parents')
         os.makedirs(par)
         open(os.path.join(par, 'master_R075_00h_Blue.gaul.csv'), 'w').write('# none\n')
-        with _patched((CFG.mosaic_coadd, 'NSIDE', 1), (CFG.mosaic_content, 'PARENTS', par)):
+        with _patched((CFG.mosaic_coadd, 'NSIDE', 1), (CFG.mosaic_content, 'PARENTS', par), _pinned_union(par)):
             assert _stage_plain(d, out, J_R075)[0].status == 'done' and _stage_plain(d, out, J_R0)[0].status == 'done'
             _archive(d, 'vclean', LSTS)
             with _patched((CFG.mosaic, 'INPUT_COADD_RUN', os.path.join(d, 'A')), (pb_apply, 'wideband_pb', _fake_pb([]))):
@@ -1059,7 +1066,7 @@ def _v3_chain(d):
             assert _unit(out, 'render', v3.render_unit, 'Blue', job, work).status == 'done'
         run, run_random = _fake_content([], json.load(open(v3.paths(out, 'Blue', job)['tiles'])))
         with _fake_module('exopipe.phase3.lib.mosaic.coadd_jysr', eng), _patched((CT, 'run', run), (CT, 'run_random', run_random)), \
-                _patched((CFG.mosaic_content, 'PARENTS', par)):
+                _patched((CFG.mosaic_content, 'PARENTS', par), _pinned_union(par)):
             assert _unit(out, 'content', v3.content_unit, 'Blue', job, work).status == 'done'
     with _fake_module('exopipe.phase3.lib.mosaic.coadd_jysr', eng), _no_content_tests(), \
             _patched((PK, 'run_band', _fake_run_band([], curve=CURVE)), (PK, 'read_map', _hpx_read)):

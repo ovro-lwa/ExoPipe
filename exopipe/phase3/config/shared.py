@@ -88,6 +88,26 @@ class paths(_Section):
     SNAPSHOT_REVIEW_ROOT = '/data07/gh/phase3/snapshot_search/review'       # served snapshot runs (Run_SNAP*)
     OPS_ROOT = '/lustre/gh/main/exopipe_ops'                     # job records, state files (not products)
     CLV15_ROOT = '/lustre/gh/main/clv15'
+    # Deep parent-catalog unions: one PyBDSF source list (master_R075_<LST>_<scope>.gaul.csv + its .gen.json naming the Master
+    # md5) per deep cell, for all 456 cells (FINDING-20261118-PARENT-UNION-OTHER-STEPS-AND-NO-MANIFEST). PARENT_UNION is THE
+    # CURRENT union: every step key whose value is None reads it (hybrid_recon.CATALOGS, mosaic_content.PARENTS), and the binding
+    # mirror catalog.DEEP_PARENT_DIR_DEFAULT names it. The 11-18 union was rebuilt on the Release 1 Masters (456/456 cells
+    # current, RESULT-20261118-DEEP-PARENT-UNION-REFRESH). A parity run pins another union on the step's own key where that key
+    # is not protected (mosaic_content.PARENTS, masters_striation.PARENTS: --set; hybrid_recon.CATALOGS is protected).
+    PARENT_UNION = '/lustre/gh/main/phase3/deep_parent_catalogs_union_20261118T0130'
+    # The 2026-10-14 union (stale on 47 of 456 cells after the Release 1 Master rebuilds). Still named by the keys that mirror
+    # production scripts which list it (catalog.DEEP_PARENT_CANDIDATES, calibrate_bright_parent.PARENT_UNION_SOURCES: the
+    # candidate sources of p3s5_parent_union.py, md5-matched per cell) and read by masters_striation.PARENTS (production
+    # striation_restore.py's default) until Gregg rules which union the striation step reads.
+    PARENT_UNION_20261014 = '/lustre/gh/main/phase3/deep_parent_catalogs_union_20261014T0203'
+    # The digest gate (core/manifest.verify_union): a union directory is read only when the md5 of its MANIFEST.md5 is one of
+    # these pins and every file it reads matches its MANIFEST.md5 line (the directory holding exactly the listed files, besides
+    # MANIFEST.md5 and MASTER_MD5_DATA.tsv). Keyed by the union's directory name; a copy elsewhere with the same manifest passes.
+    #   20261014T0203: its own MANIFEST.md5 of 2026-10-17 (912 files).
+    #   20261118T0130: MANIFEST.md5 written 2026-11-24 by the refactor chat (912 files, 3,344,197,287 bytes, md5sum format,
+    #                  names sorted); until it is placed in the directory the gate refuses every read of that union.
+    PARENT_UNION_MANIFEST_MD5 = {'deep_parent_catalogs_union_20261014T0203': 'de43d6d18602071e3042fbdcbf7d842a',
+                                 'deep_parent_catalogs_union_20261118T0130': '456c62706d4a773bbe9704f6d59ea330'}
 
 
 # Keys no --set / --config can change (DESIGN 11.4; critique_rulings 4.1): the exclusion file and every exclusion rule
@@ -96,7 +116,9 @@ class paths(_Section):
 PROTECTED = ('paths.DATA_DECISIONS', 'paths.FIX_LEDGER', 'paths.PRODUCTION_WRITES', 'paths.PRODUCTION_WRITES_ALLOWED',
              'paths.PRODUCTION_ROOTS',
              'paths.PINNED_INPUTS', 'paths.PHASE1_RUN_PINS', 'paths.SNAPSHOT_GPU_FRAME_CELLS',
-             'paths.SNAPSHOT_GPU_FRAME_ROOT', 'exclusions.*')
+             'paths.SNAPSHOT_GPU_FRAME_ROOT', 'exclusions.*',
+             # the parent-catalog unions and their digest pins (a step pins another union on its own key, e.g. a parity run)
+             'paths.PARENT_UNION', 'paths.PARENT_UNION_20261014', 'paths.PARENT_UNION_MANIFEST_MD5')
 
 
 class exclusions(_Section):

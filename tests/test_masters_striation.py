@@ -317,12 +317,14 @@ def test_stage():
         with open(sel, 'w') as f:
             f.write(f'lst,band,variant\n{TARGET},{BAND},{VAR}\n')
         sel_md5 = hashlib.md5(open(sel, 'rb').read()).hexdigest()
+        from exopipe.phase3.core import manifest as MFS
+        pins = {'test-union': MFS.write_manifest(par, os.path.join(par, MFS.MANIFEST))[1]}   # the digest gate admits `par`
 
         def cfg(**ms):
             return _Cfg(CFG, masters_striation=_section(CFG.masters_striation, PARENTS=par, **ms),
                         hybrid=types.SimpleNamespace(STRIATION_SELECTION=sel, STRIATION_SELECTION_MD5=sel_md5),
                         paths=_section(CFG.paths, PHASE3_ARCHIVE_ROOT=os.path.join(d, 'archive'), ARCHIVE_RUN='Run_T',
-                                       COADD_SB_ROOT=root))
+                                       COADD_SB_ROOT=root, PARENT_UNION_MANIFEST_MD5=pins))
 
         def unit(cell, out, **ms):
             DS._cfg = lambda: cfg(**ms)
@@ -395,8 +397,16 @@ def test_stage():
         assert len(Bk) == 1 and set(Bk[0].cells) <= {SR.nb(TARGET, k) for k in range(-4, 5)}, sorted(Bk[0].cells)
         u = unit(f'05h_{BAND}', os.path.join(d, 'out3'))       # not in the selection: no input
         assert u.status == 'no-input' and 'not in the striation selection' in u.reason, (u.status, u.reason)
+        assert u.meta.get('parents') is None
+        with open(SR.parents_csv(par, TARGET, BAND), 'a') as f:   # the catalog changed after its MANIFEST.md5: refused, dry run gated
+            f.write(f'0,0,0,0,10.0,0,20.0,0,0,0,1.0\n')
+        u = unit(cell, os.path.join(d, 'out7'))
+        assert u.status == 'refused' and 'parent union digest gate: M4' in u.reason and not u.outputs, (u.status, u.reason)
+        assert not os.path.exists(os.path.join(d, 'out7', cell)) or os.listdir(os.path.join(d, 'out7', cell)) == []
+        lines, gates = DS._plan_simple('striation')(cell, pa, os.path.join(d, 'out_plan'), set())
+        assert len(gates) == 1 and 'digest gate: M4' in gates[0], gates
         print(f'  stage: done ({info["index_before"]:.3f} -> {info["index_after"]:.3f}), rerun refused, failed test renamed, '
-              f'unselected cell no-input')
+              f'unselected cell no-input, changed parents catalog refused')
     finally:
         DS._cfg = real
         DS._STRIATION_BANDS.clear()
