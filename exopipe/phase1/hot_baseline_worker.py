@@ -2,6 +2,7 @@ import argparse
 import sys
 import re
 import os
+import warnings
 import numpy as np
 import matplotlib
 matplotlib.use('Agg')
@@ -92,6 +93,18 @@ def get_mean_frequency(ms_name):
     return np.mean(freqs)
 
 def get_data_matrix(ms_name, data_col="CORRECTED_DATA"):
+    """Per-baseline mean and standard deviation over time of the channel-averaged visibility amplitude, for each
+    correlation (XX, XY, YX, YY); returns (mean matrices, std matrices, number of antennas), indexed by MS antenna index.
+
+    Flagged visibilities are excluded from every statistic (Gregg 2026-11-11: ignoring the FLAG column "is a bug"). The
+    FLAG column is read with the data and every flagged value is set to NaN before the channel average (numpy nanmean):
+      - a row's channel average uses its unflagged channels only;
+      - a row whose channels are all flagged in one correlation enters neither that correlation's sums nor its counts;
+      - a baseline with no unflagged visibility in a correlation is NaN there (no data: neither hot nor cold), never 0.
+    Before this, antennas that were already flagged but still held junk amplitudes made about 26% of every live
+    antenna's baselines look hot, above the 25% bad-antenna threshold. A FLAG column that cannot be read, or whose shape
+    differs from the data's, fails the read (the caller then refuses), never a silent fallback to unflagged statistics.
+    """
     # Wrapped in try/except for safety
     try:
         t_ant = table(ms_name + "::ANTENNA", ack=False, readonly=True)
@@ -115,11 +128,18 @@ def get_data_matrix(ms_name, data_col="CORRECTED_DATA"):
                 # Fallback if CORRECTED_DATA missing
                 logging.warning(f"Column {data_col} missing, falling back to DATA.")
                 data = t.getcol("DATA", startrow=start, nrow=end-start)
-                
+            flag = t.getcol("FLAG", startrow=start, nrow=end-start)
+            if flag.shape != data.shape:
+                raise ValueError(f"FLAG shape {flag.shape} differs from the data shape {data.shape} (rows {start}-{end})")
+
             mask = (a1 != a2)
             if not mask.any(): continue
-            a1 = a1[mask]; a2 = a2[mask]; data = data[mask]
-            amp = np.abs(data); amp_avg = np.nanmean(amp, axis=1)
+            a1 = a1[mask]; a2 = a2[mask]; data = data[mask]; flag = flag[mask]
+            amp = np.abs(data)
+            amp[flag] = np.nan                      # flagged visibilities leave every statistic below
+            with warnings.catch_warnings():         # a row flagged in every channel: "Mean of empty slice", NaN
+                warnings.simplefilter('ignore', RuntimeWarning)
+                amp_avg = np.nanmean(amp, axis=1)
 
             for p_idx in range(4):
                 pol_name = pol_map[p_idx]; vals = amp_avg[:, p_idx]
@@ -148,6 +168,30 @@ def get_data_matrix(ms_name, data_col="CORRECTED_DATA"):
         logging.error(f"Error reading MS matrix: {e}")
         # Return dummies to prevent crash
         return {}, {}, 0
+
+def summarize_no_data(raw_mean, n_ant):
+    """The baselines and antennas without unflagged data, read from get_data_matrix's mean matrices (NaN = no data).
+    Returns (report lines, whether any cross-correlation baseline has unflagged data in at least one correlation).
+    Baselines without data are reported as such here and are neither hot nor cold in the detection."""
+    iu, ju = np.triu_indices(n_ant, k=1)
+    pols = [p for p in ('XX', 'XY', 'YX', 'YY') if p in raw_mean]
+    has = {p: np.isfinite(raw_mean[p][iu, ju]) for p in pols}
+    has_any = np.logical_or.reduce([has[p] for p in pols]) if pols else np.zeros(len(iu), dtype=bool)
+    ant_has = np.zeros(n_ant, dtype=bool)
+    ant_has[iu[has_any]] = True; ant_has[ju[has_any]] = True
+    no_ant = np.nonzero(~ant_has)[0]
+    no_bl = ~has_any
+    no_bl_live = no_bl & ant_has[iu] & ant_has[ju]
+    lines = ["", "[NO DATA] Flagged visibilities are excluded from every statistic. A baseline without an unflagged "
+                 "visibility is no data (NaN): neither hot nor cold."]
+    for p in pols:
+        lines.append(f"  Baselines without unflagged data in {p}: {int((~has[p]).sum())} of {len(iu)}")
+    lines.append(f"  Antennas without unflagged data on any baseline (MS antenna index): {len(no_ant)}: "
+                 f"{[int(a) for a in no_ant]}")
+    lines.append(f"  Baselines without unflagged data in any correlation: {int(no_bl.sum())} of {len(iu)}; of these, "
+                 f"between two antennas that have data on other baselines: {int(no_bl_live.sum())}: "
+                 + ", ".join(f"{int(a)}-{int(b)}" for a, b in zip(iu[no_bl_live], ju[no_bl_live])))
+    return lines, bool(has_any.any())
 
 def apply_uv_cut(matrix, pos_array, uv_cut_m):
     if uv_cut_m <= 0: return matrix
@@ -342,7 +386,17 @@ def run_diagnostics(args_obj, logger):
     ms_basename = os.path.basename(os.path.normpath(args_obj.ms))
     
     raw_mean, raw_std, n_ant = get_data_matrix(args_obj.ms, args_obj.col)
-    
+    if n_ant == 0:
+        raise RuntimeError(f"hot-baseline step refused on {args_obj.ms}: its data and flags could not be read (error "
+                           "logged above); nothing listed, nothing flagged")
+    no_data_lines, any_data = summarize_no_data(raw_mean, n_ant)
+    if not any_data:
+        with open(f"{ms_basename}_hot_component_report.txt", "w") as f:
+            f.write("\n".join(["\n[HOT BASELINE REPORT]", "  REFUSED: no unflagged cross-correlation visibility"]
+                              + no_data_lines))
+        raise RuntimeError(f"hot-baseline step refused on {args_obj.ms}: every cross-correlation visibility is "
+                           "flagged; nothing listed, nothing flagged")
+
     uv_bad = []
     if args_obj.run_uv:
         uv_window = getattr(args_obj, 'uv_window_size', 100)
@@ -361,7 +415,7 @@ def run_diagnostics(args_obj, logger):
     diag_matrix = (raw_mean['XY'] + raw_mean['YX']) / 2.0
     hm_bad, bad_ants, report = identify_bad_components(diag_matrix, df_map, n_ant, uv_bad, args_obj.sigma, args_obj.threshold)
     
-    with open(f"{ms_basename}_hot_component_report.txt", "w") as f: f.write("\n".join(report))
+    with open(f"{ms_basename}_hot_component_report.txt", "w") as f: f.write("\n".join(report + no_data_lines))
     
     # GENERATE ALL PLOTS
     plot_diagnosis_figure(diag_matrix, bad_ants, hm_bad, f"{ms_basename}_diagnosis_heatmap.png", uv_baselines=uv_bad)
