@@ -19,8 +19,8 @@ lib/catalog/wraps/builder_grouping.py (the builder with the grouping), the 10-mi
                design B, refuses a selected row the grouping does not hold, runs it in place under production's mode
   record       one_rule_record against synthetic builder outputs: rescued multiples, singles dropped by the sigma-stack test
                and by the repeat rungs, a single kept by a cross-match rung
-  carry        carry_judgements: agreeing pages carried unchanged, a disagreement a CONFLICT not carried, an unreached judgement
-               reported, a non-empty journal refused
+  carry        carry_judgements: agreeing pages carried unchanged, a disagreement a CONFLICT not carried (kept with both
+               verdicts for the page, merge_conflicts.jsonl), an unreached judgement reported, a non-empty journal refused
   cli          `exopipe3 catalog --tier sublst --stages group --group-input <frozen 10-minute subset>`: the first run needs
                --group-new-state; a second run carries every ID; under production's mode the unit is no-input
 Run: NUMPY_MADVISE_HUGEPAGE=0 EXOPIPE3_SITE=/lustre/gh/main/exopipe_ops/exopipe3_site.py taskset -c $(bash
@@ -627,6 +627,13 @@ def test_carry():
     check('carry: a judgement reaching no detection is reported; a retracted one is not carried',
           rep.get('OLD_GONE', {}).get('outcome') == 'old judgement reached no new detection' and 'J0532+3300a' not in new, rep)
     check('carry: the counts', cnt['carried'] == 1 and cnt['conflicts'] == 1 and cnt['unmatched'] == 1, cnt)
+    mc = [json.loads(ln) for ln in open(f'{d}/new/{GS.MERGE_CONFLICTS}')]
+    check('carry: the CONFLICT is kept with BOTH verdicts for the page (merge_conflicts.jsonl: shown and marked AMBIGUOUS, '
+          'never one picked; R-GREGG-20261124-CROSS-STOKES-LINK-TEST-APPROVED)',
+          len(mc) == 1 and mc[0]['source_id'] == 'J0536+3400a' and mc[0]['group_identity_id'] == 'GTI-0000005'
+          and mc[0]['origin'] == 'carry' and [(v['source'], v['judge_confidence'], v['judge_fp_reason']) for v in
+                                              mc[0]['verdicts']] == [('OLD_E1', 'FP', 'bilobe'), ('OLD_E2', 'REAL', '')]
+          and cnt['ambiguous_kept'] == 1, (mc, cnt))
     try:
         GS.carry_judgements(f'{d}/old/judgements.jsonl', members, f'{d}/grouping_I/detections.csv', f'{d}/new', 'Run_TEST')
         got = 'written'

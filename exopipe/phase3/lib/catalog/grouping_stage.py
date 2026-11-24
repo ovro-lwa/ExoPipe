@@ -316,13 +316,16 @@ def state_lock_path(state_dir, tier, stokes):
     return os.path.join(state_dir, f'.grouping_{tier}_{stokes}.lock')
 
 
-def run_group(det, tier, stokes, out_dir, state_dir, run_label, inputs, group_mode=None, new_state=False, check=None):
+def run_group(det, tier, stokes, out_dir, state_dir, run_label, inputs, group_mode=None, new_state=False, check=None,
+              reserved_names=None):
     """Group det (one tier and Stokes) against the saved state and replace grouping_<S>/ only when every check passed
     (review 2026-11-04, F2): the products are written into a TEMPORARY directory beside it; ``check`` (a callable (paths) ->
     [failures]: the content tests) runs there; on a failure the directory is renamed grouping_<S>.refused_<UTC> (kept for
     inspection, never at the path the builds read) and nothing else changes; on a pass the state is saved (atomic) with its
     event history, then the previous grouping_<S>/ is moved to grouping_<S>.superseded_<UTC> and the new one renamed into
     place. The whole run holds an exclusive lock on the state (<state dir>/.grouping_<tier>_<S>.lock; a second run refuses).
+    reserved_names: the display names no identity here may take (default: those of the tier's other Stokes in out_dir now,
+    present_names; the cross-Stokes link, lib/catalog/stokes_link.py).
     Returns (paths, summary, result) with the final paths and the table's sha1 (paths['detections_sha1'])."""
     m = mode()
     if not m.design_b:
@@ -334,7 +337,9 @@ def run_group(det, tier, stokes, out_dir, state_dir, run_label, inputs, group_mo
         except G.GroupingRefused as e:
             raise StageRefusal(str(e)) from None
         try:
-            res = G.group_catalog(det, tier, stokes, state=st, run_label=run_label, mode=group_mode)
+            res = G.group_catalog(det, tier, stokes, state=st, run_label=run_label, mode=group_mode,
+                                  reserved_names=present_names(out_dir, other_stokes(stokes)) if reserved_names is None
+                                  else reserved_names)
         except G.GroupingRefused as e:
             raise StageRefusal(str(e)) from None
         tmp = f'{final}.tmp.{os.getpid()}'
@@ -363,6 +368,20 @@ def run_group(det, tier, stokes, out_dir, state_dir, run_label, inputs, group_mo
     paths = {k: (final + v[len(tmp):] if isinstance(v, str) and v.startswith(tmp) else v) for k, v in paths.items()}
     paths.update(state=state_file, history=hp, detections_sha1=table_digest(paths['detections']))
     return paths, summ, res
+
+
+def other_stokes(stokes):
+    return {'I': 'V', 'V': 'I'}[stokes]
+
+
+def present_names(out_dir, stokes):
+    """the identity display names of Stokes `stokes` in grouping_<S>/ under out_dir now (identities.csv; none: empty) - what
+    the other Stokes' grouping must not reuse (display_names reserved)"""
+    p = os.path.join(group_dir(out_dir, stokes), IDENTITIES)
+    if not os.path.exists(p):
+        return frozenset()
+    with open(p, newline='') as f:
+        return frozenset(r['identity_name'] for r in csv.DictReader(f))
 
 
 def read_detections(path):
@@ -895,6 +914,10 @@ class _Matcher:
         return out
 
 
+_VERDICT_KEYS = ('judge_confidence', 'judge_fp_reason', 'judge_fp_reason_2')
+MERGE_CONFLICTS = 'merge_conflicts.jsonl'      # = lib/serve/label_identity.MERGE_CONFLICTS
+
+
 def _verdict(r):
     return (r.get('judge_confidence'), r.get('judge_fp_reason', ''), r.get('judge_fp_reason_2', ''))
 
@@ -927,8 +950,11 @@ def carry_judgements(journal, old_members, new, out_dir, run_id, queue_name='', 
     page's judgement is its FINAL state in the journal (the lines in order: a classify sets it, a retract clears it). A new
     identity reached by judged old pages that all agree on (judge_confidence, judge_fp_reason, judge_fp_reason_2) takes the
     judgement UNCHANGED (source_id = its display name; carried_from_run / carried_from_source / shared_detections and the
-    'CARRIED from' note); a disagreement is a CONFLICT - reported, NOT carried; an old judgement whose detections reach no new
-    detection is reported. Writes out_dir/judgements.jsonl and out_dir/carry_report.csv (production's columns + new_identity_id).
+    'CARRIED from' note); a disagreement is a CONFLICT - reported, NOT carried, and kept with every verdict in
+    out_dir/merge_conflicts.jsonl, which the served page shows at its top marked AMBIGUOUS (lib/serve/label_identity.py
+    ambiguous_html; R-GREGG-20261124-CROSS-STOKES-LINK-TEST-APPROVED: "When the merged identities carry conflicting verdicts,
+    show both and mark the source ambiguous; never pick one"); an old judgement whose detections reach no new detection is
+    reported. Writes out_dir/judgements.jsonl and out_dir/carry_report.csv (production's columns + new_identity_id).
     append=False: the SEED carry - it REFUSES a non-empty journal (the carry only seeds).
     append=True (review 2026-11-04, F1): ``lines`` is the FULL old journal and ``since`` the number of its lines the seed carry
     read. Every new identity an old page of the lines after ``since`` reaches is RE-DERIVED from the whole journal - the final
@@ -984,7 +1010,7 @@ def carry_judgements(journal, old_members, new, out_dir, run_id, queue_name='', 
         return dict(action='retract', scope='source', source_id=name, presentation_id='p1', run_id=run_id, ts=now,
                     group_identity_id=iid, retract_carried_from_run=carried_from_run, retract_reason=why)
 
-    recs, rows = [], []
+    recs, rows, conflicts = [], [], []
     os.makedirs(out_dir, exist_ok=True)
     jp, rp = os.path.join(out_dir, 'judgements.jsonl'), os.path.join(out_dir, 'carry_report.csv')
     cnt = collections.Counter()
@@ -1017,6 +1043,11 @@ def carry_judgements(journal, old_members, new, out_dir, run_id, queue_name='', 
         if len(verdicts) > 1:
             rows.append(dict(base, outcome='CONFLICT - not carried',
                              verdicts='|'.join('/'.join(str(x) for x in v) for v in sorted(verdicts, key=str))))
+            conflicts.append(dict(ts=now, origin='carry', source_id=name, group_identity_id=iid, run_id=run_id,
+                                  carried_from_run=carried_from_run,
+                                  verdicts=[dict({k: J[s0].get(k, '') or '' for k in _VERDICT_KEYS + ('judge_note',)},
+                                                 source=s0, identity=J[s0].get('group_identity_id', ''), ts=J[s0].get('ts', ''))
+                                            for s0 in sorted(olds)]))
             if now_rec is not None:                     # a carried judgement the old pages no longer agree on
                 recs.append(retract_record(name, iid, 'CONFLICT: the old pages reaching this identity now disagree'))
                 cnt['retracted'] += 1
@@ -1046,6 +1077,10 @@ def carry_judgements(journal, old_members, new, out_dir, run_id, queue_name='', 
     with open(jp, 'a' if append else 'w') as f:
         for r in recs:
             f.write(json.dumps(r) + '\n')
+    if conflicts or not append:
+        with open(os.path.join(out_dir, MERGE_CONFLICTS), 'a' if append else 'w') as f:
+            for r in conflicts:
+                f.write(json.dumps(r, sort_keys=True) + '\n')
     if append and os.path.exists(rp):
         with open(rp, 'a', newline='') as f:
             csv.DictWriter(f, fieldnames=list(CARRY_COLS)).writerows(rows)
@@ -1054,6 +1089,7 @@ def carry_judgements(journal, old_members, new, out_dir, run_id, queue_name='', 
     return dict(judged_old=len(J), carried=cnt['carried'], conflicts=cnt['conflicts'], unmatched=len(unmatched),
                 new_identities_touched=len(targets), retracted=cnt['retracted'], unchanged=cnt['unchanged'],
                 judged_on_new_page=cnt['own'], lines=len(raw), between_lines=(len(raw) - since) if append else 0,
+                ambiguous_kept=len(conflicts),
                 carried_on_page=(sum(1 for r in recs if r.get('action') != 'retract' and r['source_id'] in on_page)
                                  if on_page is not None else None))
 
@@ -1221,12 +1257,13 @@ def _run_tenmin_unit(args, u, m, label, out, src, stokes, lsts, cells):
         if not os.path.exists(p):
             u.refuse(f'grouping input {p} is missing')
         u.add_input(p)
+    grouped = {}
     for S in stokes:
         if S not in ('I', 'V'):
             u.refuse(f'--group-stokes {S}: I and/or V')
         from exopipe.phase3.lib.catalog import tests_grouping as TG
         try:
-            det = load_det('10min', S, mc, pt)
+            det = grouped[S] = load_det('10min', S, mc, pt)
             paths, summ, _res = run_group(det, '10min', S, out, out, f'{label}.{STAGE}', dict(master_catalog=mc, pertie=pt),
                                           group_mode=getattr(args, 'group_mode', None),
                                           new_state=bool(getattr(args, 'group_new_state', False)),
@@ -1241,3 +1278,27 @@ def _run_tenmin_unit(args, u, m, label, out, src, stokes, lsts, cells):
         u.note(f"{S}: {summ['counts']['detections']} detections -> {summ['counts']['identities']} identities, "
                f"{summ['counts']['multiples']} multiples ({summ['counts']['identities_in_multiples']} identities); "
                f"table sha1 {paths['detections_sha1'][:12]}")
+    link_unit(u, out, '10min', grouped)
+
+
+def link_unit(u, out, tier, have=None):
+    """the cross-Stokes link of the groupings under out (lib/catalog/stokes_link.py; R-GREGG-20261124-CROSS-STOKES-LINK-TEST-
+    APPROVED), after any grouping run: both Stokes' present tables (the one grouped now and the other as it stands) -> out/
+    stokes_link/; a refusal refuses the unit (the readers merge on the link: a stale link must not stand beside a new table).
+    With one Stokes grouped there is nothing to link: (None, None), noted (the readers ask for a link only when both are)."""
+    from exopipe.phase3.lib.catalog import stokes_link as SL
+    one = SL.grouped_stokes(out) | set(have or ())
+    if one != {'I', 'V'}:                       # one Stokes grouped so far: nothing to link (the readers need no link then)
+        u.meta['stokes_link'] = None
+        u.note(f'cross-Stokes link: only Stokes {sorted(one)} grouped under {out} - nothing to link until the other is grouped')
+        return None, None
+    try:
+        paths, counts = SL.run_link(SL.dets_of_tables(out, tier, have), out, tier)
+    except SL.LinkRefused as e:
+        u.refuse(str(e))
+    u.meta['stokes_link'] = counts
+    u.add_output(paths['links'], 'stokes_link', tier=tier)
+    u.note(f"cross-Stokes link: {counts['linked_pairs']} linked I/V pairs in {counts['components']} components "
+           f"({counts['ambiguous_components']} ambiguous: one-to-many) of {counts['identities_I']} I and "
+           f"{counts['identities_V']} V identities")
+    return paths, counts

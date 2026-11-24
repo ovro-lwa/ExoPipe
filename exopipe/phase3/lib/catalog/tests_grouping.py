@@ -19,6 +19,14 @@
     S1 it loads (format, fields, every assignment to a live ID, next_seq above every issued ID: grouping.GroupingState.load)
     S2 its assignments are the table's: the same cand_ids, each with the table's identity and multiples IDs and fingerprint
     S3 every live ID of the state is in the table, and every ID of the table is live
+  stokes_link      stokes_link/stokes_links.csv with its siblings (stokes_link_pairs.csv, identity_merges.csv, summary.json;
+                   lib/catalog/stokes_link.py), the grouping's own or a served run's copy
+    L1 the two grouping tables the summary names are the present ones (sha1) and no display name is held in both Stokes
+    L2 every linked (Stokes, identity) is an identity of its Stokes' table with that name; every pair passes the test it records
+       (u <= U_CAP, P >= the identity level), with an offset percentile in 0-100 and a chance-coincidence probability in 0-1
+    L3 the components are the pairs' connected components: each holds both Stokes, link_size members, link_ambiguous exactly
+       when it holds three or more, and is named (link_id, link_name) by one of its members, the best-localized one
+    L4 identity_merges.csv: every merged ID stands for a live identity of its Stokes' table and is not live itself
 ``failures(paths, tier, stokes, input)`` runs both on a stage's products before the stage saves the state (run_group's check).
 """
 import collections
@@ -272,3 +280,95 @@ def grouping_state(path, **ctx):
         return False, None, 'grouping_state needs ctx table (the detections.csv of the same run)'
     bad = state_failures(path, tier, stokes, table)
     return (not bad), None, ('; '.join(bad[:4]) if bad else 'the state = the table (assignments, live IDs, next_seq)')
+
+
+def link_failures(path):
+    """L1-L4 on stokes_link/stokes_links.csv (path) and its siblings: [] or what fails. The link directory is the grouping's
+    own (beside grouping_I/ and grouping_V/) or a served run's copy (lib/serve/sublst_build.stokes_link_stage): the tables
+    are the ones its summary names, in one grouping directory, and the grouping's own when one stands beside it."""
+    from exopipe.phase3.lib.catalog import grouping_stage as GS, stokes_link as SL
+    d = os.path.dirname(os.path.abspath(path))
+    bad = []
+    with open(os.path.join(d, SL.SUMMARY)) as f:
+        summ = json.load(f)
+    outs = {os.path.dirname(os.path.dirname(os.path.abspath(summ['tables'][S]['path']))) for S in ('I', 'V')}
+    out = sorted(outs)[0]
+    if len(outs) != 1:
+        bad.append(f'L1 the two Stokes\' tables are in two grouping directories {sorted(outs)}')
+    beside = os.path.dirname(d)
+    if os.path.isdir(GS.group_dir(beside, 'I')) and os.path.abspath(beside) != out:
+        bad.append(f'L1 the link read the grouping under {out}, not the one beside it ({beside})')
+    names = {}
+    for S in ('I', 'V'):
+        t = summ['tables'][S]
+        if os.path.abspath(t['path']) != os.path.abspath(os.path.join(GS.group_dir(out, S), GS.DETECTIONS)):
+            bad.append(f'L1 {S}: the link read {t["path"]}, not a grouping detections table')
+        elif SL._sha1(t['path']) != t['sha1']:
+            bad.append(f'L1 {S}: {t["path"]} changed since the link read it')
+        names[S] = {r['identity_id']: r['identity_name'] for r in _rows(os.path.join(GS.group_dir(out, S), GS.IDENTITIES))[1]}
+    shared = SL.check_names(out)
+    if shared:
+        bad.append(f'L1 {len(shared)} display name(s) held in both Stokes, e.g. {shared[:3]}')
+    _h, links = _rows(path)
+    _h, pairs = _rows(os.path.join(d, SL.PAIRS))
+    p_thr, u_cap = float(summ['counts']['p_threshold']), float(summ['counts']['u_cap'])
+    for r in links:
+        if names.get(r['stokes'], {}).get(r['identity_id']) != r['identity_name']:
+            bad.append(f'L2 {r["stokes"]} {r["identity_id"]} {r["identity_name"]}: not an identity of that name in its table')
+    for p in pairs:
+        if not (float(p['u']) <= u_cap and float(p['p']) >= p_thr):
+            bad.append(f'L2 pair {p["I_identity_id"]}-{p["V_identity_id"]}: u {p["u"]}, P {p["p"]} fail the test')
+        if not (0 <= float(p['offset_pct']) <= 100 and 0 <= float(p['p_chance']) <= 1):
+            bad.append(f'L2 pair {p["I_identity_id"]}-{p["V_identity_id"]}: offset percentile / chance probability out of range')
+    # L3 the components from the pairs alone
+    parent = {}
+
+    def find(x):
+        parent.setdefault(x, x)
+        while parent[x] != x:
+            x = parent[x]
+        return x
+    for p in pairs:
+        a, b = find(('I', p['I_identity_id'])), find(('V', p['V_identity_id']))
+        if a != b:
+            parent[max(a, b)] = min(a, b)
+    comp = collections.defaultdict(set)
+    for x in list(parent):
+        comp[find(x)].add(x)
+    by_link = collections.defaultdict(list)
+    for r in links:
+        by_link[r['link_id']].append(r)
+    got = sorted(sorted((r['stokes'], r['identity_id']) for r in rs) for rs in by_link.values())
+    want = sorted(sorted(c) for c in comp.values())
+    if got != want:
+        bad.append(f'L3 the link table holds {len(got)} components, the pairs make {len(want)} (or their members differ)')
+    for lid, rs in by_link.items():
+        n = len(rs)
+        if {r['stokes'] for r in rs} != {'I', 'V'}:
+            bad.append(f'L3 {lid}: a component without both Stokes')
+        if any(int(r['link_size']) != n or int(r['link_ambiguous']) != int(n > 2) for r in rs):
+            bad.append(f'L3 {lid}: link_size / link_ambiguous disagree with its {n} members')
+        head = [r for r in rs if r['identity_id'] == lid]
+        if len(head) != 1 or any(r['link_name'] != head[0]['identity_name'] for r in rs):
+            bad.append(f'L3 {lid}: not named by one of its members')
+        elif float(head[0]['pos_err_arcsec']) > min(float(r['pos_err_arcsec']) for r in rs):
+            bad.append(f'L3 {lid}: named by a member that is not the best-localized')
+    # L4 the merge table: every merged ID stands for a live identity of its Stokes' table and is none itself
+    mp = os.path.join(d, SL.MERGES)
+    if not os.path.exists(mp):
+        bad.append(f'L4 {mp} is missing')
+    else:
+        for m in _rows(mp)[1]:
+            live = names.get(m['stokes'], {})
+            if m['into_id'] not in live or m['identity_id'] in live:
+                bad.append(f'L4 {m["stokes"]} {m["identity_id"]} -> {m["into_id"]}: not a merged ID of a live identity')
+    return bad
+
+
+@content_test('stokes_link')
+def stokes_link(path, **ctx):
+    bad = link_failures(path)
+    _h, rows = _rows(path)
+    return (not bad), len(rows), ('; '.join(bad[:4]) if bad else
+                                  f'{len(rows)} linked identities; tables current, names unique across Stokes, pairs pass the '
+                                  f'test, components named by their best-localized member, merged IDs stand for live ones')

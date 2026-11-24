@@ -2122,17 +2122,22 @@ def st_view(ctx, s, plan):
                 except DB.DeltaRefusal as e:
                     refuse(f'S-G21 view of {L}: {e}')
                 locs = {}
+                lenv = _link_env(ctx, root, {st: (tables[st][0], groupings[st][2]) for st in tables})
+                partners = {}
+                if lenv:
+                    from exopipe.phase3.lib.catalog import stokes_link as SL
+                    partners = SL.partner_names(lenv[SL.LOC_ENV])
                 for tag in ctx.builds:
                     cats = shared('catalog_localize', 'CATS', 'sublst').format(build=tag)
                     try:
-                        side, names, n = DB.loc_side(root, tag, cats)
+                        side, names, n = DB.loc_side(root, tag, cats, partners)
                     except DB.DeltaRefusal as e:
                         refuse(f'S-G21 view of {L} ({tag}): {e}')
                     if n:
                         res = call(ctx, s, loc, [side],
                                    env=cL.env(P3_LEAKVETO_DIR='' if tag == 'noveto' else os.path.join(root, DB.LEAKVETO),
                                               P3_TENMIN_PERTIE=os.path.join(root, DB.PERTIE), P3_LOC_CATS=cats,
-                                              P3_LOC_OUT=os.path.join(side, 'out')),
+                                              P3_LOC_OUT=os.path.join(side, 'out'), **lenv),
                                    log=f'{root}/catalogs_{tag}_loc.log', cwd=side)
                         need_ok(res, f'S-G19 build_localizations.py ({tag}, view of {L})', r'REFUS|Error',
                                 say=lambda: ctx.log.say(f'localizations ({tag}) of the view of {L} FAILED (see '
@@ -2167,6 +2172,30 @@ def st_view(ctx, s, plan):
     ctx.log.say(f'view: {len(index["hours"])} hour(s): {n_root} view root(s) written, {n_carried} carried, {n_all} all-nights; '
                 f'not viewed: {", ".join(out_of_scope) or "none"} -> {U}/{DB.INDEX}')
     s.out(os.path.join(U, DB.INDEX), 'hour_views_index', run_dir=U)
+
+
+def _link_env(ctx, dest, tables=None):
+    """The cross-Stokes link the localization merges on (design B; lib/catalog/stokes_link.py, R-GREGG-20261124-CROSS-STOKES-
+    LINK-TEST-APPROVED): the link of the grouping the build stands on - the present tables of ctx.grouping_dir, or tables
+    {S: (path, sha1)} of a view - copied into dest/stokes_link/ (the build's own copy, which the localization reads:
+    P3_LOC_LINKS). A missing or stale link REFUSES (S-G19). Production's grouping, or a grouping of one Stokes only (nothing
+    to link): {}."""
+    if not ctx.grouping_mode.design_b:
+        return {}
+    from exopipe.phase3.lib.catalog import stokes_link as SL
+    out = ctx.grouping_dir
+    if len(SL.grouped_stokes(out)) < 2 and (tables is None or len(tables) < 2):
+        return {}
+    if tables is not None:
+        dirs = {os.path.dirname(os.path.dirname(os.path.abspath(t[0]))) for t in tables.values()}
+        if len(dirs) != 1 or set(tables) != {'I', 'V'}:
+            refuse(f'S-G19 cross-Stokes link: the view stands on grouping tables {sorted(tables)} in {sorted(dirs)} - both '
+                   f'Stokes of one grouping are needed')
+        out = dirs.pop()
+    try:
+        return {SL.LOC_ENV: SL.publish(out, dest, None if tables is None else {S: t[1] for S, t in tables.items()})}
+    except SL.LinkRefused as e:
+        refuse(f'S-G19 {e}')
 
 
 def _build(ctx, s, plan, tag):
@@ -2243,7 +2272,8 @@ def _build(ctx, s, plan, tag):
                 say=lambda: ctx.log.say(f'{k} ({tag}): build_source_catalogs_v3 FAILED (see catalogs_{tag}_{k}.log)'))
         built.append(d)
     ctx.log.say(f'source catalogues ({tag}) complete')
-    res = call(ctx, s, loc, [U], env=ctx.env(P3_LEAKVETO_DIR=lv, P3_LOC_CATS=cats, P3_LOC_OUT=f'{U}/localizations_{tag}'),
+    res = call(ctx, s, loc, [U], env=ctx.env(P3_LEAKVETO_DIR=lv, P3_LOC_CATS=cats, P3_LOC_OUT=f'{U}/localizations_{tag}',
+                                             **_link_env(ctx, U)),
                log=f'{U}/catalogs_{tag}_loc.log', cwd=U)
     need_ok(res, f'S-G19 build_localizations.py ({tag})', r'REFUS|Error',
             say=lambda: ctx.log.say(f'localizations ({tag}) FAILED (see catalogs_{tag}_loc.log)'))

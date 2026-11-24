@@ -80,3 +80,28 @@ def sep_arcmin(ra1, dec1, ra2, dec2):
     r1, d1, r2, d2 = map(math.radians, (ra1, dec1, ra2, dec2))
     c = math.sin(d1) * math.sin(d2) + math.cos(d1) * math.cos(d2) * math.cos(r1 - r2)
     return math.degrees(math.acos(max(-1.0, min(1.0, c)))) * 60.0
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# association quantities of a Mahalanobis offset (the cross-Stokes link, lib/catalog/stokes_link.py;
+# R-GREGG-20261124-CROSS-STOKES-LINK-TEST-APPROVED): the offset percentile and the chance-coincidence probability that
+# CLAUDE.md asks of every association ("no hard association radius; record the offset percentile and the
+# chance-coincidence probability, and mark ambiguous associations as ambiguous")
+# ---------------------------------------------------------------------------------------------------------------------
+
+def offset_pct_profile(u, prof):
+    """Offset percentile (0-100) of a Mahalanobis offset u (in sigma of the pair's combined covariance) under a radial
+    offset profile prof = (t, s1, s2, nu): weight 1 - t of a 2-D Gaussian of scale s1 and weight t of a 2-D Student t of
+    scale s2 and nu degrees of freedom (design B's PROFILE_WS, config catalog_grouping). Closed form of the profile's
+    cumulative mass within u (grouping._profile_mass integrates the same density numerically)."""
+    t, s1, s2, nu = (float(x) for x in prof)
+    q = float(u) ** 2
+    return 100.0 * ((1.0 - t) * (1.0 - math.exp(-q / (2.0 * s1 * s1))) + t * (1.0 - (1.0 + q / (nu * s2 * s2)) ** (-nu / 2.0)))
+
+
+def p_chance_ellipse(rho_per_arcsec2, u, det_cov_arcsec4):
+    """Chance-coincidence probability (0-1) of an association at Mahalanobis offset u: the probability that at least one
+    unrelated source of areal density rho (per arcsec^2) falls inside the error ellipse out to u, whose area is
+    pi u^2 sqrt(det S) arcsec^2 for the pair's combined covariance S (det in arcsec^4); Poisson: 1 - exp(-rho x area)."""
+    area = math.pi * float(u) ** 2 * math.sqrt(max(float(det_cov_arcsec4), 0.0))
+    return 1.0 - math.exp(-float(rho_per_arcsec2) * area)

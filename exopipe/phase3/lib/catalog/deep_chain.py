@@ -1379,6 +1379,17 @@ class DeepRun:
                 u.note(f'design B identities written: {cnt}')
                 for p in sorted(tier_files | union_files):
                     self.out(u, p, 'identity_table', grouping='design-b', tables=tables)
+                # the cross-Stokes link of the two groupings (R-GREGG-20261124-CROSS-STOKES-LINK-TEST-APPROVED): U/stokes_link/,
+                # which the localization, the transient list and the pages merge on (lib/catalog/stokes_link.py)
+                from exopipe.phase3.lib.catalog import stokes_link as SL
+                try:
+                    lp, lc = SL.run_link(SL.dets_of_tables(self.U, 'deep'), self.U, 'deep')
+                except SL.LinkRefused as e:
+                    u.refuse(f'D-G21 cross-Stokes link: {e}')
+                u.meta['stokes_link'] = lc
+                self.out(u, lp['links'], 'stokes_link')
+                self.say(f"cross-Stokes link: {lc['linked_pairs']} linked I/V pairs, {lc['ambiguous_components']} ambiguous "
+                         f"components")
                 return u
             noerr, unparsed = deep_ported.identity_row_fallbacks(tier_files)      # WAVE2 B-30: pre-check (M4)
             if noerr:
@@ -1400,6 +1411,20 @@ class DeepRun:
                 self.out(u, p, 'identity_table')
         return u
 
+    def link_env(self, u):
+        """{P3_LOC_LINKS: U/stokes_link/stokes_links.csv} under design B - the cross-Stokes link of the very grouping tables this
+        pass recorded (their sha1; stokes_link.current_links refuses a missing or stale link); {} under production's grouping"""
+        if not self.design_b:
+            return {}
+        from exopipe.phase3.lib.catalog import stokes_link as SL
+        sha = {S: self.chain.meta(self.u('group', S), 'grouping_table_sha1') for S in ('I', 'V')}
+        try:
+            p = SL.current_links(self.U, sha if all(sha.values()) else None)
+        except SL.LinkRefused as e:
+            u.refuse(f'D-G21 {e}')
+        u.add_input(p)
+        return {SL.LOC_ENV: p}
+
     def st_localize(self):
         c = self.cfg
         u = self.new_unit('localize')
@@ -1417,7 +1442,7 @@ class DeepRun:
             outd = os.path.join(self.U, 'source_catalogs')
             for name in ('localizations.csv', 'localization_offsets.csv'):
                 self.move_aside(os.path.join(outd, name), u)
-            rc, tail, _ = self.call(u, 'build_localizations.py', [self.U], self.env(), self.log)
+            rc, tail, _ = self.call(u, 'build_localizations.py', [self.U], dict(self.env(), **self.link_env(u)), self.log)
             if rc != 0:
                 self.say('localization tables FAILED - pass aborted')
                 u.refuse(f'D-G21 localizations exit {rc}: {tail[-1] if tail else ""}')
@@ -1449,6 +1474,14 @@ class DeepRun:
             tmp = f'{link}.tmp.{os.getpid()}'
             if os.path.lexists(tmp):
                 os.unlink(tmp)
+            le = self.link_env(u)
+            if le:                                       # the list merges on the cross-Stokes link: its own columns
+                from exopipe.phase3.lib.catalog import stokes_link as SL
+                try:
+                    n, nl = SL.add_link_columns(out, self.U, le[SL.LOC_ENV])
+                except SL.LinkRefused as e:
+                    u.refuse(f'D-G21 transient list: {e}')
+                u.note(f'cross-Stokes link columns: {nl} of {n} rows linked')
             os.symlink(out, tmp)
             os.replace(tmp, link)
             u.note(tail[-1] if tail else '')

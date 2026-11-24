@@ -117,7 +117,23 @@ def build_env(c, K, only_file=None):
         env['P3_COADD_ROOT'] = c.coadd_root
     if only_file:
         env['P3_PAGES_ONLY_FILE'] = only_file
+    env.update(link_env(c))
     return env
+
+
+def link_env(c):
+    """The cross-Stokes link the astrometry figures merge on (build_i14 draws them with source_astrometry_panel.py, which
+    localizes again; lib/catalog/stokes_link.py): under design B, {P3_LOC_LINKS: <run>/stokes_link/stokes_links.csv} of the
+    run's present grouping tables - a missing or stale link REFUSES (the deep chain's identity stage writes it); production's
+    grouping, or a run without both Stokes' grouping tables (nothing to link): {}."""
+    from exopipe.phase3.lib.catalog import grouping_stage as GS
+    from exopipe.phase3.lib.catalog import stokes_link as SL
+    if not GS.mode().design_b or SL.grouped_stokes(c.U) != {'I', 'V'}:
+        return {}
+    try:
+        return {SL.LOC_ENV: SL.current_links(c.U)}
+    except SL.LinkRefused as e:
+        raise common.Refusal(f'astrometry figures: {e}') from None
 
 
 def build_env_key(c, K):
