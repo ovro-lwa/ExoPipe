@@ -94,7 +94,7 @@ class _Section:
 # The settings: shared.py (every step) and one module per command (STEP_CONFIG_MODULES), all in this package. They import
 # _Section from here, so they are imported after it.
 from exopipe.phase3.config.shared import (PROTECTED, astrometry, exclusions, fallbacks, fitting,  # noqa: E402
-                                          instrument, paths, runner, site)
+                                          instrument, paths, runner, site, space)
 
 
 

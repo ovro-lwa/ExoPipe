@@ -116,3 +116,5 @@ jobs:
         run: python tests/test_snapview_pages.py
       - name: per-hour driver (fake Slurm; catch-up windows, failed-parent resubmission, space booking, requeue resume, periodic jobs)
         run: python tests/test_drive.py
+      - name: space gate of every writer step (Lustre quota headroom and free space, statvfs elsewhere; codes, bookings, sticky gate, cli wiring)
+        run: python tests/test_space_gate.py

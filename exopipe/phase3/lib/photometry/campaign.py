@@ -22,8 +22,9 @@ refactor_20261012/plan/GEN6_PORT_PLAN_20261123.md pull request 4):
                      whose children ran another version than the pin (or two, 'mixed:') is recorded refused CP-PIN (not a
                      gap: it holds its cell) and the campaign stops; a unit recorded under another pin is cut again.
   space()            the run user's quota headroom (bytes and files, `lfs quota -q -u <user>`) and the file system's free space
-                     (the filesystem_summary line of `lfs df`), before each unit (gen6_space_ok.sh). Below a floor, or unreadable:
-                     the unit refuses and every later one (CP-SPACE).
+                     (the filesystem_summary line of `lfs df`), before each unit (gen6_space_ok.sh), read by core/space.lustre
+                     with this section's floors (the gate every writer step runs). Below a floor, or unreadable: the unit
+                     refuses and every later one (CP-SPACE).
   io_guard_wait()    the recorders' I/O guard: wait while it is raised, before each unit and each stage-1 cell (a yield).
   gap_kind()         GAPS (R-GREGG-20261027-LSRECON-SCALE-BOUND-0P5-2P0-LEVEL-REFUSALS-STAY-GAPS-55MHZ-06H-R0-N-MINUS-1, verbatim
                      "Refusals by the large-scale level test stay refused, as gaps, never forced"): a unit whose inputs a gate
@@ -53,12 +54,12 @@ import json
 import os
 import re
 import shutil
-import subprocess
 import sys
 import tempfile
 import time
 
 from exopipe.phase3.core import record
+from exopipe.phase3.core import space as S
 from exopipe.phase3.core.record import NoInput, Refusal
 from exopipe.phase3.lib.photometry import steps_common as K
 
@@ -296,78 +297,26 @@ class CodePin:
 
 
 def run_user():
-    """The user this process runs as (the quota that the products count against)."""
-    import pwd
-    return pwd.getpwuid(os.geteuid()).pw_name
+    """The user this process runs as (the quota that the products count against; core/space.run_user)."""
+    return S.run_user()
 
 
 def _lfs(argv):
     cc = _cc()
-    p = subprocess.run([cc.LFS] + argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True,
-                       timeout=cc.LFS_TIMEOUT_S)
-    return p.returncode, p.stdout, p.stderr
+    return S.lfs_runner(cc.LFS, cc.LFS_TIMEOUT_S)(argv)
 
 
-def parse_quota(text, fs):
-    """{'kbytes', 'kbytes_limit', 'files', 'files_limit'} of `lfs quota -q -u <user> <fs>` (KiB; a limit None: none set - the
-    smaller non-zero of the soft and hard limits otherwise). None when the line is not there."""
-    toks = text.split()
-    if fs not in toks:
-        return None
-    v = toks[toks.index(fs) + 1:toks.index(fs) + 9]
-    if len(v) < 8:
-        return None
-    try:
-        kb, kq, kl, fl, fq, fll = (int(x.rstrip('*')) for x in (v[0], v[1], v[2], v[4], v[5], v[6]))
-    except ValueError:
-        return None
-    lim = lambda a, b: min([x for x in (a, b) if x > 0] or [0]) or None     # noqa: E731
-    return dict(kbytes=kb, kbytes_limit=lim(kq, kl), files=fl, files_limit=lim(fq, fll))
-
-
-def parse_df(text):
-    """The available KiB of the filesystem_summary line of `lfs df <fs>` (its fourth field); None without that line."""
-    for ln in text.splitlines():
-        f = ln.split()
-        if f and f[0] == 'filesystem_summary:' and len(f) >= 4:
-            try:
-                return int(f[3])
-            except ValueError:
-                return None
-    return None
+parse_quota = S.parse_quota          # `lfs quota -q -u <user> <fs>` (core/space.parse_quota)
+parse_df = S.parse_df                # the filesystem_summary line of `lfs df <fs>` (core/space.parse_df)
 
 
 def space(lfs=None):
-    """(ok, text, values): the run user's quota headroom (bytes, files) and the file system's free bytes against the floors of
-    photometry_campaign. Unreadable is not ok. ``lfs``: argv -> (rc, stdout, stderr) (tests)."""
+    """(ok, text, values): the run user's quota headroom (bytes, files) and the file system's free space against the floors of
+    photometry_campaign - core/space.lustre with this section's SPACE_FILESYSTEM, LFS, LFS_TIMEOUT_S and floors (the gate
+    every writer step runs, generalized from this one). Unreadable is not ok. ``lfs``: argv -> (rc, stdout, stderr) (tests)."""
     cc = _cc()
-    lfs = lfs or _lfs
-    fs, user = cc.SPACE_FILESYSTEM, run_user()
-    try:
-        rq, oq, eq = lfs(['quota', '-q', '-u', user, fs])
-        rd, od, ed = lfs(['df', fs])
-    except (OSError, subprocess.SubprocessError) as e:
-        return False, 'lfs quota / lfs df could not run (%s: %s)' % (type(e).__name__, e), {}
-    q = parse_quota(oq, fs) if rq == 0 else None
-    av = parse_df(od) if rd == 0 else None
-    if q is None or av is None:
-        return False, 'lfs quota -u %s %s / lfs df %s unreadable (exit %s, %s; %s, %s)' % (
-            user, fs, fs, rq, (eq or oq).strip()[:200], rd, (ed or 'no filesystem_summary line').strip()[:200]), {}
-    vals = dict(user=user, filesystem=fs, quota_free_bytes=None if q['kbytes_limit'] is None else
-                (q['kbytes_limit'] - q['kbytes']) * 1024, quota_free_files=None if q['files_limit'] is None else
-                q['files_limit'] - q['files'], fs_free_bytes=av * 1024)
-    low = []
-    if vals['quota_free_bytes'] is not None and vals['quota_free_bytes'] < cc.QUOTA_MIN_FREE_BYTES:
-        low.append('quota headroom of %s %.2f TiB < %.2f TiB' % (user, vals['quota_free_bytes'] / 2 ** 40,
-                                                                 cc.QUOTA_MIN_FREE_BYTES / 2 ** 40))
-    if vals['quota_free_files'] is not None and vals['quota_free_files'] < cc.QUOTA_MIN_FREE_FILES:
-        low.append('quota headroom of %s %d files < %d files' % (user, vals['quota_free_files'], cc.QUOTA_MIN_FREE_FILES))
-    if vals['fs_free_bytes'] < cc.FS_MIN_FREE_BYTES:
-        low.append('%s free %.1f TB < %.1f TB' % (fs, vals['fs_free_bytes'] / 1e12, cc.FS_MIN_FREE_BYTES / 1e12))
-    text = '%s quota headroom %s, %s files; %s free %.1f TB' % (
-        user, 'unlimited' if vals['quota_free_bytes'] is None else '%.2f TiB' % (vals['quota_free_bytes'] / 2 ** 40),
-        'unlimited' if vals['quota_free_files'] is None else vals['quota_free_files'], fs, vals['fs_free_bytes'] / 1e12)
-    return not low, ('; '.join(low) + ' (%s)' % text) if low else text, vals
+    ok, text, vals, _codes = S.lustre(cc.SPACE_FILESYSTEM, cc, lfs=lfs or _lfs, user=run_user())
+    return ok, text, vals
 
 
 def io_guard_raised():

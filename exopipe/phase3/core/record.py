@@ -592,6 +592,9 @@ class Run:
         return True
 
     def unit(self, name, **meta):
+        gate = getattr(self, 'space_gate', None)       # core/space.Gate (cli.main, writer steps): refuses before the unit,
+        if gate is not None and not self.dry_run:       # and every later one, once the room is below a floor (Refusal)
+            gate.before_unit()
         u = UnitRecord(self, name, meta)
         u.upstream = upstream_hit(meta, self._upstream_list())   # opened: refuses the step (UnitRecord.__enter__)
         self.units.append(u)

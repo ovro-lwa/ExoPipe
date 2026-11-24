@@ -7,6 +7,10 @@
 Every step is independently runnable by a person or by Claude, documents its inputs, outputs and failure modes in
 --help, refuses (exit 2) instead of warning, has --dry-run, and writes a machine-readable record of what it did under
 <out>/_records/<step>/. Exit codes: 0 done (every content test passed), 1 error, 2 refused by a gate, 3 nothing to do.
+Every writer step that is not a dry run passes the space gate first (core/space.py, config section space): on Lustre the run
+user's quota headroom (bytes and files) and the file system's free space, elsewhere statvfs, for --out and --work; it reads
+again before a unit every space.RECHECK_S seconds and, once low or unreadable, refuses that unit and every later one. The one
+exception is a step whose writes free room (SPACE_GATE = False: retention).
 While a step runs, SIGTERM interrupts it as Ctrl-C does (Terminated, a KeyboardInterrupt: every rollback runs, the unit is
 recorded 'interrupted'); a second SIGTERM terminates at once. A process forked from the step (a pool worker) takes SIGTERM's
 default action.
@@ -437,6 +441,14 @@ def main(argv=None):
     record.mark_injected(run)                  # an injected run's start record, before the step writes anything
     with _sigterm_interrupts(name):            # SIGTERM unwinds the step as Ctrl-C does (Terminated)
         try:
+            if getattr(mod, 'WRITES', True) and getattr(mod, 'SPACE_GATE', True) and not args.dry_run:
+                # the space gate of every writer step (core/space.py; config section space): the run user's Lustre quota
+                # headroom and the free space of each root it writes, now and again before its units (record.Run.unit).
+                # SPACE_GATE = False only in a step whose writes FREE room (retention: its delete, and the plan and holds
+                # that a delete needs) - a gate there would keep a full quota full
+                from exopipe.phase3.core import space as _space
+                run.space_gate = _space.Gate([out] + ([args.work] if args.work else []))
+                run.space_gate.require()
             if getattr(mod, 'WRITES', True) and getattr(mod, 'PRODUCTS', True):
                 record.check_code_identity()   # B-30 GITTAG_FALLBACK: before the step's run() (core/record.py)
             rc = mod.run(args, run)
