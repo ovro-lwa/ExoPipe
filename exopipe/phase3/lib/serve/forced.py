@@ -5,7 +5,8 @@ the two-port server, whose per-page servers were retired 2026-10-22 - and of the
 
 switch: unit snapshot_forced_<TAG>_register (flow.register_pages): the two-port server is checked first (nothing is carried
   for a registration that cannot happen), then per requested page (gen5:31-45; a page that fails a check keeps the run its
-  entry serves):
+  entry serves; check_page), first what only reads - the tag has serve.FORCED_GENERATIONS text (G26), and no registry entry
+  serves the run already (a served run is refused, never rewritten in place; gen5:38 registered it again) - then:
   1. the run is ready (ready(): an exopipe3 forced family-C run by its verify record - done, servable, for this review copy;
      a production page run by the last line FT-READY of <OPS_ROOT>/snapshot_forced_pages_run_<run>.log);
   2. it holds its queue, catalogue view, localization offsets and association table;
@@ -14,23 +15,24 @@ switch: unit snapshot_forced_<TAG>_register (flow.register_pages): the two-port 
   4. the serve-time exclusion gate on the run: refuses the page under the ruled value (gate key 'snapshot-forced' in
      EXCLUSION_GATE_TIERS: Gregg 2026-10-14 R-GREGG-20261014-REFACTOR-DECISIONS-LIST-RECOMMENDATIONS); production has no
      gate on these pages (the parity file: report only);
-  5. THE PER-PANEL QA BLOCK (page_context): scintillation_index.py RUN --tier snapshot, then page_context_snapshot.py RUN
+  5. the expected index sources (the server's own App on the run's queue and catalogue: servers.app_probe), before anything
+     changes the run;
+  6. THE PER-PANEL QA BLOCK (page_context): scintillation_index.py RUN --tier snapshot, then page_context_snapshot.py RUN
      --served-from VIEW in place on the run the page will serve, VIEW the transient-search view the production registry's
      snapshot pages serve (paired_view, serve.FORCED_PAGE_CONTEXT_VIEW_IDS; production ran both by hand); its files present and
-     content tests snapshot_forced_page_context passed, else refused (production's page code falls back silently when
-     frame_counts.json is absent, review_filters.py:262-271);
-  6. the expected index sources (the server's own App on the run's files: servers.app_probe);
+     content tests snapshot_forced_page_context passed (each run once, in the registration unit; a failure refuses this page
+     only), else refused (production's page code falls back silently when frame_counts.json is absent,
+     review_filters.py:262-271);
   7. Gregg's judgements carried (snapshot_carry_judgements.py OLD NEW) from the run the page's entry serves now (gen5 cur_run;
      a parity serve: the PRODUCTION registry's entry, read only) when its journal is not empty and the new run has none (a
-     journal already in the new run: carry skipped, gen5:40); a page already serving the run is registered again, nothing
-     carried (gen5:38).
+     journal already in the new run: carry skipped, gen5:40).
   Then ALL pages that passed are registered in ONE registration (one registry change), each with --sibling links to what every
   other forced page serves AFTER the switch - its new run where it passed, else the run its entry serves now (gen5:47-56;
   plan.forced_siblings) - and one unit per page waits on its build state (gen5:66-69 waited up to 60 min for the run name in
   the title) and records it (class served_page); the title and hub generation in the words of serve.FORCED_GENERATIONS for
   the run's tag (gen5: HWJ + 10 pc, generation-5 cutouts; gen6: HWJ + 10 pc + LPT, generation-6 cutouts from the rescaled
-  cubes; another tag is refused, G26); the inspection pages built before requested once; the hub buttons
-  (<S> <10-sec|1-min>-forced) in the hub unit.
+  cubes; another tag is refused, G26, for that page only); the inspection pages built before requested once; the hub buttons
+  (<S> <10-sec|1-min>-forced) in the hub unit, each naming the run its page's entry serves (plan.hub_entry).
 refresh-siblings: the pages of a <TAG> run whose --sibling links differ from what the other pages serve now are registered
   again in one registration, with the current links and a new served time; judgements stay (journal on disk).
 Parity: each run is byte-copied (minus judgements/ and server logs) to <out>/snapshot/<run> and registered in <out>/two_port
@@ -39,7 +41,6 @@ Parity: each run is byte-copied (minus judgements/ and server logs) to <out>/sna
 import os
 import subprocess
 
-from exopipe.phase3.core import validate
 from exopipe.phase3.core.record import Refusal
 from exopipe.phase3.lib.serve import common, exclusion_gate, flow, journals, register, scripts, servers
 
@@ -51,9 +52,21 @@ def _CFG():
     return CFG
 
 
+def forced_outs(review=None):
+    """Where the family-C run serving ``review`` keeps its records: forced_snapshot.WORK_ROOT (a production run) and, for a
+    review copy <out>/<forced_snapshot.REVIEW_SUBDIR_UNDER_OUT>/<name> (tier_snapshot.Ctx: a run under --out), that <out>."""
+    fs = _CFG().forced_snapshot
+    outs = [os.path.abspath(fs.WORK_ROOT)]
+    p = os.path.dirname(os.path.abspath(review.rstrip('/'))) if review else None
+    if p and os.path.basename(p) == fs.REVIEW_SUBDIR_UNDER_OUT:
+        outs.append(os.path.dirname(p))
+    return list(dict.fromkeys(outs))
+
+
 def ready(name, review=None):
     """(ok, text): run ``name`` is ready to serve. A run built by exopipe3 forced --tier snapshot (family C) by its verify
-    record (serve.FORCED_READY_RECORD, step forced, under forced_snapshot.WORK_ROOT): done, servable (associated, not
+    record (serve.FORCED_READY_RECORD, step forced) under the run's own --out (forced_outs: forced_snapshot.WORK_ROOT, or the
+    <out> of a review copy <out>/review/<name>; the record naming this review copy first): done, servable (associated, not
     restricted to an hour or cells), and naming ``review`` (the run directory the page serves) as its review copy - a record
     in any other state refuses, whatever log exists. A run without such a record (production's page runs): the last line of
     its log serve.FORCED_READY_LOG under paths.OPS_ROOT holds FORCED_READY_MARK."""
@@ -61,9 +74,12 @@ def ready(name, review=None):
     C = _CFG()
     S = C.serve
     unit = S.FORCED_READY_RECORD.format(name=name)
-    rec = recmod.load_record(C.forced_snapshot.WORK_ROOT, 'forced', unit)
-    if rec is not None:
-        rp = recmod.record_path(C.forced_snapshot.WORK_ROOT, 'forced', unit)
+    found = [(o, r) for o in forced_outs(review) for r in [recmod.load_record(o, 'forced', unit)] if r is not None]
+    found.sort(key=lambda x: not (review and os.path.realpath((x[1].get('meta') or {}).get('review') or '')
+                                  == os.path.realpath(review)))      # the record of this review copy first
+    if found:
+        out, rec = found[0]
+        rp = recmod.record_path(out, 'forced', unit)
         meta = rec.get('meta') or {}
         if rec.get('status') != 'done':
             return False, f'exopipe3 forced record {rp}: {rec.get("status")} ({(rec.get("reason") or "")[:160]})'
@@ -78,7 +94,7 @@ def ready(name, review=None):
         with open(p) as f:
             lines = [l for l in f.read().splitlines() if l.strip()]
     except OSError:
-        return False, f'no record {unit} under {C.forced_snapshot.WORK_ROOT} and no log {p}'
+        return False, f'no record {unit} under {" or ".join(forced_outs(review))} and no log {p}'
     last = lines[-1] if lines else ''
     return S.FORCED_READY_MARK in last, last[29:200] if len(last) > 29 else last
 
@@ -120,39 +136,39 @@ def page_context(u, plan, pg, D, view):
          each panel's <png>.page.json (the transient-search view, global noise V / I, served detections I / V, scintillation,
          beam) and D/frame_counts.json naming VIEW, whose frame_counts_<S>_<tier>.csv.gz the n_i_epoch / n_v_epoch sliders read
          (R-GREGG-20261114-NEPOCH-SLIDERS-PER-FRAME).
-    Then serve.FORCED_PAGE_CONTEXT_REQUIRED must exist and every test of classes scintillation_index and
-    snapshot_forced_page_context (view = VIEW) pass, else Refusal: the page keeps its entry. This refusal is the gate production
-    lacks: its page code falls back to the superseded counts with no refusal when frame_counts.json is absent
-    (review_filters.py:262-271). Returns the notes."""
-    from exopipe.phase3.lib.serve.snapshot_copy import NOHUGE, _parity_cache
+    Each tool through snapshot_copy._step (the snapshot serve's tool-run helper; a failure raises Refusal for this page). Then
+    serve.FORCED_PAGE_CONTEXT_REQUIRED must exist and every test of classes scintillation_index and snapshot_forced_page_context
+    (view = VIEW) pass, each run once through page_output, else Refusal: the page keeps its entry. This refusal is the gate
+    production lacks: its page code falls back to the superseded counts with no refusal when frame_counts.json is absent
+    (review_filters.py:262-271)."""
+    from exopipe.phase3.lib.serve.snapshot_copy import NOHUGE, _parity_cache, _step
     S = _CFG().serve
-    notes = []
     args = [D, '--tier', S.SNAPSHOT_FILTER_TIER]
     cache = _parity_cache(plan, 'scintillation_table_index.json')
     if cache:
         args += ['--cache', cache]
     pctx = [D, '--served-from', view, '--workers', S.SNAPSHOT_PAGE_CONTEXT_WORKERS]
     for name, a, cwd in (('scintillation_index', args, S.SNAPSHOT_STEP_CWD), ('page_context_snapshot', pctx, None)):
-        log = os.path.join(D, f'{name}.log')
-        res = scripts.run(name, a, log=log, unit=u, env=NOHUGE, cwd=cwd)
-        if not res.ok:
-            raise Refusal(f'{scripts.SCRIPTS[name][0]} on {D}: {res.reason or scripts.last_line(res.tail)} (see {log}) - old '
-                          f'entry kept')
-        notes.append(f'page {pg.key}: {name}: {scripts.last_line(res.tail)[:200]}')
+        _step(u, name, a, os.path.join(D, f'{name}.log'), cwd=cwd, env=NOHUGE, what=f'(page {pg.key}) ', where=D,
+              after='old entry kept')
     miss = [f for f in S.FORCED_PAGE_CONTEXT_REQUIRED if not os.path.exists(os.path.join(D, f))]
     if miss:
         raise Refusal(f'{D} lacks {", ".join(miss)} after the page context - old entry kept')
-    sci = os.path.join(D, 'scintillation_index.csv')
-    for path, cls, ctx in ((sci, 'scintillation_index', dict(tier=S.SNAPSHOT_FILTER_TIER)),
-                           (D, 'snapshot_forced_page_context', dict(view=view))):
-        bad = [t for t in validate.run(cls, path, **ctx) if not t['passed']]
-        if bad:      # this page only: the registration unit's own record would refuse every page
-            raise Refusal('page context: ' + '; '.join(f'{t["name"]} ({t["detail"][:300]})' for t in bad[:3]) +
-                          ' - old entry kept')
-    for path, cls, ctx in ((sci, 'scintillation_index', dict(tier=S.SNAPSHOT_FILTER_TIER)),
-                           (D, 'snapshot_forced_page_context', dict(view=view))):
-        u.add_output(path, cls, **ctx)
-    return notes
+    page_output(u, pg, os.path.join(D, 'scintillation_index.csv'), 'scintillation_index', tier=S.SNAPSHOT_FILTER_TIER)
+    page_output(u, pg, D, 'snapshot_forced_page_context', view=view)
+
+
+def page_output(u, pg, path, cls, what=None, **ctx):
+    """u.add_output(path, cls, **ctx) in the registration unit - each content test runs once - with a failure refusing page
+    ``pg`` only: the output is recorded as a refused item (core.record refuse_item, so the unit's status ignores its failed
+    tests and the other pages go on), then Refusal (the page keeps its entry)."""
+    n0 = len(u.tests)
+    u.add_output(path, cls, **ctx)
+    bad = [t for t in u.tests[n0:] if not t['passed'] and not t.get('waived')]
+    if bad:
+        why = '; '.join(f'{t["name"]} ({str(t.get("detail") or t.get("value") or "")[:300]})' for t in bad[:3])
+        u.refuse_item(path, f'page {pg.key}: {why}', gate=cls)
+        raise Refusal(f'{what or cls}: {why} - old entry kept')
 
 
 def _parity_copy(pg):
@@ -165,9 +181,16 @@ def _parity_copy(pg):
 
 def check_page(u, plan, pg):
     """Checks 1-7 of the switch for ``pg`` inside the registration unit ``u`` (the in-place calls recorded there). Returns
-    (run dir, expected sources, notes); raises Refusal (the page keeps its entry)."""
+    (run dir, expected sources, notes); raises Refusal (the page keeps its entry). Everything that only reads comes before
+    anything changes: the tag's generation text (G26), readiness, the files, and whether a registry entry serves the run
+    already - a served run is refused (never rewritten in place: the QA block writes its sidecars, scintillation table and
+    frame_counts.json while its page reads them; a deliberate departure from gen5:38, which registered it again) - then the
+    parity copy, AD Leo, the exclusion gate and the App probe (it reads the queue and catalogue, which the QA block leaves
+    alone), and only then the QA block and the judgement carry."""
+    from exopipe.phase3.lib.serve.plan import forced_generation
     S = _CFG().serve
     notes = []
+    forced_generation(pg, os.path.basename(os.path.normpath(pg.root_src)))      # G26, before anything changes
     ok, last = ready(pg.run_name, pg.root_src)
     if not ok:
         raise Refusal(f'{pg.run_name} is not ready to serve ({last}) - old entry kept')
@@ -175,9 +198,13 @@ def check_page(u, plan, pg):
     if miss:
         raise Refusal(f'{pg.root_src} lacks {", ".join(miss)} (queue, catalogue, localization offsets or association table) '
                       f'- old entry kept')
+    D = pg.root
+    on = served_by(plan, D)
+    if on:
+        raise Refusal(f'{D} is served already ({", ".join(on)}): the per-panel QA block would rewrite a served run in place - '
+                      f'old entry kept (a new run name serves a new build)')
     if plan.parity:
         _parity_copy(pg)
-    D = pg.root
     res = scripts.run('forced_adleo', list(S.FORCED_ADLEO_CHECK[1]) + [D], python='py36', unit=u, refusal_codes=(1, 2))
     if not res.ok:
         raise Refusal(f'AD Leo check ({scripts.last_line(res.tail)}) - old entry kept')
@@ -187,12 +214,8 @@ def check_page(u, plan, pg):
                  f'pages): {scan.summary()}')
     if scan.hits and refuses:
         raise Refusal(f'G17 serve-time exclusion gate: {scan.summary()} - old entry kept')
-    notes += page_context(u, plan, pg, D, plan.forced_view)     # the per-panel QA block, before the App reads frame_counts.json
     exp = servers.app_probe(plan, pg, D, unit=u)        # before anything changes: a failed probe keeps the old entry
-    now = plan.registered_run(pg)
-    if now and os.path.realpath(now) == os.path.realpath(D):
-        notes.append(f'page {pg.key}: {pg.port} already serves {pg.run_name} - registered again, nothing carried')
-        return D, exp, notes
+    page_context(u, plan, pg, D, plan.forced_view)      # the per-panel QA block, on a run no page serves
     old = journals.served_run_of_port(pg.port_cfg)     # the carry source: the production registry's entry (read only)
     oj = os.path.join(old, 'judgements', 'judgements.jsonl') if old else None
     if old and journals.journal_nonempty(oj):
@@ -204,6 +227,26 @@ def check_page(u, plan, pg):
     else:
         notes.append(f'page {pg.key}: judgements: none in {old or "(no entry)"} - nothing to carry')
     return D, exp, notes
+
+
+def served_by(plan, D):
+    """The ids of the entries of the plan's registry (register.registry_dir) whose --run is the run directory ``D``."""
+    import json
+    try:
+        with open(register.files(register.registry_dir(plan))[0]) as f:
+            pages = json.load(f).get('pages', [])
+    except OSError:
+        return []
+    except ValueError as x:
+        raise Refusal(f'the registry of {register.registry_dir(plan)} is unreadable ({x}) - old entry kept')
+    want = os.path.realpath(D)
+    out = []
+    for e in pages:
+        a = e.get('argv') or []
+        i = a.index('--run') + 1 if '--run' in a else len(a)
+        if i < len(a) and os.path.realpath(a[i]) == want:
+            out.append(e.get('id'))
+    return out
 
 
 def switch(run, plan, state, utc):
@@ -229,16 +272,27 @@ def switch(run, plan, state, utc):
                 u.note(n)
             j = os.path.join(D, 'judgements', 'judgements.jsonl')
             if os.path.exists(j):                 # the journal's content tests refuse this page only, never the others
-                bad = [t for t in validate.run('judgement_journal', j) if not t['passed']]
-                if bad:
-                    refused[pg.key] = (f'judgement journal {j}: ' + '; '.join(f'{t["name"]} ({t["detail"]})' for t in bad[:3])
-                                       + ' - old entry kept')
-                    u.note(f'page {pg.key} REFUSED: {refused[pg.key]}')
+                try:
+                    page_output(u, pg, j, 'judgement_journal', what=f'judgement journal {j}')
+                except Refusal as e:
+                    refused[pg.key] = str(e)
+                    u.note(f'page {pg.key} REFUSED: {e}')
                     continue
-                u.add_output(j, 'judgement_journal')
             passed.append((pg, D, exp))
-        plan.forced_after = {pg.key: D for pg, D, _ in passed}      # what each switched page serves after the switch
-        items = [(pg, D, register.page_entry(plan, pg, utc, D), exp, []) for pg, D, exp in passed]
+        while True:     # a page whose entry refuses leaves the others, their sibling links recomputed without it
+            plan.forced_after = {pg.key: D for pg, D, _ in passed}      # what each switched page serves after the switch
+            items, bad = [], None
+            for pg, D, exp in passed:
+                try:
+                    items.append((pg, D, register.page_entry(plan, pg, utc, D), exp, []))
+                except Refusal as e:
+                    bad = (pg, e)
+                    break
+            if bad is None:
+                break
+            refused[bad[0].key] = str(bad[1])
+            u.note(f'page {bad[0].key} REFUSED: {bad[1]}')
+            passed = [x for x in passed if x[0] is not bad[0]]
         for pg, D, e, _, _ in items:
             u.note(f'FORCED-SWITCH {e["id"]} {pg.stokes}/{pg.kind} {pg.run_name} siblings {e["argv"].count("--sibling")}')
         return items, refused
@@ -267,11 +321,12 @@ def refresh_siblings(run, plan, state, utc):
                 continue
             try:
                 exp = servers.app_probe(plan, pg, D, unit=u)
+                e = register.page_entry(plan, pg, utc, D)      # G26 refuses this page only
             except Refusal as x:
                 refused[pg.key] = str(x)
                 continue
             u.note(f'FORCED-SIBLINGS-REFRESHED p{pg.port} ({D}): {want}')
-            items.append((pg, D, register.page_entry(plan, pg, utc, D), exp, []))
+            items.append((pg, D, e, exp, []))
         return items, refused
     state['served'].update(flow.register_pages(run, plan, prepare, _unit_name(plan) + '_siblings', stage='refresh-siblings',
                                                inc_log=False))
@@ -312,8 +367,8 @@ def describe(plan, stages, args):
         if getattr(args, 'forced_refresh_siblings', False) or not plan.forced_tag:
             continue
         try:
-            print(f'    title: {plan.title(pg, utc)}')
-            h = plan.hub_entry(pg, utc)
+            print(f'    title: {plan.title(pg, utc, pg.root_src)}')
+            h = plan.hub_entry(pg, utc, pg.root_src)
             if h:
                 print(f'    hub {h[0]} {h[1]}: {dict(kv.split("=", 1) for kv in h[2]).get("generation")}')
         except Refusal as e:

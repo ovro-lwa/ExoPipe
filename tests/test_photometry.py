@@ -157,6 +157,20 @@ def patched(obj, **kw):
             setattr(obj, k, v)
 
 
+def syn_samples():
+    """The configuration the synthetic snapshot cell is measured and evaluated under: photometry.SAMPLES_MEASURED['snapshot']
+    = HWJ and 10 pc, the samples of its cutout templates (the served generation 5 holds no LPT cutout, pick_templates). Under
+    the configured HWJ, 10 pc and LPT its evaluation refuses V2 (test_snapshot_e2e checks it)."""
+    return patched(CFG.photometry, SAMPLES_MEASURED=dict(CFG.photometry.SAMPLES_MEASURED, snapshot=('HWJ', '10pc')))
+
+
+def v2_lpt_only(detail):
+    """V2's detail names exactly the four LPT classes as missing and nothing else (an evaluation of before 2026-11-18, or
+    of cells without LPT stage 1: the engine records no dropped class)."""
+    d = str(detail)
+    return d.count('no row of ') == 4 and d.count('no row of LPT/') == 4 and ' rows of ' not in d and 'a row of' not in d
+
+
 def run_tests(cls, path, **ctx):
     T._CACHE.clear()
     return {r['name'].split('.', 1)[1]: r for r in validate.run(cls, path, **ctx)}
@@ -1008,6 +1022,17 @@ WORK = os.path.join(TMP, 'work')
 
 
 def test_snapshot_e2e():
+    with syn_samples():
+        snapshot_e2e()
+    tp = os.path.join(SNAP_OUT, 'eval_T1', 'thresholds.csv')
+    if os.path.exists(tp):
+        cols, th = T.read_csv(tp)
+        ok, n, det = T.threshold_classes_check(th, cols)
+        check('V2 under the configured samples (HWJ, 10 pc, LPT): the synthetic evaluation (no LPT stage 1) refuses, naming '
+              'exactly the four LPT classes (the engine records no dropped class)', not ok and v2_lpt_only(det), det)
+
+
+def snapshot_e2e():
     argv = ['photometry'] + SNAP_COMMON + ['--cells', SYN_SNAP_CELL, '--out', SNAP_OUT, '--work', WORK, '--eval-tag', 'T1',
                                            '--band-procs', '4']
     rc, txt = step(argv + ['--dry-run'])
@@ -1138,6 +1163,34 @@ def neg(cls, test, path, **ctx):
     res = run_tests(cls, path, **ctx)
     r = res.get(test)
     return r is not None and not r['passed'], (r or {}).get('detail')
+
+
+def negative_snapshot_eval(evs, ctx):
+    """The synthetic snapshot evaluation passes every test and each corrupted copy fails its test (under syn_samples)."""
+    ok, bad = all_pass('photometry_eval', evs, **ctx)
+    check('snapshot evaluation original passes G, V1, V2, Z1, S', ok, bad)
+    th_h = T.read_csv(os.path.join(evs, 'thresholds.csv'))[0]
+    g4_h = T.read_csv(os.path.join(evs, 'targets_ge4.csv'))[0]
+    ih = th_h.index('thr_here')
+
+    def one_step_off(v):        # the production grid test's mutant 'a threshold one step off' (nan -> the grid bottom)
+        return '3.0' if v == 'nan' else '%.2f' % (float(v) + 0.05)
+    scases = [('E1_thresholds_or_G_grid', 'thresholds.csv',
+               lambda r: [r[0]] + [x[:ih] + [one_step_off(x[ih])] + x[ih + 1:] for x in r[1:]]),
+              ('E2_lists_or_V1_kind_exclusions', 'targets_ge4.csv',
+               lambda r: [r[0], r[1][:g4_h.index('band')] + ['Full'] + r[1][g4_h.index('band') + 1:]] + r[2:]),
+              ('E3_exceedance_or_V2_rows', 'thresholds.csv', lambda r: r[:-1]),
+              ('Z1_zones', 'targets_ge4.csv',
+               lambda r: [r[0], r[1][:g4_h.index('screen')] + ['zone' if r[1][g4_h.index('screen')] == 'clean' else 'clean']
+                          + r[1][g4_h.index('screen') + 1:]] + r[2:]),
+              ('Z1_zones', 'targets_ge4.csv', lambda r: r[:1])]
+    for test, fname, fn in scases:
+        e2 = os.path.join(NEG, 'eval_T1')
+        shutil.rmtree(e2, ignore_errors=True)
+        shutil.copytree(evs, e2)
+        _csv_rewrite(os.path.join(evs, fname), os.path.join(e2, fname), fn)
+        f_, det = neg('photometry_eval', test, e2, **ctx)
+        check('negative %s fails on a corrupted snapshot evaluation (%s)' % (test, fname), f_, det)
 
 
 def test_negative():
@@ -1308,30 +1361,8 @@ def test_negative():
         check('negative %s fails on a corrupted manifest' % test, f_, det)
     evs = os.path.join(SNAP_OUT, 'eval_T1')
     ctx = dict(stage1=os.path.join(SNAP_OUT, S1), procs=1)
-    ok, bad = all_pass('photometry_eval', evs, **ctx)
-    check('snapshot evaluation original passes G, V1, V2, Z1, S', ok, bad)
-    th_h = T.read_csv(os.path.join(evs, 'thresholds.csv'))[0]
-    g4_h = T.read_csv(os.path.join(evs, 'targets_ge4.csv'))[0]
-    ih = th_h.index('thr_here')
-
-    def one_step_off(v):        # the production grid test's mutant 'a threshold one step off' (nan -> the grid bottom)
-        return '3.0' if v == 'nan' else '%.2f' % (float(v) + 0.05)
-    scases = [('E1_thresholds_or_G_grid', 'thresholds.csv',
-               lambda r: [r[0]] + [x[:ih] + [one_step_off(x[ih])] + x[ih + 1:] for x in r[1:]]),
-              ('E2_lists_or_V1_kind_exclusions', 'targets_ge4.csv',
-               lambda r: [r[0], r[1][:g4_h.index('band')] + ['Full'] + r[1][g4_h.index('band') + 1:]] + r[2:]),
-              ('E3_exceedance_or_V2_rows', 'thresholds.csv', lambda r: r[:-1]),
-              ('Z1_zones', 'targets_ge4.csv',
-               lambda r: [r[0], r[1][:g4_h.index('screen')] + ['zone' if r[1][g4_h.index('screen')] == 'clean' else 'clean']
-                          + r[1][g4_h.index('screen') + 1:]] + r[2:]),
-              ('Z1_zones', 'targets_ge4.csv', lambda r: r[:1])]
-    for test, fname, fn in scases:
-        e2 = os.path.join(NEG, 'eval_T1')
-        shutil.rmtree(e2, ignore_errors=True)
-        shutil.copytree(evs, e2)
-        _csv_rewrite(os.path.join(evs, fname), os.path.join(e2, fname), fn)
-        f_, det = neg('photometry_eval', test, e2, **ctx)
-        check('negative %s fails on a corrupted snapshot evaluation (%s)' % (test, fname), f_, det)
+    with syn_samples():
+        negative_snapshot_eval(evs, ctx)
     proto = os.path.join(NEG, 'proto', SYN_SNAP_CELL)
     os.makedirs(proto)
     for b, st_ in (('64MHz', 'I'), ('82MHz', 'I')):
@@ -1469,10 +1500,16 @@ def test_real():
     check('real %s/forced_manifest.csv passes M1-M3' % REAL_SNAP_CELL, ok, bad)
     ev = '/lustre/gh/main/phase3/snapshot_forced/eval_wb_20261007'
     res = run_tests('photometry_eval', ev, max_cells=3, procs=1)
-    check('real eval_wb_20261007: grid G1-G6, 8 threshold rows, stage 1 of 3 evaluated cells pass (V1 / Z1 reported: the '
+    v2 = res['E3_exceedance_or_V2_rows']
+    tcols, th = T.read_csv(os.path.join(ev, 'thresholds.csv'))
+    ok8 = T.threshold_classes_check(th, tcols, samples=('HWJ', '10pc'))
+    check('real eval_wb_20261007: grid G1-G6 and stage 1 of 3 evaluated cells pass; V2 refuses, naming exactly the four LPT '
+          'classes (an evaluation of before LPT was measured, 2026-11-18: the configured samples are HWJ, 10 pc and LPT and '
+          'the engine records no dropped class); its 8 rows are one per class of HWJ and 10 pc (V1 / Z1 reported: the '
           'exclusions and the gen-4 Master catalogues changed since 2026-10-07)',
-          all(res[k]['passed'] for k in ('E1_thresholds_or_G_grid', 'E3_exceedance_or_V2_rows', 'S_stage1')),
-          {k: (r['passed'], str(r['detail'])[:200]) for k, r in res.items()})
+          all(res[k]['passed'] for k in ('E1_thresholds_or_G_grid', 'S_stage1')) and not v2['passed']
+          and v2_lpt_only(v2['detail']) and ok8[0] and ok8[1] == 8,
+          ({k: (r['passed'], str(r['detail'])[:300]) for k, r in res.items()}, ok8))
     print('      (report) V1: %s | Z1: %s' % (str(res['E2_lists_or_V1_kind_exclusions']['detail'])[:160],
                                              str(res['Z1_zones']['detail'])[:160]))
     prod = os.path.dirname(REAL_STAGE1)
@@ -1502,14 +1539,16 @@ def test_real():
         cb = {(r['cell'], r['band']) for r in csv.DictReader(open(tg))}
         late = sorted(k for k in cb if ex_now.is_excluded(k[0].split('_', 1)[0], k[1], k[0].split('_', 1)[1]))
         early = sorted(k for k in cb if ex_then.is_excluded(k[0].split('_', 1)[0], k[1], k[0].split('_', 1)[1]))
-        v1 = res['E2_lists_or_V1_kind_exclusions']
-        check('real %s (served): G1-G6, V2, Z1 and S (stage 1 = %s) pass on 3 cells; V1 names only the %d (cell, band) '
-              'excluded after the evaluation was written (%s; data_decisions.csv at %s excluded none of them)'
+        v1, v2 = res['E2_lists_or_V1_kind_exclusions'], res['E3_exceedance_or_V2_rows']
+        check('real %s (served): G1-G6, Z1 and S (stage 1 = %s) pass on 3 cells; V2 refuses, naming exactly the four LPT '
+              'classes (generation 5 measured HWJ and 10 pc only; the engine records no dropped class); V1 names only the %d '
+              '(cell, band) excluded after the evaluation was written (%s; data_decisions.csv at %s excluded none of them)'
               % (ev, S1, len(late), built, rev[:10]),
-              all(r['passed'] for k, r in res.items() if k != 'E2_lists_or_V1_kind_exclusions')
+              all(r['passed'] for k, r in res.items() if k not in ('E2_lists_or_V1_kind_exclusions', 'E3_exceedance_or_V2_rows'))
+              and not v2['passed'] and v2_lpt_only(v2['detail'])
               and 'stage-1 files' in str(res['S_stage1']['detail'])
               and rev and not early and (v1['passed'] if not late else v1['value'] == len(late)),
-              {'early': early, 'late': late, 'tests': {k: (r['passed'], str(r['detail'])[:160]) for k, r in res.items()}})
+              {'early': early, 'late': late, 'tests': {k: (r['passed'], str(r['detail'])[:300]) for k, r in res.items()}})
     ok, bad = all_pass('photometry_zone_flags', os.path.join(prod, 'zones_recomputed_gen5.csv'))
     check('real zones_recomputed_gen5.csv (the served zone flags) passes ZF1', ok, bad)
     same = {}

@@ -227,18 +227,23 @@ class Plan:
             argv += ['--lists-dir', self.lists_dir]
         return argv
 
-    def hub_entry(self, page, utc):
+    def hub_entry(self, page, utc, root=None):
         """(Stokes, hub tier, [key=value ...]) of build_review_hub.py --set for ``page``, in the launcher's order; None for a
-        page without a button (tunnel only)."""
+        page without a button (tunnel only). A forced page's run name, as title(): from ``root``, else from the run its entry
+        in this plan's registry serves (registered_run: what the button points at after a switch or a sibling refresh), else
+        the plan's name; G26 refuses a name whose tag has no serve.FORCED_GENERATIONS text."""
         if page.hub is None:
             return None
         S = _CFG().serve
+        run_name = page.run_name
         if page.family == 'forced':
-            samples, g = forced_generation(page, page.run_name)
+            root = root or self.registered_run(page)
+            run_name = os.path.basename(os.path.normpath(root)) if root else page.run_name
+            samples, g = forced_generation(page, run_name)
             gen = S.FORCED_HUB_GENERATION.format(S=page.stokes, kind=page.kind, samples=samples, generation=g)
         else:
             gen = S.HUB_GENERATION[self.tier].format(lsts=self.lsts_text, label=self.label or '')
-        vals = {'run': page.run_name, 'generation': gen, 'served': utc, 'live': '1', 'port': str(page.port), 'note': ''}
+        vals = {'run': run_name, 'generation': gen, 'served': utc, 'live': '1', 'port': str(page.port), 'note': ''}
         return page.hub[0], page.hub[1], [f'{k}={vals[k]}' for k in HUB_KV_ORDER[(self.tier, page.family)]]
 
 

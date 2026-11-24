@@ -3,10 +3,11 @@
 event pages (exopipe3 forced --tier snapshot, family C) and the serve switch (serve --tier snapshot --family forced). Data free:
 synthetic stage-1 directories (empty files named as stage-1 files), a synthetic exclusion list and synthetic unit records.
 Asserts:
-  - V2 (lib/photometry/tests.threshold_classes_check): thresholds.csv holds one row per (sample, Stokes, tier) of the samples
-    with a stage-1 file of the evaluated kind in the evaluated cells - LPT's four classes with its files (12 rows), 8 rows
-    without them; a missing class, a class of a sample without stage 1 and a duplicated class fail, each named; Full, a band
-    of the other kind and an excluded (cell, band) call for no class; an evaluation with no stage-1 file fails;
+  - V2 (lib/photometry/tests.threshold_classes_check): thresholds.csv holds one row per (sample, Stokes, tier) of the
+    configured samples (photometry.SAMPLES_MEASURED['snapshot'], restricted to the evaluation's --samples when its record names
+    them), never derived from the files present - 12 rows; the former 8 refuse with the four LPT classes named (the engine
+    records no dropped class), pass under --samples HWJ,10pc; a row of another class, a duplicate, a missing column and an
+    unmeasured --samples sample refuse, each named; through the content test a missing column is a recorded failure;
   - the evaluation over a campaign's stage 1 (steps_snapshot._measure_refusals, refused_for, done_evidence): per band kind, a
     cell without the kind's cutouts (SM-NOBAND), not run for a gap (SM-HELD outcome 'gap') or whose measurement refused
     (SM-DONE) is listed refused for that kind only; a cell held for its cutouts (SM-HELD 'held') or stopped by the campaign
@@ -16,7 +17,8 @@ Asserts:
     (the served generation), gen6 names stage1_gen6, eval_gen6, eval_wb_gen6, zones_recomputed_gen6.csv and photometry_gen6;
     --snap-generation sets the five keys as overrides of that source and refuses a mix with --snap-eval-sb/-wb,
     --snap-zone-flags or a --set of those keys; a bad tag refuses; G-GEN: an evaluation made from another stage 1 (its
-    evaluate record, else its sibling stage1_<tag>) is named, one made from the panels' stage 1 is not;
+    evaluate record, else its sibling stage1_<tag>) is named, one made from the panels' stage 1 is not, one of unknown
+    provenance (neither) is named;
   - the serve switch (lib/serve): the title and hub text of a forced run come from serve.FORCED_GENERATIONS of the run's tag -
     gen5 in the words of the live generation-5 entries (snapshot_forced_gen5_serve_20261026.sh:57, :72), gen6 in the words
     of gen6_forced_serve_SWITCH_DRAFT.sh:55, :71 (HWJ + 10 pc + LPT); another tag refuses (G26); a refresh names the run it
@@ -27,9 +29,11 @@ Asserts:
   - the per-panel QA block of a forced page (lib/serve/forced.paired_view, page_context, check_page; content tests
     snapshot_forced_page_context): the paired view is the one run the registry entries serve.FORCED_PAGE_CONTEXT_VIEW_IDS
     serve (a missing entry, two runs or a run without a search summary refuse); the switch runs scintillation_index.py RUN
-    --tier snapshot (cwd SNAPSHOT_STEP_CWD), then page_context_snapshot.py RUN --served-from VIEW --workers N, after the
-    exclusion gate and before the App probe; a failed tool, a missing frame_counts.json / scintillation_index.csv / .json or a
-    failed content test refuses the page; the pointer test fails on a missing pointer, one naming the run itself or another
+    --tier snapshot (cwd SNAPSHOT_STEP_CWD), then page_context_snapshot.py RUN --served-from VIEW --workers N, after G26,
+    readiness, the served-run probe (a run a registry entry serves is refused before anything changes), the exclusion gate
+    and the App probe; each content test runs once; a failed tool, a missing frame_counts.json / scintillation_index.csv /
+    .json or a failed content test refuses the page (in a real registration unit: a refused item, the unit and the other
+    page done); readiness finds the verify record under the run's own --out (<out>/review/<name>); the pointer test fails on a missing pointer, one naming the run itself or another
     view, and a view without its count table; the sidecar test fails on a panel without its sidecar, a sidecar naming another
     view (the served generation-5 state) and a run without scintillation_index.csv.
 Scratch: a fresh directory under $EXOPIPE3_TEST_SCRATCH, else the system temp directory, removed at exit.
@@ -47,7 +51,7 @@ sys.path.insert(0, REPO)
 os.environ.setdefault('NUMPY_MADVISE_HUGEPAGE', '0')
 
 from exopipe.phase3.config import CFG                                # noqa: E402
-from exopipe.phase3.core import exclusions, record                  # noqa: E402
+from exopipe.phase3.core import record                              # noqa: E402
 from exopipe.phase3.core.record import Refusal                      # noqa: E402
 from exopipe.phase3.lib.photometry import steps_snapshot as SS      # noqa: E402
 from exopipe.phase3.lib.photometry import tests as T                # noqa: E402
@@ -77,58 +81,63 @@ def touch(path):
     open(path, 'w').close()
 
 
-def stage1_files(stage1, cell, samples, bands):
-    for smp in samples:
-        for b in bands:
-            for st in ('I', 'V'):
-                touch(os.path.join(stage1, cell, 'forced_%s_%s_%s.npz' % (smp, b, st)))
-
-
 def th_rows(samples, stokes=('I', 'V'), tiers=('10s', '1min')):
     return [dict(sample=s, stokes=st, tier=t) for s in samples for st in stokes for t in tiers]
 
 
 # ---------------------------------------------------------------------------------------------------------------------
 def test_v2_classes(d):
-    stage1 = os.path.join(d, 'stage1_gen6')
-    dd = os.path.join(d, 'data_decisions.csv')
-    with open(dd, 'w', newline='') as f:
-        w = csv.writer(f)
-        w.writerow(['lst', 'subband', 'date', 'verdict', 'reason'])
-        w.writerow(['10h', SB[3], '2025-01-07', 'exclude', 'synthetic'])
-    ex = exclusions.Exclusions(dd, scope='snapshot')
     check('config: the snapshot samples measured are HWJ, 10pc and LPT (photometry.SAMPLES_MEASURED)',
           tuple(CFG.photometry.SAMPLES_MEASURED['snapshot']) == ('HWJ', '10pc', 'LPT'), CFG.photometry.SAMPLES_MEASURED)
-    stage1_files(stage1, CELL_A, ('HWJ', '10pc', 'LPT'), SB[:2] + WB[:1])
-    stage1_files(stage1, CELL_B, ('HWJ', '10pc'), SB[:2])
-    stage1_files(stage1, CELL_B, ('LPT',), [SB[3]])          # LPT only in an excluded (cell, band): no LPT class from B
-    touch(os.path.join(stage1, CELL_A, 'forced_SolarSystem_%s_I.npz' % SB[0]))     # not a snapshot sample: no class
-    touch(os.path.join(stage1, CELL_A, 'forced_HWJ_Full_I.npz'))
-    cells_a = [dict(cell=CELL_A, kind='sb'), dict(cell=CELL_B, kind='sb')]
-    cells_b = [dict(cell=CELL_B, kind='sb')]
-    want = T.threshold_classes(cells_a, stage1, ex)
-    check('V2 classes: three samples x 2 Stokes x 2 tiers with LPT stage 1 in an evaluated cell (12)',
+    cols = ['sample', 'stokes', 'tier', 'thr_survey_gauss']
+    want = T.threshold_classes()
+    check('V2 classes: the configured samples x 2 Stokes x 2 tiers (12), from the configuration alone',
           len(want) == 12 and {k[0] for k in want} == {'HWJ', '10pc', 'LPT'}, sorted(want))
-    ok, n, det = T.threshold_classes_check(th_rows(('HWJ', '10pc', 'LPT')), cells_a, stage1, ex)
+    check('V2 classes restricted to the evaluation\'s --samples (HWJ, 10pc): 8',
+          T.threshold_classes(('HWJ', '10pc')) == {k for k in want if k[0] != 'LPT'})
+    ok, n, det = T.threshold_classes_check(th_rows(('HWJ', '10pc', 'LPT')), cols)
     check('V2: 12 rows, one per class, pass', ok and n == 12, det)
-    ok, n, det = T.threshold_classes_check(th_rows(('HWJ', '10pc')), cells_a, stage1, ex)
-    check('V2: the former 8 rows fail when LPT has stage 1 - the four LPT classes named',
+    ok, n, det = T.threshold_classes_check(th_rows(('HWJ', '10pc')), cols)
+    check('V2: the former 8 rows refuse - the four LPT classes named (the engine records no dropped class)',
           not ok and det.count('no row of LPT/') == 4 and 'LPT/I/10s' in det, det)
-    ok, n, det = T.threshold_classes_check(th_rows(('HWJ', '10pc')), cells_b, stage1, ex)
-    check('V2: 8 rows pass when LPT stage 1 lies only in an excluded (cell, band) (never reaches the histograms)', ok, det)
-    ok, n, det = T.threshold_classes_check(th_rows(('HWJ', '10pc', 'LPT')), cells_b, stage1, ex)
-    check('V2: a row of a sample without stage 1 in the evaluated cells fails, named',
-          not ok and 'a row of LPT/I/10s' in det, det)
-    ok, n, det = T.threshold_classes_check(th_rows(('HWJ', '10pc', 'LPT')) + th_rows(('HWJ',), ('V',), ('1min',)),
-                                           cells_a, stage1, ex)
-    check('V2: a duplicated class fails', not ok and '2 rows of HWJ/V/1min' in det, det)
-    ok, n, det = T.threshold_classes_check(th_rows(('HWJ', '10pc', 'LPT'))[1:], cells_a, stage1, ex)
-    check('V2: one missing class fails, named', not ok and 'no row of HWJ/I/10s' in det, det)
-    wb = T.threshold_classes([dict(cell=CELL_A, kind='wb'), dict(cell=CELL_B, kind='wb')], stage1, ex)
-    check('V2 classes of a wideband evaluation: only wideband files count (Full never; cell B has none)',
-          len(wb) == 12 and all(v.startswith(CELL_A + ' ' + WB[0]) for v in wb.values()), wb)
-    ok, n, det = T.threshold_classes_check([], [dict(cell='11h_2025-01-01', kind='sb')], stage1, ex)
-    check('V2: an evaluation whose cells have no stage-1 file fails', not ok and 'no class expected' in det, det)
+    ok, n, det = T.threshold_classes_check(th_rows(('HWJ', '10pc')), cols, samples=('HWJ', '10pc'))
+    check('V2: 8 rows pass when the evaluation\'s record names --samples HWJ,10pc', ok and n == 8, det)
+    ok, n, det = T.threshold_classes_check(th_rows(('HWJ', '10pc', 'LPT')), cols, samples=('HWJ', '10pc'))
+    check('V2: a row of a sample outside the evaluation\'s --samples refuses, named',
+          not ok and 'a row of LPT/I/10s, not a configured class' in det, det)
+    ok, n, det = T.threshold_classes_check(th_rows(('HWJ', '10pc', 'LPT', 'SolarSystem')), cols)
+    check('V2: a row of a sample not configured refuses, named', not ok and 'a row of SolarSystem/I/10s' in det, det)
+    ok, n, det = T.threshold_classes_check(th_rows(('HWJ', '10pc', 'LPT')) + th_rows(('HWJ',), ('V',), ('1min',)), cols)
+    check('V2: a duplicated class refuses', not ok and '2 rows of HWJ/V/1min' in det, det)
+    ok, n, det = T.threshold_classes_check(th_rows(('HWJ', '10pc', 'LPT'))[1:], cols)
+    check('V2: one missing class refuses, named', not ok and 'no row of HWJ/I/10s' in det, det)
+    ok, n, det = T.threshold_classes_check([], cols)
+    check('V2: an empty thresholds.csv refuses, all 12 classes missing', not ok and det.count('no row of') == 5, det)
+    ok, n, det = T.threshold_classes_check(th_rows(('HWJ', '10pc')), cols, samples=('HWJ', 'Foo'))
+    check('V2: --samples naming a sample not measured refuses', not ok and 'Foo' in det, det)
+    ok, n, det = T.threshold_classes_check([dict(sample=s, stokes=st) for s, st, _ in want], ['sample', 'stokes'])
+    check('V2: a thresholds.csv without its tier column refuses, named', not ok and 'no tier column' in det, det)
+    ev = os.path.join(d, 'eval_nocol')          # through the content test: a recorded failure, not an exception
+    os.makedirs(ev, exist_ok=True)
+    with open(os.path.join(ev, 'thresholds_grid.csv'), 'w') as f:
+        f.write('sample,stokes,tier\n')
+    with open(os.path.join(ev, 'thresholds.csv'), 'w') as f:
+        f.write('sample,stokes\nHWJ,V\n')
+    with open(os.path.join(ev, 'cells.csv'), 'w') as f:
+        f.write('cell\n10h_2025-01-07\n')
+    try:
+        ok, n, det = T.ev3(ev, stage1=os.path.join(d, 'stage1_none'))
+        r = (ok, det)
+    except Exception as x:      # noqa: BLE001
+        r = (None, repr(x))
+    check('V2 content test (E3_exceedance_or_V2_rows): a missing column is a recorded failure, not an exception',
+          r[0] is False and 'no tier column' in r[1], r)
+    try:
+        ok, n, det = T.ev5(ev, stage1=os.path.join(d, 'stage1_none'))
+        r = (ok, det)
+    except Exception as x:      # noqa: BLE001
+        r = (None, repr(x))
+    check('S content test: a cells.csv without its kind column is a recorded failure', r[0] is False and 'no kind column' in r[1], r)
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -252,6 +261,14 @@ def test_generation(d):
         mm = TS.generation_mismatch(c)
         check('G-GEN: an evaluation made from generation 5\'s stage 1 under generation 6\'s panels is named',
               len(mm) == 1 and 'stage1_gen5' in mm[0], mm)
+        c.ev_sb = os.path.join(base, 'v2', 'eval_wb_gen6')
+        mm = TS.generation_mismatch(c)
+        check('G-GEN: an evaluation of unknown stage-1 provenance (no record, no sibling stage1_<tag>) is named',
+              len(mm) == 1 and 'stage 1 unknown' in mm[0] and 'v2/eval_wb_gen6' in mm[0], mm)
+        c.ev_sb = os.path.join(base, 'synthetic_evaluation')
+        mm = TS.generation_mismatch(c)
+        check('G-GEN: an evaluation not named eval_<tag> is of unknown provenance, named',
+              len(mm) == 1 and 'stage 1 unknown' in mm[0], mm)
     finally:
         CFG.reset()
 
@@ -312,6 +329,50 @@ def serve_checks(d, out, forced, planmod):
     t = p.title(v10, 'UTC', root='/r/Run_SNAPFORCED_V10s_gen5')
     check('the title names the run it serves (a refresh of a gen5 page under another tag: gen5 words, its run name)',
           t == GEN5_TITLE, t)
+    # the hub button names the run the page's entry serves (as the title), G26 per page
+    import json
+    from exopipe.phase3.lib.serve import flow, register
+    i1 = [x for x in p.pages if x.key == 'forced-I-1min'][0]
+    rd = register.registry_dir(p)
+    os.makedirs(rd, exist_ok=True)
+    with open(register.files(rd)[0], 'w') as f:
+        json.dump({'pages': [{'id': f'p{i1.port}', 'argv': ['--run', '/r/Run_SNAPFORCED_I1min_gen5']}]}, f)
+    h = dict(kv.split('=', 1) for kv in p.hub_entry(i1, 'UTC')[2])
+    check('hub entry: the run name and generation of the run the page\'s entry serves (gen5 under a gen6 plan)',
+          h['run'] == 'Run_SNAPFORCED_I1min_gen5' and h['generation'] == GEN5_HUB, h)
+    h = dict(kv.split('=', 1) for kv in p.hub_entry(i1, 'UTC', root='/r/Run_SNAPFORCED_I1min_gen6')[2])
+    check('hub entry: a root given wins (the dry run: the run to be registered)', h['run'] == 'Run_SNAPFORCED_I1min_gen6'
+          and h['generation'] == GEN6_HUB, h)
+    ns = serve_ns(None)
+    ns.forced_refresh_siblings = True
+    pn = planmod.make(ns, out)
+    i1n = [x for x in pn.pages if x.key == 'forced-I-1min'][0]
+    h = dict(kv.split('=', 1) for kv in pn.hub_entry(i1n, 'UTC')[2])
+    check('hub entry of a plan without a tag (a sibling refresh): the registered run, no G26', h['run'] ==
+          'Run_SNAPFORCED_I1min_gen5', h)
+    os.remove(register.files(rd)[0])
+    # the switch: a page whose registry entry refuses (G26) is refused alone; the others' sibling links are made without it
+    got, seen = [], []
+    sv = (flow.register_pages, forced.paired_view, forced.check_page, register.page_entry)
+    flow.register_pages = lambda run, plan, prepare, name, **k: got.append(prepare) or {}
+    forced.paired_view = lambda d=None: '/view'
+    forced.check_page = lambda u, plan, pg: (pg.root, {}, [])
+
+    def entry(plan, pg, utc, D):
+        seen.append((pg.key, sorted(plan.forced_after)))
+        if pg.key == 'forced-I-10s':
+            raise Refusal('G26 test')
+        return {'id': f'p{pg.port}', 'argv': []}
+    register.page_entry = entry
+    try:
+        forced.switch(None, p, flow.new_state(), 'UTC')
+        items, refused = got[0](_Unit())
+    finally:
+        flow.register_pages, forced.paired_view, forced.check_page, register.page_entry = sv
+    keys = sorted(x.key for x in p.pages)
+    check('switch: a page whose entry refuses (G26) is refused alone, the other three registered with sibling links made '
+          'without it', sorted(it[0].key for it in items) == sorted(k for k in keys if k != 'forced-I-10s')
+          and list(refused) == ['forced-I-10s'] and all('forced-I-10s' not in a for k_, a in seen[-3:]), (items, refused, seen))
     # readiness
     W = os.path.join(d, 'work')
     D = os.path.join(d, 'review', 'Run_SNAPFORCED_V10s_gen6')
@@ -338,6 +399,15 @@ def serve_checks(d, out, forced, planmod):
         verify(status='refused')
         ok, why = forced.ready('Run_SNAPFORCED_V10s_gen6', D)
         check('not ready: a refused verify record', not ok and 'refused' in why, why)
+        # a run built under its own --out X: its record under X, its review copy X/review/<name>
+        X = os.path.join(d, 'own_out')
+        DX = os.path.join(X, CFG.forced_snapshot.REVIEW_SUBDIR_UNDER_OUT, 'Run_SNAPFORCED_V10s_gen6')
+        record.atomic_write_json(record.record_path(X, 'forced', 'C_verify_Run_SNAPFORCED_V10s_gen6'),
+                                 dict(unit='C_verify_Run_SNAPFORCED_V10s_gen6', status='done', reason='',
+                                      meta=dict(review=DX, servable=True, partial=False, verify_line='FORCED-VERIFY-OK 2')))
+        ok, why = forced.ready('Run_SNAPFORCED_V10s_gen6', DX)
+        check('ready: the verify record under the run\'s own --out (review copy <out>/review/<name>), not only WORK_ROOT',
+              ok and X in why and 'FORCED-VERIFY-OK 2' in why, why)
     finally:
         CFG.reset()
 
@@ -365,11 +435,24 @@ class _Res:
 
 
 class _Unit:
+    """A stand-in registration unit: add_output runs the class's content tests once and records them, refuse raises Refusal
+    and refuse_item records the item, as core.record.Unit does."""
     def __init__(self):
-        self.outputs, self.notes = [], []
+        self.outputs, self.notes, self.tests, self.refused_items, self.meta = [], [], [], [], {}
 
     def add_output(self, path, cls, **ctx):
+        from exopipe.phase3.core import validate
         self.outputs.append((path, cls, ctx))
+        self.tests += [dict(r, cls=cls, path=path) for r in validate.run(cls, path, **ctx)]
+
+    def add_input(self, path):
+        pass
+
+    def refuse(self, reason):
+        raise Refusal(reason)
+
+    def refuse_item(self, path, reason, gate=None):
+        self.refused_items.append((path, reason, gate))
 
     def note(self, n):
         self.notes.append(n)
@@ -495,21 +578,26 @@ def test_forced_page_context(d):
         calls.append((name, [str(a) for a in args], cwd))
         return _Res(ok=name not in fail, tail='last line of ' + name)
     plan = argparse.Namespace(parity=False, out=d, forced_view=V)
-    pg = argparse.Namespace(key='forced-V-10s', run_name=os.path.basename(R), root_src=R, root=R, stokes='V')
+    pg = argparse.Namespace(key='forced-V-10s', run_name=os.path.basename(R), root_src=R, root=R, stokes='V', kind='10s')
     saved = (scripts.run, forced.paired_view)
     scripts.run = fake_run
     try:
         u = _Unit()
-        notes = forced.page_context(u, plan, pg, R, V)
+        forced.page_context(u, plan, pg, R, V)
         S = CFG.serve
         want = [('scintillation_index', [R, '--tier', S.SNAPSHOT_FILTER_TIER], S.SNAPSHOT_STEP_CWD),
                 ('page_context_snapshot', [R, '--served-from', V, '--workers', str(S.SNAPSHOT_PAGE_CONTEXT_WORKERS)], None)]
         check('page context: scintillation_index.py RUN --tier snapshot, then page_context_snapshot.py RUN --served-from VIEW '
               '--workers N (production\'s hand steps, its form and order)', calls == want, calls)
         check('page context: the scintillation table and the run recorded (classes scintillation_index, '
-              'snapshot_forced_page_context with its view)',
+              'snapshot_forced_page_context with its view), each tool noted',
               u.outputs == [(os.path.join(R, 'scintillation_index.csv'), 'scintillation_index', {'tier': S.SNAPSHOT_FILTER_TIER}),
-                            (R, 'snapshot_forced_page_context', {'view': V})] and len(notes) == 2, (u.outputs, notes))
+                            (R, 'snapshot_forced_page_context', {'view': V})] and len(u.notes) == 2, (u.outputs, u.notes))
+        names = [t['name'] for t in u.tests]
+        check('page context: each content test runs once (through add_output only), all passed',
+              names and len(names) == len(set(names)) and all(t['passed'] for t in u.tests)
+              and {'snapshot_forced_page_context.frame_counts_pointer', 'snapshot_forced_page_context.sidecar_per_panel'}
+              <= set(names), names)
         sj = os.path.join(R, 'scintillation_index.json')
         sk = open(sj).read()
         with open(sj, 'w') as f:
@@ -531,30 +619,70 @@ def test_forced_page_context(d):
         with open(fj, 'w') as f:
             f.write(keep)
         os.rename(sc, sc + '.x')
-        r = raises(forced.page_context, _Unit(), plan, pg, R, V)
-        check('page context: a failed content test refuses the page', r is not None and 'sidecar_per_panel' in r, r)
+        u = _Unit()
+        r = raises(forced.page_context, u, plan, pg, R, V)
+        check('page context: a failed content test refuses the page, its run recorded as a refused item',
+              r is not None and 'sidecar_per_panel' in r and [x[0] for x in u.refused_items] == [R], (r, u.refused_items))
         os.rename(sc + '.x', sc)
-        # check_page: the QA block after the exclusion gate, before the App probe
+        # in a real registration unit: one page's failed content test leaves the unit (and the other pages) done
+        from exopipe.phase3.core.record import Run
+        V2, R2, _ = pctx_tree(os.path.join(d, 'two'))
+        pg2 = argparse.Namespace(**dict(vars(pg), root_src=R2, root=R2))
+        run = Run('serve', ['test'], os.path.join(d, 'out'), CFG, config_sections=None)
+        with run.unit('snapshot_forced_TEST_register', stage='switch', tier='snapshot') as ru:
+            os.rename(sc, sc + '.x')
+            r = raises(forced.page_context, ru, plan, pg, R, V)
+            os.rename(sc + '.x', sc)
+            r2 = raises(forced.page_context, ru, plan, pg2, R2, V2)
+        check('page context in a real unit: the failing page refused, the other page passes, the unit ends done',
+              r is not None and r2 is None and ru.status == 'done' and [x['path'] for x in ru.refused_items] == [R],
+              (r, r2, ru.status, ru.reason, ru.refused_items))
+        # check_page: what only reads first (G26, readiness, files, already served), then the gate, the App probe, the QA block
         order = []
         sv = (forced.ready, forced.missing_files, forced.page_context, exclusion_gate.scan_snapshot_run,
-              exclusion_gate.refuses, servers.app_probe)
-        forced.ready = lambda *a, **k: (True, 'ok')
+              exclusion_gate.refuses, servers.app_probe, forced.served_by)
+        forced.ready = lambda *a, **k: order.append('ready') or (True, 'ok')
         forced.missing_files = lambda *a, **k: []
         exclusion_gate.scan_snapshot_run = lambda D: order.append('gate') or argparse.Namespace(hits=[], summary=lambda: 'none')
         exclusion_gate.refuses = lambda *a: True
-        forced.page_context = lambda u, plan, pg, D, view: order.append(('pctx', D, view)) or []
+        forced.served_by = lambda plan_, D: order.append('served?') or []
 
-        def probe(*a, **k):
-            order.append('probe')
+        def pctx_stop(u, plan, pg, D, view):
+            order.append(('pctx', D, view))
             raise Refusal('stop here')
-        servers.app_probe = probe
+        forced.page_context = pctx_stop
+        servers.app_probe = lambda *a, **k: order.append('probe') or {}
         try:
             raises(forced.check_page, _Unit(), plan, pg)
+            check('check_page: readiness, the served-run probe, the exclusion gate and the App probe before the QA block, '
+                  'which runs on the run with the paired view', order == ['ready', 'served?', 'gate', 'probe', ('pctx', R, V)],
+                  order)
+            del order[:]
+            forced.served_by = lambda plan_, D: order.append('served?') or ['p8786']
+            r = raises(forced.check_page, _Unit(), plan, pg)
+            check('check_page: a run a registry entry serves already is refused before anything changes (no gate, probe or '
+                  'QA block: never rewritten in place)', r is not None and 'served already (p8786)' in r and 'in place' in r
+                  and order == ['ready', 'served?'], (r, order))
+            del order[:]
+            pgx = argparse.Namespace(**dict(vars(pg), root_src=os.path.join(d, 'Run_SNAPFORCED_V10s_gen99')))
+            r = raises(forced.check_page, _Unit(), plan, pgx)
+            check('check_page: G26 (a tag without serve.FORCED_GENERATIONS text) refuses the page before anything else',
+                  r is not None and 'G26' in r and order == [], (r, order))
         finally:
             (forced.ready, forced.missing_files, forced.page_context, exclusion_gate.scan_snapshot_run,
-             exclusion_gate.refuses, servers.app_probe) = sv
-        check('check_page: the QA block on the served run with the paired view, after the exclusion gate and before the App '
-              'probe', order == ['gate', ('pctx', R, V), 'probe'], order)
+             exclusion_gate.refuses, servers.app_probe, forced.served_by) = sv
+        # served_by reads the plan's registry
+        rd = os.path.join(d, 'reg_served')
+        os.makedirs(rd)
+        with open(register.files(rd)[0], 'w') as f:
+            json.dump({'pages': [{'id': 'p8786', 'argv': ['--run', R]}, {'id': 'p8785', 'argv': ['--run', V]}]}, f)
+        sv = register.registry_dir
+        register.registry_dir = lambda plan_: rd
+        try:
+            check('served_by: the registry entries whose --run is the run', forced.served_by(plan, R) == ['p8786']
+                  and forced.served_by(plan, os.path.join(d, 'x')) == [], forced.served_by(plan, R))
+        finally:
+            register.registry_dir = sv
     finally:
         scripts.run, forced.paired_view = saved
 

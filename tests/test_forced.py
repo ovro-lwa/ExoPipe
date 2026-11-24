@@ -522,9 +522,19 @@ def _excl_file(R, rows):
     return p
 
 
+def _provenance(root, tag='t1'):
+    """The evaluate records of the synthetic evaluations <root>/eval_<tag> and eval_wb_<tag>: made from
+    forced_snapshot.STAGE1_ROOT, the stage 1 the panels read (G-GEN refuses an evaluation of unknown stage-1 provenance)."""
+    for k in ('sb', 'wb'):
+        record.atomic_write_json(record.record_path(root, 'photometry', 'evaluate.%s.%s' % (k, tag)),
+                                 dict(unit='evaluate.%s.%s' % (k, tag), status='done',
+                                      meta=dict(stage1=CFG.forced_snapshot.STAGE1_ROOT)))
+
+
 def _snap_run(root):
     """A synthetic snapshot forced run (Stokes V, 10s) in the production layout, consistent across its files."""
-    ev_sb, ev_wb = os.path.join(root, 'eval_sb'), os.path.join(root, 'eval_wb')
+    ev_sb, ev_wb = os.path.join(root, 'eval_t1'), os.path.join(root, 'eval_wb_t1')
+    _provenance(root)
     th = [dict(sample='10pc', stokes='V', tier='10s', thr_survey_gauss='5.0', n_target_trials='1000'),
           dict(sample='10pc', stokes='V', tier='1min', thr_survey_gauss='5.0', n_target_trials='100')]
     tcols = ['cell', 'sample', 'target', 'band', 'stokes', 'tier', 'ts', 'snr', 'screen', 'sample_frac_ge', 'p_gauss']
@@ -772,9 +782,10 @@ def test_snapshot_cli(W, ev_sb, ev_wb):
           [b_[2] for b_ in bad] == ['t1', 't2'], str(bad))
     ex = Exclusions()
     l_, s_, d_ = sorted(k for k in ex.rows if k not in ex.perband and k[1].isdigit())[0]
-    ex_sb, ex_wb = os.path.join(TMP, 'excl_eval_sb'), os.path.join(TMP, 'excl_eval_wb')
+    ex_sb, ex_wb = os.path.join(TMP, 'excl', 'eval_t1'), os.path.join(TMP, 'excl', 'eval_wb_t1')
     shutil.copytree(ev_sb, ex_sb)
     shutil.copytree(ev_wb, ex_wb)
+    _provenance(os.path.join(TMP, 'excl'))
     tp = os.path.join(ex_sb, 'targets_ge4.csv')
     rows = list(csv.DictReader(open(tp)))
     sel = next(r for r in rows if r['stokes'] == 'V' and r['tier'] == '10s' and r['screen'] == 'clean' and abs(float(r['snr'])) >= 4.9)
@@ -789,6 +800,16 @@ def test_snapshot_cli(W, ev_sb, ev_wb):
     check('a build whose selected event lies on an excluded night is refused (exit 2) before any in-place call',
           rc == 2 and rec.get('status') == 'refused' and 'excluded night' in rec.get('reason', '')
           and not rec['meta'].get('legacy_calls'), '%s %s' % (rc, rec.get('reason')))
+    np_sb, np_wb = os.path.join(TMP, 'noprov', 'eval_t1'), os.path.join(TMP, 'noprov', 'eval_wb_t1')
+    shutil.copytree(ev_sb, np_sb)
+    shutil.copytree(ev_wb, np_wb)
+    rc, err = cli(['forced', '--tier', 'snapshot', '--cores', 'none', '--out', W, '--snap-eval-sb', np_sb, '--snap-eval-wb', np_wb,
+                   '--stokes', 'V', '--snap-cadence', '10s', '--snap-name', 'Run_SNAPFORCED_V10s_NOPROV', '--stages', 'build'])
+    rec = record.load_record(W, 'forced', 'C_build_Run_SNAPFORCED_V10s_NOPROV') or {}
+    check('G-GEN: a build on evaluations of unknown stage-1 provenance (no evaluate record, no sibling stage1_<tag>) is '
+          'refused (exit 2) before any in-place call',
+          rc == 2 and rec.get('status') == 'refused' and 'G-GEN' in rec.get('reason', '') and 'stage 1 unknown' in
+          rec.get('reason', '') and not rec['meta'].get('legacy_calls'), '%s %s' % (rc, rec.get('reason')))
     rc, err = cli(base + ['--epochs', '06h_2025-01-03'])
     recs = [record.load_record(W, 'forced', 'C_build_Run_SNAPFORCED_%s_E06h_2025-01-03' % x) or {}
             for x in ('I10s', 'I1min', 'V10s', 'V1min')]

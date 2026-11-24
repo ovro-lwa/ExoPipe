@@ -1224,52 +1224,38 @@ def stage1_cell(task):
     return bad, nband, nfile, nnocut
 
 
-def threshold_classes(cells, stage1, excl=None):
-    """{(sample, Stokes, tier): 'cell band'} - the classes thresholds.csv of a snapshot evaluation must hold, with the first
-    stage-1 file that calls for each: every sample of photometry.SAMPLES_MEASURED['snapshot'] with a stage-1 file
-    forced_<sample>_<band>_<Stokes>.npz of the evaluated kind in an evaluated cell (``cells``: the cells.csv rows; no Full,
-    no (cell, band) excluded under core.exclusions - both never reach the engine's histograms), times the tiers of
-    photometry_evaluate.THRESHOLD_CLASSES. One stage-1 directory listing per cell. ``excl``: the exclusion read (default
-    core.exclusions, scope snapshot)."""
+def threshold_classes(samples=None):
+    """{(sample, Stokes, tier)} - the classes thresholds.csv of a snapshot evaluation must hold, as configured and never derived
+    from the files present: every sample of photometry.SAMPLES_MEASURED['snapshot'] (restricted to ``samples``, the evaluation's
+    own --samples when its record names them) times the Stokes and the tiers of photometry_evaluate.THRESHOLD_CLASSES."""
     stokes, tiers = _cfg().photometry_evaluate.THRESHOLD_CLASSES['snapshot']
-    smps = set(_samples_measured('snapshot'))
-    excl = excl or _excl('snapshot')
-    want = {}
-    for r in cells:
-        cell, kind = r['cell'], r['kind']
-        lst, date = cell.split('_', 1)
-        d = os.path.join(stage1, cell)
-        for f in sorted(os.listdir(d) if os.path.isdir(d) else ()):
-            m = re.match(r'^forced_([^_]+)_(.+)_([IV])\.npz$', f)
-            if not m or m.group(1) not in smps or m.group(3) not in stokes:
-                continue
-            smp, band, st = m.groups()
-            if band == 'Full' or (kind == 'sb') != ('MHz' in band) or excl.is_excluded(lst, band, date):
-                continue
-            for t in tiers:
-                want.setdefault((smp, st, t), '%s %s' % (cell, band))
-    return want
+    smps = [s for s in _samples_measured('snapshot') if not samples or s in set(samples)]
+    return {(s, st, t) for s in smps for st in stokes for t in tiers}
 
 
-def threshold_classes_check(th, cells, stage1, excl=None):
-    """V2: thresholds.csv holds exactly one row per class of threshold_classes (each sample measured in the evaluated cells,
-    times Stokes and tier) - LPT's four classes since 2026-11-18, none of a sample not measured or without stage 1."""
-    want = threshold_classes(cells, stage1, excl)
+def threshold_classes_check(th, cols, samples=None):
+    """V2: thresholds.csv (``cols`` its header, ``th`` its rows) holds exactly one row per class of threshold_classes(samples).
+    A missing class refuses: snapshot_forced_eval.py keeps no record of a class it drops (drops.csv counts drops per reason
+    only), so no missing class can be shown to be a recorded drop. A row of another class, a duplicated class, a missing
+    column and a --samples sample that is not measured each refuse, named."""
+    meas = list(_samples_measured('snapshot'))
+    want = threshold_classes(samples)
+    bad = ['thresholds.csv has no %s column' % c for c in ('sample', 'stokes', 'tier') if c not in (cols or ())]
+    bad += ['--samples names %s, not a sample of photometry.SAMPLES_MEASURED[snapshot] %s' % (s, meas)
+            for s in sorted(set(samples or ()) - set(meas))]
+    if bad:
+        return False, len(th), _fmt(bad)
     got = {}
     for r in th:
-        k = (r.get('sample'), r.get('stokes'), r.get('tier'))
+        k = tuple(r.get(c) or '' for c in ('sample', 'stokes', 'tier'))
         got[k] = got.get(k, 0) + 1
-    miss = sorted(k for k in want if k not in got)
-    extra = sorted(k for k in got if k not in want)
-    dup = sorted(k for k, n in got.items() if n > 1)
-    bad = ['no row of %s (stage 1 %s)' % ('/'.join(k), want[k]) for k in miss] + \
-          ['a row of %s, a class without a stage-1 file of the evaluated cells' % '/'.join(k) for k in extra] + \
-          ['%d rows of %s' % (got[k], '/'.join(k)) for k in dup]
-    if not want:
-        bad.append('no class expected: no stage-1 file of the evaluated kind in %d cells.csv rows under %s' % (len(cells), stage1))
+    bad = ['no row of %s (the engine records no dropped class)' % '/'.join(k) for k in sorted(want - set(got))] + \
+          ['a row of %s, not a configured class' % '/'.join(k) for k in sorted(set(got) - want)] + \
+          ['%d rows of %s' % (got[k], '/'.join(k)) for k in sorted(got) if got[k] > 1]
     smps = sorted({k[0] for k in want})
-    return (not bad, len(th), _fmt(bad) if bad else 'thresholds.csv rows %d = one per (sample, Stokes, tier) of the samples '
-            'measured here (%s) x %d' % (len(th), ', '.join(smps), len(want) // max(1, len(smps))))
+    return (not bad, len(th), _fmt(bad) if bad else 'thresholds.csv rows %d = one per (sample, Stokes, tier) of the configured '
+            'samples (%s%s) x %d' % (len(th), ', '.join(smps), ', the evaluation\'s --samples' if samples else '',
+                                     len(want) // max(1, len(smps))))
 
 
 def _snapshot_eval(ev, ctx):
@@ -1283,12 +1269,23 @@ def _snapshot_eval(ev, ctx):
                                                                                       len(_grid())))
     except Exception as x:      # noqa: BLE001
         res['G'] = (False, None, 'grid files unreadable: %s' % x)
-    th = read_csv(os.path.join(ev, 'thresholds.csv'))[1] if os.path.exists(os.path.join(ev, 'thresholds.csv')) else []
-    cells = read_csv(os.path.join(ev, 'cells.csv'))[1] if os.path.exists(os.path.join(ev, 'cells.csv')) else []
-    res['V2'] = threshold_classes_check(th, cells, _stage1_root(ev, ctx))
+    tp = os.path.join(ev, 'thresholds.csv')
+    try:
+        if os.path.exists(tp):
+            tcols, th = read_csv(tp)
+            res['V2'] = threshold_classes_check(th, tcols, samples=ctx.get('samples'))
+        else:
+            res['V2'] = (False, 0, 'no thresholds.csv')
+    except Exception as x:      # noqa: BLE001
+        res['V2'] = (False, None, 'thresholds.csv unreadable: %s' % x)
+    cp = os.path.join(ev, 'cells.csv')
+    ccols, cells = read_csv(cp) if os.path.exists(cp) else ([], [])
+    nocol = ['cells.csv has no %s column' % c for c in ('cell', 'kind') if c not in ccols] if os.path.exists(cp) else \
+        ['no cells.csv']
+    cells = [] if nocol else cells
     kinds = {r['kind'] for r in cells}
     T = read_csv(os.path.join(ev, 'targets_ge4.csv'))[1] if os.path.exists(os.path.join(ev, 'targets_ge4.csv')) else []
-    bad = []
+    bad = list(nocol)
     if len(kinds) != 1:
         bad.append('cells.csv kinds %s' % sorted(kinds))
     kind = next(iter(kinds)) if kinds else '?'
@@ -1327,7 +1324,7 @@ def _snapshot_eval(ev, ctx):
         step = max(1, len(tasks) // ctx['max_cells'])
         tasks = tasks[::step][:ctx['max_cells']]
     if not tasks:
-        res['S'] = (False, 0, 'no cells.csv rows')
+        res['S'] = (False, 0, '; '.join(nocol) or 'no cells.csv rows')
     else:
         out = _pool_map(stage1_cell, tasks, procs)
         bad = [b for o in out for b in o[0]]
@@ -1351,7 +1348,7 @@ def _eval(path, ctx):
     if tier == 'deep':
         return 'deep', _cached('deep_eval', os.path.join(path, 'thresholds.csv'), lambda: _deep_eval(path))
     if tier == 'snapshot':
-        key = 'snap_eval:%s:%s' % (ctx.get('max_cells'), ctx.get('stage1'))
+        key = 'snap_eval:%s:%s:%s' % (ctx.get('max_cells'), ctx.get('stage1'), ','.join(ctx.get('samples') or ()))
         return 'snapshot', _cached(key, os.path.join(path, 'thresholds.csv'), lambda: _snapshot_eval(path, ctx))
     return None, {}
 

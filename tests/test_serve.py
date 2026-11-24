@@ -2350,7 +2350,7 @@ def test_forced_probe_before_stop():
     that fails a check before the registry call keeps its old run')."""
     from exopipe.phase3.core.record import Run
     from exopipe.phase3.lib.serve import exclusion_gate as eg, flow, forced
-    a = _ns(tier='snapshot', family='forced', forced_tag='TEST', pages='forced-V-10s')
+    a = _ns(tier='snapshot', family='forced', forced_tag='gen6', pages='forced-V-10s')   # a tag with title text (G26 first)
     out = f'{T}/forced_out'
     plan = planmod.make(a, out)
     pg = plan.pages[0]
@@ -2380,7 +2380,7 @@ def test_forced_probe_before_stop():
         (forced.ready, forced.missing_files, forced._parity_copy, scripts.run, eg.scan_snapshot_run, servers.app_probe,
          register.write, register.check_server, forced.paired_view, forced.page_context) = saved
     u = {x.name: x for x in run.units}
-    pu, ru = u[pg.unit], u['snapshot_forced_TEST_register']
+    pu, ru = u[pg.unit], u['snapshot_forced_gen6_register']
     assert pu.status == 'refused' and 'App probe' in pu.reason and not written, (pu.status, pu.reason, written)
     assert ru.status == 'no-input' and any('REFUSED' in n and 'App probe' in n for n in ru.notes), (ru.status, ru.notes)
     ok('forced switch: a failed App probe refuses the page before anything is registered (no registration: the page keeps '

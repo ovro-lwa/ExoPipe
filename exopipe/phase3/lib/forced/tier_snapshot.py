@@ -14,7 +14,7 @@ built it when it is node-local.
 Generation (--snap-generation GEN): the two evaluations, the zone flags, stage 1 and the cutouts of one cutout generation,
 named as the photometry step writes them (generation_roots; default the forced_snapshot keys, generation 5). G-GEN: the build
 refuses evaluations made from another stage 1 than the one the panels read (their evaluate record, else their sibling
-stage1_<tag>). Generation 6 measures LPT besides HWJ and 10 pc (photometry.SAMPLES_MEASURED): its events are built and
+stage1_<tag>), and an evaluation with neither (unknown provenance). Generation 6 measures LPT besides HWJ and 10 pc (photometry.SAMPLES_MEASURED): its events are built and
 rendered like the others, and the served catalogue lists them under the sample 'FORCED TARGET LPT'.
 
 The run name is used once (G35): a stage that fails is re-run on the same RUN (--stages <stage> ...); a new build needs a new
@@ -144,12 +144,17 @@ def evaluation_stage1(ev):
 
 def generation_mismatch(c):
     """[text] for each evaluation of the run whose stage 1 (evaluation_stage1) is not the stage 1 the panels read
-    (forced_snapshot.STAGE1_ROOT, P3_FORCED_STAGE1): a run built from one generation's events and another's measurements."""
+    (forced_snapshot.STAGE1_ROOT, P3_FORCED_STAGE1): a run built from one generation's events and another's measurements.
+    An evaluation of unknown stage-1 provenance (no evaluate record, no sibling stage1_<tag>) is named too: nothing shows it
+    is the panels' generation."""
     want = os.path.realpath(c.cfg.forced_snapshot.STAGE1_ROOT)
     out = []
     for ev in (c.ev_sb, c.ev_wb):
         st, how = evaluation_stage1(ev)
-        if st and os.path.realpath(st) != want:
+        if not st:
+            out.append('%s: stage 1 unknown (%s), the panels read %s (forced_snapshot.STAGE1_ROOT)'
+                       % (ev, how, c.cfg.forced_snapshot.STAGE1_ROOT))
+        elif os.path.realpath(st) != want:
             out.append('%s was made from stage 1 %s (%s), the panels read %s (forced_snapshot.STAGE1_ROOT)'
                        % (ev, st, how, c.cfg.forced_snapshot.STAGE1_ROOT))
     return out

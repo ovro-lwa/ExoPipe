@@ -363,11 +363,12 @@ class photometry_evaluate(_Section):
     THRESHOLD_ROWS = {'deep': 4, 'snapshot': 8}            # rows of thresholds.csv: sample x Stokes (x tier for snapshot);
                                                            # deep_forced_eval.py:93-94; snapshot_forced_reserve_20261007.sh:161
     THRESHOLD_CLASSES = {'snapshot': (('V', 'I'), ('10s', '1min'))}   # thresholds.csv of a snapshot evaluation: one row per
-                                                           # (sample, Stokes, tier), Stokes x tier of each sample with a stage-1
-                                                           # file of the evaluated kind (snapshot_forced_eval.py:204, one class per
-                                                           # sample with clean controls :536-547). It replaces the fixed 8 rows
-                                                           # (THRESHOLD_ROWS['snapshot'], HWJ + 10 pc) since LPT is measured
-                                                           # (photometry.SAMPLES_MEASURED['snapshot'], 2026-11-18): 12 rows then
+                                                           # (sample, Stokes, tier) of the configured samples
+                                                           # (photometry.SAMPLES_MEASURED['snapshot'], restricted to the evaluation's
+                                                           # own --samples when its record names them) x these Stokes x tiers; a
+                                                           # missing class refuses (the engine records no dropped class). It
+                                                           # replaces the fixed 8 rows (THRESHOLD_ROWS['snapshot'], HWJ + 10 pc)
+                                                           # since LPT is measured (2026-11-18): 12 rows
     SNAPSHOT_FWHM_ARCMIN = {18: 44.9, 27: 29.9, 36: 22.4, 46: 17.6, 55: 16.3, 64: 13.6, 73: 11.9, 82: 10.6}   # arcmin at MHz,
                                                            # interpolated; MIRROR phase3_snapshot_astro.py:50 (FWHM_ARCMIN)
     SNAPSHOT_BAND_REP_MHZ = {'Red': 27, 'Green': 50, 'Blue': 73}   # MIRROR phase3_snapshot_astro.py:52 (BAND_REP_FREQ)

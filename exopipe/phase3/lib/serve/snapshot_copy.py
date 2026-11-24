@@ -554,13 +554,16 @@ def _parity_cache(plan, name):
     return os.path.join(d, name)
 
 
-def _step(u, name, args, log, cwd=None, env=None, what='', python='default'):
-    """One tool in place on the review copy, its output in ``log`` (production's log in DST); a failure refuses the unit, so
-    nothing is served and no server is replaced (snapshot_serve.sh exit 4)."""
+def _step(u, name, args, log, cwd=None, env=None, what='', python='default', where='the review copy',
+          after='nothing served, servers untouched'):
+    """One tool in place on ``where`` (the review copy), its output in ``log`` (production's log in DST); a failure raises
+    Refusal (u.refuse): here the whole unit, so nothing is served and no server is replaced (snapshot_serve.sh exit 4); inside
+    the forced switch's per-page try (lib/serve/forced.page_context: ``where`` the run a page will serve, ``after`` old entry
+    kept) that page only."""
     res = scripts.run(name, args, log=log, unit=u, env=env, cwd=cwd, python=python)
     if not res.ok:
-        u.refuse(f'{scripts.SCRIPTS[name][0]} {what}on the review copy: {res.reason or scripts.last_line(res.tail)} - nothing '
-                 f'served, servers untouched (see {log})')
+        u.refuse(f'{scripts.SCRIPTS[name][0]} {what}on {where}: {res.reason or scripts.last_line(res.tail)} - {after} '
+                 f'(see {log})')
     u.note(f'{name} {what}: {scripts.last_line(res.tail)[:200]}')
     return res
 
