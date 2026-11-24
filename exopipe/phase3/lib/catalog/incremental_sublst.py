@@ -46,8 +46,9 @@ rewrite in place), else at the grouping; once the grouping holds the night from 
 run again and group, build, buildv, view are judged by core/record.resume_check (record done, clean tree, recorded inputs,
 code and config unchanged, outputs passing their content tests now - night_grouping_record, catalog_view and
 hour_views_index fail once a later grouping run replaced the table they stand on). The units before the resume point are
-recorded skipped-valid; the gate records it (meta `resume`). Without --resume the gate REFUSES a night the grouping
-already holds from this directory (re-running its night pass would change rows the grouping holds; a grouped night is
+recorded skipped-valid; the gate records it (meta `resume`). Without --resume the gate REFUSES a night directory holding
+an earlier attempt's done night-pass units (a night pass run again over its own outputs reads the earlier attempt's
+later-stage files) and a night the grouping already holds from this directory (re-running its night pass would change rows the grouping holds; a grouped night is
 judged again only by the audit pass).
 A night is never appended twice: the grouping run lists the night directory once (I-G4, _group).
 What the chain runs next for the tier: `pages --tier sublst --epochs {item}` (the pages of the night from this directory's
@@ -513,6 +514,12 @@ def run(args, run, epochs):
                      f'continues at its first unit that does not stand; a night pass run again over a grouped night would '
                      f'change rows the grouping holds (a grouped night is judged again only by the audit pass, ruling 4 of '
                      f'R-GREGG-20261112-PER-HOUR-STEPS-SIX-RULINGS, not built)')
+        done_before = [s for s in TS.NIGHT_DEFAULT
+                       if (rec.load_record(out, run.step, f'{unit}.{s}') or {}).get('status') == 'done']
+        if done_before and not run.resume:      # a night pass run again over its own outputs reads stale later-stage files
+            u.refuse(f'the night directory {out} holds an earlier attempt of the item (night-pass unit(s) done: '
+                     f'{", ".join(done_before)}): run the item with --resume (the chain line does), which continues at its '
+                     f'first unit that does not stand, or give it an empty night directory')
         start, why, stood = resume_point(run, unit, out, grouped) if run.resume else (TS.NIGHT_DEFAULT[0], 'no --resume', [])
         u.meta['resume'] = dict(start=start, why=why, standing=[s for s, _w in stood], grouped=grouped)
         p = os.path.join(out, GATE_RECORD)

@@ -548,6 +548,14 @@ def test_a_retried_item_resumes_at_its_first_unit_that_does_not_stand():
     _stage_records(out, u, nd[5:6], status='refused')
     msg = raises(record.Refusal, INC.resume_point, _ResumeRun(stand), u, out, True)
     assert f'{u}.{nd[5]} is refused' in msg, msg
+    # without --resume, a night directory with an earlier attempt's done night-pass units is refused (not grouped yet)
+    g2, out2 = tmp('attempt_g'), tmp('attempt_out')
+    grouping(g2, {LST: all_nights(os.path.join(tmp('attempt_F'), 'F'))})
+    _stage_records(out2, u, nd[:2])
+    _a, r, rc, txt = _run(out2, ['--tier', 'sublst', '--incremental', '--epochs', f'{LST}_{NIGHT}', '--sublst-grouping', g2,
+                                 '--sublst-view-hours', LST])
+    assert [x.status for x in r.units] == ['refused'] and 'earlier attempt of the item' in r.units[0].reason, \
+        [(x.name, x.status, x.reason) for x in r.units]
     # the gate on a night the grouping already holds from this directory
     g, out, F, _p = _night_records('regate')
     argv = ['--tier', 'sublst', '--incremental', '--epochs', f'{LST}_{NIGHT}', '--sublst-grouping', g,
