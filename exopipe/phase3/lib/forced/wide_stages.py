@@ -59,7 +59,8 @@ from exopipe.phase3.lib.forced import common as K
 
 WIDE_STAGES = ('wide_jobs', 'wide_search', 'wide_test', 'wide_publish')
 ACTIVITY_STAGES = ('activity',)
-TIER_PAGE_STAGES = ('tier_site', 'tier_runs')     # family T: lib/forced/tier_pages.py (dispatched by steps/forced.py)
+TIER_PAGE_STAGES = ('tier_eval', 'tier_site', 'tier_runs')   # family T: lib/forced/tier_pages.py (dispatched by steps/forced.py)
+TIER_FLAGS = (('--tier-site', 'tier_site'), ('--tier-forced-root', 'tier_forced_root'), ('--tier-cutout-root', 'tier_cutout_root'))
 STEP = 'forced'
 
 
@@ -147,8 +148,8 @@ def gate_args(args, fam):
                 bad.append(flag)
     if fam != 'N' and getattr(args, 'na_detections', None):
         bad.append('--na-detections')
-    if fam != 'T' and getattr(args, 'tier_site', None):
-        bad.append('--tier-site')
+    if fam != 'T':
+        bad += [flag for flag, attr in TIER_FLAGS if getattr(args, attr, None)]
     if bad:
         raise Refusal('W-FAMILY %s: not a flag of family %s' % (', '.join(bad), fam))
 

@@ -1949,6 +1949,8 @@ def test_item7_parity_file_keys():
                                                                              # taper control line (TAPER_CTL_MAX), the bootstrap's
                                                                              # precision (BOOT_DRAW, BOOT_Z_SE), the knife-edge
                                                                              # flag (KNIFE_EDGE_SE)
+             'R-GREGG-20261118-GEN6-WITH-LPTS-SAMPLE-WIRED',                 # the LPT sample in every tier: the family T pages
+                                                                             # (forced_tier_pages.SAMPLES; production HWJ / 10 pc)
              'R-REFACTOR-20261104-ABSENT-WITH-SERVED-REFUSE'}   # the refactor chat under R-GREGG-20261016-REFACTOR-DECIDES-BY-
                                                                              # GOALS: catalog_omission.ABSENT_WITH_SERVED 'refuse'
                                                                              # (G6, a data-integrity guard; production 'production')

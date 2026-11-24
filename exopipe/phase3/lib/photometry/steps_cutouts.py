@@ -24,7 +24,8 @@ Stage cutouts, one unit per item:
             tier residuals: deep Run_P3S5 iresid / vresid, 10-minute tenmin_root_x2 windows). Units cutouts.<deep|10min>.<cell>.
 Stage cutmeasure (deep, sublst), one unit per (tier, LST, root): photometry_tier_forced_20261026.py --tier --lsts --samples in
   place (the snapshot chain's estimator on the tier cutouts; planets at each plane's own pixel with orbit controls). Its samples
-  go to their served roots (photometry.TIER_FORCED_ROOTS) unless --tier-out names one. Units cutmeasure.<deep|10min>.<LST>.
+  (photometry.TIER_FORCED_SAMPLES; LPT, which the tool does not name, as an ad-hoc tag: tier_engine_env) go to their served
+  roots (photometry.TIER_FORCED_ROOTS) unless --tier-out names one. Units cutmeasure.<deep|10min>.<LST>.
 
 Every unit writes through a STAGING directory of its own on the root's filesystem (<root>/_staging/<run id>/<unit>/, the
 engine's output root), then:
@@ -1513,6 +1514,19 @@ def tier_out_roots(args, samples):
     return out
 
 
+def tier_engine_env(samples):
+    """The process environment under which the tier engine measures the samples its SAMPLES literal does not name
+    (photometry.TIER_FORCED_SAMPLES beyond TIER_FORCED_ENGINE_SAMPLES: LPT): each as an ad-hoc tag, {ADHOC_ENV:
+    'TAG=<paths.CLV15_ROOT>/<SAMPLE_FILES[TAG]>,...'} - the engine measures a tag as a fixed target exactly as HWJ / 10 pc, from
+    its cutouts under <cutout root>/<tag> (photometry_tier_forced_20261026.py:56-60); {} when every sample is the engine's."""
+    c = K.cfg()
+    ph = c.photometry
+    extra = [s for s in samples if s not in ph.TIER_FORCED_ENGINE_SAMPLES]
+    if not extra:
+        return {}
+    return {ph.ADHOC_ENV: ','.join('%s=%s' % (s, os.path.join(c.paths.CLV15_ROOT, ph.SAMPLE_FILES[s])) for s in extra)}
+
+
 def stage_tier_cutmeasure(run, args):
     tier = args.tier
     ph = K.cfg().photometry
@@ -1536,22 +1550,28 @@ def stage_tier_cutmeasure(run, args):
             return []
         raise
     lsts = sorted({cl.split('_', 1)[0] for cl in cells})
-    adhoc_env = K.adhoc_env(targets, bool(getattr(args, 'planets', False)))
+    # --targets: the ad-hoc sets; else each unit's own samples, those the engine does not name (LPT) as ad-hoc tags (a unit
+    # without such a sample, e.g. SolarSystem on its own root, gets none: P3_SNAP_CUTOUT_SAMPLES replaces the tool's SAMPLES)
+    adhoc_env = K.adhoc_env(targets, bool(getattr(args, 'planets', False))) if targets else {}
+    unit_env = (lambda smp: adhoc_env) if targets else tier_engine_env
     K.plan(run, '[cutmeasure] tier %s: LSTs %s on the cutouts of %s -> %s (photometry_tier_forced_20261026.py in place, '
                 'site PYTHON[%s])%s' % (token, ','.join(lsts), root, '; '.join('%s: %s' % (','.join(s), r)
                                                                                for r, s in sorted(roots.items())),
                                         K.python_key(tier, 'cutmeasure_tier'),
                                         '; ad hoc: %s' % ' '.join('%s=%s' % kv for kv in sorted(adhoc_env.items()))
-                                        if targets else ''))
+                                        if adhoc_env else ''))
     units = []
     for lst in lsts:
         for out_root, smp in sorted(roots.items()):
+            env = unit_env(smp)
             if run.dry_run:
-                K.plan(run, '[cutmeasure]   unit cutmeasure.%s.%s.%s -> %s' % (token, lst, '+'.join(smp), out_root))
+                K.plan(run, '[cutmeasure]   unit cutmeasure.%s.%s.%s -> %s%s' % (
+                    token, lst, '+'.join(smp), out_root,
+                    ('; ad hoc: %s' % ' '.join('%s=%s' % kv for kv in sorted(env.items()))) if env and not targets else ''))
                 continue
             units += run_unit(run, 'cutmeasure.%s.%s.%s' % (token, lst, '+'.join(smp)),
                               dict(tier=tier, stage='cutmeasure', lst=lst, cutout_root=root, tier_out=out_root),
-                              cutmeasure_unit, run, args, tier, lst, root, out_root, smp, adhoc_env)
+                              cutmeasure_unit, run, args, tier, lst, root, out_root, smp, env)
     return units
 
 
@@ -1581,7 +1601,7 @@ def cutmeasure_unit(run, args, tier, lst, root, out_root, samples, adhoc_env):
         sdir = os.path.join(stage, token, lst)
         os.makedirs(sdir)
         old_man = os.path.join(odir, 'forced_manifest.csv')
-        partial = set(samples) != set(ph.TIER_FORCED_SAMPLES)
+        partial = set(samples) != set(ph.TIER_FORCED_ENGINE_SAMPLES)   # the tool's own test (:198), against its SAMPLES
         if partial and os.path.exists(old_man):     # the tool merges a sample subset with the manifest in --out (:186-192)
             shutil.copy2(old_man, os.path.join(sdir, 'forced_manifest.csv'))
         argv = ['--root', root, '--out', stage, '--tier', token, '--lsts', lst, '--workers', '1', '--samples', ','.join(samples)]

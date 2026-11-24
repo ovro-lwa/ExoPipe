@@ -72,12 +72,20 @@ class photometry(_Section):
     # planets_forced_page_20261026.py:61 FT, the P3_FORCED_TIERS default); the
     # planets' orbit-control re-run (fa17f4c, Gregg 2026-10-28 "all approved") in tiers_gen5_planets_orbit, which the planets page
     # reads (planets_page_orbit_build_20261028.sh:12 P3_FORCED_TIERS) - forced_tiers_gen5 still holds their 9b0ca31 ring files.
-    # --tier-out puts every sample under one root instead
+    # --tier-out puts every sample under one root instead. LPT (2026-11-24): in forced_tiers_gen5 with HWJ / 10 pc, the root the
+    # tier pages read (forced_tier_pages.SAMPLES); the served generation holds LPT once cutouts,cutmeasure --in-place has run
     TIER_FORCED_ROOTS = {'HWJ': '/lustre/pipeline/exopipe/phase3/forced_tiers_gen5',
                          '10pc': '/lustre/pipeline/exopipe/phase3/forced_tiers_gen5',
+                         'LPT': '/lustre/pipeline/exopipe/phase3/forced_tiers_gen5',
                          'SolarSystem': '/lustre/gh/main/phase3/snapshot_forced/tiers_gen5_planets_orbit'}
-    TIER_FORCED_SAMPLES = ('HWJ', '10pc', 'SolarSystem')   # MIRROR photometry_tier_forced_20261026.py:54 SAMPLES (its --samples;
-                                                 # + the ad-hoc tags of ADHOC_ENV, its ADHOC, 2026-11-20)
+    TIER_FORCED_ENGINE_SAMPLES = ('HWJ', '10pc', 'SolarSystem')   # MIRROR photometry_tier_forced_20261026.py:54 SAMPLES (its
+                                                 # --samples; + the ad-hoc tags of ADHOC_ENV, its ADHOC, 2026-11-20)
+    # the samples cutmeasure measures (no --targets). One the engine does not name (LPT) is given as an ad-hoc tag
+    # (ADHOC_ENV TAG=<paths.CLV15_ROOT>/<SAMPLE_FILES[TAG]>): the engine measures a tag as a fixed target, exactly as HWJ / 10 pc,
+    # from its cutouts under <cutout root>/<tag> (photometry_tier_forced_20261026.py:56-60). LPT since 2026-11-24 (the deep and
+    # 10-minute LPT sample inside the tier pages, replacing the dated driver
+    # phase3/forced_lpt_20261123/lpt_forced_alltiers_20261123.py)
+    TIER_FORCED_SAMPLES = TIER_FORCED_ENGINE_SAMPLES + ('LPT',)
     PLANET_SAMPLE = 'SolarSystem'                # the cutout tree's planet sample (phase3_snapshot_cutouts.write_cutouts :165)
     # ---- AD-HOC TARGET LISTS (CUTOVER_READINESS 'DATED DRIVERS TO COVER': regen_adhoc_20261028.sh, stage1_when_done_20261028.sh,
     #      tier_cutouts_adhoc_20261028.sh; Gregg 2026-10-28 ~07:0x UTC "Can you produce forced photometry of UX Ari and FI Cnc
@@ -112,9 +120,10 @@ class photometry(_Section):
     # the cutout manifests); LPT in every tier
     SAMPLES_CUT = ('HWJ', '10pc', 'LPT')                                   # MIRROR phase3_snapshot_cutouts.py:34-35 SAMPLES
     # MEASURED = the samples a tier's measure engines are given and its stage 1 must hold. The deep engines name no LPT; the
-    # deep and 10-minute LPT forced photometry of 2026-11-18 is a separate dated script
-    # (phase3/forced_lpt_20261118/lpt_forced_20261118.py, DONE-20261118-LPT-FORCED-PHOTOMETRY-DEEP-10MIN-STAGE-A): a later
-    # port item
+    # deep and 10-minute LPT forced photometry of 2026-11-18 was a separate dated script
+    # (phase3/forced_lpt_20261118/lpt_forced_20261118.py, DONE-20261118-LPT-FORCED-PHOTOMETRY-DEEP-10MIN-STAGE-A). The tier
+    # forced photometry (cutmeasure, TIER_FORCED_SAMPLES; the tier pages, forced_tier_pages.SAMPLES) measures LPT since
+    # 2026-11-24; these lists are the deep family-A engines' (deep_forced_phot), which stay HWJ / 10 pc
     SAMPLES_MEASURED = {'snapshot': ('HWJ', '10pc', 'LPT'),                # MIRROR snapshot_forced_phot.py:61-62 SAMPLES default
                         'deep': ('HWJ', '10pc'),                           # MIRROR deep_forced_phot.py:87, deep_forced_eval.py:93
                         'sublst': ('HWJ', '10pc')}                         # (R-FORCED-PHOTOMETRY-ELEMENTS-APPROVED-V-FAINT-PARENT-ENTRIES)
@@ -176,6 +185,7 @@ class photometry(_Section):
     PROTECTED_KEYS = ('SAMPLE_FILES', 'SAMPLE_SHA1', 'SAMPLE_COLUMNS', 'SAMPLE_ENCODING', 'SAMPLES_MEASURED', 'SAMPLES_CUT',
                       'SAMPLES_NOT_MEASURED', 'CURRENT_LIST_ONLY', 'OUT_ROOT', 'ENGINE', 'ENV_FORBIDDEN_PREFIXES',
                       'TIERS_WITH_ENGINE', 'RETIRED_CUTOUT_ROOTS', 'ENGINE_PYTHON_BY_KEY', 'TIER_FORCED_SAMPLES',
+                      'TIER_FORCED_ENGINE_SAMPLES',
                       'PLANET_SAMPLE', 'ADHOC_ENV', 'ADHOC_PLANETS_ENV', 'ENGINE_V2')
     RULED = {'SAMPLES_MEASURED': ('R-FORCED-PHOTOMETRY-ELEMENTS-APPROVED-V-FAINT-PARENT-ENTRIES',
                                   'R-GREGG-20261118-GEN6-WITH-LPTS-SAMPLE-WIRED'),
