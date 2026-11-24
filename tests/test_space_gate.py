@@ -311,8 +311,10 @@ def test_floors_and_campaign(d):
 
     def counting(argv):
         calls.append(argv)
-        return fake_lfs(fs=cc.SPACE_FILESYSTEM)(argv)
-    G = S.Gate([cc.SPACE_FILESYSTEM], cc, lfs=counting, mountinfo=_lustre_mountinfo(d, cc.SPACE_FILESYSTEM))
+        return fake_lfs(fs=mnt)(argv)
+    mnt = os.path.join(d, 'mntC')          # a directory the test makes and declares a lustre mount (CI has no /lustre)
+    os.makedirs(mnt, exist_ok=True)
+    G = S.Gate([mnt], cc, lfs=counting, mountinfo=_lustre_mountinfo(d, mnt))
     G.require()
     n = len(calls)
     got = [CP.run_space(types.SimpleNamespace(space_gate=G)) for _ in range(3)]
