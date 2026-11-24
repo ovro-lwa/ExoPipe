@@ -3263,8 +3263,13 @@ def tier_review_fixes(adhoc, root, tout, out):
         lc = sorted({os.path.basename(p_).rsplit('_', 3)[0] for p_ in glob.glob(os.path.join(sc, 'LPT', '*', '*', '*_18h_deep_[IV].fits'))})
         ln = [p_ for p_ in glob.glob(os.path.join(sf, 'deep', '18h', 'forced_LPT_*.npz'))]
         names = sorted({str(x) for p_ in ln for x in np.load(p_, allow_pickle=False)['names']})
-        check('... the LPT cutouts the tool cut (%d objects) are measured into the served tier forced root with HWJ / 10 pc '
-              '(forced_LPT_<band>_<S>.npz, the same objects)' % len(lc), names == lc, (lc, names, len(ln)))
+        argv = [c_.get('argv') or [] for c_ in ((recs.get('cutmeasure.deep.18h.HWJ+10pc+LPT') or {}).get('meta') or {}).get(
+            'legacy_calls') or []]
+        check('... the tool ran with --samples HWJ,10pc,LPT, and the LPT objects it measured into the served tier forced root '
+              '(forced_LPT_<band>_<S>.npz) are those of the LPT cutouts (%d here: no LPT target is above the floor in the '
+              'synthetic 18h cell; the real-data content test of 2026-11-24 measures 4 at 06h)' % len(lc),
+              names == lc and argv and all(a_[a_.index('--samples') + 1] == 'HWJ,10pc,LPT' for a_ in argv if '--samples' in a_),
+              (lc, names, len(ln), argv))
     # ---- F4 helper: in place, the measurement runs once any cutouts unit placed its files
     U = [type('U', (), {'status': s_}) for s_ in ('done', 'refused')]
     check('stop_after: a stage with a refused unit stops the later stages, except --in-place cutouts once a unit placed its '
