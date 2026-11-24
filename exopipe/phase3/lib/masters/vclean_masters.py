@@ -37,8 +37,17 @@ status 'OK' / 'skip (verified: ...)' / 'sibling regenerated (...)' on success (2
 retired - an existing sibling is skipped only after its content test); any other string is a refusal
 reason (caller decides exit semantics). No import-time side effects.
 
+SOURCE IDENTITY AND REFRESH (production exopipe fc5c164, 2026-11-10; R-GREGG-20261110-VCLEAN-REBUILD-ALL-456-V-MOSAICS-IN-FEATHER3):
+the cleaned master carries VCSRC / VCISRC (md5 of the V and I masters it was made from); vclean_source_check calls a pair
+STALE when VCSRC is not the cell's current V master or its time block differs; build_vclean_cell refuses a stale pair in its
+skip path; refresh_vclean_cell re-cleans, quarantines, installs, stamps and archives one installed cell. The install step runs
+the refresh after its verify and refuses unless a second call reports CURRENT (production install_cell.sh:28-34, exopipe_ops
+532ea6b; FIX-20261113-DEEP-REBUILD-CLEANS-V-BEFORE-FLUX-APPLY: the rebuild cleans V before the flux apply, so every rebuilt
+cell's pair is stale until refreshed).
+
 Usage (batch, mirrors the frozen driver):
     python vclean_masters.py [wideband|subband|all] [NPAR]
+    python vclean_masters.py refresh <cell list file> [NPAR] [tmp root]
 """
 from exopipe.phase3.config import coadd_root
 import os
@@ -58,6 +67,39 @@ TMP_ROOT = '/fast/gh/main/tmp'
 SV2_SCRIPT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                           'search', 'search_v.py')
 SV2_TIMEOUT_S = 7200
+# SOURCE IDENTITY (Gregg 2026-11-10, R-GREGG-20261110-VCLEAN-REBUILD-ALL-456-V-MOSAICS-IN-FEATHER3): the cleaned master records the
+# md5 of the V master it was cleaned from (VCSRC) and of the I master that gave the source positions (VCISRC). A pair whose VCSRC is
+# not the cell's current V master is STALE (175 of 456 cells held older night sets, 63 since-excluded nights, 2026-11-10).
+# (production vclean_masters.py:61-92, exopipe fc5c164)
+VCSRC, VCISRC = 'VCSRC', 'VCISRC'
+TIME_CARDS = ('NCOADD', 'DATE-OBS', 'DATE-END')
+
+
+def _md5(p):
+    import hashlib
+    h = hashlib.md5()
+    with open(p, 'rb') as f:
+        for b in iter(lambda: f.read(1 << 24), b''):
+            h.update(b)
+    return h.hexdigest()
+
+
+def vclean_source_check(clean_path, v_path):
+    """(ok, why): the cleaned master was cleaned from THIS V master - its VCSRC equals md5(V master), and its time block
+    (NCOADD, DATE-OBS, DATE-END) and COADD constituent nights equal the V master's."""
+    if not os.path.exists(clean_path):
+        return False, 'no cleaned master'
+    hc, hv = fits.getheader(clean_path, memmap=False), fits.getheader(v_path, memmap=False)
+    src = hc.get(VCSRC)
+    if not src:
+        return False, 'no VCSRC card (cleaned before 2026-11-10: source unknown)'
+    if src != _md5(v_path):
+        return False, f'VCSRC {src} is not the current V master'
+    bad = [k for k in TIME_CARDS if str(hc.get(k)) != str(hv.get(k))]
+    cons = lambda h: [str(x) for x in h.get('HISTORY', []) if str(x).startswith('COADD constituent')]
+    if bad or cons(hc) != cons(hv):
+        return False, f'time block differs from the V master ({bad or "COADD constituents"})'
+    return True, f'cleaned from the current V master ({src[:8]}), time block and {len(cons(hv))} constituents equal'
 
 
 def sane(path):
@@ -135,6 +177,11 @@ def build_vclean_cell(coadd_root, cell, tmp_root=None, skip_existing=True):
         pbp = f'{cf}/PB_deep_{scope}.fits'
         if not os.path.exists(pbp):
             return cell, 'NO PB MAP'
+        # 2026-11-10: a self-consistent pair is skipped only when it was cleaned from the CURRENT V master (VCSRC); a stale pair
+        # is refused here and rebuilt, quarantined and archived by refresh_vclean_cell
+        cur, cwhy = vclean_source_check(out_ap, vp)
+        if not cur:
+            return cell, f'REFUSED stale cleaned-V pair ({cwhy}) - refresh_vclean_cell rebuilds it'
         ok, why = PB.sibling_check(out_pb, out_ap, np.squeeze(fits.getdata(pbp)))
         if ok:
             return cell, 'skip (verified: sibling x PB == cleaned master)'
@@ -172,6 +219,9 @@ def build_vclean_cell(coadd_root, cell, tmp_root=None, skip_existing=True):
         res = glob.glob(f'{td}/*_residual_final.fits')
         if r.returncode != 0 or not res:
             return cell, f'sv2 FAILED rc={r.returncode}: {r.stderr[-200:]}'
+        with fits.open(res[0], mode='update', memmap=False) as h:
+            h[0].header[VCSRC] = (_md5(vp), 'md5 of the V master this was cleaned from')
+            h[0].header[VCISRC] = (_md5(ip), 'md5 of the I master (source positions)')
         shutil.move(res[0], out_ap)
         write_vclean_sibling(cf, scope)     # one writer for build and repair (2026-10-03)
         return cell, 'OK'
@@ -179,6 +229,140 @@ def build_vclean_cell(coadd_root, cell, tmp_root=None, skip_existing=True):
         return cell, f'ERROR {e}'
     finally:
         shutil.rmtree(td, ignore_errors=True)
+
+
+def refresh_vclean_cell(cell, root=None, tmp_root=None, mdw_table=None):
+    """Release 1 cleaned-V refresh of ONE installed cell (Gregg 2026-11-10, R-GREGG-20261110-VCLEAN-REBUILD-ALL-456-V-MOSAICS-IN-
+    FEATHER3; production vclean_masters.py:220-324, exopipe fc5c164). (1) A pair already cleaned from the current V master (VCSRC)
+    with a passing sibling and an archive copy equal to it is reported CURRENT and left alone. Otherwise: (2) sv2 --clean_only into
+    scratch, VCSRC / VCISRC stamped, and the content test vclean_source_check (VCSRC = md5 of the current V master; NCOADD,
+    DATE-OBS, DATE-END and COADD constituents equal the V master's) passes BEFORE anything moves; (3) the old pair -> the install
+    round's working quarantine (install._move_to_wq, md5 verified); (4) the new master installed, its PB sibling written (sibling
+    content test), both stamped (header standard + PRODNAME), both tests re-run on the installed files; (5) the cell's exclusion
+    conformance gate over every product - a refusal leaves the new pair installed and NOT archived; (6) the cell's archived vclean
+    files -> the round's archive quarantine (md5 re-checked), the new pair published (size-checked copy), the archive audited: its
+    vclean files are exactly the pair, md5 equal. Env: P3_ARCHIVE_RUN (required), P3_INSTALL_ROUND (the quarantine pair; the
+    install step sets both). Returns (cell, status): 'OK ...' or 'CURRENT ...' on success, anything else is a refusal.
+    mdw_table (v2, CUTOVER_READINESS "INSTALL-CELL HEADER REPAIR"): the MDWSTAT table path - the Release 1 cards are written on the
+    new pair after its stamp, before it is published (release1_cards.write_cell), as install step b writes them on the cell's
+    other co-adds; production instead repairs the archived pair afterwards (install_cell.sh:35-54). None = production's pair."""
+    from exopipe.phase3.lib.masters import pb_apply as PB, coadd as C
+    from exopipe.phase3.lib.install import install as PI
+    root = root or SB_ROOT
+    lst, scope = cell.split('_', 1)
+    cf = f'{root}/{cell}/coadd_final'
+    vp = f'{cf}/V_deep_Taper_R0_{scope}.fits'
+    out_ap, out_pb = f'{cf}/V_deep_Taper_R0_clean_{scope}.fits', f'{cf}/V_deep_Taper_R0_clean_pbcorr_{scope}.fits'
+    run = os.environ.get('P3_ARCHIVE_RUN')
+    if not run:
+        return cell, 'REFUSED: P3_ARCHIVE_RUN unset'
+    arch = C._archive_root(); mdir = f'{arch}/Coadd/{run}/{lst}/{scope}'; qroot = f'{arch}/{PI.QROOT_NAME}'
+    patt = f'{mdir}/{scope}_V_deep_Taper_Robust+0.0_vclean_*.fits'
+
+    def dest(p):
+        nm = fits.getheader(p, memmap=False).get('PRODNAME') or ''
+        return f'{mdir}/{nm if nm.endswith(".fits") else nm + ".fits"}' if nm else None
+
+    def audit():
+        want = {dest(p): p for p in (out_ap, out_pb)}
+        if None in want:
+            return 'an installed file has no PRODNAME'
+        now = sorted(glob.glob(patt))
+        if sorted(want) != now:
+            return f'archive vclean files {[os.path.basename(x) for x in now]} are not the installed pair'
+        bad = [os.path.basename(d) for d, s in want.items() if _md5(d) != _md5(s)]
+        return f'archive md5 differs: {bad}' if bad else ''
+
+    if not sane(vp):
+        return cell, 'NO SANE V MASTER'
+    ip = pick_i_master(cf, scope)
+    if ip is None:
+        return cell, 'NO SANE I MASTER'
+    pbp = f'{cf}/PB_deep_{scope}.fits'
+    if not os.path.exists(pbp):
+        return cell, 'NO PB MAP'
+    pb_map = np.squeeze(fits.getdata(pbp, memmap=False))
+    cur, cwhy = vclean_source_check(out_ap, vp)
+    if cur and os.path.exists(out_pb) and PB.sibling_check(out_pb, out_ap, pb_map)[0] and not audit():
+        return cell, f'CURRENT ({cwhy}; sibling and archive copies verified)'
+    tmp_root = tmp_root or TMP_ROOT
+    os.makedirs(tmp_root, exist_ok=True)
+    td = tempfile.mkdtemp(prefix=f'vclean_{cell}_', dir=tmp_root)
+    try:
+        env = {**os.environ, 'OMP_NUM_THREADS': '2', 'MKL_NUM_THREADS': '2', 'OPENBLAS_NUM_THREADS': '2'}
+        repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.dirname(os.path.abspath(__file__))))))
+        env['PYTHONPATH'] = repo_root + (os.pathsep + env['PYTHONPATH'] if env.get('PYTHONPATH') else '')
+        r = subprocess.run([sys.executable, SV2_SCRIPT, '--v_image', vp, '--i_image', ip, '--clean_only', '--no_cutouts',
+                            '--out_dir', td], capture_output=True, text=True, timeout=SV2_TIMEOUT_S, env=env)
+        res = glob.glob(f'{td}/*_residual_final.fits')
+        if r.returncode != 0 or not res:
+            return cell, f'sv2 FAILED rc={r.returncode}: {r.stderr[-200:]}'
+        with fits.open(res[0], mode='update', memmap=False) as h:
+            h[0].header[VCSRC] = (_md5(vp), 'md5 of the V master this was cleaned from')
+            h[0].header[VCISRC] = (_md5(ip), 'md5 of the I master (source positions)')
+        ok, why = vclean_source_check(res[0], vp)
+        if not ok:
+            return cell, f'REFUSED before install: new cleaned master fails its content test ({why})'
+        for p in (out_ap, out_pb):                                   # (3)
+            if os.path.exists(p):
+                PI._move_to_wq(cell, p, f'coadd_final/{os.path.basename(p)}')
+        shutil.move(res[0], out_ap)                                  # (4)
+        write_vclean_sibling(cf, scope)
+        _d, _ = C.load_image(vp)
+        thermnoi = C.get_uniform_rms(_d, ~np.isfinite(_d) | (_d == 0))
+        for p in (out_ap, out_pb):
+            if not C._stamp_master_standard(p, lst, scope, thermnoi):
+                return cell, f'REFUSED: {os.path.basename(p)} could not be stamped (installed, NOT archived)'
+        cards = ''
+        if mdw_table:                                                # v2: the Release 1 cards before the publish
+            from exopipe.phase3.lib.masters import release1_cards as R1
+            rep = R1.write_cell(cf, lst, scope, mdw_table=mdw_table, name_dir=mdir,
+                                files=[os.path.basename(out_ap), os.path.basename(out_pb)])
+            cards = '; Release 1 cards: ' + ' | '.join(rep['lines'])
+        ok1, why1 = vclean_source_check(out_ap, vp)
+        ok2, why2 = PB.sibling_check(out_pb, out_ap, pb_map)
+        if not (ok1 and ok2):
+            return cell, f'REFUSED: installed pair fails its content tests ({why1}; {why2}) - NOT archived'
+        try:                                                         # (5)
+            C._refuse_excluded_constituents(cf, lst, scope)
+        except RuntimeError as e:
+            return cell, f'REFUSED (installed, NOT archived): {e}'
+        for p in sorted(glob.glob(patt)):                            # (6)
+            q = f'{qroot}/{os.path.relpath(p, arch)}'
+            if os.path.exists(q):
+                return cell, f'REFUSED (installed, NOT archived): archive quarantine destination exists {q}'
+            os.makedirs(os.path.dirname(q), exist_ok=True); m = _md5(p); n = os.path.getsize(p); os.rename(p, q)
+            if _md5(q) != m:
+                raise RuntimeError(f'{cell}: archive quarantine move of {p} not verified (md5)')
+            PI.rec(cell, 'vclean-archive-quarantine', p, q, m, n)
+        for p in (out_ap, out_pb):
+            d = dest(p); C._atomic_copy(p, d); PI.rec(cell, 'vclean-published', p, d, _md5(d), os.path.getsize(d))
+        a = audit()
+        if a:
+            return cell, f'REFUSED: archive audit - {a}'
+        PI.rec(cell, 'vclean-refreshed', out_ap, '', '', '', f'{why1}; sibling {why2}')
+        return cell, f'OK ({why1}; sibling {why2}; 2 archive files published and audited{cards})'
+    except Exception as e:
+        return cell, f'ERROR {e}'
+    finally:
+        shutil.rmtree(td, ignore_errors=True)
+
+
+def run_refresh(cells, npar=4, tmp_root=None):
+    """Refresh the given cells (refresh_vclean_cell) NPAR at a time; prints one status line per cell and a summary
+    (production vclean_masters.py:327-339)."""
+    import multiprocessing as mp_
+    from functools import partial
+    print(f'{len(cells)} cells, NPAR={npar}', flush=True)
+    nok = nbad = 0
+    with mp_.get_context('fork').Pool(npar) as pool:
+        for cell, st in pool.imap_unordered(partial(refresh_vclean_cell, tmp_root=tmp_root), cells):
+            ok = st.startswith('OK') or st.startswith('CURRENT')
+            nok += ok; nbad += (not ok)
+            print(f'  {cell}: {st}', flush=True)
+    print(f'VCLEAN-REFRESH-DONE ok={nok} problems={nbad}', flush=True)
+    return nok, nbad
 
 
 def enumerate_cells(mode='all', wb_root=None, sb_root=None):
@@ -217,6 +401,10 @@ def run_vclean(mode='all', npar=2, wb_root=None, sb_root=None):
 
 
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == 'refresh':     # refresh <cell list file> [NPAR] [tmp root]
+        cells = [ln.strip() for ln in open(sys.argv[2]) if ln.strip() and not ln.startswith('#')]
+        _, bad = run_refresh(cells, int(sys.argv[3]) if len(sys.argv) > 3 else 4, sys.argv[4] if len(sys.argv) > 4 else None)
+        sys.exit(1 if bad else 0)
     mode = sys.argv[1] if len(sys.argv) > 1 else 'all'
     npar = int(sys.argv[2]) if len(sys.argv) > 2 else 2
     run_vclean(mode, npar)
