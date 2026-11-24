@@ -23,6 +23,7 @@ Where things are
   config/steps/jupiter.py       `exopipe3 jupiter`
   config/steps/status.py        `exopipe3 status`
   config/steps/notify.py        `exopipe3 notify`
+  config/steps/drive.py         `exopipe3 drive`
   config/__init__.py            this file: the machinery (CFG, overrides, hash, describe) - nothing here is a tunable
 A key listed in its section's PROTECTED_KEYS (or in shared.PROTECTED) is locked: a mirror of in-place code, a pinned input
 or a ruling-fixed value - it changes only by a commit (`exopipe3 config --section S` marks them).
@@ -582,7 +583,7 @@ def _load_site(cfg):
     return path
 
 
-STEP_CONFIG_MODULES = ('frames', 'flow', 'search', 'catalog', 'forced', 'curves', 'pages', 'serve', 'archive', 'masters', 'dewarp', 'install', 'calibrate', 'hybrid', 'mosaic', 'photometry', 'followup', 'jupiter', 'status', 'notify')   # exopipe/phase3/config/steps/<step>.py, pipeline order
+STEP_CONFIG_MODULES = ('frames', 'flow', 'search', 'catalog', 'forced', 'curves', 'pages', 'serve', 'archive', 'masters', 'dewarp', 'install', 'calibrate', 'hybrid', 'mosaic', 'photometry', 'followup', 'jupiter', 'status', 'notify', 'drive')   # exopipe/phase3/config/steps/<step>.py, pipeline order
 
 
 def _load_step_configs():

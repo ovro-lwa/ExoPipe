@@ -51,6 +51,7 @@ STEPS = [
     ('status', 'completion, exclusion conformance, stale products, coverage, rebuild due; emits item lists', 'tools'),
     ('verify', 'run the content test of any product class alone; compare two product roots (parity)', 'tools'),
     ('run', 'multi-node runner: jobs, chains (e.g. the per-hour chain), --after, --code, hold/release/drain/retry', 'tools'),
+    ('drive', 'per-hour driver: each hour\'s chain as Slurm jobs over the stage records; catch-up windows; periodic jobs', 'tools'),
 ]
 
 # Selectors a step may declare in SELECTORS; cli adds the flags.
@@ -368,10 +369,10 @@ def main(argv=None):
     from exopipe.phase3.core import record
     try:
         sections = step_sections(mod)          # CONFIG + shared sections: the step's resume hash (DESIGN 11.4)
-        # Ruled keys may be overridden with --ruling-for or into a non-production --out; `run submit` forwards its
-        # overrides to every step process, which checks them against its own --out.
+        # Ruled keys may be overridden with --ruling-for or into a non-production --out; `run submit` and `drive` forward
+        # their overrides to every step process, which checks them against its own --out.
         CFG.authorize(args.ruling_for, out=args.out or mod.default_out(args),
-                      mode='forward' if name == 'run' else 'run')
+                      mode='forward' if name in ('run', 'drive') else 'run')
         # parity replay of protected inputs (config.set): only under --parity into a non-production --out
         CFG.parity_replay = bool(getattr(args, 'parity', False) and name != 'run' and args.out
                                  and CFG.production_root_of(args.out) is None)
