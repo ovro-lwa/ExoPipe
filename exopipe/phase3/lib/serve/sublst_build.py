@@ -41,7 +41,9 @@ carry/swap/start  (unit sublst_<run>_swap) journals copied into B, then B PLACED
        sublst_cumulative.sh:295-300); then (unit sublst_<run>_switch) V's page index (flow.build_page_index, class
        detections_index), V SEALED (its completion record: every page's queue and view present, the page index current, the
        manifest of every file) and U SWITCHED to V by one atomic rename of the pointer, the between lines appended (from the
-       version U named before); a refusal before the switch moves V back to B (nothing served changes, the next attempt finds
+       version U named before) - the switch and that catch-up under the run's journal locks, which the two-port server's
+       POSTs take, and a POST answered only by a page of the version U names (two_port Store.get current): no label is left
+       in the old version; a refusal before the switch moves V back to B (nothing served changes, the next attempt finds
        the build). Production does the page context and the index AFTER its swap, on the served run: here every file the
        pages read is in V before any reader can reach it. Then the four pages registered in ONE registration and each one's
        build waited on (flow.start_stage; sublst_cumulative.sh:301-307 -> sublst_register_pages.py: no server of its own since
@@ -51,6 +53,15 @@ retire (unit sublst_<run>_retire; never in the default stages) RETENTION of the 
        --retire-plan a dry run (the plan written, nothing deleted); with --retire-plan <that plan> the planned versions
        deleted, each still older than the newest serve.RUN_VERSIONS_KEEP complete ones, not served, not held, not being built.
 hub    10-min / 10-min-multiples set; '10-min-sublst' removed (sublst_cumulative.sh:145-150).
+THE COALESCING BUILDER (requirement 11 of plan/ORCHESTRATION_DESIGN_20261117.md, approved 2026-11-17: "Publish immutable
+       versions behind an atomic pointer. A build pins its inputs at its start, and one coalescing builder"): an invocation
+       with build or start goes through the run's slot (lib/serve/coalesce.py, slot_for(U)): it requests a build, then
+       builds while a request is pending - its own, and once more for all requests made while it built (one follow-up
+       however many; a follow-up makes the plan again at its start, so it reads the LST runs placed by then). An invocation
+       that finds another build of the run running records unit sublst_<run>_coalesced, no-input (COALESCED: that builder
+       builds once more after its build, which begins after this request) and exits 3; the per-hour chain goes on. The
+       sub-LST placement (pages --tier sublst, stage place) requests a build in the slot of the cumulative run beside the
+       LST runs it placed. The build lock (G12) stays: production's sublst_cumulative.sh takes the same file.
 verify served_page tests + sublst_cumulative (with tests (c)+(d), sublst_catalog_publish.sh:101-108) on the served run.
 Parity: U, B and the lock live under <out>/sublst/; the build hard-links the LST runs' candidates (cp -al), so a parity
 --out must be on the same file system as the runs (/data07: spec 10's parity root /data07/gh/refactor_parity/serve).
@@ -764,10 +775,14 @@ def index_check(R):
 def switch_stage(run, plan, state):
     """THE SWITCH (unit sublst_<run>_switch): the placed version V's page index (flow.build_page_index), V sealed
     (versions.seal: the pages' queues and views present, the index current, the manifest) and U switched to V
-    (versions.switch: V verified against its manifest, one atomic rename of the pointer; the first switch adopts the legacy
-    directory U as a version), then the journal lines recorded on the old pages between the carry and the switch appended
-    from the version U named before. A refusal before the switch moves V back to B (versions.unplace): U unchanged. Returns
-    the unit."""
+    (versions.switch with the seal's record: its walk is the switch's; one atomic rename of the pointer; the first switch
+    adopts the legacy directory U as a version), then the journal lines recorded on the old pages between the carry and the
+    switch carried (design B) or appended from the version U named before. The switch and that catch-up run under the run's
+    JOURNAL LOCKS (versions.journal_locks), the locks the two-port server's POSTs to these journals take: a label sent on an
+    old page is written before the switch (into the old version, then caught up here) or after the catch-up by a page of V
+    (two_port Store.get current) - none is left behind in the old version. An adopted legacy run then gets its manifest
+    (versions.seal_adopted). A refusal before the switch - the seal's, or the switch's after a seal - moves V back to B
+    (versions.unplace; a sealed, never served V loses its record first): U unchanged. Returns the unit."""
     S = _CFG().serve
     v = state.get('version')
     B = build_dir(plan)
@@ -776,31 +791,43 @@ def switch_stage(run, plan, state):
         if v is None:
             u.refuse('no placed version (the carry+swap unit did not place the build)')
         switched = False
+        src, design_b, marks = state.get('carry_src'), state.get('design_b'), state.get('marks') or {}
         try:
             flow.build_page_index(u, v.run)                # no publish marker on a version nobody reads yet
             rec = versions.seal(v, required=seal_required(plan, state, v.run), checks=[('page_index_current', index_check)],
                                 note=f'serve --tier sublst {u.name}')
             u.note(f'version {v.vid} sealed: {rec["n_files"]} files, {rec["n_bytes"]} bytes (manifest walk {rec["walk_s"]} s)')
-            sw = versions.switch(plan.U, v, note=f'serve --tier sublst {u.name}')
-            switched = True
+            with versions.journal_locks(plan.U, S.SUBLST_JOURNALS):
+                sw = versions.switch(plan.U, v, note=f'serve --tier sublst {u.name}', record=rec)
+                switched = True
+                prev = sw['previous']
+                between_src = src if plan.parity else (prev.run if prev else None)
+                if between_src:
+                    if design_b:
+                        app = journals.sublst_carry_between(between_src, plan.U, marks)
+                        u.note(f'journal lines recorded on the old servers between the carry and the swap, carried: {app}')
+                    else:
+                        app = journals.append_between(between_src, plan.U)
+                        u.note(f'journal lines recorded on the old servers between the copy and the swap, appended: {app}')
         finally:
-            if not switched and v is not None and v.record() is None and os.path.isdir(v.run):
-                versions.unplace(v, B)
+            if not switched and v is not None and os.path.isdir(v.run):
+                versions.unplace(v, B, sealed=True)
                 u.note(f'not switched: version {v.vid} moved back to {B} - {plan.U} unchanged')
-        prev = sw['previous']
         u.meta.update(version=v.vid, previous=prev.vid if prev else None, adopted=sw['adopted'].vid if sw['adopted'] else None)
         u.note(f'switched: {plan.U} -> version {v.vid} (previous {prev.vid + " " + prev.run if prev else "none"}'
                f'{"; the legacy run adopted as that version" if sw["adopted"] else ""}); {sw["verify"]}')
-        u.add_output(v.path('VERSION.json'), 'run_version', pointer=plan.U)
-        src, design_b, marks = state.get('carry_src'), state.get('design_b'), state.get('marks') or {}
-        between_src = src if plan.parity else (prev.run if prev else None)
-        if between_src:
-            if design_b:
-                app = journals.sublst_carry_between(between_src, plan.U, marks)
-                u.note(f'journal lines recorded on the old servers between the carry and the swap, carried: {app}')
+        u.add_output(v.path('VERSION.json'), 'run_version', pointer=plan.U, sealed_by_this_unit=True)
+        if sw['adopted'] is not None:                  # outside the locks: one walk of the old run; U is switched by now, so
+            try:                                       # a refusal is recorded, not raised (the version stays 'adopted')
+                arec = versions.seal_adopted(sw['adopted'], note=f'serve --tier sublst {u.name}')
+            except (Refusal, OSError) as e:
+                u.meta['adopted_seal_error'] = str(e)[:400]
+                u.note(f'ADOPTED WITHOUT A MANIFEST: {sw["adopted"].vid} ({str(e)[:300]}) - kept by retention, not counted '
+                       f'among the newest versions; versions.seal_adopted gives it one')
             else:
-                app = journals.append_between(between_src, plan.U)
-                u.note(f'journal lines recorded on the old servers between the copy and the swap, appended: {app}')
+                u.note(f'the adopted legacy run {sw["adopted"].vid} given its manifest: {arec["n_files"]} files, '
+                       f'{arec["n_bytes"]} bytes (walk {arec["walk_s"]} s) - it can be switched back to')
+                u.add_output(sw['adopted'].path('VERSION.json'), 'run_version_adopted', sealed_by_this_unit=True)
         for J in S.SUBLST_JOURNALS:
             j = os.path.join(plan.U, J, 'judgements.jsonl')
             if os.path.exists(j):
@@ -864,21 +891,69 @@ def page_context_stage(run, plan, root=None):
 
 
 def recover_placed(plan):
-    """A swap killed between its place and its switch left the build as an unsealed version whose placing process is gone:
-    move it back to B (versions.unplace), so the next carry+swap finds it where production would. Under the build lock."""
+    """A swap killed between its place and its switch left the build as a version whose placing process is gone and that was
+    never served (unsealed, or sealed and never switched to): move it back to B (versions.unplace, sealed=True), so the next
+    carry+swap finds it where production would. Under the build lock."""
     B = build_dir(plan)
     if os.path.lexists(B):
         return None
     v = versions.placed_abandoned(plan.U, B)
     if v is None:
         return None
-    versions.unplace(v, B)
+    versions.unplace(v, B, sealed=True)
     print(f'serve: version {v.vid} of {plan.U} was placed from {B} by a swap that did not finish - moved back to {B}',
           file=sys.stderr)
     return v
 
 
+COALESCED_STAGES = ('build', 'start')     # an invocation with either goes through the run's coalescing slot
+
+
+def _fresh_plan(args, run_):
+    """The plan made again (a follow-up build pins its inputs at its own start: the LST runs placed by then)."""
+    from exopipe.phase3.lib.serve import plan as planmod
+    plan = planmod.make(args, run_.out_root)
+    if plan.gates:
+        raise Refusal('; '.join(f'{g}: {m}' for g, m in plan.gates))
+    return plan
+
+
 def run(args, run, plan, stages):
+    """THE COALESCING BUILDER around build_and_serve (module text). Without build and start (page-index, retire, hub, verify
+    alone) the stages run directly."""
+    from exopipe.phase3.lib.serve import coalesce
+    if not set(COALESCED_STAGES) & set(stages):
+        return build_and_serve(args, run, plan, stages)
+    versions._guard(plan.U, 'the coalescing slot of')
+    slot = coalesce.slot_for(plan.U)
+    plans, failed = [plan], []
+
+    def build():
+        try:
+            build_and_serve(args, run, plans.pop() if plans else _fresh_plan(args, run), stages)
+        except Exception as e:                         # re-raised below once the slot is released (drain records it)
+            failed.append(e)
+            raise
+        return 0
+    res = slot.submit(build, note=f'serve --tier sublst {run.run_id}')
+    builds = res.get('builds') or []
+    if len(builds) > 1:
+        print(f'serve: coalescing builder of {plan.U}: {len(builds)} builds (this invocation\'s and {len(builds) - 1} '
+              f'follow-up(s) requested while it built); slot {slot.d}', flush=True)
+    if failed:
+        raise failed[0]
+    if res['status'] in ('coalesced', 'covered'):
+        with run.unit(f'sublst_{plan.run_name}_coalesced', stage='coalesce', tier='sublst', slot=slot.d) as u:
+            b = res.get('builder') or {}
+            u.meta['coalesce'] = {'status': res['status'], 'builder': b}
+            raise NoInput(f'COALESCED ({res["status"]}): ' + (
+                f'a build of {plan.U} runs (pid {b.get("pid")} on {b.get("host")}, since {b.get("utc")}); it builds once more '
+                f'after its build ends, beginning after this request (slot {slot.d})' if res['status'] == 'coalesced' else
+                f'another builder\'s build of {plan.U}, begun after this request, served it (slot {slot.d})'))
+    return None
+
+
+def build_and_serve(args, run, plan, stages):
     S = _CFG().serve
     state = flow.new_state()
     together = {'carry', 'swap', 'start'}

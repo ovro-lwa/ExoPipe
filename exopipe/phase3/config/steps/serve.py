@@ -53,14 +53,19 @@ class serve(_Section):
     # once the new version is sealed; the sub-LST swap places its build as a new version (production instead renames U to
     # U.prev_<utc>, sublst_cumulative.sh:102, and keeps every previous build)
     RUN_VERSIONS_SUFFIX = '.versions'       # PROTECTED: the pointer form readers recognize; a new value orphans every version
-    RUN_VERSIONS_KEEP = 3                   # retention: the newest 3 complete (sealed or adopted) versions are kept, and besides
-                                            # them every version the pointer or another link names, a held one and one being
-                                            # built; the others are retired only by `serve --stages retire` (a dry run first,
-                                            # then --retire-plan)
-    RUN_VERSIONS_MUTABLE = ('judgements*/judgements.jsonl', 'incremental.log', 'page_index/DIRTY',
+    RUN_VERSIONS_KEEP = 3                   # retention: the newest 3 complete (sealed) versions are kept, and besides them every
+                                            # version the pointer or another link names, a held one, one being built and an
+                                            # adopted one without its manifest; the others are retired only by `serve --stages
+                                            # retire` (a dry run first, then --retire-plan)
+    RUN_VERSIONS_MUTABLE = ('judgements*/judgements.jsonl', 'incremental.log', 'page_index/*', 'page_index_build.log',
                             'PUBLISH_IN_PROGRESS.txt*')   # (fnmatch, relative to the run) the review state appended while a
                                             # version is served: left out of its manifest (classify_transients.py:3147 journal,
-                                            # common.inc_log, build_detections_index.mark_run_dirty, register.lift_hold)
+                                            # common.inc_log, register.lift_hold) - and the page index, which serve --stages
+                                            # page-index rebuilds in place on the served version (flow.build_page_index: its
+                                            # DIRTY marker, build_detections_index.mark_run_dirty, and its repair); the seal
+                                            # still requires the index current (sublst_build.index_check)
+    RUN_VERSIONS_LEASE_S = 600              # s: a holder's or builder's lease (lib/serve/versions.py LEASES): one on another node
+                                            # counts as alive until its lease, renewed every quarter lease while it runs, expires
     COALESCE_SLOT_DIR = '.coalesce'         # the coalescing builder's slot inside a run's versions root (lib/serve/coalesce.py)
     SUBLST_PAGE_CONTEXT_WORKERS = 16        # page_context_tenmin.py --workers on the placed version (sublst_cumulative.sh:298; the
                                             # 10-minute panels' run context as page text, Gregg 2026-10-22)

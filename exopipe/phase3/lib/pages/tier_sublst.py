@@ -539,6 +539,13 @@ def stage_place(c, run, done, lst):
         if r.returncode != 0:
             raise common.Refusal(f'P17 rsync to {tgt} failed (rc {r.returncode}): {r.stdout[-200:]}')
         u.add_output(tgt, 'sublst_page_run')
+        # a placement requests a build of the cumulative run beside it (requirement 11, 2026-11-17: one coalescing builder -
+        # a placement during a build schedules exactly one follow-up; lib/serve/coalesce.py); the build is serve --tier
+        # sublst, which takes the request (the per-hour chain's next step), or the running builder's follow-up
+        from exopipe.phase3.lib.serve import coalesce
+        slot = coalesce.slot_for(os.path.join(os.path.dirname(tgt), CFG.serve.RUN_NAME['sublst']))
+        slot.request(f'pages --tier sublst {name}: {tgt} placed')
+        u.meta['build_requested'] = slot.d
         done[name] = 'done'
 
 

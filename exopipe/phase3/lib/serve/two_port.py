@@ -24,7 +24,10 @@ The review-page code is NOT forked. Each page is today's classify_transients.py,
   page's legacy port (the filter cookie stays per page), so routing, inspection refusals and redirects are production's;
 - with its responses rewritten (rewrite_body / rewrite_location): the page's absolute routes gain /p/<page_id>, the URL of
   every registered legacy port becomes that page's path, the two hub URLs become the listener's own '/'.
-Writes (POST) are serialized per labels directory, since pages share journals.
+Writes (POST) are serialized per labels directory, since pages share journals. For a VERSIONED run (lib/serve/versions.py: --run
+a pointer switched to a new version by one rename) a POST is answered only by a page built on the version the pointer names
+when the label is written (Store.get current, Store.moved, under the run's journal lock that the switch holds), so a page of
+the previous version never writes its page ids into the new version's journal.
 At a registry change every built page is rebuilt, one at a time, in its backend's rebuild thread; until its rebuild is done the
 page built before answers requests (STALE_HEADER says so), and only a GET carrying FRESH_HEADER waits for the rebuilt page. A page
 whose own entry changed is dropped at once and built on its next request, as before. A build also builds the page's indices (its
@@ -73,6 +76,11 @@ LISTENER_HEADER = 'X-Two-Port-Listener'                 # set by the front: 'rev
 FRESH_HEADER = 'X-Two-Port-Fresh'                       # '1': wait for the page rebuilt since the last registry change
 STALE_HEADER = 'X-Two-Port-Stale'                       # a response from a page older than the registry: its build time
 HELD_HEADER = 'X-Two-Port-Held'                         # ... kept on that build by its run's publish hold: the hold file
+VERSIONS_SUFFIX = '.versions'                           # serve.RUN_VERSIONS_SUFFIX (lib/serve/versions.py; a backend does not
+                                                        # import the refactor's config - tests/test_publish_pointer pins them)
+VERSION_ID_RE = re.compile(r'^\d{8}T\d{6}Z(-\d+)?(-adopted)?$')   # versions._VID_RE (pinned by the same test)
+POST_VERSION_TRIES = 3                                  # a POST whose page's run version was switched under it is retried on
+                                                        # the page built on the served version this many times
 HOLD_FILE = 'PUBLISH_IN_PROGRESS.txt'                   # a run's publish hold (the publish marker, classify_transients.py:1242)
 BUILD_STATE = 1                                         # the /_status build-state protocol (entry, build_start, errors, ...)
 SOCK_PATH_MAX = 107                                     # bytes of a Unix socket path (sun_path 108 with its NUL)
@@ -381,6 +389,8 @@ class Page:
         self.build_s = self.prime_s = None
         self.build_start = None               # when its build started (Store._build): the build read the files after it
         self.gen = None                       # the registry generation its build started at (Store._build)
+        self.labels_real = None               # its labels directory resolved when its build started (Store._build): a run
+                                              # version switched since makes it no longer current for a POST (Store.moved)
 
 
 _BUILDS = iter(range(1, 1 << 62))            # every build's module name is its own: a rebuilt page and the one it replaces coexist
@@ -523,12 +533,38 @@ def project_modules():
     return out
 
 
+def journal_lock_file(R, rel):
+    """The journal lock of the labels directory ``rel`` (relative to the run) of every version under versions root R."""
+    return os.path.join(R, 'locks', 'journal_' + '__'.join(p for p in os.path.normpath(rel).split(os.sep) if p) + '.lock')
+
+
+def journal_lock_path(labels_dir):
+    """The journal lock of a labels directory of a VERSIONED run (lib/serve/versions.py), or None: for a directory inside a
+    version, <R>/<vid>/<name>/<rel> with R = <name>VERSIONS_SUFFIX, and for one inside a run whose versions root R =
+    <run>VERSIONS_SUFFIX exists beside it (a legacy run its first switch adopts), journal_lock_file(R, rel) - ONE file for
+    every version of the run, the file versions.journal_locks holds across a switch and the catch-up of the old version's
+    lines."""
+    parts = os.path.realpath(labels_dir).split(os.sep)
+    for i in range(1, len(parts) - 3):
+        if parts[i] == parts[i + 2] + VERSIONS_SUFFIX and VERSION_ID_RE.match(parts[i + 1]):
+            return journal_lock_file(os.sep.join(parts[:i + 1]), os.sep.join(parts[i + 3:]))
+    for k in range(len(parts) - 1, 1, -1):
+        R = os.sep.join(parts[:k]) + VERSIONS_SUFFIX
+        if os.path.isdir(R):
+            return journal_lock_file(R, os.sep.join(parts[k:]))
+    return None
+
+
 @contextlib.contextmanager
 def post_lock(thread_lock, labels_dir):
-    """POSTs to one labels directory, one at a time across every backend: the in-process lock, then a file lock named by the
-    directory in LOCK_DIR."""
-    os.makedirs(LOCK_DIR, exist_ok=True)
-    p = os.path.join(LOCK_DIR, hashlib.md5(labels_dir.encode()).hexdigest() + '.lock')
+    """POSTs to one labels directory, one at a time across every backend: the in-process lock, then a file lock - the run's
+    journal lock (journal_lock_path) for a versioned run, else one named by the directory in LOCK_DIR."""
+    p = journal_lock_path(labels_dir)
+    if p is None:
+        os.makedirs(LOCK_DIR, exist_ok=True)
+        p = os.path.join(LOCK_DIR, hashlib.md5(labels_dir.encode()).hexdigest() + '.lock')
+    else:
+        os.makedirs(os.path.dirname(p), exist_ok=True)
     with thread_lock:
         with open(p, 'a') as f:
             fcntl.flock(f, fcntl.LOCK_EX)
@@ -697,10 +733,19 @@ class Store:
         run = a[a.index('--run') + 1] if '--run' in a else ''
         return os.path.realpath(os.path.join(run, 'judgements'))
 
-    def get(self, pid, inspect, fresh=False):
+    def moved(self, pg):
+        """True when the page's labels directory resolves now to another directory than when its build started: its run is a
+        versioned run (lib/serve/versions.py) switched to another version since. Its journal path (the entry's, through the
+        pointer) now names the served version's journal, while its sources and page ids are its own version's."""
+        return pg.labels_real is not None and self.labels_dir(pg.entry) != pg.labels_real
+
+    def get(self, pid, inspect, fresh=False, current=False):
         """The page to answer a request: its current build; a page built before the last registry change answers too unless
         fresh (a GET carrying FRESH_HEADER), which waits for the rebuilt page. A page held by its run's publish hold answers
-        from its build, fresh or not; once the hold is lifted its rebuild is queued here."""
+        from its build, fresh or not; once the hold is lifted its rebuild is queued here. ``current`` (a POST): a page whose run
+        was switched to another version since its build (moved) never answers - the request waits for the page built on the
+        served version, so a label is written by a page of the version whose journal it goes to (its ids and the journal's
+        agree)."""
         key = (pid, bool(inspect))
         e = self.reg.get(pid)
         if e is None or e['kind'] != 'review':
@@ -712,8 +757,11 @@ class Store:
         while True:
             with self.lock:
                 pg = self.pages.get(key)
-                held = pg is not None and key in self.stale and self._held(key, pg.entry)
-                if pg is not None and (held or not (fresh and key in self.stale)):
+                moved = current and pg is not None and self.moved(pg)
+                if moved:
+                    self.stale.add(key)                        # its rebuild reads the served version
+                held = pg is not None and not moved and key in self.stale and self._held(key, pg.entry)
+                if pg is not None and not moved and (held or not (fresh and key in self.stale)):
                     pg.last_used = time.time()
                     if key in self.stale and not held and key not in self.building and key not in self.rebuild_q:
                         self._queue(key)                       # never left stale: its rebuild is queued
@@ -753,12 +801,13 @@ class Store:
             if e is None or e['kind'] != 'review' or (self.tree is not None and tree_of(e) != self.tree):
                 raise RuntimeError(f'{pid}: no longer a review page of this tree in the registry')
             t = time.time()
+            labels_real = self.labels_dir(e)          # before the page code resolves its --run (moved compares with it)
             try:
-                pg = build_page(e, inspect, self.base_env, self.write_locks[self.labels_dir(e)])
+                pg = build_page(e, inspect, self.base_env, self.write_locks[labels_real])
             finally:
                 with self.lock:
                     self.builds_done += 1             # a build of the process finished (its page's report follows at once)
-            pg.build_s, pg.gen, pg.build_start = round(time.time() - t, 1), gen, t
+            pg.build_s, pg.gen, pg.build_start, pg.labels_real = round(time.time() - t, 1), gen, t, labels_real
             prime_page(pg)
             report = self._report(e)
             with self.lock:
@@ -869,16 +918,30 @@ def serve_request(store, inspect, method, path, headers, body=b''):
     if e['kind'] != 'review':
         return 404, [('Content-Type', 'text/plain')], b'unknown page'
     fresh = method == 'GET' and any(k.lower() == FRESH_HEADER.lower() and v.strip() == '1' for k, v in (headers or {}).items())
-    try:
-        pg = store.get(pid, inspect, fresh=fresh)
-    except Exception as exc:                                    # the page's error page, the process carries on
-        return 500, [('Content-Type', 'text/plain; charset=utf-8')], f'page {pid} could not be built: {exc}'.encode()
+    post = method == 'POST'
     sub = rest + (('?' + path.split('?', 1)[1]) if '?' in path else '')
+    # A POST is answered by a page built on the run version its labels directory names now (get(current=True)), and that is
+    # checked again under the POST lock - for a versioned run the run's journal lock, which the pointer switch and the
+    # catch-up of the old version's journal lines hold (versions.journal_locks): a label is either written before the switch
+    # (to the old version, whose lines the catch-up carries) or by a page of the new version, never in between.
+    for _ in range(POST_VERSION_TRIES if post else 1):
+        try:
+            pg = store.get(pid, inspect, fresh=fresh, current=post)
+        except Exception as exc:                                # the page's error page, the process carries on
+            return 500, [('Content-Type', 'text/plain; charset=utf-8')], f'page {pid} could not be built: {exc}'.encode()
+        if not post:
+            status, hdrs, payload = run_request(pg, method, sub, headers, body)
+            break
+        with post_lock(pg.write_lock, store.labels_dir(pg.entry)):
+            if not store.moved(pg):
+                status, hdrs, payload = run_request(pg, method, sub, headers, body)
+                break
+    else:
+        return 503, [('Content-Type', 'text/plain; charset=utf-8')], (
+            f'page {pid}: its run was switched to a new version {POST_VERSION_TRIES} times while this was sent - nothing was '
+            f'recorded; send it again').encode()
     stale_built = pg.built if pg.gen is not None and pg.gen != store.gen else None    # a page older than the registry
     held = hold_path(pg.entry) if stale_built is not None and (pid, bool(inspect)) in store.held else None
-    lock = post_lock(pg.write_lock, store.labels_dir(pg.entry)) if method == 'POST' else contextlib.nullcontext()
-    with lock:
-        status, hdrs, payload = run_request(pg, method, sub, headers, body)
     pm = store.port_map()
     out = []
     for k, v in hdrs:

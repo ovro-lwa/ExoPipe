@@ -197,7 +197,8 @@ def _module(plan):
 
 def select_stages(all_stages, args, default_off=()):
     """The stages to run: --stages (any stage), else every stage but ``default_off`` (run only when named); then --from /
-    --until."""
+    --until. Refusal when that leaves no stage (e.g. --from retire without --stages retire: retire runs only when named) -
+    never a run that silently does nothing."""
     from exopipe.phase3.core.record import Refusal
     st = [s for s in all_stages if s not in default_off]
     if args.stages:
@@ -214,6 +215,11 @@ def select_stages(all_stages, args, default_off=()):
         if args.until not in all_stages:
             raise Refusal(f'--until {args.until}: stages are {", ".join(all_stages)}')
         st = [s for s in st if all_stages.index(s) <= all_stages.index(args.until)]
+    if not st:
+        sel = ' '.join(f'{k} {v}' for k, v in (('--stages', args.stages), ('--from', args.from_stage), ('--until', args.until))
+                       if v)
+        raise Refusal(f'{sel or "the default stages"}: no stage selected (stages {", ".join(all_stages)}'
+                      + (f'; {", ".join(default_off)} only when named in --stages' if default_off else '') + ')')
     return st
 
 

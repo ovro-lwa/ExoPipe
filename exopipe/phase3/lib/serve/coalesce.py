@@ -11,12 +11,18 @@ A SLOT is a directory (one per built product: for a served run, versions.root_of
   journal.jsonl  one line per request and per build (UTC, who, exit code, seconds).
 
 submit(build): request, then drain. drain(build): take the lock without waiting - when another builder holds it, return
-'coalesced' (that builder runs the build this request asked for: it takes the flag after its build ends); else, while the flag
-exists, remove it and run build() once. After the lock is released the flag is looked at once more: a request made between the
+'coalesced' (that builder runs the build this request asked for: it takes the flag after its build ends; only a builder ever
+holds the lock - status and builder() read BUILDER.json and never take it); else, while the flag exists, remove it and run
+build() once. After the lock is released the flag is looked at once more: a request made between the
 last look and the release would otherwise wait for the next request, so the builder takes the lock again and builds.
 A build that fails (a non-zero exit, an exception) is recorded; a request made during it still gets its one follow-up (it asked
 for a build that starts after it). A builder that dies releases the lock with its process; the request it took is lost with
 the build, and the build's own record shows the failure (the per-hour driver resubmits from the stage records).
+
+WIRED IN: serve --tier sublst coalesces by itself (sublst_build.run submits its build and start stages to the slot of U; a
+serve that finds a build running exits 3 with a COALESCED no-input unit), and the sub-LST placement (pages --tier sublst,
+stage place) requests a build of the cumulative run beside the runs it placed. So the per-hour chain (pages, then serve,
+per item) needs no wrapper; another builder of a served product wraps its command with the CLI 'run' below.
 
 CLI (for the per-hour driver; plan/ORCHESTRATION_DESIGN_20261117.md section 5.3):
   python -m exopipe.phase3.lib.serve.coalesce run --slot DIR [--who TEXT] -- CMD [ARG ...]   request, then build or coalesce
@@ -92,17 +98,16 @@ class Slot:
             return None
 
     def builder(self):
-        """The running builder's BUILDER.json, or None when no build runs (the lock is free)."""
-        fd = self._try_lock()
-        if fd is not None:
-            fcntl.flock(fd, fcntl.LOCK_UN)
-            os.close(fd)
-            return None
+        """The builder BUILDER.json records when it may still run (versions.alive: its pid on this host, its lease on another),
+        else None. Never takes the lock: a probe that held it, however briefly, made a concurrent drain() fail its try-lock and
+        leave its request to no builder."""
+        from exopipe.phase3.lib.serve.versions import alive
         try:
             with open(self.builder_file) as f:
-                return json.load(f)
+                who = json.load(f)
         except (OSError, ValueError):
-            return {'unknown': True}
+            return None
+        return who if alive(who) else None
 
     def drain(self, build, note=''):
         """Run build() once per taken request while this process holds the lock (see the module text). Returns
@@ -116,10 +121,12 @@ class Slot:
                 if builds:                               # this builder built; a newer builder took the slot meanwhile
                     return {'status': 'built', 'builds': builds, 'builder': None}
                 return {'status': 'coalesced', 'builds': builds, 'builder': self.builder()}
+            from exopipe.phase3.lib.serve import versions
             try:
                 with open(self.builder_file + '.part', 'w') as f:
                     json.dump(_who(note), f)
                 os.replace(self.builder_file + '.part', self.builder_file)
+                versions.renew(self.builder_file)        # its lease, for status readers on other nodes
                 while self._take():
                     t0, rc, err = time.time(), None, None
                     self._log(event='build-start', n=len(builds) + 1, who=_who(note))
@@ -131,6 +138,7 @@ class Slot:
                     builds.append({'rc': rc, 'seconds': round(time.time() - t0, 3), 'error': err})
                     self._log(event='build-end', n=len(builds), rc=rc, seconds=builds[-1]['seconds'], error=err)
             finally:
+                versions.renew_stop(self.builder_file)
                 with contextlib.suppress(OSError):
                     os.unlink(self.builder_file)
                 fcntl.flock(fd, fcntl.LOCK_UN)

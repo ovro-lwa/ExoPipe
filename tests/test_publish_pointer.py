@@ -21,7 +21,22 @@ lib/serve/sublst_build.py): data-free, plain checks, runnable with python, under
 7. The coalesce command line: exit 0 for a build, 3 when coalesced, the build's own exit code when it fails.
 8. The sub-LST switch stage: an incomplete version (a page's queue missing) is not switched and goes back to the build
    directory; a complete one is sealed and switched, the journal lines written on the old version between the carry and the
-   switch are appended; an abandoned placed build is moved back to the build directory by the next serve.
+   switch are appended; an abandoned placed build is moved back to the build directory by the next serve; a seal that
+   passed and a switch that then refused moves the build back (and so does the next serve after a kill between them).
+9. No judgement lost after a switch (PR 155 review, finding 1): a page process that resolved --run to the old version's
+   realpath writes after the switch, and its line is in the served version; the two-port server answers a POST made after
+   the switch with a page built on the served version (its version in the line), never the page built before; a POST in
+   flight across the switch (holding the run's journal lock) is written before the switch and caught up into the new
+   version; the two-port lock file and versions.journal_locks name the same file for every version and for the legacy run.
+10. The review's other findings: the page index rebuilt in place leaves a sealed version verifiable; adoption refuses an empty
+   run, a failed rename and no free name with U intact; an adopted version gets its manifest and can be switched back to,
+   and one without a manifest is not counted among the kept newest; leases (another host's holder alive until its lease
+   expires; holds and builders renewed); one walk per publish and none in the content test of a unit's own seal; an empty
+   stage selection refuses; the coalescer's status probe never takes the lock.
+11. The coalescing builder wired in: serve --tier sublst with build or start coalesces into a running build (a no-input
+   unit, nothing built), builds with one follow-up for a request made during its build (the plan made again), re-raises a
+   build's refusal once the slot is free, and runs stages without build or start directly; the sub-LST placement requests a
+   build of the cumulative run beside the runs it placed.
 """
 import json
 import os
@@ -141,10 +156,18 @@ def test_adopt():
           versions.root_of(U))
     sw = versions.publish(U, v)
     ad = sw['adopted']
-    check('the first switch adopts the legacy directory as the previous version', ad is not None and sw['previous'] is ad
-          and ad.vid.endswith('-adopted') and read(f'{ad.run}/candidates/V/x.txt') == 'legacy'
-          and (ad.record() or {}).get('state') == 'adopted', (sw, ad and ad.record()))
+    check('the first switch adopts the legacy directory as the previous version, then gives it its manifest',
+          ad is not None and sw['previous'] is ad and ad.vid.endswith('-adopted')
+          and read(f'{ad.run}/candidates/V/x.txt') == 'legacy' and (ad.record() or {}).get('state') == 'sealed'
+          and (ad.record() or {}).get('adopted') is True and versions.verify(ad)[0], (sw, ad and ad.record()))
     check('after adoption U is the pointer to the new version', os.path.islink(U) and read(f'{U}/a.txt') == 'N' * 1000)
+    from exopipe.phase3.lib.serve import tests_versions as TV
+    r = TV.adopted_sealed(ad.path('VERSION.json'))
+    check('run_version_adopted content test on the adopted version', r[0], r)
+    sb = versions.switch(U, ad)
+    check('the adopted version (with its manifest) can be switched back to', read(f'{U}/candidates/V/x.txt') == 'legacy'
+          and sb['previous'].vid == v.vid, sb)
+    versions.switch(U, v)
     # a legacy LINK to a directory elsewhere (Run_P3S5 -> /fast/...): the versions root lies beside the real directory
     real = f'{TMP}/adopt_fast/Run_P3S5'
     write(f'{real}/x.txt', 'deep')
@@ -439,8 +462,472 @@ def test_sublst_switch():
         check('an abandoned placed build is moved back to the build directory by the next serve',
               got is not None and got.vid == w.vid and read(f'{B}/candidates/V/x.txt') == 'newer'
               and not os.path.exists(w.dir), got)
+        # finding 3: the seal passes, then the switch refuses - the build goes back to B (it was stranded as a sealed version)
+        served_before = os.readlink(U)
+        write(f'{B}/judgements/queue_V.txt', 'J1\n')
+        write(f'{B}/source_catalogs_V/23MHz_sources_survivors.csv', 'source_id\nJ1\n')
+        real_switch = versions.switch
+
+        def refusing_switch(*a, **k):
+            raise Refusal('stand-in: the switch refused after the seal')
+        versions.switch = refusing_switch
+        try:
+            state['version'] = w2 = versions.place(U, B)
+            u = sublst_build.switch_stage(run, plan, state)
+        finally:
+            versions.switch = real_switch
+        check('a seal that passed and a switch that refused: the unit refused, the sealed build moved back to B (its record '
+              'removed), U unchanged', u.status == 'refused' and 'stand-in' in (u.reason or '') and os.path.isdir(B)
+              and read(f'{B}/candidates/V/x.txt') == 'newer' and not os.path.exists(w2.dir)
+              and not os.path.exists(f'{B}/VERSION.json') and os.readlink(U) == served_before, (u.status, u.reason))
+        # ... and a swap killed between its seal and its switch: the next serve moves the sealed, never served build back
+        w3 = versions.place(U, B)
+        versions.seal(w3)
+        versions._atomic_json(w3.path('BUILDING.json'), dict(w3.builder(), start=-1))
+        got = sublst_build.recover_placed(plan)
+        check('a sealed build never switched to, its swap gone, is moved back to the build directory by the next serve',
+              got is not None and got.vid == w3.vid and os.path.isdir(B) and not os.path.exists(w3.dir), got)
+        check('a served version is never moved back (unplace refuses it even with sealed=True)',
+              'was served' in (refuses(versions.unplace, versions.served(U), f'{d}/elsewhere', sealed=True) or ''))
     finally:
         flow.build_page_index, flow._index_current = orig
+
+
+# ---- 9. no judgement lost after a switch (finding 1) -------------------------------------------------------------------------
+# the page code's path handling, as classify_transients.py does it: run_dir = os.path.realpath(--run) once at start (:5310),
+# labels_dir = --labels-dir as given (:5313; the plan passes <U>/<journal dir>, plan.py:190-191), the journal opened at every
+# write (append_journal, :2503-2507)
+PAGE_PROC = r'''
+import json, os, sys, time
+run_dir = os.path.realpath(sys.argv[1])
+labels_dir = sys.argv[2]
+print(run_dir, flush=True)
+while not os.path.exists(sys.argv[3]):
+    time.sleep(0.02)
+with open(os.path.join(labels_dir, 'judgements.jsonl'), 'a') as f:
+    f.write(json.dumps({'source_id': 'J1', 'action': 'classify', 'page_run': run_dir}, sort_keys=True) + '\n')
+    f.flush()
+    os.fsync(f.fileno())
+print('written', flush=True)
+'''
+
+# a review page for the two-port store whose label records the version its build resolved (--run realpath'd once)
+PAGE_V = r'''
+import argparse, json, os, urllib.parse
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+INSPECT = False
+HUB_URL = 'http://localhost:8765/'
+
+class App:
+    def __init__(self, run_dir, labels):
+        self.run_dir, self.labels = run_dir, labels
+    def version(self):
+        return os.path.basename(os.path.dirname(os.path.dirname(self.run_dir)))
+    def handle_label(self, form):
+        with open(os.path.join(self.labels, 'judgements.jsonl'), 'a') as f:
+            f.write(json.dumps(dict({k: v[0] for k, v in form.items()}, page_version=os.path.basename(
+                os.path.dirname(self.run_dir)))) + '\n')
+        return '/source/' + urllib.parse.quote(form.get('source_id', [''])[0])
+
+class Handler(BaseHTTPRequestHandler):
+    app = None
+    def do_GET(self):
+        body = ('version=' + os.path.basename(os.path.dirname(self.app.run_dir))).encode()
+        self.send_response(200); self.send_header('Content-Type', 'text/html; charset=utf-8')
+        self.send_header('Content-Length', str(len(body))); self.end_headers(); self.wfile.write(body)
+    def do_POST(self):
+        n = int(self.headers.get('Content-Length', 0))
+        dest = self.app.handle_label(urllib.parse.parse_qs(self.rfile.read(n).decode()))
+        self.send_response(303); self.send_header('Location', dest); self.end_headers()
+    def log_message(self, *a):
+        pass
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--run', required=True); ap.add_argument('--labels-dir'); ap.add_argument('--title', default='')
+    ap.add_argument('--port', type=int, default=1); ap.add_argument('--inspect', action='store_true')
+    a = ap.parse_args()
+    run_dir = os.path.realpath(a.run)
+    Handler.app = App(run_dir, a.labels_dir or os.path.join(run_dir, 'judgements'))
+    ThreadingHTTPServer(('127.0.0.1', a.port), Handler).serve_forever()
+'''
+
+
+def lines(path):
+    with open(path) as f:
+        return [json.loads(x) for x in f if x.strip()]
+
+
+def next_version(U, tag, J):
+    """A new sealed version of U whose journal J is a copy of the served one (the carry), with one data file."""
+    v = new_version(U, tag)
+    cur = os.path.join(U, J, 'judgements.jsonl')
+    os.makedirs(os.path.join(v.run, J))
+    if os.path.exists(cur):
+        shutil.copy2(cur, os.path.join(v.run, J, 'judgements.jsonl'))
+    return v, versions.seal(v)
+
+
+def test_judgements_after_switch():
+    from exopipe.phase3.lib.serve import journals
+    from exopipe.phase3.lib.serve import two_port as TP
+    J = CFG.serve.SUBLST_JOURNALS[0]
+    d = f'{TMP}/judge'
+    U = f'{d}/Run_SLSTB'
+    os.makedirs(d)
+    v1 = new_version(U, 'A')
+    write(f'{v1.run}/{J}/judgements.jsonl', '{"source_id": "J0", "action": "classify"}\n')
+    versions.publish(U, v1)
+    # 9a. a page process holding the old realpath writes after the switch
+    go = f'{d}/go'
+    p = subprocess.Popen([sys.executable, '-c', PAGE_PROC, U, os.path.join(U, J), go], stdout=subprocess.PIPE, text=True)
+    held_run = p.stdout.readline().strip()
+    v2, rec2 = next_version(U, 'B', J)
+    versions.switch(U, v2, record=rec2)
+    write(go, 'go')
+    done = p.stdout.readline().strip()
+    p.wait(30)
+    served = lines(os.path.join(U, J, 'judgements.jsonl'))
+    check('a page process that resolved --run to the old version writes after the switch: the line is in the served '
+          'version\'s journal, not the old one',
+          held_run == v1.run and done == 'written' and os.path.realpath(U) == v2.run
+          and served[-1].get('page_run') == v1.run and not any(r.get('page_run') for r in lines(f'{v1.run}/{J}/judgements.jsonl')),
+          (held_run, done, served[-1:]))
+    # 9b. the two-port store: a POST made after a switch is answered by a page built on the served version
+    code = f'{d}/page_v.py'
+    write(code, PAGE_V)
+    reg = f'{d}/registry.json'
+    with open(reg, 'w') as f:
+        json.dump({'pages': [{'id': 'pv', 'kind': 'review', 'code': code, 'legacy_port': 47991,
+                              'argv': ['--run', U, '--labels-dir', os.path.join(U, J), '--title', 'V']}]}, f)
+    st = TP.Store(reg)
+    r = TP.serve_request(st, False, 'GET', '/p/pv/', {})
+    check('two-port: the page is built on the served version', r[0] == 200 and f'version={v2.vid}'.encode() in r[2], r[:1])
+    v3, rec3 = next_version(U, 'C', J)
+    with versions.journal_locks(U, [J]):
+        versions.switch(U, v3, record=rec3)
+    r = TP.serve_request(st, False, 'GET', '/p/pv/', {})
+    check('two-port: a GET right after the switch (no registry change) may still be answered by the page built before',
+          r[0] == 200 and f'version={v2.vid}'.encode() in r[2], r[:1])
+    body = b'source_id=J7&confidence=fp'
+    r = TP.serve_request(st, False, 'POST', '/p/pv/label', {'Content-Length': str(len(body))}, body)
+    got = lines(os.path.join(U, J, 'judgements.jsonl'))
+    check('two-port: a POST after the switch is answered by a page built on the served version, and its line is in the '
+          'served journal (never by the page of the version before, whose page ids differ under design B)',
+          r[0] == 303 and got[-1].get('source_id') == 'J7' and got[-1].get('page_version') == v3.vid
+          and os.path.realpath(U) == v3.run and not any(x.get('source_id') == 'J7' for x in lines(f'{v2.run}/{J}/judgements.jsonl')),
+          (r[:2], got[-1:]))
+    pg = st.pages.get(('pv', False))
+    check('two-port: the page now answering is current (built on the version U names)', pg is not None and not st.moved(pg)
+          and pg.labels_real == os.path.realpath(os.path.join(U, J)), pg and pg.labels_real)
+    # 9c. a POST in flight across the switch: it holds the run's journal lock, so the switch waits; its line goes to the old
+    # version and the catch-up (under the same locks) carries it into the new one
+    lk = TP.journal_lock_path(os.path.realpath(os.path.join(U, J)))
+    check('the two-port POST lock of a labels directory in a version is the run\'s journal lock (one file for every version)',
+          lk == TP.journal_lock_file(versions.root_of(U), J) == TP.journal_lock_path(os.path.join(v1.run, J)), lk)
+    v4, rec4 = next_version(U, 'D', J)
+    holding, order = threading.Event(), []
+
+    def post_in_flight():
+        with TP.post_lock(threading.Lock(), os.path.realpath(os.path.join(U, J))):
+            holding.set()
+            time.sleep(0.5)
+            with open(os.path.join(U, J, 'judgements.jsonl'), 'a') as f:     # through the pointer, as the page writes
+                f.write(json.dumps({'source_id': 'J9', 'action': 'classify'}) + '\n')
+            order.append('post')
+    t = threading.Thread(target=post_in_flight)
+    t.start()
+    holding.wait(10)
+    with versions.journal_locks(U, [J]):
+        order.append('switch')
+        sw = versions.switch(U, v4, record=rec4)
+        app = journals.append_between(sw['previous'].run, U)
+    t.join(10)
+    served = lines(os.path.join(U, J, 'judgements.jsonl'))
+    check('a POST in flight across the switch is written before it (the switch waits for the journal lock) and caught up '
+          'into the served version', order == ['post', 'switch'] and served[-1].get('source_id') == 'J9'
+          and app.get(J) == 1 and sum(x.get('source_id') == 'J9' for x in served) == 1, (order, app, served[-2:]))
+    # the legacy run (before its first switch, once its versions root exists): the same lock file as after it
+    L = f'{d}/Run_LEG'
+    write(f'{L}/{J}/judgements.jsonl', '')
+    os.makedirs(versions.root_of(L))
+    check('the legacy run\'s POST lock is the journal lock its first switch takes',
+          TP.journal_lock_path(os.path.join(L, J)) == TP.journal_lock_file(versions.root_of(L), J), TP.journal_lock_path(L))
+    check('a run without versions keeps the two-port lock by directory', TP.journal_lock_path(f'{TMP}/judge') is None)
+    check('the two-port copies of the versions suffix and version-name pattern match the config and versions.py',
+          TP.VERSIONS_SUFFIX == CFG.serve.RUN_VERSIONS_SUFFIX and TP.VERSION_ID_RE.pattern == versions._VID_RE.pattern)
+    # 9d. the sub-LST pages pass --labels-dir through the pointer (the page resolves only --run)
+    src = read(os.path.join(REPO, 'exopipe/phase3/lib/serve/plan.py'))
+    check('the plan gives the sub-LST pages --labels-dir under U (page.at(\'labels\', U)), never a version path',
+          "argv += ['--labels-dir', page.at('labels', U)]" in src and 'U = root or page.root' in src)
+
+
+# ---- 10. the review's other findings -----------------------------------------------------------------------------------------
+def test_review_findings():
+    from exopipe.phase3.lib.serve import tests_versions as TV
+    d = f'{TMP}/findings'
+    os.makedirs(d)
+    # finding 4: the page index rebuilt in place on a sealed version
+    U = f'{d}/Run_PI'
+    v = new_version(U, 'P', files=('a.txt', 'page_index/manifest.json', 'page_index/DIRTY', 'page_index_build.log'))
+    versions.publish(U, v)
+    write(f'{U}/page_index/manifest.json', 'rebuilt')
+    write(f'{U}/page_index/V/new_folder.json', '{}')
+    write(f'{U}/page_index_build.log', 'repair')
+    ok, det = versions.verify(v)
+    check('the page index rebuilt in place (serve --stages page-index) leaves the served version verifiable', ok, det)
+    write(f'{U}/a.txt', 'changed')
+    check('... and a change to any other file still fails it', not versions.verify(v)[0])
+    # finding 5: adoption
+    E = f'{d}/Run_EMPTY'
+    os.makedirs(f'{E}/sub')
+    ve = new_version(E, 'E')
+    why = refuses(versions.publish, E, ve)
+    check('an empty legacy run is not adopted: the switch refuses, U still its directory, no adopted version',
+          why and 'holds no file' in why and os.path.isdir(E) and not os.path.islink(E)
+          and not any(x.vid.endswith('adopted') for x in versions.all_versions(E)), why)
+    F = f'{d}/Run_FAIL'
+    write(f'{F}/x.txt', 'legacy')
+    vf, recf = new_version(F, 'F'), None
+    recf = versions.seal(vf)
+    real_rename = os.rename
+
+    def failing_rename(a, b):
+        if os.path.realpath(a) == os.path.realpath(F):
+            raise OSError(5, 'stand-in rename failure')
+        return real_rename(a, b)
+    os.rename = failing_rename
+    try:
+        why = refuses(versions.switch, F, vf, record=recf)
+    finally:
+        os.rename = real_rename
+    check('a failed rename at adoption refuses with U intact, no version directory or record left',
+          why and 'could not be moved' in why and read(f'{F}/x.txt') == 'legacy' and not os.path.islink(F)
+          and not any(x.vid.endswith('adopted') for x in versions.all_versions(F)), why)
+    stamp = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime(os.stat(F).st_mtime))
+    R = versions.root_of(F)
+    for n in range(1, 1000):
+        os.mkdir(os.path.join(R, f'{stamp}-adopted' if n == 1 else f'{stamp}-{n}-adopted'))
+    why = refuses(versions.switch, F, vf, record=recf)
+    check('no free adopted-version name (999 taken) refuses: no name reused, U intact', why and 'no free version name' in why
+          and read(f'{F}/x.txt') == 'legacy' and not os.path.islink(F), why)
+    # a legacy run holding only review state (a journal) is adopted with an empty manifest; a seal of the adopted run that
+    # fails after the switch is returned, not raised (U is switched by then)
+    Jr = CFG.serve.SUBLST_JOURNALS[0]
+    M = f'{d}/Run_MUT'
+    write(f'{M}/{Jr}/judgements.jsonl', '{"a": 1}\n')
+    sw = versions.publish(M, new_version(M, 'M'))
+    check('a legacy run holding only a journal: adopted, given an empty manifest, verifiable',
+          sw['adopted'] is not None and (sw.get('adopted_record') or {}).get('n_files') == 0
+          and versions.verify(sw['adopted'])[0], sw.get('adopted_record'))
+    M2 = f'{d}/Run_MUT2'
+    write(f'{M2}/x.txt', 'legacy')
+    real_sa = versions.seal_adopted
+
+    def failing_seal_adopted(v, note=''):
+        raise Refusal('stand-in: the adopted run could not be walked')
+    versions.seal_adopted = failing_seal_adopted
+    try:
+        m2 = new_version(M2, 'N')
+        sw = versions.publish(M2, m2)
+    finally:
+        versions.seal_adopted = real_sa
+    check('a failed seal of the adopted run after the switch is returned (adopted_error), U switched, the version kept '
+          'as adopted', os.path.realpath(M2) == os.path.realpath(m2.run) and 'stand-in' in (sw.get('adopted_error') or '')
+          and (sw['adopted'].record() or {}).get('state') == 'adopted', sw.get('adopted_error'))
+    # finding 6: an adopted version without a manifest is not one of the kept newest (and is kept itself)
+    K = f'{d}/Run_KEEP'
+    k1 = new_version(K, '1')
+    versions.publish(K, k1)
+    time.sleep(1.05)
+    k2 = new_version(K, '2')
+    versions.publish(K, k2)
+    fake = versions.Version(versions.root_of(K), '20991231T000000Z-adopted', 'Run_KEEP')
+    write(f'{fake.run}/x.txt', 'legacy')
+    versions._atomic_json(fake.path('VERSION.json'), {'format': versions.FORMAT, 'name': 'Run_KEEP', 'version': fake.vid,
+                                                      'state': 'adopted', 'manifest': None})
+    rows = {x.vid: (act, why) for x, act, why in versions.retention(K, keep=2)}
+    check('retention (keep 2): an adopted version without a manifest is kept but not counted, so the two newest sealed '
+          'versions are kept', rows[k1.vid][0] == 'keep' and 'newest' in rows[k1.vid][1] and rows[fake.vid][0] == 'keep'
+          and 'without a manifest' in rows[fake.vid][1], rows)
+    # finding 7: leases
+    now = time.time()
+    check('alive: a holder on another host is alive until its lease expires, not for ever',
+          versions.alive({'host': 'another-node', 'pid': 1, 'lease_until': now + 60})
+          and not versions.alive({'host': 'another-node', 'pid': 1, 'lease_until': now - 1})
+          and not versions.alive({'host': 'another-node', 'pid': 1}))
+    check('alive: on this host the pid decides (a dead pid with a lease is not alive)',
+          not versions.alive(dict(versions.me(), start=-1)) and versions.alive(versions.me()))
+    real_lease = versions._lease_s
+    versions._lease_s = lambda: 0.4
+    try:
+        with versions.hold(U) as _:
+            hf = [p for p, _h in versions.served(U).holds()][0]
+            l0 = json.load(open(hf))['lease_until']
+            time.sleep(0.6)
+            l1 = json.load(open(hf))['lease_until']
+        b = new_version(f'{d}/Run_LEASE', 'L')
+        b0 = b.builder()['lease_until']
+        time.sleep(0.6)
+        b1 = b.builder()['lease_until']
+        versions.seal(b)
+        time.sleep(0.3)
+        b2 = b.builder()['lease_until']
+        time.sleep(0.3)
+        b3 = b.builder()['lease_until']
+    finally:
+        versions._lease_s = real_lease
+    check('a hold renews its lease while held and its file is gone after', l1 > l0 and not os.path.exists(hf), (l0, l1))
+    check('a version being built renews its builder\'s lease until it is sealed', b1 > b0 and b2 == b3, (b0, b1, b2, b3))
+    # finding 8: one walk per publish; none for the content test of a unit's own seal
+    calls = []
+    real_walk = versions.walk
+
+    def counting_walk(*a, **k):
+        calls.append(a[0])
+        return real_walk(*a, **k)
+    versions.walk = counting_walk
+    try:
+        W = f'{d}/Run_WALK'
+        w1 = new_version(W, 'W')
+        versions.publish(W, w1)
+        w2 = new_version(W, 'X')
+        n0 = len(calls)
+        versions.publish(W, w2)
+        n_publish = len(calls) - n0
+        r = TV.sealed_complete(w2.path('VERSION.json'), sealed_by_this_unit=True)
+        n_test = len(calls) - n0 - n_publish
+        r_full = TV.sealed_complete(w2.path('VERSION.json'))
+    finally:
+        versions.walk = real_walk
+    check('a publish walks the run once (the seal; the switch checks the seal\'s record and manifest)', n_publish == 1,
+          n_publish)
+    check('the run_version content test of a version the unit sealed itself does not walk it again; without that, it does',
+          r[0] and n_test == 0 and r_full[0], (r, n_test, r_full))
+    write(f'{w2.run}/added.txt', 'x')
+    check('a switch to a version without the caller\'s seal record walks it (a change after the seal refuses)',
+          'differs from its manifest' in (refuses(versions.switch, W, w2) or '') or 'already names' in
+          (refuses(versions.switch, W, w2) or ''))
+    os.remove(f'{w2.run}/added.txt')
+    # finding 9: an empty stage selection refuses
+    from exopipe.phase3.steps import serve as SS
+    a = types.SimpleNamespace(stages=None, from_stage='retire', until=None)
+    why = refuses(SS.select_stages, ('build', 'start', 'retire'), a, default_off=('retire',))
+    check('--from retire without --stages retire selects nothing: refused, not a silent no-op', why and 'no stage' in why, why)
+    a = types.SimpleNamespace(stages='retire', from_stage='build', until=None)
+    check('--stages retire --from build selects retire', SS.select_stages(('build', 'start', 'retire'), a, ('retire',))
+          == ['retire'])
+    # finding 2: the status probe never takes the lock
+    slot = coalesce.Slot(f'{d}/slot_probe')
+
+    def no_lock():
+        raise AssertionError('builder() took the lock')
+    real_try = slot._try_lock
+    slot._try_lock = no_lock
+    try:
+        b = slot.builder()
+        ok = True
+    except AssertionError:
+        ok = False
+    slot._try_lock = real_try
+    check('Slot.builder() reads BUILDER.json and never takes the lock', ok and b is None)
+    stop, outs = threading.Event(), []
+
+    def prober():
+        while not stop.is_set():
+            slot.builder()
+    th = threading.Thread(target=prober)
+    th.start()
+    try:
+        for _ in range(200):
+            outs.append(slot.submit(lambda: 0)['status'])
+    finally:
+        stop.set()
+        th.join(10)
+    check('200 requests with a status probe running all build (none left coalesced into no builder)',
+          outs.count('built') == 200, {k: outs.count(k) for k in set(outs)})
+
+
+# ---- 11. the coalescing builder wired into the sub-LST build and placement --------------------------------------------------
+def test_coalescer_wired():
+    from exopipe.phase3.core.record import Run
+    from exopipe.phase3.lib.pages import tier_sublst
+    from exopipe.phase3.lib.serve import sublst_build
+    d = f'{TMP}/wired'
+    U = f'{d}/Run_SLSTB'
+    os.makedirs(d)
+    out = f'{d}/out'
+    plan = types.SimpleNamespace(U=U, U_src=U, run_name='Run_SLSTB', parity=False, pages=[], tag='first')
+    args = types.SimpleNamespace()
+    calls = []
+    real = (sublst_build.build_and_serve, sublst_build._fresh_plan)
+    slot = coalesce.slot_for(U)
+    try:
+        sublst_build._fresh_plan = lambda a, r: types.SimpleNamespace(**dict(vars(plan), tag='fresh'))
+        # a build of the run runs elsewhere (holds the slot): this invocation is coalesced, nothing built
+        sublst_build.build_and_serve = lambda a, r, p, st: calls.append(p.tag)
+        fd = slot._try_lock()
+        with open(slot.builder_file, 'w') as f:
+            json.dump(versions.me('another serve'), f)
+        try:
+            run = Run('serve', ['test'], out, CFG, config_sections=None)
+            sublst_build.run(args, run, plan, ['build', 'views', 'test', 'carry', 'swap', 'start'])
+        finally:
+            os.unlink(slot.builder_file)
+            os.close(fd)
+        u = run.units[-1]
+        check('serve --tier sublst while a build of the run runs: unit sublst_<run>_coalesced, no-input (COALESCED), nothing '
+              'built, the request left for that builder', calls == [] and u.name == 'sublst_Run_SLSTB_coalesced'
+              and u.status == 'no-input' and (u.reason or '').startswith('COALESCED') and slot.pending()
+              and run.exit_code() == 3, (calls, u.name, u.status, u.reason))
+        # the slot free: this invocation builds (the pending request and its own), and a placement during its build gets
+        # exactly one follow-up, on a plan made again at its start
+
+        def building(a, r, p, st):
+            calls.append(p.tag)
+            if len(calls) == 1:
+                slot.request('a placement during the build')
+        sublst_build.build_and_serve = building
+        run = Run('serve', ['test'], out, CFG, config_sections=None)
+        sublst_build.run(args, run, plan, ['build', 'start'])
+        check('a free slot: the invocation builds, and a request made during its build gets one follow-up on a fresh plan',
+              calls == ['first', 'fresh'] and not slot.pending(), calls)
+        # a refusal inside the build is raised once the slot is released
+        calls.clear()
+
+        def refusing(a, r, p, st):
+            calls.append(p.tag)
+            raise Refusal('stand-in refusal outside a unit')
+        sublst_build.build_and_serve = refusing
+        why = refuses(sublst_build.run, args, Run('serve', ['test'], out, CFG, config_sections=None), plan, ['start'])
+        fd = slot._try_lock()
+        check('a build\'s refusal is raised by serve after the slot is released', why and 'stand-in' in why
+              and fd is not None, why)
+        if fd is not None:
+            os.close(fd)
+        # stages without build or start run directly
+        calls.clear()
+        sublst_build.build_and_serve = lambda a, r, p, st: calls.append(tuple(st))
+        n = len(open(slot.journal).read().splitlines())
+        sublst_build.run(args, Run('serve', ['test'], out, CFG, config_sections=None), plan, ['retire'])
+        check('stages without build or start (retire) run directly, no request', calls == [('retire',)]
+              and len(open(slot.journal).read().splitlines()) == n, calls)
+    finally:
+        sublst_build.build_and_serve, sublst_build._fresh_plan = real
+    # the placement requests a build of the cumulative run beside the runs it placed
+    lst = '05h'
+    c = types.SimpleNamespace(out=f'{d}/pages_out', place_target=f'{d}/transients', sets=[])
+    P = tier_sublst.P_of(c, lst)
+    write(f'{P}/candidates/V/x.txt', 'hour')         # (the unit's sublst_page_run content test refuses this stand-in run)
+    os.makedirs(f'{d}/transients')
+    run = Run('pages', ['test'], f'{d}/pages_records', CFG, config_sections=None)
+    tier_sublst.stage_place(c, run, {}, lst)
+    u = run.units[-1]
+    cum = coalesce.slot_for(os.path.join(f'{d}/transients', CFG.serve.RUN_NAME['sublst']))
+    check('the sub-LST placement places the hour run and requests a build of the cumulative run beside it',
+          os.path.isfile(f'{d}/transients/{os.path.basename(P)}/candidates/V/x.txt') and cum.pending()
+          and u.meta.get('build_requested') == cum.d and 'placed' in json.loads(open(cum.flag).read()).get('note', ''),
+          (u.status, u.reason, u.meta.get('build_requested')))
 
 
 def main():
@@ -455,6 +942,9 @@ def main():
         test_coalesce()
         test_cli()
         test_sublst_switch()
+        test_judgements_after_switch()
+        test_review_findings()
+        test_coalescer_wired()
     finally:
         shutil.rmtree(TMP, ignore_errors=True)
     print(f'{N[0] - len(FAILS)} of {N[0]} checks passed')
