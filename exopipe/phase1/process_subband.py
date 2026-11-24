@@ -18,6 +18,7 @@ import logging
 import glob
 import subprocess
 import pickle
+import json
 import traceback
 import numpy as np
 from datetime import datetime
@@ -32,8 +33,10 @@ from casacore.tables import table
 # --- OPTIONAL HEAVY IMPORTS (guarded) ---
 try:
     from exopipe.phase1 import hot_baseline_worker
-except ImportError:
+    _HOT_IMPORT_ERROR = None
+except ImportError as _e:
     hot_baseline_worker = None
+    _HOT_IMPORT_ERROR = f"{type(_e).__name__}: {_e}"
 
 try:
     from exopipe.phase2.extractor_pb_75 import (
@@ -107,6 +110,49 @@ def load_state(work_dir):
             return pickle.load(f)
     except Exception:
         return None
+
+
+REFUSED_EXIT_CODE = 3
+
+
+class SubbandRefused(RuntimeError):
+    """A gate refused this subband, which is not imaged. Raised after record_subband_refusal has recorded it;
+    run_stage_image then exits with REFUSED_EXIT_CODE (the subband job's status)."""
+
+
+def record_subband_refusal(args, org_args, subband, step, reason, qa_files=()):
+    """Record a refused subband where people and later stages look, and return the SubbandRefused to raise: a CRITICAL
+    line in the subband's log (this process's output, the subband's Slurm log), and REFUSED.json in the work directory
+    and in the subband's archive directory, with the step's QA files (its refusal report) copied beside it in QA/.
+    A record that cannot be written is logged; it never turns the refusal into a pass."""
+    rec = dict(status="REFUSED", step=step, reason=reason, subband=subband, consequence="the subband is not imaged",
+               work_dir=args.work_dir, host=socket.gethostname(),
+               time_utc=datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'))
+    logger.critical(f"SUBBAND REFUSED ({subband}, {step}): {reason}. The subband is not imaged.")
+    targets = [args.work_dir]
+    try:
+        start_time_val = org_args.start_time if org_args else args.start_time
+        obs_date = datetime.strptime(start_time_val.replace('T', ':').split('.')[0],
+                                     '%Y-%m-%d:%H:%M:%S').strftime('%Y-%m-%d')
+        run_label = args.run_label if args.run_label else (org_args.run_label if org_args else "Unknown_Run")
+        lst_label = org_args.lst_label if org_args else args.lst_label
+        targets.append(os.path.join(config.LUSTRE_ARCHIVE_DIR, lst_label, obs_date, run_label, subband))
+    except Exception as e:
+        logger.error(f"refusal record: the subband's archive directory could not be named ({e}); "
+                     "recorded in the work directory only")
+    for d in targets:
+        try:
+            qa = os.path.join(d, "QA")
+            os.makedirs(qa, exist_ok=True)
+            for f in qa_files:
+                if os.path.exists(f) and os.path.abspath(os.path.dirname(f)) != os.path.abspath(qa):
+                    shutil.copy(f, qa)
+            with open(os.path.join(d, "REFUSED.json"), "w") as fh:
+                json.dump(rec, fh, indent=1)
+            logger.critical(f"refusal recorded: {os.path.join(d, 'REFUSED.json')}")
+        except Exception as e:
+            logger.error(f"refusal record not written in {d}: {e}")
+    return SubbandRefused(f"{subband}: {step} refused: {reason}")
 
 
 def run_subprocess(cmd, description):
@@ -555,8 +601,16 @@ def run_stage_image(args):
                     logger.error(f"Jupiter check of flagged integrations not run (flag unaffected): {e}")
 
             # --- 5. HOT BASELINE REMOVAL ---
+            # A refusal of this step stops the subband (SubbandRefused, exit REFUSED_EXIT_CODE): it can refuse when the
+            # data and flags cannot be read, when every cross-correlation visibility is flagged, or when no baseline
+            # longer than the UV cut has cross-hand data; imaging the subband then would be meaningless (its hot
+            # baselines neither found nor flagged).
             run_hot = org_args.hot_baselines if org_args else getattr(args, 'hot_baselines', False)
-            if run_hot and hot_baseline_worker is not None:
+            if run_hot and hot_baseline_worker is None:
+                raise record_subband_refusal(args, org_args, subband_val, "hot-baseline step",
+                                             "hot_baselines is enabled but exopipe.phase1.hot_baseline_worker could "
+                                             f"not be imported ({_HOT_IMPORT_ERROR})")
+            if run_hot:
                 class HotArgs:
                     ms = concat_ms
                     col = "CORRECTED_DATA"
@@ -577,8 +631,11 @@ def run_stage_image(args):
                 try:
                     hot_baseline_worker.run_diagnostics(HotArgs, logger)
                 except Exception as e:
-                    logger.error(f"Hot Baseline Analysis crashed: {e}")
-                    traceback.print_exc()
+                    ms_base = os.path.basename(os.path.normpath(concat_ms))
+                    raise record_subband_refusal(
+                        args, org_args, subband_val, "hot-baseline step", f"{type(e).__name__}: {e}",
+                        qa_files=[os.path.join(qa_dir, f"{ms_base}_hot_component_report.txt"),
+                                  os.path.join(qa_dir, f"{ms_base}_no_data_baselines.csv")]) from e
                 finally:
                     os.chdir(cwd)
 
@@ -961,6 +1018,14 @@ def run_stage_image(args):
         # Archive from science_out_dir (which is the same as work_dir for normal runs)
         archive_source = science_out_dir
 
+        # This attempt ran the gates on the data and passed them: a previous attempt's refusal record
+        # (record_subband_refusal) is not current. A science-only resume ran no gate on the data and keeps any record.
+        for stale in ({os.path.join(args.work_dir, "REFUSED.json"), os.path.join(archive_base, "REFUSED.json")}
+                      if not skip_to_science else ()):
+            if os.path.exists(stale):
+                os.remove(stale)
+                logger.info(f"removed a previous attempt's refusal record: {stale}")
+
         # Structured copy  preserves directory layout for run-local products
         for top_level in ['I', 'V', 'snapshots', 'QA', 'Movies',
                           'Dewarp_Diagnostics', 'samples', 'detections']:
@@ -1092,6 +1157,10 @@ def run_stage_image(args):
 
         logger.info("--- PIPELINE COMPLETE ---")
 
+    except SubbandRefused as e:
+        logger.critical(f"Pipeline stopped, subband refused: {e}")
+        traceback.print_exc()
+        sys.exit(REFUSED_EXIT_CODE)
     except Exception as e:
         logger.critical(f"Pipeline Failed: {e}")
         traceback.print_exc()
