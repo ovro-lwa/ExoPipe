@@ -10,12 +10,16 @@ temp directory), removed at exit. Plain asserts; run standalone or under pytest.
      root; argv with the OTHER comb pages as siblings (never the batch pages 8779-8782), in snapshot_serve.sh's order; the
      registry entry's P3_CUTOUTS_TIER / P3_PAGE_ID; the hub --set in snapshot_serve.sh's key order; the exclusion gate refuses
      on comb pages like on the snapshot pages.
-  3. stage selection: no --stages = the build stages; --from hides = the serve stages; the batch serve's TESS step between
-     the page context and the bright-source filter.
+  3. stage selection: no selection, --from alone or --until naming a build stage = the build stages (stop at ready); the serve
+     stages only when named (--stages, or --until naming one); --from hides alone refused; the batch serve's TESS step between
+     the page context and the bright-source filter. The serve order: a build resume plans no page (no port or label gate);
+     G26 without --label; the serve hold (G29) refuses before the hides; hold and go checked once, before the hides. The TESS
+     step: master_catalog.csv an input (refused when absent), the orbit table fingerprinted after the tool's refresh.
   4. fp_filters on a synthetic four-page view: the listed rows only, the page's own tier (an empty tier counts), the first
      page's row of a detection on two pages, the flood rule's three edges (>= 100x and >= 50: flood; 60x: not; 49 against 0:
      not), the held alignment cell, the CSV / json form (line ends, key order), the records; the refusals (files exist, an
-     excluded cell-band, nothing listed, no queue); the content test's negatives.
+     excluded cell-band, nothing listed, no queue, a listed directory without detections.csv); the install (the json renamed
+     before the CSV, a half-installed pair refused and untouched, nothing left after a failure); the content test's negatives.
 """
 import atexit
 import csv
@@ -126,20 +130,123 @@ def test_plan():
     # the exclusion gate keys the comb pages as the snapshot pages (refuses the same way)
     assert exclusion_gate.gate_key('snapshot', 'comb') == 'snapshot' == exclusion_gate.gate_key('snapshot', 'review')
     assert exclusion_gate.refuses('snapshot', 'comb') == exclusion_gate.refuses('snapshot', 'review')
-    ok('plan: comb pages, siblings, entries with cutouts, hub order, no --source, exclusion gate key')
+    assert p.first_page().port_cfg == 8986 and pb.first_page().port_cfg == 8779, (p.first_page(), pb.first_page())
+    ok('plan: comb pages, siblings, entries with cutouts, hub order, no --source, exclusion gate key, first page of the family')
 
 
 # ---- 3. stages ----------------------------------------------------------------------------------------------------------
 def test_stages():
-    assert snapshot_view.select_stages(args()) == list(snapshot_view.BUILD_STAGES)
-    assert snapshot_view.select_stages(args(from_stage='hides')) == list(snapshot_view.SERVE_STAGES)
-    assert snapshot_view.select_stages(args(stages='hides,start')) == ['hides', 'start']
+    sel, B, SV = snapshot_view.select_stages, list(snapshot_view.BUILD_STAGES), list(snapshot_view.SERVE_STAGES)
+    assert sel(args()) == B
+    # the serve stages only when named (--stages, or --until naming one): --from or --until alone stops at ready
+    assert sel(args(from_stage='build')) == B[1:] and sel(args(until='localize')) == B[:4]
+    assert sel(args(from_stage='hides', until='verify')) == SV and sel(args(until='hides')) == B + ['hides']
+    assert sel(args(stages='hides,start')) == ['hides', 'start']
+    try:
+        sel(args(from_stage='hides'))
+        raise AssertionError('--from hides without --until selected nothing and was not refused')
+    except Refusal as e:
+        assert '--until' in str(e), e
     st = list(snapshot_copy.STAGES)
     assert st.index('page-context') < st.index('tess') < st.index('bright-filter'), st
     assert [s for s, _ in snapshot_copy.STEP_STAGES] == ['scintillation', 'page-context', 'tess', 'bright-filter', 'page-index']
     assert set(snapshot_view.SERVE_STAGES) - {'hides'} <= set(snapshot_copy.STAGES)
     assert 'tess_coverage' in __import__('exopipe.phase3.lib.serve.scripts', fromlist=['x']).SCRIPTS
-    ok('stages: build by default, serve on request, TESS after the page context')
+    ok('stages: build by default and with --from / --until alone; serve only when named; --from hides alone refused; TESS '
+       'after the page context')
+
+
+def test_serve_order():
+    """A build resume plans no page (so no port or label gate refuses it); G29 and G27 come before the hides write anything;
+    the batch serve's stages are not checked twice."""
+    from exopipe.phase3.core.record import Run
+    from exopipe.phase3.lib.serve import flow
+    out, calls = os.path.join(T, 'order'), []
+    saved = (snapshot_view.gate_runs, snapshot_view.serve_plan, snapshot_view.describe, snapshot_view.hides_stage,
+             snapshot_copy.run, snapshot_copy.hold_or_no_go, flow.require_done, S.SNAPSHOT_SERVE_HOLD)
+    real_plan, real_hold = saved[1], saved[5]
+    try:
+        snapshot_view.gate_runs = lambda plan, st: calls.append(('gate_runs', tuple(st)))
+        snapshot_view.serve_plan = lambda a, r: calls.append(('serve_plan',)) or real_plan(a, r)
+        snapshot_view.describe = lambda plan, st, sp, a: calls.append(('describe', tuple(st), sp is None))
+        snapshot_view.run(args(from_stage='filtercat', label=None), types.SimpleNamespace(out_root=out, dry_run=True))
+        assert calls == [('gate_runs', ('filtercat', 'localize', 'ready')),
+                         ('describe', ('filtercat', 'localize', 'ready'), True)], calls
+        calls.clear()
+        try:
+            snapshot_view.run(args(from_stage='hides', until='verify', label=None), types.SimpleNamespace(out_root=out,
+                                                                                                         dry_run=False))
+            raise AssertionError('a serve without --label was not refused')
+        except Refusal as e:
+            assert 'G26' in str(e) and calls == [('serve_plan',)], (e, calls)
+        # the serve hold: refused before the hides; nothing later runs
+        calls.clear()
+        flow.require_done = lambda *a, **k: None
+        snapshot_view.hides_stage = lambda r, p, sp: calls.append(('hides',))
+        snapshot_copy.run = lambda a, r, sp, rest, held_checked=False: calls.append(('copy', tuple(rest), held_checked))
+        hold = os.path.join(T, 'SERVE_HOLD')
+        open(hold, 'w').write('test hold\n')
+        S.SNAPSHOT_SERVE_HOLD = hold
+        run_ = Run('serve', ['test'], os.path.join(out, 'held'), CFG, config_sections=None)
+        snapshot_view.run(args(stages='hides,gate-copy,start', port_offset=10000), run_)
+        assert calls == [('serve_plan',)] and [(u.name, u.status) for u in run_.units] == [
+            (f'snapshot_{VIEW}_hold', 'refused')], (calls, [(u.name, u.status, u.reason) for u in run_.units])
+        # no hold: the hold / go check once, then the hides, then the batch stages without a second check
+        calls.clear()
+        snapshot_copy.hold_or_no_go = lambda r, sp: calls.append(('hold_or_no_go',)) or False
+        run_ = Run('serve', ['test'], os.path.join(out, 'free'), CFG, config_sections=None)
+        snapshot_view.run(args(stages='hides,gate-copy,start', port_offset=10000), run_)
+        assert calls == [('serve_plan',), ('hold_or_no_go',), ('hides',), ('copy', ('gate-copy', 'start'), True)], calls
+    finally:
+        (snapshot_view.gate_runs, snapshot_view.serve_plan, snapshot_view.describe, snapshot_view.hides_stage, snapshot_copy.run,
+         snapshot_copy.hold_or_no_go, flow.require_done, S.SNAPSHOT_SERVE_HOLD) = saved
+    assert real_hold is snapshot_copy.hold_or_no_go
+    ok('serve order: a build resume plans no page; G26 refuses a serve without --label; the serve hold refuses before the hides; '
+       'hold and go checked once, before the hides')
+
+
+def test_tess_step():
+    """The batch serve's TESS step: the view's master_catalog.csv an input (refused when absent, before the tool); the orbit
+    table fingerprinted as the tool left it (after its refresh)."""
+    import hashlib
+    from exopipe.phase3.core.record import Run
+    from exopipe.phase3.lib.pages import common as pcommon
+    from exopipe.phase3.lib.serve import scripts
+    DST = os.path.join(T, 'tess_view')
+    os.makedirs(DST)
+    table = os.path.join(os.path.dirname(scripts.path('tess_coverage')), 'TESS_orbit_times.csv')
+    os.makedirs(os.path.dirname(table), exist_ok=True)
+    open(table, 'w').write('Sector,Orbit,Start,End\n1,1,old,old\n')
+    fresh = 'Sector,Orbit,Start,End\n1,1,2099-01-01,2099-01-14\n'
+    cid = '05h_2099-01-02_23MHz_V_10s_20990102_030000'
+    calls = []
+
+    def fake_run(name, a=(), **k):
+        calls.append(name)
+        open(table, 'w').write(fresh)                 # the tool's refresh
+        with open(os.path.join(DST, 'tess_coverage.csv'), 'w') as f:
+            f.write(f'# tess_coverage.py (stand-in)\ncand_id,status,sector,camera,ccd\n{cid},not observed,,,\n')
+        return types.SimpleNamespace(ok=True, rc=0, reason='', tail='wrote tess_coverage')
+    saved = (scripts.run, pcommon.interpreter_or_none, CFG.pages_deep.TESS_REFRESH_IN_READER)
+    plan = types.SimpleNamespace(U=DST, run_name='Run_SNAPTESS')
+    try:
+        scripts.run, pcommon.interpreter_or_none = fake_run, (lambda key: sys.executable)
+        CFG.pages_deep.TESS_REFRESH_IN_READER = True
+        r0 = Run('serve', ['test'], os.path.join(T, 'tess_out0'), CFG, config_sections=None)
+        u = snapshot_copy.tess_stage(r0, plan)
+        assert u.status == 'refused' and 'master_catalog.csv' in u.reason and not calls, (u.status, u.reason, calls)
+        with open(os.path.join(DST, 'master_catalog.csv'), 'w') as f:
+            f.write(f'cand_id,lst,date,band,stokes\n{cid},05h,2099-01-02,23MHz,V\n')
+        r1 = Run('serve', ['test'], os.path.join(T, 'tess_out1'), CFG, config_sections=None)
+        u = snapshot_copy.tess_stage(r1, plan)
+        assert u.status == 'done' and calls == ['tess_coverage'], (u.status, u.reason, calls)
+        fp = u.inputs[os.path.abspath(table)]
+        assert fp['sha1'] == hashlib.sha1(fresh.encode()).hexdigest(), 'the orbit table was fingerprinted before the refresh'
+        assert os.path.abspath(os.path.join(DST, 'master_catalog.csv')) in u.inputs
+    finally:
+        scripts.run, pcommon.interpreter_or_none, CFG.pages_deep.TESS_REFRESH_IN_READER = saved
+    ok('TESS step: master_catalog.csv an input (absent: refused before the tool); the orbit table fingerprinted after the '
+       'refresh')
 
 
 # ---- 4. fp_filters -------------------------------------------------------------------------------------------------------
@@ -290,6 +397,65 @@ def test_fp_filters():
     ok('fp_filters refusals: files exist, excluded cell-band, no queue, nothing listed, a listed page directory without '
        'detections.csv (nothing written); with refuse_missing=False it is counted')
 
+    # the install: both .part files tested, the json renamed before the CSV; a half-installed pair refused, never overwritten;
+    # a failure leaves no .part file and no json without its CSV
+    meta = json.load(open(res['json']))
+    good = [list(r) for r in rows]
+    cnt = dict(align_failed=0, align_held=2, flood=120)
+    order, real_replace = [], os.replace
+
+    def rec_replace(a, b):
+        order.append(os.path.basename(b))
+        return real_replace(a, b)
+    W = os.path.join(T, 'fp_write')
+    os.makedirs(W)
+    open(os.path.join(W, 'fp_filters.csv.part'), 'w').write('left by a dead attempt\n')
+    notes = []
+    fp_filters.os.replace = rec_replace
+    try:
+        fp_filters.write_files(W, good, meta, cnt, log=notes.append)
+    finally:
+        fp_filters.os.replace = real_replace
+    assert order == ['fp_filters.json', 'fp_filters.csv'], order
+    assert sorted(os.listdir(W)) == ['fp_filters.csv', 'fp_filters.json'] and any('earlier attempt' in n for n in notes), notes
+    assert open(os.path.join(W, 'fp_filters.csv'), 'rb').read() == open(res['csv'], 'rb').read()
+    for keep in ('fp_filters.csv', 'fp_filters.json'):
+        H = os.path.join(T, 'fp_half_' + keep.split('.')[1])
+        os.makedirs(H)
+        shutil.copy(os.path.join(W, keep), H)
+        for fn in (lambda: fp_filters.build(V, H, PAGES, ex=NoEx(), log=lambda m: None),
+                   lambda: fp_filters.write_files(H, good, meta, cnt, log=lambda m: None)):
+            try:
+                fn()
+                raise AssertionError(f'a half-installed pair ({keep} alone) was not refused')
+            except fp_filters.HidesRefusal as e:
+                assert 'HALF-INSTALLED' in str(e) and keep in str(e), e
+        assert os.listdir(H) == [keep], os.listdir(H)
+    F = os.path.join(T, 'fp_fail')
+    os.makedirs(F)
+    try:
+        fp_filters.write_files(F, good + [['x_1', '1.0', '2.0', 'no such state', '']], meta, cnt, log=lambda m: None)
+        raise AssertionError('a file failing its content test was installed')
+    except fp_filters.HidesRefusal as e:
+        assert 'content test' in str(e), e
+    assert not os.listdir(F), os.listdir(F)
+
+    def fail_csv(a, b):
+        if b.endswith('.csv'):
+            raise OSError('simulated rename failure')
+        return real_replace(a, b)
+    fp_filters.os.replace = fail_csv
+    try:
+        fp_filters.write_files(F, good, meta, cnt, log=lambda m: None)
+        raise AssertionError('a failed CSV rename was not raised')
+    except OSError as e:
+        assert 'simulated' in str(e)
+    finally:
+        fp_filters.os.replace = real_replace
+    assert not os.listdir(F), os.listdir(F)
+    ok('fp_filters install: json renamed before the CSV; a dead attempt\'s .part removed with a note; CSV or json alone refused '
+       'as HALF-INSTALLED (build and write), untouched; a content-test failure or a failed CSV rename leaves nothing')
+
     # the content test's negatives
     def bad(name, edit_csv=None, edit_json=None):
         d = os.path.join(T, 'neg_' + name)
@@ -319,6 +485,8 @@ def main():
     test_config()
     test_plan()
     test_stages()
+    test_serve_order()
+    test_tess_step()
     test_fp_filters()
     print(f'ALL {len(PASSED)} CHECKS PASSED')
 

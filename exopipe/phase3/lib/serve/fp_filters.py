@@ -15,7 +15,7 @@ IS THE SNAPSHOT CHAT'S and is ported unchanged (config serve.SNAPVIEW_ALIGN_*, S
 hides sources needs Gregg's go):
 
   collect   per page of the view, in the pages' order (V 10-s, I 10-s, V 1-min, I 1-min = p8986-p8989): the LISTED sources (the
-            queue's non-comment lines) and, for each survivors row of the page's catalogue directory (*_sources_survivors.csv in
+            queue's non-comment lines) and, for each survivors row of the page's catalog directory (*_sources_survivors.csv in
             sorted order) whose identity (identity_id, else source_id) is listed, the rows of <view>/<review_dir>/detections.csv of
             the page's own tier (a row with an empty tier counts) - exactly as classify_transients assembles a page (parallel_collect.py,
             "validated against the page builds before use"). serve.SNAPVIEW_HIDES_READERS threads read the files; the order is the
@@ -32,14 +32,16 @@ hides sources needs Gregg's go):
             two categories of config (help texts with this view's counts) and no metric.
 
 Refusals (gates refuse; nothing is written on a refusal): fp_filters.csv or .json already in the output directory (never
-overwritten - production's 'REFUSED: ... exists - not overwritten'); a page whose queue or catalogue directory is absent; no listed
-detection at all; a listed detection on an excluded cell-band (core.exclusions read now, the snapshot gate's reader - production's
-check named the three excluded 23h 82 MHz cells literally; this reads the whole list); the written files failing their content test
-(class fp_filters). Deliberate deviations: the exclusion check reads every data_decisions row instead of production's three literal
-cells (stricter: it refuses, it never hides); the CSV's first comment line names this module; the collected detections and the flood
-list are kept as the stage's records (production kept them in the tools' dets/ directory, the cross-tier pair builder's input);
-flood-list rows of equal ratio follow their key (production's order of ties was not reproducible); a listed source's page directory
-without detections.csv refuses (production's collector read it as no detections).
+overwritten - production's 'REFUSED: ... exists - not overwritten'; one without the other is named HALF-INSTALLED); a page whose
+queue or catalog directory is absent; no listed detection at all; a listed detection on an excluded cell-band (core.exclusions
+read now, the snapshot gate's reader - production's check named the three excluded 23h 82 MHz cells literally; this reads the
+whole list); the written files failing their content test (class fp_filters). Deliberate deviations: the exclusion check reads
+every data_decisions row instead of production's three literal cells (stricter: it refuses, it never hides); the CSV's first
+comment line names this module; the collected detections and the flood list are kept as the stage's records (production kept them
+in the tools' dets/ directory, the cross-tier pair builder's input); flood-list rows of equal ratio follow their key (production's
+order of ties was not reproducible); a listed source's page directory without detections.csv refuses (production's collector read
+it as no detections); the json is renamed into place before the CSV (production: the CSV first), so an interrupted install never
+leaves the page a CSV without its json.
 """
 import collections
 import csv
@@ -70,14 +72,14 @@ def listed_ids(queue):
 
 
 def page_jobs(view, page):
-    """[(identity, review_dir)] of a page: each survivors row of its catalogue directory whose identity is listed, files in sorted
+    """[(identity, review_dir)] of a page: each survivors row of its catalog directory whose identity is listed, files in sorted
     order, rows in file order. ``page``: dict with queue, catalog (paths relative to the view), kind, stokes, id."""
     import glob
     q, cdir = os.path.join(view, page['queue']), os.path.join(view, page['catalog'])
     if not os.path.isfile(q):
         raise HidesRefusal(f'page {page["id"]}: no queue {q}')
     if not os.path.isdir(cdir):
-        raise HidesRefusal(f'page {page["id"]}: no catalogue directory {cdir}')
+        raise HidesRefusal(f'page {page["id"]}: no catalog directory {cdir}')
     listed = listed_ids(q)
     jobs = []
     for p in sorted(glob.glob(os.path.join(cdir, '*_sources_survivors.csv'))):
@@ -206,7 +208,7 @@ def rows_and_meta(uniq, fl):
     failed, held = _cells(S.SNAPVIEW_ALIGN_FAILED), _cells(S.SNAPVIEW_ALIGN_HELD)
     ca, cf = dict(S.SNAPVIEW_FP_ALIGN), dict(S.SNAPVIEW_FP_FLOOD)
     A0, A0b, F0 = ca['states'][0], ca['states'][1], cf['states'][0]
-    rows, na, nh, nf = [], 0, 0, 0
+    rows, na, nh, nf = [], 0, 0, 0                 # rows; detections hidden as alignment-failed, held, in a flood hour
     for d in uniq.values():
         a = d['band'] in failed.get((d['lst'], d['night']), ())
         h = d['band'] in held.get((d['lst'], d['night']), ())
@@ -216,43 +218,77 @@ def rows_and_meta(uniq, fl):
             na += a
             nh += h
             nf += f_
-    n_flood_rows = sum(1 for r in rows if r[4])
+    n_nights = len({k[3] for k in fl})             # nights with a flood hour
     ca['help'] = ca['help'].format(n_held=nh)
-    cf['help'] = cf['help'].format(factor=S.SNAPVIEW_FLOOD_FACTOR, n_min=S.SNAPVIEW_FLOOD_MIN, n_hours=len(fl), n_det=n_flood_rows,
-                                   n_nights=len({k[3] for k in fl}))
+    cf['help'] = cf['help'].format(factor=S.SNAPVIEW_FLOOD_FACTOR, n_min=S.SNAPVIEW_FLOOD_MIN, n_hours=len(fl), n_det=nf,
+                                   n_nights=n_nights)
     order = ('key', 'stokes', 'states', 'default_off', 'label', 'help')     # production's key order (the live json's)
     meta = {'cats': [{k: c[k] for k in order} for c in (ca, cf)], 'metrics': []}
-    counts = dict(rows=len(rows), align_failed=na, align_held=nh, flood=nf, flood_hours=len(fl),
-                  flood_nights=len({k[3] for k in fl}), distinct=len(uniq))
+    counts = dict(rows=len(rows), align_failed=na, align_held=nh, flood=nf, flood_hours=len(fl), flood_nights=n_nights,
+                  distinct=len(uniq))
     return rows, meta, counts
 
 
-def write_files(out, rows, meta, counts):
-    """<out>/fp_filters.csv (the note line, header, rows; csv.writer's line ends, as production) and fp_filters.json (indent 1),
-    each through a .part renamed into place, the CSV first (production's order), only after both .part files passed the content
-    test (check_files; a file the page cannot read is dropped by the page silently). Refuses when either exists."""
+def installed_refusal(out):
+    """The refusal text when ``out`` holds either file already, else None: both (a view's hides are written once, before its
+    pages are registered), or a HALF-INSTALLED pair - the CSV without its json, or the json without its CSV (an install
+    stopped between its two renames); the page reads the filters only when both exist (review_filters.py:334-335), so either
+    half shows no hides, silently. Never overwritten: whoever finds a half-installed pair decides what to remove."""
+    c, j = (os.path.lexists(os.path.join(out, p)) for p in (FP_FILE, FP_META))
+    if c and j:
+        return (f'{os.path.join(out, FP_FILE)} and {FP_META} exist - not overwritten (a view\'s hides are written once, '
+                f'before its pages are registered)')
+    if c:
+        return (f'HALF-INSTALLED hides: {os.path.join(out, FP_FILE)} exists without {FP_META} (the page shows no hides without '
+                f'both files) - not overwritten; remove the CSV to rebuild both')
+    if j:
+        return (f'HALF-INSTALLED hides: {os.path.join(out, FP_META)} exists without {FP_FILE} (an install stopped between its '
+                f'two renames; the page shows no hides) - not overwritten; remove the json to rebuild both')
+    return None
+
+
+def write_files(out, rows, meta, counts, log=print):
+    """<out>/fp_filters.csv (the note line, header, rows; csv.writer's line ends, as production) and fp_filters.json (indent 1):
+    both written as .part, both content-tested (check_files; a file the page cannot read is dropped by the page silently), then
+    the json renamed into place BEFORE the CSV (the CSV is the file the page keys its rows on, so no state ever shows a CSV
+    without its json; production renamed the CSV first). On any failure the .part files are removed (and a json renamed in this
+    call, so nothing is left half-installed). Refuses when either file exists (installed_refusal); a .part left by an earlier
+    attempt that died is this step's own intermediate, removed with a note."""
     S = _S()
-    for p in (FP_FILE, FP_META):
-        if os.path.lexists(os.path.join(out, p)):
-            raise HidesRefusal(f'{os.path.join(out, p)} exists - not overwritten (a view\'s hides are written once, before its pages '
-                               f'are registered)')
+    why = installed_refusal(out)
+    if why:
+        raise HidesRefusal(why)
     cp, jp = os.path.join(out, FP_FILE), os.path.join(out, FP_META)
-    with open(cp + '.part', 'w', newline='') as f:
-        f.write(S.SNAPVIEW_FP_NOTE.format(factor=S.SNAPVIEW_FLOOD_FACTOR, n_failed=f'{counts["align_failed"]:,}',
-                                          n_held=f'{counts["align_held"]:,}', n_flood=f'{counts["flood"]:,}'))
-        w = csv.writer(f)
-        w.writerow(['cand_id', 'ra', 'dec', 'fp_c_align', 'fp_c_flood'])
-        w.writerows(rows)
-    with open(jp + '.part', 'w') as f:
-        json.dump(meta, f, indent=1)
-    ok, n, detail = check_files(cp + '.part', jp + '.part')
-    if not ok or n != len(rows):
-        for p in (cp + '.part', jp + '.part'):
+    parts = (cp + '.part', jp + '.part')
+    for p in parts:
+        if os.path.lexists(p):
+            log(f'fp_filters: removing {p} left by an earlier attempt that did not finish')
             os.remove(p)
-        raise HidesRefusal(f'the written fp_filters fail their content test ({detail}; {n} rows read back, {len(rows)} written) - '
-                           f'nothing installed')
-    os.replace(cp + '.part', cp)
-    os.replace(jp + '.part', jp)
+    installed = []
+    try:
+        with open(parts[0], 'x', newline='') as f:
+            f.write(S.SNAPVIEW_FP_NOTE.format(factor=S.SNAPVIEW_FLOOD_FACTOR, n_failed=f'{counts["align_failed"]:,}',
+                                              n_held=f'{counts["align_held"]:,}', n_flood=f'{counts["flood"]:,}'))
+            w = csv.writer(f)
+            w.writerow(['cand_id', 'ra', 'dec', 'fp_c_align', 'fp_c_flood'])
+            w.writerows(rows)
+        with open(parts[1], 'x') as f:
+            json.dump(meta, f, indent=1)
+        ok, n, detail = check_files(parts[0], parts[1])
+        if not ok or n != len(rows):
+            raise HidesRefusal(f'the written fp_filters fail their content test ({detail}; {n} rows read back, {len(rows)} '
+                               f'written) - nothing installed')
+        os.replace(parts[1], jp)
+        installed.append(jp)
+        os.replace(parts[0], cp)
+        installed.append(cp)
+    except BaseException:
+        for p in parts:
+            if os.path.lexists(p):
+                os.remove(p)
+        if installed == [jp]:              # the CSV's rename failed: take back the json this call installed
+            os.remove(jp)
+        raise
     return cp, jp
 
 
@@ -268,9 +304,9 @@ def build(view, out, pages, records=None, ex=None, readers=None, log=print, refu
     into ``out`` (the view itself when served; a scratch directory for a content test). ``records``: a directory for the collected
     detections and the flood list (flood_dets_<page>.csv, flood_list_K<factor>.csv). Returns a summary dict. Raises HidesRefusal,
     before anything is written into ``out``."""
-    for p in (FP_FILE, FP_META):              # before any read: a refusal costs nothing
-        if os.path.lexists(os.path.join(out, p)):
-            raise HidesRefusal(f'{os.path.join(out, p)} exists - not overwritten')
+    why = installed_refusal(out)               # before any read: a refusal costs nothing
+    if why:
+        raise HidesRefusal(why)
     per_page, info = collect_pages(view, pages, records=records, readers=readers, log=log, refuse_missing=refuse_missing)
     if not any(per_page):
         raise HidesRefusal(f'no listed detection on any page of {view} - nothing to filter (a view without detections is not served)')
@@ -322,7 +358,7 @@ def filters_from(per_page, out, records=None, ex=None, log=print):
     rows, meta, counts = rows_and_meta(uniq, fl)
     log(f'{len(uniq):,} distinct detections; flood night-bands {len(fl)} holding {counts["flood"]:,} detections on '
         f'{counts["flood_nights"]} nights; alignment failed {counts["align_failed"]:,}, held {counts["align_held"]:,}')
-    cp, jp = write_files(out, rows, meta, counts)
+    cp, jp = write_files(out, rows, meta, counts, log=log)
     return cp, jp, counts
 
 

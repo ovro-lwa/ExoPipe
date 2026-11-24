@@ -1926,9 +1926,10 @@ def test_snapshot_steps():
             + [('build_detections_index', ['--run', DST], f'{DST}/page_index_build.log', None, {})])
     steps = tuple(st for st, _ in SC.STEP_STAGES)
     unit_of = {st: f'snapshot_Run_SNAPSTEP_{st.replace("-", "_")}' for st in steps}
-    orig = (scripts.run, S.SNAPSHOT_SERVE_HOLD, CFG.paths.SNAPSHOT_FLEET_OUT, scripts.interpreter_or_none)
+    from exopipe.phase3.lib.pages import common as pcommon
+    orig = (scripts.run, S.SNAPSHOT_SERVE_HOLD, CFG.paths.SNAPSHOT_FLEET_OUT, pcommon.interpreter_or_none)
     scripts.run, S.SNAPSHOT_SERVE_HOLD, CFG.paths.SNAPSHOT_FLEET_OUT = fake_run, f'{D}/NO_HOLD', fleet
-    scripts.interpreter_or_none = lambda key: sys.executable          # the site's TESS interpreter need not be on this host
+    pcommon.interpreter_or_none = lambda key: sys.executable          # the site's TESS interpreter need not be on this host
     try:
         res = {}
         for case in ('ok', 'scintillation_index', 'page_context_snapshot', 'tess_coverage', 'help', 'bright_source_filter',
@@ -1975,14 +1976,14 @@ def test_snapshot_steps():
         assert (xk.name == unit_of['page-index'] and xk.status == 'done' and not calls and any('current, kept' in n_ for n_ in xk.notes)
                 and xk.tests and all(t['passed'] for t in xk.tests)), (xk.name, xk.status, xk.reason, calls, xk.notes)
         # no TESS interpreter on the host: the tess unit refuses before any call; nothing later runs
-        scripts.interpreter_or_none = lambda key: None
+        pcommon.interpreter_or_none = lambda key: None
         calls.clear()
         run_n = Run('serve', ['test'], f'{out}_notess', CFG, config_sections=None)
         SC.run(a, run_n, plan, steps)
         xn = run_n.units[-1]
         assert (xn.name == unit_of['tess'] and xn.status == 'refused' and "PYTHON['tess']" in xn.reason and run_n.exit_code() == 2
                 and [c_[0] for c_ in calls] == ['scintillation_index', 'page_context_snapshot']), (xn.name, xn.status, xn.reason, calls)
-        scripts.interpreter_or_none = lambda key: sys.executable
+        pcommon.interpreter_or_none = lambda key: sys.executable
         ok(f'snapshot steps: {len(want)} calls in production\'s order with its arguments (parity: caches under --out); 8 outputs '
            f'recorded, their {len(tests_)} content tests and checks pass; a failure of each tool (and a --help without the {tier} tier) '
            f'refuses its unit and nothing later runs - exit 2; the page index goes through flow.page_index_stage (no working '
@@ -2001,7 +2002,7 @@ def test_snapshot_steps():
         ok('snapshot steps: a start without them in the invocation requires the records of the gate on the copy and of all five '
            '(G28)')
     finally:
-        scripts.run, S.SNAPSHOT_SERVE_HOLD, CFG.paths.SNAPSHOT_FLEET_OUT, scripts.interpreter_or_none = orig
+        scripts.run, S.SNAPSHOT_SERVE_HOLD, CFG.paths.SNAPSHOT_FLEET_OUT, pcommon.interpreter_or_none = orig
     # negative controls on the content tests (the files of the 'ok' case rewritten one fault at a time)
     neg = []
     w_sci()

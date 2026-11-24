@@ -81,13 +81,6 @@ def interpreter(key='default'):
     return legacy.interpreter(key)
 
 
-def interpreter_or_none(key):
-    """The site PYTHON[key] interpreter path, or None when unset or not on this host (lib/pages/common.interpreter_or_none)."""
-    from exopipe.phase3.config import CFG
-    py = (CFG.site.PYTHON or {}).get(key)
-    return py if py and os.path.exists(py) else None
-
-
 def site_value(name, default=None):
     from exopipe.phase3.config import CFG
     return getattr(CFG.site, name, default)

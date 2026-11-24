@@ -440,28 +440,35 @@ None of these is ruled; each is production's today and changes only with a rulin
 
 Production: `run_hides.sh` (refactor_analysis/review_items_20261031/hides_20261115: `parallel_collect.py`, `newview_hides.py`
 flood + write), then `snapshot_serve.sh` with `SNAP_REGISTER=1`, `SNAP_PORTS="8986 8987 8988 8989"`, `SNAP_HUB_SUFFIX=comb`,
-`CARRY_FROM` the served view (serve_release1_20261117.sh). v2: the serve stages of `--family comb`, named explicitly (the
-default is the build stages): `hides`, then the batch serve's stages from `gate-copy` on (`lib/serve/snapshot_copy.py`) with
-the view as its own review copy, the pages `serve.PAGES` family comb (8986 V 10-s, 8987 I 10-s, 8988 V 1-min, 8989 I 1-min;
-hub `<S> 10-sec-comb` / `<S> 1-min-comb`).
+`CARRY_FROM` the served view (serve_release1_20261117.sh). v2: the serve stages of `--family comb`, run only when named - by
+`--stages`, or by `--until` naming a serve stage (the whole serve: `--from hides --until verify --label ...`); no selection,
+`--from` alone or `--until` naming a build stage stops at `ready`, so a resumed build never registers pages, and only a run with a
+serve stage plans the pages (their port and label gates G23, G25, G26). The serve hold (G29) and the go (G27) first, before
+`hides` writes into the view; then `hides`, then the batch serve's stages from `gate-copy` on (`lib/serve/snapshot_copy.py`) with
+the view as its own review copy, the pages `serve.PAGES` family comb (8986 V 10-s, 8987 I 10-s, 8988 V 1-min, 8989 I 1-min; hub
+`<S> 10-sec-comb` / `<S> 1-min-comb`).
 
-- `hides` (`lib/serve/fp_filters.py`): `<view>/fp_filters.csv` + `fp_filters.json` as `review_filters.py` reads them. The
-  content is the Snapshot chat's, ported unchanged into config: alignment (`SNAPVIEW_ALIGN_FAILED` hidden by default - empty
-  since R-GREGG-20261103-ALIGNMENT-HIDE-ONLY-1030-SHOW-REPAIRED-NIGHTS - and `SNAPVIEW_ALIGN_HELD` shown by default) and flood
-  hours (a night-band of one Stokes, tier and LST with at least `SNAPVIEW_FLOOD_MIN` = 50 distinct detections and at least
+- `hides` (`lib/serve/fp_filters.py`): `<view>/fp_filters.csv` + `fp_filters.json` as `review_filters.py` reads them. The content
+  is the Snapshot chat's, ported unchanged into config: alignment (`SNAPVIEW_ALIGN_FAILED` hidden by default - empty since
+  R-GREGG-20261103-ALIGNMENT-HIDE-ONLY-1030-SHOW-REPAIRED-NIGHTS - and `SNAPVIEW_ALIGN_HELD` shown by default) and flood hours (a
+  night-band of one Stokes, tier and LST with at least `SNAPVIEW_FLOOD_MIN` = 50 distinct detections and at least
   `SNAPVIEW_FLOOD_FACTOR` = 100 times the median of the other nights' counts in that band; IMPL-SNAPSHOT-FLOOD-HOURS-HIDDEN-BY-
   DEFAULT-20261031, R-GREGG-20261108-GEN4-REPLACE-FLOOD-100X-JOVIAN-WAITS-FOR-CUBES). Refusals: the files exist; a listed
-  detection on an excluded cell-band (core.exclusions - production named three 23h 82 MHz cells literally; a stricter check);
-  no listed detection; a listed source's page directory without `detections.csv` (production's collector read it as no
-  detections); the content test (class `fp_filters`). What the page hides by default is the page code's: `review_filters.py`
-  overrides the flood category's `default_off` (R-GREGG-20261112-TRACKING-AND-FLOOD-DEFAULTS-OFF: no default, no control), and
-  the alignment-failed state (hidden by default) holds no detection of Run_SNAPCOMB_20261116; the file keeps production's
-  `default_off` lists byte for byte. Deliberate differences from production: the CSV's first (comment) line names this step;
-  flood-list rows of equal ratio follow their key (production's tie order was its process's set order); the two refusals above
-  that production did not have.
-- `gate-copy`, `carry` (from the run served on 8986, or `--carry-from`), `scintillation`, `page-context`, `tess`,
-  `bright-filter`, `page-index`, `test`, `start` (the four servers in one flush; `P3_CUTOUTS_TIER` per page), `hub`, `verify`:
-  as the batch serve. G29 and G27 before every stage; the restore-only go reads the member runs under the snapshot review root
+  detection on an excluded cell-band (core.exclusions - production named three 23h 82 MHz cells literally; a stricter check); no
+  listed detection; a listed source's page directory without `detections.csv` (production's collector read it as no detections); a
+  half-installed pair (one of the two files without the other); the content test (class `fp_filters`). Both files are written as
+  `.part`, both tested, then the json renamed into place before the CSV (the page keys on the CSV: an interrupted install leaves
+  no CSV without its json); on any failure the `.part` files are removed. What the page hides by default is the page code's:
+  `review_filters.py` overrides the flood category's `default_off` (R-GREGG-20261112-TRACKING-AND-FLOOD-DEFAULTS-OFF: no default,
+  no control), and the alignment-failed state (hidden by default) holds no detection of Run_SNAPCOMB_20261116; the file keeps
+  production's `default_off` lists byte for byte. Deliberate differences from production: the CSV's first (comment) line names
+  this step; flood-list rows of equal ratio follow their key (production's tie order was its process's set order); the json is
+  installed before the CSV (production: the CSV first); the refusals above that production did not have (the excluded cell-band
+  check on the whole list, the missing `detections.csv`, the half-installed pair).
+- `gate-copy`, `carry` (from the run served on 8986, or `--carry-from`), `scintillation`, `page-context`, `tess`, `bright-filter`,
+  `page-index`, `test`, `start` (the four servers in one flush; `P3_CUTOUTS_TIER` per page), `hub`, `verify`: as the batch serve
+  (`tess`: the orbit table fingerprinted after the tool's refresh, the view's `master_catalog.csv` an input). G29 and G27 before
+  every serve stage, `hides` included; the restore-only go reads the member runs under the snapshot review root
   (`plan.member_root`), also for a parity view.
 
 - An incremental append (one new batch into an existing view): production rebuilds the view whole; a cumulative step that

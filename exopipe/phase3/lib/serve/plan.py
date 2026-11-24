@@ -121,6 +121,11 @@ class Plan:
     def refuse_later(self, gate, msg):
         self.gates.append((gate, msg))
 
+    def first_page(self):
+        """The first page of this plan's family in config order, whatever --pages selects: the page whose served run is the
+        family's 'served' run (the carry source 'served', journals.resolve_carry_from)."""
+        return next(pg for pg in self.all_pages if pg.family == self.family)
+
     # ---- environment and argv of the servers -----------------------------------------------------------------------
     def env_key(self):
         """serve.SERVER_ENV key of this plan's servers: '<tier>-<family>' when config has one (the snapshot forced pages,

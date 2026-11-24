@@ -27,11 +27,12 @@ Stages (--stages/--from/--until; default all, in order):
   snapshot --family comb  build stages omit, build, filtercat, localize, ready (the default): THE COMBINED SNAPSHOT VIEW, the
             snapshot tier's cumulative step (lib/serve/snapshot_view.py; spec docs/specs/snapshot_combined_view.md): the
             deep-omission kept product of the --view-runs applied, the batch identities merged with the chain's merge (in
-            place), one page per tier and Stokes with hard-linked panels, production's tests T1-T6, the filter catalogue, the
+            place), one page per tier and Stokes with hard-linked panels, production's tests T1-T6, the filter catalog, the
             per-tier localization; ends VIEW-READY-FOR-HIDES. Serve stages hides, gate-copy, carry, scintillation, page-context,
-            tess, bright-filter, page-index, test, start, hub, verify (only when named: --from hides --label ...): the view's
-            false-positive filters fp_filters.csv / .json (lib/serve/fp_filters.py), then the snapshot serve's stages on the
-            view as its own review copy, registering p8986-p8989
+            tess, bright-filter, page-index, test, start, hub, verify (only when named: --stages, or --until naming a serve
+            stage; the whole serve: --from hides --until verify --label ...; --from alone stops at ready): the serve hold and
+            the go first, then the view's false-positive filters fp_filters.csv / .json (lib/serve/fp_filters.py), then the
+            snapshot serve's stages on the view as its own review copy, registering p8986-p8989
   forced    switch, hub, verify            jupiter   start, hub, verify
 
 Inputs (read, never rewritten unless listed under Outputs):

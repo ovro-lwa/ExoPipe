@@ -522,7 +522,8 @@ def carry_stage(run, plan, args):
     DST = plan.U
     with run.unit(f'snapshot_{plan.run_name}_carry', stage='carry', tier='snapshot') as u:
         old = journals.resolve_carry_from(plan, spec)
-        u.note(f'carry from the run served on {_first_port(plan)}: {old}' if spec == 'served' else f'carry from --carry-from {old}')
+        u.note(f'carry from the run served on {plan.first_page().port_cfg}: {old}' if spec == 'served'
+               else f'carry from --carry-from {old}')
         if not os.path.exists(os.path.join(old, 'judgements', 'judgements.jsonl')):
             u.refuse(f'G18 carry preconditions: no journal at {old}/judgements/judgements.jsonl')
         cr = journals.snapshot_carry(old, DST, unit=u)
@@ -542,11 +543,6 @@ def carry_stage(run, plan, args):
 # ---- the four steps on the review copy before any page starts (snapshot_serve.sh:164-198, exopipe_ops 607f7a2 + acfa685) -----------
 NOHUGE = {'NUMPY_MADVISE_HUGEPAGE': '0'}    # snapshot_serve.sh:168, :176, :187 (numpy's huge-page advice stalls the kernel on fragmented
                                             # memory); the page index runs without it (:196)
-
-
-def _first_port(plan):
-    """The production port of the first page of the plan's family ('served' carries from the run it serves)."""
-    return next(pg for pg in plan.all_pages if pg.family == plan.family).port_cfg
 
 
 def _parity_cache(plan, name):
@@ -611,13 +607,16 @@ def tess_stage(run, plan):
     orbit table beside the script is read as the deep pages' TESS step reads it (pages_deep.TESS_REFRESH_IN_READER: True = the
     reader refreshes it, production; False = --no-refresh, the table kept current by lib/pages/tess_orbits)."""
     from exopipe.phase3.config import CFG
+    from exopipe.phase3.lib.pages import common
     DST, S, D = plan.U, _S(), CFG.pages_deep
     with run.unit(f'snapshot_{plan.run_name}_tess', stage='tess', tier='snapshot') as u:
-        if not scripts.interpreter_or_none('tess'):
+        if not common.interpreter_or_none('tess'):
             u.refuse("TESS coverage: the site PYTHON['tess'] interpreter is not on this host - nothing served, servers untouched")
+        mc = os.path.join(DST, 'master_catalog.csv')       # the detections the tool reads (one row each)
+        if not os.path.exists(mc):
+            u.refuse(f'TESS coverage: no {mc} - nothing served, servers untouched')
+        u.add_input(mc)
         table = os.path.join(os.path.dirname(scripts.path('tess_coverage')), 'TESS_orbit_times.csv')
-        if os.path.exists(table):
-            u.add_input(table)
         if not D.TESS_REFRESH_IN_READER:
             from exopipe.phase3.lib.pages import tess_orbits
             why = tess_orbits.stale_for_reader(table)
@@ -626,6 +625,8 @@ def tess_stage(run, plan):
                          f'tess_orbits) has not kept it current - nothing served, servers untouched')
         _step(u, 'tess_coverage', ['--run', DST, '--epoch-from-cand-id'] + ([] if D.TESS_REFRESH_IN_READER else ['--no-refresh']),
               os.path.join(DST, 'tess_coverage.log'), cwd=S.SNAPSHOT_STEP_CWD, python='tess')
+        if os.path.exists(table):                          # as the tool read it: after its refresh (TESS_REFRESH_IN_READER)
+            u.add_input(table)
         u.add_output(os.path.join(DST, 'tess_coverage.csv'), 'tess_coverage')
     return u
 
@@ -683,17 +684,24 @@ STEP_STAGES = (('scintillation', scintillation_stage), ('page-context', page_con
                ('bright-filter', bright_filter_stage), ('page-index', page_index_stage))
 
 
-def run(args, run, plan, stages):
+def hold_or_no_go(run, plan):
+    """True when the serve stops before its first stage: G29 (the serve hold) then G27 (the go) as units (snapshot_serve.sh
+    checks both before the gate, the copy or any server; exit 7 there)."""
+    if flow.halts(hold_unit(run, plan), 'hold', need_done=True):
+        return True
+    go = go_unit(run, plan)
+    return go is not None and flow.halts(go, 'go', need_done=True)
+
+
+def run(args, run, plan, stages, held_checked=False):
+    """The serve stages ``stages`` in order. ``held_checked``: the caller ran hold_or_no_go already (the combined view, before
+    its hides stage writes into the view)."""
     state = flow.new_state()
     # a refused stage stops the later ones (flow.halts): snapshot_serve.sh exits at a refused gate (:27 exit 5), localization
     # (:46 exit 4), gate on the copy (:48 exit 5), carry (:38 exit 3; the batch driver's HOLD, snapshot_rechain_batch.sh:406)
     # - nothing copied, no server replaced. A recorded no-input (the parity gate on a remote source, localization off) does
     # not stop.
-    # G29 then G27 before every stage (snapshot_serve.sh checks both before the gate, the copy or any server; exit 7 there)
-    if flow.halts(hold_unit(run, plan), 'hold', need_done=True):
-        return
-    go = go_unit(run, plan)
-    if go is not None and flow.halts(go, 'go', need_done=True):
+    if not held_checked and hold_or_no_go(run, plan):     # G29 then G27 before every stage
         return
     if 'gate' in stages and flow.halts(gate_stage(run, plan), 'gate'):
         return
@@ -730,6 +738,7 @@ def run(args, run, plan, stages):
 
 def describe(plan, stages, args, scan=True):
     """--dry-run lines. ``scan`` False (the combined view: millions of CSVs) leaves the G17 scan to the gate stage."""
+    from exopipe.phase3.lib.pages import common as pages_common
     host, src = split_source(plan.source)
     if plan.family == 'comb':
         print('  chain run (source): none - the combined view is built in place and is its own review copy')
@@ -756,9 +765,10 @@ def describe(plan, stages, args, scan=True):
         scan = exclusion_gate.scan_snapshot_run(plan.U_src)
         print(f'  G17 on the served copy {plan.U_src} (core.exclusions, read now): {scan.summary()}'
               + (' - WOULD REFUSE' if scan.hits else ''))
-    print(f'  carry from: {getattr(args, "carry_from", None) or "served"} (run on {_first_port(plan)}: '
-          f'{journals.served_run_of_port(_first_port(plan))})')
+    first = plan.first_page().port_cfg
+    print(f'  carry from: {getattr(args, "carry_from", None) or "served"} (run on {first}: {journals.served_run_of_port(first)})')
     print(f'  steps on the copy before any page starts, each refusing: scintillation_index.py --tier {_S().SNAPSHOT_FILTER_TIER}; '
           f'page_context_snapshot.py; tess/tess_coverage.py --epoch-from-cand-id (site PYTHON tess: '
-          f'{scripts.interpreter_or_none("tess") or "NOT ON THIS HOST - would refuse"}); bright_source_filter_precompute.py Stokes {"+".join(bright_stokes(plan)) or "(none)"} x '
+          f'{pages_common.interpreter_or_none("tess") or "NOT ON THIS HOST - would refuse"}); bright_source_filter_precompute.py '
+          f'Stokes {"+".join(bright_stokes(plan)) or "(none)"} x '
           f'{"+".join(_S().SNAPSHOT_BRIGHT_CADENCES)}; build_detections_index.py')
