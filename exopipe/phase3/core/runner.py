@@ -8,10 +8,12 @@ record lives in ``CFG.runner.JOBS_ROOT/<job>/`` (a handful of files per item, on
                           `run submit`, forwarded into every step command); chain + chain_steps (a chain job); code_commit +
                           code_root (a --code job)
     items.txt             the items in run order (rewritten by `run reorder`)
-    items/<item>.json     per item: status (queued|running|done|refused|no-input|error|failed), host, pid, rc,
-                          attempts, started, finished, log path; code_commit (--code); steps (chain: one entry per
-                          step run, with its own status, rc, started, finished); chain_status + finally (a chain
-                          with closing steps: the chain's outcome, and one entry per closing step)
+    items/<item>.json     per item: status (queued|running|done|refused|no-input|error|failed|cells-refused), host,
+                          pid, rc, attempts, started, finished, log path; code_commit (--code); steps (chain: one entry
+                          per step run, with its own status, rc, started, finished, units {status: count} and, for a
+                          step that went on past refused cells, refused_cells); refused_cells + summary (chain: every
+                          cell refusal of the item, and its one-line outcome); chain_status + finally (a chain with
+                          closing steps: the chain's outcome, and one entry per closing step)
     claims/<item>/        atomic claim (mkdir) by the worker that runs the item
     logs/<item>.log       the step's stdout/stderr for that item (every step of a chain, in order)
     HOLD                  present = workers take no new items (running items finish)
@@ -27,11 +29,33 @@ process names or pids.
 Chains (``run submit --chain NAME``; ``CFG.runner.CHAINS``): one worker runs every step of an item in order on its
 node; a step that ends no-input (exit 3: nothing to do for this item) is recorded and the chain goes on; the item stops
 at its first refused (2) or error exit, and its status is that step's. An item where every step had no input ends
-no-input. A retried
-chain item resumes at its first step not done. Closing steps (``CFG.runner.CHAIN_FINALLY[NAME]``, e.g. the hour's
-email): run for every item once its chain has ended in a terminal status - done, refused, no-input or failed, not when
-it is queued for a retry - with the item's record path for ``{record}``; the record then holds ``chain_status`` and the
-steps so far. Their exit codes are recorded under ``finally`` and never change the item's status.
+no-input. A retried chain item skips the steps that ended done and runs the others again; in a chain of
+CELL_REFUSAL_CHAINS (below) it resumes at its first step that ended neither done nor no-input (a 'running' step of a
+dead worker included), and every step after it runs again (a later entry stays in the record until replaced). Closing
+steps (``CFG.runner.CHAIN_FINALLY[NAME]``, e.g. the hour's
+email): run for every item once its chain has ended in a terminal status - done, refused, no-input, failed or
+cells-refused, not when it is queued for a retry - with the item's record path for ``{record}``; the record then holds
+``chain_status``, ``refused_cells``, ``summary`` and the steps so far. Their exit codes are recorded under ``finally``
+and never change the item's status.
+
+Cell refusals (``CFG.runner.CELL_REFUSAL_CHAINS``, the per-hour chain 'epoch': an item holds every cell of an hour). Each
+chain step gets an inherited file descriptor in ``EXOPIPE3_STEP_OUTCOME_FD``; the step (cli.main) writes its outcome
+there as JSON at its end (``step_outcome``: exit code, the exit its units give, the refusal before any unit, refusals
+outside the units, and every unit's name, status, reason, cell and subband). A step's exit 2 is a CELL refusal when the
+exit its units give (Run.exit_code) is that 2, no refusal was made before or outside a unit, and the refused units each
+name their cell (``cell_refusals``). In a chain of CELL_REFUSAL_CHAINS the step is then recorded 'cells-refused' with one
+entry per refused unit (cell, subband when the unit names one, unit, refusal code, reason) and the chain goes on: the
+hour's other cells continue through the later steps. Every later step gets the item's refused (cell, subband) pairs in
+``record.UPSTREAM_ENV``. Each per-cell unit loop calls the guard ``run.upstream_refused(name, **meta)`` before it opens
+a unit: a unit of a refused cell (of that subband, or of the whole cell) is recorded refused, code UPSTREAM-REFUSED
+naming the step that refused it, and never opened; a refused cell's unit opened without the guard refuses the whole
+step (core/record.py). Units of many cells (a shard, a run-wide stage) are not covered. Any other exit 2 (a refusal before or outside the units, a refused unit without a
+cell, no outcome handed back - e.g. a --code commit older than this protocol) and every error stop the item as before.
+An item that ran to its end with cell refusals ends 'cells-refused', never done; its ``summary`` reads "COMPLETE with N
+refused cells (<cell>: <step> [<refusal code>], ...)" (``chain_outcome``: each cell once), and ``refused_by_cell`` holds
+the same per-cell list for the hour's email. A job submitted with --after takes the refused cells of the upstream job's
+items through the same exclusion (``carry_refused_cells``), and with after_ok an upstream item that ended
+'cells-refused' counts as finished well (``AFTER_OK``).
 
 Pinned code (``run submit --code COMMIT``): ``ensure_code_worktree`` makes ONE read-only ``git worktree add --detach``
 of the commit under ``CFG.runner.CODE_WORKTREES_ROOT/<sha>`` (reused by every later job of that commit) and every step
@@ -47,12 +71,21 @@ import shlex
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 
-TERMINAL = ('done', 'refused', 'no-input', 'failed')
-AFTER_OK = ('done', 'no-input')         # --after with after_ok (run update): the upstream job's items must all end in one of these
+from exopipe.phase3.core.record import UPSTREAM_ENV
+
+CELLS_REFUSED = 'cells-refused'         # a chain item (or step) that went on past refused cells: complete with refusals, not done
+TERMINAL = ('done', 'refused', 'no-input', 'failed', CELLS_REFUSED)
+# --after with after_ok (run update): the upstream job's items must all end in one of these. 'cells-refused' is one: its
+# refused cells carry over to the dependent job through the same exclusion (carry_refused_cells, record.UPSTREAM_ENV)
+AFTER_OK = ('done', 'no-input', CELLS_REFUSED)
 ITEM_CELL_RE = re.compile(r'^(?P<lst>\d\dh)_(?P<scope>\S+)$')   # an <LST>_<scope> item: {item_lst} / {item_scope} (run update)
 RC_STATUS = {0: 'done', 2: 'refused', 3: 'no-input'}
+OUTCOME_FD_ENV = 'EXOPIPE3_STEP_OUTCOME_FD'   # the descriptor a chain step writes its outcome to (step_outcome / hand_outcome)
+OUTCOME_PROTOCOL = 1
+REASON_CHARS = 600                      # a refused cell's reason kept in the item record (the step's unit record holds all of it)
 
 
 def _cfg():
@@ -304,6 +337,8 @@ def submit(name, step_argv, item_list, nodes, after=None, retry=0, gpu=False, py
          'site_file': os.environ.get('EXOPIPE3_SITE', ''), 'n_items': len(item_list), 'jobs_root': jobs_root(),
          'forward_argv': forward, 'overrides': _overrides_of(forward),
          'chain': chain, 'chain_steps': steps, 'chain_finally': chain_finally(chain) if chain else None,
+         # fixed at submit, as the steps are: a step's refusal of some cells is recorded per cell and the chain goes on
+         'cell_refusals': bool(chain) and chain in (getattr(cfg.runner, 'CELL_REFUSAL_CHAINS', None) or ()),
          'code_commit': code_commit, 'code_root': code_root, 'code_repo': code_repo() if code else None}
     _wjson(os.path.join(d, 'job.json'), j)
     if start:
@@ -343,6 +378,7 @@ def supervise(job):
             time.sleep(cfg.runner.POLL_S)
         st = job_state(j['after'])[1]
         print(f'{_now()} job {j["after"]} finished: {st}', flush=True)
+        carry_refused_cells(job, j['after'])
         bad = {k: n for k, n in st.items() if k not in AFTER_OK}
         if j.get('after_ok') and bad:
             why = f'upstream job {j["after"]} ended with {bad} (after_ok: every item must end {"/".join(AFTER_OK)})'
@@ -371,6 +407,34 @@ def supervise(job):
     while job_state(job)[0] != 'finished':
         time.sleep(cfg.runner.POLL_S)
     print(f'{_now()} job finished: {job_state(job)[1]}', flush=True)
+
+
+UPSTREAM_FILE = 'upstream_refused.json'
+
+
+def carry_refused_cells(job, after):
+    """--after: the upstream job's refused cells carry over to this job through the same exclusion as within a chain item
+    (record.UPSTREAM_ENV): {item: [entries]} of every upstream item that recorded refused cells. An item of this job takes
+    the list of the upstream item of the same name; an item with no upstream item of its name takes every upstream item's
+    list (the upstream job's items need not be this job's). Written once, before any worker starts."""
+    carry = {}
+    for it in items(after):
+        st = item_state(after, it)
+        refused = st.get('refused_cells') or []
+        if refused:
+            carry[it] = [dict(e, step=f"job {after} item {it}: {e['step']}") for e in upstream_of(refused)]
+    _wjson(os.path.join(job_dir(job), UPSTREAM_FILE), carry)
+    if carry:
+        print(f'{_now()} cells refused in job {after} carried over: '
+              + '; '.join(f'{it}: {len(v)}' for it, v in sorted(carry.items())), flush=True)
+
+
+def carried_refused_cells(job, item):
+    """This item's share of the refused cells carried over from the --after job (carry_refused_cells)."""
+    carry = _rjson(os.path.join(job_dir(job), UPSTREAM_FILE), {}) or {}
+    if item in carry:
+        return list(carry[item])
+    return [e for v in carry.values() for e in v]
 
 
 def _root_set(j):
@@ -436,6 +500,173 @@ def step_argvs(j, item):
     return [_argv_for(j, item)]
 
 
+# ---------------------------------------------------------------------------------------------------------------------
+# a chain step's outcome (EXOPIPE3_STEP_OUTCOME_FD) and cell refusals
+# ---------------------------------------------------------------------------------------------------------------------
+
+UNIT_STATUSES = ('done', 'skipped-valid', 'no-input', 'planned', 'refused')   # a cell refusal needs every unit in one of these
+_CODE_TOKEN = r'[A-Z][A-Z0-9]{0,9}(?:-[A-Z0-9]+){1,2}'                         # G-M05, CP-GEN, C-NOCUBE, FE-10MIN-APPEND
+_CODE_LEAD = re.compile(r'^\s*(' + _CODE_TOKEN + r')(?=[\s:(]|$)')
+_CODE_GATE = re.compile(r'\bgates? ([A-Z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)*)')     # 'gate E3', 'gate G-A12'
+
+
+def refusal_code(reason):
+    """The gate code a refusal's reason names, or None: its leading code ('CP-GEN: ...') or the code after 'gate'
+    ('... (gate E3)'). v2 has no registry of gate codes, so a code-shaped token elsewhere in the text is never taken for
+    one (a ledger ID is not a code); ledger IDs (a run of 8 digits, more than three parts) are refused in both forms.
+    The reason itself is always kept beside the code."""
+    text = str(reason or '')
+
+    def ok(tok):
+        return tok and not re.search(r'\d{8}', tok) and tok.count('-') <= 2 and (re.search(r'[\d-]', tok) is not None)
+
+    m = _CODE_LEAD.match(text)
+    if m and ok(m.group(1)):
+        return m.group(1)
+    for m in _CODE_GATE.finditer(text):
+        if ok(m.group(1)):
+            return m.group(1)
+    return None
+
+
+def step_outcome(name, rc, run, record=None):
+    """What a step hands back to the runner at its end (cli.main; JSON on the descriptor in EXOPIPE3_STEP_OUTCOME_FD): its
+    exit code, the exit its units give (Run.exit_code), the refusal or no-input before any unit (run_reason), the number
+    of refusals outside every unit (B-30 fallback sites, refused memory maps: they refuse the whole run) and each unit's
+    name, status, reason, cell and subband (the unit's meta; None for a unit that is not one cell's) and whether the unit
+    framework refused it as a cell an earlier step refused (record.UPSTREAM_CODE)."""
+    try:
+        outside = len(run.fallback_outside()[0])
+    except Exception:                       # noqa: BLE001 - unknown is never zero: the runner then stops the item at a refusal
+        outside = None
+    try:
+        unit_exit = run.exit_code()
+    except Exception:                       # noqa: BLE001 - unknown: the runner stops the item at a refusal
+        unit_exit = None
+    return {'protocol': OUTCOME_PROTOCOL, 'step': name, 'rc': rc, 'unit_exit': unit_exit,
+            'run_id': getattr(run, 'run_id', None),
+            'run_reason': getattr(run, 'run_reason', None), 'refusals_outside_units': outside, 'record': record,
+            'units': [{'unit': u.name, 'status': u.status, 'reason': str(u.reason or '')[:4000],
+                       'cell': (u.meta or {}).get('cell'), 'subband': (u.meta or {}).get('subband'),
+                       'upstream': bool(getattr(u, 'upstream', None)) and u.status == 'refused'} for u in run.units]}
+
+
+def hand_outcome(fd, outcome):
+    """Write ``outcome`` (step_outcome) to the inherited descriptor ``fd`` (no path is opened: the parity and injected-run
+    write guards watch paths, and the runner reads the file it made)."""
+    view = memoryview(json.dumps(outcome, default=str, sort_keys=True).encode())
+    fd = int(fd)
+    while view:
+        view = view[os.write(fd, view):]
+
+
+def read_outcome(f):
+    """The outcome a step wrote to the runner's file ``f``, or None (nothing written, unreadable, another protocol)."""
+    try:
+        f.seek(0)
+        data = f.read()
+        out = json.loads(data.decode()) if data else None
+    except (OSError, ValueError):
+        return None
+    return out if isinstance(out, dict) and out.get('protocol') == OUTCOME_PROTOCOL else None
+
+
+def cell_refusals(outcome, rc):
+    """The step's NEW cell refusals [{'cell', 'subband', 'unit', 'code', 'reason'}] (possibly none: every refused unit was
+    a cell an earlier step refused, record.UPSTREAM_CODE) when the step's exit 2 is cell refusals only: the process exit,
+    the outcome's exit and the exit its units give (Run.exit_code) are all 2, no refusal before or outside its units, the
+    refused units each name their cell, and every other unit is done, skipped as valid, planned or without input. None
+    otherwise (the exit then stops a chain item as any refusal does)."""
+    if rc != 2 or not isinstance(outcome, dict) or outcome.get('rc') != 2 or outcome.get('unit_exit') != 2:
+        return None
+    if outcome.get('run_reason') or outcome.get('refusals_outside_units') != 0:
+        return None
+    units = outcome.get('units') or []
+    refused = [u for u in units if u.get('status') == 'refused']
+    if not refused or any(u.get('status') not in UNIT_STATUSES for u in units) or any(not u.get('cell') for u in refused):
+        return None
+    out = []
+    for u in refused:
+        if u.get('upstream'):
+            continue
+        sb = u.get('subband')
+        out.append({'cell': str(u['cell']), 'subband': str(sb) if isinstance(sb, str) and sb else None,
+                    'unit': u.get('unit'), 'code': refusal_code(u.get('reason')),
+                    'reason': str(u.get('reason') or '')[:REASON_CHARS]})
+    return out
+
+
+def upstream_of(refused):
+    """The list the runner hands a later step (record.UPSTREAM_ENV): one entry per refused (cell, subband)."""
+    out, seen = [], set()
+    for c in refused or ():
+        key = (c['cell'], c.get('subband'))
+        if key not in seen:
+            seen.add(key)
+            out.append({'cell': c['cell'], 'subband': c.get('subband'), 'step': c.get('name'), 'code': c.get('code')})
+    return out
+
+
+def unit_counts(outcome):
+    by = {}
+    for u in (outcome or {}).get('units') or []:
+        by[u.get('status')] = by.get(u.get('status'), 0) + 1
+    return dict(sorted(by.items(), key=lambda kv: str(kv[0])))
+
+
+def step_label(argv):
+    """'search --tier deep' from a step command (the step, an archive action, --tier and --stages)."""
+    a = [str(x) for x in (argv or [])]
+    if 'exopipe.phase3' in a:
+        a = a[a.index('exopipe.phase3') + 1:]
+    if not a:
+        return '?'
+    out = [a[0]] + ([a[1]] if a[0] == 'archive' and len(a) > 1 and not a[1].startswith('-') else [])
+    for flag in ('--tier', '--stages'):
+        if flag in a and a.index(flag) + 1 < len(a):
+            out += [flag, a[a.index(flag) + 1]]
+    return ' '.join(out)
+
+
+def refused_cells_of(steps):
+    """Every cell refusal of a chain item, in step order: [{'step', 'name', 'cell', 'subband', 'unit', 'code', 'reason'}]."""
+    return [dict(c, step=s.get('step'), name=step_label(s.get('argv')))
+            for s in steps or [] if s.get('status') == CELLS_REFUSED for c in s.get('refused_cells') or []]
+
+
+def refused_by_cell(refused):
+    """One entry per refused cell (a (cell, subband) pair when the refusal named a subband), in order of refusal:
+    [{'cell': '<cell>[ <subband>]', 'refusals': ['<step> [<code>]', ...], 'reason': <its first reason>}]. A cell's I and V
+    units refused alike are one entry. The record keeps it (item 'refused_by_cell'); chain_outcome and the hour's email
+    (lib/notify/block.py) are both built from it."""
+    by = {}
+    for c in refused or ():
+        key = c['cell'] + (f" {c['subband']}" if c.get('subband') else '')
+        e = by.setdefault(key, {'cell': key, 'refusals': [], 'reason': c.get('reason') or ''})
+        r = f"{c.get('name')} [{c.get('code') or 'no code named'}]"
+        if r not in e['refusals']:
+            e['refusals'].append(r)
+    return list(by.values())
+
+
+def chain_outcome(status, steps, n_steps, carried=()):
+    """A chain item's one-line outcome (record 'summary', `run status`, the hour's email). 'COMPLETE (N steps)'; 'COMPLETE with
+    N refused cells (<cell>: <step> [<refusal code>], ...; ...)' - N counts distinct cells (refused_by_cell), each listed
+    once with every step and code that refused it; or the status and the step that stopped the item, with the cells
+    refused before it."""
+    by = refused_by_cell(list(carried) + refused_cells_of(steps))
+    listing = '; '.join(f"{e['cell']}: {', '.join(e['refusals'])}" for e in by)
+    if status == 'done':
+        return f'COMPLETE ({n_steps} steps)'
+    if status == CELLS_REFUSED:
+        return f'COMPLETE with {len(by)} refused cell{"" if len(by) == 1 else "s"} ({listing})'
+    if status == 'no-input':
+        return f'NO INPUT (none of the {n_steps} steps had anything to do)'
+    stop = next((s for s in reversed(steps or []) if s.get('status') not in ('done', 'no-input', CELLS_REFUSED)), None)
+    where = f' at step {stop.get("step", 0) + 1} ({step_label(stop.get("argv"))}, exit {stop.get("rc")})' if stop else ''
+    return f'{str(status).upper()}{where}' + (f'; refused cells before it: {len(by)} ({listing})' if by else '')
+
+
 def worker(job, lane=0):
     """Claim items in order and run them until none is left, HOLD stops new claims, or DRAIN.<host> exists."""
     cfg = _cfg()
@@ -472,6 +703,18 @@ def _run_item(j, job, it, st, host, lane):
     argvs = step_argvs(j, it)
     chain = bool(j.get('chain_steps'))
     steps = list(st.get('steps') or []) if chain else None
+    cellwise = chain and bool(j.get('cell_refusals'))
+    resume_at = len(steps) if chain else 0
+    if cellwise:
+        # runner.CELL_REFUSAL_CHAINS: a retried item resumes at its first step that ended neither done nor no-input (a
+        # 'running' step of a worker that died included), and every step after it runs again (after a step that went on
+        # past refused cells, the later steps must see the cells it re-runs). Earlier done steps are skipped; no entry is
+        # dropped: a later entry stays in the record until this attempt replaces it (its 'attempt' says which)
+        resume_at = next((k for k, s in enumerate(steps) if s.get('status') not in ('done', 'no-input')), len(steps))
+    # cells refused in the --after job (carry_refused_cells): this item's refused cells from its start
+    carried = [{'cell': e['cell'], 'subband': e.get('subband'), 'name': e.get('step'), 'code': e.get('code'),
+                'unit': None, 'step': None, 'reason': f"refused in job {j['after']} (carried over by --after)"}
+               for e in (carried_refused_cells(job, it) if j.get('after') else [])]
     root = j.get('code_root') or j['pkg_root']
     head = [j['python'], '-m', 'exopipe.phase3']
     rec = {'status': 'running', 'host': host, 'lane': lane, 'attempts': attempts, 'started': _now(), 'log': log,
@@ -483,44 +726,88 @@ def _run_item(j, job, it, st, host, lane):
     _wjson(ipath, rec)
     status, rc = 'done', 0
     n_noinput = 0
+    ran_to = -1
     with open(log, 'a') as lf:
         for k, argv in enumerate(argvs):
-            if chain and k < len(steps) and steps[k].get('status') == 'done':
-                continue                      # done in an earlier attempt: resume at the first step not done
+            if chain and k < len(steps) and k < resume_at and steps[k].get('status') == 'done':
+                continue                      # done in an earlier attempt (cell-refusal chains: before the resume step)
+            ran_to = k
             full = head + argv
             tag = f' step {k + 1}/{len(argvs)}' if chain else ''
             lf.write(f'\n===== {_now()} {host} lane {lane} attempt {attempts}{tag}: {" ".join(map(shlex.quote, full))}'
                      + (f'  [code {j["code_commit"]}]' if j.get('code_commit') else '') + '\n')
             lf.flush()
-            p = subprocess.Popen(full, stdout=lf, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, cwd=root,
-                                 env=_child_env(j, root))
-            rec.update(argv=full, pid=p.pid)
-            if chain:
-                entry = {'step': k, 'name': argv[0], 'argv': full, 'status': 'running', 'started': _now(),
-                         'pid': p.pid, 'attempt': attempts}
-                if k < len(steps):
-                    steps[k] = entry
-                else:
-                    steps.append(entry)
-                rec['step'] = k
-            _wjson(ipath, rec)
-            rc = p.wait()
-            s = RC_STATUS.get(rc, 'error')
-            if chain:
-                entry.update(status=s, rc=rc, finished=_now())
+            env = _child_env(j, root)
+            env.pop(OUTCOME_FD_ENV, None)
+            env.pop(UPSTREAM_ENV, None)
+            if cellwise or carried:
+                # every cell this item refused so far (and the --after job's): the unit framework refuses them in this
+                # step before any work (record.UPSTREAM_ENV, code UPSTREAM-REFUSED)
+                upstream = upstream_of(carried + (refused_cells_of(steps[:k]) if cellwise else []))
+                if upstream:
+                    env[UPSTREAM_ENV] = json.dumps(upstream, sort_keys=True)
+            ofile = tempfile.TemporaryFile(prefix='exopipe3_step_outcome_') if chain else None   # the step's outcome
+            if ofile is not None:
+                env[OUTCOME_FD_ENV] = str(ofile.fileno())
+            try:
+                p = subprocess.Popen(full, stdout=lf, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, cwd=root,
+                                     env=env, pass_fds=(ofile.fileno(),) if ofile is not None else ())
+                rec.update(argv=full, pid=p.pid)
+                if chain:
+                    entry = {'step': k, 'name': argv[0], 'argv': full, 'status': 'running', 'started': _now(),
+                             'pid': p.pid, 'attempt': attempts}
+                    if k < len(steps):
+                        steps[k] = entry
+                    else:
+                        steps.append(entry)
+                    rec['step'] = k
                 _wjson(ipath, rec)
+                rc = p.wait()
+                outcome = read_outcome(ofile) if ofile is not None else None
+            finally:
+                if ofile is not None:
+                    ofile.close()
+            s = RC_STATUS.get(rc, 'error')
+            cells = cell_refusals(outcome, rc) if cellwise else None
+            n_up = sum(1 for u in (outcome or {}).get('units') or [] if u.get('upstream')) if cells is not None else 0
+            if chain:
+                entry.update(status=CELLS_REFUSED if cells is not None else s, rc=rc, finished=_now())
+                if outcome is not None:
+                    entry['units'] = unit_counts(outcome)
+                if cells is not None:
+                    entry['refused_cells'] = cells
+                    entry['upstream_refused_units'] = n_up
+                _wjson(ipath, rec)
+            if cells is not None:             # the step refused these cells only: recorded per cell, the chain goes on
+                for c in cells:
+                    lf.write(f'===== {_now()} step {k + 1}/{len(argvs)} refused cell {c["cell"]}'
+                             + (f' {c["subband"]}' if c.get('subband') else '')
+                             + f' (unit {c["unit"]}, code {c["code"] or "none named"}): {c["reason"]}\n')
+                lf.write(f'===== {_now()} step {k + 1}/{len(argvs)}: {len(cells)} refused unit(s) recorded, {n_up} unit(s) '
+                         f'of cells refused earlier refused again (UPSTREAM-REFUSED); the chain goes on for the other '
+                         f'cells\n')
+                lf.flush()
+                continue
             if rc == 3 and chain:
                 n_noinput += 1                # nothing to do for this item in this step: the chain goes on (DESIGN 12)
                 continue
             if rc != 0:
                 status = s
                 break
-    if chain and status == 'done' and n_noinput == len(argvs):
+    if chain:
+        steps_now = steps[:ran_to + 1]        # entries of this attempt and the earlier ones it kept (later ones: stale)
+    refused = ((carried if cellwise else []) + refused_cells_of(steps_now)) if chain else []
+    if chain and status == 'done' and refused:
+        status, rc = CELLS_REFUSED, 2         # ran to its end with refused cells: complete with N refused, never done
+    elif chain and status == 'done' and n_noinput == len(argvs):
         status = 'no-input'                   # every step had nothing to do
     if status == 'error' and attempts <= int(j.get('retry', 0)):
         status = 'queued'                       # retried by the next free worker
     elif status == 'error':
         status = 'failed'
+    if chain:
+        rec.update(refused_cells=refused, refused_by_cell=refused_by_cell(refused),
+                   summary=chain_outcome(status, steps_now, len(argvs), carried if cellwise else ()))
     if chain and j.get('chain_finally') and status != 'queued':
         # closing steps (runner.CHAIN_FINALLY): whatever the chain's outcome; they read it from the record ({record})
         fin = []

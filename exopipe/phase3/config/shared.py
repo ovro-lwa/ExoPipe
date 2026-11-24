@@ -339,15 +339,17 @@ class runner(_Section):
     CODE_WORKTREES_ROOT = '/lustre/gh/main/exopipe_ops/jobs/_code'
     CODE_REPO = None             # repository the --code commits come from; None = the repository this package runs from
     # Named chains for `run submit --chain NAME --items ...` (DESIGN 11.3): each item runs through the steps in order,
-    # on one node, and stops at its first non-zero exit (refused / no-input / error recorded per step); a retried item
-    # resumes at its first step not done. A step is a command-line template: {item} is replaced by the item; a
+    # on one node (exit codes recorded per step; what stops an item: the next paragraph); a retried item skips its done
+    # steps (CELL_REFUSAL_CHAINS: it resumes at its first step that ended neither done nor no-input and runs every later
+    # step again). A step is a command-line template: {item} is replaced by the item; a
     # template without {item} gets '--cells <item>' appended. Example (for when the steps exist):
     #   'deep-cell': ['masters --tier deep --cells {item} --stages build,vclean,fluxscale,pbmaps',
     #                 'dewarp --tier deep --cells {item}', 'install --tier deep --cells {item}',
     #                 'masters --tier deep --cells {item} --stages sources']
     # Named chains (DESIGN 11.3, 12): `exopipe3 run submit --chain NAME --items ...` runs each item through these step
     # commands in order on one node; a step that ends no-input (exit 3) is recorded and the chain goes on, and an item
-    # stops at its first refused (2) or error exit (core/runner.py).
+    # stops at its first refused (2) or error exit (core/runner.py) - except a refusal of cells in a chain of
+    # CELL_REFUSAL_CHAINS (below CHAIN_FINALLY), which is recorded per cell while the chain goes on.
     # {item} is the item. The per-hour chain is the unit a merged Phase 1-2-3 controller will run (DESIGN 12.3).
     CHILD_ENV_CLEAR_PREFIXES = ('P3_', 'P3S', 'P3T', 'SUBLST_', 'SNAP_', 'FORK_', 'CATPUB_', 'NOCAT_', 'DEEP_FORCED_',
                                 'FT_', 'TENMIN_', 'GEN4_', 'BDSF_')   # production switch families never inherited by a child
@@ -439,11 +441,19 @@ class runner(_Section):
                           'catalog --tier snapshot --cells {item}'],
     }
     # Closing steps of a chain (core/runner.py): run for every item once its chain has ended, whatever the outcome
-    # (done, refused, no-input, failed; not while it is queued for a retry), with the item's record path for {record};
-    # their exit codes are recorded and never change the item's status. The per-hour chain closes with the ONE email
+    # (done, refused, no-input, failed, cells-refused; not while it is queued for a retry), with the item's record path for
+    # {record}; their exit codes are recorded and never change the item's status. The per-hour chain closes with the ONE email
     # of the hour (Gregg 2026-11-12: "one email at the end of Phase 3 that is close to identical to the current one in
     # what is included, just with the transient and forced photometry highlights added").
     CHAIN_FINALLY = {'epoch': ['notify --epochs {item} --chain-record {record}']}
+    # Chains whose items hold many cells, where one cell's refusal does not stop the others (core/runner.py; the per-hour chain:
+    # prerequisite (2) of the refactor chat's decision of 2026-11-14 to put the admission steps into it,
+    # DECISION-20261114-PR21-ADMIT-STEPS-NOT-IN-EPOCH-CHAIN-YET). A step's exit 2 whose refused units all name their cell, with
+    # nothing refused before or outside a unit, is recorded per cell (cell, unit, refusal code, reason) and the chain goes on
+    # for the hour's other cells; every later step's units of a refused cell are refused without being opened (core/record.py,
+    # code UPSTREAM-REFUSED). The item then ends 'cells-refused' ("COMPLETE with N refused cells (...)"), never done. Any
+    # other refusal and every error stop the item as in the other chains.
+    CELL_REFUSAL_CHAINS = ('epoch',)
 
 
 class site(_Section):

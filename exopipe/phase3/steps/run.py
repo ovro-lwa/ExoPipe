@@ -29,7 +29,12 @@ Outputs: a job record under runner.JOBS_ROOT (job.json, items.txt, items/<item>.
 Failure modes: unknown job; unknown chain; --code not a commit of the repository (refused); a --gpu job on a non-GPU
 host (refused); nodes unreachable (worker never starts - visible in supervisor.log and `run status`). An item's status
 is its step's exit code (0 done, 2 refused, 3 no-input, other error; errors retried --retry times, then failed); a
-chain item stops at its first non-zero exit with that step's status, and a retried chain item resumes at that step.
+chain item goes on past a no-input step and stops at its first refused or error exit with that step's status, and a
+retried chain item resumes at that step (every later step runs again). In a chain of runner.CELL_REFUSAL_CHAINS (the
+per-hour chain 'epoch') a step whose every refusal is one cell's (refused units naming their cell, nothing refused
+before or outside a unit) is recorded per cell (cell, unit, refusal code, reason) and the chain goes on for the other
+cells; such an item ends cells-refused, "COMPLETE with N refused cells (...)", never done (`run status` prints that
+line; `run retry JOB --which cells-refused` re-runs it from the first step that refused a cell).
 """
 import os
 
@@ -118,15 +123,17 @@ def submit_injected_gate(args):
 
 
 def _status_line(j, it, s):
-    line = (f"  {it:20s} {s.get('status'):9s} {s.get('host', ''):12s} attempts {s.get('attempts', 0)} "
+    line = (f"  {it:20s} {s.get('status'):13s} {s.get('host', ''):12s} attempts {s.get('attempts', 0)} "
             f"rc {s.get('rc', '')} {s.get('finished', s.get('started', ''))}")
     if j.get('chain_steps'):
         steps = s.get('steps') or []
-        n_done = sum(1 for x in steps if x.get('status') == 'done')
+        n_done = sum(1 for x in steps if x.get('status') in ('done', 'no-input', 'cells-refused'))   # finished steps
         line += f"  steps {n_done}/{len(j['chain_steps'])}"
         last = steps[-1] if steps else None
-        if last and last.get('status') != 'done':
+        if last and last.get('status') not in ('done', 'cells-refused'):
             line += f" at step {last.get('step', 0) + 1} {last.get('name', '')} ({last.get('status')})"
+        if s.get('refused_cells'):
+            line += f"  {s.get('summary') or str(len(s['refused_cells'])) + ' cell refusals'}"
     return line
 
 

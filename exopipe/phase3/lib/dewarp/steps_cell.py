@@ -284,15 +284,15 @@ def run_cell(run, args, roots, lst, cell, meas, stages, route_src=None, resume_o
     if run.resume and not run.fresh:
         ok, why = _resume(run, cell, meas)
         if ok:
-            u = run.unit(cell, lst=lst, kind='cell')
+            u = run.unit(cell, cell=cell, lst=lst, kind='cell')
             u.status, u.reason = 'skipped-valid', why
             print(f'{cell}: resumed ({why})')
             return u
         if resume_only:
-            with run.unit(cell, lst=lst, kind='cell') as u:
+            with run.unit(cell, cell=cell, lst=lst, kind='cell') as u:
                 u.refuse(f'{resume_only}; its earlier dewarp record is not current ({why})')
             return u
-    with run.unit(cell, lst=lst, kind='cell') as u:
+    with run.unit(cell, cell=cell, lst=lst, kind='cell') as u:
         u.meta['stages'] = [s for s in stages if s in SC.CELL_STAGES]
         if meas is None:
             u.refuse(f'measurement unit {lst} not done')

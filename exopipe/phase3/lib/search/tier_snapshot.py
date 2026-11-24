@@ -808,6 +808,8 @@ def run_unit(args, run, item, cell, only_sb, stages, inject=None):
             u.status, u.reason = 'skipped-valid', why
             print(f'[{unit}] resume: {why}')
             return
+    if run.upstream_refused(unit, tier=TIER, cell=cell, subband=only_sb):   # refused upstream (core/record.py)
+        return
     with run.unit(unit, tier=TIER, cell=cell, subband=only_sb, stage=plan['stage'], bands=bands, pause_1min=pause,
                   inject=inject) as u:
         u.meta.update(stages=stages, gates=plan['gates'], staged=plan['staged'], zero_vis=plan['zero_vis'],

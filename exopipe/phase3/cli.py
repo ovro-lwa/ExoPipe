@@ -333,6 +333,9 @@ def build_parser():
 
 
 def main(argv=None):
+    # a chain step of `exopipe3 run` hands its outcome back on this descriptor (core/runner.py step_outcome); taken out of
+    # the environment first, so no process this step starts inherits it
+    outcome_fd = os.environ.pop('EXOPIPE3_STEP_OUTCOME_FD', None)
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv or argv[0] in ('-h', '--help'):
         build_parser().print_help()
@@ -460,6 +463,13 @@ def main(argv=None):
             print(f'  {u.status} {u.name}: {u.reason[:600]}', file=sys.stderr)
     print(f'exopipe3 {name}: {", ".join(f"{k} {v}" for k, v in sorted(by.items())) or "no units"}; exit {rc}'
           + (f'; record {summ}' if summ else ''), file=sys.stderr)
+    if outcome_fd:                       # a chain step: the runner reads which units (cells) refused (core/runner.py)
+        from exopipe.phase3.core import runner as _runner
+        try:
+            _runner.hand_outcome(outcome_fd, _runner.step_outcome(name, rc, run, summ))
+        except Exception as e:           # noqa: BLE001 - no outcome: the runner treats an exit 2 as the whole step's refusal
+            print(f'the step outcome was not handed to the runner ({type(e).__name__}: {e}); a refusal stops the chain '
+                  f'item', file=sys.stderr)
     return rc
 
 

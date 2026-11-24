@@ -1762,6 +1762,8 @@ def run_unit(args, run, cell, lst, band, stokes, date, stages, work_root):
     # the seconds between that plan and the lease). So under the lease the resume check is made again (the same unit, run
     # twice, is skipped the second time, never refused over the first's record), the unit plans again (the gates on the
     # published cell: night not yet searched, size rule, appended headers), and only then is the attempt directory named
+    if run.upstream_refused(unit, tier=TIER, cell=cell, stokes=stokes):   # refused upstream (core/record.py)
+        return
     held = contextlib.ExitStack()
     try:
         clease = held.enter_context(held_cell_lease(run, plan, unit, stages))

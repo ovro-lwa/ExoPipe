@@ -70,7 +70,9 @@ def table(columns, rows):
 
 def chain_summary(record_path):
     """One sentence on the hour's Phase 3 chain from the runner's item record (runner.CHAIN_FINALLY passes its path):
-    the outcome and, for a chain that did not finish, the step that stopped it. (text, ok). No record: said so."""
+    the outcome and, for a chain that did not finish, the step that stopped it; every cell a step refused while the chain
+    went on (status cells-refused: COMPLETE with N refused cells), with its step, refusal code and reason. (text, ok). No
+    record: said so."""
     if not record_path:
         return 'Phase 3 chain record: none given (this email was built outside the per-hour chain).', None
     try:
@@ -85,15 +87,28 @@ def chain_summary(record_path):
     for s in steps:
         by[s.get('status')] = by.get(s.get('status'), 0) + 1
     counts = ', '.join(f'{n} {k}' for k, n in sorted(by.items()))
+    # cells a step refused while the chain went on (core/runner.py, runner.CELL_REFUSAL_CHAINS): one bullet per cell (its
+    # I and V units together), from the record's per-cell list that the runner's chain_outcome summary is built from
+    cells = rec.get('refused_by_cell') or []
+    refused = ('<ul>' + ''.join(
+        f'<li>{esc(c.get("cell"))}: refused by '
+        + ', '.join(f'<code>{esc(r)}</code>' for r in c.get('refusals') or [])
+        + f': {esc(str(c.get("reason") or "")[:300])}</li>' for c in cells) + '</ul>' if cells else '')
     if status == 'done':
         return f'Phase 3 chain: done ({len(steps)} steps: {esc(counts)}).', True
     if status == 'no-input':
         return f'Phase 3 chain: every step had nothing to do for this hour ({len(steps)} steps).', False
-    stop = next((i for i, s in enumerate(steps) if s.get('status') not in ('done', 'no-input')), None)
+    if status == 'cells-refused':
+        n = len(cells)
+        return (f'<strong>Phase 3 chain: COMPLETE with {n} refused cell{"" if n == 1 else "s"}</strong> ({len(steps)} '
+                f'steps: {esc(counts)}); the hour\'s other cells went on through every step. Log: '
+                f'<code>{esc(rec.get("log"))}</code>. Refused:{refused}'), False
+    stop = next((i for i, s in enumerate(steps) if s.get('status') not in ('done', 'no-input', 'cells-refused')), None)
     where = (f' at step {stop + 1} (<code>{esc(names[stop])}</code>, exit code {esc(steps[stop].get("rc"))})'
              if stop is not None else '')
     return (f'<strong>Phase 3 chain: {esc(str(status).upper())}{where}</strong>; steps before it: {esc(counts)}. '
-            f'Log: <code>{esc(rec.get("log"))}</code>. The tables below hold what the finished steps wrote.'), False
+            f'Log: <code>{esc(rec.get("log"))}</code>. The tables below hold what the finished steps wrote.'
+            + (f' Cells refused before it:{refused}' if cells else '')), False
 
 
 def gal_lat(r, bold_below):

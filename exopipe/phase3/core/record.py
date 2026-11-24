@@ -50,6 +50,60 @@ class NoInput(Exception):
 
 EXIT_DONE, EXIT_ERROR, EXIT_REFUSED, EXIT_NO_INPUT = 0, 1, 2, 3
 
+# ---- cells an earlier step of the same chain item refused (core/runner.py, runner.CELL_REFUSAL_CHAINS) ---------------
+# The runner hands every later step (and, through --after, the dependent job's items) the item's refused cells in this
+# variable: a JSON list of {'cell', 'subband', 'step', 'code'}. The unit framework refuses every unit whose meta names a
+# refused cell (and, when the refusal names a subband, that subband or no subband: a unit of the whole cell covers it),
+# with code UPSTREAM-REFUSED naming the step that refused it - no later step processes it. A step's unit loop asks
+# before it opens a unit: `if run.upstream_refused(name, **meta): continue` records the refused unit without opening it.
+# A unit of a refused cell opened without that guard refuses the whole step (UpstreamRefused): never processed.
+UPSTREAM_ENV = 'EXOPIPE3_UPSTREAM_REFUSED'
+UPSTREAM_CODE = 'UPSTREAM-REFUSED'
+
+
+class UpstreamRefused(Refusal):
+    """A unit of an upstream-refused cell opened without the guard (Run.upstream_refused): it stops the step (a run-level
+    refusal, so the runner stops the chain item) instead of letting the unit run."""
+
+
+def upstream_refusals(env=None):
+    """The refused cells the runner handed this process ([] when none). A value that does not parse refuses the run: the
+    step never runs without the list it was given."""
+    raw = (os.environ if env is None else env).get(UPSTREAM_ENV)
+    if not raw:
+        return []
+    try:
+        out = json.loads(raw)
+        if not isinstance(out, list) or not all(isinstance(e, dict) and e.get('cell') for e in out):
+            raise ValueError('not a list of {cell, subband, step, code}')
+    except ValueError as e:
+        raise Refusal(f'{UPSTREAM_CODE}: {UPSTREAM_ENV} is not readable ({e}): the cells an earlier step refused are unknown')
+    return out
+
+
+def _as_set(v):
+    return {str(x) for x in v} if isinstance(v, (list, tuple, set)) else ({str(v)} if v not in (None, '') else set())
+
+
+def upstream_hit(meta, refused):
+    """The first refusal in ``refused`` that covers a unit of this meta, or None: the unit's 'cell' is the refused cell,
+    and the refusal names no subband, or the unit names that subband or none. A unit of many cells (meta 'cells': a
+    shard, a run-wide stage) is not one cell's unit and is not covered; such a step reads the list itself if it must."""
+    cells = _as_set((meta or {}).get('cell'))
+    if not cells:
+        return None
+    sbs = _as_set((meta or {}).get('subband'))
+    for e in refused or ():
+        if str(e['cell']) in cells and (not e.get('subband') or not sbs or str(e['subband']) in sbs):
+            return e
+    return None
+
+
+def upstream_reason(e):
+    pair = f"{e['cell']}" + (f" {e['subband']}" if e.get('subband') else '')
+    return (f"{UPSTREAM_CODE}: {pair} was refused by {e.get('step') or 'an earlier step'} "
+            f"[{e.get('code') or 'no code named'}] earlier in this chain item; no later step processes it")
+
 
 def utcnow():
     return time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
@@ -516,8 +570,30 @@ class Run:
             h['injected'] = self.injected         # core/injected.py: why this run carries synthetic sources (record.injected)
         return h
 
+    def _upstream_list(self):
+        if not hasattr(self, '_upstream'):
+            self._upstream = upstream_refusals()
+        return self._upstream
+
+    def upstream_refused(self, name, **meta):
+        """The guard every unit loop calls before it opens a unit of one cell: True when an earlier step of the chain item
+        refused the cell (record.UPSTREAM_ENV) - the unit is then recorded refused (code UPSTREAM-REFUSED, naming that
+        step) WITHOUT being opened, and the loop goes on to its next unit: `if run.upstream_refused(name, **meta): continue`.
+        False otherwise (nothing is recorded)."""
+        hit = upstream_hit(meta, self._upstream_list())
+        if not hit:
+            return False
+        u = UnitRecord(self, name, meta)
+        u.upstream = hit
+        u.status, u.reason = 'refused', upstream_reason(hit)
+        self.units.append(u)
+        u._write_outcome()
+        print(f'REFUSED {name}: {u.reason}', flush=True)
+        return True
+
     def unit(self, name, **meta):
         u = UnitRecord(self, name, meta)
+        u.upstream = upstream_hit(meta, self._upstream_list())   # opened: refuses the step (UnitRecord.__enter__)
         self.units.append(u)
         return u
 
@@ -691,6 +767,12 @@ class UnitRecord:
 
     # ---- context ------------------------------------------------------------------------------------------------
     def __enter__(self):
+        if getattr(self, 'upstream', None):
+            # a refused cell's unit opened without the guard (Run.upstream_refused): the step stops before the unit runs
+            self.status, self.reason = 'refused', upstream_reason(self.upstream) + (
+                ' (its unit was opened without the guard run.upstream_refused: the step stops here)')
+            self._write_outcome()
+            raise UpstreamRefused(self.reason)
         return self
 
     def _final_status(self):

@@ -406,6 +406,8 @@ def run(args, run):
 
     for cell, sbs in units:
         name = items.unit_name(cell, sbs, stokes)
+        if run.upstream_refused(name, tier='snapshot', cell=cell):   # refused upstream (core/record.py)
+            continue
         pl = P.plan_cell(cell, sbs, stokes, ex, C, CFG.instrument.ALL_SUBBANDS)
         if args.resume and not args.fresh:
             ok, why = run.resume_check(name, inputs=None, admitted=P.admitted(pl))
