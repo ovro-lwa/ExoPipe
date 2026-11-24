@@ -351,7 +351,9 @@ class catalog_incremental(_Section):
     PROTECTED_KEYS = ('STAGE_SCRIPTS', 'BUILDER', 'BUILDER_FUNCS', 'BUILDER_CONSTS', 'ASTROM_MODULE', 'SSTACK_SOURCE',
                       'SOURCE_FILES', 'FORK_KEYS')
     # ---- scope -------------------------------------------------------------------------------------------------------
-    TIERS = ('deep',)                    # tiers with an incremental path; sublst / snapshot refuse (NOT DONE, impl note) [step]
+    TIERS = ('deep', 'sublst')           # tiers with an incremental path; snapshot refuses (NOT DONE, impl note). sublst: one
+                                         # night of one LST hour, lib/catalog/incremental_sublst.py (design 2.2a / 2.3a of
+                                         # plan/PER_HOUR_GAP_DESIGNS_20261111.md) [step]
     STATE_DIR = '_incremental'                            # under --out: epoch blocks, association state, deltas (NEW) [step]
     PHASES_DEFAULT = ('epoch', 'associate')               # 'identity' runs after `exopipe3 forced` (full-chain order p3s3_pass.sh:96-136; gate D-G22) [step]
     REQUIRE_FORCED_BEFORE_IDENTITY = True                 # spec catalog.md 5.1 D-G22 (a done `forced` record newer than the associate record) [step]
@@ -488,6 +490,16 @@ class catalog_sublst(_Section):
     ROOTS_CSV = '{root}/catalog_inputs/roots_{lst}.csv'   # sublst_catalogs.sh:30, sublst_catalog_chain.sh:36 [env:P3S2_ROOTS_CSV]
     STACK_ROOT = '{root}/{lst}'                           # window stacks SL/<LST>; sublst_catalogs.sh:46-48 [arg:--stack-root]
     COMPARE_ROOT = '{root}/compare_{lst}'                 # sublst_catalog_chain.sh:42 (old/ and new_<arm>/ under it) [step]
+    # ---- the per-hour chain: `catalog --tier sublst --incremental --epochs <LST>_<date>` (lib/catalog/incremental_sublst.py)
+    # The night pass's own directory of one night of one LST hour and arm ({transients_root} = paths.TRANSIENTS_ROOT, beside
+    # the 10-minute grouping catalog_grouping.SUBLST_DIR). It is kept after the pass: every later night's grouping run reads its
+    # master_catalog.csv and window-tie rows (grouping_stage.assemble_tenmin_input) until the next all-nights pass, and the
+    # pages of the night read its index hour_views.json (NEW, refactor chat 2026-11-24) [step]
+    NIGHT_DIR = '{transients_root}/sublst_nights/{lst}_{arm}/{night}'
+    # one per-hour item at a time groups, builds and views on the 10-minute grouping (an flock in the grouping directory held
+    # from the grouping run to the last view): a second item waits up to this long, then REFUSES naming the holder (the
+    # grouping unit's own lock refuses at once, so two hours' items would otherwise refuse each other) [step]
+    NIGHT_LOCK_WAIT_S = 7200
     RULED = {'TIER_RULE4_RANGE': 'RULING-TIER-RULE-4-FAILED-FLUX-SCALE',
              'ELEV_FLOOR_DEG': 'IMPLEMENTED-10MIN-ELEVATION-FLOOR-25-DEG',
              'FLUX_BAKE_POLICY': 'IMPLEMENTED-Q10-DEEP-FLUX-SCALE-BAKED-AND-Q1-FRAME-TIME-IN-10MIN-STACKS',
