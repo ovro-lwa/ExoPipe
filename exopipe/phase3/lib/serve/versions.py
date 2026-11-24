@@ -25,11 +25,15 @@ LAYOUT (name = basename(U); R = the VERSIONS ROOT, <dir>/<name><serve.RUN_VERSIO
                            counts, the manifest's sha256, the required paths and the caller's content checks with their results)
   R/<vid>/holds/<id>.json  hold(): a reader of the version (a build that reads it); retire() never deletes a held version
   R/POINTER_LOG.jsonl      one line per switch (UTC, from, to, the switcher)
+  R/CATCHUP_OWED.json      a switch whose catch-up of the old version's journal lines failed (owe_catchup): every later
+                           begin/place/switch of U refuses and the old version is retained until catchup_done removes it
   R/RETIRE_LOG.jsonl       one line per retired version
   R/retire_plans/          the dry runs of retire()
   R/locks/journal_<J>.lock flock of the judgement journal directory <J> of every version (journal_locks; the two-port server's
                            POST lock of a labels directory in a version, two_port.journal_lock_path): one file across versions
   R/.lock                  flock: switch() and retire() exclusive
+  Lock files are created group-writable (0o664 set explicitly; R/locks setgid, so they take its group: the serve and the hub
+  may run as different users of one group); a lock that cannot be opened is a Refusal naming the file and its owner.
 U -> <name><suffix>/<vid>/<name> (relative when R is beside U, else absolute).
 
 COMPLETION. A version is complete only when seal() wrote its VERSION.json, and seal() writes it only when the run directory
@@ -44,19 +48,29 @@ ADOPTION. The first switch of a run that is still a plain directory (today's Run
 /fast/gh/main/phase3/Run_P3S5) first moves that directory into R as version <its mtime>-adopted (a rename on its own file
 system; R lies beside the real directory; an empty run directory is refused, nothing moved), then switches. Between the
 rename and the switch, about a millisecond once per run, U does not exist; a page already built keeps its own realpath (the
-page code resolves --run once) and reads on. The adopted version's record (state 'adopted') is written only after the rename;
+page code resolves --run once) and reads on. Any failure after the rename and before U points at the new version moves the
+run back to where it was (U as before) and removes the adopted version. The adopted version's record (state 'adopted') is
+written only after the rename;
 seal_adopted() then gives it a manifest (state 'sealed', the adoption kept in the record), so it can be switched back to like
 any other version - publish() does so after the switch, outside the lock (one walk of the old run).
 
-LEASES. A holder or builder record (me()) carries lease_until (UTC seconds, serve.RUN_VERSIONS_LEASE_S ahead). On this host a
-record is alive while its pid runs with the same start time; on another host only until its lease expires. hold(), a placed
-or begun version's BUILDING.json and the coalescing builder renew their lease in this process (a renewer thread, every quarter
-lease) until they end, so a reader or builder on another node is never taken for gone while it runs, and a dead one is not
-kept for ever.
+LEASES. A holder or builder record (me()) carries lease_until (UTC seconds, serve.RUN_VERSIONS_LEASE_S ahead) and lease_s. On
+this host a record is alive while its pid runs with the same start time; on another host until TWICE its lease has passed
+(lease_until + lease_s: a renewal delayed by a slow file system is not taken for a death), and a record without lease_until
+(written before leases, or unreadable) counts as alive - it is never retired or moved back automatically. hold(), a placed or
+begun version's BUILDING.json and the coalescing builder renew their lease in this process (a renewer thread, every quarter
+lease: the new record written and fsynced outside the renewer's lock, only its rename under it) until they end, so a reader
+or builder on another node is never taken for gone while it runs, and a dead one is not kept for ever.
+
+OWED CATCH-UP. A switch is followed by the catch-up of the journal lines written on the old version (sublst_build). If that
+fails after the switch, owe_catchup() records it (R/CATCHUP_OWED.json: the old and new versions, the marks); until
+catchup_done() removes it, begin(), place() and switch() of U refuse and retention keeps the old version. The sub-LST serve
+retries the owed catch-up before it builds.
 
 RETENTION (retire). Kept: the version the pointer names (and any version another link in U's directory names), the newest
 serve.RUN_VERSIONS_KEEP sealed versions (an adopted version without its manifest cannot be switched back to: it is not one of
-them, and it is kept until seal_adopted gives it one), every version with a live hold or a live builder (LEASES). Everything else - older versions and abandoned unsealed
+them, and it is kept until seal_adopted gives it one), every version with a live hold or a live builder (LEASES), the old
+version of an owed catch-up. Everything else - older versions and abandoned unsealed
 builds - is retired, ONLY through a dry run first: retire(U) writes the plan (R/retire_plans/RETIRE_PLAN_<UTC>.json: the versions and
 their sizes) and deletes nothing; retire(U, plan=<that file>) re-derives the plan under the lock and refuses (nothing deleted)
 unless every planned version is still to be retired; each one is renamed out of R's names (R/.retiring_<vid>) before it is
@@ -72,6 +86,7 @@ import fnmatch
 import hashlib
 import json
 import os
+import sys
 import re
 import shutil
 import socket
@@ -129,28 +144,62 @@ def me(note=''):
     seconds: serve.RUN_VERSIONS_LEASE_S ahead; renewed by renew() while the hold or build lasts)."""
     pid = os.getpid()
     return {'pid': pid, 'start': _proc_start(pid), 'host': socket.gethostname(), 'utc': _utc(), 'note': str(note)[:300],
-            'lease_until': round(time.time() + _lease_s(), 3)}
+            'lease_until': round(time.time() + _lease_s(), 3), 'lease_s': _lease_s()}
 
 
 def alive(who):
     """True when the holder/builder ``who`` (a me() dict) may still run: on this host, its pid runs with the same start time;
-    on another host, until its lease expires (lease_until; a record without one is not alive - it cannot be checked)."""
+    on another host, until twice its lease has passed (lease_until + lease_s); a record from another host without
+    lease_until (from before leases, or unreadable) counts as alive - nothing removes it automatically (LEASES)."""
     if not who:
         return False
     if who.get('host') != socket.gethostname():
+        if who.get('lease_until') is None:
+            return True
         try:
-            return time.time() < float(who.get('lease_until') or 0)
+            return time.time() < float(who['lease_until']) + float(who.get('lease_s') or _lease_s())
         except (TypeError, ValueError):
-            return False
+            return True
     st = _proc_start(who.get('pid', -1))
     return st is not None and (who.get('start') is None or st == who.get('start'))
 
 
 # ---- lease renewal ----------------------------------------------------------------------------------------------------
 _RENEW = {}                        # path of a holder/builder JSON -> stop test (callable -> True when the lease may end)
-_RENEW_LOCK = threading.Lock()     # held while a lease file is rewritten: renew_stop() returns only after any rewrite of it
+_RENEW_LOCK = threading.Lock()     # held while a renewed lease file is renamed into place: renew_stop() returns only after it
 _RENEWER = [None]
 _RENEW_WAKE = threading.Event()   # set by renew(): a new lease is renewed on the period of now, not of the last sleep
+
+
+def _renew_one(path, done):
+    """One renewal of ``path``: read, written to a temporary file beside it and fsynced OUTSIDE _RENEW_LOCK (a slow file
+    system never blocks renew_stop), renamed over ``path`` under the lock only while ``path`` is still renewed with this
+    stop test (after renew_stop() the file is never rewritten)."""
+    tmp = os.path.join(os.path.dirname(path), f'.{os.path.basename(path)}.lease.{os.getpid()}')
+    try:
+        if done() or not os.path.exists(path):
+            with _RENEW_LOCK:
+                if _RENEW.get(path) is done:
+                    _RENEW.pop(path, None)
+            return
+        with open(path) as f:
+            rec = json.load(f)
+        rec['lease_until'] = round(time.time() + _lease_s(), 3)
+        rec['lease_s'] = _lease_s()
+        with open(tmp, 'w') as f:
+            json.dump(rec, f, sort_keys=True)
+            f.flush()
+            os.fsync(f.fileno())
+        with _RENEW_LOCK:
+            if _RENEW.get(path) is done and os.path.exists(path):
+                os.replace(tmp, path)
+    except (OSError, ValueError):
+        with _RENEW_LOCK:
+            if _RENEW.get(path) is done:
+                _RENEW.pop(path, None)       # gone or unreadable: nothing left to renew
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
 
 
 def _renew_loop():
@@ -161,17 +210,9 @@ def _renew_loop():
             if not _RENEW:
                 _RENEWER[0] = None
                 return
-            for path, done in list(_RENEW.items()):
-                try:
-                    if done() or not os.path.exists(path):
-                        _RENEW.pop(path, None)
-                        continue
-                    with open(path) as f:
-                        rec = json.load(f)
-                    rec['lease_until'] = round(time.time() + _lease_s(), 3)
-                    _atomic_json(path, rec)
-                except (OSError, ValueError):
-                    _RENEW.pop(path, None)       # gone or unreadable: nothing left to renew
+            todo = list(_RENEW.items())
+        for path, done in todo:
+            _renew_one(path, done)
 
 
 def renew(path, done=lambda: False):
@@ -219,9 +260,10 @@ class Version:
             return None
 
     def holds(self):
-        """[(hold file, holder)] of the version."""
+        """[(hold file, holder)] of the version (a hold that cannot be read counts as alive: alive() of a record without a
+        lease)."""
         d, out = self.path('holds'), []
-        for f in sorted(os.listdir(d)) if os.path.isdir(d) else ():
+        for f in sorted(n for n in os.listdir(d) if not n.startswith('.')) if os.path.isdir(d) else ():
             try:
                 with open(os.path.join(d, f)) as fh:
                     out.append((os.path.join(d, f), json.load(fh)))
@@ -282,10 +324,19 @@ def all_versions(U):
     return [Version(R, v, name) for v in sorted(os.listdir(R)) if _VID_RE.match(v) and os.path.isdir(os.path.join(R, v))]
 
 
+def _open_lock(p):
+    """two_port.open_lock (group-writable, close-on-exec), its permission failure a Refusal naming the file and owner."""
+    from exopipe.phase3.lib.serve import two_port
+    try:
+        return two_port.open_lock(p)
+    except two_port.LockPermissionError as e:
+        raise Refusal(str(e)) from None
+
+
 @contextlib.contextmanager
 def _lock(R):
     os.makedirs(R, exist_ok=True)
-    fd = os.open(os.path.join(R, '.lock'), os.O_RDWR | os.O_CREAT, 0o664)   # close-on-exec (Python's default)
+    fd = _open_lock(os.path.join(R, '.lock'))
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
         yield
@@ -310,6 +361,7 @@ def _new_vid_dir(R, stamp):
 def begin(U, note=''):
     """A new, empty, unsealed version of U: R/<vid>/<name>/ and its BUILDING.json (this process). Returns the Version."""
     _guard(U, 'a new version of')
+    refuse_owed(U, 'no new version begun')
     R, name = root_of(U), os.path.basename(os.path.normpath(U))
     vid = _new_vid_dir(R, time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()))
     v = Version(R, vid, name)
@@ -330,6 +382,7 @@ def place(U, B, note=''):
     _guard(U, 'a new version of')
     if not os.path.isdir(B) or os.path.islink(B):
         raise Refusal(f'no build directory {B} to place as a version of {U}')
+    refuse_owed(U, f'{B} not placed')
     R, name = root_of(U), os.path.basename(os.path.normpath(U))
     os.makedirs(R, exist_ok=True)
     if os.stat(B).st_dev != os.stat(R).st_dev:
@@ -344,13 +397,18 @@ def place(U, B, note=''):
 
 
 def ever_served(v):
-    """True when R/POINTER_LOG.jsonl records a switch to ``v`` or a link names it now (a version readers may have seen)."""
+    """True when R/POINTER_LOG.jsonl records a switch to ``v`` or a link names it now (a version readers may have seen). No
+    log: no switch was ever made under R (the first switch writes it), so not served by a switch. A log that exists and
+    cannot be read or parsed: Refusal (it cannot be decided)."""
+    log = os.path.join(v.root, 'POINTER_LOG.jsonl')
     try:
-        with open(os.path.join(v.root, 'POINTER_LOG.jsonl')) as f:
+        with open(log) as f:
             if any(json.loads(x).get('to') == v.vid for x in f if x.strip()):
                 return True
-    except (OSError, ValueError):
-        return True                                    # an unreadable log: assume it was served
+    except FileNotFoundError:
+        pass
+    except (OSError, ValueError) as e:
+        raise Refusal(f'{log} cannot be read ({e}): whether version {v.vid} was served is not known') from None
     U = (v.builder() or {}).get('pointer') or os.path.join(os.path.dirname(v.root), v.name)
     return v.vid in _linked_vids(U, v.root)
 
@@ -538,12 +596,28 @@ def _has_file(d):
     return False
 
 
+def _unadopt(v, real):
+    """Undo _adopt: the adopted run moved back to ``real`` (U's directory, or the directory U links to) and the adopted
+    version removed. Returns None, or the text of what could not be undone."""
+    try:
+        os.rename(v.run, real)
+    except OSError as e:
+        return (f'the legacy run could not be moved back: it is {v.run} (adopted version {v.vid}); move it back to {real} '
+                f'by hand ({e})')
+    with contextlib.suppress(OSError):
+        os.unlink(v.path('VERSION.json'))
+    with contextlib.suppress(OSError):
+        os.rmdir(v.dir)
+    return None
+
+
 def _adopt(U, R):
     """Move the legacy run U (a directory, or a link to one) into R as an adopted version; returns (Version, the link U was or
-    None). The caller holds R's lock and writes the pointer right after (os.replace over U: over the link U was, now
-    dangling, or where the directory was). Refusal, nothing moved: not a directory, another file system, an empty run, no
-    free version name. The record (state 'adopted') is written only after the rename; a failed rename removes the empty
-    version directory and refuses."""
+    None, the directory it was moved from). The caller holds R's lock and writes the pointer right after (os.replace over U:
+    over the link U was, now dangling, or where the directory was); a failure before U points at the new version calls
+    _unadopt. Refusal, nothing moved: not a directory, another file system, an empty run, no free version name. The record
+    (state 'adopted') is written only after the rename; a failed rename removes the empty version directory and refuses, a
+    failed record moves the run back and refuses."""
     name = os.path.basename(os.path.normpath(U))
     was_link = os.readlink(U) if os.path.islink(U) else None
     real = os.path.realpath(U)
@@ -572,10 +646,19 @@ def _adopt(U, R):
         with contextlib.suppress(OSError):
             os.rmdir(v.dir)
         raise Refusal(f'{real} could not be moved into {v.run} ({e}) - nothing switched, {U} unchanged') from None
-    _atomic_json(v.path('VERSION.json'), {'format': FORMAT, 'name': name, 'version': vid, 'state': 'adopted',
-                                          'adopted_utc': _utc(), 'adopted_by': me(), 'adopted_from': real,
-                                          'pointer_was_link': was_link, 'manifest': None})
-    return v, was_link
+    try:
+        _atomic_json(v.path('VERSION.json'), {'format': FORMAT, 'name': name, 'version': vid, 'state': 'adopted',
+                                              'adopted_utc': _utc(), 'adopted_by': me(), 'adopted_from': real,
+                                              'pointer_was_link': was_link, 'manifest': None})
+    except BaseException as e:
+        undo = _unadopt(v, real)
+        if not isinstance(e, Exception):               # an interrupt stays an interrupt; what was not undone is printed
+            if undo:
+                print(f'versions: {undo}', file=sys.stderr, flush=True)
+            raise
+        raise Refusal(f'the adoption record of {v.vid} could not be written ({e}) - '
+                      + (undo or f'the run moved back to {real}, nothing switched')) from None
+    return v, was_link, real
 
 
 def seal_adopted(v, note=''):
@@ -620,20 +703,34 @@ def switch(U, v, note='', record=None):
     with _lock(v.root):
         if os.path.realpath(root_of(U)) != os.path.realpath(v.root):
             raise Refusal(f'version {v.run} is not under the versions root of {U} ({root_of(U)})')
+        refuse_owed(U, 'not switched')
         ok, detail = verify(v, record)
         if not ok:
             raise Refusal(f'not switched: {detail} - {U} still names {os.path.realpath(U) if os.path.lexists(U) else "nothing"}')
         prev, adopted = served(U), None
-        if prev is None and os.path.lexists(U):
-            adopted, _ = _adopt(U, v.root)
-            prev = adopted
         if prev is not None and prev.vid == v.vid:
             raise Refusal(f'{U} already names version {v.vid}')
+        if prev is None and os.path.lexists(U):
+            adopted, _, real = _adopt(U, v.root)
+            prev = adopted
         tmp = os.path.join(os.path.dirname(os.path.abspath(U)), f'.{name}.pointer.{os.getpid()}')
-        if os.path.lexists(tmp):
-            os.unlink(tmp)
-        os.symlink(_link_target(U, v), tmp)
-        os.replace(tmp, U)
+        try:
+            if os.path.lexists(tmp):
+                os.unlink(tmp)
+            os.symlink(_link_target(U, v), tmp)
+            os.replace(tmp, U)
+        except BaseException as e:                     # U does not point at v: an adopted run goes back where it was
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)
+            undo = _unadopt(adopted, real) if adopted is not None else None
+            if not isinstance(e, Exception):           # an interrupt stays an interrupt; what was not undone is printed
+                if undo:
+                    print(f'versions: {undo}', file=sys.stderr, flush=True)
+                raise
+            if undo is not None or not isinstance(e, Refusal):
+                raise Refusal(f'not switched: the pointer could not be written ({e})'
+                              + (f' - AND {undo}' if undo else f' - {U} unchanged')) from e
+            raise
         _append_jsonl(os.path.join(v.root, 'POINTER_LOG.jsonl'),
                       {'utc': _utc(), 'pointer': os.path.abspath(U), 'from': prev.vid if prev else None, 'to': v.vid,
                        'adopted': adopted.vid if adopted else None, 'by': me(note)})
@@ -696,9 +793,7 @@ def journal_locks(U, journals):
     fds = []
     try:
         for J in sorted(set(journals)):
-            p = two_port.journal_lock_file(R, J)
-            os.makedirs(os.path.dirname(p), exist_ok=True)
-            fd = os.open(p, os.O_RDWR | os.O_CREAT, 0o664)       # close-on-exec (Python's default)
+            fd = _open_lock(two_port.journal_lock_file(R, J))      # group-writable, close-on-exec
             fds.append(fd)
             fcntl.flock(fd, fcntl.LOCK_EX)
         yield
@@ -707,6 +802,49 @@ def journal_locks(U, journals):
             with contextlib.suppress(OSError):
                 fcntl.flock(fd, fcntl.LOCK_UN)
             os.close(fd)
+
+
+# ---- an owed catch-up -------------------------------------------------------------------------------------------------
+OWED_FILE = 'CATCHUP_OWED.json'
+
+
+def owed_catchup(U):
+    """The owed catch-up record of U (R/CATCHUP_OWED.json) or None. A record that exists and cannot be read: Refusal."""
+    p = os.path.join(root_of(U), OWED_FILE)
+    try:
+        with open(p) as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as e:
+        raise Refusal(f'{p} exists and cannot be read ({e}): an owed journal catch-up of {U} - resolve it first') from None
+
+
+def refuse_owed(U, what):
+    """Refusal when U owes a journal catch-up (OWED CATCH-UP)."""
+    rec = owed_catchup(U)
+    if rec is not None:
+        raise Refusal(f'{what}: {U} owes the catch-up of the journal lines of version {rec.get("from_version")} into '
+                      f'{rec.get("to_version")} (failed {rec.get("utc")}: {str(rec.get("error"))[:200]}; '
+                      f'{os.path.join(root_of(U), OWED_FILE)}) - the next serve --tier sublst retries it first')
+
+
+def owe_catchup(U, rec):
+    """Record an owed catch-up (rec: from_version, from_run, to_version, the marks, the error). Returns its path."""
+    p = os.path.join(root_of(U), OWED_FILE)
+    _atomic_json(p, dict(rec, format=FORMAT, utc=_utc(), by=me(rec.get('note', ''))))
+    return p
+
+
+def catchup_done(U, rec):
+    """Remove the owed catch-up record ``rec`` (it must still be the one on disk)."""
+    p = os.path.join(root_of(U), OWED_FILE)
+    if owed_catchup(U) != rec:
+        raise Refusal(f'{p} changed since it was read - not removed')
+    os.unlink(p)
+    _append_jsonl(os.path.join(root_of(U), 'POINTER_LOG.jsonl'),
+                  {'utc': _utc(), 'pointer': os.path.abspath(U), 'catchup_done': rec.get('from_version'),
+                   'to': rec.get('to_version'), 'by': me()})
 
 
 # ---- retention --------------------------------------------------------------------------------------------------------
@@ -748,6 +886,7 @@ def retention(U, keep=None):
     vs = all_versions(U)
     cur = served(U)
     linked = _linked_vids(U, R)
+    owed = (owed_catchup(U) or {}).get('from_version')
     done = [v for v in vs if (v.record() or {}).get('state') == 'sealed']     # switchable: a manifest to verify against
     newest = {v.vid for v in done[-keep:]}
     out = []
@@ -759,6 +898,8 @@ def retention(U, keep=None):
             out.append((v, 'keep', 'the pointer names it'))
         elif v.vid in linked:
             out.append((v, 'keep', 'a link names it'))
+        elif v.vid == owed:
+            out.append((v, 'keep', f'its journal lines are owed to the served version ({OWED_FILE})'))
         elif live_holds:
             out.append((v, 'keep', f'held by {len(live_holds)} reader(s), e.g. pid {live_holds[0].get("pid")} on '
                                    f'{live_holds[0].get("host")}'))

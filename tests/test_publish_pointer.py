@@ -37,9 +37,21 @@ lib/serve/sublst_build.py): data-free, plain checks, runnable with python, under
    unit, nothing built), builds with one follow-up for a request made during its build (the plan made again), re-raises a
    build's refusal once the slot is free, and runs stages without build or start directly; the sub-LST placement requests a
    build of the cumulative run beside the runs it placed.
+12. The second review round: no pointer log means never served (the move back works at the first switch) and a failed move
+   back never masks the refusal; the seed carry/copy reads the journals under the journal locks and the design-B maps are
+   loaded before them (seed and catch-up); a catch-up that fails after the switch is owed (builds and switches refuse, the
+   old version kept) until the next serve completes it; a label form rendered by another version, or without its token, is
+   answered 409 and nothing is recorded; the legacy LOCK_DIR lock is taken too when it exists; lock files group-writable,
+   a lock that cannot be opened a refusal naming its owner; another host's record without a lease is alive, a lease dead
+   only after twice its length, renewals fsynced outside the renewer lock; adoption rolled back on a failure before U
+   points at the new version; the content test walks the run against MANIFEST.tsv.
 """
+import contextlib
+import fcntl
+import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -252,8 +264,9 @@ def test_place():
     versions._atomic_json(v.path('BUILDING.json'), dict(b, start=-1))       # its placing process is gone
     check('a placed build whose placer is gone is found', versions.placed_abandoned(U, B).vid == v.vid)
     versions.seal(v)
-    check('a sealed version is never moved back', 'is sealed' in (refuses(versions.unplace, v, B) or '')
-          and versions.placed_abandoned(U, B) is None)
+    check('a sealed version is not moved back without sealed=True; one never switched to (no pointer log) whose placer is '
+          'gone is found as abandoned', 'is sealed' in (refuses(versions.unplace, v, B) or '')
+          and (versions.placed_abandoned(U, B) or types.SimpleNamespace(vid=None)).vid == v.vid)
     check('place refuses a missing build directory', 'no build directory' in (refuses(versions.place, U, B) or ''))
 
 
@@ -532,7 +545,8 @@ class App:
 class Handler(BaseHTTPRequestHandler):
     app = None
     def do_GET(self):
-        body = ('version=' + os.path.basename(os.path.dirname(self.app.run_dir))).encode()
+        body = ('version=' + os.path.basename(os.path.dirname(self.app.run_dir)) + '<form method="POST" action="/label">'
+                '<input name="source_id" value="J7"><button>fp</button></form>').encode()
         self.send_response(200); self.send_header('Content-Type', 'text/html; charset=utf-8')
         self.send_header('Content-Length', str(len(body))); self.end_headers(); self.wfile.write(body)
     def do_POST(self):
@@ -603,18 +617,38 @@ def test_judgements_after_switch():
     st = TP.Store(reg)
     r = TP.serve_request(st, False, 'GET', '/p/pv/', {})
     check('two-port: the page is built on the served version', r[0] == 200 and f'version={v2.vid}'.encode() in r[2], r[:1])
+    tok_re = re.compile(TP.PAGE_TOKEN_FIELD.encode() + rb'" value="([0-9a-f]+)"')
+    t2 = (tok_re.findall(r[2]) or [b''])[0].decode()
+    check('two-port: the label form of a page in a version carries that version\'s token',
+          t2 and t2 == TP.page_token(os.path.realpath(os.path.join(v2.run, J))) and r[2].count(b'name="_twoport_page"') == 1,
+          r[2][:300])
     v3, rec3 = next_version(U, 'C', J)
     with versions.journal_locks(U, [J]):
         versions.switch(U, v3, record=rec3)
     r = TP.serve_request(st, False, 'GET', '/p/pv/', {})
     check('two-port: a GET right after the switch (no registry change) may still be answered by the page built before',
-          r[0] == 200 and f'version={v2.vid}'.encode() in r[2], r[:1])
-    body = b'source_id=J7&confidence=fp'
-    r = TP.serve_request(st, False, 'POST', '/p/pv/label', {'Content-Length': str(len(body))}, body)
+          r[0] == 200 and f'version={v2.vid}'.encode() in r[2] and t2.encode() in r[2], r[:1])
+    n_before = (len(lines(os.path.join(U, J, 'judgements.jsonl'))), len(lines(f'{v2.run}/{J}/judgements.jsonl')))
+
+    def post(body):
+        return TP.serve_request(st, False, 'POST', '/p/pv/label', {'Content-Length': str(len(body))}, body)
+    r_old = post(f'source_id=J7&confidence=fp&{TP.PAGE_TOKEN_FIELD}={t2}'.encode())
+    r_none = post(b'source_id=J7&confidence=fp')
+    n_after = (len(lines(os.path.join(U, J, 'judgements.jsonl'))), len(lines(f'{v2.run}/{J}/judgements.jsonl')))
+    check('two-port: a label form rendered by the version before the switch (its token) and one without a token are '
+          'answered 409 "the page changed since you loaded it; reload and judge again; nothing was recorded", nothing '
+          'written to either journal', r_old[0] == 409 and r_none[0] == 409 and b'reload and judge again' in r_old[2]
+          and b'nothing was recorded' in r_old[2] and n_after == n_before, (r_old[:1], r_none[:1], n_before, n_after))
+    r = TP.serve_request(st, False, 'GET', '/p/pv/', {})
+    t3 = (tok_re.findall(r[2]) or [b''])[0].decode()
+    check('two-port: the reload is the page built on the served version, its form the new token',
+          f'version={v3.vid}'.encode() in r[2] and t3 and t3 != t2, r[2][:200])
+    r = post(f'source_id=J7&{TP.PAGE_TOKEN_FIELD}={t3}&confidence=fp'.encode())
     got = lines(os.path.join(U, J, 'judgements.jsonl'))
-    check('two-port: a POST after the switch is answered by a page built on the served version, and its line is in the '
-          'served journal (never by the page of the version before, whose page ids differ under design B)',
-          r[0] == 303 and got[-1].get('source_id') == 'J7' and got[-1].get('page_version') == v3.vid
+    check('two-port: the form of the served version is recorded by a page built on it, in the served journal, without the '
+          'token field (the page reads the form it always read)',
+          r[0] == 303 and got[-1].get('source_id') == 'J7' and got[-1].get('confidence') == 'fp'
+          and got[-1].get('page_version') == v3.vid and TP.PAGE_TOKEN_FIELD not in got[-1]
           and os.path.realpath(U) == v3.run and not any(x.get('source_id') == 'J7' for x in lines(f'{v2.run}/{J}/judgements.jsonl')),
           (r[:2], got[-1:]))
     pg = st.pages.get(('pv', False))
@@ -752,10 +786,13 @@ def test_review_findings():
           and 'without a manifest' in rows[fake.vid][1], rows)
     # finding 7: leases
     now = time.time()
-    check('alive: a holder on another host is alive until its lease expires, not for ever',
-          versions.alive({'host': 'another-node', 'pid': 1, 'lease_until': now + 60})
-          and not versions.alive({'host': 'another-node', 'pid': 1, 'lease_until': now - 1})
-          and not versions.alive({'host': 'another-node', 'pid': 1}))
+    Ls = versions._lease_s()
+    check('alive: a holder on another host is alive until twice its lease has passed, not for ever; a record without a '
+          'lease (before leases) counts as alive',
+          versions.alive({'host': 'another-node', 'pid': 1, 'lease_until': now + 60, 'lease_s': Ls})
+          and versions.alive({'host': 'another-node', 'pid': 1, 'lease_until': now - 1, 'lease_s': Ls})
+          and not versions.alive({'host': 'another-node', 'pid': 1, 'lease_until': now - Ls - 1, 'lease_s': Ls})
+          and versions.alive({'host': 'another-node', 'pid': 1}))
     check('alive: on this host the pid decides (a dead pid with a lease is not alive)',
           not versions.alive(dict(versions.me(), start=-1)) and versions.alive(versions.me()))
     real_lease = versions._lease_s
@@ -795,15 +832,14 @@ def test_review_findings():
         n0 = len(calls)
         versions.publish(W, w2)
         n_publish = len(calls) - n0
-        r = TV.sealed_complete(w2.path('VERSION.json'), sealed_by_this_unit=True)
+        r = TV.sealed_complete(w2.path('VERSION.json'))
         n_test = len(calls) - n0 - n_publish
-        r_full = TV.sealed_complete(w2.path('VERSION.json'))
     finally:
         versions.walk = real_walk
     check('a publish walks the run once (the seal; the switch checks the seal\'s record and manifest)', n_publish == 1,
           n_publish)
-    check('the run_version content test of a version the unit sealed itself does not walk it again; without that, it does',
-          r[0] and n_test == 0 and r_full[0], (r, n_test, r_full))
+    check('the run_version content test walks the run again against MANIFEST.tsv (second review, finding 9)',
+          r[0] and n_test == 1, (r, n_test))
     write(f'{w2.run}/added.txt', 'x')
     check('a switch to a version without the caller\'s seal record walks it (a change after the seal refuses)',
           'differs from its manifest' in (refuses(versions.switch, W, w2) or '') or 'already names' in
@@ -930,6 +966,302 @@ def test_coalescer_wired():
           (u.status, u.reason, u.meta.get('build_requested')))
 
 
+# ---- 12. the second review round ---------------------------------------------------------------------------------------------
+def test_review_round2():
+    from exopipe.phase3.core.record import Run
+    from exopipe.phase3.lib.catalog import grouping_stage as GS
+    from exopipe.phase3.lib.serve import flow, journals, sublst_build
+    from exopipe.phase3.lib.serve import tests_versions as TV
+    from exopipe.phase3.lib.serve import two_port as TP
+    d = f'{TMP}/round2'
+    os.makedirs(d)
+    J = CFG.serve.SUBLST_JOURNALS[0]
+    rels = {'queue': 'judgements/queue_V.txt', 'catalog': 'source_catalogs_V'}
+    page = types.SimpleNamespace(key='V', family='test', program='test',
+                                 at=lambda f, root=None: os.path.join(root, rels[f]) if f in rels else None)
+
+    def build(B, tag):
+        write(f'{B}/candidates/V/x.txt', tag)
+        write(f'{B}/candidates/I/y.txt', tag)
+        write(f'{B}/judgements/queue_V.txt', 'J1\n')
+        write(f'{B}/source_catalogs_V/23MHz_sources_survivors.csv', 'source_id\nJ1\n')
+
+    def sublst(name):
+        U = f'{d}/{name}/Run_SLSTB'
+        B = U + CFG.serve.SUBLST_BUILD_SUFFIX
+        write(f'{U}/{J}/judgements.jsonl', '{"a": 1}\n')
+        write(f'{U}/candidates/V/x.txt', 'old')
+        build(B, 'new')
+        write(f'{B}/{J}/judgements.jsonl', '{"a": 1}\n')
+        return U, B, types.SimpleNamespace(U=U, U_src=U, run_name='Run_SLSTB', parity=False, pages=[page], family='review',
+                                           refused={})
+
+    def new_run():
+        return Run('serve', ['test'], f'{d}/out', CFG, config_sections=None)
+
+    def refusing(*a, **k):
+        raise Refusal('stand-in: the switch refused')
+    orig = (flow.build_page_index, flow._index_current)
+    flow.build_page_index = lambda u, R, publisher=False: None
+    flow._index_current = lambda R: ''
+    try:
+        # finding 1: no pointer log is "never served"; the move back works at the FIRST switch; a failed move back never
+        # masks the refusal
+        U, B, plan = sublst('first')
+        state = flow.new_state()
+        state.update(version=versions.place(U, B), carry_src=U, design_b=False, marks={})
+        v = state['version']
+        check('no POINTER_LOG.jsonl (no switch yet): ever_served is False', not os.path.exists(
+            f'{versions.root_of(U)}/POINTER_LOG.jsonl') and versions.ever_served(v) is False)
+        real_switch, real_unplace = versions.switch, versions.unplace
+        versions.switch = refusing
+        try:
+            u = sublst_build.switch_stage(new_run(), plan, state)
+        finally:
+            versions.switch = real_switch
+        check('the FIRST switch refused after the seal: the sealed build moved back to B, U still the legacy directory',
+              u.status == 'refused' and 'stand-in' in (u.reason or '') and os.path.isdir(B) and not os.path.exists(v.dir)
+              and not os.path.islink(U) and read(f'{U}/candidates/V/x.txt') == 'old', (u.status, u.reason))
+
+        def failing_unplace(*a, **k):
+            raise OSError(5, 'stand-in move-back failure')
+        state['version'] = v = versions.place(U, B)
+        versions.switch, versions.unplace = refusing, failing_unplace
+        try:
+            u = sublst_build.switch_stage(new_run(), plan, state)
+        finally:
+            versions.switch, versions.unplace = real_switch, real_unplace
+        why = u.reason or ''
+        check('a failed move back never masks the refusal: the switch\'s refusal is the unit\'s reason, the move-back failure '
+              'added after it', u.status == 'refused' and 'stand-in: the switch refused' in why
+              and 'stand-in move-back failure' in why
+              and why.index('stand-in: the switch refused') < why.index('could not be moved back'), (u.status, why))
+        versions.unplace(v, B, sealed=True)
+        write(f'{versions.root_of(U)}/POINTER_LOG.jsonl', 'not json\n')
+        check('a pointer log that exists and cannot be parsed: ever_served refuses (not decided), never guesses',
+              'cannot be read' in (refuses(versions.ever_served, v) or ''))
+        os.remove(f'{versions.root_of(U)}/POINTER_LOG.jsonl')
+        # finding 2: the seed carry/copy reads the served journals under the journal locks; the maps are loaded before them
+        events = []
+        real = (versions.journal_locks, journals.sublst_carry_maps, journals.sublst_journal_snapshot,
+                journals.sublst_carry_journals, journals.sublst_copy_journals, journals.sublst_carry_between, GS.mode)
+
+        @contextlib.contextmanager
+        def jl(U_, Js):
+            with real[0](U_, Js):
+                events.append('lock')
+                yield
+                events.append('unlock')
+        versions.journal_locks = jl
+        journals.sublst_carry_maps = lambda old, new: events.append(('maps', old, new)) or {'V': ('old', 'new')}
+        journals.sublst_journal_snapshot = lambda src: events.append('snapshot') or {J: ['{"a": 1}']}
+        journals.sublst_carry_journals = lambda src, B_, snapshot=None, maps=None: (
+            events.append(('carry', snapshot, maps)) or ({J: {}}, {J: len(snapshot[J])}))
+        journals.sublst_copy_journals = lambda src, B_: events.append('copy') or real[4](src, B_)
+        journals.sublst_carry_between = lambda P, U_, marks, maps=None: events.append(('between', P, marks, maps)) or {J: 0}
+        try:
+            GS.mode = lambda: types.SimpleNamespace(design_b=True)
+            st = flow.new_state()
+            u = sublst_build.carry_swap_stage(new_run(), plan, st)
+            ev_b = list(events)
+            check('design B seed: maps loaded before the journal locks, the journals read under them (a consistent cut), the '
+                  'carry after', u.status == 'done' and ev_b == [('maps', U, B), 'lock', 'snapshot', 'unlock',
+                                                               ('carry', {J: ['{"a": 1}']}, {'V': ('old', 'new')})],
+                  (u.status, u.reason, ev_b))
+            versions.unplace(st['version'], B)
+            events.clear()
+            GS.mode = lambda: types.SimpleNamespace(design_b=False)
+            st = flow.new_state()
+            u = sublst_build.carry_swap_stage(new_run(), plan, st)
+            check('the journal copy (not design B) runs under the journal locks', u.status == 'done'
+                  and events == ['lock', 'copy', 'unlock'], (u.status, u.reason, events))
+            versions.unplace(st['version'], B)
+            # finding 10: the catch-up's catalogues and member maps are loaded before the locks; under them only the tail
+            events.clear()
+            legacy_real = os.path.realpath(U)
+            state = flow.new_state()
+            state.update(version=versions.place(U, B), carry_src=U, design_b=True, marks={J: 1})
+            v1 = state['version']
+            u = sublst_build.switch_stage(new_run(), plan, state)
+            prev = versions.Version(v1.root, u.meta.get('previous') or '', 'Run_SLSTB')
+            check('design-B catch-up: the maps of the old run (the legacy directory, adopted by this switch) and the new '
+                  'version loaded before the locks; under them only the switch and the tail carried with those maps',
+                  u.status == 'done' and events == [('maps', legacy_real, v1.run), 'lock',
+                                                    ('between', prev.run, {J: 1}, {'V': ('old', 'new')}), 'unlock'],
+                  (u.status, u.reason, events))
+        finally:
+            (versions.journal_locks, journals.sublst_carry_maps, journals.sublst_journal_snapshot,
+             journals.sublst_carry_journals, journals.sublst_copy_journals, journals.sublst_carry_between, GS.mode) = real
+        # finding 4: a catch-up that fails after the switch is owed; builds and switches refuse until it completes
+        build(B, 'second')
+        write(f'{B}/{J}/judgements.jsonl', read(f'{U}/{J}/judgements.jsonl'))              # the seed copy
+        with open(f'{U}/{J}/judgements.jsonl', 'a') as f:
+            f.write('{"c": 3}\n')                                                       # a label after the copy
+        real_ab = journals.append_between
+
+        def failing_ab(P, U_):
+            raise OSError(5, 'stand-in catch-up failure')
+        journals.append_between = failing_ab
+        try:
+            state = flow.new_state()
+            state.update(version=versions.place(U, B), carry_src=U, design_b=False, marks={})
+            v2 = state['version']
+            u = sublst_build.switch_stage(new_run(), plan, state)
+        finally:
+            journals.append_between = real_ab
+        owed = versions.owed_catchup(U)
+        check('a catch-up that fails after the switch: the unit refused (SWITCHED ... OWED), U names the new version, the '
+              'owed record names the old version and the marks', u.status == 'refused' and 'SWITCHED' in (u.reason or '')
+              and 'OWED' in u.reason and os.path.realpath(U) == v2.run and owed and owed['from_version'] == v1.vid
+              and owed['to_version'] == v2.vid and owed['from_run'] == v1.run, (u.status, u.reason, owed))
+        os.makedirs(f'{d}/first/another.build')
+        check('while a catch-up is owed: begin, place and switch of U refuse',
+              'owes the catch-up' in (refuses(versions.begin, U) or '')
+              and 'owes the catch-up' in (refuses(versions.place, U, f'{d}/first/another.build') or '')
+              and 'owes the catch-up' in (refuses(versions.switch, U, v1) or ''))
+        rows = {x.vid: (act, why) for x, act, why in versions.retention(U, keep=1)}
+        check('while owed, retention keeps the old version (keep 1)', rows[v1.vid][0] == 'keep'
+              and 'owed' in rows[v1.vid][1], rows)
+        uc = sublst_build.catchup_stage(new_run(), plan)
+        check('the next serve completes the owed catch-up first: the line written on the old version is in the served '
+              'journal once, the record removed', uc is not None and uc.status == 'done' and versions.owed_catchup(U) is None
+              and read(f'{U}/{J}/judgements.jsonl').count('"c": 3') == 1, (uc and uc.status, uc and uc.reason))
+        check('nothing owed: no catch-up unit', sublst_build.catchup_stage(new_run(), plan) is None)
+    finally:
+        flow.build_page_index, flow._index_current = orig
+    # finding 8: adoption rolls back on any failure before U points at the new version
+    L = f'{d}/adopt/Run_L'
+    write(f'{L}/x.txt', 'legacy')
+    vl = new_version(L, 'L')
+    recl = versions.seal(vl)
+    real_replace = os.replace
+
+    def failing_replace(a, b):
+        if os.path.abspath(b) == os.path.abspath(L):
+            raise OSError(5, 'stand-in pointer write failure')
+        return real_replace(a, b)
+    os.replace = failing_replace
+    try:
+        why = refuses(versions.switch, L, vl, record=recl)
+    finally:
+        os.replace = real_replace
+    check('a failure after the adoption and before U points at the new version: the legacy run moved back to U, no adopted '
+          'version or temporary link left', why and 'stand-in pointer write failure' in why and os.path.isdir(L)
+          and not os.path.islink(L) and read(f'{L}/x.txt') == 'legacy'
+          and not any(x.vid.endswith('adopted') for x in versions.all_versions(L))
+          and not any(n.startswith('.Run_L.pointer') for n in os.listdir(os.path.dirname(L))), why)
+    real_aj = versions._atomic_json
+
+    def failing_aj(path, obj):
+        if obj.get('state') == 'adopted':
+            raise OSError(28, 'stand-in: no space for the adoption record')
+        return real_aj(path, obj)
+    versions._atomic_json = failing_aj
+    try:
+        why = refuses(versions.switch, L, vl, record=recl)
+    finally:
+        versions._atomic_json = real_aj
+    check('a failed adoption record: the run moved back to U, refused', why and 'adoption record' in why
+          and os.path.isdir(L) and not os.path.islink(L) and read(f'{L}/x.txt') == 'legacy'
+          and not any(x.vid.endswith('adopted') for x in versions.all_versions(L)), why)
+    sw = versions.switch(L, vl, record=recl)
+    check('... and the next switch adopts and switches', os.path.islink(L) and sw['adopted'] is not None)
+    # finding 9: the content test walks the run against MANIFEST.tsv
+    write(f'{vl.run}/added.txt', 'x')
+    r = TV.sealed_complete(vl.path('VERSION.json'))
+    os.remove(f'{vl.run}/added.txt')
+    r2 = TV.sealed_complete(vl.path('VERSION.json'))
+    check('run_version content test: a file added after the seal fails it (the run walked against MANIFEST.tsv)',
+          not r[0] and 'added' in r[2] and r2[0], (r, r2))
+    # finding 7: leases - a renewal's write and fsync outside the renewer lock
+    hf = f'{d}/lease/h.json'
+    write(hf, json.dumps(versions.me()))
+    before = read(hf)
+    real_lease, real_fsync = versions._lease_s, os.fsync
+    slow = threading.Event()
+
+    def slow_fsync(fd):
+        if threading.current_thread().name == 'versions-lease':
+            slow.set()
+            time.sleep(0.6)
+        return real_fsync(fd)
+    versions._lease_s = lambda: 0.4
+    os.fsync = slow_fsync
+    try:
+        versions.renew(hf)
+        slow.wait(5)
+        t0 = time.time()
+        versions.renew_stop(hf)
+        dt = time.time() - t0
+        time.sleep(0.9)
+        after = read(hf)
+    finally:
+        os.fsync, versions._lease_s = real_fsync, real_lease
+    check('a renewal is written and fsynced outside the renewer lock: renew_stop returns at once during a slow fsync, and the '
+          'renewal in flight is dropped (the file not rewritten after renew_stop, no temporary left)',
+          slow.is_set() and dt < 0.3 and after == before and os.listdir(f'{d}/lease') == ['h.json'], (dt, os.listdir(f'{d}/lease')))
+    # findings 5 and 6: the lock files
+    VR = f'{d}/locks/Run_K'
+    vk = new_version(VR, 'K')
+    os.makedirs(f'{vk.run}/{J}')
+    versions.publish(VR, vk)
+    lab = os.path.realpath(os.path.join(VR, J))
+    real_lockdir = TP.LOCK_DIR
+    TP.LOCK_DIR = f'{d}/legacy_locks'
+    try:
+        legacy = os.path.join(TP.LOCK_DIR, hashlib.md5(lab.encode()).hexdigest() + '.lock')
+        with TP.post_lock(threading.Lock(), lab) as jlp:
+            pass
+        check('a versioned labels directory without a legacy lock file on this node: the journal lock only (none created)',
+              jlp == TP.journal_lock_file(versions.root_of(VR), J) and not os.path.exists(legacy), jlp)
+        write(legacy, '')
+        fd = os.open(legacy, os.O_RDWR)
+        fcntl.flock(fd, fcntl.LOCK_EX)                             # a POST of a hub running the code before versioned runs
+        got = []
+
+        def poster():
+            with TP.post_lock(threading.Lock(), lab):
+                got.append(time.time())
+        t = threading.Thread(target=poster)
+        t.start()
+        time.sleep(0.3)
+        blocked = not got
+        released = time.time()
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+        t.join(5)
+        check('the legacy lock exists on this node (an old-code hub\'s): a POST waits for it as well as the journal lock',
+              blocked and got and got[0] >= released, (blocked, got, released))
+    finally:
+        TP.LOCK_DIR = real_lockdir
+    old_umask = os.umask(0o077)                                     # a restrictive umask must not decide the mode
+    try:
+        p6 = f'{d}/perm/Run_P.versions/locks/journal_x.lock'
+        os.close(TP.open_lock(p6))
+    finally:
+        os.umask(old_umask)
+    mode, dmode = os.stat(p6).st_mode & 0o7777, os.stat(os.path.dirname(p6)).st_mode & 0o7777
+    check('a lock file is created group-writable (0o664 under umask 077) in a setgid locks directory (its group inherited)',
+          mode == 0o664 and dmode & 0o2000 and dmode & 0o070 == 0o070, (oct(mode), oct(dmode)))
+    os.chmod(p6, 0o444)
+    why = None
+    try:
+        os.close(TP.open_lock(p6))
+    except TP.LockPermissionError as e:
+        why = str(e)
+    check('a lock this process may not open: a clear refusal naming the file and its owner', why and p6 in why
+          and 'owned by' in why, why)
+    P6 = f'{d}/perm/Run_P'
+    jp = TP.journal_lock_file(versions.root_of(P6), J)
+    os.close(TP.open_lock(jp))
+    os.chmod(jp, 0o444)
+    why = refuses(lambda: versions.journal_locks(P6, [J]).__enter__())
+    check('versions.journal_locks: the same is a Refusal (not an unhandled exception)', why and jp in why and 'owned by' in why,
+          why)
+    os.chmod(jp, 0o664)
+    os.chmod(p6, 0o664)
+
+
 def main():
     shutil.rmtree(TMP, ignore_errors=True)
     os.makedirs(TMP)
@@ -945,6 +1277,7 @@ def main():
         test_judgements_after_switch()
         test_review_findings()
         test_coalescer_wired()
+        test_review_round2()
     finally:
         shutil.rmtree(TMP, ignore_errors=True)
     print(f'{N[0] - len(FAILS)} of {N[0]} checks passed')

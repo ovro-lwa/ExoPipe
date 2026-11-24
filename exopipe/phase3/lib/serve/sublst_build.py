@@ -737,13 +737,20 @@ def carry_swap_stage(run, plan, state):
         from exopipe.phase3.lib.catalog import grouping_stage as GS
         design_b = GS.mode().design_b     # WAVE2 GROUPING (item F.3): design-B page ids are the grouping's identity names -
         marks = {}                        # the journals are CARRIED by member detections (production: copied, page ids kept)
+        # the seed reads the served journals under the run's JOURNAL LOCKS (the two-port POST lock of these journals): a
+        # consistent cut, no label write half done in it; the catalogues and member maps are loaded before the locks
         if design_b and os.path.isdir(src):
-            carried, marks = journals.sublst_carry_journals(src, B)
+            maps = journals.sublst_carry_maps(src, B)
+            with versions.journal_locks(plan.U, S.SUBLST_JOURNALS):
+                snap = journals.sublst_journal_snapshot(src)
+            carried, marks = journals.sublst_carry_journals(src, B, snapshot=snap, maps=maps)
             u.meta['journal_carry'] = carried
-            u.note(f'journals carried from {src} by member detections (design B): {carried}')
+            u.note(f'journals carried from {src} by member detections (design B; the cut read under the journal locks): '
+                   f'{carried}')
         else:
-            copied = journals.sublst_copy_journals(src, B)
-            u.note(f'journals copied from {src}: {len(copied)}')
+            with versions.journal_locks(plan.U, S.SUBLST_JOURNALS):
+                copied = journals.sublst_copy_journals(src, B)
+            u.note(f'journals copied from {src} under the journal locks: {len(copied)}')
         u.meta['page_context_cache'] = carry_page_context_cache(src, B, u)
         v = versions.place(plan.U, B, note=f'serve --tier sublst {u.name}')
         state['version'], state['carry_src'], state['design_b'], state['marks'] = v, src, design_b, marks
@@ -782,7 +789,11 @@ def switch_stage(run, plan, state):
     old page is written before the switch (into the old version, then caught up here) or after the catch-up by a page of V
     (two_port Store.get current) - none is left behind in the old version. An adopted legacy run then gets its manifest
     (versions.seal_adopted). A refusal before the switch - the seal's, or the switch's after a seal - moves V back to B
-    (versions.unplace; a sealed, never served V loses its record first): U unchanged. Returns the unit."""
+    (versions.unplace; a sealed, never served V loses its record first): U unchanged; that refusal is the one raised (a
+    failure of the move back is added to its text, never in its place). The catalogues and member maps of a design-B
+    catch-up are loaded before the locks: under them run only the switch, the read of the old journals' tails and the
+    append. A catch-up that fails after the switch is OWED (versions.owe_catchup: the old version and the marks): every later
+    build or switch of U refuses and the old version is retained until catchup_stage completes it. Returns the unit."""
     S = _CFG().serve
     v = state.get('version')
     B = build_dir(plan)
@@ -797,26 +808,37 @@ def switch_stage(run, plan, state):
             rec = versions.seal(v, required=seal_required(plan, state, v.run), checks=[('page_index_current', index_check)],
                                 note=f'serve --tier sublst {u.name}')
             u.note(f'version {v.vid} sealed: {rec["n_files"]} files, {rec["n_bytes"]} bytes (manifest walk {rec["walk_s"]} s)')
+            # the old run the catch-up reads: the parity source, the version U names, or the legacy directory it adopts
+            cur = versions.served(plan.U)
+            old = src if plan.parity else (cur.run if cur is not None else
+                                           (os.path.realpath(plan.U) if os.path.isdir(plan.U) else None))
+            maps = journals.sublst_carry_maps(old, v.run) if design_b and old else None      # before the locks
             with versions.journal_locks(plan.U, S.SUBLST_JOURNALS):
                 sw = versions.switch(plan.U, v, note=f'serve --tier sublst {u.name}', record=rec)
                 switched = True
                 prev = sw['previous']
                 between_src = src if plan.parity else (prev.run if prev else None)
+                same = plan.parity or (prev is not None and (sw['adopted'] is not None if cur is None else prev.vid == cur.vid))
                 if between_src:
-                    if design_b:
-                        app = journals.sublst_carry_between(between_src, plan.U, marks)
-                        u.note(f'journal lines recorded on the old servers between the carry and the swap, carried: {app}')
-                    else:
-                        app = journals.append_between(between_src, plan.U)
-                        u.note(f'journal lines recorded on the old servers between the copy and the swap, appended: {app}')
-        finally:
+                    try:
+                        app = catch_up(between_src, plan.U, design_b, marks, maps if same else None)
+                    except Exception as e:
+                        raise Refusal(_owe(plan, v, prev, between_src, design_b, marks, e)) from e
+                    u.note(f'journal lines recorded on the old servers between the '
+                           f'{"carry" if design_b else "copy"} and the swap, {"carried" if design_b else "appended"}: {app}')
+        except Exception as e:
             if not switched and v is not None and os.path.isdir(v.run):
-                versions.unplace(v, B, sealed=True)
-                u.note(f'not switched: version {v.vid} moved back to {B} - {plan.U} unchanged')
+                try:
+                    versions.unplace(v, B, sealed=True)
+                    u.note(f'not switched: version {v.vid} moved back to {B} - {plan.U} unchanged')
+                except Exception as e2:
+                    _add_failure(e, f' - AND version {v.vid} could not be moved back to {B} ({e2}): the next serve moves '
+                                    f'it back (recover_placed) or it is retired')
+            raise
         u.meta.update(version=v.vid, previous=prev.vid if prev else None, adopted=sw['adopted'].vid if sw['adopted'] else None)
         u.note(f'switched: {plan.U} -> version {v.vid} (previous {prev.vid + " " + prev.run if prev else "none"}'
                f'{"; the legacy run adopted as that version" if sw["adopted"] else ""}); {sw["verify"]}')
-        u.add_output(v.path('VERSION.json'), 'run_version', pointer=plan.U, sealed_by_this_unit=True)
+        u.add_output(v.path('VERSION.json'), 'run_version', pointer=plan.U)
         if sw['adopted'] is not None:                  # outside the locks: one walk of the old run; U is switched by now, so
             try:                                       # a refusal is recorded, not raised (the version stays 'adopted')
                 arec = versions.seal_adopted(sw['adopted'], note=f'serve --tier sublst {u.name}')
@@ -827,7 +849,7 @@ def switch_stage(run, plan, state):
             else:
                 u.note(f'the adopted legacy run {sw["adopted"].vid} given its manifest: {arec["n_files"]} files, '
                        f'{arec["n_bytes"]} bytes (walk {arec["walk_s"]} s) - it can be switched back to')
-                u.add_output(sw['adopted'].path('VERSION.json'), 'run_version_adopted', sealed_by_this_unit=True)
+                u.add_output(sw['adopted'].path('VERSION.json'), 'run_version_adopted')
         for J in S.SUBLST_JOURNALS:
             j = os.path.join(plan.U, J, 'judgements.jsonl')
             if os.path.exists(j):
@@ -839,6 +861,70 @@ def switch_stage(run, plan, state):
                 os.makedirs(os.path.dirname(j), exist_ok=True)
         if not any(os.path.exists(os.path.join(plan.U, J, 'judgements.jsonl')) for J in S.SUBLST_JOURNALS):
             u.add_output(plan.U, 'sublst_cumulative', with_served_tests=False)
+    return u
+
+
+def catch_up(P, U, design_b, marks, maps=None):
+    """The journal lines written on the old run P after the seed carry/copy, into U's served version: design B,
+    journals.sublst_carry_between from the marks (maps loaded before the locks); else journals.append_between (the exact
+    lines U lacks). Both are safe to repeat (an owed catch-up is retried in full). The caller holds the journal locks."""
+    if design_b:
+        return journals.sublst_carry_between(P, U, marks, maps=maps)
+    return journals.append_between(P, U)
+
+
+def _owe(plan, v, prev, P, design_b, marks, e):
+    """Record the owed catch-up after a switch (versions.owe_catchup); the refusal text."""
+    head = (f'SWITCHED {plan.U} to version {v.vid}, but the catch-up of the journal lines written on '
+            f'{prev.vid if prev else P} failed ({type(e).__name__}: {str(e)[:300]})')
+    try:
+        p = versions.owe_catchup(plan.U, {'from_version': prev.vid if prev else None, 'from_run': P, 'to_version': v.vid,
+                                          'design_b': bool(design_b), 'marks': marks, 'error': f'{type(e).__name__}: {e}'[:600],
+                                          'note': f'serve --tier sublst {plan.run_name}'})
+    except Exception as e2:
+        return (f'{head} - AND the owed catch-up could not be recorded ({e2}): no build or switch of {plan.U} may run until '
+                f'the lines of {P} are caught up by hand')
+    return (f'{head} - OWED ({p}): every later build or switch of {plan.U} refuses, and {prev.vid if prev else P} is kept, '
+            f'until the catch-up completes (the next serve --tier sublst retries it first)')
+
+
+def _add_failure(e, text):
+    """Add ``text`` to the message of the exception ``e`` (re-raised by the caller: the original refusal is never masked)."""
+    if isinstance(e, OSError) and e.strerror is not None:     # OSError's text is errno + strerror, not its args
+        e.strerror = f'{e.strerror}{text}'
+    elif e.args and isinstance(e.args[0], str):
+        e.args = (e.args[0] + text,) + tuple(e.args[1:])
+    else:
+        e.args = (f'{e}{text}',)
+
+
+def catchup_stage(run, plan):
+    """THE OWED CATCH-UP (unit sublst_<run>_catchup), before any build or switch: when U owes the catch-up of an old
+    version's journal lines (versions.owed_catchup), it is run again (maps loaded first, then under the journal locks the
+    tails read and appended) and its record removed (versions.catchup_done). None when nothing is owed; a refusal leaves the
+    record (every build and switch keeps refusing). Returns the unit."""
+    S = _CFG().serve
+    rec = versions.owed_catchup(plan.U)
+    if rec is None:
+        return None
+    with run.unit(f'sublst_{plan.run_name}_catchup', stage='catch-up', tier='sublst', parity=plan.parity) as u:
+        cur = versions.served(plan.U)
+        if cur is None or cur.vid != rec.get('to_version'):
+            u.refuse(f'the owed catch-up is into version {rec.get("to_version")}, but {plan.U} names '
+                     f'{cur.vid if cur else "no version"} - resolve {versions.OWED_FILE} by hand')
+        P = rec.get('from_run')
+        if not P or not os.path.isdir(P):
+            u.refuse(f'the old run {P} of the owed catch-up is gone - its journal lines cannot be caught up')
+        maps = journals.sublst_carry_maps(P, cur.run) if rec.get('design_b') else None
+        with versions.journal_locks(plan.U, S.SUBLST_JOURNALS):
+            app = catch_up(P, plan.U, rec.get('design_b'), rec.get('marks') or {}, maps)
+            versions.catchup_done(plan.U, rec)
+        u.meta.update(owed=rec, caught_up=app)
+        u.note(f'the owed catch-up of {rec.get("from_version")} into {cur.vid} completed: {app}; record removed')
+        for J in S.SUBLST_JOURNALS:
+            j = os.path.join(plan.U, J, 'judgements.jsonl')
+            if os.path.exists(j):
+                u.add_output(j, 'judgement_journal')
     return u
 
 
@@ -962,6 +1048,9 @@ def build_and_serve(args, run, plan, stages):
                       'the swap are appended at the swap, sublst_cumulative.sh:106-120)')
     with build_lock(plan):
         recover_placed(plan)
+        if set(stages) & set(COALESCED_STAGES):        # an owed journal catch-up first: no build or switch before it
+            if flow.halts(catchup_stage(run, plan), 'catch-up', need_done=True):
+                return
         # each stage runs only after the previous one ended done (flow.halts; G11: a refused build, views or test leaves
         # the served product and its four servers untouched - nothing is swapped in, sublst_cumulative.sh:26-74)
         if 'build' in stages:

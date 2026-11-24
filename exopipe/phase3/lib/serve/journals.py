@@ -171,22 +171,52 @@ def _sublst_new_identities(B, S):
     return GS.identities_of_catalogs([os.path.join(B, f'source_catalogs_{S}_{t}') for t in ('sb', 'wb')])
 
 
-def sublst_carry_journals(src_run, B):
+def sublst_journal_snapshot(src_run):
+    """{journal: its lines} of every sub-LST journal of src_run that exists - the CUT the seed carry starts from (the caller
+    holds the run's journal locks, versions.journal_locks: no label write is half done in it)."""
+    out = {}
+    for J in _S().SUBLST_JOURNALS:
+        a = os.path.join(src_run, J, 'judgements.jsonl')
+        if os.path.isfile(a):
+            with open(a) as f:
+                out[J] = f.read().splitlines()
+    return out
+
+
+def sublst_carry_maps(old_run, new_run):
+    """{Stokes: (old page members of old_run, new identities of new_run)} for the Stokes of every non-empty journal of
+    old_run - the catalogues and member maps a design-B carry reads, loaded BEFORE the journal locks are taken (only the
+    journal read and the append run under them)."""
+    out = {}
+    for J in _S().SUBLST_JOURNALS:
+        S = _sublst_stokes(J)
+        if S not in out and journal_nonempty(os.path.join(old_run, J, 'judgements.jsonl')):
+            out[S] = (_sublst_old_members(old_run, S), _sublst_new_identities(new_run, S))
+    return out
+
+
+def sublst_carry_journals(src_run, B, snapshot=None, maps=None):
     """Design B: carry each journal of the served run src_run into the build B by member detections (grouping_stage.
     carry_judgements; production's carry report beside each journal: carried, CONFLICT - not carried, reached no new
-    detection). Returns ({journal: counts}, {journal: number of source lines carried}) - the second is where
-    sublst_carry_between starts."""
+    detection). ``snapshot``: the journals' lines read under the journal locks (sublst_journal_snapshot; default: read
+    here); ``maps``: sublst_carry_maps(src_run, B) (default: loaded here). Returns ({journal: counts}, {journal: number of
+    source lines carried}) - the second is where sublst_carry_between starts."""
     from exopipe.phase3.lib.catalog import grouping_stage as GS
-    out, marks, cache = {}, {}, {}
+    out, marks, cache = {}, {}, dict(maps or {})
     for J in _S().SUBLST_JOURNALS:
         os.makedirs(os.path.join(B, J), exist_ok=True)
         a = os.path.join(src_run, J, 'judgements.jsonl')
-        if not journal_nonempty(a):
+        if snapshot is not None:
+            lines = snapshot.get(J) or []
+            if not any(x.strip() for x in lines):
+                continue
+        elif not journal_nonempty(a):
             continue
+        else:
+            lines = open(a).read().splitlines()
         S = _sublst_stokes(J)
         if S not in cache:
             cache[S] = (_sublst_old_members(src_run, S), _sublst_new_identities(B, S))
-        lines = open(a).read().splitlines()
         try:
             out[J] = GS.carry_judgements(a, cache[S][0], cache[S][1], os.path.join(B, J), os.path.basename(B.rstrip('/')),
                                          carried_from_run=os.path.basename(src_run.rstrip('/')), lines=lines)
@@ -196,14 +226,15 @@ def sublst_carry_journals(src_run, B):
     return out, marks
 
 
-def sublst_carry_between(P, U, marks):
+def sublst_carry_between(P, U, marks, maps=None):
     """Design B: the lines journalled on the old servers (journals of P) after the carry point (marks: the number of lines the
     seed carry read) - append_between's design-B counterpart. Every new identity those lines' old pages reach is RE-DERIVED
     from the FULL old journal, in order (review 2026-11-04, F1: classify / retract / classify ends as the last action says; a
     label that now disagrees with a carried one is a CONFLICT row and a retract, never an override); grouping_stage.
-    carry_judgements(append=True). Returns {journal: counts}."""
+    carry_judgements(append=True). ``maps``: sublst_carry_maps(P, U's version) loaded before the journal locks (default:
+    loaded here, only for a journal with lines after its mark). Returns {journal: counts}."""
     from exopipe.phase3.lib.catalog import grouping_stage as GS
-    out = {}
+    out, maps = {}, dict(maps or {})
     for J in _S().SUBLST_JOURNALS:
         a = os.path.join(P, J, 'judgements.jsonl')
         if not os.path.exists(a):
@@ -213,7 +244,9 @@ def sublst_carry_between(P, U, marks):
         if not any(l.strip() for l in lines[since:]):
             continue
         S = _sublst_stokes(J)
-        out[J] = GS.carry_judgements(a, _sublst_old_members(P, S), _sublst_new_identities(U, S), os.path.join(U, J),
+        if S not in maps:
+            maps[S] = (_sublst_old_members(P, S), _sublst_new_identities(U, S))
+        out[J] = GS.carry_judgements(a, maps[S][0], maps[S][1], os.path.join(U, J),
                                      os.path.basename(U.rstrip('/')), carried_from_run=os.path.basename(P.rstrip('/')),
                                      lines=lines, append=True, since=since)
     return out
