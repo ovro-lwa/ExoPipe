@@ -128,3 +128,5 @@ jobs:
         run: python tests/test_tier_npz_planets.py
       - name: per-hour 10-s/1-min catalog, the per-cell stage (prefit loop, tie pass) and the association phase's refusal
         run: python tests/test_catalog_snapshot_incremental.py
+      - name: versioned page publishing (run versions, the atomic pointer, the coalescing builder, the sub-LST switch)
+        run: python tests/test_publish_pointer.py

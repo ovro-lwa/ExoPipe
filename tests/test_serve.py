@@ -546,10 +546,15 @@ def test_journals():
         os.makedirs(f'{U}/{J}')
         open(f'{U}/{J}/judgements.jsonl', 'w').write('{"a": 1}\n')
     os.makedirs(f'{Bd}/candidates')
+    open(f'{Bd}/candidates/page.txt', 'w').write('x\n')
     journals.sublst_copy_journals(U, Bd)
     with open(f'{U}/judgements_V/judgements.jsonl', 'a') as f:
         f.write('{"b": 2}\n')                                          # a verdict between the copy and the swap
-    prev = journals.sublst_swap(U, Bd, U + '.prev_X')
+    from exopipe.phase3.lib.serve import versions
+    v = versions.place(U, Bd)                                          # the swap: the build placed, sealed, U switched to it
+    sw = versions.publish(U, v)
+    prev = sw['previous'].run                                          # the legacy U, adopted as the previous version
+    assert os.path.islink(U) and os.path.realpath(U) == os.path.realpath(v.run) and os.path.isdir(prev), sw
     shutil.copytree(U, f'{T}/swap_prod')
     rc, out = run_heredoc(heredoc('sublst_cumulative.sh', 'PYJ'), [prev, f'{T}/swap_prod'])
     assert rc == 0, out
@@ -559,7 +564,9 @@ def test_journals():
     r = {x['name']: x for x in validate.run('judgement_journal', f'{U}/judgements_V/judgements.jsonl',
                                             carried_from=f'{prev}/judgements_V/judgements.jsonl')}
     assert r['judgement_journal.parses_append_only']['passed'], r
-    ok('sub-LST journal copy, swap and between-lines append identical to the production heredoc; append-only test passes')
+    assert versions.verify(v)[0], versions.verify(v)                    # the appended journal is review state (not in the
+    ok('sub-LST journal copy, swap (place + seal + pointer switch) and between-lines append identical to the production '
+       'heredoc; append-only test passes; the served version still verifies after the append')   # manifest)
 
 
 # ---- 2. exclusion gate, hub ------------------------------------------------------------------------------------------
@@ -1473,7 +1480,7 @@ def test_cumulative_reuses():
         and 'rms=repr(v)' in psrc and "float(c['rms'])" in psrc \
         and "c['size'] == str(st.st_size) and c['mtime'] == str(int(st.st_mtime))" in psrc, 'page_context_tenmin.py: the cache moved'
     c = inspect.getsource(sublst_build.carry_swap_stage)
-    assert 0 < c.index('carry_page_context_cache(src, B, u)') < c.index('journals.sublst_swap(')
+    assert 0 < c.index('carry_page_context_cache(src, B, u)') < c.index('versions.place(')
     d = f'{T}/reuses'
     shutil.rmtree(d, ignore_errors=True)
     served, B = f'{d}/served', f'{d}/build'
@@ -1530,9 +1537,9 @@ def test_cumulative_reuses():
 
 
 def test_page_context_stage():
-    """THE 10-MINUTE PAGE CONTEXT (sublst_cumulative.sh:295-300): after the swap and before the registration, unit
-    sublst_<run>_page_context runs page_context_tenmin.py on the swapped-in run U with production's arguments and environment
-    and records U as class tenmin_page_context; a failed script or an exception in the stage never stops the registration
+    """THE 10-MINUTE PAGE CONTEXT (sublst_cumulative.sh:295-300): after the build is placed as a version and before its
+    switch and the registration, unit sublst_<run>_page_context runs page_context_tenmin.py on the placed version's run with
+    production's arguments and environment and records it as class tenmin_page_context; a failed script or an exception in the stage never stops the registration
     (page text, not a gate); the class's content tests pass on well-formed sidecars and fail on a missing, malformed,
     misplaced or orphaned one."""
     import types
@@ -1578,9 +1585,18 @@ def test_page_context_stage():
         with run_.unit(f'sublst_{plan_.run_name}_carry', stage='swap', tier='sublst') as u_:
             pass
         u_.status = 'done'                          # a stand-in swap with no output (it would end no-input)
+        state_['version'] = types.SimpleNamespace(run=U)   # the placed version's run (here U itself)
         return u_
-    orig = (sublst_build.carry_swap_stage, flow.start_stage, flow.require_done, flow.expected_from_record, scripts.run)
-    sublst_build.carry_swap_stage, scripts.run = fake_carry, fake_run
+
+    def fake_switch(run_, plan_, state_):
+        calls.append('switch')
+        with run_.unit(f'sublst_{plan_.run_name}_switch', stage='swap', tier='sublst') as u_:
+            pass
+        u_.status = 'done'
+        return u_
+    orig = (sublst_build.carry_swap_stage, sublst_build.switch_stage, flow.start_stage, flow.require_done,
+            flow.expected_from_record, scripts.run)
+    sublst_build.carry_swap_stage, sublst_build.switch_stage, scripts.run = fake_carry, fake_switch, fake_run
     flow.start_stage = lambda run_, plan_, state_: calls.append('register')
     flow.require_done = lambda *a_, **k_: {'meta': {}}
     flow.expected_from_record = lambda *a_, **k_: ({}, {})
@@ -1594,7 +1610,7 @@ def test_page_context_stage():
             sublst_build.run(a, run, plan, ['carry', 'swap', 'start'])
             want = ('script', 'page_context_tenmin', [U, '--workers', str(S.SUBLST_PAGE_CONTEXT_WORKERS)],
                     f'{U}/page_context_tenmin.log', {'NUMPY_MADVISE_HUGEPAGE': '0'})
-            assert calls == ['swap', want, 'register'], calls
+            assert calls == ['swap', want, 'switch', 'register'], calls
             u = next(x for x in run.units if x.name == f'sublst_{plan.run_name}_page_context')
             if case == 'ok':
                 assert u.status == 'done' and u.meta['page_context']['ok'] and run.exit_code() == 0, (u.status, u.reason)
@@ -1605,8 +1621,9 @@ def test_page_context_stage():
             else:
                 assert u.status == 'error' and 'stand-in failure' in u.reason and run.exit_code() == 1, (u.status, u.reason)
     finally:
-        (sublst_build.carry_swap_stage, flow.start_stage, flow.require_done, flow.expected_from_record, scripts.run) = orig
-    ok('page context: after the swap and before the registration, with production\'s arguments, U recorded as '
+        (sublst_build.carry_swap_stage, sublst_build.switch_stage, flow.start_stage, flow.require_done,
+         flow.expected_from_record, scripts.run) = orig
+    ok('page context: on the placed version, before its switch and the registration, with production\'s arguments, recorded as '
        'tenmin_page_context (done); a failed script refuses the unit and an exception errors it - the pages are registered '
        'in both (exit 2 / 1 after the registration)')
     sidecars()

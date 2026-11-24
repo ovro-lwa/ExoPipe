@@ -33,7 +33,8 @@ class serve(_Section):
                       'SNAPVIEW_TIERS', 'SNAPVIEW_STOKES', 'SNAPVIEW_PAGE_SUFFIX',   # the combined view's layout: what the page code
                                                                                     # reads (mirrors of snapshot_combined_view.py)
                       'SNAPVIEW_FLOOD_FACTOR', 'SNAPVIEW_FLOOD_MIN', 'SNAPVIEW_ALIGN_FAILED', 'SNAPVIEW_ALIGN_HELD',
-                      'SNAPVIEW_FP_ALIGN', 'SNAPVIEW_FP_FLOOD')   # the view's default hides: the snapshot chat's ruled content
+                      'SNAPVIEW_FP_ALIGN', 'SNAPVIEW_FP_FLOOD',   # the view's default hides: the snapshot chat's ruled content
+                      'RUN_VERSIONS_SUFFIX')                                        # the pointer form (lib/serve/versions.py)
 
     # ---- served runs (production product roots, from config.paths; PROTECTED) ----------------------------------------
     RUN_ROOT_KEY = {'deep': 'TRANSIENTS_ROOT',        # /data07/gh/phase3/transients; p3s3_serve_stokes.sh:9
@@ -47,8 +48,46 @@ class serve(_Section):
     SUBLST_LST_RUN = 'Run_SLST{hh}B'        # sublst_cumulative.py:23; sublst_publish_lst.sh:16
     SUBLST_LST_RUN_GLOB = 'Run_SLST[0-9][0-9]B'   # sublst_publish_lst.sh:42; sublst_catalog_publish.sh:96
     SUBLST_BUILD_SUFFIX = '.build'          # sublst_cumulative.sh:15
-    SUBLST_PREV_SUFFIX = '.prev_{utc}'      # utc = %Y%m%dT%H%M%S; sublst_cumulative.sh:102
-    SUBLST_PAGE_CONTEXT_WORKERS = 16        # page_context_tenmin.py --workers after the swap (sublst_cumulative.sh:298; the
+    # ---- run versions and the pointer (lib/serve/versions.py; plan/CUTOVER_REMAINING_20261124.md row 8, CUTOVER_READINESS.md:
+    # 333-344): a served run U is a symbolic link to <dir>/<name><RUN_VERSIONS_SUFFIX>/<vid>/<name>, switched by one atomic rename
+    # once the new version is sealed; the sub-LST swap places its build as a new version (production instead renames U to
+    # U.prev_<utc>, sublst_cumulative.sh:102, and keeps every previous build)
+    RUN_VERSIONS_SUFFIX = '.versions'       # PROTECTED: the pointer form readers recognize; a new value orphans every version
+    RUN_VERSIONS_KEEP = 3                   # retention: the newest 3 complete (sealed) versions are kept, and besides them every
+                                            # version the pointer or another link names, a held one, one being built and an
+                                            # adopted one without its manifest; the others are retired only by `serve --stages
+                                            # retire` (a dry run first, then --retire-plan)
+    RUN_VERSIONS_MUTABLE = ('judgements*/judgements.jsonl', 'incremental.log', 'page_index/*', 'page_index_build.log',
+                            'PUBLISH_IN_PROGRESS.txt*')   # (fnmatch, relative to the run) the review state appended while a
+                                            # version is served: left out of its manifest (classify_transients.py:3147 journal,
+                                            # common.inc_log, register.lift_hold) - and the page index, which serve --stages
+                                            # page-index rebuilds in place on the served version (flow.build_page_index: its
+                                            # DIRTY marker, build_detections_index.mark_run_dirty, and its repair); the seal
+                                            # still requires the index current (sublst_build.index_check)
+    # what a seal hashes and the content test re-reads (lib/serve/versions.py CONTENT): names, sizes, modification times or
+    # markers never prove completion; the content test reads content (Gregg's rule; the coordinator, PR 155 review of finding 9)
+    RUN_VERSIONS_HASH_SMALL_BYTES = 16 * 1024 * 1024   # bytes (16 MiB): a file up to this size that is not a binary type, and
+    RUN_VERSIONS_HASH_TEXT = ('.csv', '.json', '.jsonl', '.html', '.htm', '.txt', '.tsv', '.js', '.css', '.md', '.xml', '.yaml',
+                              '.yml', '.log')   # a file of these types whatever its size (queues, catalogs, page indexes,
+                                            # pages, records) is hashed at the seal and re-hashed by every content test
+    RUN_VERSIONS_HASH_BINARY = ('.png', '.jpg', '.jpeg', '.gif', '.webp', '.pdf', '.npz', '.npy', '.fits', '.fit', '.fz', '.h5',
+                                '.hdf5', '.gz', '.zip', '.tar')   # the binaries - these types of any size, and any other file
+                                            # over 16 MiB not of a text type: the content test re-hashes their stable sample.
+                                            # Run_SLSTB 2026-11-24: 49,593 .png panels (11.859 GB of its 12.215 GB, none over
+                                            # 0.83 MiB) and 1 .npz; the rest 0.35 GB in 48,537 files
+    RUN_VERSIONS_HASH_LARGE = 'sample'      # the seal hashes of the binaries: 'sample' (their stable sample only) or 'all'.
+                                            # 'sample': hashing all of Run_SLSTB's 12.2 GB read about 9 MB/s from /data07
+                                            # (4.0 GB in about 7.5 min), about 25 min - over twice its seal walk (76 s). With
+                                            # 'sample' a publish of it read 583.8 MB at the seal (48,537 files not binaries and
+                                            # 977 of 49,594 binaries: 241.9 s, cold) and the same 583.8 MB in its content test
+                                            # (4.1 s, warm): 1.17 GB of its 12.2 GB
+    RUN_VERSIONS_SAMPLE_FRACTION = 0.02     # the stable sample of the binaries: those whose path's sha256 falls in the first
+    RUN_VERSIONS_SAMPLE_MIN = 20            # 2% of its range, at least 20 files (all when fewer); plus, in the content test,
+                                            # every file whose size or modification time differs from the manifest
+    RUN_VERSIONS_LEASE_S = 600              # s: a holder's or builder's lease (lib/serve/versions.py LEASES): one on another node
+                                            # counts as alive until its lease, renewed every quarter lease while it runs, expires
+    COALESCE_SLOT_DIR = '.coalesce'         # the coalescing builder's slot inside a run's versions root (lib/serve/coalesce.py)
+    SUBLST_PAGE_CONTEXT_WORKERS = 16        # page_context_tenmin.py --workers on the placed version (sublst_cumulative.sh:298; the
                                             # 10-minute panels' run context as page text, Gregg 2026-10-22)
     SUBLST_FILTER_TIER = 'tenmin'           # --tier of bright_source_filter_precompute.py and scintillation_index.py on the new build
                                             # (sublst_cumulative.sh:177-180; R-GREGG-20261112-FILTERS-FINALIZE-BRIGHT-AND-SCINTILLATION)
