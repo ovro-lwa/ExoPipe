@@ -558,7 +558,7 @@ def refine_unit(u, args, run, lst, sb, night, base, plan_files=()):
         timing['residuals'] = round(time.time() - t0 - sum(timing.values()), 1)
         for ln in night_lines:
             u.note(ln)
-        SS.verdict(u, run, args, lst, sb, [night], rc_child=3 if n_ref else 0)
+        SS.verdict(u, run, args, lst, sb, [night], rc_child=3 if n_ref else 0, named=written)   # each written with its PRODNAME
         mine = {os.path.abspath(p) for p in written}
         failed = [t for t in u.failed_tests() if t.get('path') in mine]
         if failed:

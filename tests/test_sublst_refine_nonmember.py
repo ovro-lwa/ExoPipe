@@ -402,6 +402,21 @@ def test_unit_writes_the_residuals():
         # no other night's residual, and nothing under the stack tree
         assert len(s.on_disk()) == 16 and all(f'{LST}_{NEW}' in p for p in s.on_disk())
         assert not t.residuals()
+        # the cards test REQUIRES the name on every residual the unit wrote (named=True in each output's context, which
+        # --resume and verify pass back; 9b): without the card the same test fails
+        from exopipe.phase3.core import validate
+        u = s.unit(r, t.sbs[0])
+        assert all(o['ctx']['named'] is True for o in u.outputs), u.outputs[:1]
+        o = u.outputs[0]
+        with fits.open(o['path'], memmap=False) as hd:
+            d, h = hd[0].data, hd[0].header.copy()
+        del h['PRODNAME']
+        fits.writeto(o['path'], d, h, overwrite=True)
+        res = [x for x in validate.run('sublst_x2_residual', o['path'], **o['ctx']) if x['name'].endswith('cards')]
+        assert len(res) == 1 and not res[0]['passed'] and 'no PRODNAME' in res[0]['detail'], res
+        ctx = dict(o['ctx'], named=False)                     # a batch-refine residual: no name required
+        res = [x for x in validate.run('sublst_x2_residual', o['path'], **ctx) if x['name'].endswith('cards')]
+        assert len(res) == 1 and res[0]['passed'], res
 
 
 def test_the_displacement_is_applied_to_both_stokes():

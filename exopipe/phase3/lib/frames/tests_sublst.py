@@ -140,8 +140,9 @@ def wideband_content(path, **ctx):
     Stokes V stack (the weight); the central 64x64 patch = the WBWGTS-weighted mean of the members' patches
     (minimum for _nframes; NaN propagates) within 1e-3 of the patch scale (WBWGTS carry 4 significant digits); baked flux:
     SHSCALE x FLUXCORR = the weighted mean of the members' SHSCALE x FLUXCORR (1e-3), read from their stacks of the first
-    Stokes built (I, else V: as the engine); not excluded under the band rule. A PRODNAME only on the set-B residual, and
-    there the group's own name (sublst_nonmember.window_residual_name, epoch = the earliest member window stack DATE-OBS)."""
+    Stokes built (I, else V: as the engine); not excluded under the band rule. A PRODNAME on every set-B residual and on no
+    other product, the group's own name (sublst_nonmember.window_residual_name, epoch = the earliest member window stack
+    DATE-OBS; R-GREGG-20261113-SPEEDUP-CHECKIN-TEN-ANSWERS (9b), tier_sublst.name_wideband_residual)."""
     from exopipe.phase3.core import cells
     b = os.path.basename(path)
     m = _STACK_RE.match(b)
@@ -200,6 +201,8 @@ def wideband_content(path, **ctx):
         got = float(h.get('SHSCALE', np.nan)) * float(h.get('FLUXCORR', np.nan))
         if not (np.isfinite(got) and abs(got - beff) <= 1e-3 * abs(beff)):
             msgs.append(f'pixel factor SHSCALE x FLUXCORR {got:.6g} != weighted member mean {beff:.6g}')
+    if kind == 'rB' and 'PRODNAME' not in h:
+        msgs.append('no PRODNAME on the set-B residual (the group\'s own name is required, 9b)')
     if 'PRODNAME' in h:      # only the set-B residual may carry a name, and only the group's own (9b; tier_sublst.name_wideband_residual)
         from exopipe.phase3.lib.masters import sublst_nonmember as NM
         try:

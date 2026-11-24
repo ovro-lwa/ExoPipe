@@ -676,8 +676,13 @@ def test_snapshot_engines():
 
 def test_real():
     SL = CFG.paths.SUBLST_ROOT
+    # production's set-B wideband residual carries no PRODNAME, which v2 requires (R-GREGG-20261113-SPEEDUP-CHECKIN-TEN-ANSWERS
+    # (9b): the group's own name); every other test passes on it
+    r = validate.run('sublst_wideband', f'{SL}/09h_x2/09h_2025-01-01/Blue/V/sublst_09h_2025-01-01_Blue_V_w4_resid_loo.fits')
+    bad = [x for x in r if not x['passed']]
+    check('real sublst_wideband set-B residual: only the required PRODNAME is missing (production writes none, 9b)',
+          len(bad) == 1 and 'no PRODNAME on the set-B residual' in str(bad[0]), str(r)[:300])
     for cls, p in (('sublst_wideband', f'{SL}/09h/09h_2025-01-01/Red/I/sublst_09h_2025-01-01_Red_I_w0.fits'),
-                   ('sublst_wideband', f'{SL}/09h_x2/09h_2025-01-01/Blue/V/sublst_09h_2025-01-01_Blue_V_w4_resid_loo.fits'),
                    ('tenmin_tree', f'{SL}/tenmin_root_x2/09h_55MHz/frames.csv'),
                    ('tenmin_tree', f'{SL}/tenmin_root_x2/09h_55MHz/bin_masters/PB_bin0_55MHz.fits'),
                    ('tenmin_tree', f'{SL}/tenmin_root_x2/01h_18MHz/NO_WINDOWS.txt'),

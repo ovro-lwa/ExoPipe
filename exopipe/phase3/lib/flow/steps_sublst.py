@@ -140,9 +140,10 @@ def excluded_stacks(model, lst, sb):
     return E.path, [n for n in nights if E.is_excluded(lst, sb, n)]
 
 
-def verdict(u, run, args, lst, sb, nights, rc_child=None):
+def verdict(u, run, args, lst, sb, nights, rc_child=None, named=()):
     """Content test (b) for (LST, subband[, nights]) on <out>/<LST>_x2, independently of the module; plans every expected
-    residual, adds every residual on disk as an output (R1 + cards per file), judges the missing ones (G-C7)."""
+    residual, adds every residual on disk as an output (R1 + cards per file), judges the missing ones (G-C7). ``named``: the
+    residuals this unit wrote with a PRODNAME (the per-hour non-member refine, 9b), which the cards test then requires."""
     from exopipe.phase3.lib.flow import tests as T
     fr = C.cfg().flow_refine
     x2 = os.path.join(run.out_root, f'{lst}_x2')
@@ -154,8 +155,10 @@ def verdict(u, run, args, lst, sb, nights, rc_child=None):
         u.plan(T.residual_path(x2, lst, n, sb, S, k), 'sublst_x2_residual')
     have = T.residuals_on_disk(x2, lst, sb, nset)
     mroot = os.path.join(base, fr.MASTERS_DIR.format(lst=lst))
+    named = {os.path.abspath(x) for x in named}
     for key, p in sorted(have.items()):
-        u.add_output(p, 'sublst_x2_residual', masters_root=mroot, stack_root=os.path.join(base, lst))
+        u.add_output(p, 'sublst_x2_residual', masters_root=mroot, stack_root=os.path.join(base, lst),
+                     named=os.path.abspath(p) in named)
     missing, appr = T.r2_missing(x2, lst, sb, nset, model)
     ok, waived, why = T.judge_missing(missing, appr)
     u.meta['verdict'] = {'expected': len(expected), 'on_disk': len(have), 'missing': len(missing),
