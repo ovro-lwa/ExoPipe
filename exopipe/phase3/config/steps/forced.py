@@ -223,18 +223,19 @@ class forced_tier_pages(_Section):
     and 10 pc forced photometry at 10-minute and deep - that is very valuable"; the LPT sample inside these pages since
     2026-11-24, his hub ruling of 2026-10-27: a new page variant is a sample inside a page, not a hub button). Stage tier_eval =
     snapshot_forced_eval.py --tier T in place (the four stage-2 evaluations of SAMPLES); tier_forced_page_20261027.py runs in
-    place for the rest: stage tier_site = its build + verify (the static site whose page_record.json lists every event card), stage tier_runs = its
-    chain + verify-chain (the four review runs Run_SNAPFORCED_{V,I}{10min,deep}_gen5, served on p9120-p9123: each event fitted
-    in its own image, localized, associated, rendered in the 10-s / 1-min forced runs' layout). Ledger 3079 (site), 3081
-    (chain), 3394-3395 (Epoch panels, 2026-11-10). Keys marked MIRROR are literals of the in-place script, compared with the
-    file by tests/test_forced_tier_pages.py; an override of one is refused (G37)."""
+    place for the rest: stage tier_site = its build + verify (the static site whose page_record.json lists every event card),
+    stage tier_runs = its chain + verify-chain (the four review runs Run_SNAPFORCED_{V,I}{10min,deep}_gen5, served on
+    p9120-p9123: each event fitted in its own image, localized, associated, rendered in the 10-s / 1-min forced runs' layout).
+    Ledger 3079 (site), 3081 (chain), 3394-3395 (Epoch panels, 2026-11-10). Keys marked MIRROR are literals of the in-place
+    script, compared with the file by tests/test_forced_tier_pages.py; an override of one is refused (G37)."""
     # the site's root: the default --out of family T (records <root>/_records/forced/T_*.json); the served build is
     # <root>/SITE_NAME (2026-10-27 06:54 UT, 462 events). A build never reuses a directory (T-G35): a new one takes --tier-site
     SITE_ROOT = '/lustre/gh/main/phase3/snapshot_forced'     # MIRROR planets_forced_page_20261026.py SF (tier_forced_page :30)
     SITE_NAME = 'site_hwj10pc_tiers_gen5'
     # production's four stage-2 evaluations (snapshot_forced_eval.py --tier T --samples HWJ,10pc [--kind wb]), read in place
     # by literal path (ev_dir :37-38) when this --out has no tier_eval record: they hold no LPT, so T-EVAL-SAMPLES refuses
-    # them for SAMPLES with LPT. tier_eval writes <out>/<EVAL_NAME> and the site reads them through the script's SF (EVAL_ROOT_GLOBAL)
+    # them for SAMPLES with LPT. tier_eval writes <out>/<EVAL_NAME> and the site reads them through the script's SF
+    # (EVAL_ROOT_GLOBAL)
     EVAL_DIRS = {('10min', 'sb'): '/lustre/gh/main/phase3/snapshot_forced/eval_10min_gen5_hwj10pc',     # MIRROR :37-38
                  ('10min', 'wb'): '/lustre/gh/main/phase3/snapshot_forced/eval_10min_wb_gen5_hwj10pc',
                  ('deep', 'sb'): '/lustre/gh/main/phase3/snapshot_forced/eval_deep_gen5_hwj10pc',

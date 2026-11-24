@@ -83,7 +83,8 @@ class photometry(_Section):
     # the samples cutmeasure measures (no --targets). One the engine does not name (LPT) is given as an ad-hoc tag
     # (ADHOC_ENV TAG=<paths.CLV15_ROOT>/<SAMPLE_FILES[TAG]>): the engine measures a tag as a fixed target, exactly as HWJ / 10 pc,
     # from its cutouts under <cutout root>/<tag> (photometry_tier_forced_20261026.py:56-60). LPT since 2026-11-24 (the deep and
-    # 10-minute LPT sample inside the tier pages, replacing the dated driver phase3/forced_lpt_20261123/lpt_forced_alltiers_20261123.py)
+    # 10-minute LPT sample inside the tier pages, replacing the dated driver
+    # phase3/forced_lpt_20261123/lpt_forced_alltiers_20261123.py)
     TIER_FORCED_SAMPLES = TIER_FORCED_ENGINE_SAMPLES + ('LPT',)
     PLANET_SAMPLE = 'SolarSystem'                # the cutout tree's planet sample (phase3_snapshot_cutouts.write_cutouts :165)
     # ---- AD-HOC TARGET LISTS (CUTOVER_READINESS 'DATED DRIVERS TO COVER': regen_adhoc_20261028.sh, stage1_when_done_20261028.sh,

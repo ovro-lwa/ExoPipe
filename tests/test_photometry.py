@@ -1801,7 +1801,8 @@ def test_cutout_mirrors():
     LF, fsrc = mod_literals(TIER_FORCED_TOOL), open(TIER_FORCED_TOOL).read()
     check('mirror photometry_tier_forced_20261026.py: SAMPLES, MOVING, the ad-hoc tags read from photometry.ADHOC_ENV, its '
           'manifest header and completion line',
-          tuple(LF.get('SAMPLES') or ()) == tuple(ph.TIER_FORCED_ENGINE_SAMPLES) and tuple(LF.get('MOVING') or ()) == (ph.PLANET_SAMPLE,)
+          tuple(LF.get('SAMPLES') or ()) == tuple(ph.TIER_FORCED_ENGINE_SAMPLES)
+          and tuple(LF.get('MOVING') or ()) == (ph.PLANET_SAMPLE,)
           and "ADHOC = tuple(x.split('=', 1)[0] for x in os.environ.get('%s', '')" % ph.ADHOC_ENV in fsrc
           and "fieldnames=%r" % list(TC.TIER_MANIFEST_HEADER) in fsrc
           and 'PHOTOMETRY-TIER-FORCED-DONE %d cutouts measured, %d refused' in fsrc, (LF.get('SAMPLES'), LF.get('MOVING')))
@@ -3258,9 +3259,11 @@ def tier_review_fixes(adhoc, root, tout, out):
         check('--in-place regeneration of the (patched) served generation: the tier cutouts placed in the served cutout root and '
               'cutmeasure run in the same invocation into each sample\'s served tier forced root (exit 0)',
               rc == 0 and cu.get('status') == 'done' and glob.glob(os.path.join(sc, '*', '64MHz', '*', '*_18h_deep_[IV].fits'))
-              and cms.get('cutmeasure.deep.18h.HWJ+10pc+LPT') == 'done' and glob.glob(os.path.join(sf, 'deep', '18h', 'forced_*.npz')),
+              and cms.get('cutmeasure.deep.18h.HWJ+10pc+LPT') == 'done'
+              and glob.glob(os.path.join(sf, 'deep', '18h', 'forced_*.npz')),
               (rc, cu.get('status'), cu.get('reason'), cms, txt[-900:]))
-        lc = sorted({os.path.basename(p_).rsplit('_', 3)[0] for p_ in glob.glob(os.path.join(sc, 'LPT', '*', '*', '*_18h_deep_[IV].fits'))})
+        lc = sorted({os.path.basename(p_).rsplit('_', 3)[0]
+                     for p_ in glob.glob(os.path.join(sc, 'LPT', '*', '*', '*_18h_deep_[IV].fits'))})
         ln = [p_ for p_ in glob.glob(os.path.join(sf, 'deep', '18h', 'forced_LPT_*.npz'))]
         names = sorted({str(x) for p_ in ln for x in np.load(p_, allow_pickle=False)['names']})
         argv = [c_.get('argv') or [] for c_ in ((recs.get('cutmeasure.deep.18h.HWJ+10pc+LPT') or {}).get('meta') or {}).get(

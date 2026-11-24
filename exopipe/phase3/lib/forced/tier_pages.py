@@ -41,18 +41,18 @@ inverse-variance estimator with fitted errors), so its localizations differ from
 Not ported: installing the runs (production's `swap`: <run> -> <run>.superseded_*, <run>.new -> <run>), the one-off `runs` /
 `verify-runs` (the no-fit generation of 2026-10-27, superseded the same morning) and `rerender` / `swap-stage` (2026-11-10, the
 Epoch panels: the chain renders them now). Serving them (p9120-p9123) is not part of `serve` either.
-Gates (exit 2, named in the record): T-G35 the site directory, its Masters tree, a <run>.new or its Masters tree, an
-evaluation directory exists (a name is used once); T-EVAL an evaluation file missing, or this --out's tier_eval record not done;
-T-EVAL-SAMPLES an evaluation without the thresholds of every SAMPLES (sample, Stokes) of its tier; T-SAMPLES a sample without
-a pinned list (photometry.SAMPLE_FILES / SAMPLE_SHA1) or a label; T-ROOTS the samples' tier forced roots differ, or the
+Gates (exit 2, named in the record): T-G35 the site directory, its Masters tree, a <run>.new or its Masters tree, an evaluation
+directory exists (a name is used once); T-EVAL an evaluation file missing, or this --out's tier_eval record not done;
+T-EVAL-SAMPLES an evaluation without the thresholds of every SAMPLES (sample, Stokes) of its tier; T-SAMPLES a sample without a
+pinned list (photometry.SAMPLE_FILES / SAMPLE_SHA1) or a label; T-ROOTS the samples' tier forced roots differ, or the
 evaluations were made on other roots than this run names; T-INPUT a sample without a measurement of a tier and kind in the tier
 forced root, or without cutouts; T-EVAL-RUN an evaluation exiting non-zero or without its success line; T-EXCL an event on an
 excluded cell-band (forced_tier_pages.EXCLUDED_EVENTS 'refuse'), read now: tier_site checks the evaluations' selection,
-tier_runs the site's cards (a site production built had no such gate); T-HOST tier_runs off the review host (the localization reads paths.COADD_SB_ROOT) or the review
-root node-local to another host; T-SITE the site's record or content test failing; T-WORKERS --workers above
-forced_tier_pages.MAX_WORKERS (the in-place pool reads Lustre); T-WORK the fit's work directory not node-local
-(core.fitsio.scratch_root: none configured, or on Lustre; never a fallback to --out); T-BUILD / T-CHAIN the in-place call
-exiting non-zero or its success line missing; T-VERIFY / T-VERIFY-CHAIN the in-place content test failing; a production
+tier_runs the site's cards (a site production built had no such gate); T-HOST tier_runs off the review host (the localization
+reads paths.COADD_SB_ROOT) or the review root node-local to another host; T-SITE the site's record or content test failing;
+T-WORKERS --workers above forced_tier_pages.MAX_WORKERS (the in-place pool reads Lustre); T-WORK the fit's work directory not
+node-local (core.fitsio.scratch_root: none configured, or on Lustre; never a fallback to --out); T-BUILD / T-CHAIN the in-place
+call exiting non-zero or its success line missing; T-VERIFY / T-VERIFY-CHAIN the in-place content test failing; a production
 target while paths.PRODUCTION_WRITES is False. A dry run exits 2 when its plan names a gate the real run would hit.
 --resume adopts a T_* record only for the same site (tier_runs: and review root and fit work) and the same admitted
 cell-bands (the events not excluded now), then as every unit (inputs, code, config, outputs re-tested)."""
@@ -254,12 +254,14 @@ def run(args, run, stages):
     from exopipe.phase3.lib.forced.wide_stages import gate_args
     gate_args(args, 'T')
     c = TCtx(args, run, stages)
+    roots = 'tier forced and cutout roots: those the site was built on (its page_record.json)'
+    if {'tier_eval', 'tier_site'} & set(stages):
+        roots = 'tier forced root %s; cutout root %s' % (c.ft or c.roots_refusal, c.phot)
     K.plan('family T (%s forced-photometry pages, 10-minute and deep tiers): stages %s; site %s; review root %s '
-           '(review host %s); runs %s; fit work %s; tier forced root %s; cutout root %s; tier_forced_page_20261027.py in place '
-           '(site PYTHON %r)'
+           '(review host %s); runs %s; fit work %s; %s; tier_forced_page_20261027.py in place (site PYTHON %r)'
            % (' / '.join(c.t.SAMPLES), ','.join(stages), c.site, c.root, c.review_host or 'shared',
               ', '.join(n + c.t.NEW_SUFFIX for _, _, n in c.runs), c.fit_work or c.fit_work_refusal or '- (no tier_runs)',
-              c.ft or c.roots_refusal, c.phot, c.py))
+              roots, c.py))
     for st in stages:
         STAGE_FN[st](c)
     if c.dry and c.would_refuse:           # the plan named a gate the real run would hit: the dry run exits 2 as well
