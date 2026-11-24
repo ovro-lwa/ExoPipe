@@ -21,7 +21,8 @@ Argv per page family reproduces the launchers exactly (orders included); a revie
                       [--mchain-queue] (singles: the two-port registry entries p8787/p8788, which sublst_register_pages.py
                       re-registers as they are)
   snapshot review     snapshot_serve.sh:72-76      --run --queue --catalog-dir --port --default-fp-reason --loc-dir
-                      --loc-offsets --title --sibling x3
+                      --loc-offsets --title --sibling x3 (the combined view's pages, family comb, the same: snapshot_serve.sh
+                      SNAP_PORTS="8986 8987 8988 8989"; their siblings are the other comb pages)
   snapshot forced     snapshot_forced_serve_20261007.sh:49-51  --run --queue --catalog-dir --port --loc-offsets
                       --default-fp-reason --sibling (what each other forced page serves AFTER this serve: its registry
                       entry's run or the run this serve registers for it, snapshot_forced_gen5_serve_20261026.sh:47-56) --title
@@ -41,6 +42,7 @@ SERVER_DEFAULT_FP_REASON = 'bilobe'      # classify_transients.py:2438 (the in-p
 HUB_KV_ORDER = {('deep', 'review'): ('run', 'generation', 'served', 'live', 'port'),          # p3s3_serve_stokes.sh:84
                 ('sublst', 'review'): ('run', 'generation', 'served', 'live', 'port'),        # sublst_serve.sh:142
                 ('snapshot', 'review'): ('port', 'run', 'generation', 'served', 'live'),      # snapshot_serve.sh:101
+                ('snapshot', 'comb'): ('port', 'run', 'generation', 'served', 'live'),        # the same (SNAP_HUB_SUFFIX=comb)
                 ('snapshot', 'forced'): ('port', 'run', 'generation', 'served', 'live', 'note')}   # snapshot_forced_serve:96-98
 FAMILY_DEFAULT = {'deep': 'review', 'sublst': 'review', 'snapshot': 'review', 'jupiter': 'jupiter'}
 
@@ -118,6 +120,11 @@ class Plan:
 
     def refuse_later(self, gate, msg):
         self.gates.append((gate, msg))
+
+    def first_page(self):
+        """The first page of this plan's family in config order, whatever --pages selects: the page whose served run is the
+        family's 'served' run (the carry source 'served', journals.resolve_carry_from)."""
+        return next(pg for pg in self.all_pages if pg.family == self.family)
 
     # ---- environment and argv of the servers -----------------------------------------------------------------------
     def env_key(self):
@@ -201,8 +208,8 @@ class Plan:
         if t is not None:
             argv += ['--title', t]
         if self.tier == 'snapshot':
-            for o in self.all_pages:
-                if o.key == page.key or o.family != 'review':
+            for o in self.all_pages:            # the other pages of the page's own family (review: 8779-8782; comb: 8986-8989)
+                if o.key == page.key or o.family != page.family:
                     continue
                 lab = S.SNAPSHOT_SIBLING_LABEL.format(S=o.stokes, T='10-s' if o.kind == '10s' else '1-min')
                 argv += ['--sibling', f'{o.port}:{o.at("catalog", U)}:{lab}']
@@ -283,7 +290,7 @@ def make(args, out):
         raise Refusal(f'--family {p.family}: tier {p.tier} has the page families {", ".join(families)}')
     label = getattr(args, 'run_label', None)
     restart_like = bool(getattr(args, 'restart', None) or getattr(args, 'stop', None))
-    if p.family != 'review' or restart_like:
+    if (p.family != 'review' and (p.tier, p.family) != ('snapshot', 'comb')) or restart_like:
         p.label = _strip_run(label) if label else None
         p.run_name = 'jupiter' if p.tier == 'jupiter' else (f'Run_{p.label}' if p.label else p.family)
     elif p.tier == 'deep':
@@ -297,7 +304,7 @@ def make(args, out):
         p.label = _strip_run(p.run_name)
         p.lsts = sublst_lsts(getattr(args, 'lsts', None))
         p.lsts_text = ' '.join(p.lsts)
-    else:   # snapshot review
+    else:   # snapshot review, and the combined view's pages (family comb: the view itself is the review copy, no source)
         if not label:
             raise Refusal(f'G26 label required: --run {S.SNAPSHOT_RUN_PREFIX}... (the chain run name) - the snapshot serve has '
                           f'no default run')
@@ -307,19 +314,26 @@ def make(args, out):
         p.run_name = S.RUN_NAME['snapshot'].format(label=label)
         p.label = p.snap_label
         src = getattr(args, 'source', None)
-        if src:
+        if p.family == 'comb':
+            if src:
+                raise Refusal('--source: the combined view is built in place under the snapshot review root and served from there '
+                              '(snapshot_serve.sh: "copy skipped: $RUN is the review host\'s copy") - no source to copy')
+        elif src:
             p.source = src
         elif _chain_host():
             p.source = f'{_chain_host()}:{S.SNAPSHOT_SOURCE.format(label=p.run_name)}'
     if p.family == 'forced' and not p.forced_tag and not restart_like and not getattr(args, 'forced_refresh_siblings', False):
         raise Refusal('G26 label required: --forced-tag TAG (the forced runs are Run_SNAPFORCED_<S><T>_<TAG>, '
                       'snapshot_forced_serve_20261007.sh:30)')
-    rr = run_root(p.tier) if p.family == 'review' else None    # forced pages: one run per page (Page.root)
+    rr = run_root(p.tier) if p.family in ('review', 'comb') else None    # forced pages: one run per page (Page.root)
+    # the combined view's member batch runs (G27's restore-only go reads them): production's, beside the view under the snapshot
+    # review root - also for a parity view under --out, whose members are the production batch runs it was built from
+    p.member_root = run_root(p.tier) if p.family == 'comb' else None
     p.U_src = os.path.join(rr, p.run_name) if rr else None
     p.U = (os.path.join(p.out, p.tier, p.run_name) if p.parity else p.U_src) if rr else None
     p.hub_dir = os.path.join(p.out, 'review_hub') if p.parity else S.HUB_DIR
     p.lists_dir = os.path.join(p.out, 'review_lists') if p.parity else None
-    p.log_path = os.path.join(p.U, 'incremental.log') if p.U and p.family == 'review' else None
+    p.log_path = os.path.join(p.U, 'incremental.log') if p.U and p.family in ('review', 'comb') else None
 
     # ---- pages ----------------------------------------------------------------------------------------------------
     p.all_pages = [Page(p, k, S.PAGES[(t, k)]) for (t, k) in S.PAGES if t == p.tier]

@@ -1570,3 +1570,17 @@ def gate_passed(path, run=None, **ctx):
             return False, len(scan.hits), f're-read now: {scan.summary()}'
         return True, 0, f'{first[:100]}; re-read now: 0 rows on excluded cell-bands'
     return True, None, first[:160]
+
+
+# ---- fp_filters: the false-positive filters of a served snapshot view (lib/serve/fp_filters.py, stage hides of --family comb) ----
+@content_test('fp_filters')
+def fp_filters_contract(path, rows=None, **ctx):
+    """fp_filters.csv with its fp_filters.json beside it as the pages read them (review_filters.py:333-358; a file the page cannot
+    read is dropped by the page silently): categories fp_c_* with states, labels and help, default_off within the states; the
+    header cand_id, ra, dec + the categories; every cell empty or one of its category's states, every row with a state, one row
+    per (cand_id, ra, dec to 4 decimals); with ``rows`` (the step's own count), exactly that many rows."""
+    from exopipe.phase3.lib.serve import fp_filters
+    ok, n, detail = fp_filters.check_files(path)
+    if ok and rows is not None and n != rows:
+        return False, n, f'{n} rows read back, the step wrote {rows}'
+    return ok, n, detail

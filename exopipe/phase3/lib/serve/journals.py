@@ -254,7 +254,7 @@ def resolve_carry_from(plan, spec):
     if spec != 'served':
         old = os.path.abspath(spec)
     else:
-        first = next(pg for pg in plan.all_pages if pg.family == plan.family)
+        first = plan.first_page()
         old = None
         if not plan.parity and os.path.exists(first.record_path()):
             with open(first.record_path()) as f:
