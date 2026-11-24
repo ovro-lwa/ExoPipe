@@ -15,9 +15,12 @@ Campaign stages, named only (never a default), one family per invocation (as fam
              run_evals.sh): `<FT>/<tier> <out>/<EVAL_NAME> --kind sb|wb --nproc N --tier 10min|deep --survey-cells
              EVAL_SURVEY_CELLS --samples <SAMPLES>` with P3_PHOT_ROOT = the cutout root (the cutouts' TIMES), per tier and
              kind. The thresholds, counts and exceedance fractions are per sample, so a sample added leaves the other samples'
-             rows as they were. Outputs <out>/eval_<tier>_[wb_]gen5_hwj10pc/thresholds.csv (class forced_tier_eval). FT =
-             --tier-forced-root, else photometry.TIER_FORCED_ROOTS (one root for every sample); the cutout root =
-             --tier-cutout-root, else photometry.CUTOUT_ROOT.
+             rows as they were. Outputs <out>/eval_<tier>_[wb_]gen5_<samples>/thresholds.csv (class forced_tier_eval; <samples>
+             = eval_tag(SAMPLES): hwj10pc, production's names, or hwj10pclpt) and, when <samples> is not the script's literal
+             hwj10pc, <out>/eval_links_<samples>/, links with the script's literal names (ev_dir :37-38) that the site reads as
+             SF. FT = --tier-forced-root, else photometry.TIER_FORCED_ROOTS (one root for every sample); the cutout root =
+             --tier-cutout-root, else photometry.CUTOUT_ROOT. Resume identity: the exclusion list (an input) and the admitted
+             (tier, LST, band, night) set of the tier files (_eval_admitted).
   tier_site  unit T_site: `build SITE --nproc N`, then its content test `verify SITE` (HWJ10PC-TIERS-PAGE-OK: the events are
              exactly the clean measurements at or above their Gaussian thresholds in the four evaluations, every card's forced
              numbers recomputed from the tier files, every yellow reading from the saved crops). SITE = --tier-site, else
@@ -89,6 +92,13 @@ def run_names(t=None):
     return [(tier, S, t.RUN_NAME.format(S=S, tier=tier)) for tier in t.TIERS for S in ('V', 'I')]
 
 
+def eval_tag(samples):
+    """An evaluation directory's samples tag (forced_tier_pages.EVAL_NAME {samples}): the sample names lower-cased, letters
+    and digits only, joined - 'hwj10pc' for HWJ / 10 pc (production's names), 'hwj10pclpt' with LPT."""
+    import re
+    return ''.join(re.sub(r'[^0-9a-z]', '', s.lower()) for s in samples)
+
+
 def selected_events(t=None, ev_dirs=None, samples=None):
     """The rows the in-place build lists (tier_forced_page_20261027.py:41-65): per tier and kind, the clean rows of the
     evaluation's targets_ge4.csv of the samples (default forced_tier_pages.SAMPLES) at or above thr_survey_gauss of their
@@ -157,9 +167,34 @@ class TCtx:
         return roots[self.t.SAMPLES[0]], phot, None
 
     def eval_dirs(self):
-        """{(tier, kind): <out>/<EVAL_NAME>}: the evaluations tier_eval writes (the script's ev_dir with SF = <out>)."""
-        return {(tier, kind): os.path.join(self.W, self.t.EVAL_NAME.format(tier=tier, wb='wb_' if kind == 'wb' else ''))
+        """{(tier, kind): <out>/<EVAL_NAME>}: the evaluations tier_eval writes, named from SAMPLES (eval_tag)."""
+        tag = eval_tag(self.t.SAMPLES)
+        return {(tier, kind): os.path.join(self.W, self.t.EVAL_NAME.format(tier=tier, wb='wb_' if kind == 'wb' else '',
+                                                                           samples=tag))
                 for tier, kind in sorted(self.t.EVAL_DIRS)}
+
+    def eval_links(self, evs=None):
+        """(directory, {link: evaluation}) through which the script reads evaluations not named as its literal
+        (SCRIPT_EVAL_NAME, ev_dir :37-38): <out>/<EVAL_LINKS>/<literal name> -> the evaluation, SF = that directory; (None, {})
+        when the evaluations carry the literal names in one directory (SF = that directory)."""
+        t = self.t
+        evs = self.eval_dirs() if evs is None else evs
+        lit = {k: t.SCRIPT_EVAL_NAME.format(tier=k[0], wb='wb_' if k[1] == 'wb' else '') for k in evs}
+        if len({os.path.dirname(v) for v in evs.values()}) == 1 and all(os.path.basename(v) == lit[k] for k, v in evs.items()):
+            return None, {}
+        d = os.path.join(self.W, t.EVAL_LINKS.format(samples=eval_tag(t.SAMPLES)))
+        return d, {os.path.join(d, lit[k]): v for k, v in sorted(evs.items())}
+
+    def eval_root(self, evs, check=True):
+        """(the SF the script reads the evaluations ``evs`` under, T-EVAL refusal or None): their directory when they carry
+        the literal names, else the links directory (eval_links), whose links must point to them (``check``)."""
+        d, links = self.eval_links(evs)
+        if d is None:
+            return os.path.dirname(next(iter(evs.values()))), None
+        bad = [ln for ln, v in sorted(links.items()) if not os.path.islink(ln) or os.path.realpath(ln) != os.path.realpath(v)]
+        if check and bad:
+            return d, 'T-EVAL the links %s do not point to the evaluations (tier_eval makes them)' % bad
+        return d, None
 
     def eval_source(self):
         """(evaluations {(tier, kind): dir}, their root SF, how, T-EVAL / T-ROOTS refusal or None) that tier_site reads:
@@ -168,7 +203,7 @@ class TCtx:
         from exopipe.phase3.core import record
         t = self.t
         if 'tier_eval' in self.stages:
-            return self.eval_dirs(), self.W, 'tier_eval in this run', None
+            return self.eval_dirs(), self.eval_root(self.eval_dirs(), check=False)[0], 'tier_eval in this run', None
         rec = record.load_record(self.W, self.run.step, UNITS['tier_eval'])
         if rec is not None:
             meta = rec.get('meta') or {}
@@ -179,19 +214,24 @@ class TCtx:
                 return self.eval_dirs(), self.W, None, ('T-ROOTS the evaluations of this --out read %s / %s, this run names '
                                                         '%s / %s' % (meta.get('tier_forced_root'), meta.get('tier_cutout_root'),
                                                                      self.ft, self.phot))
-            return self.eval_dirs(), self.W, 'record %s' % UNITS['tier_eval'], None
+            if meta.get('samples') != list(t.SAMPLES):
+                return self.eval_dirs(), self.W, None, ('T-EVAL the evaluations of this --out are of the samples %s, this run '
+                                                        'names %s' % (meta.get('samples'), list(t.SAMPLES)))
+            sf, why = self.eval_root(self.eval_dirs())
+            return self.eval_dirs(), sf, None if why else 'record %s' % UNITS['tier_eval'], why
         if (self.ft, self.phot) != (t.FT_PRODUCTION, t.PHOT_PRODUCTION):
-            return dict(t.EVAL_DIRS), t.SITE_ROOT, None, (
+            return dict(t.EVAL_DIRS), t.SCRIPT_SF, None, (
                 'T-ROOTS production\'s evaluations (forced_tier_pages.EVAL_DIRS) read %s / %s; this run names %s / %s - '
                 'evaluate them first (--stages tier_eval)' % (t.FT_PRODUCTION, t.PHOT_PRODUCTION, self.ft, self.phot))
-        return dict(t.EVAL_DIRS), t.SITE_ROOT, 'forced_tier_pages.EVAL_DIRS (production)', None
+        return dict(t.EVAL_DIRS), t.SCRIPT_SF, 'forced_tier_pages.EVAL_DIRS (production)', None
 
     def page_globals(self, sf):
         """The in-place script's module globals a site build sets, only where config differs from its literal: SF (the root of
-        the evaluations, ev_dir :37-38), SAMPLES and SAMPLE_LABEL (:31-32)."""
+        the evaluations, ev_dir :37-38; compared with the script's own literal SCRIPT_SF, not the overridable SITE_ROOT),
+        SAMPLES and SAMPLE_LABEL (:31-32)."""
         t = self.t
         gl = {}
-        if os.path.abspath(sf) != os.path.abspath(t.SITE_ROOT):
+        if os.path.abspath(sf) != os.path.abspath(t.SCRIPT_SF):
             gl[t.EVAL_ROOT_GLOBAL] = os.path.abspath(sf)
         if tuple(t.SAMPLES) != tuple(t.SCRIPT_SAMPLES):
             gl['SAMPLES'] = list(t.SAMPLES)
@@ -315,6 +355,21 @@ def _eval_sample_gaps(t, evs):
             if (tier, kind, s, S) not in have]
 
 
+def _eval_samples(t, evs):
+    """[samples] that every evaluation of ``evs`` holds thresholds for (thresholds.csv), SAMPLES' order first."""
+    import csv
+    held = None
+    for ev in evs.values():
+        p = os.path.join(ev, 'thresholds.csv')
+        have = set()
+        if os.path.exists(p):
+            with open(p) as f:
+                have = {r['sample'] for r in csv.DictReader(f)}
+        held = have if held is None else held & have
+    held = held or set()
+    return [s for s in t.SAMPLES if s in held] + sorted(held - set(t.SAMPLES))
+
+
 def _eval_inputs(c):
     """T-INPUT: [what is missing] of the inputs tier_eval reads: per tier and kind (sb = the subbands, wb = the widebands),
     every sample's forced_<sample>_<band>_<S>.npz in some <FT>/<tier>/<LST>/ (globs one level per LST, no recursion), and
@@ -339,6 +394,29 @@ def _eval_inputs(c):
     return miss
 
 
+def _eval_admitted(c):
+    """T_eval's admitted set, part of its resume identity (the evaluation reads core.exclusions itself, at run time): the
+    sorted '<tier>|<LST>|<band>|<night>' of the nights its tier files hold (each sample's forced_<sample>_<band>_I.npz
+    'night') not excluded now (core.exclusions.for_tier, read fresh). An exclusion added later changes it, so --resume
+    re-runs the evaluation (whose T-G35 then asks for a new --out) instead of keeping one made with the excluded cell."""
+    import glob
+    import numpy as np
+    from exopipe.phase3.core import exclusions
+    out = set()
+    for tier in sorted({k[0] for k in c.t.EVAL_DIRS}):
+        ex = exclusions.for_tier(tier, fresh=True)
+        for d in sorted(glob.glob(os.path.join(c.ft, tier, '[0-2][0-9]h'))):
+            lst = os.path.basename(d)
+            for s in c.t.SAMPLES:
+                pre = 'forced_%s_' % s
+                for p in sorted(glob.glob(os.path.join(d, pre + '*_I.npz'))):
+                    band = os.path.basename(p)[len(pre):-len('_I.npz')]
+                    with np.load(p, allow_pickle=False) as z:
+                        nights = {str(n) for n in z['night']}
+                    out |= {'%s|%s|%s|%s' % (tier, lst, band, n) for n in nights if not ex.is_excluded(lst, band, n[:10])}
+    return sorted(out)
+
+
 def stage_eval(c):
     """tier_eval: the four stage-2 evaluations of SAMPLES (module docstring), one unit T_eval."""
     import glob
@@ -351,12 +429,16 @@ def stage_eval(c):
     argv_of = lambda tier, kind, out: [os.path.join(c.ft or '<FT>', tier), out, '--kind', kind, '--nproc', nproc, '--tier',
                                        tier, '--survey-cells', t.EVAL_SURVEY_CELLS, '--samples', ','.join(t.SAMPLES)]
     env = dict(t.EVAL_ENV, P3_PHOT_ROOT=c.phot)
+    links_dir, links = c.eval_links(evs)
+    new = sorted(evs.values()) + ([links_dir] if links_dir else [])
     for (tier, kind), out in sorted(evs.items()):
         K.plan('[tier_eval] %s %s (%s)' % (os.path.basename(script), ' '.join(str(a) for a in argv_of(tier, kind, out)),
                                            ' '.join('%s=%s' % kv for kv in sorted(env.items()))))
+    if links_dir:
+        K.plan('[tier_eval] links %s: the script\'s literal names (ev_dir :37-38) -> the evaluations' % links_dir)
     if c.dry:
         gates = [too_many, c.roots_refusal, _samples_refusal(c)]
-        ex = [p for p in evs.values() if os.path.lexists(p)]
+        ex = [p for p in new if os.path.lexists(p)]
         gates.append(('T-G35 %s exist(s)' % ', '.join(ex)) if ex else None)
         for p in evs.values():
             try:
@@ -381,7 +463,8 @@ def stage_eval(c):
         diff = ['%s %s -> %s' % (k, meta.get(k), v) for k, v in sorted(want.items()) if meta.get(k) != v]
         if diff:
             print('resume %s: not skipped (%s)' % (name, '; '.join(diff)), flush=True)
-        elif K.resumed(c.run, name, None, tier='snapshot', stage='tier_eval', family='T', **want):
+        elif not c.roots_refusal and K.resumed(c.run, name, None, admitted=_eval_admitted(c), tier='snapshot',
+                                               stage='tier_eval', family='T', **want):
             return
     with c.run.unit(name, tier='snapshot', stage='tier_eval', family='T', tier_forced_root=c.ft, tier_cutout_root=c.phot,
                     samples=list(t.SAMPLES)) as u:
@@ -392,11 +475,12 @@ def stage_eval(c):
             u.refuse(why)
         for s in t.SAMPLES:
             u.add_input(os.path.join(c.cfg.paths.CLV15_ROOT, c.cfg.photometry.SAMPLE_FILES[s]))
-        for p in evs.values():
+        u.add_input(c.cfg.paths.DATA_DECISIONS)     # the evaluation reads the exclusions itself: their digest is an input
+        for p in new:
             K.refuse_production_target(p, 'tier evaluation')
         if too_many:
             u.refuse(too_many)
-        ex = [p for p in evs.values() if os.path.lexists(p)]
+        ex = [p for p in new if os.path.lexists(p)]
         if ex:
             u.refuse('T-G35 %s exist(s): an evaluation writes a new directory (production\'s run_evals.sh refuses one); name '
                      'a new --out' % ', '.join(ex))
@@ -404,6 +488,7 @@ def stage_eval(c):
         if miss:
             u.refuse('T-INPUT %s - measure the samples first (photometry --tier deep|sublst --stages cutouts,cutmeasure)'
                      % '; '.join(miss)[:900])
+        u.set_admitted(_eval_admitted(c))
         for tier in t.TIERS:
             for mp in sorted(glob.glob(os.path.join(c.ft, tier, '[0-2][0-9]h', 'forced_manifest.csv'))):
                 u.add_input(mp)
@@ -422,6 +507,11 @@ def stage_eval(c):
                          % (tier, kind, res.rc, res.why()))
             lines['%s|%s' % (tier, kind)] = done[-1].group(0)
         u.meta['eval_lines'] = lines
+        if links_dir:
+            os.makedirs(links_dir)
+            for ln, v in sorted(links.items()):
+                os.symlink(os.path.relpath(v, links_dir), ln)
+            u.meta['eval_links'] = links_dir
         for (tier, kind), out in sorted(evs.items()):
             u.add_output(os.path.join(out, 'thresholds.csv'), 'forced_tier_eval', tier=tier, kind=kind,
                          samples=list(t.SAMPLES), inp=os.path.join(c.ft, tier))
@@ -534,7 +624,8 @@ def stage_site(c):
                 if bad:
                     c.would_refuse.append('T-EXCL %d selected event(s)' % len(bad))
         return
-    if _resumed(c, 'tier_site', selected_events(t, evs) if c.run.resume else None, site=c.site):
+    if _resumed(c, 'tier_site', selected_events(t, evs) if c.run.resume else None, site=c.site, evals=_evals(evs),
+                samples=list(t.SAMPLES), tier_forced_root=c.ft, tier_cutout_root=c.phot):
         return
     with c.run.unit(name, tier='snapshot', stage='tier_site', family='T', site=c.site, evals=_evals(evs),
                     samples=list(t.SAMPLES), tier_forced_root=c.ft, tier_cutout_root=c.phot) as u:
@@ -599,7 +690,12 @@ def _site_check(c):
             return rp, None, 'record %s' % UNITS['tier_site']
     if not os.path.exists(rp):
         return None, 'T-SITE no site %s (no tier_site record of this --out names it)' % rp, None
-    tests = validate.run('forced_tier_site', rp, evals=_evals(c.eval_source()[0]), samples=list(c.t.SAMPLES))
+    evs = c.eval_source()[0]
+    held = _eval_samples(c.t, evs)
+    if not held:
+        return None, 'T-SITE the evaluations %s hold no sample\'s thresholds' % sorted(evs.values()), None
+    # the samples the evaluations it reads hold, not forced_tier_pages.SAMPLES: production's site shows HWJ / 10 pc (review F1)
+    tests = validate.run('forced_tier_site', rp, evals=_evals(evs), samples=held)
     bad = [x for x in tests if not x['passed']]
     if bad:
         return None, 'T-SITE the site %s fails its content test: %s' % (c.site, '; '.join(x['detail'][:300] for x in bad)), None

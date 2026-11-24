@@ -102,6 +102,7 @@ def test_config():
     import importlib
     from exopipe.phase3 import config
     from exopipe.phase3.lib.forced import common as K
+    from exopipe.phase3.lib.forced import tier_pages as TP
     t, f = CFG.forced_tier_pages, CFG.forced
     check('config section forced_tier_pages loads', 'forced_tier_pages' in CFG.sections())
     check('steps.forced CONFIG declares forced_tier_pages',
@@ -125,10 +126,13 @@ def test_config():
           and all(s_ in t.SAMPLE_LABEL and s_ in CFG.photometry.SAMPLE_FILES and s_ in CFG.photometry.SAMPLE_SHA1
                   for s_ in t.SAMPLES)
           and all(t.SAMPLE_LABEL[s_] == t.SCRIPT_SAMPLE_LABEL[s_] for s_ in t.SCRIPT_SAMPLES), t.SAMPLES)
-    check('MIRROR EVAL_NAME / EVAL_ROOT_GLOBAL: ev_dir joins the module literal SF (:30, :37-38)',
+    check('MIRROR SCRIPT_EVAL_NAME / EVAL_ROOT_GLOBAL / SCRIPT_SF: ev_dir joins the module literal SF (:30, :37-38); '
+          'EVAL_NAME of the script\'s samples is production\'s name (review F7)',
           "%s = PP.SF" % t.EVAL_ROOT_GLOBAL in src and "os.path.join(SF, 'eval_%s_%sgen5_hwj10pc'" in src
-          and all(os.path.basename(v) == t.EVAL_NAME.format(tier=ti, wb='wb_' if k == 'wb' else '')
-                  and os.path.dirname(v) == t.SITE_ROOT for (ti, k), v in t.EVAL_DIRS.items()))
+          and all(os.path.basename(v) == t.SCRIPT_EVAL_NAME.format(tier=ti, wb='wb_' if k == 'wb' else '')
+                  == t.EVAL_NAME.format(tier=ti, wb='wb_' if k == 'wb' else '', samples=TP.eval_tag(t.SCRIPT_SAMPLES))
+                  and os.path.dirname(v) == t.SCRIPT_SF for (ti, k), v in t.EVAL_DIRS.items())
+          and TP.eval_tag(t.SAMPLES) == 'hwj10pclpt', TP.eval_tag(t.SAMPLES))
     ppsrc = open(PP_SCRIPT).read()
     check('MIRROR FT_PRODUCTION / PHOT_PRODUCTION = planets_forced_page FT and P3_PHOT_ROOT defaults (:54, :61)',
           "FT = os.environ.get('P3_FORCED_TIERS', '%s')" % t.FT_PRODUCTION in ppsrc
@@ -141,7 +145,8 @@ def test_config():
     check('tier_eval passes the evaluation\'s own flags (--tier, --survey-cells, --samples, --kind, --nproc) and P3_PHOT_ROOT',
           all("ap.add_argument('%s'" % x in esrc for x in ('--tier', '--survey-cells', '--samples', '--kind', '--nproc'))
           and "PHOT = os.environ.get('P3_PHOT_ROOT'" in esrc)
-    check('MIRROR SITE_ROOT = planets_forced_page SF', pp.get('SF') == t.SITE_ROOT, '%r' % pp.get('SF'))
+    check('MIRROR SITE_ROOT, SCRIPT_SF = planets_forced_page SF', pp.get('SF') == t.SITE_ROOT == t.SCRIPT_SF,
+          '%r' % pp.get('SF'))
     check('MIRROR the review root RUN_ROOT = paths.SNAPSHOT_REVIEW_ROOT', a.get('RUN_ROOT') == CFG.paths.SNAPSHOT_REVIEW_ROOT)
     check('MIRROR EVAL_DIRS = ev_dir() of the four (tier, kind)', "'eval_%s_%sgen5_hwj10pc' % (tier, 'wb_' if kind == 'wb' else '')"
           in src and t.EVAL_DIRS == {(ti, k): os.path.join(t.SITE_ROOT, 'eval_%s_%sgen5_hwj10pc' % (ti, 'wb_' if k == 'wb' else ''))
@@ -417,15 +422,16 @@ def _eval_out(out, inp, tier, kind, samples=SAMPLES):
 
 
 def _tier_tree(ft, samples=SAMPLES, lsts=('06h', '07h')):
-    """A tier forced root with every sample measured in a subband and a wideband of each tier and LST (empty files: the
-    gates glob names only)."""
+    """A tier forced root with every sample measured in a subband and a wideband of each tier and LST (each file holds only
+    its nights: the gates glob names, T_eval's admitted set reads 'night')."""
+    import numpy as np
     for tier in ('10min', 'deep'):
         for lst in lsts:
             for s_ in samples:
                 for b in ('55MHz', 'Green'):
                     p = os.path.join(ft, tier, lst, 'forced_%s_%s_I.npz' % (s_, b))
                     os.makedirs(os.path.dirname(p), exist_ok=True)
-                    open(p, 'wb').close()
+                    np.savez(p, night=np.array(['2025-01-01', '2025-01-02']))
     return ft
 
 
@@ -643,6 +649,21 @@ def test_cli_lpt():
     o = _LAST_OUT[0]
     check('cli: T-EVAL-SAMPLES evaluations without LPT thresholds named by the dry run (exit 2)',
           rc == 2 and 'gate T-EVAL-SAMPLES: 4 (tier, kind, sample, Stokes)' in o and "'LPT'" in o, o[-500:])
+    # review F1: tier_runs reads a site production built (HWJ / 10 pc) under the default SAMPLES (with LPT): T-SITE tests it
+    # against the samples its evaluations hold, not SAMPLES
+
+    class _Run:
+        resume, step, out_root = False, 'forced', os.path.join(TMP, 'o_f1')
+
+    class _C:
+        pass
+    cx = _C()
+    cx.run, cx.W, cx.t, cx.site = _Run(), _Run.out_root, t, os.path.join(TMP, 'siteprod_')
+    cx.eval_source = lambda: (dict(evs), TMP, 'test: HWJ / 10 pc evaluations', None)
+    got, why, how = TP._site_check(cx)
+    check('cli: T-SITE passes a site of HWJ / 10 pc with its HWJ / 10 pc evaluations under SAMPLES %s (review F1)'
+          % (t.SAMPLES,), 'LPT' in t.SAMPLES and got == os.path.join(cx.site, 'page_record.json') and why is None
+          and TP._eval_samples(t, evs) == ['HWJ', '10pc'], '%s %s' % (why, how))
     prod_gaps = TP._eval_sample_gaps(t, t.EVAL_DIRS)
     rc, err = cli(base + ['--stages', 'tier_site', '--dry-run', '--out', os.path.join(TMP, 'o_lpt_es2')])
     o = _LAST_OUT[0]
@@ -674,7 +695,7 @@ def test_cli_lpt():
           and 'gates T-ROOTS, T-SAMPLES, T-G35, T-INPUT, T-WORKERS: pass' in o, o[-600:])
     # T-G35: an evaluation directory of this --out exists
     out = os.path.join(TMP, 'o_lpt_g35')
-    os.makedirs(os.path.join(out, t.EVAL_NAME.format(tier='deep', wb='')))
+    os.makedirs(os.path.join(out, t.EVAL_NAME.format(tier='deep', wb='', samples=TP.eval_tag(SAMPLES))))
     calls = []
     keep = K.call
     K.call = lambda *a, **kw: calls.append(a) or _Call(1, [])
@@ -716,19 +737,46 @@ def test_cli_lpt():
         K.call, TP.TCtx.inplace, TS.excluded_events = keep, keep_i, keep_x
     st_e, why_e = _reason(out, 'T_eval')
     st_s, why_s = _reason(out, 'T_site')
-    want_ev = sorted(os.path.join(out, t.EVAL_NAME.format(tier=ti, wb='wb_' if k == 'wb' else '')) for ti, k in t.EVAL_DIRS)
+    want_ev = sorted(os.path.join(out, 'eval_%s_%sgen5_hwj10pclpt' % (ti, 'wb_' if k == 'wb' else '')) for ti, k in t.EVAL_DIRS)
     check('cli: tier_eval runs the four evaluations of HWJ,10pc,LPT on the given roots, each passing forced_tier_eval',
           st_e == 'done' and sorted(a[1][1] for a in evcalls) == want_ev
           and all(a[1][a[1].index('--samples') + 1] == 'HWJ,10pc,LPT' and a[1][0].startswith(ft + '/')
                   and a[0] == EVAL_SCRIPT and a[3].get('P3_PHOT_ROOT') == cut and a[3].get('OMP_NUM_THREADS') == '1'
                   and a[2] == CFG.forced.PYTHON_KEY['tier_eval'] for a in evcalls), '%s %s %s' % (st_e, why_e, evcalls[:1]))
+    links = os.path.join(out, 'eval_links_hwj10pclpt')
+    lk = {os.path.join(links, t.SCRIPT_EVAL_NAME.format(tier=ti, wb='wb_' if k == 'wb' else '')):
+          os.path.join(out, 'eval_%s_%sgen5_hwj10pclpt' % (ti, 'wb_' if k == 'wb' else '')) for ti, k in t.EVAL_DIRS}
+    check('cli: the evaluations are named from their samples (hwj10pclpt) and read by the script through links with its '
+          'literal names (review F7)', all(os.path.islink(a) and os.path.realpath(a) == os.path.realpath(b)
+                                           for a, b in lk.items()), sorted(os.listdir(out)))
     gl = builds[0][1] if builds else {}
-    check('cli: tier_site builds from those evaluations: SF = the --out, SAMPLES with LPT and its label, the tier files and '
-          'cutouts in the environment (the build replaced; T-BUILD then refuses)',
+    check('cli: tier_site builds from those evaluations: SF = the links directory, SAMPLES with LPT and its label, the tier '
+          'files and cutouts in the environment (the build replaced; T-BUILD then refuses)',
           st_s == 'refused' and 'T-BUILD' in why_s and builds and builds[0][0][0] == 'build'
-          and gl.get(t.EVAL_ROOT_GLOBAL) == os.path.abspath(out) and gl.get('SAMPLES') == list(SAMPLES)
+          and gl.get(t.EVAL_ROOT_GLOBAL) == links and gl.get('SAMPLES') == list(SAMPLES)
           and gl.get('SAMPLE_LABEL', {}).get('LPT') == t.SAMPLE_LABEL['LPT']
           and builds[0][2] == {'P3_FORCED_TIERS': ft, 'P3_PHOT_ROOT': cut}, '%s %s %s' % (st_s, why_s, builds[:1]))
+    # review F2 / F3: the resume identities. T_eval: the exclusion list an input, the admitted (tier, LST, band, night) set
+    # recorded and compared; T_site: the evaluations, samples and roots compared
+    rec = record.load_record(out, 'forced', 'T_eval') or {}
+    adm = rec.get('admitted') or []
+    check('cli: T_eval records the exclusion list as an input and its admitted set (review F2)',
+          CFG.paths.DATA_DECISIONS in (rec.get('inputs') or {}) and adm and all(a.count('|') == 3 for a in adm)
+          and {a.split('|')[0] for a in adm} == {'10min', 'deep'}, '%s %s' % (adm[:3], sorted(rec.get('inputs') or {})[:3]))
+    seen = []
+    keep_r = K.resumed
+    K.resumed = lambda run, name, inputs, admitted=None, **meta: seen.append((name, admitted, meta)) or True
+    try:
+        cli(base + ['--stages', 'tier_eval', '--resume', '--out', out, '--tier-forced-root', ft, '--tier-cutout-root', cut])
+        TP.TCtx.inplace, TS.excluded_events = fake_inplace, (lambda rows, ex=None: [])
+        cli(base + ['--stages', 'tier_site', '--resume', '--out', out, '--tier-forced-root', ft, '--tier-cutout-root', cut])
+    finally:
+        K.resumed, TP.TCtx.inplace, TS.excluded_events = keep_r, keep_i, keep_x
+    se = [x for x in seen if x[0] == 'T_eval']
+    ss = [x for x in seen if x[0] == 'T_site']
+    check('cli: --resume of T_eval passes the admitted set read now (review F2)', se and se[0][1] == adm, str(se)[:300])
+    check('cli: --resume of T_site compares the evaluations, samples and both roots (review F3)',
+          ss and {'site', 'evals', 'samples', 'tier_forced_root', 'tier_cutout_root'} <= set(ss[0][2]), str(ss)[:300])
 
 
 def test_resume_identity():

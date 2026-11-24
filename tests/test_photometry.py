@@ -3252,6 +3252,14 @@ def tier_review_fixes(adhoc, root, tout, out):
         check('cutmeasure measures LPT (photometry.TIER_FORCED_SAMPLES; the tool does not name it): its unit holds LPT with '
               'HWJ / 10 pc, the tool given LPT as an ad-hoc tag (%s)' % lpt_env,
               'cutmeasure.deep.18h.HWJ+10pc+LPT' in txt and ('ad hoc: %s' % lpt_env) in txt, txt[-700:])
+        from exopipe.phase3.lib.photometry import steps_cutouts as SC_
+        um = {l_.split('[cutmeasure]   unit ', 1)[1].split()[0]: l_ for l_ in txt.splitlines() if '[cutmeasure]   unit ' in l_}
+        check('... the ad-hoc environment is each unit\'s own (review F6): the LPT unit has it, a unit without LPT has none '
+              '(units %s; a planets-only unit\'s environment %s)' % (sorted(um), SC_.tier_engine_env(['SolarSystem'])),
+              any('LPT' in n_ and ('ad hoc: %s' % lpt_env) in l_ for n_, l_ in um.items())
+              and all('ad hoc' not in l_ for n_, l_ in um.items() if 'LPT' not in n_)
+              and SC_.tier_engine_env(['SolarSystem']) == {} and SC_.tier_engine_env(['HWJ', 'LPT']) == dict(
+                  [lpt_env.split('=', 1)]), sorted(um.values()))
         rc, txt = step(base + ['--stages', 'cutouts,cutmeasure', '--in-place'])
         recs = records(out)
         cu = recs.get('cutouts.deep.%s' % TIER_CELL, {})

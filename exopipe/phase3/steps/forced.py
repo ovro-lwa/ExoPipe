@@ -61,7 +61,7 @@ Outputs (production names and layout unchanged; records at <out>/_records/forced
             candidates_v3.csv (forced_wide_candidates); <review root>/<run>/forced_wide_v3.csv (forced_wide_published).
   N         <out> = night_activity.OUT_ROOT by default: night_activity_I10s.csv (night_activity_bands),
             night_activity_nights_I10s.csv (night_activity_nights).
-  T         <out> = the site root (default forced_tier_pages.SITE_ROOT): <out>/eval_<tier>_[wb_]gen5_hwj10pc/thresholds.csv
+  T         <out> = the site root (default forced_tier_pages.SITE_ROOT): <out>/eval_<tier>_[wb_]gen5_<samples>/thresholds.csv
             (forced_tier_eval, with exceedance, targets_ge4 and the evaluation's other tables); <site>/page_record.json
             (forced_tier_site, with the page, panels, yellow numbers, plots and the <site>_masters links); <review root>/
             <run>.new/queue_<S>.txt

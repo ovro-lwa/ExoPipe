@@ -231,6 +231,9 @@ class forced_tier_pages(_Section):
     # the site's root: the default --out of family T (records <root>/_records/forced/T_*.json); the served build is
     # <root>/SITE_NAME (2026-10-27 06:54 UT, 462 events). A build never reuses a directory (T-G35): a new one takes --tier-site
     SITE_ROOT = '/lustre/gh/main/phase3/snapshot_forced'     # MIRROR planets_forced_page_20261026.py SF (tier_forced_page :30)
+    # the script's own SF literal (:30 SF = PP.SF): the root ev_dir joins unless SF is passed. A site build passes SF whenever
+    # the evaluations' root differs from THIS (not from the overridable SITE_ROOT)
+    SCRIPT_SF = '/lustre/gh/main/phase3/snapshot_forced'     # MIRROR planets_forced_page_20261026.py:60 SF
     SITE_NAME = 'site_hwj10pc_tiers_gen5'
     # production's four stage-2 evaluations (snapshot_forced_eval.py --tier T --samples HWJ,10pc [--kind wb]), read in place
     # by literal path (ev_dir :37-38) when this --out has no tier_eval record: they hold no LPT, so T-EVAL-SAMPLES refuses
@@ -241,8 +244,14 @@ class forced_tier_pages(_Section):
                  ('deep', 'sb'): '/lustre/gh/main/phase3/snapshot_forced/eval_deep_gen5_hwj10pc',
                  ('deep', 'wb'): '/lustre/gh/main/phase3/snapshot_forced/eval_deep_wb_gen5_hwj10pc'}
     EVAL_FILES = ('thresholds.csv', 'targets_ge4.csv', 'exceedance.csv')   # what build / verify read of each (:44, :54, :71)
-    EVAL_NAME = 'eval_{tier}_{wb}gen5_hwj10pc'   # MIRROR ev_dir :37-38 ({wb} = 'wb_' for the wideband kind, else '')
-    EVAL_ROOT_GLOBAL = 'SF'                      # the script's module literal ev_dir joins (:30 SF = PP.SF = SITE_ROOT)
+    # an evaluation's directory is named from its samples ({samples}: the sample names lower-cased and joined, tier_pages.
+    # eval_tag): 'hwj10pc' for HWJ / 10 pc, production's names; 'hwj10pclpt' with LPT. The script reads ev_dir's literal
+    # name (SCRIPT_EVAL_NAME), so evaluations of other samples are read through <out>/<EVAL_LINKS>/<SCRIPT_EVAL_NAME>,
+    # symbolic links tier_eval makes to them, with SF = that directory
+    EVAL_NAME = 'eval_{tier}_{wb}gen5_{samples}'  # {wb} = 'wb_' for the wideband kind, else ''
+    SCRIPT_EVAL_NAME = 'eval_{tier}_{wb}gen5_hwj10pc'   # MIRROR ev_dir :37-38
+    EVAL_LINKS = 'eval_links_{samples}'
+    EVAL_ROOT_GLOBAL = 'SF'                      # the script's module literal ev_dir joins (:30 SF = PP.SF = SCRIPT_SF)
     # tier_eval: production's command (run_evals.sh: --nproc 5 --survey-cells 24 --samples HWJ,10pc, P3_PHOT_ROOT = the cutout
     # root, OMP_NUM_THREADS=1); its success line (snapshot_forced_eval.py main's last print)
     EVAL_SURVEY_CELLS = 24
@@ -285,7 +294,7 @@ class forced_tier_pages(_Section):
     # core.exclusions, read now; a wideband excluded with any member subband - refuses the site before any in-place call (the
     # evaluation predates the exclusion and is redone first). 'build' = production: tier_forced_page has no such gate
     EXCLUDED_EVENTS = 'refuse'
-    PROTECTED_KEYS = ('EVAL_DIRS', 'FT_PRODUCTION', 'PHOT_PRODUCTION')
+    PROTECTED_KEYS = ('EVAL_DIRS', 'FT_PRODUCTION', 'PHOT_PRODUCTION', 'SCRIPT_SF', 'SCRIPT_EVAL_NAME')
     RULED = {'EXCLUDED_EVENTS': 'R-GREGG-20261014-REFACTOR-DECISIONS-LIST-RECOMMENDATIONS',
              # LPT a sample of every tier ("Approve gen6 with the LPTs included"), in the standard forced pages (item 5 of
              # the 2026-11-24 answers: the one-off /s/lpt/ page stays up until then)

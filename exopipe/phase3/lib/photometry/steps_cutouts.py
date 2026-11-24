@@ -1550,8 +1550,10 @@ def stage_tier_cutmeasure(run, args):
             return []
         raise
     lsts = sorted({cl.split('_', 1)[0] for cl in cells})
-    # --targets: the ad-hoc sets; else the configured samples, those the engine does not name (LPT) as ad-hoc tags
-    adhoc_env = K.adhoc_env(targets, bool(getattr(args, 'planets', False))) if targets else tier_engine_env(samples)
+    # --targets: the ad-hoc sets; else each unit's own samples, those the engine does not name (LPT) as ad-hoc tags (a unit
+    # without such a sample, e.g. SolarSystem on its own root, gets none: P3_SNAP_CUTOUT_SAMPLES replaces the tool's SAMPLES)
+    adhoc_env = K.adhoc_env(targets, bool(getattr(args, 'planets', False))) if targets else {}
+    unit_env = (lambda smp: adhoc_env) if targets else tier_engine_env
     K.plan(run, '[cutmeasure] tier %s: LSTs %s on the cutouts of %s -> %s (photometry_tier_forced_20261026.py in place, '
                 'site PYTHON[%s])%s' % (token, ','.join(lsts), root, '; '.join('%s: %s' % (','.join(s), r)
                                                                                for r, s in sorted(roots.items())),
@@ -1561,12 +1563,15 @@ def stage_tier_cutmeasure(run, args):
     units = []
     for lst in lsts:
         for out_root, smp in sorted(roots.items()):
+            env = unit_env(smp)
             if run.dry_run:
-                K.plan(run, '[cutmeasure]   unit cutmeasure.%s.%s.%s -> %s' % (token, lst, '+'.join(smp), out_root))
+                K.plan(run, '[cutmeasure]   unit cutmeasure.%s.%s.%s -> %s%s' % (
+                    token, lst, '+'.join(smp), out_root,
+                    ('; ad hoc: %s' % ' '.join('%s=%s' % kv for kv in sorted(env.items()))) if env and not targets else ''))
                 continue
             units += run_unit(run, 'cutmeasure.%s.%s.%s' % (token, lst, '+'.join(smp)),
                               dict(tier=tier, stage='cutmeasure', lst=lst, cutout_root=root, tier_out=out_root),
-                              cutmeasure_unit, run, args, tier, lst, root, out_root, smp, adhoc_env)
+                              cutmeasure_unit, run, args, tier, lst, root, out_root, smp, env)
     return units
 
 
