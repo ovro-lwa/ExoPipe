@@ -131,8 +131,10 @@ def interpreter(name='default'):
 
 
 def run(target, args=(), python='default', module=False, env=None, cwd=None, log=None, parity_root=None,
-        timeout=None, refusal_codes=(2,), refusal_text=('REFUSED', 'REFUSING', 'REFUSE:'), unit=None, tail_lines=40):
-    """Run ``target`` (a script path, or a module name with module=True) with ``args``. See the module docstring."""
+        timeout=None, refusal_codes=(2,), refusal_text=('REFUSED', 'REFUSING', 'REFUSE:'), unit=None, tail_lines=40,
+        nice=None):
+    """Run ``target`` (a script path, or a module name with module=True) with ``args``. See the module docstring.
+    ``nice``: the child's niceness increment (os.nice in the child before it starts; None = the caller's)."""
     refuse_patch_path(target, 'core.legacy.run')
     for a in args:                                            # a patch script handed to an interpreter or shell as an argument
         refuse_patch_path(a, 'core.legacy.run')
@@ -181,7 +183,7 @@ def run(target, args=(), python='default', module=False, env=None, cwd=None, log
             start = os.lseek(lf.fileno(), 0, os.SEEK_CUR)
         try:
             p = subprocess.run(argv, stdout=lf, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, cwd=cwd, env=child,
-                               timeout=timeout)
+                               timeout=timeout, preexec_fn=(lambda: os.nice(int(nice))) if nice else None)
             rc = p.returncode
         except subprocess.TimeoutExpired:
             rc = -9

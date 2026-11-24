@@ -3,10 +3,13 @@
 
 RULED AND IMPLEMENTED - phase 'cell': the PER-CELL PRE-CHAIN STAGE of ruling 2026-09-18
 (RULING-INCREMENTAL-PUBLISHING-TIE-AS-A-PER-CELL-STAGE-JUDGEMENT-CARRY-OVER; Gregg 2026-09-25 "please do", 2026-09-26
-"Proceed!"), production ops/snapshot_cell_prestage.sh, for ONE night cell:
+"Proceed!"), production ops/snapshot_cell_prestage.sh as its live successor ops/snapshot_cell_prefit.sh (2026-10-08/10) runs
+it - prefit.sh where the two differ - plus the tie pass, for ONE night cell:
   done      on the production root, a cell production already prestaged (BATCH_DIR/cells/<cell>/PRESTAGE_DONE,
-            prestage.sh:31) is recorded 'skipped-valid' (done by production; read only) and not run again
-  gates     SI-G1..SI-G4, SI-G8 (below; prestage.sh:31-61, snapshot_cell_prefit.sh:73-121), in prefit.sh's order
+            prestage.sh:31) AND whose tie-cache file (tie_ or tie2_) has the current header (phase3_snapshot_tiecache.FIELDS)
+            is recorded 'skipped-valid' (done by production; read only) and not run again; otherwise the unit runs
+  gates     SI-G13 (stop files), SI-G12 (the attempt cap), SI-G1..SI-G4, SI-G8, SI-G14 (below;
+            snapshot_cell_prefit.sh:68-121), in prefit.sh's order
   repair    snapshot_store_repair.py: the rows the store content test refuses, refitted by fit-grouped into a new store
             and appended (at most catalog_snapshot.INC_STORE_REPAIR_ROUNDS rounds; snapshot_cell_prefit.sh:141-152)
   prefit    FIT EVERY DETECTION BEFORE THE VETOES (Gregg 2026-10-07 Q6): at most catalog_snapshot.PREFIT_MAX_ITER rounds of
@@ -20,6 +23,11 @@ RULED AND IMPLEMENTED - phase 'cell': the PER-CELL PRE-CHAIN STAGE of ruling 202
             on the detection and its cell's frames and Master references, so it does not depend on which other cells or
             nights a run holds)
   forced    forced photometry stage 1 of the cell still done (SI-G8 again; prestage.sh:83) before the unit is done
+  attempts  on the production root every failed attempt after the claim (forced stage 1 at the end, store repair, prefit
+            loop, store test) appends one line to BATCH_DIR/cells/<cell>/PREFIT_FAILS, none under a stop file; a cell with
+            catalog_snapshot.INC_PREFIT_MAX_FAILS lines is parked (SI-G12) on every root (prefit.sh:25-28, :62-63, :71-72)
+  fits      fit-grouped in shards (prefit.sh:124-140): the stop files are checked between shards; workers capped by the
+            node's memory (INC_FIT_GB_PER_WORKER, INC_FIT_MEM_MARGIN_GB) at niceness INC_FIT_NICE (prefit.sh:20-21, :40-55)
   Every in-place module runs IN PLACE through core/legacy.run under the site interpreter 'py36', with the chain arguments
   and environment of the batch port (tier_snapshot.chain_args with the restore-only 3-D gate table
   catalog_snapshot.INC_CURVE_CONSTANTS_RESTORE, tier_snapshot.chain_env: what the batch driver passes).
@@ -48,6 +56,7 @@ Outputs (under --out; the production root is catalog_snapshot.BATCH_DIR, the lay
   cells/<cell>/prestage.log                  the chain and fitter lines prestage.sh:81 keeps
   prefit_claims/<cell>/owner                 the one-writer claim (node:pid), held while the unit runs: the directory the
                                              batch chain's P-G8 waits on (tier_snapshot.py st_preflight; prefit.sh:110)
+  cells/<cell>/PREFIT_FAILS                  production root only: one line appended per failed attempt (prefit.sh:63)
   Work: production catalog_snapshot.WORK_ROOT/prestage/<cell> (prestage.sh:50; removed on success, prestage.sh:86); a
   non-production --out keeps it under <out>/_work/<cell>. A NON-PRODUCTION --out first COPIES the cell's production fit store
   and tie-cache files when it has none of its own (--snap-inc-seed), so it writes only under --out.
@@ -55,6 +64,7 @@ Failure modes (exit 2, the gate code first in the record's reason): GATES below.
          cell reaches the per-frame fit step, or none reaches the tie. Exit 1 = error.
 """
 import fcntl
+import glob
 import json
 import os
 import re
@@ -83,7 +93,8 @@ GATES = {
              'INC_OWNERLESS_CLAIM_STALE_S, is released atomically) and the holds again after the claim (:112)',
     'SI-G5': 'the prefit list is empty within catalog_snapshot.PREFIT_MAX_ITER rounds (prestage.sh:66-78)',
     'SI-G6': 'every in-place call exits 0: the store repair lists, fits and appends, the prefit lists, the fits, the tie '
-             'pass (snapshot_cell_prefit.sh:145-152; prestage.sh:70, :76, :80)',
+             'pass (snapshot_cell_prefit.sh:145-164; prestage.sh:80); the reason quotes the call\'s own refusal line, else '
+             'its last line without "warn" (prefit.sh:159)',
     'SI-G7': 'non-production seeding: the production files did not change while they were copied',
     'SI-G8': 'forced photometry stage 1 of the cell done (INC_FORCED_STATE_DIR/done/<cell>) and not marked failed '
              '(failed/<cell>), before the chain passes and again before the unit ends (prestage.sh:51-61, :83; '
@@ -94,6 +105,13 @@ GATES = {
               'is tested through it only when its newest row per key (store and template) equals the production store\'s',
     'SI-G11': 'the restore-only 3-D gate table catalog_snapshot.INC_CURVE_CONSTANTS_RESTORE exists and is not empty (as '
               'the batch chain\'s P-G21)',
+    'SI-G12': 'the attempt cap: fewer than catalog_snapshot.INC_PREFIT_MAX_FAILS lines in <out>/cells/<cell>/PREFIT_FAILS '
+              '(snapshot_cell_prefit.sh:71-72; Gregg 2026-10-10 \'Go on all 3\' item 2: a parked cell is not retried until '
+              'that file is removed after a diagnosis or a fix)',
+    'SI-G13': 'no stop file (catalog_snapshot.INC_STOP_FILES under --out: PREFIT_STOP, PREFIT_STOP_<node>) before the cell '
+              'and between fit shards (snapshot_cell_prefit.sh:68, :136); a stopped attempt is not a failure',
+    'SI-G14': 'the chain would not refuse the cell: no search flow-unregistered or with a paused 1-minute tier, and a 1-minute '
+              'table beside every candidate table of a subband not excluded (snapshot_cell_prefit.sh:82-95, run in place)',
 }
 
 OPEN_CHOICES = (
@@ -369,14 +387,167 @@ def holds(ctx, cell):
     return out
 
 
-def prestaged_by_production(ctx, cell):
-    """The PRESTAGE_DONE line production wrote for the cell on the production root (prestage.sh:84), else None."""
-    if not ctx.prod:
+def stop_file(ctx):
+    """The stop file present under --out (catalog_snapshot.INC_STOP_FILES: PREFIT_STOP, PREFIT_STOP_<node>;
+    snapshot_cell_prefit.sh:24, :68, :136), or None. prestage.sh's STOP_<node> is not one (retired; stale files exist)."""
+    for n in ctx.c.INC_STOP_FILES or ():
+        p = os.path.join(ctx.OUT, n.format(node=ctx.node))
+        if os.path.exists(p):
+            return p
+    return None
+
+
+def gate_stop(ctx, cell, plan_lines, when='before the cell'):
+    """SI-G13: a stop file ends the attempt (prefit.sh:68 before a cell, :136 between fit shards); not a failure."""
+    p = stop_file(ctx)
+    if when == 'before the cell':
+        plan_lines.append('SI-G13 stop files (%s under %s): %s' % (', '.join(ctx.c.INC_STOP_FILES or ()), ctx.OUT,
+                                                                  p or 'none'))
+    if p and not ctx.dry:
+        refuse('SI-G13: %s: stop file %s %s (snapshot_cell_prefit.sh:68, :136): not a failed attempt' % (cell, p, when))
+
+
+def fails_path(ctx, cell):
+    return os.path.join(ctx.cells, cell, 'PREFIT_FAILS')
+
+
+def gate_parked(ctx, cell, plan_lines):
+    """SI-G12, THE ATTEMPT CAP (snapshot_cell_prefit.sh:71-72; Gregg 2026-10-10 'Go on all 3' item 2): a cell whose
+    <out>/cells/<cell>/PREFIT_FAILS holds catalog_snapshot.INC_PREFIT_MAX_FAILS or more lines is parked, on every root."""
+    p = fails_path(ctx, cell)
+    n = 0
+    if os.path.exists(p):
+        with open(p, errors='replace') as f:
+            n = sum(1 for ln in f if ln.strip())                         # grep -c .
+    lim = int(ctx.c.INC_PREFIT_MAX_FAILS)
+    plan_lines.append('SI-G12 attempt cap: %d failed attempts in %s (parked at %d)' % (n, p, lim))
+    if n >= lim and not ctx.dry:
+        refuse('SI-G12: %s is parked: %d failed attempts (>= %d; %s) - not retried until that file is removed after a '
+               'diagnosis or a fix (snapshot_cell_prefit.sh:71-72; Gregg 2026-10-10 \'Go on all 3\')' % (cell, n, lim, p))
+
+
+def failrec(ctx, cell, what):
+    """snapshot_cell_prefit.sh:63: on the production root, one line per failed attempt in BATCH_DIR/cells/<cell>/PREFIT_FAILS;
+    none while a stop file exists (an attempt ended by a stop file is not a failure). Returns the line written, or None."""
+    if not ctx.prod or stop_file(ctx):
         return None
+    p = fails_path(ctx, cell)
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    line = '%s %s %s (exopipe3 catalog --tier snapshot --incremental, pid %d)' % (
+        time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()), ctx.node, what, os.getpid())
+    with open(p, 'a') as f:
+        f.write(line + '\n')
+    return line
+
+
+class _Attempt:
+    """One part of the attempt that prefit.sh counts (forced stage 1, store repair, the prefit loop, the store test): a
+    refusal inside it, other than a stop (SI-G13), appends its PREFIT_FAILS line (failrec) before it propagates."""
+
+    def __init__(self, ctx, s, cell, what, on_fail=None):
+        self.ctx, self.s, self.cell, self.what, self.on_fail = ctx, s, cell, what, on_fail
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, et, e, tb):
+        from exopipe.phase3.core.record import Refusal, SpaceRefused
+        if et is not None and issubclass(et, Refusal) and self.on_fail:
+            self.on_fail()
+        if et is not None and issubclass(et, Refusal) and not issubclass(et, SpaceRefused) \
+                and not str(e).startswith('SI-G13'):
+            what = self.what(e) if callable(self.what) else self.what
+            line = failrec(self.ctx, self.cell, what)
+            if line:
+                self.s.u.meta['prefit_fails_appended'] = line
+        return False
+
+
+def _eval_fields(node, names):
+    import ast
+    if isinstance(node, ast.List):
+        return ast.literal_eval(node)
+    if isinstance(node, ast.Name):
+        return list(names[node.id])
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        return _eval_fields(node.left, names) + _eval_fields(node.right, names)
+    raise ValueError('not a list expression: %s' % ast.dump(node)[:120])
+
+
+def tie_cache_fields(ctx):
+    """The current tie-cache header: FIELDS of the installed clv15/phase3_snapshot_tiecache.py, read from its source
+    (FIELDS_V1 = [...]; FIELDS = FIELDS_V1 + [...]); a header other than it is never appended to (tiecache.save). Cached."""
+    if not hasattr(ctx, '_tie_fields'):
+        import ast
+        p = os.path.join(ctx.clv, 'phase3_snapshot_tiecache.py')
+        names = {}
+        try:
+            for node in ast.parse(open(p).read()).body:
+                if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name) \
+                        and node.targets[0].id in ('FIELDS_V1', 'FIELDS'):
+                    names[node.targets[0].id] = _eval_fields(node.value, names)
+            ctx._tie_fields = (names['FIELDS'], None)
+        except (OSError, SyntaxError, ValueError, KeyError) as e:
+            ctx._tie_fields = (None, '%s: FIELDS not read (%s)' % (p, e))
+    return ctx._tie_fields
+
+
+def current_tie_cache(ctx, cell):
+    """(path, None) of the cell's production tie-cache file (tie_ or tie2_) whose header line is the current one, else
+    (None, why)."""
+    import csv
+    fields, err = tie_cache_fields(ctx)
+    if err:
+        return None, err
+    seen = []
+    for n in ('tie_%s.csv', 'tie2_%s.csv'):
+        p = os.path.join(ctx.c.BATCH_DIR, 'tiecache', n % cell)
+        if not (os.path.exists(p) and os.path.getsize(p) > 0):
+            continue
+        with open(p, newline='') as f:
+            hdr = next(csv.reader([f.readline()]), [])
+        if hdr == fields:
+            return p, None
+        seen.append('%s (an older header, %d columns)' % (os.path.basename(p), len(hdr)))
+    return None, ('no tie-cache file with the current header (%d columns, phase3_snapshot_tiecache.FIELDS): %s'
+                  % (len(fields), '; '.join(seen) or 'no tie_ or tie2_ file'))
+
+
+def prestaged_by_production(ctx, cell):
+    """On the production root: (the PRESTAGE_DONE line production wrote, None) when production prestaged the cell
+    (prestage.sh:84) and its tie-cache file has the current header; (None, why) when PRESTAGE_DONE exists but the tie cache
+    does not hold the current header (the unit runs); (None, None) otherwise."""
+    if not ctx.prod:
+        return None, None
     p = os.path.join(ctx.c.BATCH_DIR, 'cells', cell, 'PRESTAGE_DONE')
     if not os.path.exists(p):
-        return None
-    return '%s: %s' % (p, open(p, errors='replace').read().strip()[:300])
+        return None, None
+    tc, why = current_tie_cache(ctx, cell)
+    if not tc:
+        return None, '%s exists, but %s: the unit runs' % (p, why)
+    return '%s: %s; tie cache %s (current header)' % (p, open(p, errors='replace').read().strip()[:300], tc), None
+
+
+def gate_chain_refuses(ctx, s, cell, W, plan_lines):
+    """SI-G14 (snapshot_cell_prefit.sh:82-95): the chain's own refusals (phase3_snapshot_chain.build) checked before the
+    claim, run in place (child 'chain-refuses': phase3_snapshot_search.excluded_subbands): a search flow-unregistered or with
+    a paused 1-minute tier, or a candidate table of a subband not excluded without its 1-minute table. prefit.sh waits on such
+    a cell (no failed attempt); a failed check refuses too (prefit.sh's ${CREF:-1})."""
+    plan_lines.append('SI-G14 the chain would refuse the cell (prefit.sh:82-95): %s %s chain-refuses %s %s %s' % (
+        ctx.py36, __file__, ctx.clv, ctx.cfg.paths.SNAPSHOT_FLEET_OUT, cell))
+    if ctx.dry:
+        return
+    d = os.path.join(os.path.dirname(W), '.precheck_%s_%d' % (cell, os.getpid()))   # before the claim: never the cell's W
+    try:
+        res = ctx.T.call(ctx, s, os.path.abspath(__file__), ['chain-refuses', ctx.clv, ctx.cfg.paths.SNAPSHOT_FLEET_OUT,
+                                                             cell], 'py36', log=os.path.join(d, 'chain_refuses.log'), cwd=d)
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+    line = ctx.T.last_line(res.tail, r'^CHAIN-REFUSES ')
+    n = line.split()[1] if len(line.split()) > 1 else ''
+    if not res.ok or n != '0':
+        refuse('SI-G14: %s: the chain would refuse the cell (snapshot_cell_prefit.sh:82-95; prefit.sh waits on it): %s'
+               % (cell, line[len('CHAIN-REFUSES '):][:300] if line else 'the check failed (%s)' % (res.reason or 'no output')))
 
 
 class _ClaimLock:
@@ -522,30 +693,115 @@ def _keep_log(ctx, cell, W, logname):
         shutil.copy2(lp, os.path.join(cdir, logname))
 
 
-def _need(ctx, cell, W, res, logname, what, pattern):
-    """tier_sublst.need_ok: refuse unless the call exited 0, its log kept first."""
-    ctx.T.need_ok(res, 'SI-G6: %s: %s' % (cell, what), pattern, say=lambda: _keep_log(ctx, cell, W, logname))
+def reason_line(path):
+    """The line a failed call's reason quotes, from its own section of the log (after the last '===== ' header): its last
+    refusal line (REFUS; the chain's own reason, whole), else its last line without 'warn' (snapshot_cell_prefit.sh:159)."""
+    try:
+        text = open(path, errors='replace').read()
+    except OSError:
+        return ''
+    part = text[text.rfind('\n===== ') + 1:] if '\n===== ' in text else text
+    lines = [ln for ln in part.splitlines()[1 if part.startswith('===== ') else 0:] if ln.strip()]
+    ref = [ln for ln in lines if 'REFUS' in ln]
+    if ref:
+        return ref[-1]
+    nw = [ln for ln in lines if 'warn' not in ln.lower()]
+    return nw[-1] if nw else ''
 
 
-def _chain(ctx, s, cell, W, name, extra, env):
-    """One chain pass (prestage.sh:62-65): its own --out W/<name>, log W/<name>.log, the INC_CHAIN_TIMEOUT_H limit."""
+def _need(ctx, cell, W, res, logname, what):
+    """Refuse SI-G6 unless the call exited 0 (tier_sublst.need_ok's rule), its log kept first; the reason quotes the call's
+    own refusal line (reason_line) and legacy.run's sticky refusal when there is one."""
+    if res.ok:
+        return
+    _keep_log(ctx, cell, W, logname)
+    line = reason_line(os.path.join(W, logname))
+    extra = res.reason if res.reason and 'REFUSED' in res.reason and (not line or line not in res.reason) else ''
+    refuse('SI-G6: %s: %s: exit %s: %s' % (cell, what, res.rc, '; '.join(x for x in (line[:400], extra[:300]) if x)
+                                          or '(no output)'))
+
+
+def _chain(ctx, s, cell, W, name, extra, env, hours):
+    """One chain pass (prestage.sh:62-65, prefit.sh:153-156): its own --out W/<name>, log W/<name>.log, a limit of ``hours``."""
     a = ctx.chainargs(cell) + ['--cells', cell, '--out', os.path.join(W, name), '--veto-record-root', ''] + extra
     return ctx.T.call(ctx, s, ctx.chain_py, a, 'py36', env=env, log=os.path.join(W, '%s.log' % name), cwd=W,
-                      timeout=int(ctx.c.INC_CHAIN_TIMEOUT_H * 3600))
+                      timeout=int(float(hours) * 3600))
+
+
+def memprocs(ctx):
+    """Fit workers the node's memory holds now (snapshot_cell_prefit.sh:40-55): (core.nodemem.mem_available_gb, v2's one
+    memory reading - MemAvailable bounded by the cgroup limits, e.g. the 400 GiB /user.slice cap - less
+    INC_FIT_MEM_MARGIN_GB) // INC_FIT_GB_PER_WORKER; 0 when nothing can be read."""
+    from exopipe.phase3.core import nodemem
+    m = nodemem.mem_available_gb()
+    return max(0, int((float(m or 0) - float(ctx.c.INC_FIT_MEM_MARGIN_GB)) // float(ctx.c.INC_FIT_GB_PER_WORKER)))
+
+
+def fit_procs(ctx, s):
+    """snapshot_cell_prefit.sh:122-123 np(): this process's cores less FIT_PROCS_RESERVE, at most memprocs, at least 2; while
+    memprocs < 2 it waits (every INC_FIT_MEM_POLL_S, at most INC_FIT_MEM_WAIT_S) for room for 2 workers."""
+    c = ctx.c
+    want = max(1, len(os.sched_getaffinity(0)) - int(c.FIT_PROCS_RESERVE))
+    m, waited = memprocs(ctx), 0
+    while m < 2 and waited < float(c.INC_FIT_MEM_WAIT_S):
+        time.sleep(float(c.INC_FIT_MEM_POLL_S))
+        waited += float(c.INC_FIT_MEM_POLL_S)
+        m = memprocs(ctx)
+    if waited:
+        s.u.note('fit workers: waited %.0f s for memory (room for %d)' % (waited, m))
+    return max(2, min(want, m))
+
+
+def fit_groups(ctx, s, W, pending):
+    """The (cell, minute, band group) tasks of a request list (snapshot_cell_prefit.sh:129-133, child 'fit-groups' in place:
+    phase3_snapshot_fit._group_order); 1 when it cannot be counted (prefit.sh's `|| echo 1`)."""
+    res = ctx.T.call(ctx, s, os.path.abspath(__file__), ['fit-groups', ctx.clv, pending], 'py36',
+                     log=os.path.join(W, 'fit_groups.log'), cwd=W)
+    line = ctx.T.last_line(res.tail, r'^FIT-GROUPS \d+')
+    return int(line.split()[1]) if res.ok and line else 1
 
 
 def _fit(ctx, s, cell, W, pending, store, logname):
-    """fit-grouped of a request list into a store (prestage.sh:74-76): procs = this process's cores minus
-    catalog_snapshot.FIT_PROCS_RESERVE."""
-    procs = max(1, len(os.sched_getaffinity(0)) - int(ctx.c.FIT_PROCS_RESERVE))
-    return ctx.T.call(ctx, s, ctx.fit_py, ['fit-grouped', '--pending', pending, '--store', store, '--proto-root',
-                                           ctx.cfg.paths.SNAPSHOT_FLEET_OUT, '--procs', str(procs)],
-                      'py36', env=ctx.fit_env(), log=os.path.join(W, logname), cwd=W)
+    """fit-grouped of a request list into a store in shards (snapshot_cell_prefit.sh:128-140 fitg): k = ceil(requests /
+    INC_FIT_SHARD_REQUESTS), at most groups // (INC_FIT_TASKS_PER_WORKER x workers), at least 1; the stop files checked
+    before every shard; workers from fit_procs before every shard; OMP/BLAS 1 thread, niceness INC_FIT_NICE. Returns
+    ('ok' | 'stopped' | 'failed', the last LegacyResult or the stop file)."""
+    c = ctx.c
+    n = rows_of(pending)
+    p = fit_procs(ctx, s)
+    g = fit_groups(ctx, s, W, pending)
+    k = max(1, min((n + int(c.INC_FIT_SHARD_REQUESTS) - 1) // int(c.INC_FIT_SHARD_REQUESTS),
+                   g // (int(c.INC_FIT_TASKS_PER_WORKER) * p)))
+    res = None
+    for i in range(k):
+        st = stop_file(ctx)
+        if st:
+            s.u.note('stop file %s during the %s fits (shard %d of %d)' % (st, cell, i, k))
+            return 'stopped', st
+        res = ctx.T.call(ctx, s, ctx.fit_py, ['fit-grouped', '--pending', pending, '--store', store, '--proto-root',
+                                              ctx.cfg.paths.SNAPSHOT_FLEET_OUT, '--procs', str(p), '--shard', str(i),
+                                              '--nshards', str(k)],
+                         'py36', env=ctx.fit_env(), log=os.path.join(W, logname), cwd=W, nice=int(c.INC_FIT_NICE))
+        if not res.ok:
+            return 'failed', res
+        p = fit_procs(ctx, s)
+    return 'ok', res
+
+
+def _fitted(ctx, cell, W, state, res, logname, what):
+    """Refuse a fit that did not end 'ok': SI-G13 for a stop file, SI-G6 for a failed shard."""
+    if state == 'stopped':
+        refuse('SI-G13: %s: stop file %s during the %s (snapshot_cell_prefit.sh:136): not a failed attempt' % (cell, res, what))
+    if state == 'failed':
+        _need(ctx, cell, W, res, logname, what)
 
 
 def cell_phase(ctx, s, cell, plan_lines):
-    """The gates in snapshot_cell_prefit.sh's order (:73-121), the claim, then the stage (_cell_run)."""
+    """The gates in snapshot_cell_prefit.sh's order (:68-121), the claim, then the stage (_cell_run)."""
     c = ctx.c
+    W = ctx.work(cell)
+    gate_stop(ctx, cell, plan_lines)                                      # prefit.sh:68
+    gate_parked(ctx, cell, plan_lines)                                    # prefit.sh:71-72
     gate_dirty(ctx, cell, plan_lines)                                     # prefit.sh:73
     fst_failed = os.path.join(c.INC_FORCED_STATE_DIR, 'failed', cell)
     if os.path.exists(fst_failed) and not ctx.dry:                        # prefit.sh:74
@@ -555,26 +811,33 @@ def cell_phase(ctx, s, cell, plan_lines):
     plan_lines.append('SI-G4 holds: %s' % ('; '.join(h) or 'none'))
     if h and not ctx.dry:
         refuse('SI-G4: %s is held: %s' % (cell, '; '.join(h)))
+    gate_chain_refuses(ctx, s, cell, W, plan_lines)                       # prefit.sh:82-95
     gate_lightcurves(ctx, cell, pl, plan_lines)                           # prefit.sh:96-107
-    gate_forced(ctx, cell, plan_lines)                                    # prestage.sh:55-61
+    gate_forced(ctx, cell, plan_lines)                                    # prefit.sh:114-121 (refused, not run)
     maxit = int(c.PREFIT_MAX_ITER)
-    W = ctx.work(cell)
     store = ctx.store(cell)
     plan_lines.append('store repair (<= %d rounds; prefit.sh:141-152): %s %s %s %s/repair<r>.csv%s --check; rows > 0 -> '
                       'fit-grouped into %s/repair<r>.store.csv, then %s <that store> --fits-dir %s' % (
                           int(c.INC_STORE_REPAIR_ROUNDS), ctx.py36, ctx.opsc('snapshot_store_repair.py'), cell, W,
                           '' if ctx.prod else ' --store %s' % store, W, ctx.opsc('snapshot_store_append.py'), ctx.fits))
-    plan_lines.append('prefit loop (<= %d rounds; prestage.sh:66-78): %s %s %s --cells %s --out %s/prefit<i> --veto-record-root '
-                      '"" --prefit-list-only; rows > 0 -> %s fit-grouped --pending %s/prefit<i>/prefit_requests.csv --store %s '
-                      '--proto-root %s --procs <free cores - %d>' % (
-                          maxit, ctx.py36, ctx.chain_py, ' '.join(ctx.chainargs(cell)), cell, W, ctx.fit_py, W, store,
-                          ctx.cfg.paths.SNAPSHOT_FLEET_OUT, c.FIT_PROCS_RESERVE))
+    plan_lines.append('prefit loop (<= %d rounds; prefit.sh:153-166): %s %s %s --cells %s --out %s/prefit<i> --veto-record-root '
+                      '"" --prefit-list-only (%s h limit); rows > 0 -> %s fit-grouped --pending %s/prefit<i>/prefit_requests.csv '
+                      '--store %s --proto-root %s --procs <min(free cores - %d, (available GB - %s) // %s), >= 2> --shard i '
+                      '--nshards <ceil(rows / %d), <= groups // (%d x procs)>, niceness %d, stop files checked between shards' % (
+                          maxit, ctx.py36, ctx.chain_py, ' '.join(ctx.chainargs(cell)), cell, W, c.INC_PREFIT_TIMEOUT_H,
+                          ctx.fit_py, W, store, ctx.cfg.paths.SNAPSHOT_FLEET_OUT, c.FIT_PROCS_RESERVE,
+                          c.INC_FIT_MEM_MARGIN_GB, c.INC_FIT_GB_PER_WORKER, c.INC_FIT_SHARD_REQUESTS,
+                          c.INC_FIT_TASKS_PER_WORKER, c.INC_FIT_NICE))
     plan_lines.append('SI-G10 store content test (prefit.sh:167-168): %s%s %s %s -> READY' % (
         '' if ctx.prod else 'non-production: %s store-same %s %s (newest row per key, store and template), then ' % (
             __file__, store, ctx.prod_store(cell)), ctx.py36, ctx.opsc('snapshot_store_ready.py'), cell))
     plan_lines.append('tie pass (prestage.sh:79-80): P3_TIE_CACHE_DIR=%s P3_REFASTRO_SHARDS=<%d if >= %d detections at the fit '
-                      'step else %d> %s --cells %s --out %s/tie --veto-record-root "" --stop-after-tie; judged by its exit '
-                      'code' % (ctx.tiecache, c.TIE_SHARDS[1], c.TIE_SHARDS[0], c.TIE_SHARDS[2], ctx.chain_py, cell, W))
+                      'step else %d> %s --cells %s --out %s/tie --veto-record-root "" --stop-after-tie (%s h limit); judged by '
+                      'its exit code' % (ctx.tiecache, c.TIE_SHARDS[1], c.TIE_SHARDS[0], c.TIE_SHARDS[2], ctx.chain_py, cell, W,
+                                         c.INC_CHAIN_TIMEOUT_H))
+    plan_lines.append('attempt record (prefit.sh:63): %s' % (
+        'a refusal in forced stage 1 (at the end), the store repair, the prefit loop or the store test appends one line to '
+        '%s, none under a stop file' % fails_path(ctx, cell) if ctx.prod else 'non-production: no PREFIT_FAILS line'))
     cd = claim(ctx, cell, plan_lines)
     try:
         seed(ctx, s, cell, plan_lines)
@@ -595,18 +858,21 @@ def store_repair(ctx, s, cell, W, store):
         a = [cell, lst] + ([] if ctx.prod else ['--store', store]) + ['--check']
         res = T.call(ctx, s, ctx.opsc('snapshot_store_repair.py'), a, 'py36', log=os.path.join(W, 'repair%d.log' % r),
                      cwd=W)
-        _need(ctx, cell, W, res, 'repair%d.log' % r, 'store repair list %d' % r, r'REPAIR-LIST|REFUSED')
+        _need(ctx, cell, W, res, 'repair%d.log' % r, 'store repair list %d' % r)
         n = rows_of(lst)
         if n == 0:
             break
         nrep += n
         new = os.path.join(W, 'repair%d.store.csv' % r)
-        res = _fit(ctx, s, cell, W, lst, new, 'repair_fit%d.log' % r)
-        if os.path.exists(new) and os.path.getsize(new) > 0:              # what a failed round fitted is appended too
+        for q in (new, ctx.S.template_of(new)):                           # prefit.sh:147
+            if os.path.exists(q):
+                os.remove(q)
+        state, res = _fit(ctx, s, cell, W, lst, new, 'repair_fit%d.log' % r)
+        if os.path.exists(new) and os.path.getsize(new) > 0:              # what a stopped or failed round fitted is appended
             ap = T.call(ctx, s, ctx.opsc('snapshot_store_append.py'), [new, '--fits-dir', ctx.fits], 'py36',
                         log=os.path.join(W, 'repair_append%d.log' % r), cwd=W)
-            _need(ctx, cell, W, ap, 'repair_append%d.log' % r, 'store repair append %d' % r, r'APPENDED|REFUSED')
-        _need(ctx, cell, W, res, 'repair_fit%d.log' % r, 'store repair fits %d' % r, r'DONE|REFUS|Error')
+            _need(ctx, cell, W, ap, 'repair_append%d.log' % r, 'store repair append %d' % r)
+        _fitted(ctx, cell, W, state, res, 'repair_fit%d.log' % r, 'store repair fits %d' % r)
     return nrep
 
 
@@ -645,40 +911,45 @@ def _cell_run(ctx, s, cell, W, store, plan_lines):
     s.code(ctx.chain_py, ctx.fit_py, ctx.opsc('snapshot_store_repair.py'), ctx.opsc('snapshot_store_append.py'),
            ctx.opsc('snapshot_store_ready.py'))
     s.inp(store, ctx.S.template_of(store), ctx.restore)
-    s.u.meta['repaired'] = store_repair(ctx, s, cell, W, store)
+    keep = lambda: [_keep_log(ctx, cell, W, os.path.basename(x)) for x in glob.glob(os.path.join(W, 'repair*.log'))]
+    with _Attempt(ctx, s, cell, 'store repair (%s/repair*.log)' % cdir, on_fail=keep):     # prefit.sh:152
+        s.u.meta['repaired'] = store_repair(ctx, s, cell, W, store)
     maxit = int(c.PREFIT_MAX_ITER)
     ok, nfit, nat, nload, it = False, 0, 0, 0, 0
     rounds = []
-    for it in range(1, maxit + 1):
-        res = _chain(ctx, s, cell, W, 'prefit%d' % it, ['--prefit-list-only'], ctx.chain_env())
-        _need(ctx, cell, W, res, 'prefit%d.log' % it, 'prefit list %d' % it, r'REFUS|Error|PREFIT')
-        req = os.path.join(W, 'prefit%d' % it, 'prefit_requests.csv')
-        if not os.path.exists(req):
-            _keep_log(ctx, cell, W, 'prefit%d.log' % it)
-            refuse('SI-G6: %s: prefit list %d wrote no %s' % (cell, it, req))
-        keep = os.path.join(cdir, 'prefit%d_requests.csv' % it)
-        shutil.copy2(req, keep)
-        s.out(keep, 'csv_table')
-        n = rows_of(req)
-        nat, nload = summary_counts(os.path.join(W, 'prefit%d' % it, 'chain_summary.json'))
-        rounds.append({'round': it, 'without_fit': n, 'at_fit_step': nat, 'loaded': nload})
-        if n == 0:
-            ok = True
-            break
-        nfit += n
-        res = _fit(ctx, s, cell, W, req, store, 'fits%d.log' % it)
-        _need(ctx, cell, W, res, 'fits%d.log' % it, 'fits of prefit round %d' % it, r'DONE|REFUS|Error')
-    s.u.meta.update(prefit_rounds=rounds, prefit_fitted=nfit, n_at_fit_step=nat, n_loaded=nload)
-    if not ok:
-        refuse('SI-G5: %s: %d detections still without their own fit after %d prefit rounds (%s/prefit%d/prefit_requests.csv)'
-               % (cell, rounds[-1]['without_fit'], it, W, it))
-    store_ready(ctx, s, cell, W, store)
+    with _Attempt(ctx, s, cell, 'prefit list not empty after %d iterations or a step failed (%s)' % (maxit, W)):  # :166
+        for it in range(1, maxit + 1):
+            res = _chain(ctx, s, cell, W, 'prefit%d' % it, ['--prefit-list-only'], ctx.chain_env(), c.INC_PREFIT_TIMEOUT_H)
+            _need(ctx, cell, W, res, 'prefit%d.log' % it, 'prefit list %d' % it)
+            req = os.path.join(W, 'prefit%d' % it, 'prefit_requests.csv')
+            if not os.path.exists(req):
+                _keep_log(ctx, cell, W, 'prefit%d.log' % it)
+                refuse('SI-G6: %s: prefit list %d wrote no %s' % (cell, it, req))
+            keep = os.path.join(cdir, 'prefit%d_requests.csv' % it)
+            shutil.copy2(req, keep)
+            s.out(keep, 'csv_table')
+            n = rows_of(req)
+            nat, nload = summary_counts(os.path.join(W, 'prefit%d' % it, 'chain_summary.json'))
+            rounds.append({'round': it, 'without_fit': n, 'at_fit_step': nat, 'loaded': nload})
+            if n == 0:
+                ok = True
+                break
+            nfit += n
+            state, res = _fit(ctx, s, cell, W, req, store, 'fits%d.log' % it)
+            _fitted(ctx, cell, W, state, res, 'fits%d.log' % it, 'fits of prefit round %d' % it)
+        s.u.meta.update(prefit_rounds=rounds, prefit_fitted=nfit, n_at_fit_step=nat, n_loaded=nload)
+        if not ok:
+            refuse('SI-G5: %s: %d detections still without their own fit after %d prefit rounds '
+                   '(%s/prefit%d/prefit_requests.csv)' % (cell, rounds[-1]['without_fit'], it, W, it))
+    with _Attempt(ctx, s, cell, lambda e: 'store test: %s' % str(e).split('after the fits: ', 1)[-1]):   # :168
+        store_ready(ctx, s, cell, W, store)
     if nat == 0:
         no_input('%s: no detection reaches the per-frame fit step (%d loaded): nothing to tie' % (cell, nload))
     shards = ctx.S.tie_shards(nat, c.TIE_SHARDS)
     res = _chain(ctx, s, cell, W, 'tie', ['--stop-after-tie'],
-                 ctx.chain_env(P3_TIE_CACHE_DIR=ctx.tiecache, P3_REFASTRO_SHARDS=shards))
-    _need(ctx, cell, W, res, 'tie.log', 'tie pass', r'STOP-AFTER-TIE|REFUS|Error')    # prestage.sh:80: the exit code
+                 ctx.chain_env(P3_TIE_CACHE_DIR=ctx.tiecache, P3_REFASTRO_SHARDS=shards), c.INC_CHAIN_TIMEOUT_H)
+    _need(ctx, cell, W, res, 'tie.log', 'tie pass')                     # prestage.sh:80: the exit code (not counted: prefit.sh
+                                                                        # has no tie pass)
     summ = json.load(open(os.path.join(W, 'tie', 'chain_summary.json')))
     tc = summ.get('tie_cache') or {}
     s.u.meta.update(tie_shards=shards, tie_from_cache=tc.get('from_cache'), tie_tied_now=tc.get('tied_now'))
@@ -693,7 +964,8 @@ def _cell_run(ctx, s, cell, W, store, plan_lines):
     s.u.note(T.last_line(res.tail, 'tie cache:'))
     if not (tc.get('from_cache') or 0) + (tc.get('tied_now') or 0):
         no_input('%s: no detection of the %d at the per-frame fit step reaches the association pool: nothing tied' % (cell, nat))
-    gate_forced(ctx, cell, plan_lines, when='at the end')                # prestage.sh:83
+    with _Attempt(ctx, s, cell, 'forced photometry stage 1'):           # prestage.sh:83; prefit.sh:121
+        gate_forced(ctx, cell, plan_lines, when='at the end')
     s.out(os.path.join(cdir, 'chain_summary.json'), 'snapshot_tie_summary')
     for p in (store, ctx.S.template_of(store)):                          # the fit store and its template side store
         if os.path.exists(p):
@@ -752,25 +1024,31 @@ def run(args, run, epochs=None):
         if 'cell' in phases:
             name = '%s.cell.%s' % (UNIT, cell)
             meta = dict(tier=TIER, phase='cell', cell=cell)
-            done_by = prestaged_by_production(ctx, cell)
+            done_by, not_done = prestaged_by_production(ctx, cell)
             if run.upstream_refused(name, **meta):                     # an earlier step of the chain item refused the cell
                 status = 'refused upstream'
+            elif done_by and ctx.dry:
+                print('[%s]\n  skipped-valid: done by production: %s' % (name, done_by))
+                status = 'done by production'
             elif done_by:
-                # production prestaged the cell (prestage.sh:31 skips it): recorded read only, never run again or refused
+                # production prestaged the cell (prestage.sh:31 skips it) and its tie cache has the current header:
+                # recorded read only, never run again or refused
                 u = run.unit(name, done_by='production', prestage_done=done_by, **meta)
                 u.status, u.reason = 'skipped-valid', 'done by production: %s' % done_by
                 u.write()
                 print('%s: skipped (%s)' % (name, u.reason), file=sys.stderr)
                 status = 'done by production'
             elif ctx.dry:
-                plan_lines = []
+                plan_lines = ['PRESTAGE_DONE: %s' % not_done] if not_done else []
                 cell_phase(ctx, T.Stage(ctx, 'cell', T.DryUnit(), tier=TIER, in_place=()), cell, plan_lines)
                 print('[%s]' % name)
                 for ln in plan_lines:
                     print('  ' + ln)
                 status = 'planned'
             else:
-                plan_lines = []
+                plan_lines = ['PRESTAGE_DONE: %s' % not_done] if not_done else []
+                if not_done:
+                    meta['prestage_done_not_valid'] = not_done
                 with run.unit(name, **meta) as u:
                     st = T.Stage(ctx, 'cell', u, tier=TIER, in_place=())
                     try:
@@ -799,7 +1077,46 @@ def run(args, run, epochs=None):
     return None
 
 
-if __name__ == '__main__':          # child entry point through core/legacy.run (Python 3.6 + clv15 only)
-    if len(sys.argv) == 5 and sys.argv[1] == 'store-same':
-        sys.exit(child_store_same(*sys.argv[2:5]))
-    sys.exit('usage: incremental_snapshot.py store-same CLV STORE PRODUCTION_STORE')
+def child_chain_refuses(clv, fleet_out, cell):
+    """Child (py36, clv15 in place): snapshot_cell_prefit.sh:83-94 verbatim - the searches of the cell the chain refuses
+    (phase3_snapshot_chain.build): runinfo flow-unregistered or with a paused 1-minute tier, and candidate tables of a subband
+    not excluded (phase3_snapshot_search.excluded_subbands) without their 1-minute table. Prints CHAIN-REFUSES <n> <which>."""
+    sys.path.insert(0, clv)
+    from phase3_snapshot_search import excluded_subbands
+    d = os.path.join(fleet_out, cell)
+    ex = excluded_subbands(*cell.split('_', 1))
+    why = []
+    for rp in sorted(glob.glob(d + '/runinfo_*_median.json')):
+        try:
+            ri = json.load(open(rp))
+        except Exception:
+            continue
+        if ri.get('flow_registered') is False or str(ri.get('tier_1min', '')).strip().lower() == 'paused':
+            why.append(os.path.basename(rp) + (' flow-unregistered' if ri.get('flow_registered') is False
+                                               else ' 1-minute tier paused'))
+    for p in sorted(glob.glob(d + '/candidates_*_median.csv')):
+        if os.path.basename(p).split('_')[1] not in ex and not os.path.exists(p[:-4] + '_1min.csv'):
+            why.append(os.path.basename(p) + ' without its 1-minute table')
+    print('CHAIN-REFUSES %d %s' % (len(why), '; '.join(why)))
+    return 0
+
+
+def child_fit_groups(clv, pending):
+    """Child (py36, clv15 in place): snapshot_cell_prefit.sh:129-133 - the (cell, minute, band group) tasks of a request list
+    (phase3_snapshot_fit._group_order). Prints FIT-GROUPS <n>."""
+    import csv
+    sys.path.insert(0, clv)
+    from phase3_snapshot_fit import _group_order
+    with open(pending) as f:
+        print('FIT-GROUPS %d' % len({(r['cell'], r['ts'][:13], _group_order(r)[0]) for r in csv.DictReader(f)}))
+    return 0
+
+
+CHILDREN = {'store-same': (child_store_same, 3), 'chain-refuses': (child_chain_refuses, 3),
+            'fit-groups': (child_fit_groups, 2)}
+
+if __name__ == '__main__':          # child entry points through core/legacy.run (Python 3.6 + clv15 only)
+    if len(sys.argv) >= 2 and sys.argv[1] in CHILDREN and len(sys.argv) == 2 + CHILDREN[sys.argv[1]][1]:
+        sys.exit(CHILDREN[sys.argv[1]][0](*sys.argv[2:]))
+    sys.exit('usage: incremental_snapshot.py store-same CLV STORE PRODUCTION_STORE | chain-refuses CLV FLEET_OUT CELL | '
+             'fit-groups CLV PENDING')

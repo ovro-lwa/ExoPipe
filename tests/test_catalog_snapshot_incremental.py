@@ -7,8 +7,9 @@ production ops/snapshot_cell_prestage.sh); R-GREGG-20261112-PER-HOUR-STEPS-SIX-R
 cross-cell association has no ruled design, so its phase refuses).
 
 Everything is synthetic, in a temporary directory of this test's own (tempfile.mkdtemp, removed at the end): a fleet-out
-tree, a batch directory, light-curve tables (empty files), an exclusion stub, and STUB in-place modules (phase3_snapshot_chain.py
-and phase3_snapshot_fit.py) run by core/legacy.run under this interpreter. The stub chain reads <fleet>/<cell>/dets.csv
+tree, a batch directory, light-curve tables (empty files), an exclusion stub, and STUB in-place modules (phase3_snapshot_chain.py,
+phase3_snapshot_fit.py, phase3_snapshot_search.py, phase3_snapshot_tiecache.py) run by core/legacy.run under this interpreter;
+the node's available memory is fixed at room for 2 fit workers. The stub chain reads <fleet>/<cell>/dets.csv
 (the detections that reach the per-frame fit step), lists those without a store row (--prefit-list-only) and ties the
 association-pool ones not in the tie cache (--stop-after-tie), as production's chain does; the stub fitter APPENDS rows to
 the store, as fit-grouped does. Every stub call writes its argv and environment to calls.jsonl.
@@ -37,6 +38,21 @@ Asserts:
   seeding      a non-production --out copies the production store and tie-cache files (tie_ and tie2_) it lacks and is
                store-tested through production's test while it holds production's content; 'none' copies nothing; an
                existing copy is kept
+  attempts     (prefit.sh:62-72, :152-168; Gregg 2026-10-10 'Go on all 3') SI-G12: >= INC_PREFIT_MAX_FAILS (3) lines in
+               <out>/cells/<cell>/PREFIT_FAILS park the cell on any root, 2 do not; on the production root one line per
+               failed store repair (its logs kept), prefit loop (not converged, a chain exit or refusal), store test (its
+               NOT-READY line) and forced stage 1 at the end; none for a tie-pass failure, none while a stop file exists,
+               none on a non-production root
+  stop files   SI-G13: PREFIT_STOP and PREFIT_STOP_<node> under --out before the cell and between fit shards (no failed
+               attempt); STOP_<node> and another node's file are not honored
+  chain check  SI-G14 (prefit.sh:82-95): flow-unregistered and paused 1-minute searches, candidate tables of a subband not
+               excluded without their 1-minute table; refused before the claim, nothing run, no failed attempt
+  done-by      PRESTAGE_DONE is done only with a tie_ or tie2_ file whose header is phase3_snapshot_tiecache.FIELDS (no file,
+               or an older header: the unit runs); a dry run prints it and records nothing
+  fits         shards (ceil(requests / INC_FIT_SHARD_REQUESTS), at most groups // (INC_FIT_TASKS_PER_WORKER x workers)),
+               workers = min(free cores - reserve, memory's), >= 2, waiting for memory; niceness 19; the prefit-list passes
+               under a 6-h limit and the tie pass under INC_CHAIN_TIMEOUT_H; an SI-G6 reason quotes the chain's REFUSING
+               line, not the 60 warning lines after it
   helpers      phases, seeds, the cell-list parse, the prestage.log filter, the stale-claim rule; tier_snapshot.chain_args
                and chain_env; the tie_cache content test on a tie2_ file; steps/catalog.py routes --tier snapshot
                --incremental here
@@ -63,6 +79,7 @@ _IMPORT_ERROR = None
 try:
     from exopipe.phase3.config import CFG
     from exopipe.phase3.core import exclusions as EX
+    from exopipe.phase3.core import nodemem as NM
     from exopipe.phase3.core import record, validate
     from exopipe.phase3.lib.catalog import incremental_snapshot as IS
     from exopipe.phase3.lib.catalog import tier_snapshot as TS
@@ -83,10 +100,17 @@ def opt(k):
 out, store, cell, proto = opt("--out"), opt("--fit-store"), opt("--cells"), opt("--proto-root")
 with open(os.environ["STUB_CALLS"], "a") as f:
     f.write(json.dumps({"prog": "chain", "argv": a, "env": {k: v for k, v in os.environ.items() if k.startswith("P3_")}}) + "\n")
+if os.environ.get("STUB_TOUCH"):
+    open(os.environ["STUB_TOUCH"], "w").close()
 os.makedirs(out, exist_ok=True)
 dets = list(csv.DictReader(open(os.path.join(proto, cell, "dets.csv"))))
 if any(d["key"] == "CRASH" for d in dets):
     print("Traceback: stub chain crash"); sys.exit(1)
+if any(d["key"] == "REFUSE" for d in dets):
+    print("REFUSING: stub chain refusal reason, the 1-minute tier of 41MHz is paused")
+    for i in range(60):
+        print("WARNING noise line %d after the refusal" % i)
+    sys.exit(2)
 fitted = set()
 if os.path.exists(store):
     fitted = {r["key"] for r in csv.DictReader(open(store)) if r["fit_status"] == "ok"}
@@ -105,6 +129,8 @@ if todo:
 assert "--stop-after-tie" in a
 if os.environ.get("STUB_RM"):
     os.remove(os.environ["STUB_RM"])
+if os.environ.get("STUB_TIE_FAIL"):
+    print("Traceback: stub tie failure"); sys.exit(1)
 d_ = os.environ["P3_TIE_CACHE_DIR"]; os.makedirs(d_, exist_ok=True)
 pool = [d for d in dets if d["pool"] == "1"]
 p = os.path.join(d_, "tie_%s.csv" % cell)
@@ -142,13 +168,21 @@ def template_store_path(p):
     return (p[:-4] if p.endswith(".csv") else p) + "_template.csv"
 
 
+def _group_order(r):
+    return (r["subband"], r["stokes"])
+
+
 if __name__ == "__main__":
     a = sys.argv[1:]
     pend, store = a[a.index("--pending") + 1], a[a.index("--store") + 1]
+    shard, nshards = int(a[a.index("--shard") + 1]), int(a[a.index("--nshards") + 1])
     with open(os.environ["STUB_CALLS"], "a") as f:
-        f.write(json.dumps({"prog": "fit", "argv": a, "env": {k: v for k, v in os.environ.items()
-                                                             if k.startswith("P3_") or k.endswith("_NUM_THREADS")}}) + "\n")
+        f.write(json.dumps({"prog": "fit", "argv": a, "nice": os.nice(0), "env": {
+            k: v for k, v in os.environ.items() if k.startswith("P3_") or k.endswith("_NUM_THREADS")}}) + "\n")
     rows = [r for r in csv.DictReader(open(pend)) if not r["key"].startswith("UNFITTABLE")]
+    rows = [r for i, r in enumerate(sorted(rows, key=lambda r: r["key"])) if i % nshards == shard]
+    if os.environ.get("STUB_STOP_AFTER_SHARD") and shard == 0:
+        open(os.environ["STUB_STOP_AFTER_SHARD"], "w").close()
     new = not os.path.exists(store)
     with open(store, "a") as f:
         if new:
@@ -169,6 +203,8 @@ cell, out = a[0], a[1]
 S = sys.argv[sys.argv.index("--store") + 1] if "--store" in sys.argv else os.path.join(os.environ["STUB_BATCH"], "fits", "fits_%s.csv" % cell)
 with open(os.environ["STUB_CALLS"], "a") as f:
     f.write(json.dumps({"prog": "repair", "argv": sys.argv[1:]}) + "\n")
+if os.environ.get("STUB_REPAIR_FAIL"):
+    print("Traceback: stub repair failure"); sys.exit(1)
 rows = [r for r in load_store(S).values() if r["fit_status"] == "raw"]
 with open(out, "w") as f:
     f.write("cell,subband,stokes,tier,ts,ra_deg,dec_deg,snr,key\n")
@@ -214,6 +250,26 @@ for cell in sys.argv[1:]:
     print("%s %s rows %d: raw-frame ok fits %d, bad %d" % ("READY" if ok else "NOT-READY", cell, len(st), raw, bad))
 sys.exit(1 if bad_any else 0)
 '''
+
+
+STUB_SEARCH = r'''
+import os
+
+
+def excluded_subbands(lst, date, path=None):
+    return {x for x in os.environ.get("STUB_EXCLUDED", "").split(",") if x}
+'''
+
+# the module's own form (FIELDS_V1 = [...]; FIELDS = FIELDS_V1 + [...]): the current header is read from its source
+STUB_TIECACHE = r'''
+import os
+FIELDS_V1 = ["cell", "sb", "st", "tier", "ts", "ra_pre", "dec_pre", "tie_status", "tie_n_refs", "tie_dx_arcmin",
+             "tie_dy_arcmin", "sys_arcmin", "ra", "dec", "ra_untied", "dec_untied", "errmodel"]
+FIELDS = FIELDS_V1 + ["tie_search_deg", "tie_ref_max_sep_deg", "sys_scatter_arcmin"]
+'''
+TIE_FIELDS = ['cell', 'sb', 'st', 'tier', 'ts', 'ra_pre', 'dec_pre', 'tie_status', 'tie_n_refs', 'tie_dx_arcmin',
+              'tie_dy_arcmin', 'sys_arcmin', 'ra', 'dec', 'ra_untied', 'dec_untied', 'errmodel', 'tie_search_deg',
+              'tie_ref_max_sep_deg', 'sys_scatter_arcmin']
 
 
 class Patch:
@@ -263,6 +319,8 @@ class Tree:
         open(self.restore, 'w').write('{"stub": 1}\n')
         open(f'{self.stub}/clv15/phase3_snapshot_chain.py', 'w').write(STUB_CHAIN)
         open(f'{self.stub}/clv15/phase3_snapshot_fit.py', 'w').write(STUB_FIT)
+        open(f'{self.stub}/clv15/phase3_snapshot_search.py', 'w').write(STUB_SEARCH)
+        open(f'{self.stub}/clv15/phase3_snapshot_tiecache.py', 'w').write(STUB_TIECACHE)
         for n, src in (('snapshot_store_repair.py', STUB_REPAIR), ('snapshot_store_append.py', STUB_APPEND),
                        ('snapshot_store_ready.py', STUB_READY)):
             open(f'{self.stub}/exopipe_ops/{n}', 'w').write(src)
@@ -309,19 +367,24 @@ class Tree:
             (CFG.catalog_snapshot, 'INC_CURVE_CONSTANTS_RESTORE', self.restore),
             (CFG.site, 'PYTHON', {'default': sys.executable, 'py36': sys.executable}),
             (CFG.site, 'LEGACY_CODE_ROOTS', [f'{self.stub}/clv15', f'{self.stub}/exopipe_ops']),
-            (EX, 'for_tier', lambda tier, **k: _Excl(self.excluded)))
+            (EX, 'for_tier', lambda tier, **k: _Excl(self.excluded)),
+            # room for exactly 2 fit workers (INC_FIT_MEM_MARGIN_GB + 2 x INC_FIT_GB_PER_WORKER): one worker count everywhere
+            (NM, 'mem_available_gb', lambda *a, **k: CFG.catalog_snapshot.INC_FIT_MEM_MARGIN_GB
+             + 2 * CFG.catalog_snapshot.INC_FIT_GB_PER_WORKER))
         self._prod = Patch((CFG.paths, 'PRODUCTION_ROOTS', tuple(CFG.paths.PRODUCTION_ROOTS) + (self.batch,)))
 
     def __enter__(self):
         self._patch.__enter__()
         self._prod.__enter__()
-        os.environ.update(STUB_CALLS=self.calls, STUB_BATCH=self.batch, STUB_CLV=f'{self.stub}/clv15')
+        os.environ.update(STUB_CALLS=self.calls, STUB_BATCH=self.batch, STUB_CLV=f'{self.stub}/clv15',
+                          STUB_EXCLUDED=','.join(sb for lst, sb, date in self.excluded if f'{lst}_{date}' == CELL))
         return self
 
     def __exit__(self, *exc):
         self._prod.__exit__(*exc)
         self._patch.__exit__(*exc)
-        for k in ('STUB_CALLS', 'STUB_BATCH', 'STUB_CLV', 'STUB_RM', record.UPSTREAM_ENV):
+        for k in ('STUB_CALLS', 'STUB_BATCH', 'STUB_CLV', 'STUB_RM', 'STUB_EXCLUDED', 'STUB_TOUCH', 'STUB_TIE_FAIL',
+                  'STUB_REPAIR_FAIL', 'STUB_STOP_AFTER_SHARD', record.UPSTREAM_ENV):
             os.environ.pop(k, None)
         shutil.rmtree(self.dir, ignore_errors=True)
 
@@ -354,6 +417,14 @@ def unit(r, phase):
 def rows(path):
     with open(path, newline='') as f:
         return list(csv.DictReader(f))
+
+
+def fails(root):
+    """The kinds of the PREFIT_FAILS lines of the cell under a root (prefit.sh:63: '<time> <node> <kind>'), the v2 suffix cut."""
+    p = f'{root}/cells/{CELL}/PREFIT_FAILS'
+    if not os.path.exists(p):
+        return []
+    return [ln.split(' ', 2)[2].rsplit(' (exopipe3 catalog', 1)[0] for ln in open(p).read().splitlines() if ln.strip()]
 
 
 # =====================================================================================================================
@@ -398,13 +469,19 @@ def test_happy_path_and_associate_refusal():
         assert 'P3_TIE_CACHE_DIR' not in ch[0]['env']
         fit = t.calls_of('fit')
         assert len(fit) == 1 and fit[0]['env']['OMP_NUM_THREADS'] == '1'
-        assert fit[0]['argv'][fit[0]['argv'].index('--store') + 1] == f'{t.batch}/fits/fits_{CELL}.csv'
+        fa = fit[0]['argv']
+        assert fa[fa.index('--store') + 1] == f'{t.batch}/fits/fits_{CELL}.csv'
+        assert fa[fa.index('--procs') + 1] == '2' and fa[fa.index('--shard') + 1] == '0' and fa[fa.index('--nshards') + 1] == '1'
+        assert fit[0]['nice'] == min(19, os.nice(0) + CFG.catalog_snapshot.INC_FIT_NICE)    # prefit.sh:32 nice -n 19
+        assert not os.path.exists(f'{cd}/PREFIT_FAILS') and 'prefit_fails_appended' not in u.meta
         a = unit(r, 'associate')
         assert a.status == 'refused' and a.reason.startswith('SI-G9: ') and all(f'({i})' in a.reason for i in (1, 2, 3, 4))
         assert 'The cell phase is done' in a.reason and a.meta['cell'] == CELL and u.meta['cell'] == CELL
         assert r.exit_code() == record.EXIT_REFUSED
         rec = record.load_record(t.batch, 'catalog', f'{IS.UNIT}.cell.{CELL}')
-        assert rec['status'] == 'done' and rec['meta']['plan'][0].startswith('SI-G2 dirty Stokes I cell: False')
+        pl = rec['meta']['plan']
+        assert rec['status'] == 'done' and pl[0].startswith('SI-G13 stop files') and pl[1].startswith('SI-G12 attempt cap: 0')
+        assert pl[2].startswith('SI-G2 dirty Stokes I cell: False'), pl
         # rerun: every pool detection from the cache, nothing fitted
         r2, _ = t.run(prod=True)
         u2 = unit(r2, 'cell')
@@ -421,10 +498,24 @@ def test_done_by_production():
         assert u.status == 'refused' and u.reason.startswith('SI-G4: ') and 'old per-cell stage' in u.reason, u.reason
         os.makedirs(f'{t.batch}/cells/{CELL}')
         open(f'{t.batch}/cells/{CELL}/PRESTAGE_DONE', 'w').write('lwacalim99 Fri Oct 3 prefit_fitted=4 forced=done\n')
+        # PRESTAGE_DONE without a tie-cache file of the current header (11 of production's 111 such cells): the unit runs
+        r, _ = t.run(prod=True)
+        u = unit(r, 'cell')
+        assert u.status == 'done' and 'no tie_ or tie2_ file' in u.meta['prestage_done_not_valid'], (u.status, u.meta)
+        assert len(t.calls_of('chain')) == 3 and 'PRESTAGE_DONE' in u.meta['plan'][0]
+        r, _ = t.run(prod=True)                                                 # the stub's tie_ file: an older header
+        u = unit(r, 'cell')
+        assert u.status == 'done' and 'older header, 11 columns' in u.meta['prestage_done_not_valid'], u.meta
+        os.remove(t.calls)
+        with open(f'{t.batch}/tiecache/tie2_{CELL}.csv', 'w', newline='') as f:   # the current header (tiecache.FIELDS)
+            csv.writer(f, lineterminator='\r\n').writerow(TIE_FIELDS)
+        r, rc = t.run(prod=True, dry=True)                                      # a dry run prints it, records nothing
+        assert not r.units and not t.calls_of('chain')
         before = sorted(os.listdir(t.batch))
         r, rc = t.run(prod=True)
         u = unit(r, 'cell')
         assert u.status == 'skipped-valid' and u.reason.startswith('done by production: ') and 'prefit_fitted=4' in u.reason
+        assert f'tiecache/tie2_{CELL}.csv (current header)' in u.reason, u.reason
         assert u.meta['done_by'] == 'production' and not t.calls_of('chain') and not t.calls_of('repair')
         rec = record.load_record(t.batch, 'catalog', f'{IS.UNIT}.cell.{CELL}')
         assert rec['status'] == 'skipped-valid'
@@ -482,13 +573,13 @@ def test_gate_lightcurves():
         u = unit(r, 'cell')
         assert u.status == 'refused' and u.reason.startswith('SI-G3: ') and '41MHzV' in u.reason, u.reason
         assert not t.calls_of('chain')
-    # an excluded subband and a flow-unregistered one need no table (curves plan_cell)
+    # an excluded subband needs no table (curves plan_cell); a flow-unregistered one stops at SI-G14 first (prefit.sh:82-95)
     lst, date = CELL.split('_', 1)
-    with Tree(excluded=[(lst, '41MHz', date)], flow_unregistered=('73MHz',)) as t:
+    with Tree(excluded=[(lst, '41MHz', date)]) as t:
         r, _ = t.run(prod=True)
         u = unit(r, 'cell')
         assert u.status == 'done', u.reason
-        assert any('not required: 41MHz (excluded), 73MHz (flow-unregistered)' in x for x in u.meta['plan']), u.meta['plan']
+        assert any('not required: 41MHz (excluded)' in x for x in u.meta['plan']), u.meta['plan']
 
 
 def test_gate_forced():
@@ -509,6 +600,7 @@ def test_gate_forced():
         u = unit(r, 'cell')
         assert u.status == 'refused' and u.reason.startswith('SI-G8: ') and 'at the end' in u.reason, u.reason
         assert len(t.calls_of('chain')) == 3 and not os.path.exists(f'{t.batch}/prefit_claims/{CELL}')
+        assert fails(t.batch) == ['forced photometry stage 1'] and u.meta['prefit_fails_appended'], fails(t.batch)
 
 
 def test_gate_holds_and_claim():
@@ -600,6 +692,8 @@ def test_store_repair_and_ready():
         u = unit(r, 'cell')
         assert u.status == 'refused' and u.reason.startswith('SI-G10: ') and 'NOT-READY' in u.reason, u.reason
         assert os.path.exists(f'{t.batch}/cells/{CELL}/store_ready.log') and len(t.calls_of('chain')) == 1   # no tie pass
+        f_ = fails(t.batch)
+        assert len(f_) == 1 and f_[0].startswith(f'store test: NOT-READY {CELL} rows 3'), f_          # prefit.sh:168
 
 
 def test_gate_not_converged():
@@ -608,6 +702,8 @@ def test_gate_not_converged():
         u = unit(r, 'cell')
         assert u.status == 'refused' and u.reason.startswith('SI-G5: ') and 'after 3 prefit rounds' in u.reason, u.reason
         assert len(t.calls_of('fit')) == 3 and not os.path.exists(f'{t.batch}/tiecache')
+        f_ = fails(t.batch)
+        assert len(f_) == 1 and f_[0].startswith('prefit list not empty after 3 iterations or a step failed ('), f_
 
 
 def test_gate_chain_failure():
@@ -617,6 +713,15 @@ def test_gate_chain_failure():
         assert u.status == 'refused' and u.reason.startswith('SI-G6: ') and 'prefit list 1' in u.reason, u.reason
         assert os.path.exists(f'{t.out}/cells/{CELL}/prefit1.log')
         assert not os.path.exists(f'{t.out}/prefit_claims/{CELL}')
+        assert not os.path.exists(f'{t.out}/cells/{CELL}/PREFIT_FAILS')        # a non-production root records no attempt
+    with Tree(dets=(('REFUSE', 1),)) as t:          # the reason quotes the chain's refusal line, not the noise after it
+        r, _ = t.run(prod=True)
+        u = unit(r, 'cell')
+        assert u.status == 'refused' and u.reason.startswith('SI-G6: ') and 'exit 2' in u.reason, u.reason
+        assert 'REFUSING: stub chain refusal reason, the 1-minute tier of 41MHz is paused' in u.reason, u.reason
+        assert 'noise line' not in u.reason.split('REFUSING')[0]
+        f_ = fails(t.batch)
+        assert len(f_) == 1 and f_[0].startswith('prefit list not empty after 3 iterations or a step failed'), f_
 
 
 def test_no_input():
@@ -660,6 +765,152 @@ def test_seeding():
         u = unit(r, 'cell')
         assert u.meta['prefit_fitted'] == 3 and not u.meta.get('seeded')
         assert u.status == 'refused' and u.reason.startswith('SI-G10: '), u.reason
+
+
+def test_attempt_cap():
+    """SI-G12 (prefit.sh:71-72; Gregg 2026-10-10 'Go on all 3'): >= INC_PREFIT_MAX_FAILS lines park the cell on any root."""
+    lim = CFG.catalog_snapshot.INC_PREFIT_MAX_FAILS
+    assert lim == 3
+    with Tree() as t:
+        for root, prod in ((t.out, False), (t.batch, True)):
+            os.makedirs(f'{root}/cells/{CELL}', exist_ok=True)
+            open(f'{root}/cells/{CELL}/PREFIT_FAILS', 'w').write(''.join(f'2026-10-10T0{i}:00:00Z n{i} store test\n'
+                                                                          for i in range(lim)) + '\n')
+            r, _ = t.run(prod=prod)
+            u = unit(r, 'cell')
+            assert u.status == 'refused' and u.reason.startswith('SI-G12: ') and f'{lim} failed attempts' in u.reason, u.reason
+            assert not t.calls_of('chain') and not os.path.exists(f'{root}/prefit_claims/{CELL}')
+            assert len(fails(root)) == lim                                     # a parked cell gains no line
+        open(f'{t.batch}/cells/{CELL}/PREFIT_FAILS', 'w').write('2026-10-10T00:00:00Z n0 store test\n' * (lim - 1))
+        r, _ = t.run(prod=True)
+        assert unit(r, 'cell').status == 'done' and len(fails(t.batch)) == lim - 1, unit(r, 'cell').reason
+
+
+def test_attempt_record_repair_tie_and_stop():
+    """prefit.sh:63 failrec: the store repair counts (its logs kept); the tie pass does not (prefit.sh has none); nothing is
+    recorded while a stop file exists or on a non-production root."""
+    with Tree(fitted=('d1', 'd2', 'd3'), store_rows=(('d1', 'raw'),)) as t:
+        os.environ['STUB_REPAIR_FAIL'] = '1'
+        r, _ = t.run(prod=True)
+        u = unit(r, 'cell')
+        assert u.status == 'refused' and u.reason.startswith('SI-G6: ') and 'store repair list 1' in u.reason, u.reason
+        assert 'stub repair failure' in u.reason
+        f_ = fails(t.batch)
+        assert len(f_) == 1 and f_[0] == f'store repair ({t.batch}/cells/{CELL}/repair*.log)', f_
+        assert os.path.exists(f'{t.batch}/cells/{CELL}/repair1.log') and not t.calls_of('chain')
+        r, _ = t.run()                                                          # non-production: no line
+        assert unit(r, 'cell').status == 'refused' and not fails(t.out)
+    with Tree() as t:
+        os.environ['STUB_TIE_FAIL'] = '1'
+        r, _ = t.run(prod=True)
+        u = unit(r, 'cell')
+        assert u.status == 'refused' and u.reason.startswith('SI-G6: ') and 'tie pass' in u.reason, u.reason
+        assert not fails(t.batch)
+    with Tree(fitted=('d1', 'd2', 'd3'), store_rows=(('d2', 'bad'),)) as t:   # a stop file appears during the attempt
+        node = socket.gethostname().split('.')[0]
+        os.environ['STUB_TOUCH'] = f'{t.batch}/PREFIT_STOP_{node}'
+        r, _ = t.run(prod=True)
+        u = unit(r, 'cell')
+        assert u.status == 'refused' and u.reason.startswith('SI-G10: '), u.reason
+        assert not fails(t.batch) and 'prefit_fails_appended' not in u.meta
+
+
+def test_stop_files_and_fit_shards():
+    """SI-G13 (prefit.sh:24, :68, :136): PREFIT_STOP / PREFIT_STOP_<node> under --out before each cell and between fit shards;
+    prestage.sh's STOP_<node> is not honored. Shards: ceil(requests / INC_FIT_SHARD_REQUESTS), at most groups // (tasks per
+    worker x workers) (prefit.sh:124-134)."""
+    node = socket.gethostname().split('.')[0]
+    with Tree() as t:
+        for root, prod, name in ((t.out, False, 'PREFIT_STOP'), (t.batch, True, f'PREFIT_STOP_{node}')):
+            os.makedirs(root, exist_ok=True)
+            open(f'{root}/{name}', 'w').close()
+            r, _ = t.run(prod=prod)
+            u = unit(r, 'cell')
+            assert u.status == 'refused' and u.reason.startswith('SI-G13: ') and name in u.reason, u.reason
+            assert 'not a failed attempt' in u.reason and not t.calls_of('chain') and not fails(root)
+            os.remove(f'{root}/{name}')
+        open(f'{t.batch}/STOP_{node}', 'w').close()                             # stale prestage.sh stop files exist
+        open(f'{t.batch}/PREFIT_STOP_othernode', 'w').close()
+        r, _ = t.run(prod=True)
+        assert unit(r, 'cell').status == 'done', unit(r, 'cell').reason
+    dets = tuple((f'd{i}', 1) for i in range(1, 6))
+    c = CFG.catalog_snapshot
+    with Tree(dets=dets) as t, Patch((c, 'INC_FIT_SHARD_REQUESTS', 1), (c, 'INC_FIT_TASKS_PER_WORKER', 1)):
+        r, _ = t.run(prod=True)                                                 # 4 requests, 4 groups, 2 workers: 2 shards
+        u = unit(r, 'cell')
+        assert u.status == 'done' and u.meta['prefit_fitted'] == 4, (u.status, u.reason)
+        fa = [x['argv'] for x in t.calls_of('fit')]
+        assert [(a[a.index('--shard') + 1], a[a.index('--nshards') + 1]) for a in fa] == [('0', '2'), ('1', '2')], fa
+        assert len(rows(f'{t.batch}/fits/fits_{CELL}.csv')) == 5
+    with Tree(dets=dets) as t, Patch((c, 'INC_FIT_SHARD_REQUESTS', 1), (c, 'INC_FIT_TASKS_PER_WORKER', 1)):
+        os.environ['STUB_STOP_AFTER_SHARD'] = f'{t.batch}/PREFIT_STOP'          # a stop between the shards
+        r, _ = t.run(prod=True)
+        u = unit(r, 'cell')
+        assert u.status == 'refused' and u.reason.startswith('SI-G13: ') and 'during the fits of prefit round 1' in u.reason
+        assert len(t.calls_of('fit')) == 1 and not fails(t.batch) and not os.path.exists(f'{t.batch}/prefit_claims/{CELL}')
+    # the worker count: free cores less FIT_PROCS_RESERVE, at most the memory's, >= 2; waits while memory holds < 2
+    seq = iter([c.INC_FIT_MEM_MARGIN_GB, c.INC_FIT_MEM_MARGIN_GB + 30 * c.INC_FIT_GB_PER_WORKER])
+    notes = []
+    ctx = argparse.Namespace(c=c)
+    s_ = argparse.Namespace(u=argparse.Namespace(note=notes.append))
+    with Patch((NM, 'mem_available_gb', lambda *a, **k: next(seq)), (c, 'INC_FIT_MEM_POLL_S', 0.01)):
+        assert IS.fit_procs(ctx, s_) == max(2, min(len(os.sched_getaffinity(0)) - c.FIT_PROCS_RESERVE, 30))
+    assert notes and notes[0].startswith('fit workers: waited'), notes
+    with Patch((NM, 'mem_available_gb', lambda *a, **k: None)):
+        assert IS.memprocs(ctx) == 0
+
+
+def test_gate_chain_refuses():
+    """SI-G14 (prefit.sh:82-95): flow-unregistered or paused 1-minute searches, and candidate tables of a subband not excluded
+    without their 1-minute table, wait before the claim - no chain call, no failed attempt."""
+    lst, date = CELL.split('_', 1)
+    with Tree(flow_unregistered=('73MHz',)) as t:
+        r, _ = t.run(prod=True)
+        u = unit(r, 'cell')
+        assert u.status == 'refused' and u.reason.startswith('SI-G14: ') and 'runinfo_73MHz_I_median.json flow-unregistered' \
+            in u.reason, u.reason
+        assert not t.calls_of('chain') and not fails(t.batch) and not os.path.exists(f'{t.batch}/prefit_claims/{CELL}')
+    with Tree(excluded=[(lst, '18MHz', date)]) as t:
+        cf = f'{t.fleet}/{CELL}'
+        ri = json.load(open(f'{cf}/runinfo_41MHz_V_median.json'))
+        json.dump(dict(ri, tier_1min='Paused '), open(f'{cf}/runinfo_41MHz_V_median.json', 'w'))
+        r, _ = t.run()
+        u = unit(r, 'cell')
+        assert u.status == 'refused' and 'runinfo_41MHz_V_median.json 1-minute tier paused' in u.reason, u.reason
+        json.dump(ri, open(f'{cf}/runinfo_41MHz_V_median.json', 'w'))
+        open(f'{cf}/candidates_73MHz_I_median.csv', 'w').write('x\n')
+        open(f'{cf}/candidates_18MHz_I_median.csv', 'w').write('x\n')           # excluded: no 1-minute table needed
+        r, _ = t.run()
+        u = unit(r, 'cell')
+        assert u.status == 'refused' and 'candidates_73MHz_I_median.csv without its 1-minute table' in u.reason, u.reason
+        assert 'candidates_18MHz' not in u.reason
+        open(f'{cf}/candidates_73MHz_I_median_1min.csv', 'w').write('x\n')
+        r, _ = t.run(prod=True)
+        assert unit(r, 'cell').status == 'done', unit(r, 'cell').reason
+        assert not [n for n in os.listdir(f'{t.dir}/prodwork/prestage') if n.startswith('.precheck')]
+
+
+def test_call_limits():
+    """The prefit-list passes run under INC_PREFIT_TIMEOUT_H (prefit.sh:153 PREFIT_TIMEOUT 6h), the tie pass under
+    INC_CHAIN_TIMEOUT_H (prestage.sh:62); fits at niceness INC_FIT_NICE (prefit.sh:32)."""
+    seen = []
+    real = TSL.call
+
+    def rec(ctx, s, target, args, python='default', env=None, log=None, cwd=None, timeout=None, nice=None):
+        seen.append((os.path.basename(target), args[:1] + [a for a in args if a in ('--prefit-list-only', '--stop-after-tie')],
+                     timeout, nice))
+        return real(ctx, s, target, args, python, env, log, cwd, timeout, nice)
+    with Tree() as t, Patch((TSL, 'call', rec)):
+        r, _ = t.run(prod=True)
+        assert unit(r, 'cell').status == 'done', unit(r, 'cell').reason
+    c = CFG.catalog_snapshot
+    assert c.INC_PREFIT_TIMEOUT_H == 6 and c.INC_FIT_NICE == 19
+    chain = [x for x in seen if x[0] == 'phase3_snapshot_chain.py']
+    assert [x[2] for x in chain if '--prefit-list-only' in x[1]] == [6 * 3600] * 2, chain
+    assert [x[2] for x in chain if '--stop-after-tie' in x[1]] == [c.INC_CHAIN_TIMEOUT_H * 3600], chain
+    fit = [x for x in seen if x[0] == 'phase3_snapshot_fit.py']
+    assert len(fit) == 1 and fit[0][3] == 19 and all(x[3] is None for x in seen if x not in fit), seen
+    assert [x[1][0] for x in seen if x[0] == 'incremental_snapshot.py'] == ['chain-refuses', 'fit-groups'], seen
 
 
 def test_helpers():
@@ -735,7 +986,8 @@ def test_step_routes_here():
 TESTS = [test_happy_path_and_associate_refusal, test_done_by_production, test_associate_alone_and_dry_run,
          test_upstream_refused, test_gate_search_shipped, test_gate_dirty, test_gate_lightcurves, test_gate_forced,
          test_gate_holds_and_claim, test_production_root_layout, test_store_repair_and_ready, test_gate_not_converged,
-         test_gate_chain_failure, test_no_input, test_seeding, test_helpers, test_step_routes_here]
+         test_gate_chain_failure, test_no_input, test_seeding, test_attempt_cap, test_attempt_record_repair_tie_and_stop,
+         test_stop_files_and_fit_shards, test_gate_chain_refuses, test_call_limits, test_helpers, test_step_routes_here]
 
 
 def main(argv):

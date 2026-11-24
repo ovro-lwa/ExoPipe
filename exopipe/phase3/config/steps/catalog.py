@@ -735,10 +735,29 @@ class catalog_snapshot(_Section):
     # Phase 'associate' refuses (SI-G9): no ruled per-hour design for the cross-cell association and the combined view.
     INC_PHASES_DEFAULT = ('cell', 'associate')            # --inc-phase default; the associate phase refuses every hour, so the
                                                           # per-hour chain item stops at this step and is never complete [step]
-    INC_CHAIN_TIMEOUT_H = 36                              # h per chain pass; snapshot_cell_prestage.sh:62 PRESTAGE_TIMEOUT 36h [step]
+    INC_CHAIN_TIMEOUT_H = 36                              # h for the tie pass; snapshot_cell_prestage.sh:62 PRESTAGE_TIMEOUT 36h [step]
+    INC_PREFIT_TIMEOUT_H = 6                              # h per prefit-list pass; snapshot_cell_prefit.sh:153 PREFIT_TIMEOUT 6h [step]
     INC_FORCED_STATE_DIR = '/lustre/gh/main/exopipe_ops/snapshot_forced_state'   # forced photometry stage 1 markers done/<cell>,
                                                           # failed/<cell>, claims/<cell> (read only; gate SI-G8); prestage.sh:55 FST,
-                                                          # :61, :83; snapshot_cell_prefit.sh:74, :115-121 (Gregg 2026-10-04) [step]
+                                                          # :61, :83; snapshot_cell_prefit.sh:74, :115-121 (Gregg 2026-10-04). The
+                                                          # gen5 state: it must follow gen6 when gen6 becomes the production
+                                                          # generation [step]
+    INC_PREFIT_MAX_FAILS = 3                              # THE ATTEMPT CAP: a cell with this many lines in <out>/cells/<cell>/
+                                                          # PREFIT_FAILS is parked (gate SI-G12); on the production root every failed
+                                                          # attempt after the claim appends one line, none under a stop file;
+                                                          # snapshot_cell_prefit.sh:25-28, :62-63, :71-72 (Gregg 2026-10-10 'Go on all
+                                                          # 3' item 2, IMPLEMENTED-SNAP-PREFIT-ATTEMPT-CAP-11-CELLS-PARKED-20261010) [step]
+    INC_STOP_FILES = ('PREFIT_STOP', 'PREFIT_STOP_{node}')   # under --out: present = stop before a cell and between fit shards
+                                                          # (gate SI-G13); snapshot_cell_prefit.sh:24, :68, :136 (not prestage.sh's
+                                                          # retired STOP_<node>) [step]
+    INC_FIT_SHARD_REQUESTS = 2000                         # fit-grouped shards: one per this many requests, at most groups / (
+    INC_FIT_TASKS_PER_WORKER = 3                          # TASKS_PER_WORKER x workers); snapshot_cell_prefit.sh:124-134 [step]
+    INC_FIT_GB_PER_WORKER = 3                             # GB per fit worker and GB kept free: workers = (core.nodemem
+    INC_FIT_MEM_MARGIN_GB = 120                           # .mem_available_gb - MARGIN) // GB_PER_WORKER, at most the free cores
+                                                          # less FIT_PROCS_RESERVE, at least 2; snapshot_cell_prefit.sh:20-21, :40-55 [step]
+    INC_FIT_MEM_WAIT_S = 21600                            # s waited (polled every INC_FIT_MEM_POLL_S) for room for 2 workers
+    INC_FIT_MEM_POLL_S = 120                              # before running with 2; snapshot_cell_prefit.sh:122-123 [step]
+    INC_FIT_NICE = 19                                     # niceness of the fit workers (spare capacity); snapshot_cell_prefit.sh:20, :32 [step]
     INC_HOLD_LISTS = ('/lustre/gh/main/exopipe_ops/snapshot_rechain_b2_cells.txt',
                       '/lustre/gh/main/exopipe_ops/snapshot_batch/prefit_hold_cells.txt')   # cells no per-cell stage takes
                                                           # (with BATCH_DIR/rechain_active/*.cells; gate SI-G4);
