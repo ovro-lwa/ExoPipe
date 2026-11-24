@@ -4,7 +4,7 @@ this module). Each test reads the file's CONTENT; ``ctx`` (passed by the step wh
 directory allow (`exopipe3 verify <class> <path>`).
 
 Classes: review_page, page_index, review_queue, pages_input, astrometry_figure, tess_coverage, survivors_review_dir,
-sublst_page_run, snapshot_page_run, filter_catalog, strat_queue. (localization_table is catalog's class: catalog --stages localize
+sublst_page_run, snapshot_page_run, filter_catalog, strat_queue; tenmin_frame_times (serve's 10-minute TESS step writes it). (localization_table is catalog's class: catalog --stages localize
 writes the tables, crosscheck decision 6.)
 """
 import csv
@@ -366,36 +366,105 @@ def figure_decodes(path, **ctx):
     return w >= 200 and h >= 200, f'{w}x{h}', mode
 
 
+TESS_WRITTEN = ('simultaneous', 'not observed')   # the statuses tess_coverage.py writes since 2026-11-15 (its WRITTEN; mirror): a
+                                                 # detection without an epoch time or a position, or after the orbit table, is left out
+
+
 @content_test('tess_coverage')
-def tess_rows(path, **ctx):
+def tess_rows(path, written=None, left_out=None, **ctx):
     """The output contract of tess_coverage.py (:126-160): header comment line, one row per cand_id, status in the ruled
     vocabulary (simultaneous only), a simultaneous row carries sector/camera/CCD; with the run's master_catalog.csv beside
-    it, the cand_ids are exactly that catalogue's detections of the wanted Stokes."""
+    it, the cand_ids are exactly that catalogue's detections of the wanted Stokes.
+    With the tool's own counts (ctx written, left_out: its summary line, passed by the serve's TESS steps, lib/serve/tess.py):
+    exactly ``written`` rows, statuses only those it writes (TESS_WRITTEN), and the cand_ids that catalogue's detections of the
+    wanted Stokes less exactly ``left_out`` of them (the ones the page says "not computed" for)."""
     with open(path) as f:
         first = f.readline()
         rows = list(csv.DictReader(f))
     if not first.startswith('# tess_coverage.py'):
         return False, None, 'no tess_coverage.py header comment line'
-    if not rows:
+    counted = written is not None and left_out is not None
+    if not rows and not (counted and int(written) == 0):
         return False, 0, 'no rows'
-    allowed = set(common.CFG().pages_deep.TESS_STATUSES)
+    allowed = set(TESS_WRITTEN if counted else common.CFG().pages_deep.TESS_STATUSES)
     bad = [r['cand_id'] for r in rows if r.get('status') not in allowed]
     bad += [r['cand_id'] for r in rows if r.get('status') == 'simultaneous' and not (r.get('sector') and r.get('camera')
                                                                                     and r.get('ccd'))]
     ids = [r['cand_id'] for r in rows]
     if len(ids) != len(set(ids)):
         bad.append('repeated cand_id')
+    if counted and len(rows) != int(written):
+        bad.append(f'{len(rows)} rows, the tool wrote {written}')
     mc = ctx.get('master_catalog') or os.path.join(os.path.dirname(path), 'master_catalog.csv')
     detail = ''
+    if counted and not os.path.exists(mc):
+        bad.append(f'no {mc} to test the rows against')
     if os.path.exists(mc) and not bad:
         want = set(common.CFG().pages_deep.TESS_STOKES.split(','))
         with open(mc, newline='') as f:
             exp = {r['cand_id'] for r in csv.DictReader(f) if r.get('stokes') in want}
-        diff = exp ^ set(ids)
-        if diff:
-            bad.append(f'{len(diff)} cand_ids differ from master_catalog.csv ({len(exp)} detections)')
-        detail = f'= master_catalog.csv detections ({len(exp)})'
+        got = set(ids)
+        if counted:
+            if got - exp:
+                bad.append(f'{len(got - exp)} cand_ids not in master_catalog.csv ({len(exp)} detections)')
+            if len(exp - got) != int(left_out):
+                bad.append(f'{len(exp - got)} master_catalog.csv detections without a row, the tool left out {left_out}')
+            detail = f'{len(rows)} rows = master_catalog.csv detections ({len(exp)}) less the {left_out} left out'
+        else:
+            diff = exp ^ got
+            if diff:
+                bad.append(f'{len(diff)} cand_ids differ from master_catalog.csv ({len(exp)} detections)')
+            detail = f'= master_catalog.csv detections ({len(exp)})'
     return not bad, len(rows), '; '.join(map(str, bad[:3])) or detail or f'{len(rows)} rows'
+
+
+# frame_times_tenmin.py:95 (its columns) and :25 (a window: <night>T<window>)
+FRAME_TIMES_COLUMNS = ('stokes', 'lst', 'band', 'date', 'date_obs', 'date_end', 'image', 'image_size', 'image_mtime')
+_WINDOW_RE = re.compile(r'^\d{4}-\d\d-\d\dT\d\d$')
+
+
+@content_test('tenmin_frame_times')
+def tenmin_window_times(path, windows=None, needed=None, **ctx):
+    """<run>/frame_times.csv of a 10-minute run (tess/frame_times_tenmin.py; read by tess_coverage.py): its columns; one row per
+    (Stokes, LST, band, window), the window named <night>T<window>; DATE-OBS before DATE-END (the window image's own cards).
+    With master_catalog.csv beside it, every row is a window of that catalogue; with the tool's own counts (ctx windows, needed:
+    its summary line, lib/serve/tess.py), exactly ``windows`` rows and the catalogue names exactly ``needed`` windows."""
+    from datetime import datetime
+    with open(path, newline='') as f:
+        rd = csv.DictReader(f)
+        cols = tuple(rd.fieldnames or ())
+        rows = list(rd)
+    if cols != FRAME_TIMES_COLUMNS:
+        return False, None, f'columns {cols} != {FRAME_TIMES_COLUMNS}'
+    if not rows:
+        return False, 0, 'no rows'
+    bad, keys = [], set()
+    for r in rows:
+        k = (r['stokes'], r['lst'], r['band'], r['date'])
+        if k in keys:
+            bad.append(f'repeated window {k}')
+        keys.add(k)
+        if not _WINDOW_RE.match(r['date']):
+            bad.append(f'{k}: not a window name')
+            continue
+        try:
+            if not datetime.fromisoformat(r['date_obs'][:19]) < datetime.fromisoformat(r['date_end'][:19]):
+                bad.append(f'{k}: DATE-OBS {r["date_obs"]} not before DATE-END {r["date_end"]}')
+        except ValueError:
+            bad.append(f'{k}: DATE-OBS {r["date_obs"]!r} / DATE-END {r["date_end"]!r} not ISO times')
+    if windows is not None and len(rows) != int(windows):
+        bad.append(f'{len(rows)} rows, the tool wrote {windows}')
+    mc = ctx.get('master_catalog') or os.path.join(os.path.dirname(path), 'master_catalog.csv')
+    if os.path.exists(mc) and not bad:
+        with open(mc, newline='') as f:
+            need = {(r['stokes'], r['lst'], r['band'], r['date']) for r in csv.DictReader(f) if _WINDOW_RE.match(r.get('date', ''))}
+        if keys - need:
+            bad.append(f'{len(keys - need)} rows name no window of master_catalog.csv')
+        if needed is not None and len(need) != int(needed):
+            bad.append(f'master_catalog.csv names {len(need)} windows, the tool needed {needed}')
+    elif needed is not None and not os.path.exists(mc):
+        bad.append(f'no {mc} to test the rows against')
+    return not bad, len(rows), '; '.join(map(str, bad[:3])) or f'{len(rows)} windows' + (f' of {needed}' if needed is not None else '')
 
 
 # ---------------------------------------------------------------------------------------------------------------------

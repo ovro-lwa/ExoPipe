@@ -1157,12 +1157,13 @@ def test_mchain():
     run5 = Run('serve', ['test'], p5.out, CFG, config_sections=None)
     st5 = flow.new_state()
     filt, sublst_build.filters = sublst_build.filters, lambda u_, B_, log_: filt_calls.append(B_)   # test_sublst_filters
-    filt_calls = []
+    tcov, sublst_build.tess_coverage = sublst_build.tess_coverage, lambda u_, p_, B_, log_: filt_calls.append(('tess', B_))
+    filt_calls = []                                                                     # tests/test_serve_tess.py
     try:
         u5 = sublst_build.views_stage(run5, p5, st5)
     finally:
-        sublst_build.filters = filt
-    assert u5.status == 'done' and not st5['refused'] and filt_calls == [B5], (u5.status, u5.reason, st5, filt_calls)
+        sublst_build.filters, sublst_build.tess_coverage = filt, tcov
+    assert u5.status == 'done' and not st5['refused'] and filt_calls == [B5, ('tess', B5)], (u5.status, u5.reason, st5, filt_calls)
     assert common.has_j_line(f'{B5}/judgements/queue_p3s3_V_multi.txt') and not os.path.exists(f'{B5}/source_catalogs_V_multi')
     assert not os.path.exists(f'{B5}/judgements/queue_p3s3_I_multi.txt')
     ok('multiples chain, sub-LST: the views stage writes the multi-integration queue of every Stokes it builds (the singles '
@@ -1754,6 +1755,30 @@ def test_sublst_filters():
     ok(f'filters content tests fail on {", ".join(n_ for n_, _ in neg)}')
 
 
+def test_sublst_tess():
+    """THE 10-MINUTE TESS COVERAGE (sublst_cumulative.sh:192-200): production runs frame_times_tenmin.py on the new build with
+    --image-root the x2 tree [and --reuse the served run's frame_times.csv when that file is not empty], then tess_coverage.py
+    --run $B, after the filters, refusing; the port (sublst_build.tess_coverage, lib/serve/tess.py) passes the same arguments
+    (its stand-in runs: tests/test_serve_tess.py, data-free, in CI)."""
+    from exopipe.phase3.core import legacy
+    sh = open(f'{OPS}/sublst_cumulative.sh').read()
+    cs = CFG.catalog_sublst
+    tree = cs.TENMIN_TREE.format(root=CFG.paths.SUBLST_ROOT, tree=cs.ARM_TREES['B'])
+    frag = ['$PY8 $OPSC/bright_source_filter_precompute.py $B',
+            'REUSE=; [ -s $U/frame_times.csv ] && REUSE="--reuse $U/frame_times.csv"',
+            f'$PY8 $OPSC/{scripts.SCRIPTS["frame_times_tenmin"][0]} --run $B --image-root {tree} $REUSE >> $LOG 2>&1',
+            f'/fast/gh/main/envs/tess/bin/python $OPSC/{scripts.SCRIPTS["tess_coverage"][0]} --run $B >> $LOG 2>&1',
+            'REFUSING: TESS coverage']
+    pos = [sh.find(f_) for f_ in frag]
+    assert all(p_ >= 0 for p_ in pos) and pos == sorted(pos), [f_[:70] for f_, p_ in zip(frag, pos) if p_ < 0] or pos
+    rf = sh[pos[4]:sh.find('\n', sh.find('exit', pos[4]))]
+    assert 'exit 1' in rf, rf
+    assert all(os.path.isfile(scripts.path(n_)) for n_ in ('frame_times_tenmin', 'tess_coverage'))
+    assert os.path.isfile(legacy.interpreter(CFG.serve.TESS_PYTHON))
+    ok(f'10-minute TESS: production runs frame_times_tenmin.py --image-root {tree} [--reuse], then tess_coverage.py --run $B, '
+       f'after the filters, refusing (exit 1); both tools resolve in place, the TESS environment from the site file')
+
+
 def test_snapshot_steps():
     """THE FIVE STEPS ON THE SNAPSHOT REVIEW COPY (snapshot_serve.sh:164-210, exopipe_ops 607f7a2 + acfa685 + 1a9f9c8): after the carry
     and before any page starts, snapshot_copy runs scintillation_index.py, page_context_snapshot.py, tess/tess_coverage.py (under the
@@ -1955,6 +1980,7 @@ def test_snapshot_steps():
         cls = Counter(o['class'] for x in u.values() for o in x.outputs)
         assert cls == {'scintillation_index': 1, 'snapshot_page_context': 1, 'tess_coverage': 1, 'bright_source_filter': 4,
                        'detections_index': 1}, cls
+        assert u[unit_of['tess']].meta['tess_coverage'] == {'written': 1, 'left_out': 0}, u[unit_of['tess']].meta
         tests_ = [t for x in u.values() for t in x.tests]
         assert tests_ and all(t['passed'] for t in tests_), [t for t in tests_ if not t['passed']]
         assert res['ok'].exit_code() == 0
@@ -3350,6 +3376,7 @@ def main():
         test_stage_halting()
         test_page_context_stage()
         test_sublst_filters()
+        test_sublst_tess()
         test_snapshot_steps()
         test_cumulative_reuses()
         test_serve_hold()

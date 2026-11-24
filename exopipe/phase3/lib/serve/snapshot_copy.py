@@ -59,7 +59,7 @@ import shlex
 import subprocess
 
 from exopipe.phase3.core.record import NoInput
-from exopipe.phase3.lib.serve import exclusion_gate, flow, journals, scripts
+from exopipe.phase3.lib.serve import exclusion_gate, flow, journals, scripts, tess
 
 STAGES = ('gate', 'copy', 'localize', 'gate-copy', 'carry', 'scintillation', 'page-context', 'tess', 'bright-filter', 'page-index',
           'test', 'start', 'hub', 'verify')
@@ -599,35 +599,16 @@ def page_context_stage(run, plan):
 
 
 def tess_stage(run, plan):
-    """TESS COVERAGE (snapshot_serve.sh, exopipe_ops 1a9f9c8; FIX-20261115-TESS-COVERAGE-PRODUCER-SNAPSHOT-FORCED-10MIN-WIDEBAND):
-    tess/tess_coverage.py --run DST --epoch-from-cand-id under the site PYTHON['tess'] interpreter, from serve.SNAPSHOT_STEP_CWD -
-    <DST>/tess_coverage.csv, one row per detection of the run's master_catalog.csv (its own 10-s / 1-min integration as the epoch),
-    which the page reads at its build. After the page context, before the bright-source filter (production's order). An annotation,
-    not a gate, but a failure refuses the serve (production: "so no page shows 'coverage not computed' for want of the file"). The
-    orbit table beside the script is read as the deep pages' TESS step reads it (pages_deep.TESS_REFRESH_IN_READER: True = the
-    reader refreshes it, production; False = --no-refresh, the table kept current by lib/pages/tess_orbits)."""
-    from exopipe.phase3.config import CFG
-    from exopipe.phase3.lib.pages import common
-    DST, S, D = plan.U, _S(), CFG.pages_deep
+    """TESS COVERAGE (snapshot_serve.sh:183-189; FIX-20261115-TESS-COVERAGE-PRODUCER-SNAPSHOT-FORCED-10MIN-WIDEBAND): tess/tess_coverage.py
+    --run DST --epoch-from-cand-id --proto-root paths.SNAPSHOT_FLEET_OUT in place under the site PYTHON[serve.TESS_PYTHON], from
+    serve.SNAPSHOT_STEP_CWD - <DST>/tess_coverage.csv, which the server reads at page build (lib/serve/tess.py). After the page
+    context, before the bright-source filter. A failure refuses: nothing served, servers untouched."""
+    DST, S = plan.U, _S()
     with run.unit(f'snapshot_{plan.run_name}_tess', stage='tess', tier='snapshot') as u:
-        if not common.interpreter_or_none('tess'):
-            u.refuse("TESS coverage: the site PYTHON['tess'] interpreter is not on this host - nothing served, servers untouched")
-        mc = os.path.join(DST, 'master_catalog.csv')       # the detections the tool reads (one row each)
-        if not os.path.exists(mc):
-            u.refuse(f'TESS coverage: no {mc} - nothing served, servers untouched')
-        u.add_input(mc)
-        table = os.path.join(os.path.dirname(scripts.path('tess_coverage')), 'TESS_orbit_times.csv')
-        if not D.TESS_REFRESH_IN_READER:
-            from exopipe.phase3.lib.pages import tess_orbits
-            why = tess_orbits.stale_for_reader(table)
-            if why:
-                u.refuse(f'TESS coverage: the orbit table {table} {why} - the refresh step (python -m exopipe.phase3.lib.pages.'
-                         f'tess_orbits) has not kept it current - nothing served, servers untouched')
-        _step(u, 'tess_coverage', ['--run', DST, '--epoch-from-cand-id'] + ([] if D.TESS_REFRESH_IN_READER else ['--no-refresh']),
-              os.path.join(DST, 'tess_coverage.log'), cwd=S.SNAPSHOT_STEP_CWD, python='tess')
-        if os.path.exists(table):                          # as the tool read it: after its refresh (TESS_REFRESH_IN_READER)
-            u.add_input(table)
-        u.add_output(os.path.join(DST, 'tess_coverage.csv'), 'tess_coverage')
+        from exopipe.phase3.config import CFG
+        tess.coverage(u, DST, ['--epoch-from-cand-id', '--proto-root', CFG.paths.SNAPSHOT_FLEET_OUT],
+                      os.path.join(DST, 'tess_coverage.log'), cwd=S.SNAPSHOT_STEP_CWD,
+                      after='nothing served, servers untouched (snapshot_serve.sh:187-189)')
     return u
 
 

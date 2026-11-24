@@ -122,3 +122,5 @@ jobs:
         run: python tests/test_retention.py
       - name: Release 1 header-repair cards, the sibling card-key gate, the cleaned Stokes V source check and refresh (install wiring)
         run: python tests/test_install_release1_cards.py
+      - name: TESS coverage in the snapshot and 10-minute serves (production's arguments, refusals, the tool's own counts)
+        run: python tests/test_serve_tess.py
