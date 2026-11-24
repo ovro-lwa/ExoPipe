@@ -549,8 +549,8 @@ def registry_matches(path, expected=None, **ctx):
     site, build_review_hub.py:47); each served page's entry (ctx expected=[(S, tier, {k: v})]) holds its run, port,
     generation, served, live=1; index.html (when tested) IS the page build_review_hub.py renders from registry.json at
     its own 'Page generated' time, byte for byte (lib/serve/hub.render, the port of exopipe_ops 4c42f91: per Stokes row
-    and tier the tier's page - the live combined view first - and its forced button, the three links, no tunnel line;
-    Gregg 2026-10-27)."""
+    and tier the tier's page - the live combined view first - and its forced button, the three links and the interim
+    known-LPT link, no tunnel line; Gregg 2026-10-27 and 2026-11-24)."""
     d = os.path.dirname(os.path.abspath(path))
     reg_p = os.path.join(d, 'registry.json')
     if not os.path.exists(reg_p):

@@ -373,11 +373,14 @@ class serve(_Section):
     # THE HUB PAGE (Gregg 2026-10-27, R-GREGG-20261027-HUB-BOTH-LISTENERS-MULTIPLES-CHAIN-FORCED-EVERY-TIER; build_review_hub.py,
     # exopipe_ops 4c42f91, rendered by lib/serve/hub.render): per Stokes row (V on top, I below) one column per tier, left to
     # right, holding the tier's page (its combined view '<tier>-comb' when live) and its HWJ + 10 pc forced button; below both
-    # rows these links and no other (no multiples / preview / batch buttons, no Round-2 link, no tunnel line). PROTECTED: a
+    # rows these links and no other (no multiples / preview / batch buttons, no Round-2 link, no tunnel line), plus the interim
+    # known-LPT page (exopipe_ops 8cb1139, DONE-20261123-LPT-FORCED-ALL-TIERS-SERVED; Gregg 2026-11-24 "keep it up",
+    # R-GREGG-20261124-SIX-ANSWERS-RAMPUP-STATUS item 5: until LPT is a sample of the standard forced pages). PROTECTED: a
     # mirror of the in-place page (production hub writes are build_review_hub.py's; the content test compares the page with it)
     HUB_TIERS = ('1-hour', '10-min', '1-min', '10-sec')   # build_review_hub.py:25 (TIERS)
     HUB_LINKS = (('Jovian bursts', '/s/jupiter/'), ('Solar system', '/s/planets/'),
-                 ('Data processed: Phase 1 &rarr; 2 &rarr; 3', 'data_processing.html'))   # build_review_hub.py:26-27 (LINKS;
+                 ('Known LPTs (all tiers)', '/s/lpt/'),
+                 ('Data processed: Phase 1 &rarr; 2 &rarr; 3', 'data_processing.html'))   # build_review_hub.py:26-28 (LINKS;
                                             # the text is HTML: the page prints it as is)
 
     # ---- queues and views -------------------------------------------------------------------------------------------
@@ -597,7 +600,8 @@ class serve(_Section):
         'PAGES': ('R-PORTS-RECLAIMED-CANONICAL-SET-13-PORTS', 'R-MULTIPLES-OWN-PAGES-8772-8773', 'R-TENMIN-PORTS-8787-V-8788-I',
                   'R-SNAP-1MIN-OWN-PAGES-PER-STOKES', 'R-GREGG-20261027-HUB-BOTH-LISTENERS-MULTIPLES-CHAIN-FORCED-EVERY-TIER'),
         'HUB_TIERS': 'R-GREGG-20261027-HUB-BOTH-LISTENERS-MULTIPLES-CHAIN-FORCED-EVERY-TIER',
-        'HUB_LINKS': 'R-GREGG-20261027-HUB-BOTH-LISTENERS-MULTIPLES-CHAIN-FORCED-EVERY-TIER',
+        'HUB_LINKS': ('R-GREGG-20261027-HUB-BOTH-LISTENERS-MULTIPLES-CHAIN-FORCED-EVERY-TIER',
+                      'R-GREGG-20261124-SIX-ANSWERS-RAMPUP-STATUS'),
         'HUB_PORT': 'R-PORTS-RECLAIMED-CANONICAL-SET-13-PORTS',
         'INSPECTION_HUB_PORT': 'R-PORTS-RECLAIMED-CANONICAL-SET-13-PORTS',
         'OTHER_SERVED_PORTS': ('R-PORTS-RECLAIMED-CANONICAL-SET-13-PORTS', 'R-GREGG-20261011-KEEP-8767-THRESHOLDS-AT-RERUN'),

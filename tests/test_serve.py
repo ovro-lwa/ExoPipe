@@ -786,7 +786,8 @@ def test_hub_page():
         hub.first_difference(hub.render(reg, when or ''), page)
     for must in ('>1-hour</a>', 'href="http://localhost:8988/"', 'href="http://localhost:8779/"',
                  'href="/s/forced_tiers/10min_V.html?x=1&amp;y=2"', '&lt;deep&gt; &amp; &quot;quoted&quot;',
-                 '<span class="b off" title="not yet served">1-min</span>', 'served not yet', '/s/jupiter/', '/s/planets/'):
+                 '<span class="b off" title="not yet served">1-min</span>', 'served not yet', '/s/jupiter/', '/s/planets/',
+                 '<a class="b" href="/s/lpt/">Known LPTs (all tiers)</a>'):
         assert must in page, must
     for never in ('8772', '9301', '9070', '8986', 'Tunnel', 'ssh ', '8767', 'multiples'):
         assert never not in page, never
@@ -807,8 +808,9 @@ def test_hub_page():
     page = open(f'{D}/index.html').read()
     assert page == hub.render(ref, hub.page_generated(page)) and '18800' not in page
     ok('hub page: lib/serve/hub.render == the page production\'s build_review_hub.py writes (V over I; per tier its page - '
-       'the live combined view first - and its forced button, placeholders while unserved; three links; no multiples / '
-       'preview / batch button, no Round-2, no tunnel line), and its --set / --tunnel-extra registry writes, byte for byte')
+       'the live combined view first - and its forced button, placeholders while unserved; three links and the interim '
+       'known-LPT link; no multiples / preview / batch button, no Round-2, no tunnel line), and its --set / --tunnel-extra '
+       'registry writes, byte for byte')
     # the content test on the production-written hub
     exp = [('I', '10-min', dict(kv.split('=', 1) for kv in kvs))]
     r = {x['name']: x for x in validate.run('hub_page', f'{D}/index.html', expected=exp)}
