@@ -11,7 +11,8 @@ the window). Without the keyword (the search owner's commit, lib/frames/deep_sea
 'engine-seam') before any work.
 
 Writes ONE result file (JSON, atomic): {'status': 'ok'|'refused'|'error', 'gate', 'reason', 'return', 'engine_file'} and
-exits 0 (ok), 2 (refused) or 1 (error). The parent maps it (deep_engine.run_child).
+exits 0 (ok), 2 (refused) or 1 (error). The parent maps it (deep_engine.run_child). A 10-minute spec with included nights
+(a per-hour append) is refused before the engine is imported (gate FE-10MIN-APPEND, deep_engine.tenmin_append_refusal).
 """
 import json
 import os
@@ -46,6 +47,13 @@ def main(argv):
     res = {'status': None, 'unit': f"{spec['lst']}_{spec['scope']}_{spec['stokes']}"}
     rc = 0
     try:
+        from exopipe.phase3.lib.frames.deep_engine import TENMIN_APPEND_GATE, tenmin_append_refusal
+        why = tenmin_append_refusal(f"{spec['lst']}_{spec['scope']}", spec.get('cadence'), spec.get('included_dates'))
+        if why:                               # gate FE-10MIN-APPEND (UnitSpec refuses first): before the engine is imported
+            res.update(status='refused', gate=TENMIN_APPEND_GATE, reason=why.split(': ', 1)[1])   # run_child prefixes the gate
+            _write(spec['result_path'], res)
+            print(f'FRAMES-ENGINE-END refused {TENMIN_APPEND_GATE}', flush=True)
+            return 2
         import inspect
         from exopipe.phase3.lib.search import deep_search as ds
         res['engine_file'] = ds.__file__

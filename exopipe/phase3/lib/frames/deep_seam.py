@@ -7,7 +7,8 @@ it must be byte-neutral for the default call. This module (frames-owned) carries
 
 - ``propose(src)``: the keyword as a list of anchored edits of the engine source (each anchor must occur exactly once, so
   an edit can never land in the wrong place; the result is returned, never written into lib/search). With
-  frames_only=True: one Stokes per call; everything up to the sigma stacks runs unchanged (setup, master and membership
+  frames_only=True: one Stokes per call; a 10-minute call with included nights (a per-hour append) refuses (gate
+  FE-10MIN-APPEND); everything up to the sigma stacks runs unchanged (setup, master and membership
   gates, flow cache, x2 flows, every admission gate, LOO selection, residual build, sigma stack); the search-only
   per-cell inputs (parent catalogue, I structure map, V sanity gate, extraction-refusal setup) are skipped; in the date
   loop only the frame blocks run (frame, sibling, archive copies) and the loop continues before the search; the call
@@ -61,7 +62,8 @@ def _frames_only_result(lst, scope, dates, fo, run_root, refdir, policy_skip=Non
 
 _DOC_ADD = '''
     frames_only=True (exopipe3 frames --tier deep, frame-only rebuilds; refactor 2026-10-13, crosscheck group 14): one
-    Stokes per call; every gate, the flows, the LOO selection, the residuals and the sigma stack run as in the default call;
+    Stokes per call; a 10-minute call with included nights (a per-hour append) refuses (gate FE-10MIN-APPEND); every
+    gate, the flows, the LOO selection, the residuals and the sigma stack run as in the default call;
     in the date loop only the frame blocks run (frame, pbcorr sibling, archive copies), the search is skipped, and the call
     returns _frames_only_result(...) (a dict) instead of the candidate count. The default call (frames_only=False) is
     statement-for-statement the call without the keyword (proof: lib/frames/deep_seam.default_path_identical)."""'''
@@ -87,6 +89,18 @@ def _edits():
          "    t0 = time.time()\n    if frames_only and stokes not in ('I', 'V'):\n"
          "        raise ValueError(f'frames_only=True needs one Stokes (I or V), got {stokes!r}')\n"
          "    if cadence not in ('deep', '10min'):\n"),
+        # gate FE-10MIN-APPEND (ledger FINDING-20261113-FRAMES-ONLY-ENGINE-TENMIN-APPEND-READS-FROZEN-POPULATIONS): a
+        # 10-minute call with included nights is a per-hour append judged by the frozen gate populations of its base
+        # attempt, which a frames-only attempt does not hold - the engine refuses it before any work (its callers,
+        # lib/frames/deep_engine.UnitSpec and deep_child, refuse first)
+        ('tenmin-append-refusal',
+         "        raise ValueError(f'cadence {cadence!r}: deep or 10min')\n",
+         "        raise ValueError(f'cadence {cadence!r}: deep or 10min')\n"
+         "    if frames_only and cadence == '10min' and included_dates:\n"
+         "        raise RuntimeError(f'FE-10MIN-APPEND: {lst}_{scope}: the frames-only engine refuses a 10-minute append '\n"
+         "                           f'(included nights {list(included_dates)}): it would read the frozen gate populations '\n"
+         "                           f'of a base attempt (gate_population.csv) that a frames-only attempt does not hold '\n"
+         "                           f'- REFUSING')\n"),
         ('policy-skip-epochs',
          "P3-POLICY-SKIP only {len(dates)} epochs (minimum {_minE}, cadence {cadence})'); return 0\n",
          "P3-POLICY-SKIP only {len(dates)} epochs (minimum {_minE}, cadence {cadence})'); return "

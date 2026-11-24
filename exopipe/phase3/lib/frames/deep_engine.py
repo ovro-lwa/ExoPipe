@@ -171,9 +171,32 @@ def check_overrides(cfg=None):
     return notes
 
 
+TENMIN_APPEND_GATE = 'FE-10MIN-APPEND'
+
+
+def tenmin_append_refusal(cell, cadence, included_dates):
+    """Gate FE-10MIN-APPEND: the reason the frames-only engine refuses this call, or None. The engine treats ANY 10-minute
+    call with included nights as a per-hour append (deep_search.run_deep_cell: ``_ph10 = cadence == '10min' and
+    bool(included_dates)``): it then reads the frozen gate populations of its base attempt (gate_population.csv: the
+    search-tier gate per Stokes and the beam gate) in its run root, which a frames-only attempt is not seeded with, and
+    writes the base's carried refusal rows again from a frames step, past the seam's check of the locked appends (code
+    review of pull request 30, finding 5, 2026-11-13). No caller does this today: one night's 10-minute frames are built by
+    the per-hour chain's `frames --tier sublst --stages wideband,tree-nonmember` (the tree entry). A frames-only 10-minute
+    build runs on the whole cell (no included nights); a deep-cadence call with included nights (the per-hour deep frames)
+    is not affected."""
+    if cadence == '10min' and included_dates:
+        return (f'{TENMIN_APPEND_GATE}: {cell}: the frames-only engine refuses a 10-minute append (cadence 10min with included '
+                f'nights {sorted(str(d) for d in included_dates)[:6]}): the engine would read the frozen gate populations of '
+                f'a base attempt (gate_population.csv) that a frames-only attempt does not hold, and write search refusal rows '
+                f'from a frames step. One night\'s 10-minute frames come from `frames --tier sublst --stages tree-nonmember` '
+                f'(the tree entry); a frames-only 10-minute rebuild takes the whole cell (no included nights)')
+    return None
+
+
 class UnitSpec:
     """What one engine call needs. ``tier`` 'deep' (cadence 'deep') or 'sublst' (cadence '10min', the optional sub-LST
-    searchframes stage); ``attempt`` = the unit's fresh attempt directory; ``work_root`` = the node-local flow root."""
+    searchframes stage; a whole cell only - with included_dates it is refused, gate FE-10MIN-APPEND); ``attempt`` = the
+    unit's fresh attempt directory; ``work_root`` = the node-local flow root."""
 
     FIELDS = ('tier', 'cadence', 'lst', 'scope', 'stokes', 'label', 'included_dates', 'attempt', 'coadd_root',
               'archive_root', 'archive_run', 'archive_copy', 'work_root', 'tenmin_root')
@@ -186,6 +209,9 @@ class UnitSpec:
             setattr(self, k, kw.get(k))
         self.cadence = self.cadence or ('10min' if self.tier == 'sublst' else 'deep')
         self.included_dates = list(self.included_dates or [])
+        why = tenmin_append_refusal(self.cell, self.cadence, self.included_dates)
+        if why:
+            raise Refusal(why)                # gate FE-10MIN-APPEND, before any attempt directory or child exists
 
     @property
     def cell(self):
