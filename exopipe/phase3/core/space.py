@@ -5,10 +5,17 @@ ExoPipe will run as user pipeline (uid 1002), whose Lustre quota it shares with 
 (FINDING-20261117-EXOPIPE-AS-PIPELINE-SHARES-RECORDER-QUOTA: 2.507 PB of 2.55 PB used on 2026-11-17): a product written as
 pipeline takes the recorders' room, and a full quota stops the recorders' writes. This module generalizes the photometry
 campaign's space gate (gen6_space_ok.sh; lib/photometry/campaign.space, which now calls it with its own floors) to every
-writer step (cli.main before the step runs, record.Run.unit before each unit) and to any writer outside v2
+writer step (cli.main before the step runs, record.Run.unit before each unit: a refusal there writes the unit's refused
+record, its cell meta included, and stops the step) and to any writer outside v2
 (`python -m exopipe.phase3.core.space --path P`, exit 0 room / 2 refused).
 
-What a check reads, once per file system among the roots it is given (a step's --out and --work):
+Which steps: every step with WRITES = True, in a run that is not a dry run, on its --out and --work - unless the step
+module says otherwise: SPACE_GATE = False exempts a step whose writes free room or are small and needed most when room is
+low (retention, notify, status, serve); a module function space_gate(args, out) returns the roots to check and the floors
+section for one invocation, or None for none (archive: push and sync add the archive root, its moves are exempt;
+photometry: a campaign checks its cutout file system with the photometry_campaign floors). One gate per run: the photometry
+campaign reports this gate's verdict (Gate.state) and never reads lfs itself in a run that has the gate.
+What a check reads, once per file system among the roots it is given (a step's --out and --work, plus a step's own roots):
   Lustre (the root's mount is of type lustre in /proc/self/mountinfo; the mount point is the file system argument of lfs):
     - the run user's quota, `lfs quota -q -u <user> <mount>`: used and limit, in KiB and in files. The limit is the smaller
       non-zero of the soft and hard limits; 0 means none is set, and then no floor applies to that quantity;
@@ -16,8 +23,8 @@ What a check reads, once per file system among the roots it is given (a step's -
       a project quota needs root on the Lustre servers, decision G2 of plan/CUTOVER_REMAINING_20261124.md);
     - the file system's free space, the available KiB of the filesystem_summary line of `lfs df <mount>`.
   Any other file system: the available bytes of os.statvfs (f_bavail x f_frsize); there is no user quota on node-local disks.
-Floors (bytes and files; config section `space`, or the caller's own section - the photometry campaign passes
-photometry_campaign): QUOTA_MIN_FREE_BYTES and QUOTA_MIN_FREE_FILES (user and project quota headroom), FS_MIN_FREE_BYTES
+Floors (bytes and files; config section `space` - small defaults pending Gregg's G2 values - or the step's own section: a
+photometry campaign keeps its photometry_campaign floors, 2 TiB / 200000 files / 120 TB): QUOTA_MIN_FREE_BYTES and QUOTA_MIN_FREE_FILES (user and project quota headroom), FS_MIN_FREE_BYTES
 (Lustre free space), LOCAL_MIN_FREE_BYTES (any other file system). A caller about to write a known amount - the per-hour
 driver's space booking (plan/ORCHESTRATION_DESIGN_20261117.md 5.3, "books the chain's /fast and destination bytes in a
 reservation table and checks them against the disk's real free space minus the bookings") - passes need_bytes / need_files
@@ -332,6 +339,16 @@ class Gate:
             if self.last is None or time.monotonic() - self.last >= self.recheck_s:
                 if not self._read():
                     self._raise()
+
+    def state(self):
+        """(ok, text, values) of the last read, reading nothing (a caller inside the run that reports the gate's verdict - the
+        photometry campaign - asks here instead of reading lfs a second time). Before the first read: (False, 'not read', [])."""
+        with self._lock:
+            if self.stopped:
+                return False, self.stopped, self.values
+            if self.last is None:
+                return False, 'the space gate has not read yet', []
+            return True, self.text, self.values
 
 
 def main(argv=None):

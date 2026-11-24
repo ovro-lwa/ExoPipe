@@ -80,6 +80,7 @@ CONFIG = ('status', 'status_report', 'status_rebuild', 'status_ledger', 'status_
           'status_qa', 'status_pages', 'status_snapshot', 'serve', 'runner', 'site')
 WRITES = True
 PRODUCTS = False   # writes no data product (no GITTAG to stamp): cli.main skips the code-identity check
+SPACE_GATE = False  # no space gate (cli.space_gate_of): reports and item lists are small, and needed most when room is low
 
 ACTIONS = ('report', 'qa', 'conformance', 'pages', 'ledger', 'register', 'eligibility', 'batch-list')
 REPORT_STAGES = ('summary', 'coverage', 'gaps', 'exclusion-conformance', 'violations', 'stale', 'served-diff',

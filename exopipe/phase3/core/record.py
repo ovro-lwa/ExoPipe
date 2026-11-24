@@ -61,6 +61,11 @@ UPSTREAM_ENV = 'EXOPIPE3_UPSTREAM_REFUSED'
 UPSTREAM_CODE = 'UPSTREAM-REFUSED'
 
 
+class SpaceRefused(Refusal):
+    """The space gate (core/space.Gate, set by cli.main) refused before a unit: the unit is recorded refused and the step
+    stops (Run.unit)."""
+
+
 class UpstreamRefused(Refusal):
     """A unit of an upstream-refused cell opened without the guard (Run.upstream_refused): it stops the step (a run-level
     refusal, so the runner stops the chain item) instead of letting the unit run."""
@@ -592,10 +597,22 @@ class Run:
         return True
 
     def unit(self, name, **meta):
-        gate = getattr(self, 'space_gate', None)       # core/space.Gate (cli.main, writer steps): refuses before the unit,
-        if gate is not None and not self.dry_run:       # and every later one, once the room is below a floor (Refusal)
-            gate.before_unit()
         u = UnitRecord(self, name, meta)
+        gate = getattr(self, 'space_gate', None)       # core/space.Gate (cli.main, writer steps)
+        if gate is not None and not self.dry_run:
+            try:
+                gate.before_unit()
+            except Refusal as e:
+                # below a space floor (sticky: every later unit too): this unit's refused record is written - its meta,
+                # cell and subband included, so the run summary and the runner's step outcome name it - and the STEP stops
+                # (SpaceRefused, a run-level refusal: run_reason is set here, so a step that catches it per unit still ends
+                # refused as a whole). The runner then stops the chain item, to be retried when there is room: room is not
+                # a property of a cell, so the hour's cells are never recorded refused as gaps (runner.cell_refusals).
+                u.status, u.reason = 'refused', f'{e} (the space gate, before this unit: the step stops here)'
+                self.units.append(u)
+                self.run_reason = getattr(self, 'run_reason', None) or f'refused: {e}'
+                u._write_outcome()
+                raise SpaceRefused(str(e)) from None
         u.upstream = upstream_hit(meta, self._upstream_list())   # opened: refuses the step (UnitRecord.__enter__)
         self.units.append(u)
         return u

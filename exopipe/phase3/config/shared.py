@@ -479,21 +479,26 @@ class runner(_Section):
 
 
 class space(_Section):
-    """The space gate of every writer step (core/space.py; not retention, whose writes free room): cli.main reads it before a
-    writer step runs (not a dry run) on the file system of each root the run writes (--out, --work), record.Run.unit again
-    before a unit when the last read is older than RECHECK_S. On Lustre: the run user's quota headroom, bytes and files (`lfs quota -q -u <user>`), the project
-    quota of ExoPipe's trees when PROJECT_ID is set, and the file system's free space (filesystem_summary of `lfs df`); on
-    any other file system, statvfs. Below a floor, or unreadable: the run refuses (SPACE-QUOTA, SPACE-PROJECT, SPACE-FS,
-    SPACE-LOCAL, SPACE-UNREADABLE; exit 2), and every later unit of the run too. Why: statvfs does not see Lustre user quotas,
-    and ExoPipe will run as pipeline, whose quota the recorders write under
+    """The space gate of the writer steps (core/space.py): cli.main reads it before a writer step runs (not a dry run) on the
+    file system of each root the run writes (--out, --work, and a step's own roots), record.Run.unit again before a unit when
+    the last read is older than RECHECK_S. On Lustre: the run user's quota headroom, bytes and files (`lfs quota -q -u
+    <user>`), the project quota of ExoPipe's trees when PROJECT_ID is set, and the file system's free space
+    (filesystem_summary of `lfs df`); on any other file system, statvfs. Below a floor, or unreadable: the run refuses
+    (SPACE-QUOTA, SPACE-PROJECT, SPACE-FS, SPACE-LOCAL, SPACE-UNREADABLE; exit 2), and every later unit of the run too. Why:
+    statvfs does not see Lustre user quotas, and ExoPipe will run as pipeline, whose quota the recorders write under
     (FINDING-20261117-EXOPIPE-AS-PIPELINE-SHARES-RECORDER-QUOTA). Not in any step's resume hash: a floor changes no product.
-    AWAITING GREGG'S VALUES (decision G2 of plan/CUTOVER_REMAINING_20261124.md): the three Lustre floors below are the
-    photometry campaign's (photometry_campaign; gen6_space_ok.sh), used for every step until he sets them."""
+    Exempt (SPACE_GATE = False): retention, notify, status, serve; archive's moves (its push and sync are gated, on the
+    archive root too). The photometry campaign keeps its own floors (photometry_campaign: 2 TiB, 200000 files, 120 TB).
+    PENDING GREGG'S G2 VALUES (plan/CUTOVER_REMAINING_20261124.md): the floors below are small defaults, so that a small
+    writer is not refused while Lustre still has room (the campaign's 120 TB would refuse a kilobyte writer at 110 TB free);
+    the per-hour driver's bookings (need_bytes) carry the large writes."""
     LFS = 'lfs'                                  # the lfs program (a command line: 'sudo -n lfs' reads another user's quota)
     LFS_TIMEOUT_S = 120                          # s, one lfs call
-    QUOTA_MIN_FREE_BYTES = 2 * 2 ** 40           # bytes (2 TiB) of the run user's (and the project's) block quota headroom
-    QUOTA_MIN_FREE_FILES = 200000                # files of the run user's (and the project's) inode quota headroom
-    FS_MIN_FREE_BYTES = 120 * 10 ** 12           # bytes (120 TB) free on the Lustre file system
+    QUOTA_MIN_FREE_BYTES = 2 ** 40               # bytes (1 TiB) of the run user's (and the project's) block quota headroom:
+                                                 # about 6 h of the recorders' growth (4.3 TB/day, RESULT-20261118-PIPELINE-
+                                                 # QUOTA-26H-SAMPLE); PENDING G2
+    QUOTA_MIN_FREE_FILES = 100000                # files of the run user's (and the project's) inode quota headroom; PENDING G2
+    FS_MIN_FREE_BYTES = 10 * 10 ** 12            # bytes (10 TB) free on the Lustre file system; PENDING G2
     LOCAL_MIN_FREE_BYTES = 0                     # bytes free on any other file system (node-local /fast, /dataNN): none set
                                                  # (the steps' own statvfs preflights still refuse); a booking (need_bytes) must fit
     PROJECT_ID = None                            # Lustre project quota ID of ExoPipe's trees: none exists yet (G2)

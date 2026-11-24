@@ -136,6 +136,8 @@ TIERS = ('deep', 'sublst', 'snapshot', 'jupiter')
 SELECTORS = ('tier', 'run_label', 'stokes', 'lsts', 'epochs')
 CONFIG = ('serve', 'pages', 'catalog_omission', 'catalog_sublst', 'catalog_snapshot', 'exclusions', 'paths', 'runner', 'site')
 WRITES = True
+SPACE_GATE = False  # no space gate (cli.space_gate_of): pages and their indexes are small and the team reviews through them
+                    # when room is low; a snapshot copy to the review disk keeps its own gate (G20, serve.SNAPSHOT_COPY_*)
 FAMILIES = ('review', 'forced', 'strat', 'deep-forced', 'jupiter', 'comb')
 
 

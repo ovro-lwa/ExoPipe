@@ -22,9 +22,12 @@ refactor_20261012/plan/GEN6_PORT_PLAN_20261123.md pull request 4):
                      whose children ran another version than the pin (or two, 'mixed:') is recorded refused CP-PIN (not a
                      gap: it holds its cell) and the campaign stops; a unit recorded under another pin is cut again.
   space()            the run user's quota headroom (bytes and files, `lfs quota -q -u <user>`) and the file system's free space
-                     (the filesystem_summary line of `lfs df`), before each unit (gen6_space_ok.sh), read by core/space.lustre
-                     with this section's floors (the gate every writer step runs). Below a floor, or unreadable: the unit
-                     refuses and every later one (CP-SPACE).
+                     (the filesystem_summary line of `lfs df`), before each unit (gen6_space_ok.sh), with this section's
+                     floors. ONE gate: in a run that is not a dry run, cli.main's space gate reads it (steps/photometry.
+                     space_gate: the SPACE_FILESYSTEM and these floors, before every unit, RECHECK_S 0) and run_space()
+                     reports that gate's last verdict without reading lfs again; only a dry run (no gate) reads it, space().
+                     Below a floor, or unreadable: the run does not start (SPACE-*), a unit refuses and the step stops
+                     (record.Run.unit), and the campaign's own check refuses CP-SPACE and every later unit.
   io_guard_wait()    the recorders' I/O guard: wait while it is raised, before each unit and each stage-1 cell (a yield).
   gap_kind()         GAPS (R-GREGG-20261027-LSRECON-SCALE-BOUND-0P5-2P0-LEVEL-REFUSALS-STAY-GAPS-55MHZ-06H-R0-N-MINUS-1, verbatim
                      "Refusals by the large-scale level test stay refused, as gaps, never forced"): a unit whose inputs a gate
@@ -310,10 +313,20 @@ parse_quota = S.parse_quota          # `lfs quota -q -u <user> <fs>` (core/space
 parse_df = S.parse_df                # the filesystem_summary line of `lfs df <fs>` (core/space.parse_df)
 
 
+def run_space(run):
+    """The campaign's space verdict (ok, text, values) in ``run``: with cli.main's space gate (``run.space_gate``; every run
+    that is not a dry run - steps/photometry.space_gate gives it this section's file system and floors, read before every
+    unit) the gate's last verdict, reading nothing (one gate, no second lfs read); without it (a dry run) space(), once per
+    call."""
+    gate = getattr(run, 'space_gate', None)
+    return gate.state() if gate is not None else space()
+
+
 def space(lfs=None):
     """(ok, text, values): the run user's quota headroom (bytes, files) and the file system's free space against the floors of
-    photometry_campaign - core/space.lustre with this section's SPACE_FILESYSTEM, LFS, LFS_TIMEOUT_S and floors (the gate
-    every writer step runs, generalized from this one). Unreadable is not ok. ``lfs``: argv -> (rc, stdout, stderr) (tests)."""
+    photometry_campaign - core/space.lustre with this section's SPACE_FILESYSTEM, LFS, LFS_TIMEOUT_S and floors (what the
+    cli's gate reads for a campaign). Unreadable is not ok. ``lfs``: argv -> (rc, stdout, stderr) (tests). A run with the
+    cli's gate asks run_space() instead."""
     cc = _cc()
     ok, text, vals, _codes = S.lustre(cc.SPACE_FILESYSTEM, cc, lfs=lfs or _lfs, user=run_user())
     return ok, text, vals
@@ -544,7 +557,7 @@ def start(run, args):
             K.would_refuse(run, 'campaign', why)
         else:
             pin.files, cont = dict(prior.get('pin') or {}), prior.get('run_id')
-    camp = Campaign(gen, enum, pin, root=root)
+    camp = Campaign(gen, enum, pin, root=root, space_fn=lambda: run_space(run))   # the cli's gate when the run has one
     ok, text, vals = camp.space_fn()
     which = ('continues campaign %s' % cont if cont else
              'a new campaign over %s (--new-campaign)' % prior.get('run_id') if prior and new else 'a new campaign')

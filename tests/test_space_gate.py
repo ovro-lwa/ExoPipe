@@ -14,11 +14,17 @@ stub statvfs. Asserts:
   - check(): one read per file system (two roots on one mount: one quota read), the codes of every file system;
   - Gate: require() refuses (record.Refusal) with the codes first; before_unit() reads again only after RECHECK_S; once low it
     stays shut (sticky) even after the room comes back;
-  - the floors: the shared section's Lustre floors and lfs settings are the photometry campaign's (until Gregg sets them, G2);
-    the campaign's gate gives the same verdict, text and values as core/space.lustre with its section;
+  - Gate.state: the last verdict without a read;
+  - the floors: section space has small defaults pending G2 (1 TiB, 100000 files, 10 TB: a 1 kB writer at 110 TB free has
+    room), the photometry campaign keeps its own (2 TiB, 200000 files, 120 TB; read before every unit); the campaign's own
+    read gives the same verdict, text and values as core/space.lustre with its section, and in a run with the cli's gate the
+    campaign reports that gate's verdict and reads no lfs (one gate);
   - the wiring: cli.main runs the gate before a writer step's run() (exit 2, nothing written, the run summary says why), not
-    for a dry run, not for a step that writes nothing, not for a step with SPACE_GATE = False; record.Run.unit refuses a
-    later unit once the room is low (the units before it stay done);
+    for a dry run, not for a step that writes nothing, not for a step with SPACE_GATE = False (retention, notify, status,
+    serve), with a step's space_gate(args, out) roots and floors (archive push/sync: the archive root too, its moves none;
+    photometry --campaign: its file system and floors); record.Run.unit refuses a later unit once the room is low (the units
+    before it stay done): the refused unit's record is written with its cell meta, the run ends refused even when the step
+    goes on after the refusal, and the runner's per-cell handling does not take it as a cell refusal (the chain item stops);
   - the command `python -m exopipe.phase3.core.space`: exit 0 with ROOM, 2 with REFUSED and the codes.
 """
 import contextlib
@@ -67,9 +73,10 @@ class Patch:
 
 
 def floors(**kw):
-    """A floors object: the shared section's values, overridden by kw."""
-    d = {k: getattr(CFG.space, k) for k in ('LFS', 'LFS_TIMEOUT_S', 'QUOTA_MIN_FREE_BYTES', 'QUOTA_MIN_FREE_FILES',
-                                            'FS_MIN_FREE_BYTES', 'LOCAL_MIN_FREE_BYTES', 'PROJECT_ID', 'RECHECK_S')}
+    """A floors object of fixed test values (the photometry campaign's: 2 TiB, 200000 files, 120 TB; no local floor, no
+    project), overridden by kw - the mechanics are tested against these, whatever the config's values."""
+    d = dict(LFS='lfs', LFS_TIMEOUT_S=120, QUOTA_MIN_FREE_BYTES=2 * 2 ** 40, QUOTA_MIN_FREE_FILES=200000,
+             FS_MIN_FREE_BYTES=120 * 10 ** 12, LOCAL_MIN_FREE_BYTES=0, PROJECT_ID=None, RECHECK_S=300)
     d.update(kw)
     return types.SimpleNamespace(**d)
 
@@ -241,6 +248,9 @@ def test_gate(d):
     G.before_unit()
     G.before_unit()
     check('Gate: room at the start; before_unit within RECHECK_S reads nothing again', n == 2 and len(calls) == 2, calls)
+    st = G.state()
+    check('Gate.state: the last verdict, reading nothing (ok, its text, its values)', st[0] is True and 'free' in st[1]
+          and st[2] and len(calls) == 2, (st, calls))
     G.recheck_s = 0
     state['avail'] = int(100e12 / 1024)
     try:
@@ -250,6 +260,9 @@ def test_gate(d):
         check('Gate: low after RECHECK_S -> Refusal naming SPACE-FS first', str(e).startswith('SPACE-FS: '), str(e))
     state['avail'] = int(200e12 / 1024)
     n = len(calls)
+    st = G.state()
+    check('Gate.state once low: not ok, the refusal text, reading nothing', st[0] is False and st[1].startswith('SPACE-FS')
+          and len(calls) == n, st)
     for fn in (G.before_unit, G.require):
         try:
             fn()
@@ -258,6 +271,7 @@ def test_gate(d):
             check('Gate: sticky - %s refuses after the room came back, without reading again' % fn.__name__,
                   str(e).startswith('SPACE-FS') and len(calls) == n, (str(e), len(calls)))
     G2 = S.Gate([os.path.join(lus, 'out')], floors(), lfs=fake_lfs(rq=1), mountinfo=mi)
+    check('Gate.state before the first read: not ok', G2.state()[0] is False, G2.state())
     try:
         G2.require()
         check('Gate: unreadable quota at the start refuses', False)
@@ -270,11 +284,19 @@ def test_gate(d):
         check('require: low files refuses SPACE-QUOTA', str(e).startswith('SPACE-QUOTA'), str(e))
 
 
-def test_floors_and_campaign():
+def test_floors_and_campaign(d):
     cc = CFG.photometry_campaign
-    same = [k for k in ('LFS', 'LFS_TIMEOUT_S', 'QUOTA_MIN_FREE_BYTES', 'QUOTA_MIN_FREE_FILES', 'FS_MIN_FREE_BYTES')
-            if getattr(CFG.space, k) != getattr(cc, k)]
-    check('the shared floors and lfs settings are the photometry campaign\'s (awaiting Gregg\'s values, G2)', not same, same)
+    check('the floors of section space are small defaults pending G2: 1 TiB and 100000 files of quota headroom, 10 TB free',
+          (CFG.space.QUOTA_MIN_FREE_BYTES, CFG.space.QUOTA_MIN_FREE_FILES, CFG.space.FS_MIN_FREE_BYTES) ==
+          (2 ** 40, 100000, 10 * 10 ** 12) and 'PENDING' in (CFG.space.__doc__ or ''))
+    check('the photometry campaign keeps its own floors (2 TiB, 200000 files, 120 TB) and reads before every unit '
+          '(RECHECK_S 0)', (cc.QUOTA_MIN_FREE_BYTES, cc.QUOTA_MIN_FREE_FILES, cc.FS_MIN_FREE_BYTES, cc.RECHECK_S) ==
+          (2 * 2 ** 40, 200000, 120 * 10 ** 12, 0))
+    kb110 = int(110e12 / 1024)
+    ok_s = S.lustre('/lustre', CFG.space, lfs=fake_lfs(avail=kb110), user='u', need_bytes=1000)[0]
+    ok_c = S.lustre('/lustre', cc, lfs=fake_lfs(avail=kb110), user='u', need_bytes=1000)
+    check('a 1 kB writer at 110 TB free: room with the floors of section space; the campaign\'s 120 TB refuses SPACE-FS',
+          ok_s and not ok_c[0] and 'SPACE-FS' in ok_c[3], (ok_s, ok_c))
     check('no project quota and no local floor set by default (PROJECT_ID None, LOCAL_MIN_FREE_BYTES 0)',
           CFG.space.PROJECT_ID is None and CFG.space.LOCAL_MIN_FREE_BYTES == 0)
     check('space is not a shared section (a floor changes no product: no resume hash moves)',
@@ -285,17 +307,38 @@ def test_floors_and_campaign():
         ok, text, vals, _c = S.lustre(cc.SPACE_FILESYSTEM, cc, lfs=fake_lfs(fs=cc.SPACE_FILESYSTEM, **kw), user=CP.run_user())
         check('campaign gate = core/space.lustre with photometry_campaign (%s)' % (kw or 'room'), a == (ok, text, vals),
               (a, (ok, text, vals)))
+    calls = []
+
+    def counting(argv):
+        calls.append(argv)
+        return fake_lfs(fs=cc.SPACE_FILESYSTEM)(argv)
+    G = S.Gate([cc.SPACE_FILESYSTEM], cc, lfs=counting, mountinfo=_lustre_mountinfo(d, cc.SPACE_FILESYSTEM))
+    G.require()
+    n = len(calls)
+    got = [CP.run_space(types.SimpleNamespace(space_gate=G)) for _ in range(3)]
+    check('one gate: in a run with the cli\'s space gate, the campaign reports the gate\'s verdict and reads no lfs itself',
+          n == 2 and len(calls) == n and all(g == G.state() for g in got) and got[0][0] is True, (n, len(calls), got[0]))
+
+
+def _lustre_mountinfo(d, path):
+    """A mount table file in the test's directory ``d`` naming ``path`` a lustre mount."""
+    p = os.path.join(d, 'mountinfo_lustre')
+    with open(p, 'w') as f:
+        f.write('1 0 8:1 / / rw - xfs /dev/sda1 rw\n41 1 0:52 / %s rw,relatime - lustre 10.0.0.1@o2ib:/fs rw\n' % path)
+    return p
 
 
 STEP = 'zz_space_gate_test'
 
 
-def fake_step(writes=True, space_gate=None, units=2):
+def fake_step(writes=True, space_gate=None, units=2, swallow=False, hook=None):
     m = types.ModuleType('exopipe.phase3.steps.' + STEP)
     m.SUMMARY, m.TIERS, m.SELECTORS, m.CONFIG = 'test step', (), (), ()
     m.WRITES, m.PRODUCTS = writes, False
     if space_gate is not None:
         m.SPACE_GATE = space_gate
+    if hook is not None:
+        m.space_gate = hook
     m.add_arguments = lambda p: None
     m.default_out = lambda args: None
     m.ran = []
@@ -306,11 +349,15 @@ def fake_step(writes=True, space_gate=None, units=2):
             return record.EXIT_DONE
         os.makedirs(run.out_root, exist_ok=True)
         for i in range(units):
-            with run.unit('u%d' % i) as u:
-                p = os.path.join(run.out_root, 'u%d.txt' % i)
-                with open(p, 'w') as f:
-                    f.write('x')
-                u.add_output(p, 'zz_space_gate_test_file', test=False)
+            try:
+                with run.unit('u%d' % i, cell='04h_2025-10-14', subband='55MHz') as u:
+                    p = os.path.join(run.out_root, 'u%d.txt' % i)
+                    with open(p, 'w') as f:
+                        f.write('x')
+                    u.add_output(p, 'zz_space_gate_test_file', test=False)
+            except record.Refusal:
+                if not swallow:          # a step that goes on to its next unit after a refusal (it must still end refused)
+                    raise
         return run.exit_code()
     m.run = run
     return m
@@ -323,22 +370,34 @@ def test_wiring(d):
 
     def fake_check(roots, floors=None, **kw):
         reads.append(list(roots))
+        state['floors'] = floors
         ok = state['ok'].pop(0) if len(state['ok']) > 1 else state['ok'][0]
         return (True, 'room', [], []) if ok else (False, 'pipeline quota headroom 1.00 TiB < 2.00 TiB', [], ['SPACE-QUOTA'])
     try:
         P.set(cli, 'STEPS', list(cli.STEPS) + [(STEP, 'test step', 'tools')])
         P.set(S, 'check', fake_check)
 
-        def go(mod, out, *extra):
+        def go(mod, out, *extra, outcome=None):
             sys.modules['exopipe.phase3.steps.' + STEP] = mod
             err = io.StringIO()
+            fd = os.open(outcome, os.O_RDWR | os.O_CREAT | os.O_TRUNC, 0o600) if outcome else None
+            if fd is not None:
+                os.environ['EXOPIPE3_STEP_OUTCOME_FD'] = str(fd)
             try:
                 with contextlib.redirect_stderr(err):
                     rc = cli.main([STEP, '--out', out, '--cores', 'none'] + list(extra))
             finally:
                 CFG.reset()
                 sys.modules.pop('exopipe.phase3.steps.' + STEP, None)
+                os.environ.pop('EXOPIPE3_STEP_OUTCOME_FD', None)
+                if fd is not None:
+                    os.close(fd)
             return rc, err.getvalue()
+
+        def outcome_of(path):
+            from exopipe.phase3.core import runner
+            with open(path, 'rb') as f:
+                return runner.read_outcome(f)
 
         out = os.path.join(d, 'w_refused')
         state['ok'] = [False]
@@ -361,14 +420,68 @@ def test_wiring(d):
         m = fake_step(space_gate=False)
         rc, err = go(m, os.path.join(d, 'w_free'))
         check('cli: a step with SPACE_GATE = False (retention) reads no room', len(reads) == n and m.ran and rc == 0, (rc, err))
+        check('cli: the floors of section space by default', state.get('floors') is CFG.space, state.get('floors'))
         P.set(CFG.space, 'RECHECK_S', 0)
-        state['ok'] = [True, True, False]          # start, unit u0, unit u1
-        out = os.path.join(d, 'w_mid')
-        m = fake_step(units=3)
-        rc, err = go(m, out)
-        check('Run.unit: room at the start and before u0; low before u1 -> exit 2, u0 written, u1 and u2 not',
-              rc == 2 and os.path.exists(os.path.join(out, 'u0.txt')) and not os.path.exists(os.path.join(out, 'u1.txt'))
-              and not os.path.exists(os.path.join(out, 'u2.txt')) and 'SPACE-QUOTA' in err, (rc, err))
+        from exopipe.phase3.core import runner
+        for swallow in (False, True):
+            state['ok'] = [True, True, False]          # start, unit u0, unit u1
+            out = os.path.join(d, 'w_mid_%s' % swallow)
+            m = fake_step(units=3, swallow=swallow)
+            oc = os.path.join(d, 'outcome_%s.json' % swallow)
+            rc, err = go(m, out, outcome=oc)
+            how = 'a step that goes on after a refused unit' if swallow else 'the refusal propagates'
+            check('Run.unit (%s): room at the start and before u0; low before u1 -> exit 2, u0 written, u1 and u2 not'
+                  % how, rc == 2 and os.path.exists(os.path.join(out, 'u0.txt'))
+                  and not os.path.exists(os.path.join(out, 'u1.txt')) and not os.path.exists(os.path.join(out, 'u2.txt'))
+                  and 'SPACE-QUOTA' in err, (rc, err))
+            rec = os.path.join(out, '_records', STEP, 'u1.json')
+            r1 = json.load(open(rec)) if os.path.exists(rec) else {}
+            check('Run.unit (%s): the refused unit u1 has its record - status refused, reason SPACE-QUOTA first, its cell '
+                  'and subband meta' % how, r1.get('status') == 'refused' and str(r1.get('reason')).startswith('SPACE-QUOTA')
+                  and (r1.get('meta') or {}).get('cell') == '04h_2025-10-14'
+                  and (r1.get('meta') or {}).get('subband') == '55MHz', r1)
+            o = outcome_of(oc)
+            u1 = [u for u in (o or {}).get('units', []) if u.get('unit') == 'u1']
+            check('runner outcome (%s): u1 refused with its cell, the run reason refused: SPACE-QUOTA, and the runner\'s '
+                  'per-cell handling does NOT take it as a cell refusal (cell_refusals None: the chain item stops, retried '
+                  'when there is room, never the hour\'s cells recorded as gaps)' % how,
+                  o and u1 and u1[0]['status'] == 'refused' and u1[0]['cell'] == '04h_2025-10-14'
+                  and str(o.get('run_reason')).startswith('refused: SPACE-QUOTA') and runner.cell_refusals(o, rc) is None,
+                  o)
+            if swallow:
+                check('... the step that goes on: u2 refused too (sticky), never written', any(
+                    u.get('unit') == 'u2' and u.get('status') == 'refused' for u in (o or {}).get('units', [])), o)
+        state['ok'] = [True]
+        n = len(reads)
+        m = fake_step(hook=lambda args, out: ([out, '/lustre'], 'photometry_campaign'))
+        rc, err = go(m, os.path.join(d, 'w_hook'), '--work', os.path.join(d, 'w_hook_work'))
+        check('cli: a step\'s space_gate(args, out) picks the roots (plus --work) and the floors section',
+              rc == 0 and reads[n] == [os.path.join(d, 'w_hook'), '/lustre', os.path.join(d, 'w_hook_work')]
+              and state['floors'] is CFG.photometry_campaign, (rc, reads[n:], err[-300:]))
+        n = len(reads)
+        m = fake_step(hook=lambda args, out: None)
+        rc, err = go(m, os.path.join(d, 'w_hook_none'))
+        check('cli: space_gate(args, out) returning None: no gate for this invocation', rc == 0 and len(reads) == n, rc)
+        import argparse
+        from exopipe.phase3.steps import archive, notify, photometry, retention, serve, status
+        for mod in (notify, status, serve, retention):
+            check('%s: no space gate (SPACE_GATE = False)' % mod.__name__.rsplit('.', 1)[1],
+                  mod.SPACE_GATE is False and cli.space_gate_of(mod, argparse.Namespace(work=None), '/o') is None)
+        A = lambda a, **k: argparse.Namespace(action=a, archive_root=None, work=None, **k)  # noqa: E731
+        check('archive push and sync: gated on --out AND the archive root (paths.PHASE3_ARCHIVE_ROOT, or --archive-root)',
+              cli.space_gate_of(archive, A('push'), '/o') == (['/o', os.path.abspath(CFG.paths.PHASE3_ARCHIVE_ROOT)],
+                                                               'space')
+              and cli.space_gate_of(archive, argparse.Namespace(action='sync', archive_root='/m', work=None), '/o')
+              == (['/o', '/m'], 'space'))
+        check('archive moves and audits (quarantine, retire-excluded, retire-refused, rollback, supersede, quarantine-rows, '
+              'audit): no space gate', all(cli.space_gate_of(archive, A(a), '/o') is None for a in (
+                  'quarantine', 'retire-excluded', 'retire-refused', 'rollback', 'supersede', 'quarantine-rows', 'audit')))
+        check('photometry --campaign: --out and the campaign\'s file system, with the photometry_campaign floors; any other '
+              'photometry run: --out with the space floors',
+              cli.space_gate_of(photometry, argparse.Namespace(campaign=True, work=None), '/o') ==
+              (['/o', CFG.photometry_campaign.SPACE_FILESYSTEM], 'photometry_campaign')
+              and cli.space_gate_of(photometry, argparse.Namespace(campaign=False, work='/w'), '/o') == (['/o', '/w'],
+                                                                                                          'space'))
         state['ok'] = [True]
         out = os.path.join(d, 'w_ok')
         m = fake_step()
@@ -408,7 +521,7 @@ def main():
         test_lustre(d)
         test_local_and_check(d)
         test_gate(d)
-        test_floors_and_campaign()
+        test_floors_and_campaign(d)
         test_wiring(d)
         test_command(d)
     finally:

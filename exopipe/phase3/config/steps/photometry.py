@@ -505,6 +505,8 @@ class photometry_campaign(_Section):
     QUOTA_MIN_FREE_BYTES = 2 * 2 ** 40          # 2 TiB of the run user's block quota (gen6 2147483648 KiB)
     QUOTA_MIN_FREE_FILES = 200000               # files of the run user's inode quota
     FS_MIN_FREE_BYTES = 120 * 10 ** 12          # 120 TB free on the file system (gen6 117187500000 KiB)
+    RECHECK_S = 0                               # s: the cli's space gate (core/space.Gate, these floors) reads before EVERY
+                                                # unit of a campaign, as gen6_space_ok.sh did; the campaign reads none itself
     # ---- the recorders' I/O guard (gen6_cutout_regen_DRAFT.sh, gen6_forced_stage1_DRAFT.sh): before each unit and each stage-1
     #      cell, wait while this host's stop file has a line starting with IO_GUARD_STOP_PREFIX or the alert file exists. A
     #      yield, not a gate: nothing is refused; polled every IO_GUARD_POLL_S ({ops} = paths.OPS_ROOT, {host} = this host)
