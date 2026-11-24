@@ -637,8 +637,31 @@ def _tier_npz(path):
         return {k: z[k] for k in z.files}
 
 
+PLANET_CONTROLS = 'orbit'      # ctl_kind of a planet file: controls along the planet's own track (photometry_tier_forced_20261026.py:148)
+
+
+def _planets_without_orbit_controls(d):
+    """Planet targets of a tier npz whose orbit controls are missing: no plane with the planet's own position (ra10, dec10),
+    or a plane with that position where any of the controls (ctl_ra, ctl_dec) is not finite. [(name, why)]."""
+    import numpy as np
+    out = []
+    for t, name in enumerate(d['names']):
+        pos = np.isfinite(d['ra10'][t]) & np.isfinite(d['dec10'][t])
+        ctl = (np.isfinite(d['ctl_ra'][t]) & np.isfinite(d['ctl_dec'][t])).all(axis=0)
+        if not pos.any():
+            out.append((str(name), 'no plane with its own position'))
+        elif (pos & ~ctl).any():
+            out.append((str(name), '%d of %d planes with its position lack orbit controls' % (int((pos & ~ctl).sum()),
+                                                                                              int(pos.sum()))))
+    return out
+
+
 @content_test('photometry_tier_npz', 'TN1_shapes')
 def tn1(path, **ctx):
+    """The arrays of a tier npz and their shapes (T targets, N planes, nc controls). The planet sample
+    (photometry.PLANET_SAMPLE) also needs its own track (ra10, dec10) and ORBIT controls: ctl_kind 'orbit', ctl_ra / ctl_dec,
+    and every planet target controls at every plane where it has a position (a file of ring controls, or a target without
+    them, is refused and named)."""
     m = _NPZ_RE.match(os.path.basename(path))
     if not m:
         return False, None, 'file name is not forced_<sample>_<band>_<S>.npz'
@@ -650,16 +673,22 @@ def tn1(path, **ctx):
     nc = _cfg().photometry_measure.N_CONTROLS
     want = {'ra': (T,), 'dec': (T,), 'ring_beams': (T,), 'night': (N,), 'key': (N,), 'admitted': (N,),
             'val10': (T, nc + 1, N), 'rms10': (T, nc + 1, N)}
-    if m['smp'] == _cfg().photometry.PLANET_SAMPLE:
-        want.update(ra10=(T, N), dec10=(T, N))
-        if 'ctl_kind' in d:
-            want.update(ctl_ra=(T, nc, N), ctl_dec=(T, nc, N))
+    planet = m['smp'] == _cfg().photometry.PLANET_SAMPLE
+    if planet:
+        want.update(ra10=(T, N), dec10=(T, N), ctl_ra=(T, nc, N), ctl_dec=(T, nc, N))
     bad = ['%s %s != %s' % (k, None if k not in d else tuple(d[k].shape), v) for k, v in want.items()
            if k not in d or tuple(d[k].shape) != v]
+    if planet and str(d.get('ctl_kind', '')) != PLANET_CONTROLS:
+        bad.append('ctl_kind %r != %r (planet controls must follow the orbit)' % (str(d.get('ctl_kind', '(none)')),
+                                                                                  PLANET_CONTROLS))
     if not T or not N:
         bad.append('empty')
     if bad:
         return False, len(bad), _fmt(bad)
+    if planet:
+        no = _planets_without_orbit_controls(d)
+        if no:
+            return False, len(no), 'planet target(s) without orbit controls: ' + _fmt('%s (%s)' % x for x in no)
     return True, T, '%d targets x %d positions x %d planes' % (T, nc + 1, N)
 
 

@@ -124,3 +124,5 @@ jobs:
         run: python tests/test_install_release1_cards.py
       - name: TESS coverage in the snapshot and 10-minute serves (production's arguments, refusals, the tool's own counts)
         run: python tests/test_serve_tess.py
+      - name: tier npz content test TN1 refuses a planet file without orbit controls, naming the target
+        run: python tests/test_tier_npz_planets.py
