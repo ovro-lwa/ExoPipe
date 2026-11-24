@@ -162,7 +162,8 @@ def _publish_screen(cell, arch, run, qroot, meta):
     shutil.copy2(meta['screen'], dst + '.part')
     if md5(dst + '.part') != meta['screen_md5']:
         os.remove(dst + '.part'); raise RuntimeError(f'{cell}: published screen copy not verified (md5) - STOPPED')
-    os.replace(dst + '.part', dst); rec(cell, 'screen-published', meta['screen'], dst, meta['screen_md5'], os.path.getsize(dst))
+    from exopipe.phase3.core import placement      # the archive's group and ACL, not the copy2 source's (core/placement.py)
+    placement.replace(dst + '.part', dst, drop=True); rec(cell, 'screen-published', meta['screen'], dst, meta['screen_md5'], os.path.getsize(dst))
     _screen_row(sdir, dict(lst=lst, scope=scope, applied=1, status=meta['status'], n_anchors=meta['n_anchors'],
                            vlssr_med_before_arcmin=meta['med_before'], vlssr_med_after_arcmin=meta['med_after'],
                            heldout_resid_med_arcsec=meta['cv_resid_med_as'], anchor_off_med_arcsec=meta['anchor_off_med_as'],
@@ -385,6 +386,7 @@ def _finish(cell, gen, cdir, stg, staged, tgt, erows, efail, lst, scope, run, sm
     """Everything after the working-quarantine moves: install step a's renames, the set check, the epoch-gate record, b,
     c, d, e. Shared by install() and resume() (2026-10-05). old (resume state R2) = the archive files this attempt already
     quarantined: renames, record, b and the archive quarantine are done; the publish, audit and screen run."""
+    from exopipe.phase3.core import placement
     from exopipe.phase3.lib.masters import coadd as C, epoch_gate as EG
     fd, sd = f'{cdir}/coadd_final', f'{cdir}/subtracted'
     arch = C._archive_root(); qroot = f'{arch}/{QROOT_NAME}'
@@ -392,7 +394,7 @@ def _finish(cell, gen, cdir, stg, staged, tgt, erows, efail, lst, scope, run, sm
     if old is None:
         for c_, (d0, m0, s_) in sorted(staged.items()):
             d = f'{cdir}/{c_}'; os.makedirs(os.path.dirname(d), exist_ok=True)
-            os.replace(d0, d); rec(cell, 'installed', s_, d, m0, os.path.getsize(d))
+            placement.replace(d0, d); rec(cell, 'installed', s_, d, m0, os.path.getsize(d))   # group and ACL (core/placement.py)
         shutil.rmtree(stg)
         if sorted(_fits_under(cdir)) != sorted(tgt.values()):
             raise RuntimeError(f'{cell}: working tree after install != the generation file set - STOPPED')
