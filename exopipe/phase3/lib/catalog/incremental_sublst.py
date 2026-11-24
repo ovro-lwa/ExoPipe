@@ -40,13 +40,15 @@ first that does not end done stops the item):
   The grouping, builds and views of one item hold <grouping directory>/.night_items.lock (NightLock): an item of another
   hour waits up to catalog_sublst.NIGHT_LOCK_WAIT_S, then refuses (the grouping unit's own lock would refuse it at once).
 AN ITEM RUN AGAIN (a chain retry; the chain line passes --resume) runs the gate, then, with --resume, resumes at its first
-unit that does not stand: a unit stands when core/record.resume_check passes (its record is done, written from a clean
-tree, its recorded inputs, code and config unchanged, every output passing its content test now - night_grouping_record,
-catalog_view and hour_views_index fail once a later grouping run replaced the table they stand on). The units before it
-are recorded skipped-valid; every unit from it runs again (a night-pass stage through tier_sublst's own --stages gap
-check). The gate records the resume point (meta `resume`). Once the grouping holds the night from this directory, the
-night pass is never run again: the gate REFUSES an item run again without --resume, and one whose night-pass unit does
-not stand (re-running it would change rows the grouping holds; a grouped night is judged again only by the audit pass).
+unit that does not stand (resume_point): before the grouping holds the night, at the first night-pass stage not done (the
+tier's own --stages gap check, tier_sublst.check_from, vouches for the stage before and restores the files later stages
+rewrite in place), else at the grouping; once the grouping holds the night from this directory, the night pass is never
+run again and group, build, buildv, view are judged by core/record.resume_check (record done, clean tree, recorded inputs,
+code and config unchanged, outputs passing their content tests now - night_grouping_record, catalog_view and
+hour_views_index fail once a later grouping run replaced the table they stand on). The units before the resume point are
+recorded skipped-valid; the gate records it (meta `resume`). Without --resume the gate REFUSES a night the grouping
+already holds from this directory (re-running its night pass would change rows the grouping holds; a grouped night is
+judged again only by the audit pass).
 A night is never appended twice: the grouping run lists the night directory once (I-G4, _group).
 What the chain runs next for the tier: `pages --tier sublst --epochs {item}` (the pages of the night from this directory's
 index, lib/pages/tier_sublst.py) and `serve --tier sublst --epochs {item}` (the cumulative Run_SLSTB with its reuses and the
@@ -380,13 +382,32 @@ def item_units():
     return list(_ts().NIGHT_DEFAULT) + [STAGE_GROUP] + BUILD_STAGES.split(',')
 
 
-def resume_point(run, unit):
-    """Where an item run again with --resume resumes: (the first unit of item_units() whose record does not stand under
-    core/record.resume_check (None: every one stands), why, [(unit stage, why) of the units before it, which stand]). A
-    unit stands when its record is done, written from a clean tree, and its recorded inputs, code, config and outputs'
-    content tests pass now; every unit from the first that does not stand runs again."""
+def resume_point(run, unit, out, grouped):
+    """Where an item run again with --resume resumes: (the first unit of item_units() that runs again (None: none), why,
+    [(unit stage, why) of the units before it, recorded skipped-valid]).
+    - The night pass's stages are judged by their records' status (done), as the tier's own --from / --stages gap check
+      does (tier_sublst.check_from, which also restores the files later stages rewrite in place, master_catalog.csv among
+      them: a stage's recorded input changes by design, so core/record.resume_check cannot judge these stages). Once the
+      grouping holds the night from this directory (``grouped``), the night pass is never judged again: its stages must
+      all be done (else the item REFUSES) and stand for the rows the grouping took.
+    - group, build, buildv, view stand when core/record.resume_check passes (record done, clean tree, recorded inputs,
+      code and config unchanged, outputs passing their content tests now: a later grouping run fails them)."""
+    rec = _rec()
     stood = []
-    for s in item_units():
+    for s in _ts().NIGHT_DEFAULT:
+        r = rec.load_record(out, run.step, f'{unit}.{s}')
+        st = (r or {}).get('status')
+        if st != 'done':
+            if grouped:
+                raise rec.Refusal(f'--resume: the grouping holds the night from {out}, but its night-pass unit '
+                                  f'{unit}.{s} is {st or "unrecorded"}: the directory does not hold the night pass the '
+                                  f'grouping took')
+            return s, f'{unit}.{s} is {st or "unrecorded"}', stood
+        stood.append((s, 'the grouping holds the night from this directory: the night pass is not run again' if grouped
+                      else 'record done (the next stage\'s --stages gap check vouches for its outputs)'))
+    for s in [STAGE_GROUP] + BUILD_STAGES.split(','):
+        if s == STAGE_GROUP and not grouped:
+            return s, 'the grouping does not hold the night yet', stood
         ok, why = run.resume_check(f'{unit}.{s}', inputs=None, admitted=None)
         if not ok:
             return s, why, stood
@@ -475,18 +496,14 @@ def run(args, run, epochs):
                        f'directory of {lst}: {st["frozen_from"]}')
         # an item run again: the grouping may already hold the night from this directory (an earlier attempt grouped it)
         grouped = any(L == lst and D == _real(out) for L, D in st['nights_before'])
-        start, why, stood = resume_point(run, unit) if run.resume else (TS.NIGHT_DEFAULT[0], 'no --resume', [])
-        u.meta['resume'] = dict(start=start, why=why, standing=[s for s, _w in stood], grouped=grouped)
         if grouped and not run.resume:
             u.refuse(f'the 10-minute grouping {gdir} already holds the night {night} of {lst} from this directory {out} '
                      f'(an earlier attempt of the item grouped it): run the item with --resume (the chain line does), which '
                      f'continues at its first unit that does not stand; a night pass run again over a grouped night would '
-                     f'change rows the grouping holds')
-        if grouped and start in TS.NIGHT_DEFAULT:
-            u.refuse(f'--resume: the night pass unit {unit}.{start} does not stand ({why}), but the 10-minute grouping {gdir} '
-                     f'already holds the night {night} of {lst} from this directory: a night pass run again would change '
-                     f'rows the grouping holds. A grouped night is judged again only by the audit pass (ruling 4 of '
+                     f'change rows the grouping holds (a grouped night is judged again only by the audit pass, ruling 4 of '
                      f'R-GREGG-20261112-PER-HOUR-STEPS-SIX-RULINGS, not built)')
+        start, why, stood = resume_point(run, unit, out, grouped) if run.resume else (TS.NIGHT_DEFAULT[0], 'no --resume', [])
+        u.meta['resume'] = dict(start=start, why=why, standing=[s for s, _w in stood], grouped=grouped)
         p = os.path.join(out, GATE_RECORD)
         rec.atomic_write_json(p, st)
         u.meta['frozen_state'] = dict(frozen_from=st['frozen_from'], grouping_dir=st['grouping_dir'], scope=st['scope'],

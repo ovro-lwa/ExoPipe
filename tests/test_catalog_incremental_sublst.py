@@ -461,7 +461,7 @@ class _ResumeRun:
     """A run whose resume_check answers from a table {unit: (ok, why)} (units absent: no record)."""
 
     def __init__(self, table):
-        self.table, self.units = table, []
+        self.table, self.units, self.step = table, [], 'catalog'
         self.resume = True
 
     def resume_check(self, unit, inputs=None, admitted=None):
@@ -473,36 +473,55 @@ class _ResumeRun:
         return u
 
 
+def _stage_records(out, unit, stages, status='done'):
+    for s in stages:
+        p = record.record_path(out, 'catalog', f'{unit}.{s}')
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, 'w') as f:
+            json.dump({'unit': f'{unit}.{s}', 'status': status}, f)
+
+
 def test_a_retried_item_resumes_at_its_first_unit_that_does_not_stand():
-    """resume_point: the first of the night pass's stages, group, build, buildv, view whose record does not stand; the
-    units before it are recorded skipped-valid. A grouped night is never passed again: without --resume the gate refuses,
-    and with --resume it refuses when a night-pass unit does not stand."""
+    """resume_point. Before the grouping holds the night: the first night-pass stage not done (the tier's --stages gap
+    check vouches for the one before and restores in-place files; resume_check cannot judge these stages, whose recorded
+    master_catalog.csv later stages rewrite), else the grouping. Once it holds the night: the night pass is never run
+    again (its stages must all be done, else REFUSED), and group, build, buildv, view are judged by resume_check. The units
+    before the resume point are recorded skipped-valid. Without --resume the gate refuses a grouped night."""
     u = f'{LST}_{ARM}'
     units = INC.item_units()
-    assert units[:len(TS.NIGHT_DEFAULT)] == list(TS.NIGHT_DEFAULT) and units[len(TS.NIGHT_DEFAULT):] == ['group', 'build',
-                                                                                                       'buildv', 'view']
-    stand = {f'{u}.{s}': (True, 'current') for s in units[:units.index('view')]}
-    r = _ResumeRun(stand)
-    start, why, stood = INC.resume_point(r, u)
+    nd = list(TS.NIGHT_DEFAULT)
+    assert units[:len(nd)] == nd and units[len(nd):] == ['group', 'build', 'buildv', 'view']
+    out = tmp('resume_out')
+    r = _ResumeRun({})
+    assert INC.resume_point(r, u, out, False)[:2] == (nd[0], f'{u}.{nd[0]} is unrecorded')
+    _stage_records(out, u, nd[:3])
+    start, why, stood = INC.resume_point(r, u, out, False)
+    assert start == nd[3] and [s for s, _ in stood] == nd[:3], (start, why, stood)
+    _stage_records(out, u, nd)
+    assert INC.resume_point(r, u, out, False)[:2] == ('group', 'the grouping does not hold the night yet')
+    stand = {f'{u}.{s}': (True, 'current') for s in ('group', 'build', 'buildv')}
+    r = _ResumeRun(stand)                                                    # grouped: resume_check from the grouping on
+    start, why, stood = INC.resume_point(r, u, out, True)
     assert start == 'view' and why == 'no record' and [s for s, _ in stood] == units[:-1], (start, why, stood)
+    assert 'not run again' in stood[0][1]
     INC._skip(r, u, stood, lst=LST)
     assert [x.status for x in r.units] == ['skipped-valid'] * (len(units) - 1)
-    r = _ResumeRun({**stand, f'{u}.view': (True, 'current')})
-    assert INC.resume_point(r, u)[0] is None
-    r = _ResumeRun({**stand, f'{u}.fitpos': (False, 'output changed')})
-    assert INC.resume_point(r, u)[:2] == ('fitpos', 'output changed')
+    assert INC.resume_point(_ResumeRun({**stand, f'{u}.view': (True, 'current')}), u, out, True)[0] is None
+    assert INC.resume_point(_ResumeRun({f'{u}.group': (False, 'output changed')}), u, out, True)[:2] == ('group',
+                                                                                                          'output changed')
+    _stage_records(out, u, nd[5:6], status='refused')
+    msg = raises(record.Refusal, INC.resume_point, _ResumeRun(stand), u, out, True)
+    assert f'{u}.{nd[5]} is refused' in msg, msg
     # the gate on a night the grouping already holds from this directory
     g, out, F, _p = _night_records('regate')
     argv = ['--tier', 'sublst', '--incremental', '--epochs', f'{LST}_{NIGHT}', '--sublst-grouping', g,
             '--sublst-view-hours', LST]
     _a, r, rc, txt = _run(out, argv)
-    assert [x.status for x in r.units] == ['refused'] and 'run the item with --resume' in r.units[0].reason, \
-        [(x.name, x.status, x.reason) for x in r.units]
-    assert r.units[0].meta['resume']['grouped'] is True
-    _a, r, rc, txt = _run(out, argv + ['--resume'])
-    assert [x.status for x in r.units] == ['refused'] and 'night pass unit' in r.units[0].reason \
+    assert [x.status for x in r.units] == ['refused'] and 'run the item with --resume' in r.units[0].reason \
         and 'audit pass' in r.units[0].reason, [(x.name, x.status, x.reason) for x in r.units]
-    assert r.units[0].meta['resume']['start'] == TS.NIGHT_DEFAULT[0]
+    _a, r, rc, txt = _run(out, argv + ['--resume'])
+    assert [x.status for x in r.units] == ['refused'] and f'{u}.{nd[0]} is unrecorded' in r.units[0].reason, \
+        [(x.name, x.status, x.reason) for x in r.units]
 
 
 def test_the_pages_of_the_item_come_from_its_night_directory():
