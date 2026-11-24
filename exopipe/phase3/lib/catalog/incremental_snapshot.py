@@ -1057,7 +1057,7 @@ def run(args, run, epochs=None):
                         u.meta['plan'] = plan_lines
                         st.close()
                 status = u.status if not u.reason else '%s (%s)' % (u.status, u.reason[:200])
-            if ctx.dry and status != 'planned':
+            if ctx.dry and status not in ('planned', 'done by production'):     # those two printed above
                 print('[%s]\n  %s' % (name, status))
         if 'associate' in phases:
             name = '%s.associate.%s' % (UNIT, cell)
