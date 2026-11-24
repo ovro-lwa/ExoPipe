@@ -394,22 +394,29 @@ class runner(_Section):
                   # A subband the admission left out and a group the band rule leaves without a window end no-input
                   # or have no unit: the chain goes on. A night that IS in the window Masters (per subband; a group when
                   # any member subband is) ends these steps no-input and the chain goes on: its 10-minute products are
-                  # the batch chain 'sublst-lst''s (Gregg 2026-11-13). `catalog --tier sublst --incremental` has no path
-                  # yet (catalog_incremental.TIERS = ('deep',)): it refuses every night, and the item stops there.
+                  # the batch chain 'sublst-lst''s (Gregg 2026-11-13). `catalog --tier sublst --incremental` (lib/catalog/
+                  # incremental_sublst.py): a gate on the frozen all-nights state (it REFUSES, and the item stops, until the
+                  # first all-nights design-B pass has written it; no-input when the night is in that pass), the night
+                  # pass, the incremental grouping with the night, the delta builds and views (design 2.2a, 2.3a stage 1-2).
                   'frames --tier sublst --stages nonmember-list,stack,nonmember --epochs {item}',
                   'flow --tier sublst --stages refine-nonmember --epochs {item}',
                   'frames --tier sublst --stages wideband,tree-nonmember --epochs {item}',
                   'search --tier sublst --epochs {item}',
-                  'catalog --tier sublst --incremental --epochs {item}',
-                  # the rest of the 10-second tier. Its catalog step, like the 10-minute one, refuses every night until the
-                  # tier has an incremental path (plan/PER_HOUR_GAP_DESIGNS_20261111.md 2.2); without --incremental it was a
-                  # usage error (exit 1, a failed item, not a refusal): steps/catalog.py takes --epochs only with it
+                  'catalog --tier sublst --incremental --resume --epochs {item}',
+                  # the rest of the 10-second tier. Its catalog step refuses every night until the tier has an incremental
+                  # path (plan/PER_HOUR_GAP_DESIGNS_20261111.md 2.2); without --incremental it was a usage error (exit 1, a
+                  # failed item, not a refusal): steps/catalog.py takes --epochs only with it
                   'search --tier snapshot --epochs {item}',
                   'curves --tier snapshot --epochs {item}',
                   'catalog --tier snapshot --incremental --epochs {item}',
                   'forced --tier snapshot --epochs {item}',
                   'pages --run {deep_run} --epochs {item}',
                   'serve --run {deep_run} --epochs {item}',
+                  # the 10-minute pages of the night (every hour its catalog pass viewed; no-input when that pass ended
+                  # no-input) and the cumulative Run_SLSTB re-served from the placed hour runs with its reuses (design 2.3a
+                  # stages 3 and 4); after the deep tier's, so a 10-minute refusal never holds the deep pages back
+                  'pages --tier sublst --epochs {item}',
+                  'serve --tier sublst --epochs {item}',
                   'archive push --epochs {item}'],
         # survey build of one deep cell (item kind: cell 04h_Full); dewarp (per LST) and install follow separately
         'deep-build-cell': ['masters --tier deep --stages stage-in --cells {item}',

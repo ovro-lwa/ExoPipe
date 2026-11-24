@@ -1,6 +1,10 @@
 """Sub-LST tier of `exopipe3 pages` (production: the page part of ops/sublst_publish_lst.sh and ops/sublst_pages_build.sh).
 
-Unit of work: one LST hour (item kind `lst`, core.cells.parse_lst; per-hour use: the LSTs of the --epochs items).
+Unit of work: one LST hour (item kind `lst`, core.cells.parse_lst). Per hour (the chain's `pages --tier sublst --epochs
+<LST>_<date>`, ONE item, no --lsts / --sublst-night-dir / --sublst-catalog-dir): the pages of that night, i.e.
+--sublst-night-dir pages_sublst.NIGHT_DIR of the item (the directory `catalog --tier sublst --incremental` wrote) for every
+hour its pass viewed, with --sublst-base-runs pages_sublst.NIGHT_BASE_RUNS (the placed page runs); exit 3 (no-input) when that
+catalog pass ended no-input. With --lsts or --sublst-night-dir, --epochs only adds its LSTs.
 Units <LST>:prep, <LST>:input, <LST>:build, <LST>:index:<K>, <LST>:place. Page run P = <out>/Run_SLST<hh>B (production
 /fast/gh/main/phase3/sublst_pages/Run_SLST<hh>B on the publish host, then rsync'ed to the review host). No fingerprint skip in
 this tier (every block renders every publish, as today: sublst_pages_build.sh:9 wipes candidates/).
@@ -112,14 +116,33 @@ def context(args, run):
     lsts = []
     if getattr(args, 'lsts', None):
         lsts = [cells.parse_lst(x) for x in cells.expand(args.lsts, universe=cells.LSTS, kind='LST')]
-    for lst, _d in common.epochs_of(args):
-        if lst not in lsts:
-            lsts.append(lst)
+    nd, c.item = getattr(args, 'sublst_night_dir', None), None
+    eps = common.epochs_of(args)
+    if eps and not (nd or lsts or getattr(args, 'sublst_catalog_dir', None)):
+        # THE PER-HOUR CHAIN'S ITEM (runner.CHAINS['epoch']): the pages of the night whose `catalog --tier sublst
+        # --incremental` pass wrote its own directory (pages_sublst.NIGHT_DIR), for every hour that pass viewed
+        if len(eps) != 1:
+            raise common.Refusal(f'P18 pages of a night: ONE --epochs item <LST>_<date> per invocation (got {len(eps)}): '
+                                 f'each item is one night pass\'s directory')
+        c.item = eps[0]
+        K = common.CFG().catalog_sublst
+        if (S.NIGHT_DIR, S.ARM) != (K.NIGHT_DIR, K.ARM):
+            raise common.Refusal(f'P18 pages of a night: pages_sublst.NIGHT_DIR / ARM ({S.NIGHT_DIR}, {S.ARM}) differ from the '
+                                 f'catalog\'s catalog_sublst.NIGHT_DIR / ARM ({K.NIGHT_DIR}, {K.ARM}): set both alike')
+        nd = night_item_dir(*c.item)
+    else:
+        for lst, _d in eps:
+            if lst not in lsts:
+                lsts.append(lst)
     c.night_dir, c.views, c.not_viewed = None, {}, []
-    if getattr(args, 'sublst_night_dir', None):
-        c.night_dir = os.path.abspath(args.sublst_night_dir)
+    if nd:
+        c.night_dir = os.path.abspath(nd)
         ixp = os.path.join(c.night_dir, S.NIGHT_INDEX)
         if not os.path.isfile(ixp):
+            why = catalog_no_input(c.night_dir, *c.item) if c.item else ''
+            if why:
+                raise common.NoInput(f'{c.item[0]}_{c.item[1]}: the night pass {c.night_dir} ended no-input ({why}): no page '
+                                     f'run to make')
             raise common.Refusal(f'P18 pages of a night: {c.night_dir} holds no {S.NIGHT_INDEX} (the stage view of `catalog '
                                  f'--tier sublst` writes it)')
         with open(ixp) as f:
@@ -129,7 +152,10 @@ def context(args, run):
             lsts = sorted(L for L, e in c.views.items() if e.get('kind') == 'view' and e.get('written_here'))
             if not lsts:
                 raise common.NoInput(f'{c.night_dir}: the night pass wrote no view root (no hour changed): no page run to make')
-    c.base_runs = os.path.abspath(args.sublst_base_runs) if getattr(args, 'sublst_base_runs', None) else None
+    base = getattr(args, 'sublst_base_runs', None)
+    if not base and c.item:                       # the per-hour item: the placed page runs the cumulative serves (serve's lst_run)
+        base = S.NIGHT_BASE_RUNS.format(transients_root=common.CFG().paths.TRANSIENTS_ROOT)
+    c.base_runs = os.path.abspath(base) if base else None
     c.catalog_dir = os.path.abspath(args.sublst_catalog_dir) if getattr(args, 'sublst_catalog_dir', None) else None
     if c.catalog_dir and (c.night_dir or len(lsts) != 1 or not os.path.isdir(c.catalog_dir)):
         raise common.Refusal(f'P18: --sublst-catalog-dir names the catalog directory of ONE LST hour ({len(lsts)} given), is not '
@@ -147,6 +173,31 @@ def context(args, run):
     c.place_target = getattr(args, 'sublst_place_target', None)
     c.tree, c.tree_err = frozen_tree(c.roots)
     return c
+
+
+def night_item_dir(lst, night):
+    """The night pass's directory of one per-hour item (pages_sublst.NIGHT_DIR, a copy of catalog_sublst.NIGHT_DIR that
+    context() checks: as `catalog --tier sublst --incremental` writes it)."""
+    cfg = common.CFG()
+    S = cfg.pages_sublst
+    return S.NIGHT_DIR.format(transients_root=cfg.paths.TRANSIENTS_ROOT, lst=lst, arm=S.ARM, night=night)
+
+
+def catalog_no_input(night_dir, lst, night):
+    """The reason the item's catalog pass ended no-input ('' = it did not): its gate found the night in the all-nights
+    directory, or its merge found no row of the night (lib/catalog/incremental_sublst.py). Read from the pass's unit records."""
+    from exopipe.phase3.core import record
+    unit = f'{lst}_{common.CFG().pages_sublst.ARM}'
+    for st in ('frozen-state', 'merge'):
+        p = record.record_path(night_dir, 'catalog', f'{unit}.{st}')
+        try:
+            with open(p) as f:
+                r = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if r.get('status') == 'no-input':
+            return f'{unit}.{st}: {(r.get("reason") or "")[:300]}'
+    return ''
 
 
 def P_of(c, lst):

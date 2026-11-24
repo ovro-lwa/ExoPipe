@@ -235,6 +235,15 @@ class pages_sublst(_Section):
     # the view root's reference-tie table (DECISION-20261114-PR50-VIEW-CARRIES-ITS-REFERENCE-TIE-TABLE): prep's copy of
     # tie_members.csv reads it (wraps/prep_catalog.py); an annotation, so a view without one is not refused; sublst_pages_prep.py:46
     NIGHT_TIE = 'tie_members.csv'
+    # the earlier page runs a per-hour item's pages of a night carry unchanged blocks from (`pages --tier sublst --epochs
+    # <LST>_<date>` without --sublst-base-runs): the placed runs Run_SLST<hh>B the cumulative serve reads (lib/serve
+    # sublst lst_run; PLACE_TARGET's directory). NEW, refactor chat 2026-11-24
+    NIGHT_BASE_RUNS = '{transients_root}'
+    # the night pass's directory of a per-hour item, as `catalog --tier sublst --incremental` writes it: a COPY of
+    # catalog_sublst.NIGHT_DIR with {arm} = ARM (the pages step does not declare the catalog's config sections, so a change
+    # of the catalog's does not re-render every deep page under --resume); a per-hour pages run REFUSES when the two
+    # differ (P18). NEW, refactor chat 2026-11-24
+    NIGHT_DIR = '{transients_root}/sublst_nights/{lst}_{arm}/{night}'
     PREP_SHA1 = ('38da7a8723f0a789f799b021b71c82bf913497cb',   # sublst_pages_prep.py of the frozen trees up to 2026-11-13 (path-normalized sha1)
                  '187acd897b30e8f5ce6c189fc4a8bc6ca0e838d4')   # live exopipe_ops since 2026-11-13 (tie_members.csv travels with the pages)
     RULED = {'SERVED_CATALOG_TAG': 'R-SUBLST-FORCED-SKIP-V110-AND-LEAK-VETO',

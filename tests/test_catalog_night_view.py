@@ -328,12 +328,16 @@ def test_wiring():
           "os.path.exists(f'{d}/{DB.DELTA_RECORD}')" in od and "os.path.exists(f'{d}/{DELTA_STARTED}')" in od and 'refuse(' in od
           and bd.index('_own_delta(d, ') < bd.index('shutil.rmtree(d)')
           and bd.index('os.makedirs(d)') < bd.index("open(f'{d}/{DELTA_STARTED}', 'w')") < bd.index('res = call(')
-          and bd.index('content test failed') < bd.index("os.remove(f'{d}/{DELTA_STARTED}')") < bd.index('built.append(d)'))
+          and bd.index('content test failed') < bd.index("os.remove(f'{d}/{DELTA_STARTED}')") < bd.index('built.append((d, '))
     check('wiring: every delta catalog is content-tested on the night\'s own selected rows, recorded as a check, and a failed '
           'test refuses',
           "mine_c = set(m['appended'])" in bd and "DB.content_test(d, sorted(mine_c), vetoed=asm['vetoed'])" in bd and "s.u.check(f'delta.content.{name}', ok" in bd
           and bd.index('DB.content_test(') < bd.index("content test failed") < bd.index('DB.write_inputs(')
-          < bd.index('built.append(d)'))
+          < bd.index('built.append((d, '))
+    check('wiring: each delta catalog directory is content-tested (source_catalog) against the selection its build read, '
+          'which holds the earlier nights\' members of a touched identity, not against the night\'s own selected rows',
+          "built.append((d, os.path.join(B, DB.SELECTED.format(key=k))))" in bd
+          and "s.out(d, 'source_catalog', run_dir=U, selection=sel)" in bd)
     check('wiring: the delta build writes no rejected-source record and no localization, and assigns nothing outside the '
           'night\'s directory',
           'emit_rejected_record' not in bd and 'build_localizations' not in bd and "f'{root}/source_catalogs_{tag}_{k}'" in bd

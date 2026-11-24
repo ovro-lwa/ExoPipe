@@ -4,6 +4,10 @@ fork, identity, localizations, names (deep); the sub-LST catalogue chain; the sn
 Use (per hour vs intermittent, DESIGN 12):
   per hour      exopipe3 catalog --incremental --epochs 04h_2025-10-14     add one hour's detections to the cumulative
                 deep catalogue (lib/catalog/incremental.py); snapshot: the batch chain per LST x night
+                exopipe3 catalog --tier sublst --incremental --epochs 17h_2025-05-08   the 10-minute tier of ONE night of
+                one LST hour on the frozen all-nights state: a gate on that state, the night pass, the incremental
+                grouping with the night, the delta builds and the catalog views (lib/catalog/incremental_sublst.py;
+                --out = the night's directory, catalog_sublst.NIGHT_DIR)
   intermittent  exopipe3 catalog --tier deep --run P3S5                     the full deep publish pass, preflight..fork
                 exopipe3 forced --tier deep --run P3S5 ...                  forced photometry into the tier catalogues
                 exopipe3 catalog --tier deep --run P3S5 --from union        union, identity, localizations, transient list
@@ -148,7 +152,8 @@ def add_arguments(p):
     g.add_argument('--until', dest='until_stage', metavar='STAGE', help='last stage of the range')
     g.add_argument('--incremental', action='store_true',
                    help='per-hour mode: add the --epochs (<LST>_<date>) to the cumulative deep catalogue '
-                        '(lib/catalog/incremental.py; results equal a full rebuild over the same epochs)')
+                        '(lib/catalog/incremental.py; results equal a full rebuild over the same epochs); --tier sublst: '
+                        'ONE night of one LST hour on the frozen all-nights state (lib/catalog/incremental_sublst.py)')
     d = p.add_argument_group('tier deep')
     d.add_argument('--parents', '--deep-parents', dest='deep_parents', default='snapshot', metavar='DIR|snapshot',
                    help="parent-catalogue directory passed to every stage as P3_PARENT_DIR (as the pass exports it); "
@@ -181,6 +186,9 @@ def add_arguments(p):
 
 def default_out(args):
     from exopipe.phase3.config import CFG
+    if getattr(args, 'incremental', False) and args.tier == 'sublst':
+        from exopipe.phase3.lib.catalog import incremental_sublst      # the night's own directory (catalog_sublst.NIGHT_DIR)
+        return incremental_sublst.default_out(args)
     if getattr(args, 'incremental', False):
         inc = _incremental_module()
         if inc is not None and hasattr(inc, 'default_out'):
@@ -208,6 +216,9 @@ def run(args, run):
         except ValueError as e:
             print(f'error: {e}', file=sys.stderr)
             return record.EXIT_ERROR
+        if args.tier == 'sublst':                  # one night of one LST hour (lib/catalog/incremental_sublst.py)
+            from exopipe.phase3.lib.catalog import incremental_sublst
+            return incremental_sublst.run(args, run, epochs)
         inc = _incremental_module()
         if inc is None or not hasattr(inc, 'run_incremental'):
             print(f'catalog --incremental: lib/catalog/incremental.py not available '

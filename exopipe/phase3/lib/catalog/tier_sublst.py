@@ -64,10 +64,13 @@ Failure modes (exit 2, gate named in the record): S-G1..S-G22 and S-G24, S-G25 (
          (its last machine line recorded); a [lit] key whose module literal differs from config; a module switch set in this
          process environment that would leak into the children; a missing shared config key (named). Exit 1 = error.
 Per-hour vs intermittent: per LST once its search is complete (DESIGN 12.1: the sub-LST per-hour chain runs `catalog` after
-         `search`). `--incremental` (one epoch into the cumulative catalog) is NOT implemented for this tier.
+         `search`). `--incremental --epochs <LST>_<date>` (the per-hour chain's item) runs this module's night pass, the
+         grouping's incremental run with the night and the night's builds and views, behind a gate on the frozen state
+         (lib/catalog/incremental_sublst.py).
          PER-HOUR NIGHT PASS (`--sublst-night YYYY-MM-DD --sublst-frozen-from <LST-wide catalog directory> --out <the
-         night's own directory>`; Gregg 2026-11-12, R-GREGG-20261112-PER-HOUR-STEPS-SIX-RULINGS (1), (2)): the stages
-         preflight to veto on ONE night's rows. The merge reads a night view of the search jobs (lib/catalog/night_view.py:
+         night's own directory>`, never an LST-wide one: night_out_refusal; its side files always under <out>/_side;
+         Gregg 2026-11-12, R-GREGG-20261112-PER-HOUR-STEPS-SIX-RULINGS (1), (2)): the stages preflight to veto on ONE
+         night's rows. The merge reads a night view of the search jobs (lib/catalog/night_view.py:
          the cumulative record files cut to the night's windows), never the jobs themselves; the conformance takes the
          bright-parent table's noise from the LST-wide pass's record (conform_table_noise.csv) and, for its pulsar step,
          the other nights' detections near ATNF pulsars from the LST-wide pass's second record
@@ -642,6 +645,38 @@ def default_out(args):
     return os.path.join(c.CAT_ROOT, f'catalog_{sfx_of(lst, arm)}')
 
 
+def night_out_refusal(out, lst, arm, unit):
+    """Why ``out`` may not be a night pass's directory ('' = it may). A night's pass writes its own directory, never an
+    LST-wide one: not under production's LST-wide catalog root catalog_sublst.CAT_ROOT (the catalog, collect and state
+    directories of the LST chains), not the hour's published run, and not a directory holding the record of a stage that only
+    an LST-wide pass runs (STAGES outside NIGHT_STAGES). A directory under another production root is allowed (the per-hour
+    chain's catalog_sublst.NIGHT_DIR); the CLI refuses every production root while paths.PRODUCTION_WRITES is False."""
+    cfg = _cfg()
+    real = os.path.realpath(out)
+
+    def under(root):
+        r = os.path.realpath(root)
+        return real == r or real.startswith(r.rstrip('/') + '/')
+    if under(cfg.catalog_sublst.CAT_ROOT):
+        return f'--out {out} is under catalog_sublst.CAT_ROOT {cfg.catalog_sublst.CAT_ROOT} (the LST chains\' own directories)'
+    run = os.path.join(cfg.paths.TRANSIENTS_ROOT, cfg.catalog_omission.TENMIN_RUN.format(hh=lst[:2], arm=arm))
+    if real == os.path.realpath(run):
+        return f'--out {out} is the published run of {lst}'
+    wide = []
+    for s in STAGES:                     # a stage record without the night in its meta (night_meta) is an LST-wide pass's
+        r = stage_record(out, f'{unit}.{s}')
+        if r is not None and (s not in NIGHT_STAGES or not (r.get('meta') or {}).get('night')):
+            wide.append(s)
+    if wide:
+        return f'--out {out} holds records of the LST-wide stage(s) {", ".join(wide)} of {unit}'
+    return ''
+
+
+def night_meta(ctx):
+    """The unit meta of a night pass's stage: its night (night_out_refusal tells a night pass's records by it)."""
+    return {'night': ctx.night} if ctx.night else {}
+
+
 class Ctx:
     """Everything one LST's chain needs (paths as sublst_catalogs.sh:20-30 builds them)."""
 
@@ -679,7 +714,10 @@ class Ctx:
             foot = foot.replace('_{lst}', '')
         self.foot = foot.format(lst=self.lst)
         self.U = os.path.abspath(run.out_root)
-        self.prod = cfg.production_root_of(self.U) is not None
+        # a NIGHT pass never uses production's LST-wide side paths (collect_/state_<SFX>, compare_<LST>, the ops logs), also
+        # when its own directory is under a production root (the per-hour chain's catalog_sublst.NIGHT_DIR): they belong to
+        # the hour's LST-wide pass
+        self.prod = cfg.production_root_of(self.U) is not None and not arg(args, 'sublst_night')
         ops_state = cfg.paths.OPS_ROOT
         # node-local and ops-side paths: production's in production; under <out>/_side otherwise (never outside --out: the
         # merge's collect layout and state copy, the compare copy, the lock, the logs production keeps in ops)
@@ -696,7 +734,10 @@ class Ctx:
             self.coll = os.path.join(side, f'collect_{self.sfx}')
             self.state = os.path.join(side, f'state_{self.sfx}')
             self.cmp_new = os.path.join(side, f'compare_{self.lst}', f'new_{self.arm}')
-            self.lock = os.path.join(side, 'sublst_heavy.lock')
+            # a night pass under a production root (the per-hour chain) shares the node's heavy-stage lock with the
+            # production LST-wide passes (review of PR 161, finding 1); any other non-production run keeps its own
+            self.lock = (os.path.join(os.path.dirname(c.CAT_ROOT), 'sublst_heavy.lock')
+                         if cfg.production_root_of(self.U) is not None else os.path.join(side, 'sublst_heavy.lock'))
             self.scratch = os.path.join(arg(args, 'work', default=side), f'catalog_sublst_{self.unit}_scratch')
             self.chain_log = os.path.join(side, f'sublst_catalog_chain_{self.sfx}.log')
             self.pcheck_txt = os.path.join(side, f'sublst_parentcheck_{self.lst}.txt')
@@ -708,9 +749,10 @@ class Ctx:
         if self.night:
             if not re.match(r'^\d{4}-\d\d-\d\d$', self.night):
                 raise SystemExit(f'error: --sublst-night {self.night!r} is not YYYY-MM-DD')
-            if self.prod:
-                raise SystemExit(f'error: --sublst-night: --out {self.U} is a production root; a night\'s pass writes its own '
-                                 f'directory, never an LST-wide catalog directory (give --out)')
+            why = night_out_refusal(self.U, self.lst, self.arm, self.unit)
+            if why:
+                raise SystemExit(f'error: --sublst-night: {why}; a night\'s pass writes its own directory, never an LST-wide '
+                                 f'catalog directory (give --out)')
             if not self.frozen_from:
                 raise SystemExit('error: --sublst-night needs --sublst-frozen-from <the LST-wide catalog directory>: its '
                                  'conform_table_noise.csv and conform_pulsar_evidence.csv are the frozen records the '
@@ -1982,13 +2024,13 @@ def _build_delta(ctx, s, plan, tag):
                 refuse(f'S-G18 delta build {L} {k} ({tag}): content test failed: {detail}')
             os.remove(f'{d}/{DELTA_STARTED}')
             DB.write_inputs(d, L, k, tag, FL, nights, asm['digest'][k])
-            built.append(d)
+            built.append((d, os.path.join(B, DB.SELECTED.format(key=k))))
     if not built:
         raise _record().NoInput(f'night {ctx.night} ({tag}): no delta build owed in any hour or key')
     ctx.log.say(f'delta source catalogs ({tag}) complete: {len(built)} key(s) in '
-                f'{len({os.path.dirname(d) for d in built})} hour(s)')
-    for d in built:
-        s.out(d, 'source_catalog', run_dir=U)
+                f'{len({os.path.dirname(d) for d, _ in built})} hour(s)')
+    for d, sel in built:                           # members are rows of the BUILD's selection: a touched identity keeps its
+        s.out(d, 'source_catalog', run_dir=U, selection=sel)   # earlier nights' members (not rows of the night's own file)
 
 
 def st_view(ctx, s, plan):
@@ -2542,7 +2584,8 @@ def run(args, run):
         if not sel:
             raise SystemExit(f'error: --sublst-night: no stage selected (stages {", ".join(NIGHT_STAGES)})')
     first = chain.index(sel[0])
-    where = 'production' if ctx.prod else 'non-production; side files under ' + os.path.join(ctx.U, '_side')
+    where = ('production' if ctx.prod else ('night pass' if ctx.night else 'non-production') + '; side files under '
+             + os.path.join(ctx.U, '_side'))
     print(f'catalog --tier sublst {ctx.unit}: U={ctx.U} ({where}); label {ctx.label}; tree {ctx.tree}; code {ctx.ops}, '
           f'{ctx.clv}; stages {",".join(sel)}'
           + (f'; NIGHT PASS {ctx.night}, frozen statistics from {ctx.frozen_from}' if ctx.night else ''), file=sys.stderr)
@@ -2568,13 +2611,13 @@ def run(args, run):
         if not ok:
             ctx.chainlog.say('REFUSING: no memory headroom (see MEM-GATE)')
             lock.close()
-            with run.unit(f'{ctx.unit}.{sel[0]}', tier=TIER, lst=ctx.lst, arm=ctx.arm, stage=sel[0]) as u:
+            with run.unit(f'{ctx.unit}.{sel[0]}', tier=TIER, lst=ctx.lst, arm=ctx.arm, stage=sel[0], **night_meta(ctx)) as u:
                 u.refuse(f'S-G3 memory: {line or "node_mem_gate.sh refused"}')
             return None
     ctx.chainlog.say(f'CHAIN-START arm {ctx.arm} lst {ctx.lst} (exopipe3 catalog --tier sublst; stages {",".join(sel)})')
     try:
         for name in sel:
-            with run.unit(f'{ctx.unit}.{name}', tier=TIER, lst=ctx.lst, arm=ctx.arm, stage=name) as u:
+            with run.unit(f'{ctx.unit}.{name}', tier=TIER, lst=ctx.lst, arm=ctx.arm, stage=name, **night_meta(ctx)) as u:
                 st = Stage(ctx, name, u)
                 i_ = chain.index(name)
                 if name != sel[0] and chain[i_ - 1] not in sel:

@@ -700,7 +700,11 @@ def source_catalogue_dir(path, **ctx):
     """ops/build_source_catalogs_v3.py output on content: per band, survivors with unique source_id, sorted by
     |best_snr|, each at or above SURVIVOR_SNR or promoted, on the sky, each with >= 1 member; one Stokes per directory
     (M1: the selection the members come from holds one Stokes, and every member is one of its rows); no member on an
-    epoch data_decisions excludes now (by the member's selection row); gate-7-8 removals at 7 <= |SNR| < 8."""
+    epoch data_decisions excludes now (by the member's selection row); gate-7-8 removals at 7 <= |SNR| < 8.
+    The selection is the directory's sibling selected_<key>.csv (an LST-wide build), or ctx ``selection``: the file the build
+    read, which a 10-minute night pass's delta build names (its build directory's selection: the all-nights rows plus the
+    appended nights' rows, since a touched identity is rebuilt from every member it has); a named selection that is absent
+    fails."""
     if not os.path.isdir(path):
         return False, None, f'{path} is not a directory'
     msgs = []
@@ -709,7 +713,9 @@ def source_catalogue_dir(path, **ctx):
         return False, 0, 'no <band>_sources_survivors.csv'
     key = _catalogue_key(path)
     if key and not key.split('_')[1].startswith('f'):
-        sel = os.path.join(os.path.dirname(os.path.abspath(path)), f'selected_{key}.csv')
+        sel = ctx.get('selection') or os.path.join(os.path.dirname(os.path.abspath(path)), f'selected_{key}.csv')
+        if ctx.get('selection') and not os.path.exists(sel):
+            msgs.append(f'the selection {sel} the build read is absent')
         if os.path.exists(sel):
             _, srows = _rows(sel)
             st = {r['stokes'] for r in srows}
