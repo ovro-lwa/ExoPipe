@@ -46,6 +46,8 @@ SCRIPTS = {
                                                       'snapshot_serve.sh:168-170 (the review copy)'),
     'page_context_snapshot': ('page_context_snapshot.py', 'snapshot_serve.sh:176-178 (the review copy, after the scintillation index; '
                                                           'page text and the n_i_epoch / n_v_epoch sliders\' frame counts)'),
+    'tess_coverage': ('tess/tess_coverage.py', 'snapshot_serve.sh TESS COVERAGE step (exopipe_ops 1a9f9c8: the review copy, after the '
+                                               'page context, before the bright-source filter; --epoch-from-cand-id)'),
     'build_detections_index': ('build_detections_index.py', 'snapshot_serve.sh:196-198 (the review copy\'s page index, before any '
                                                             'page starts)'),
     'sublst_served_test': ('sublst_reserve_test_served.py', 'sublst_catalog_publish.sh:106'),
@@ -77,6 +79,13 @@ def path(name):
 def interpreter(key='default'):
     from exopipe.phase3.core import legacy
     return legacy.interpreter(key)
+
+
+def interpreter_or_none(key):
+    """The site PYTHON[key] interpreter path, or None when unset or not on this host (lib/pages/common.interpreter_or_none)."""
+    from exopipe.phase3.config import CFG
+    py = (CFG.site.PYTHON or {}).get(key)
+    return py if py and os.path.exists(py) else None
 
 
 def site_value(name, default=None):
