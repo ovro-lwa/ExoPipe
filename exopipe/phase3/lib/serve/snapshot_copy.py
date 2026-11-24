@@ -522,7 +522,7 @@ def carry_stage(run, plan, args):
     DST = plan.U
     with run.unit(f'snapshot_{plan.run_name}_carry', stage='carry', tier='snapshot') as u:
         old = journals.resolve_carry_from(plan, spec)
-        u.note(f'carry from the run served on {_first_port(plan)}: {old}')
+        u.note(f'carry from the run served on {_first_port(plan)}: {old}' if spec == 'served' else f'carry from --carry-from {old}')
         if not os.path.exists(os.path.join(old, 'judgements', 'judgements.jsonl')):
             u.refuse(f'G18 carry preconditions: no journal at {old}/judgements/judgements.jsonl')
         cr = journals.snapshot_carry(old, DST, unit=u)
