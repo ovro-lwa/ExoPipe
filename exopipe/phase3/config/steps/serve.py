@@ -625,6 +625,17 @@ class serve(_Section):
                                             # naming the review copy served; a run without it by its FORCED_READY_LOG
     FORCED_REQUIRED = ('queue_{S}.txt', 'source_catalogs_{S}', 'source_catalogs/localization_offsets.csv',
                        'forced_assoc_identity.csv')          # :66-67
+    # THE PER-PANEL QA BLOCK of the forced pages (lib/serve/forced.page_context): before a page is registered, on the run it will
+    # serve, production's two hand steps on its forced runs (2026-11-13/14; counts repointed 2026-11-20 by
+    # DONE-20261120-GEN5-FORCED-PAGES-COUNTS-REPOINTED-TO-SNAPCOMB-20261116): scintillation_index.py RUN --tier
+    # SNAPSHOT_FILTER_TIER, then page_context_snapshot.py RUN --served-from VIEW --workers SNAPSHOT_PAGE_CONTEXT_WORKERS
+    FORCED_PAGE_CONTEXT_VIEW_IDS = ('p8986', 'p8987', 'p8988', 'p8989')   # the production registry entries (read only, a parity
+                                            # serve too) of the snapshot transient-search pages, 10 s and 1 min (snapshot_serve.sh
+                                            # SNAP_REGISTER=1): their --run is the view the forced pages are paired with (its
+                                            # member rows are the panels' 'served detections' and the n_i_epoch / n_v_epoch
+                                            # sliders' counts); all four must name ONE run, else the page is refused
+    FORCED_PAGE_CONTEXT_REQUIRED = ('frame_counts.json', 'scintillation_index.csv', 'scintillation_index.json')   # after the two
+                                            # steps; the sidecars by content test snapshot_forced_page_context
     FORCED_ADLEO_CHECK = ('test_snapshot_forced_reserve.py', ('adleo', '--absent-ok'))   # ops script + args, site PYTHON 'py36' (:68;
                                             # Gregg 2026-10-08 "don't label AD Leo unless you have a metric defined and measured")
     FORCED_GENERATIONS = {                   # forced run tag -> (the samples, the cutout generation) the title and hub name;

@@ -13,6 +13,8 @@ is read-only (verify may run it on production files). Registered with @content_t
   scintillation_index  table_matches_definition, run_own_hours  (scintillation_index.csv + .json)
   snapshot_page_context  frame_counts_match_members, frames_admitted, sidecar_per_panel  (a snapshot review copy;
                      page_context_snapshot.py's frame counts and sidecars; every served frame admitted by its search)
+  snapshot_forced_page_context  frame_counts_pointer, sidecar_per_panel  (a snapshot forced-photometry run;
+                     page_context_snapshot.py --served-from VIEW: the pointer to its view and every panel's sidecar from it)
   detections_index   manifest_current, folders_cover_catalogs, records_current  (<run>/page_index/manifest.json;
                      build_detections_index.py)
   stopped_page       not_listening                           (record of `serve --stop`)
@@ -998,6 +1000,7 @@ SPCTX_HEADS = (('hours searched el>', 'transient-search view of the counts'), ('
                ('served detections in this frame, Stokes V (n_v_epoch):',),
                ('scintillation of the hour and band:',), ('beam epoch/hour:',))   # its ctx_lines, in order (own view or forced run)
 SPCTX_NO_SCINT = 'scintillation of the hour and band: not computed for this run'
+SPCTX_VIEW_LINE = 'transient-search view of the counts and populations below: '   # a forced run's first line + view name
 SNAP_CAND_RE = re.compile(r'^(\d\dh_\d{4}-\d\d-\d\d)_(\w+?)_([IV])_(10s|1min)_(\d{8}_\d{6})')   # a snapshot cand_id
 
 
@@ -1179,6 +1182,80 @@ def snapshot_sidecar_per_panel(path, sample=None, seed=0, **ctx):
     return not bad, len(bad), ('; '.join(bad[:4]) if bad else
                                f'{n} panels in {len(pick)} of {len(dirs)} review folders (seed {seed}), each with its sidecar '
                                f'({other} written by another builder, kept)')
+
+
+@content_test('snapshot_forced_page_context')
+def frame_counts_pointer(path, view=None, **ctx):
+    """The n_i_epoch / n_v_epoch sliders' input on a FORCED run (R-GREGG-20261114-NEPOCH-SLIDERS-PER-FRAME):
+    <run>/frame_counts.json, written by page_context_snapshot.py --served-from VIEW, names a view other than the run (``view``
+    when given: that one) and carries no tables of its own; that view's own frame_counts.json names itself and holds hour-cells,
+    the Stokes/tiers held and a histogram per held Stokes/tier, and the view holds frame_counts_<S>_<tier>.csv.gz for each -
+    every file the page code reads for this run (review_filters.py:262-284, which refuses a pointer it cannot read but falls
+    back silently when the run's frame_counts.json is absent, :262-271: absent refuses here)."""
+    fj = os.path.join(path, 'frame_counts.json')
+    try:
+        meta = json.load(open(fj))
+    except (OSError, ValueError) as e:
+        return False, None, f'frame_counts.json: {type(e).__name__}: {e}'
+    bad = []
+    if meta.get('builder') != SPCTX_TOOL:
+        bad.append(f"builder {meta.get('builder')!r}")
+    v = os.path.realpath(meta.get('view') or '')
+    if not meta.get('view') or v == os.path.realpath(path):
+        return False, None, (f"frame_counts.json names the view {meta.get('view')!r}: a forced run points at its "
+                             f"transient-search view")
+    if view and v != os.path.realpath(view):
+        bad.append(f'names the view {v}, not the paired view {os.path.realpath(view)}')
+    if 'hist' in meta:
+        bad.append("a forced run's frame_counts.json carries tables of its own ('hist'): the page would not read its view")
+    try:
+        vj = json.load(open(os.path.join(v, 'frame_counts.json')))
+    except (OSError, ValueError) as e:
+        return False, None, f'the view {v}: frame_counts.json: {type(e).__name__}: {e}'
+    if os.path.realpath(vj.get('view') or '') != v:
+        bad.append(f"the view's frame_counts.json names {vj.get('view')!r}, not itself")
+    held = sorted(vj.get('held') or ())
+    if not vj.get('cells') or not held:
+        bad.append(f"the view's frame_counts.json: {len(vj.get('cells') or ())} hour-cells, held {held}")
+    for st in held:
+        if not (vj.get('hist') or {}).get(st):
+            bad.append(f'the view: {st} has no histogram')
+        if not os.path.isfile(os.path.join(v, f'frame_counts_{st}.csv.gz')):
+            bad.append(f'the view lacks frame_counts_{st}.csv.gz')
+    return not bad, len(bad), ('; '.join(bad[:4]) if bad else
+                               f'points at {v} (its own counts: {len(vj["cells"])} hour-cells, Stokes/tiers {held}, each with '
+                               f'its histogram and table)')
+
+
+@content_test('snapshot_forced_page_context', 'sidecar_per_panel')
+def forced_sidecar_per_panel(path, view=None, **ctx):
+    """Every panel of the forced run (rank*.png in EVERY review folder of candidates/{V,I}) has its sidecar with the tool's seven
+    lines and its own frame (snapshot_page_context.sidecar_per_panel on all folders; scintillation_index.csv is required beside
+    it, so its line is never 'not computed'), and every sidecar names, in its first line, the view frame_counts.json points at
+    (``view`` when given): the counts printed under a panel and the sliders' counts come from one view (2026-11-24: the served
+    generation-5 runs' sidecars name Run_SNAPCOMB_20261107, deleted 2026-11-18, while their frame_counts.json names
+    Run_SNAPCOMB_20261116)."""
+    if not os.path.isfile(os.path.join(path, 'scintillation_index.csv')):
+        return False, None, 'no scintillation_index.csv: the panels\' scintillation line would read "not computed"'
+    ok_, n, detail = snapshot_sidecar_per_panel(path, sample=10 ** 9)
+    if not ok_:
+        return ok_, n, detail
+    try:
+        v = view or json.load(open(os.path.join(path, 'frame_counts.json')))['view']
+    except (OSError, ValueError, KeyError) as e:
+        return False, None, f'frame_counts.json: {type(e).__name__}: {e}'
+    want = f'{SPCTX_VIEW_LINE}{os.path.basename(os.path.realpath(v))}'
+    other = Counter()
+    for sc in glob.glob(os.path.join(path, 'candidates', '[VI]', '*', '*.page.json')):
+        try:
+            obj = json.load(open(sc))
+        except (OSError, ValueError):
+            continue                                  # counted by sidecar_per_panel
+        if obj.get('builder') == SPCTX_TOOL and (obj.get('ctx_lines') or [''])[0] != want:
+            other[(obj.get('ctx_lines') or [''])[0][:120]] += 1
+    if other:
+        return False, sum(other.values()), f'{sum(other.values())} sidecars do not read "{want}": {dict(other.most_common(3))}'
+    return True, 0, f'{detail}; every sidecar names {os.path.basename(os.path.realpath(v))}'
 
 
 def _pidx(path):

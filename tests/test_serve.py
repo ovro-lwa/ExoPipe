@@ -2362,10 +2362,12 @@ def test_forced_probe_before_stop():
     def probe_fails(*x, **k):
         raise Refusal('App probe of page forced-V-10s failed (rc 1): test')
     saved = (forced.ready, forced.missing_files, forced._parity_copy, scripts.run, eg.scan_snapshot_run, servers.app_probe,
-             register.write, register.check_server)
+             register.write, register.check_server, forced.paired_view, forced.page_context)
     forced.ready = lambda name, review=None: (True, 'FT-READY')
     forced.missing_files = lambda pg_, D: []
     forced._parity_copy = lambda pg_: None
+    forced.paired_view = lambda d=None: '/view'              # the per-panel QA block passes (its own test:
+    forced.page_context = lambda *x, **k: []                 # tests/test_photometry_snapshot_stage2.py)
     scripts.run = lambda *x, **k: Res()
     eg.scan_snapshot_run = lambda D, ex=None: eg.Scan()
     servers.app_probe = probe_fails
@@ -2376,7 +2378,7 @@ def test_forced_probe_before_stop():
         forced.switch(run, plan, flow.new_state(), 'UTC')
     finally:
         (forced.ready, forced.missing_files, forced._parity_copy, scripts.run, eg.scan_snapshot_run, servers.app_probe,
-         register.write, register.check_server) = saved
+         register.write, register.check_server, forced.paired_view, forced.page_context) = saved
     u = {x.name: x for x in run.units}
     pu, ru = u[pg.unit], u['snapshot_forced_TEST_register']
     assert pu.status == 'refused' and 'App probe' in pu.reason and not written, (pu.status, pu.reason, written)

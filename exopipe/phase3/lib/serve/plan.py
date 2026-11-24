@@ -117,6 +117,7 @@ class Plan:
         self.gates = []          # [(gate, message)] refusals found while planning (raised by the caller unless dry-run)
         self.notes = []
         self.forced_after = {}   # forced page key -> the run this serve registers for it (forced_siblings)
+        self.forced_view = None  # the transient-search view the forced pages are paired with (forced.paired_view; the switch)
 
     def refuse_later(self, gate, msg):
         self.gates.append((gate, msg))

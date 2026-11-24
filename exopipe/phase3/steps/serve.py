@@ -45,7 +45,8 @@ Inputs (read, never rewritten unless listed under Outputs):
   snapshot  the chain run (--source [HOST:]PATH, default site CHAIN_HOST + serve.SNAPSHOT_SOURCE), the served run (journal)
   forced    Run_SNAPFORCED_<S><T>_<TAG> under paths.SNAPSHOT_REVIEW_ROOT and its readiness: the exopipe3 forced verify
             record C_verify_<run> under forced_snapshot.WORK_ROOT, else its FT-READY log under paths.OPS_ROOT; the title and
-            hub text of <TAG> (serve.FORCED_GENERATIONS: gen5, gen6 with LPT)
+            hub text of <TAG> (serve.FORCED_GENERATIONS: gen5, gen6 with LPT); the paired transient-search view, the --run of
+            the production registry's entries serve.FORCED_PAGE_CONTEXT_VIEW_IDS (one run, else refused)
   all       data_decisions.csv (read now, the serve-time exclusion gate), inspection_greenlit.csv, the hub registry
 Outputs (product classes; content tests run on every write and by `exopipe3 verify <class>`):
   served_queue   sectioned tier queues, queue_p3s3_<S>.txt, queue_p3s3_<S>_multi.txt
@@ -55,6 +56,9 @@ Outputs (product classes; content tests run on every write and by `exopipe3 veri
   tenmin_page_context  the swapped-in Run_SLSTB after page_context_tenmin.py (sublst_cumulative.sh:295-300): every 10-minute
                  panel of its four views has its <png>.page.json run-context sidecar (six lines, the panel's own frame) and no
                  sidecar of the tool stands without its panel; page text, not a gate - its failure never stops the registration
+  snapshot_forced_page_context  a forced run after scintillation_index.py and page_context_snapshot.py --served-from VIEW
+                 (the per-panel QA block, before its page is registered): frame_counts.json points at VIEW, whose count tables
+                 exist; every panel has its sidecar, each naming VIEW; a failure refuses the page
   review_copy    the snapshot review copy;  exclusion_check  the serve-time exclusion gate's pass file;  serve_go  G27's
                  pass file (Gregg's go on a combined view: the go files it names re-read)
   snapshot_view  the combined view (<SNAPSHOT_REVIEW_ROOT>/<view>, parity <out>/snapshot/<view>): V1-V6 read back - queues,

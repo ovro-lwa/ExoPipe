@@ -24,6 +24,14 @@ Asserts:
     ready; refused, partial, not servable or of another review copy is not; no record and no log is not ready;
   - the build content test (lib/forced/tests_snapshot.queue_header) reads generation 5's queue header and the current
     build's, which names the measured samples (HWJ + 10pc + LPT).
+  - the per-panel QA block of a forced page (lib/serve/forced.paired_view, page_context, check_page; content tests
+    snapshot_forced_page_context): the paired view is the one run the registry entries serve.FORCED_PAGE_CONTEXT_VIEW_IDS
+    serve (a missing entry, two runs or a run without a search summary refuse); the switch runs scintillation_index.py RUN
+    --tier snapshot (cwd SNAPSHOT_STEP_CWD), then page_context_snapshot.py RUN --served-from VIEW --workers N, after the
+    exclusion gate and before the App probe; a failed tool, a missing frame_counts.json / scintillation_index.csv / .json or a
+    failed content test refuses the page; the pointer test fails on a missing pointer, one naming the run itself or another
+    view, and a view without its count table; the sidecar test fails on a panel without its sidecar, a sidecar naming another
+    view (the served generation-5 state) and a run without scintillation_index.csv.
 Scratch: a fresh directory under $EXOPIPE3_TEST_SCRATCH, else the system temp directory, removed at exit.
 Run: python tests/test_photometry_snapshot_stage2.py
 """
@@ -351,6 +359,206 @@ def test_queue_header(d):
     check('a queue header whose samples text is malformed is no header', got['bad'] is None, got['bad'])
 
 
+class _Res:
+    def __init__(self, ok=True, tail=''):
+        self.ok, self.tail, self.reason, self.rc = ok, tail, '' if ok else 'rc 1', 0 if ok else 1
+
+
+class _Unit:
+    def __init__(self):
+        self.outputs, self.notes = [], []
+
+    def add_output(self, path, cls, **ctx):
+        self.outputs.append((path, cls, ctx))
+
+    def note(self, n):
+        self.notes.append(n)
+
+
+def pctx_tree(d, name='Run_SNAPFORCED_V10s_gen6', view_name='Run_SNAPCOMB_20261116'):
+    """A synthetic paired view (its own frame counts) and a forced run with one panel, its sidecar and its pointer."""
+    import gzip
+    import json
+    V = os.path.join(d, 'review', view_name)
+    R = os.path.join(d, 'review', name)
+    os.makedirs(V, exist_ok=True)
+    with open(os.path.join(V, 'combined_view_summary.json'), 'w') as f:
+        json.dump({'batches': []}, f)
+    held = ['I_10s', 'V_10s']
+    with open(os.path.join(V, 'frame_counts.json'), 'w') as f:
+        json.dump(dict(builder='page_context_snapshot.py', view=V, cells=[CELL_A], held=held,
+                       hist={st: {'23MHz': {'0': 5, '1': 1}} for st in held}), f)
+    for st in held:
+        with gzip.open(os.path.join(V, f'frame_counts_{st}.csv.gz'), 'wt') as f:
+            f.write('cell,band,ts,n\n%s,23MHz,20250903_095708,1\n' % CELL_A)
+    folder = os.path.join(R, 'candidates', 'V', 'J0409+4640_23MHz')
+    os.makedirs(folder, exist_ok=True)
+    png = os.path.join(folder, 'rank0000_%s_23MHz20250903095708.png' % CELL_A)
+    touch(png)
+    lines = ['transient-search view of the counts and populations below: ' + view_name,
+             'global noise V: 1.0 mJy (50 pctile of band, all admitted 10s frames of the transient-search view %s)' % view_name,
+             'global noise I: 2.0 mJy (50 pctile of band, all admitted 10s frames of the transient-search view %s)' % view_name,
+             'served detections in this frame, Stokes I (n_i_epoch): 1  (83 pctile of band, all admitted frames)',
+             'served detections in this frame, Stokes V (n_v_epoch): 1  (83 pctile of band, all admitted frames)',
+             "scintillation of the hour and band: index 0.100 (40 pctile of the band's hours)",
+             "beam epoch/hour: 1.00 (50 pctile of band; reference = median beam of the hour's frames)"]
+    with open(png[:-4] + '.page.json', 'w') as f:
+        json.dump(dict(ctx_lines=lines, builder='page_context_snapshot.py', code='x',
+                       frame=[CELL_A, '23MHz', 'V', '10s', '20250903_095708']), f)
+    with open(os.path.join(R, 'frame_counts.json'), 'w') as f:
+        json.dump(dict(builder='page_context_snapshot.py', view=V), f)
+    with open(os.path.join(R, 'scintillation_index.csv'), 'w') as f:
+        f.write('lst,date,band,scint_index,n_sources,n_frames,pct_in_band,state\n00h,2025-09-03,23MHz,0.1000,50,200,40.0,other\n')
+    with open(os.path.join(R, 'scintillation_index.json'), 'w') as f:
+        json.dump(dict(tier='snapshot', default_hidden=False, hour_bands=1, worst_pct=90.0, forced_run=True,
+                       states=['worst 10% of its band', 'other', 'not measured'], counts={'23MHz': {'other': 1}}), f)
+    return V, R, png
+
+
+def test_forced_page_context(d):
+    import json
+    from exopipe.phase3.core import validate
+    from exopipe.phase3.lib.serve import exclusion_gate, forced, register, scripts, servers
+    d = os.path.join(d, 'pctx')
+    V, R, png = pctx_tree(d)
+    # the paired view: the one run of the four registry entries
+    reg = os.path.join(d, 'registry')
+    os.makedirs(reg)
+
+    def entries(runs):
+        with open(register.files(reg)[0], 'w') as f:
+            json.dump({'pages': [{'id': i, 'argv': ['--run', r]} for i, r in runs.items() if r]}, f)
+    ids = CFG.serve.FORCED_PAGE_CONTEXT_VIEW_IDS
+    entries({i: V for i in ids})
+    check('paired view: the one run the snapshot pages\' registry entries serve', forced.paired_view(reg) == os.path.realpath(V))
+    other = os.path.join(d, 'review', 'Run_SNAPCOMB_20261101')
+    os.makedirs(other)
+    entries(dict({i: V for i in ids}, **{ids[-1]: other}))
+    r = raises(forced.paired_view, reg)
+    check('paired view: entries naming two runs refuse', r is not None and 'no single' in r, r)
+    entries(dict({i: V for i in ids}, **{ids[0]: None}))
+    r = raises(forced.paired_view, reg)
+    check('paired view: a missing entry refuses', r is not None and 'no single' in r, r)
+    entries({i: other for i in ids})
+    r = raises(forced.paired_view, reg)
+    check('paired view: a run without a search summary refuses (the tool refuses it too)',
+          r is not None and 'combined_view_summary' in r, r)
+    # the content tests
+    def tests(path=R, **ctx):
+        return {t['name'].split('.')[1]: t for t in validate.run('snapshot_forced_page_context', path, **ctx)}
+    t = tests(view=V)
+    check('content tests: a forced run whose pointer names the paired view and whose panel has its sidecar from it passes',
+          all(x['passed'] for x in t.values()) and set(t) == {'frame_counts_pointer', 'sidecar_per_panel'}, t)
+    check('content tests: the pointer naming another view than the paired one fails',
+          not tests(view=other)['frame_counts_pointer']['passed'])
+    fj = os.path.join(R, 'frame_counts.json')
+    keep = open(fj).read()
+    os.remove(fj)
+    t = tests(view=V)
+    check('content tests: no frame_counts.json fails (production\'s page code falls back silently, review_filters.py:262-271)',
+          not t['frame_counts_pointer']['passed'], t['frame_counts_pointer'])
+    with open(fj, 'w') as f:
+        json.dump(dict(builder='page_context_snapshot.py', view=R), f)
+    check('content tests: a pointer naming the run itself fails', not tests()['frame_counts_pointer']['passed'])
+    with open(fj, 'w') as f:
+        f.write(keep)
+    tab = os.path.join(V, 'frame_counts_V_10s.csv.gz')
+    os.rename(tab, tab + '.x')
+    t = tests(view=V)['frame_counts_pointer']
+    check('content tests: a view without a held Stokes/tier\'s count table fails', not t['passed'] and 'V_10s' in t['detail'],
+          t)
+    os.rename(tab + '.x', tab)
+    sc = png[:-4] + '.page.json'
+    obj = json.load(open(sc))
+    lines = list(obj['ctx_lines'])
+    obj['ctx_lines'][0] = 'transient-search view of the counts and populations below: Run_SNAPCOMB_20261107'
+    with open(sc, 'w') as f:
+        json.dump(obj, f)
+    t = tests(view=V)['sidecar_per_panel']
+    check('content tests: a sidecar naming another view than the pointer\'s fails (the served generation-5 state)',
+          not t['passed'] and '20261107' in t['detail'], t)
+    obj['ctx_lines'] = lines
+    with open(sc, 'w') as f:
+        json.dump(obj, f)
+    sp = os.path.join(R, 'scintillation_index.csv')
+    os.rename(sp, sp + '.x')
+    check('content tests: no scintillation_index.csv fails', not tests(view=V)['sidecar_per_panel']['passed'])
+    os.rename(sp + '.x', sp)
+    os.rename(sc, sc + '.x')
+    check('content tests: a panel without its sidecar fails', not tests(view=V)['sidecar_per_panel']['passed'])
+    os.rename(sc + '.x', sc)
+    # page_context: the two tools in production's form and order, then the files and the content tests
+    calls = []
+    fail = {}
+
+    def fake_run(name, args=(), cwd=None, **k):
+        calls.append((name, [str(a) for a in args], cwd))
+        return _Res(ok=name not in fail, tail='last line of ' + name)
+    plan = argparse.Namespace(parity=False, out=d, forced_view=V)
+    pg = argparse.Namespace(key='forced-V-10s', run_name=os.path.basename(R), root_src=R, root=R, stokes='V')
+    saved = (scripts.run, forced.paired_view)
+    scripts.run = fake_run
+    try:
+        u = _Unit()
+        notes = forced.page_context(u, plan, pg, R, V)
+        S = CFG.serve
+        want = [('scintillation_index', [R, '--tier', S.SNAPSHOT_FILTER_TIER], S.SNAPSHOT_STEP_CWD),
+                ('page_context_snapshot', [R, '--served-from', V, '--workers', str(S.SNAPSHOT_PAGE_CONTEXT_WORKERS)], None)]
+        check('page context: scintillation_index.py RUN --tier snapshot, then page_context_snapshot.py RUN --served-from VIEW '
+              '--workers N (production\'s hand steps, its form and order)', calls == want, calls)
+        check('page context: the scintillation table and the run recorded (classes scintillation_index, '
+              'snapshot_forced_page_context with its view)',
+              u.outputs == [(os.path.join(R, 'scintillation_index.csv'), 'scintillation_index', {'tier': S.SNAPSHOT_FILTER_TIER}),
+                            (R, 'snapshot_forced_page_context', {'view': V})] and len(notes) == 2, (u.outputs, notes))
+        sj = os.path.join(R, 'scintillation_index.json')
+        sk = open(sj).read()
+        with open(sj, 'w') as f:
+            f.write(sk.replace('"default_hidden": false', '"default_hidden": true'))
+        r = raises(forced.page_context, _Unit(), plan, pg, R, V)
+        check('page context: a scintillation table failing its content test refuses the page',
+              r is not None and 'scintillation_index.table_matches_definition' in r, r)
+        with open(sj, 'w') as f:
+            f.write(sk)
+        fail['page_context_snapshot'] = 1
+        r = raises(forced.page_context, _Unit(), plan, pg, R, V)
+        check('page context: a failed page_context_snapshot.py refuses the page', r is not None and
+              'page_context_snapshot.py' in r and 'old entry kept' in r, r)
+        fail.clear()
+        os.remove(fj)
+        r = raises(forced.page_context, _Unit(), plan, pg, R, V)
+        check('page context: no frame_counts.json after the tools refuses the page',
+              r is not None and 'frame_counts.json' in r, r)
+        with open(fj, 'w') as f:
+            f.write(keep)
+        os.rename(sc, sc + '.x')
+        r = raises(forced.page_context, _Unit(), plan, pg, R, V)
+        check('page context: a failed content test refuses the page', r is not None and 'sidecar_per_panel' in r, r)
+        os.rename(sc + '.x', sc)
+        # check_page: the QA block after the exclusion gate, before the App probe
+        order = []
+        sv = (forced.ready, forced.missing_files, forced.page_context, exclusion_gate.scan_snapshot_run,
+              exclusion_gate.refuses, servers.app_probe)
+        forced.ready = lambda *a, **k: (True, 'ok')
+        forced.missing_files = lambda *a, **k: []
+        exclusion_gate.scan_snapshot_run = lambda D: order.append('gate') or argparse.Namespace(hits=[], summary=lambda: 'none')
+        exclusion_gate.refuses = lambda *a: True
+        forced.page_context = lambda u, plan, pg, D, view: order.append(('pctx', D, view)) or []
+
+        def probe(*a, **k):
+            order.append('probe')
+            raise Refusal('stop here')
+        servers.app_probe = probe
+        try:
+            raises(forced.check_page, _Unit(), plan, pg)
+        finally:
+            (forced.ready, forced.missing_files, forced.page_context, exclusion_gate.scan_snapshot_run,
+             exclusion_gate.refuses, servers.app_probe) = sv
+        check('check_page: the QA block on the served run with the paired view, after the exclusion gate and before the App '
+              'probe', order == ['gate', ('pctx', R, V), 'probe'], order)
+    finally:
+        scripts.run, forced.paired_view = saved
+
+
 def main():
     base = os.environ.get('EXOPIPE3_TEST_SCRATCH') or None
     d = tempfile.mkdtemp(prefix='test_photometry_snapshot_stage2_', dir=base)
@@ -360,6 +568,7 @@ def main():
         test_generation(d)
         test_serve(d)
         test_queue_header(d)
+        test_forced_page_context(d)
     finally:
         shutil.rmtree(d, ignore_errors=True)
     print('%d check(s) failed: %s' % (len(FAILS), FAILS) if FAILS else 'all checks passed', flush=True)

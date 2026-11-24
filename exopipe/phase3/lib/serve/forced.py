@@ -14,8 +14,13 @@ switch: unit snapshot_forced_<TAG>_register (flow.register_pages): the two-port 
   4. the serve-time exclusion gate on the run: refuses the page under the ruled value (gate key 'snapshot-forced' in
      EXCLUSION_GATE_TIERS: Gregg 2026-10-14 R-GREGG-20261014-REFACTOR-DECISIONS-LIST-RECOMMENDATIONS); production has no
      gate on these pages (the parity file: report only);
-  5. the expected index sources (the server's own App on the run's files: servers.app_probe);
-  6. Gregg's judgements carried (snapshot_carry_judgements.py OLD NEW) from the run the page's entry serves now (gen5 cur_run;
+  5. THE PER-PANEL QA BLOCK (page_context): scintillation_index.py RUN --tier snapshot, then page_context_snapshot.py RUN
+     --served-from VIEW in place on the run the page will serve, VIEW the transient-search view the production registry's
+     snapshot pages serve (paired_view, serve.FORCED_PAGE_CONTEXT_VIEW_IDS; production ran both by hand); its files present and
+     content tests snapshot_forced_page_context passed, else refused (production's page code falls back silently when
+     frame_counts.json is absent, review_filters.py:262-271);
+  6. the expected index sources (the server's own App on the run's files: servers.app_probe);
+  7. Gregg's judgements carried (snapshot_carry_judgements.py OLD NEW) from the run the page's entry serves now (gen5 cur_run;
      a parity serve: the PRODUCTION registry's entry, read only) when its journal is not empty and the new run has none (a
      journal already in the new run: carry skipped, gen5:40); a page already serving the run is registered again, nothing
      carried (gen5:38).
@@ -82,6 +87,74 @@ def missing_files(pg, D):
     return [f for f in (x.format(S=pg.stokes) for x in _CFG().serve.FORCED_REQUIRED) if not os.path.exists(os.path.join(D, f))]
 
 
+def paired_view(d=None):
+    """The transient-search view the forced pages are paired with (page_context_snapshot.py --served-from VIEW): the one run the
+    registry entries serve.FORCED_PAGE_CONTEXT_VIEW_IDS (the snapshot 10-s and 1-minute pages) serve, in the registry directory
+    ``d`` (default the production one serve.TWO_PORT_DIR, read only; a parity serve pairs its copies with the production view,
+    read in place). Raises Refusal when an entry is missing, when they name different runs, or when the run has no search of its
+    own (no chain_summary.json or combined_view_summary.json: the tool refuses it too)."""
+    S = _CFG().serve
+    runs = {}
+    for pid in S.FORCED_PAGE_CONTEXT_VIEW_IDS:
+        a = (register.registered_entry(d or S.TWO_PORT_DIR, pid) or {}).get('argv') or []
+        i = a.index('--run') + 1 if '--run' in a else len(a)
+        runs[pid] = a[i] if i < len(a) else None
+    names = sorted({os.path.realpath(r) for r in runs.values() if r})
+    if len(names) != 1 or not all(runs.values()):
+        raise Refusal(f'no single transient-search view to pair the forced pages with: registry entries {runs} - old entries '
+                      f'kept')
+    view = names[0]
+    if not any(os.path.exists(os.path.join(view, x)) for x in ('chain_summary.json', 'combined_view_summary.json')):
+        raise Refusal(f'the paired view {view} has no chain_summary.json or combined_view_summary.json - old entries kept')
+    return view
+
+
+def page_context(u, plan, pg, D, view):
+    """THE PER-PANEL QA BLOCK of a forced page, on the run it will serve (``D``; a parity serve: the copy), before it is
+    registered: production's two hand steps on its forced runs, in its form and order (2026-11-13/14; the counts repointed by
+    DONE-20261120-GEN5-FORCED-PAGES-COUNTS-REPOINTED-TO-SNAPCOMB-20261116; no production driver runs them):
+      1. scintillation_index.py D --tier serve.SNAPSHOT_FILTER_TIER (cwd serve.SNAPSHOT_STEP_CWD; a parity serve: its own --cache)
+         - D/scintillation_index.{csv,json}, the hours from the forced record (scintillation_index.forced_hours): the panel text's
+         scintillation line and the page's scintillation slider;
+      2. page_context_snapshot.py D --served-from VIEW --workers serve.SNAPSHOT_PAGE_CONTEXT_WORKERS (cwd the exopipe_ops root) -
+         each panel's <png>.page.json (the transient-search view, global noise V / I, served detections I / V, scintillation,
+         beam) and D/frame_counts.json naming VIEW, whose frame_counts_<S>_<tier>.csv.gz the n_i_epoch / n_v_epoch sliders read
+         (R-GREGG-20261114-NEPOCH-SLIDERS-PER-FRAME).
+    Then serve.FORCED_PAGE_CONTEXT_REQUIRED must exist and every test of classes scintillation_index and
+    snapshot_forced_page_context (view = VIEW) pass, else Refusal: the page keeps its entry. This refusal is the gate production
+    lacks: its page code falls back to the superseded counts with no refusal when frame_counts.json is absent
+    (review_filters.py:262-271). Returns the notes."""
+    from exopipe.phase3.lib.serve.snapshot_copy import NOHUGE, _parity_cache
+    S = _CFG().serve
+    notes = []
+    args = [D, '--tier', S.SNAPSHOT_FILTER_TIER]
+    cache = _parity_cache(plan, 'scintillation_table_index.json')
+    if cache:
+        args += ['--cache', cache]
+    pctx = [D, '--served-from', view, '--workers', S.SNAPSHOT_PAGE_CONTEXT_WORKERS]
+    for name, a, cwd in (('scintillation_index', args, S.SNAPSHOT_STEP_CWD), ('page_context_snapshot', pctx, None)):
+        log = os.path.join(D, f'{name}.log')
+        res = scripts.run(name, a, log=log, unit=u, env=NOHUGE, cwd=cwd)
+        if not res.ok:
+            raise Refusal(f'{scripts.SCRIPTS[name][0]} on {D}: {res.reason or scripts.last_line(res.tail)} (see {log}) - old '
+                          f'entry kept')
+        notes.append(f'page {pg.key}: {name}: {scripts.last_line(res.tail)[:200]}')
+    miss = [f for f in S.FORCED_PAGE_CONTEXT_REQUIRED if not os.path.exists(os.path.join(D, f))]
+    if miss:
+        raise Refusal(f'{D} lacks {", ".join(miss)} after the page context - old entry kept')
+    sci = os.path.join(D, 'scintillation_index.csv')
+    for path, cls, ctx in ((sci, 'scintillation_index', dict(tier=S.SNAPSHOT_FILTER_TIER)),
+                           (D, 'snapshot_forced_page_context', dict(view=view))):
+        bad = [t for t in validate.run(cls, path, **ctx) if not t['passed']]
+        if bad:      # this page only: the registration unit's own record would refuse every page
+            raise Refusal('page context: ' + '; '.join(f'{t["name"]} ({t["detail"][:300]})' for t in bad[:3]) +
+                          ' - old entry kept')
+    for path, cls, ctx in ((sci, 'scintillation_index', dict(tier=S.SNAPSHOT_FILTER_TIER)),
+                           (D, 'snapshot_forced_page_context', dict(view=view))):
+        u.add_output(path, cls, **ctx)
+    return notes
+
+
 def _parity_copy(pg):
     os.makedirs(os.path.dirname(pg.root), exist_ok=True)
     p = subprocess.run(['rsync', '-a', '--exclude', 'judgements', '--exclude', 'classify_*.log',
@@ -91,7 +164,7 @@ def _parity_copy(pg):
 
 
 def check_page(u, plan, pg):
-    """Checks 1-6 of the switch for ``pg`` inside the registration unit ``u`` (the in-place calls recorded there). Returns
+    """Checks 1-7 of the switch for ``pg`` inside the registration unit ``u`` (the in-place calls recorded there). Returns
     (run dir, expected sources, notes); raises Refusal (the page keeps its entry)."""
     S = _CFG().serve
     notes = []
@@ -114,6 +187,7 @@ def check_page(u, plan, pg):
                  f'pages): {scan.summary()}')
     if scan.hits and refuses:
         raise Refusal(f'G17 serve-time exclusion gate: {scan.summary()} - old entry kept')
+    notes += page_context(u, plan, pg, D, plan.forced_view)     # the per-panel QA block, before the App reads frame_counts.json
     exp = servers.app_probe(plan, pg, D, unit=u)        # before anything changes: a failed probe keeps the old entry
     now = plan.registered_run(pg)
     if now and os.path.realpath(now) == os.path.realpath(D):
@@ -136,6 +210,14 @@ def switch(run, plan, state, utc):
     def prepare(u):
         flow.excl_note(u)
         passed, refused = [], {}
+        try:
+            plan.forced_view = paired_view()
+        except Refusal as e:                      # no view to pair with: no page gets its QA block, none is registered
+            for pg in plan.pages:
+                refused[pg.key] = str(e)
+                u.note(f'page {pg.key} REFUSED: {e}')
+            return [], refused
+        u.note(f'paired transient-search view (page_context_snapshot.py --served-from): {plan.forced_view}')
         for pg in plan.pages:
             try:
                 D, exp, notes = check_page(u, plan, pg)
@@ -216,6 +298,12 @@ def describe(plan, stages, args):
     """The dry run: per page its run, readiness, required files, what it serves now, and the title and hub button text the
     switch would register (G26 names a tag without serve.FORCED_GENERATIONS text). Writes nothing."""
     utc = common.utc_text()
+    if 'switch' in stages and not getattr(args, 'forced_refresh_siblings', False):
+        try:
+            print(f'  page context (scintillation_index.py, then page_context_snapshot.py --served-from): paired view '
+                  f'{paired_view()}')
+        except Refusal as e:
+            print(f'  page context: REFUSED: {e}')
     for pg in plan.pages:
         ok, last = ready(pg.run_name, pg.root_src)
         miss = missing_files(pg, pg.root_src) if os.path.isdir(pg.root_src) else ['(run absent)']
