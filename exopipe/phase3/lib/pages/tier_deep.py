@@ -289,32 +289,38 @@ def stage_tess(c, run, done):
                   os.path.join(os.path.dirname(script), 'TESS_orbit_times.csv')):
             if os.path.exists(p):
                 u.add_input(p)
-        if not common.interpreter_or_none('tess'):
-            msg = ("TESS COVERAGE NOT COMPUTED: the site PYTHON['tess'] interpreter is not on this host (the TESS environment "
+        if not common.interpreter_or_none(D.TESS_PYTHON):
+            msg = (f"TESS COVERAGE NOT COMPUTED: the site PYTHON[{D.TESS_PYTHON!r}] interpreter is not on this host (the TESS environment "
                    "is node-local, p3s3_pass.sh:62) - the pages say 'coverage not computed'")
             if D.TESS_IS_GATE:
                 raise common.Refusal(msg)
             raise common.NoInput(msg)
-        if not D.TESS_REFRESH_IN_READER:             # the reader does not fetch: its table must reach now (epochs after its end
-            from exopipe.phase3.lib.pages import tess_orbits   # get no coverage); the refresh step keeps it at now + 14 days
-            table = os.path.join(os.path.dirname(script), 'TESS_orbit_times.csv')
-            why = tess_orbits.stale_for_reader(table)
-            if why:                                  # as every TESS failure: no-input with the reason (TESS_IS_GATE False, B-30)
-                msg = (f"TESS COVERAGE NOT COMPUTED: the orbit table {table} {why} - the refresh step (python -m "
-                       f"exopipe.phase3.lib.pages.tess_orbits) has not kept it current and the reader runs with --no-refresh")
-                if D.TESS_IS_GATE:
-                    raise common.Refusal(msg)
-                raise common.NoInput(msg)
-            u.check('pages.tess_orbit_table_reaches_now', True, None, f'{table} reaches now', path=table)
-        args = (['--run', c.U] + ([] if D.TESS_STOKES == 'I,V' else ['--stokes', D.TESS_STOKES])
-                + ([] if D.TESS_REFRESH_IN_READER else ['--no-refresh']))   # the table is then refreshed by lib/pages/tess_orbits.py
-        res = common.lrun(u, script, args, python='tess', cwd=c.U, log=os.path.join(c.U, 'pages_tess.log'))
-        if not res.ok:
-            msg = f"TESS COVERAGE FAILED - the pages will say 'coverage not computed' ({res.reason})"
+        # the reader's call (lib/pages/tess_orbits.reader_args, shared with the serves' TESS steps): --stokes, and --no-refresh
+        # when the refresh step keeps the table - which must then reach now (epochs after its end get no coverage)
+        from exopipe.phase3.lib.pages import tess_orbits
+        table = os.path.join(os.path.dirname(script), 'TESS_orbit_times.csv')
+        extra, why = tess_orbits.reader_args(table)
+        if why:                                      # as every TESS failure: no-input with the reason (TESS_IS_GATE False, B-30)
+            msg = (f"TESS COVERAGE NOT COMPUTED: the orbit table {table} {why} - the refresh step (python -m "
+                   f"exopipe.phase3.lib.pages.tess_orbits) has not kept it current and the reader runs with --no-refresh")
             if D.TESS_IS_GATE:
                 raise common.Refusal(msg)
             raise common.NoInput(msg)
-        u.add_output(os.path.join(c.U, 'tess_coverage.csv'), 'tess_coverage')
+        if '--no-refresh' in extra:
+            u.check('pages.tess_orbit_table_reaches_now', True, None, f'{table} reaches now', path=table)
+        res = common.lrun(u, script, ['--run', c.U] + extra, python=D.TESS_PYTHON, cwd=c.U, log=os.path.join(c.U, 'pages_tess.log'))
+        counts = tess_orbits.coverage_counts(res, os.path.join(c.U, 'tess_coverage.csv')) if res.ok else None
+        if counts is None:
+            msg = (f"TESS COVERAGE FAILED - the pages will say 'coverage not computed' ("
+                   + (res.reason if not res.ok else "no summary line 'written N (left out, page says not computed: M)' for "
+                      f"{c.U}/tess_coverage.csv in the tool's output") + ')')
+            if D.TESS_IS_GATE:
+                raise common.Refusal(msg)
+            raise common.NoInput(msg)
+        # the tool's own counts (since 2026-11-15 it leaves out detections without an epoch time or a position): tess_rows tests
+        # the file against them
+        u.meta['tess_coverage'] = dict(written=counts[0], left_out=counts[1])
+        u.add_output(os.path.join(c.U, 'tess_coverage.csv'), 'tess_coverage', written=counts[0], left_out=counts[1])
         done[name] = 'done'
 
 
@@ -657,8 +663,9 @@ def dry_run(c, args, run_):
         if st == 'stagein':
             say(f'    from {c.from_run}: copy {len(C.FROM_RUN_COPY)} entries, link {len(C.FROM_RUN_LINK)} trees into {c.U}')
         elif st == 'tess':
-            py = common.interpreter_or_none('tess')
-            say(f"    ops/tess/tess_coverage.py --run {c.U}  interpreter PYTHON['tess'] = {py or 'NOT SET on this host'}")
+            py = common.interpreter_or_none(common.CFG().pages_deep.TESS_PYTHON)
+            say(f"    ops/tess/tess_coverage.py --run {c.U}  interpreter PYTHON[{common.CFG().pages_deep.TESS_PYTHON!r}] = "
+                f"{py or 'NOT SET on this host'}")
             say(f'    -> {c.U}/tess_coverage.csv [tess_coverage]' + ('' if py else '  (would end NO-INPUT: coverage not computed)'))
             lines.extend(mirror.plan_lines(c.roots, TIER, 'tess'))
         elif st == 'input':

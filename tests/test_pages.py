@@ -127,6 +127,10 @@ with open(run + '/tess_coverage.csv', 'w', newline='') as f:
     w = csv.DictWriter(f, fieldnames=['cand_id', 'stokes', 'status'], extrasaction='ignore'); w.writeheader()
     for r in rows: w.writerow(dict(cand_id=r['cand_id'], stokes=r['stokes'], status='not observed'))
 print('stub tess', len(rows))
+# the tool's summary line (tess_coverage.py:286-290), whose counts the TESS stage tests the file against
+print('%s/tess_coverage.csv: %d detections (frame times stub); orbit table cached; written %d (left out, page says not '
+      'computed: 0)' % (run, len(rows), len(rows)))
+print('a line after the summary')
 '''
 
 
@@ -249,6 +253,9 @@ def test_deep_chain_cli():
                  'T1:build:V_fwb', 'T1:merge'):
         r = rec(out, unit)
         assert r and r['status'] == 'done', (unit, r and (r['status'], r['reason']))
+    t = rec(out, 'T1:tess')      # the tool's own counts (its summary line, not the log's last), tested against the file
+    rows = [x for x in open(f'{U}/tess_coverage.csv') if not x.startswith('#')][1:]
+    assert rows and t['meta']['tess_coverage'] == {'written': len(rows), 'left_out': 0}, t['meta']
     b = rec(out, 'T1:build:V_wb')
     assert b['meta']['rendered'] == 3 and b['meta']['kept_unchanged'] == 0, b['meta']
     assert len(b['planned']) == 3 + 1 + 1, b['planned']          # 3 panels (one member epoch), 1 index, 1 queue

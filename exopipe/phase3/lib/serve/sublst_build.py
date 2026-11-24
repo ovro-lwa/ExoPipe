@@ -622,12 +622,13 @@ def tess_coverage(u, plan, B, log):
     --image-root <the 10-minute tree B> [--reuse <the served run>/frame_times.csv when that file is not empty: a window whose image
     is unchanged keeps its times] - <B>/frame_times.csv, the window times (B has no page_context_frames.csv yet: the page context
     runs after the swap) - then tess/tess_coverage.py --run B - <B>/tess_coverage.csv, which the server reads at page build. A
-    failure refuses the views unit, so nothing is swapped in (G11; production: the served product and its pages untouched)."""
+    failure refuses the views unit, so nothing is swapped in (G11; production: the served product and its pages untouched). A parity
+    build reads the orbit table with --no-refresh (never writes the shared table; lib/pages/tess_orbits.reader_args)."""
     cs = _CFG().catalog_sublst
     tree = cs.TENMIN_TREE.format(root=_CFG().paths.SUBLST_ROOT, tree=cs.ARM_TREES['B'])   # sublst_cumulative.sh:197 --image-root
     after = 'nothing swapped in (sublst_cumulative.sh:197-199)'
     tess.tenmin_frame_times(u, B, tree, os.path.join(plan.U, 'frame_times.csv'), log, after=after)
-    tess.coverage(u, B, [], log, after=after)
+    tess.coverage(u, B, [], log, after=after, parity=bool(getattr(plan, 'parity', False)))
 
 
 def carry_page_context_cache(src, B, u=None):

@@ -476,10 +476,6 @@ class serve(_Section):
     SNAPSHOT_STEP_CWD = '/tmp'              # the working directory of the scintillation index, TESS coverage, bright-source filter and
                                             # page index (:168, :187, :196 `cd /tmp`); the page context runs in the exopipe_ops root
                                             # (:176)
-    TESS_PYTHON = 'tess'                    # site PYTHON key of tess/tess_coverage.py on the snapshot review copy and the 10-minute
-                                            # build (lib/serve/tess.py; snapshot_serve.sh:187, sublst_cumulative.sh:198 run
-                                            # /fast/gh/main/envs/tess/bin/python; the site file's copy is the shared environment on
-                                            # /opt with the same packages, OPS-20261116-TESS-ENV-SHARED-ON-OPT)
     SERVE_PARITY_CACHE = '{out}/_cache'     # a parity run's tool caches (the parity guard refuses writes outside --out): the
                                             # scintillation index's --cache and the bright-source filter's --peak-cache. Production
                                             # names none of them (the tools' defaults; the peak cache above)

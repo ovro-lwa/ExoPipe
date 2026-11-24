@@ -34,6 +34,7 @@ the live argv), the planned multiples-chain arguments and the planned registry e
 entries, `serve --tier deep --run P3S5 --dry-run`, content tests on real queues and views and on the review hub.
 """
 import csv
+import datetime
 import glob
 import json
 import os
@@ -1774,7 +1775,7 @@ def test_sublst_tess():
     rf = sh[pos[4]:sh.find('\n', sh.find('exit', pos[4]))]
     assert 'exit 1' in rf, rf
     assert all(os.path.isfile(scripts.path(n_)) for n_ in ('frame_times_tenmin', 'tess_coverage'))
-    assert os.path.isfile(legacy.interpreter(CFG.serve.TESS_PYTHON))
+    assert os.path.isfile(legacy.interpreter(CFG.pages_deep.TESS_PYTHON))
     ok(f'10-minute TESS: production runs frame_times_tenmin.py --image-root {tree} [--reuse], then tess_coverage.py --run $B, '
        f'after the filters, refusing (exit 1); both tools resolve in place, the TESS environment from the site file')
 
@@ -1935,16 +1936,18 @@ def test_snapshot_steps():
                 w_bsf(args[args.index('--out') + 1], args[args.index('--stokes') + 1], args[args.index('--cadence') + 1])
             else:
                 w_index()
+        summary = (f'{DST}/tess_coverage.csv: 1 detections (frame times the cand_id); orbit table cached; written 1 (left out, '
+                   f'page says not computed: 0)\n' if name == 'tess_coverage' else '')     # the tool's summary line
         return types.SimpleNamespace(ok=good, rc=0 if good else 1, reason='' if good else 'exit 1 - error',
-                                     tail=f'wrote {name}' if good else 'REFUSED: no input')
+                                     tail=summary + f'wrote {name}' if good else 'REFUSED: no input')
     NH = {'NUMPY_MADVISE_HUGEPAGE': '0'}
     pc = f'{out}/_cache'
     want = ([('scintillation_index', [DST, '--tier', tier, '--cache', f'{pc}/scintillation_table_index.json'],
               f'{DST}/scintillation_index.log', cw, NH),
              ('page_context_snapshot', [DST, '--workers', S.SNAPSHOT_PAGE_CONTEXT_WORKERS], f'{DST}/page_context_snapshot.log', None,
               NH),
-             ('tess_coverage', ['--run', DST, '--epoch-from-cand-id'] + ([] if CFG.pages_deep.TESS_REFRESH_IN_READER else
-                                                                          ['--no-refresh']), f'{DST}/tess_coverage.log', cw, {}),
+             ('tess_coverage', ['--run', DST, '--epoch-from-cand-id', '--no-refresh'],     # a parity run: the shared orbit
+              f'{DST}/tess_coverage.log', cw, {}),                                        # table is never written
              ('bright_source_filter', ['--help'], None, cw, {})]
             + [('bright_source_filter', [DST, '--tier', tier, '--stokes', s_, '--cadence', c_, '--out',
                                          f'{DST}/bright_source_filter_{s_}_{c_}.npz', '--workers', S.SNAPSHOT_BRIGHT_WORKERS,
@@ -1954,9 +1957,15 @@ def test_snapshot_steps():
     steps = tuple(st for st, _ in SC.STEP_STAGES)
     unit_of = {st: f'snapshot_Run_SNAPSTEP_{st.replace("-", "_")}' for st in steps}
     from exopipe.phase3.lib.pages import common as pcommon
-    orig = (scripts.run, S.SNAPSHOT_SERVE_HOLD, CFG.paths.SNAPSHOT_FLEET_OUT, pcommon.interpreter_or_none)
+    from exopipe.phase3.lib.serve import tess as stess
+    orig = (scripts.run, S.SNAPSHOT_SERVE_HOLD, CFG.paths.SNAPSHOT_FLEET_OUT, pcommon.interpreter_or_none, stess.orbit_table)
     scripts.run, S.SNAPSHOT_SERVE_HOLD, CFG.paths.SNAPSHOT_FLEET_OUT = fake_run, f'{D}/NO_HOLD', fleet
     pcommon.interpreter_or_none = lambda key: sys.executable          # the site's TESS interpreter need not be on this host
+    table = f'{D}/TESS_orbit_times.csv'                               # an orbit table that reaches now (the parity reader's
+    with open(table, 'w') as f:                                       # --no-refresh), not the production table's state
+        f.write('Sector,Orbit,Start of Orbit,End of Orbit\n100,200,2026-01-01 00:00:00,%s\n'
+                % (datetime.datetime.utcnow() + datetime.timedelta(days=20)).strftime('%Y-%m-%d %H:%M:%S'))
+    stess.orbit_table = lambda: table
     try:
         res = {}
         for case in ('ok', 'scintillation_index', 'page_context_snapshot', 'tess_coverage', 'help', 'bright_source_filter',
@@ -1986,7 +1995,7 @@ def test_snapshot_steps():
         assert res['ok'].exit_code() == 0
         for case, st, text in (('scintillation_index', 'scintillation', 'scintillation_index.py on the review copy'),
                                ('page_context_snapshot', 'page-context', 'page_context_snapshot.py on the review copy'),
-                               ('tess_coverage', 'tess', 'tess/tess_coverage.py on the review copy'),
+                               ('tess_coverage', 'tess', f'tess/tess_coverage.py failed on {DST}'),
                                ('help', 'bright-filter', f'has no {tier} tier'),
                                ('bright_source_filter', 'bright-filter', 'bright_source_filter_precompute.py I 10s on the review copy'),
                                ('build_detections_index', 'page-index', 'page index: build_detections_index.py --run')):
@@ -2030,7 +2039,7 @@ def test_snapshot_steps():
         ok('snapshot steps: a start without them in the invocation requires the records of the gate on the copy and of all five '
            '(G28)')
     finally:
-        scripts.run, S.SNAPSHOT_SERVE_HOLD, CFG.paths.SNAPSHOT_FLEET_OUT, pcommon.interpreter_or_none = orig
+        scripts.run, S.SNAPSHOT_SERVE_HOLD, CFG.paths.SNAPSHOT_FLEET_OUT, pcommon.interpreter_or_none, stess.orbit_table = orig
     # negative controls on the content tests (the files of the 'ok' case rewritten one fault at a time)
     neg = []
     w_sci()

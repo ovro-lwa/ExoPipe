@@ -28,6 +28,10 @@ now (the refresh has stopped) is unusable for coverage, with the reason recorded
 Run: python -m exopipe.phase3.lib.pages.tess_orbits [--table T]     (default: <paths.OPS_ROOT>/tess/TESS_orbit_times.csv, the
 table beside the reader tess_coverage.py in the ops tree)
 It prints one JSON record (fetch result, checks, rows, latest orbit end, sha256 before and after) and writes nothing else.
+
+THE READER'S CALL (reader_args, coverage_counts): one policy for every caller of tess_coverage.py - the deep pages' TESS stage
+(lib/pages/tier_deep.stage_tess) and the serves' TESS steps (lib/serve/tess.py) - under one interpreter key
+(pages_deep.TESS_PYTHON).
 """
 import argparse
 import csv
@@ -36,6 +40,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import sys
 import urllib.request
 
@@ -93,6 +98,56 @@ def stale_for_reader(table, now=None):
     except (OSError, TableError) as e:
         return f'unusable ({e})'
     return None if end >= now else f'ends {end.strftime(TIME_FMT)}, before now ({now.strftime(TIME_FMT)})'
+
+
+def reader_args(table, parity=False):
+    """(args, why) for a call of tess_coverage.py. args: --stokes pages_deep.TESS_STOKES unless the tool's default 'I,V' (the
+    content test tess_rows reads the same key), and --no-refresh unless the reader refreshes its own table
+    (pages_deep.TESS_REFRESH_IN_READER True, production) in a run that is not a parity run (a parity run never writes the shared
+    orbit table beside the tool). With --no-refresh the table must reach now: ``why`` is stale_for_reader's reason, else None."""
+    from exopipe.phase3.lib.pages import common
+    D = common.CFG().pages_deep
+    args = [] if D.TESS_STOKES == 'I,V' else ['--stokes', D.TESS_STOKES]
+    if D.TESS_REFRESH_IN_READER and not parity:
+        return args, None
+    return args + ['--no-refresh'], stale_for_reader(table)
+
+
+# tess_coverage.py:286-290, the line it prints after writing <run>/tess_coverage.csv
+COVERAGE_SUMMARY = re.compile(r'^(?P<out>\S+): (?P<n>\d+) (?:detections|forced events) \(frame times .*; written (?P<written>\d+) '
+                              r'\(left out, page says not computed: (?P<left_out>\d+)\)\s*$', re.M)
+
+
+def own_output(res, max_bytes=8 << 20):
+    """The output of this call alone: core.legacy.run appends every call to its log after a '===== <utc> <argv>' line, so the
+    text after the LAST such line of this call's argv (read from the end of the log, at most ``max_bytes``); without a log
+    (or a stand-in result without one), its tail. None when the log does not hold this call's line."""
+    log, argv = getattr(res, 'log', None), getattr(res, 'argv', None)
+    if not log or not argv:
+        return getattr(res, 'tail', '') or ''
+    try:
+        with open(log, 'rb') as f:
+            f.seek(0, 2)
+            f.seek(max(0, f.tell() - max_bytes))
+            text = f.read().decode('utf-8', 'replace')
+    except OSError:
+        return None
+    mark = re.compile(r'^===== \S+ ' + re.escape(' '.join(str(a) for a in argv)) + r'$', re.M)
+    last = None
+    for last in mark.finditer(text):
+        pass
+    return text[last.end():] if last else None
+
+
+def coverage_counts(res, out):
+    """(written, left_out) from the summary line tess_coverage.py printed for ``out`` (its <run>/tess_coverage.csv) anywhere
+    in this call's own output (own_output; the last such line), else None."""
+    text = own_output(res)
+    if not text:
+        return None
+    want = os.path.normpath(out)
+    hits = [m for m in COVERAGE_SUMMARY.finditer(text) if os.path.normpath(m['out']) == want]
+    return (int(hits[-1]['written']), int(hits[-1]['left_out'])) if hits else None
 
 
 def problems(old, new, now):

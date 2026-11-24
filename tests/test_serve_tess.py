@@ -5,7 +5,7 @@ sublst_cumulative.sh:192-200), with the content tests tess_coverage (with the to
 (lib/pages/tests.py).
 
 The tools (tess/tess_coverage.py, tess/frame_times_tenmin.py, production code run in place) are replaced by stand-ins that write
-what the tools write and print their summary lines; the production fragments and the tools' presence are checked in
+what the tools write and print their summary lines (one of them appending to the log as core.legacy.run does); the production fragments and the tools' presence are checked in
 tests/test_serve.py (test_snapshot_steps, test_sublst_tess), which reads the cluster's production tree.
 
 Run: python tests/test_serve_tess.py [test names]   (exit 0 = all passed, 1 = a failure, 2 = imports missing)
@@ -27,6 +27,8 @@ _IMPORT_ERROR = None
 try:
     from exopipe.phase3.config import CFG
     from exopipe.phase3.core.record import Run
+    from exopipe.phase3.lib.pages import common as pcommon
+    from exopipe.phase3.lib.pages import tess_orbits
     from exopipe.phase3.lib.pages import tests as PT
     from exopipe.phase3.lib.serve import scripts, snapshot_copy, sublst_build, tess
 except Exception as e:  # noqa: BLE001
@@ -115,16 +117,39 @@ def summ(run_dir, written, left_out):
             f'table cached; V not observed: 1; written {written} (left out, page says not computed: {left_out})')
 
 
-def snapshot(d, **kw):
-    """snapshot_copy.tess_stage on a synthetic review copy with a stand-in tool; returns (unit, calls, DST, ids)."""
+def snapshot(d, parity=False, runner=None, table=None, **kw):
+    """snapshot_copy.tess_stage on a synthetic review copy with a stand-in tool (the site's TESS interpreter stood in by this
+    one); returns (unit, calls, DST, ids)."""
     DST, ids = snapshot_run(d)
     calls = []
     kw.setdefault('tess_rows', coverage_rows(ids[:3], ['simultaneous', 'not observed', 'not observed']))
     kw.setdefault('summary', summ(DST, 3, 1))
     run = Run('serve', ['test'], os.path.join(d, 'out'), CFG, config_sections=None)
-    with Patch((scripts, 'run', tool(calls, **kw))):
-        u = snapshot_copy.tess_stage(run, types.SimpleNamespace(U=DST, run_name='Run_SNAPTESS'))
+    with Patch((scripts, 'run', runner(calls) if runner else tool(calls, **kw)),
+               (pcommon, 'interpreter_or_none', lambda key: sys.executable),
+               (tess, 'orbit_table', lambda: table or os.path.join(d, 'no_orbit_table.csv'))):
+        u = snapshot_copy.tess_stage(run, types.SimpleNamespace(U=DST, run_name='Run_SNAPTESS', parity=parity))
     return u, calls, DST, ids
+
+
+def logged(calls, outputs):
+    """A stand-in for scripts.run that writes as core.legacy.run does: each call appends '===== <utc> <argv>' and its own
+    output to the ONE log, and returns the log's last 40 lines as the tail, with log and argv. ``outputs``: one text per call;
+    the tool still writes its file (3 rows of the review copy)."""
+    texts = list(outputs)
+
+    def run(name, args=(), python='default', env=None, cwd=None, log=None, unit=None, timeout=None, **kw):
+        calls.append(dict(name=name, args=list(args), python=python, cwd=cwd, log=log, env=env))
+        run_dir = args[args.index('--run') + 1]
+        ids = [r['cand_id'] for r in csv.DictReader(open(f'{run_dir}/master_catalog.csv'))]
+        wcsv(f'{run_dir}/tess_coverage.csv', TESS_COLS, coverage_rows(ids[:3], ['not observed'] * 3), crlf=True,
+             comment='# tess_coverage.py x')
+        argv = ['/py', '/ops/' + scripts.SCRIPTS[name][0]] + [str(a) for a in args]
+        with open(log, 'a') as f:
+            f.write(f'\n===== 2026-11-24T00:00:00Z {" ".join(argv)}\n' + texts.pop(0))
+        tail = '\n'.join(open(log).read().splitlines()[-40:])
+        return types.SimpleNamespace(ok=True, rc=0, reason='', tail=tail, log=log, argv=argv)
+    return run
 
 
 # =====================================================================================================================
@@ -135,11 +160,11 @@ def test_the_snapshot_stage_runs_the_tool_as_production():
     with Tmp() as d:
         u, calls, DST, _ids = snapshot(d)
         assert u.name == 'snapshot_Run_SNAPTESS_tess' and u.status == 'done', (u.name, u.status, u.reason)
-        assert calls == [dict(name='tess_coverage', args=['--run', DST, '--epoch-from-cand-id', '--proto-root',
-                                                          CFG.paths.SNAPSHOT_FLEET_OUT],
-                              python=CFG.serve.TESS_PYTHON, cwd=CFG.serve.SNAPSHOT_STEP_CWD,
+        assert calls == [dict(name='tess_coverage', args=['--run', DST, '--epoch-from-cand-id'],
+                              python=CFG.pages_deep.TESS_PYTHON, cwd=CFG.serve.SNAPSHOT_STEP_CWD,
                               log=os.path.join(DST, 'tess_coverage.log'), env=None)], calls
-        assert CFG.serve.TESS_PYTHON == 'tess' and CFG.serve.SNAPSHOT_STEP_CWD == '/tmp'
+        assert CFG.pages_deep.TESS_PYTHON == 'tess' and CFG.serve.SNAPSHOT_STEP_CWD == '/tmp'
+        assert os.path.abspath(f'{DST}/master_catalog.csv') in u.inputs, u.inputs
         assert [o['class'] for o in u.outputs] == ['tess_coverage'] and u.outputs[0]['path'] == f'{DST}/tess_coverage.csv'
         assert u.meta['tess_coverage'] == {'written': 3, 'left_out': 1}, u.meta
         assert u.tests and all(t['passed'] for t in u.tests), u.tests
@@ -157,9 +182,51 @@ def test_a_failed_or_unreadable_tool_refuses():
     with Tmp() as d:
         u, _calls, _DST, _ids = snapshot(d, summary='done')
         assert u.status == 'refused' and 'no summary line' in u.reason and "'done'" in u.reason, (u.status, u.reason)
-    with Tmp() as d:          # the summary of an EARLIER call in the appended log is never read as this call's
+    with Tmp() as d:          # a summary line for another file is not this file's
         u, _calls, DST, _ids = snapshot(d, summary=summ('x', 3, 1) + '\nTraceback (most recent call last): boom')
         assert u.status == 'refused' and 'no summary line' in u.reason, (u.status, u.reason)
+    with Tmp() as d:          # no master_catalog.csv: refused before the tool
+        DST = os.path.join(d, 'Run_SNAPTESS')
+        calls = []
+        os.makedirs(DST)
+        with Patch((scripts, 'run', tool(calls, summary='')), (pcommon, 'interpreter_or_none', lambda key: sys.executable),
+                   (tess, 'orbit_table', lambda: os.path.join(d, 'no_orbit_table.csv'))):
+            u = snapshot_copy.tess_stage(Run('serve', ['test'], os.path.join(d, 'out'), CFG, config_sections=None),
+                                         types.SimpleNamespace(U=DST, run_name='Run_SNAPTESS'))
+        assert u.status == 'refused' and 'master_catalog.csv' in u.reason and not calls, (u.status, u.reason)
+    with Tmp() as d:          # the site has no TESS interpreter on this host: refused before the tool
+        DST, _ids = snapshot_run(d)
+        calls = []
+        with Patch((scripts, 'run', tool(calls, summary='')), (pcommon, 'interpreter_or_none', lambda key: None)):
+            u = snapshot_copy.tess_stage(Run('serve', ['test'], os.path.join(d, 'out'), CFG, config_sections=None),
+                                         types.SimpleNamespace(U=DST, run_name='Run_SNAPTESS'))
+        assert u.status == 'refused' and "PYTHON['tess'] interpreter is not on this host" in u.reason and not calls, u.reason
+
+
+def test_the_summary_is_found_in_this_calls_own_output_only():
+    """core.legacy.run appends every call to one log: the summary line is searched in the text after THIS call's '====='
+    line, anywhere in it (not only on the last line); an earlier call's summary for the same file is never this call's."""
+    with Tmp() as d:
+        DST = os.path.join(d, 'Run_SNAPTESS')
+        line = summ(DST, 3, 1)
+        u, _c, DST, _ids = snapshot(d, runner=lambda calls: logged(calls, [f'{line}\nUserWarning: a line after it\n']))
+        assert u.status == 'done' and u.meta['tess_coverage'] == {'written': 3, 'left_out': 1}, (u.status, u.reason)
+    with Tmp() as d:
+        DST = os.path.join(d, 'Run_SNAPTESS')
+        os.makedirs(DST)
+        with open(os.path.join(DST, 'tess_coverage.log'), 'a') as f:          # an earlier call, same file, same argv
+            f.write(f'\n===== 2026-11-23T00:00:00Z /py /ops/{scripts.SCRIPTS["tess_coverage"][0]} --run {DST} '
+                    f'--epoch-from-cand-id\n'
+                    f'{summ(DST, 3, 1)}\n')
+        u, _c, DST, _ids = snapshot(d, runner=lambda calls: logged(calls, ['Traceback (most recent call last): boom\n']))
+        assert u.status == 'refused' and 'no summary line' in u.reason, (u.status, u.reason)
+    with Tmp() as d:          # a stand-in result without a log: its tail
+        res = types.SimpleNamespace(tail=f'x\n{summ("/r", 2, 0)}\ny')
+        assert tess_orbits.coverage_counts(res, '/r/tess_coverage.csv') == (2, 0)
+        assert tess_orbits.coverage_counts(res, '/r/./tess_coverage.csv') == (2, 0)
+        assert tess_orbits.coverage_counts(res, '/s/tess_coverage.csv') is None
+        res = types.SimpleNamespace(tail='', log=os.path.join(d, 'none.log'), argv=['a'])
+        assert tess_orbits.own_output(res) is None and tess_orbits.coverage_counts(res, '/r/tess_coverage.csv') is None
 
 
 def test_the_file_must_hold_exactly_what_the_tool_counted():
@@ -209,14 +276,34 @@ def test_the_reader_uses_the_refreshed_orbit_table_when_the_refresh_step_owns_it
                 f.write(f'100,200,2026-01-01 00:00:00,{end:%Y-%m-%d %H:%M:%S}\n')
         now = datetime.datetime.utcnow()
         orbits(now + datetime.timedelta(days=20))
-        with Patch((CFG.pages_deep, 'TESS_REFRESH_IN_READER', False), (tess, 'orbit_table', lambda: table)):
-            u, calls, DST, _ids = snapshot(d)
+        with Patch((CFG.pages_deep, 'TESS_REFRESH_IN_READER', False)):
+            u, calls, DST, _ids = snapshot(d, table=table)
             assert u.status == 'done' and calls[0]['args'][-1] == '--no-refresh', (u.status, u.reason, calls)
+            assert os.path.abspath(table) in u.inputs, u.inputs
             orbits(now - datetime.timedelta(days=2))
-            u, calls, DST, _ids = snapshot(d)
+            u, calls, DST, _ids = snapshot(d, table=table)
             assert u.status == 'refused' and 'before now' in u.reason and not calls, (u.status, u.reason, calls)
-        u, calls, DST, _ids = snapshot(d)                    # True (production): the tool keeps its own table
+        u, calls, DST, _ids = snapshot(d, table=table)       # True (production): the tool keeps its own table
         assert u.status == 'done' and '--no-refresh' not in calls[0]['args'], calls
+        orbits(now + datetime.timedelta(days=20))            # ... except in a parity run, which never writes the shared table
+        u, calls, DST, _ids = snapshot(d, parity=True, table=table)
+        assert u.status == 'done' and calls[0]['args'][-1] == '--no-refresh', (u.status, u.reason, calls)
+        orbits(now - datetime.timedelta(days=2))
+        u, calls, DST, _ids = snapshot(d, parity=True, table=table)
+        assert u.status == 'refused' and 'a parity run never writes the shared table' in u.reason and not calls, u.reason
+
+
+def test_the_reader_gets_the_stokes_the_content_test_reads():
+    """--stokes pages_deep.TESS_STOKES unless the tool's default 'I,V', the key tess_rows reads (the shared reader policy,
+    lib/pages/tess_orbits.reader_args, as the deep pages)."""
+    with Tmp() as d:
+        u, calls, DST, ids = snapshot(d)
+        assert '--stokes' not in calls[0]['args']
+    with Tmp() as d, Patch((CFG.pages_deep, 'TESS_STOKES', 'V')):
+        DST, ids = snapshot_run(d)
+        u, calls, DST, ids = snapshot(d, summary=summ(DST, 3, 0))       # the three Stokes V detections, none left out
+        assert u.status == 'done' and calls[0]['args'][-2:] == ['--stokes', 'V'], (u.status, u.reason, calls)
+        assert tess_orbits.reader_args('/nonexistent', parity=False) == (['--stokes', 'V'], None)
 
 
 # =====================================================================================================================
@@ -255,9 +342,9 @@ def tenmin(d, reuse=None, **kw):
     kw.setdefault('tess_rows', [dict(r, cand_id=c) for r, c in zip(coverage_rows(ids[:3], ['not observed'] * 3), ids[:3])])
     kw.setdefault('summary', summ(B, 3, 1))
     run = Run('serve', ['test'], os.path.join(d, 'out'), CFG, config_sections=None)
-    with Patch((scripts, 'run', tool(calls, **kw))):
+    with Patch((scripts, 'run', tool(calls, **kw)), (tess, 'orbit_table', lambda: os.path.join(d, 'no_orbit_table.csv'))):
         with run.unit('sublst_Run_SLSTB_views', stage='views', tier='sublst') as u:
-            sublst_build.tess_coverage(u, types.SimpleNamespace(U=U), B, f'{B}/incremental.log')
+            sublst_build.tess_coverage(u, types.SimpleNamespace(U=U, parity=False), B, f'{B}/incremental.log')
     return u, calls, U, B
 
 
@@ -291,7 +378,7 @@ def test_the_tenmin_step_refuses_and_runs_no_coverage_after_a_failed_window_step
         assert u.reason.startswith(f'TESS coverage: tess/frame_times_tenmin.py failed on {B}') and 'nothing swapped in' in u.reason
     with Tmp() as d:
         u, calls, U, B = tenmin(d, ft_summary='finished')
-        assert u.status == 'refused' and 'no summary line from tess/frame_times_tenmin.py' in u.reason, u.reason
+        assert u.status == 'refused' and 'no summary line for' in u.reason and 'tess/frame_times_tenmin.py' in u.reason, u.reason
     with Tmp() as d:                                         # the tool counted 3 windows, the file holds 2
         u, calls, U, B = tenmin(d, ft_rows=window_rows(WINDOWS[:2]))
         assert u.status == 'refused' and 'failed their content test' in u.reason and '2 rows, the tool wrote 3' in u.reason \
