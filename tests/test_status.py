@@ -343,6 +343,19 @@ def build_world():
         json.dump(dict(r, unit=u), open(_mk(f'{R}/{u}.json'), 'w'))
     os.makedirs(f'{TMP}/empty_reports', exist_ok=True)
     os.makedirs(f'{TMP}/jobs', exist_ok=True)
+    # the data-processing page's dated sources (status_pages.DATA_PAGE_*): 3 snapshot cells in two lists (one cell twice),
+    # 2 snapshot and 1 10-minute omission rows, 2 searched 10-minute window images, 1 pending LST-night
+    q = f'{W}/qa_sources'
+    wtxt(f'{q}/snapshot_rechain_Run_SNAPB13_20261104.cells', '05h_2099-01-01\n05h_2099-01-02  # note\n')
+    wtxt(f'{q}/snapshot_rechain_Run_SNAPB23_20261104.cells', '05h_2099-01-02\n05h_2099-01-03\nnot a cell\n')
+    wcsv(f'{q}/Run_SNAPCOMB_20261107/deep_omission.csv', ['lst', 'night', 'tier', 'stokes', 'verdict'],
+         [dict(lst='05h', night='2099-01-01', tier='10s', stokes='I', verdict='KEEP'),
+          dict(lst='05h', night='2099-01-01', tier='1min', stokes='V', verdict='OMIT')])
+    wcsv(f'{q}/Run_SLSTB/deep_omission.csv', ['lst', 'night', 'stokes', 'verdict'],
+         [dict(lst='05h', night='2099-01-01', stokes='I', verdict='KEEP')])
+    wcsv(f'{q}/Run_SLSTB/v_deep_images.csv', ['lst', 'date', 'stokes', 'scope'],
+         [dict(lst='05h', date='2099-01-01T01:00:00', stokes=S, scope='Full') for S in 'IV'])
+    wtxt(f'{q}/worklist_dec18_27.txt', '# lst date\n05h 2099-01-02\n')
 
 
 def _mk(p):
@@ -433,14 +446,33 @@ def main():
     print('data page -> ' + OUT)
 ''',
     'build_qa_release1.py': '''
-import csv, json, os, sys, time
+import csv, glob, json, os, re, sys, time
 sys.path.insert(0, '@FAKE@')
 import build_data_processing_page as B                      # the 10-07 module, imported for its sources (as production)
 OUT = os.path.join(sys.argv[1] if len(sys.argv) > 1 else '@W@/release1_default', 'qa_site')
 HUB = '@W@/hub'
+OPS = '/nonexistent/ops'                                     # the dated sources as production's literals (config sets them)
+SNAPV = '/nonexistent/snapshot_search/review/Run_SNAPCOMB_20261107'
+TENV = '/nonexistent/transients/Run_SLSTB'
+DEC = OPS + '/snapshot_batch/dec18_27_20261109/worklist_dec18_27.txt'
+TENMIN_VIEW = '/nonexistent/transients/Run_SLSTB'
+def snap_cov():
+    cells = set()
+    for f in sorted(glob.glob(f'{OPS}/snapshot_rechain_Run_SNAPB*3_20261104.cells')):
+        for line in open(f):
+            t = line.split('#')[0].split()
+            if t and re.match(r'^\d\dh_20\d\d-\d\d-\d\d$', t[0]):
+                cells.add(tuple(t[0].split('_', 1)))
+    return cells
+def rows_of(p):
+    return list(csv.DictReader(open(p))) if os.path.exists(p) else []
 def main():
     os.makedirs(OUT, exist_ok=True)
     rows = list(csv.DictReader(open(B.LEDGER)))
+    src = 'sources: snap cells %d, snap omission %d, 10-min omission %d, 10-min images %d, pending %d' % (
+        len(snap_cov()), len(rows_of(SNAPV + '/deep_omission.csv')), len(rows_of(TENV + '/deep_omission.csv')),
+        len(rows_of(TENMIN_VIEW + '/v_deep_images.csv')), len([x for x in open(DEC) if x.strip() and not x.startswith('#')]) if os.path.exists(DEC) else 0)
+    titles = '10-minute: the served sub-LST chain (Run_SLSTB); 10-second and 1-minute: the served view (Run_SNAPCOMB_20261107)'
     frag = HUB + '/qa_overview_fragment.html'
     body = open(frag).read() if os.path.exists(frag) else ''      # production skips the section when absent
     keys = [(r['lst'], r['date']) for r in rows]
@@ -455,7 +487,8 @@ def main():
                    for t in ('deep', '10min', 'snap')], f)
     p = OUT + '/data_processing.html'
     with open(p + '.part', 'w') as f:
-        f.write('<html>' + body + links + '<h2>6. Every LST-night of the grids (%d)</h2></html>' % len(cov))
+        f.write('<html>' + body + links + '<p>' + titles + '</p><p>' + src + '</p>'
+                + '<h2>6. Every LST-night of the grids (%d)</h2></html>' % len(cov))
     os.replace(p + '.part', p)
     with open(OUT + '/per_night_qa_inventory.csv', 'w', newline='') as f:
         w = csv.writer(f)
@@ -734,6 +767,10 @@ def world():
             ('status_qa', 'BANDPASS_TABLES_GLOB'): f'{W}/cal/*/*/successful/*/tables/*.B.flagged',
             ('status_qa', 'BANDPASS_SHARDS'): 3,
             ('status_snapshot', 'ORDER_LIST'): f'{W}/snap/order.txt',
+            ('status_pages', 'DATA_PAGE_SNAP_VIEW'): f'{W}/qa_sources/Run_SNAPCOMB_20261107',
+            ('status_pages', 'DATA_PAGE_TENMIN_VIEW'): f'{W}/qa_sources/Run_SLSTB',
+            ('status_pages', 'DATA_PAGE_SNAP_CELL_LISTS'): f'{W}/qa_sources/snapshot_rechain_Run_SNAPB*3_20261104.cells',
+            ('status_pages', 'DATA_PAGE_DEC_PENDING'): f'{W}/qa_sources/worklist_dec18_27.txt',
             ('site', 'LEGACY_CODE_ROOTS'): [env.legacy_root('clv15'), FAKE]}
     wtxt(f'{W}/rebuild_list.txt', '05h_Full\n')
     saved = {}
@@ -1479,6 +1516,13 @@ def test_conformance_pages_ledger_register():
     check('the data page read this run\'s hub fragment (HUB = <out>/review_hub), not the production hub',
           not os.path.exists(f'{W}/hub/qa_overview_fragment.html') and
           'fragment' in open(os.path.join(out, 'review_hub', 'data_processing.html')).read())
+    check('the builder read the configured dated sources (status_pages.DATA_PAGE_*: SNAPV, TENV, TENMIN_VIEW, DEC and the '
+          'snap_cov cell lists), not its literals; the sources are inputs of the unit',
+          'sources: snap cells 3, snap omission 2, 10-min omission 1, 10-min images 2, pending 1'
+          in open(os.path.join(out, 'review_hub', 'data_processing.html')).read()
+          and {f'{W}/qa_sources/Run_SNAPCOMB_20261107/deep_omission.csv', f'{W}/qa_sources/worklist_dec18_27.txt',
+               f'{W}/qa_sources/snapshot_rechain_Run_SNAPB23_20261104.cells'} <= set(rd.get('inputs', {})),
+          (rd.get('inputs', {}).keys(), txt[-300:]))
     site = os.path.join(out, 'status', 'qa_site')
     nled = len(rows(CFG.status.LEDGER))
     cov = json.load(open(os.path.join(out, 'review_hub', 'coverage.json')))
@@ -1528,6 +1572,23 @@ def test_conformance_pages_ledger_register():
     check('S-G17: data-processing without this hub\'s QA overview fragment refuses (the page would lack its section)',
           rc == 2 and 'S-G17' in txt and not os.path.exists(f'{TMP}/o_dp_nofrag/review_hub/data_processing.html'),
           txt[-300:])
+    before = sha(os.path.join(out, 'review_hub', 'data_processing.html'))
+    rc, txt = step(['status', 'pages', '--stages', 'data-processing', '--out', out, '--cores', 'none',
+                    '--set', f'status_pages.DATA_PAGE_SNAP_VIEW={W}/qa_sources/Run_SNAPCOMB_MISSING'])
+    check('S-G18: a configured source absent (the snapshot view) refuses before the build; the hub keeps its page',
+          rc == 2 and 'S-G18' in txt and 'Run_SNAPCOMB_MISSING' in txt
+          and sha(os.path.join(out, 'review_hub', 'data_processing.html')) == before, txt[-300:])
+    rc, txt = step(['status', 'pages', '--stages', 'data-processing', '--out', out, '--cores', 'none',
+                    '--set', f'status_pages.DATA_PAGE_SNAP_CELL_LISTS={W}/qa_sources/none_*.cells'])
+    check('S-G18: no cell list matches the configured glob: refused', rc == 2 and 'S-G18' in txt and 'no cell list' in txt,
+          txt[-300:])
+    wcsv(f'{W}/qa_sources/Run_SNAPCOMB_20261116/deep_omission.csv', ['lst', 'night', 'tier', 'stokes', 'verdict'], [])
+    rc, txt = step(['status', 'pages', '--stages', 'data-processing', '--out', out, '--cores', 'none',
+                    '--set', f'status_pages.DATA_PAGE_SNAP_VIEW={W}/qa_sources/Run_SNAPCOMB_20261116'])
+    check('S-G19: another snapshot view configured while the builder\'s tier title (a literal) names Run_SNAPCOMB_20261107: '
+          'refused, not installed (the hub keeps its page)',
+          rc == 2 and 'S-G19' in txt and 'Run_SNAPCOMB_20261107' in txt
+          and sha(os.path.join(out, 'review_hub', 'data_processing.html')) == before, txt[-400:])
     neg('qa_coverage_count', 'qa_coverage', os.path.join(out, 'review_hub', 'coverage.json'),
         lambda p: json.dump(dict(cov, nights=dict(list(cov['nights'].items())[1:])), open(p, 'w')),
         siblings=[os.path.join(out, 'review_hub', 'data_processing.html')])

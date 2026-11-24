@@ -14,6 +14,10 @@ pages        nights: ops/build_qa_pages.py (HUB = <out>/review_hub, LEDGER, DD, 
              and sources; B is imported first with LEDGER, DD, ROOT, QA set from config. The builder writes into
              <out>/status/qa_site (OUT) and reads the QA overview fragment and the night pages of <out>/review_hub (HUB);
              the page and coverage.json are then copied into <out>/review_hub, as production installs them into the hub.
+             The builder's dated sources come from config (status_pages.DATA_PAGE_SNAP_VIEW, DATA_PAGE_TENMIN_VIEW,
+             DATA_PAGE_SNAP_CELL_LISTS, DATA_PAGE_DEC_PENDING; the roots A, GEN, P1, P2, OPS from paths): S-G18 refuses when
+             one is absent (production reads it as empty), S-G19 when the page names a view or archive run other than the
+             configured ones (the tier titles are literals in its main()).
 register     ops/build_ratified_register.py AUDIT_CSV ...: REG = <out>/clv15/RATIFIED_STEPS_REGISTER.csv, PAGE =
              <out>/review_hub/ratified_steps.html.
 """
@@ -97,16 +101,84 @@ def run_nights(out, nights, unit, log, allowed):
     return rc, text, hub.rstrip('/')
 
 
+# build_qa_release1.py:106, the cell-list glob written inside snap_cov(); replaced by status_pages.DATA_PAGE_SNAP_CELL_LISTS
+SNAP_COV_LITERAL = "f'{OPS}/snapshot_rechain_Run_SNAPB*3_20261104.cells'"
+# S-G19: run-name families the page prints -> the configured name each must equal (the page's text, its tier titles included)
+PAGE_RUN_TOKENS = (('snap', r'Run_SNAPCOMB_[A-Za-z0-9_]+'), ('tenmin', r'Run_SLST[A-Za-z0-9_]*'), ('archive', r'Run_2\d{7}_\d{6}'))
+
+
+def data_page_sources(C=None):
+    """The builder's dated sources from config: {name: value} with the views and files expanded."""
+    C = C or K.cfg()
+    P = C.status_pages
+    kw = dict(snapreview=C.paths.SNAPSHOT_REVIEW_ROOT, transients=C.paths.TRANSIENTS_ROOT)
+    return dict(snap_view=K.expand(P.DATA_PAGE_SNAP_VIEW, **kw), tenmin_view=K.expand(P.DATA_PAGE_TENMIN_VIEW, **kw),
+                cell_lists=K.expand(P.DATA_PAGE_SNAP_CELL_LISTS, **kw), dec_pending=K.expand(P.DATA_PAGE_DEC_PENDING, **kw))
+
+
+def data_page_missing(src):
+    """S-G18: the sources the builder would read as empty. Returns (missing descriptions, the files read)."""
+    import glob
+    need = [os.path.join(src['snap_view'], 'deep_omission.csv'), os.path.join(src['tenmin_view'], 'deep_omission.csv'),
+            os.path.join(src['tenmin_view'], 'v_deep_images.csv'), src['dec_pending']]
+    missing = [p for p in need if not os.path.isfile(p)]
+    lists = sorted(glob.glob(src['cell_lists']))
+    if not lists:
+        missing.append(f'{src["cell_lists"]} (no cell list matches)')
+    return missing, [p for p in need if p not in missing] + lists
+
+
+def snap_cov_reader(builder_file, pattern):
+    """The builder's snap_cov() with its cell-list glob literal (SNAP_COV_LITERAL) replaced by ``pattern``; the rest of the
+    body is production's own source, compiled from the builder file. Refusal when the literal is not there exactly once."""
+    import ast
+    import glob
+    import re
+    from exopipe.phase3.core.record import Refusal
+    text = open(builder_file).read()
+    fn = [n for n in ast.parse(text).body if isinstance(n, ast.FunctionDef) and n.name == 'snap_cov']
+    seg = ast.get_source_segment(text, fn[0]) if len(fn) == 1 else ''
+    if seg.count(SNAP_COV_LITERAL) != 1:
+        raise Refusal(f'S-G18: {builder_file} snap_cov() no longer reads {SNAP_COV_LITERAL} (exactly once): the configured '
+                      f'status_pages.DATA_PAGE_SNAP_CELL_LISTS cannot replace it')
+    ns = dict(glob=glob, re=re, DATA_PAGE_SNAP_CELL_LISTS=pattern)
+    exec(compile(seg.replace(SNAP_COV_LITERAL, 'DATA_PAGE_SNAP_CELL_LISTS'), builder_file, 'exec'), ns)   # noqa: S102
+    return ns['snap_cov']
+
+
+def page_run_mismatches(page_text, src, archive_run):
+    """S-G19: run names of each family the page prints that differ from the configured one ([] = consistent)."""
+    import re
+    want = dict(snap=os.path.basename(src['snap_view'].rstrip('/')), tenmin=os.path.basename(src['tenmin_view'].rstrip('/')),
+                archive=archive_run)
+    bad = []
+    for fam, pat in PAGE_RUN_TOKENS:
+        other = sorted(set(re.findall(pat, page_text)) - {want[fam]})
+        if other:
+            bad.append(f'{fam}: the page names {other}, config {want[fam]}')
+    return bad
+
+
 def run_data_page(out, unit, log, allowed):
     """build_qa_release1.main in place (module docstring). The installed files are content-tested in the builder's folder
     first (its preview links nights/ and dates/ point at this hub), and installed only when every test passes, both
-    staged as .part before either is replaced. Returns (rc, text, {installed path: class}, builder folder, failures)."""
+    staged as .part before either is replaced. Returns (rc, text, {installed path: class}, builder folder, failures).
+    Refuses S-G18 (a configured source absent) before the build and S-G19 (the page names another view) after it."""
     import importlib
+    import importlib.util
     import sys
     from exopipe.phase3.core import validate
+    from exopipe.phase3.core.record import Refusal
     from exopipe.phase3.lib.status import steps_inplace as IP
     C = K.cfg()
     P = C.status_pages
+    src = data_page_sources(C)
+    missing, reads = data_page_missing(src)
+    if missing:
+        raise Refusal(f'S-G18: {P.DATA_PAGE_BUILDER} would read these configured sources as empty: {missing} '
+                      f'(status_pages.DATA_PAGE_SNAP_VIEW / DATA_PAGE_TENMIN_VIEW / DATA_PAGE_SNAP_CELL_LISTS / DATA_PAGE_DEC_PENDING)')
+    for p in reads:
+        unit.add_input(p)
     hub = K.place(out, 'review_hub', '').rstrip('/')
     site = K.place(out, 'status', P.DATA_PAGE_SITE)
     dests = {K.check_write(os.path.join(hub, n)): cls for n, cls in P.DATA_PAGE_INSTALL.items()}
@@ -122,12 +194,23 @@ def run_data_page(out, unit, log, allowed):
         for k, v in dict(LEDGER=C.status.LEDGER, DD=C.paths.DATA_DECISIONS, ROOT=C.paths.COADD_SB_ROOT,
                          QA=C.status.QA_DIR).items():
             setattr(B, k, v)
-        rc, text, mod = IP.call_attr(P.DATA_PAGE_BUILDER, dict(OUT=site, HUB=hub), 'main', allowed_roots=allowed, log=log,
+        with IP.redirect({}, allowed, env=env):           # the builder's file on the legacy path (found, not imported)
+            spec = importlib.util.find_spec(P.DATA_PAGE_BUILDER)
+        attrs = dict(OUT=site, HUB=hub, A=C.paths.PHASE3_ARCHIVE_ROOT, GEN=C.paths.ARCHIVE_RUN, OPS=C.paths.OPS_ROOT,
+                     P1=C.paths.PHASE1_ROOT, P2=C.paths.PHASE2_ROOT, SNAPV=src['snap_view'], TENV=src['tenmin_view'],
+                     TENMIN_VIEW=src['tenmin_view'], DEC=src['dec_pending'],
+                     snap_cov=snap_cov_reader(spec.origin, src['cell_lists']))
+        rc, text, mod = IP.call_attr(P.DATA_PAGE_BUILDER, attrs, 'main', allowed_roots=allowed, log=log,
                                      unit=unit, env=env, argv=[P.DATA_PAGE_BUILDER + '.py', os.path.dirname(site)])
     finally:
         sys.modules.pop(P.DATA_PAGE_HELPER, None)
     if rc != 0:
         return rc, text, {}, site, []
+    page = os.path.join(site, P.DATA_PAGE)
+    wrong = page_run_mismatches(open(page).read(), src, C.paths.ARCHIVE_RUN) if os.path.exists(page) else []
+    if wrong:
+        raise Refusal(f'S-G19: {page} names a run other than the configured sources (a literal in the builder): '
+                      + '; '.join(wrong) + ' - not installed')
     bad = [f'{n}: {r["name"]}: {str(r["detail"])[:200]}' for n, cls in P.DATA_PAGE_INSTALL.items()
            for r in validate.run(cls, os.path.join(site, n)) if not r['passed']]
     if bad:
