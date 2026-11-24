@@ -323,7 +323,7 @@ def tie_cache_rows(path, errmodel=None, **ctx):
     miss = [x for x in need if x not in cols]
     if miss:
         return False, len(rows), 'missing columns %s' % miss
-    cell = os.path.basename(path)[4:-4]
+    cell = re.sub(r'^tie2?_', '', os.path.basename(path))[:-4]      # tie_<cell>.csv, or tie2_<cell>.csv (newer header)
     other = sum(1 for r in rows if r['cell'] != cell)
     keys = [(r['sb'], r['st'], r['tier'], r['ts'], r['ra_pre'], r['dec_pre'], r['errmodel']) for r in rows]
     dup = len(keys) - len(set(keys))

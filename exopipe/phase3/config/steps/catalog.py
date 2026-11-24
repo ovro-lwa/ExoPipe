@@ -729,6 +729,13 @@ class catalog_snapshot(_Section):
     NODE_FAST_ROOT = '/fast/gh/main/phase3'               # NODE_FAST = <root>/rechain_<NAME> on every node (tie outputs, fit shards); snapshot_rechain_batch.sh:58
     APPROVAL_MARKER = '/lustre/gh/main/exopipe_ops/snapshot_rechain_{name}.APPROVED'   # production approval marker (read only; --snap-approval-marker); snapshot_rechain_batch.sh:53
     CODE_SHA256 = '/lustre/gh/main/exopipe_ops/snapshot_rechain_{name}.code_sha256'    # tested-code fingerprint (P-G3, window form); snapshot_rechain_batch.sh:53, :75-76
+    # ---- per-hour catalog of the tier (`catalog --tier snapshot --incremental`, lib/catalog/incremental_snapshot.py). Phase
+    # 'cell' = the per-cell pre-chain stage of ruling 2026-09-18 (ops/snapshot_cell_prestage.sh): the prefit loop
+    # (PREFIT_MAX_ITER, FIT_PROCS_RESERVE above) and the tie pass (TIE_SHARDS above) into BATCH_DIR's fits/, tiecache/, cells/.
+    # Phase 'associate' refuses (SI-G9): no ruled per-hour design for the cross-cell association and the combined view.
+    INC_PHASES_DEFAULT = ('cell', 'associate')            # --inc-phase default; the associate phase refuses every hour, so the
+                                                          # per-hour chain item stops at this step and is never complete [step]
+    INC_CHAIN_TIMEOUT_H = 36                              # h per chain pass; snapshot_cell_prestage.sh:62 PRESTAGE_TIMEOUT 36h [step]
     RULED = {'STORE_FLOOR': 'R-SNAP-STORE-FLOOR-8-SIGMA',          # 8 -> 7 by Gregg 2026-09-22 "Use floor 7" (no own ledger row found)
              'SINGLETON_FLOOR': 'R-SNAP-SINGLETON-FLOOR-10-SIGMA',
              'GHOST_DATES': 'RULINGS-GREGG-20261007-STATUS-ANSWERS',

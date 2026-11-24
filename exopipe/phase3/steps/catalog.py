@@ -3,11 +3,14 @@ fork, identity, localizations, names (deep); the sub-LST catalogue chain; the sn
 
 Use (per hour vs intermittent, DESIGN 12):
   per hour      exopipe3 catalog --incremental --epochs 04h_2025-10-14     add one hour's detections to the cumulative
-                deep catalogue (lib/catalog/incremental.py); snapshot: the batch chain per LST x night
+                deep catalogue (lib/catalog/incremental.py)
                 exopipe3 catalog --tier sublst --incremental --epochs 17h_2025-05-08   the 10-minute tier of ONE night of
                 one LST hour on the frozen all-nights state: a gate on that state, the night pass, the incremental
                 grouping with the night, the delta builds and the catalog views (lib/catalog/incremental_sublst.py;
                 --out = the night's directory, catalog_sublst.NIGHT_DIR)
+                exopipe3 catalog --tier snapshot --incremental --epochs 12h_2024-12-21   10-s/1-min tiers: the per-cell
+                pre-chain stage (prefit loop + tie pass) of the night cell; the cross-cell association refuses (SI-G9,
+                no ruled design) - lib/catalog/incremental_snapshot.py
   intermittent  exopipe3 catalog --tier deep --run P3S5                     the full deep publish pass, preflight..fork
                 exopipe3 forced --tier deep --run P3S5 ...                  forced photometry into the tier catalogues
                 exopipe3 catalog --tier deep --run P3S5 --from union        union, identity, localizations, transient list
@@ -114,6 +117,14 @@ def _incremental_module():
         return None
 
 
+def _incremental_snapshot_module():
+    try:
+        return importlib.import_module('exopipe.phase3.lib.catalog.incremental_snapshot')
+    except Exception as e:
+        _TIER_ERRORS['incremental_snapshot'] = f'{type(e).__name__}: {e}'
+        return None
+
+
 def select_stages(all_stages, args, default_until=None):
     """The stages to run, in pipeline order, from --stages (exact set) or --from/--until (contiguous range). With neither
     --until nor --stages the range ends at ``default_until`` when it starts at or before it, else at the last stage.
@@ -180,6 +191,9 @@ def add_arguments(p):
             inc.add_arguments(p.add_argument_group('--incremental (lib/catalog/incremental.py)'))
         except Exception as e:
             _TIER_ERRORS['incremental'] = f'add_arguments: {type(e).__name__}: {e}'
+    snapinc = _incremental_snapshot_module()
+    if snapinc is not None:
+        snapinc.add_arguments(p.add_argument_group('--incremental --tier snapshot (lib/catalog/incremental_snapshot.py)'))
     if _TIER_ERRORS:
         p.epilog = 'not loaded: ' + '; '.join(f'{k}: {v}' for k, v in sorted(_TIER_ERRORS.items()))
 
@@ -189,6 +203,9 @@ def default_out(args):
     if getattr(args, 'incremental', False) and args.tier == 'sublst':
         from exopipe.phase3.lib.catalog import incremental_sublst      # the night's own directory (catalog_sublst.NIGHT_DIR)
         return incremental_sublst.default_out(args)
+    if getattr(args, 'incremental', False) and getattr(args, 'tier', None) == 'snapshot' \
+            and _incremental_snapshot_module() is not None:
+        return _incremental_snapshot_module().default_out(args)
     if getattr(args, 'incremental', False):
         inc = _incremental_module()
         if inc is not None and hasattr(inc, 'default_out'):
@@ -219,6 +236,13 @@ def run(args, run):
         if args.tier == 'sublst':                  # one night of one LST hour (lib/catalog/incremental_sublst.py)
             from exopipe.phase3.lib.catalog import incremental_sublst
             return incremental_sublst.run(args, run, epochs)
+        if getattr(args, 'tier', None) == 'snapshot':      # the 10-s/1-min tiers: the per-cell stage; association refuses
+            snapinc = _incremental_snapshot_module()
+            if snapinc is None:
+                print(f'catalog --incremental --tier snapshot: lib/catalog/incremental_snapshot.py not available '
+                      f'({_TIER_ERRORS.get("incremental_snapshot")})', file=sys.stderr)
+                return record.EXIT_ERROR
+            return snapinc.run(args, run, epochs)
         inc = _incremental_module()
         if inc is None or not hasattr(inc, 'run_incremental'):
             print(f'catalog --incremental: lib/catalog/incremental.py not available '

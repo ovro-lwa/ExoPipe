@@ -65,7 +65,9 @@ Failure modes (exit 2, gate named in the record): P-G1..P-G20 of spec section 5.
          directory: refused until the test is absorbed); a [lit] key differing from its module literal. Exit 1 = error.
 Per-hour vs intermittent: the chain associates over EVERY cell of the cumulative run at once (2 d 18 h on batch 2), so it is
          an intermittent (batch) step today; the per-hour chain 'snapshot-cell' stops at `curves` for a new cell and the
-         cell joins the next cumulative run. A per-cell incremental chain is not implemented (spec speed-up 9).
+         cell joins the next cumulative run. The per-hour step `catalog --tier snapshot --incremental` runs only the
+         per-cell pre-chain stage (prefit loop + tie pass, lib/catalog/incremental_snapshot.py) and refuses the cross-cell
+         association (SI-G9): a per-cell incremental chain is not ruled (spec speed-up 9).
 """
 import csv
 import glob
@@ -375,6 +377,28 @@ def argparse_defaults(path):
 # the snapshot context
 # =====================================================================================================================
 
+def chain_args(cfg, c, store, chain_py, restore=None, analysis=()):
+    """CHAINARGS of snapshot_rechain_batch.sh:280 plus every [arg] key whose config value differs from the script's own
+    default (production passes none of those) and the analysis switches. Module level so the per-hour cell phase
+    (lib/catalog/incremental_snapshot.py) passes the batch chain's own arguments, with its cell's store."""
+    T = _T()
+    a = ['--proto-root', cfg.paths.SNAPSHOT_FLEET_OUT, '--master-catalogs', c.MASTER_CATALOGS,
+         '--curve-constants', c.CURVE_CONSTANTS, '--fit-store', store, '--lightcurves-root', c.LIGHTCURVES_ROOT]
+    if restore:                              # THE RESTORE-ONLY 3-D GATE: every chain call of the run (exopipe_ops fa90670)
+        a += ['--curve-constants-restore', restore]
+    d = argparse_defaults(chain_py) if os.path.exists(chain_py) else {}
+    for flag, val in (('--samples-dir', cfg.paths.CLV15_ROOT), ('--store-floor', c.STORE_FLOOR),
+                      ('--seed-floor', c.SEED_FLOOR), ('--assoc-floor', c.ASSOC_FLOOR),
+                      ('--repeat-floor', c.REPEAT_FLOOR), ('--singleton-floor', c.SINGLETON_FLOOR['I']),
+                      ('--singleton-floor-v', c.SINGLETON_FLOOR['V']), ('--struct-k', c.STRUCT['k']),
+                      ('--dirty-cells', c.DIRTY_CELLS), ('--dirty-i-floor', c.DIRTY_I_FLOOR)):
+        if flag not in d or T._norm(d[flag]) != T._norm(val):
+            a += [flag, str(val)]
+    for k, v in analysis:
+        a += ['--' + k] + ([v] if v else [])
+    return a
+
+
 def _cells_file(args):
     spec = (getattr(args, 'cells', None) or '').strip()
     if not (spec.startswith('@') and ',' not in spec):
@@ -481,24 +505,7 @@ class Ctx:
             return '<node-local scratch>/rechain_%s' % self.name
 
     def chainargs(self):
-        """CHAINARGS of snapshot_rechain_batch.sh:280 plus every [arg] key whose config value differs from the script's own
-        default (production passes none of those) and the analysis switches."""
-        c = self.c
-        a = ['--proto-root', self.cfg.paths.SNAPSHOT_FLEET_OUT, '--master-catalogs', c.MASTER_CATALOGS,
-             '--curve-constants', c.CURVE_CONSTANTS, '--fit-store', self.S, '--lightcurves-root', c.LIGHTCURVES_ROOT]
-        if self.restore:                     # THE RESTORE-ONLY 3-D GATE: every chain call of the run (exopipe_ops fa90670)
-            a += ['--curve-constants-restore', self.restore]
-        d = argparse_defaults(self.chain_py) if os.path.exists(self.chain_py) else {}
-        for flag, val in (('--samples-dir', self.cfg.paths.CLV15_ROOT), ('--store-floor', c.STORE_FLOOR),
-                          ('--seed-floor', c.SEED_FLOOR), ('--assoc-floor', c.ASSOC_FLOOR),
-                          ('--repeat-floor', c.REPEAT_FLOOR), ('--singleton-floor', c.SINGLETON_FLOOR['I']),
-                          ('--singleton-floor-v', c.SINGLETON_FLOOR['V']), ('--struct-k', c.STRUCT['k']),
-                          ('--dirty-cells', c.DIRTY_CELLS), ('--dirty-i-floor', c.DIRTY_I_FLOOR)):
-            if flag not in d or self.T._norm(d[flag]) != self.T._norm(val):
-                a += [flag, str(val)]
-        for k, v in self.analysis:
-            a += ['--' + k] + ([v] if v else [])
-        return a
+        return chain_args(self.cfg, self.c, self.S, self.chain_py, self.restore, self.analysis)
 
     def chain_env(self, **extra):
         e = {}
