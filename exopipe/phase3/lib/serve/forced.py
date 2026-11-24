@@ -17,12 +17,12 @@ switch: unit snapshot_forced_<TAG>_register (flow.register_pages): the two-port 
      gate on these pages (the parity file: report only);
   5. the expected index sources (the server's own App on the run's queue and catalogue: servers.app_probe), before anything
      changes the run;
-  6. THE PER-PANEL QA BLOCK (page_context): scintillation_index.py RUN --tier snapshot, then page_context_snapshot.py RUN
-     --served-from VIEW in place on the run the page will serve, VIEW the transient-search view the production registry's
-     snapshot pages serve (paired_view, serve.FORCED_PAGE_CONTEXT_VIEW_IDS; production ran both by hand); its files present and
-     content tests snapshot_forced_page_context passed (each run once, in the registration unit; a failure refuses this page
-     only), else refused (production's page code falls back silently when frame_counts.json is absent,
-     review_filters.py:262-271);
+  6. THE PAGE INPUTS (page_context; the per-panel QA block, row 15): the four steps production's page runner takes before
+     FT-READY (snapshot_forced_pages_run_20261007.sh, exopipe_ops bd07263), in its order, each refusing, in place on the run the
+     page will serve: scintillation_index.py RUN --tier snapshot, bright_source_filter_precompute.py RUN --tier forced,
+     page_context_snapshot.py RUN --served-from VIEW (VIEW the transient-search view the production registry's snapshot pages
+     serve: paired_view, serve.FORCED_PAGE_CONTEXT_VIEW_IDS), tess/tess_coverage.py --run RUN --from-candidates; then their
+     files present and their content tests passed (each run once, in the registration unit; a failure refuses this page only);
   7. Gregg's judgements carried (snapshot_carry_judgements.py OLD NEW) from the run the page's entry serves now (gen5 cur_run;
      a parity serve: the PRODUCTION registry's entry, read only) when its journal is not empty and the new run has none (a
      journal already in the new run: carry skipped, gen5:40).
@@ -107,8 +107,10 @@ def paired_view(d=None):
     """The transient-search view the forced pages are paired with (page_context_snapshot.py --served-from VIEW): the one run the
     registry entries serve.FORCED_PAGE_CONTEXT_VIEW_IDS (the snapshot 10-s and 1-minute pages) serve, in the registry directory
     ``d`` (default the production one serve.TWO_PORT_DIR, read only; a parity serve pairs its copies with the production view,
-    read in place). Raises Refusal when an entry is missing, when they name different runs, or when the run has no search of its
-    own (no chain_summary.json or combined_view_summary.json: the tool refuses it too)."""
+    read in place). Raises Refusal when an entry is missing, when they name different runs, when the run has no search of its
+    own (no chain_summary.json or combined_view_summary.json: the tool refuses it too) or no frame_counts.json of its own
+    (production's runner: "the served snapshot view has no frame_counts.json - page inputs not built"). Production's runner
+    takes the view from FT_SERVED_VIEW, else entry p8986 alone."""
     S = _CFG().serve
     runs = {}
     for pid in S.FORCED_PAGE_CONTEXT_VIEW_IDS:
@@ -122,40 +124,68 @@ def paired_view(d=None):
     view = names[0]
     if not any(os.path.exists(os.path.join(view, x)) for x in ('chain_summary.json', 'combined_view_summary.json')):
         raise Refusal(f'the paired view {view} has no chain_summary.json or combined_view_summary.json - old entries kept')
+    fc = os.path.join(view, 'frame_counts.json')
+    if not (os.path.isfile(fc) and os.path.getsize(fc)):       # production's runner refuses here too (bd07263), before any step
+        raise Refusal(f'the paired view {view} has no frame_counts.json - page inputs not built, old entries kept')
     return view
 
 
 def page_context(u, plan, pg, D, view):
-    """THE PER-PANEL QA BLOCK of a forced page, on the run it will serve (``D``; a parity serve: the copy), before it is
-    registered: production's two hand steps on its forced runs, in its form and order (2026-11-13/14; the counts repointed by
-    DONE-20261120-GEN5-FORCED-PAGES-COUNTS-REPOINTED-TO-SNAPCOMB-20261116; no production driver runs them):
-      1. scintillation_index.py D --tier serve.SNAPSHOT_FILTER_TIER (cwd serve.SNAPSHOT_STEP_CWD; a parity serve: its own --cache)
-         - D/scintillation_index.{csv,json}, the hours from the forced record (scintillation_index.forced_hours): the panel text's
-         scintillation line and the page's scintillation slider;
-      2. page_context_snapshot.py D --served-from VIEW --workers serve.SNAPSHOT_PAGE_CONTEXT_WORKERS (cwd the exopipe_ops root) -
-         each panel's <png>.page.json (the transient-search view, global noise V / I, served detections I / V, scintillation,
-         beam) and D/frame_counts.json naming VIEW, whose frame_counts_<S>_<tier>.csv.gz the n_i_epoch / n_v_epoch sliders read
-         (R-GREGG-20261114-NEPOCH-SLIDERS-PER-FRAME).
-    Each tool through snapshot_copy._step (the snapshot serve's tool-run helper; a failure raises Refusal for this page). Then
-    serve.FORCED_PAGE_CONTEXT_REQUIRED must exist and every test of classes scintillation_index and snapshot_forced_page_context
-    (view = VIEW) pass, each run once through page_output, else Refusal: the page keeps its entry. This refusal is the gate
-    production lacks: its page code falls back to the superseded counts with no refusal when frame_counts.json is absent
-    (review_filters.py:262-271)."""
+    """THE PAGE INPUTS of a forced page, on the run it will serve (``D``; a parity serve: the copy), before it is registered: the
+    four steps production's page runner takes before FT-READY (snapshot_forced_pages_run_20261007.sh, exopipe_ops bd07263; by
+    hand on the generation-5 runs: the bright-source filter and scintillation 2026-11-12/14, the page context and frame counts
+    11-14/20, TESS 11-15), in its order, each from serve.SNAPSHOT_STEP_CWD as the runner (cd /tmp):
+      1. scintillation_index.py D --tier serve.SNAPSHOT_FILTER_TIER (a parity serve: its own --cache) - D/scintillation_index.
+         {csv,json}, the run's measured hours from its stage-1 record: the panel text's scintillation line and the page's slider;
+      2. bright_source_filter_precompute.py D --tier serve.FORCED_BRIGHT_TIER --workers serve.FORCED_BRIGHT_WORKERS -
+         D/bright_source_filter.npz (the 2-D bright-source panel; the cutout generation's flux scale);
+      3. page_context_snapshot.py D --served-from VIEW --workers serve.FORCED_PAGE_CONTEXT_WORKERS - each panel's <png>.page.json
+         and D/frame_counts.json naming VIEW, whose frame_counts_<S>_<tier>.csv.gz the n_i_epoch / n_v_epoch sliders read
+         (R-GREGG-20261114-NEPOCH-SLIDERS-PER-FRAME; production's review_filters.py refuses a forced page without it since
+         exopipe_ops 5889086);
+      4. tess/tess_coverage.py --run D --from-candidates under the site PYTHON['tess'] - D/tess_coverage.csv, one row per cand_id
+         of the page's candidates/*/*/detections.csv. The orbit table is read as the snapshot serve's TESS stage reads it
+         (pages_deep.TESS_REFRESH_IN_READER True = production: the tool refreshes it; False: --no-refresh, and a table that does
+         not reach now refuses first). Production's arguments; PR 166's lib/serve/tess.py, once merged, is the one TESS helper.
+    What only reads comes first (the TESS interpreter, the orbit table). Each tool through snapshot_copy._step (the snapshot
+    serve's tool-run helper; a failure raises Refusal for this page). Then serve.FORCED_PAGE_CONTEXT_REQUIRED must exist and
+    every content test pass, each run once through page_output - classes scintillation_index, bright_source_filter (tier
+    forced, the page's Stokes and cadence), snapshot_forced_page_context (view = VIEW: the pointer and every panel's sidecar
+    from it) and snapshot_forced_tess - else Refusal: the page keeps its entry (production's runner tests the same files: every
+    sidecar names VIEW, frame_counts.json names VIEW, the filter files not empty)."""
+    from exopipe.phase3.lib.pages import common as pcommon
     from exopipe.phase3.lib.serve.snapshot_copy import NOHUGE, _parity_cache, _step
-    S = _CFG().serve
-    args = [D, '--tier', S.SNAPSHOT_FILTER_TIER]
+    C = _CFG()
+    S, TD = C.serve, C.pages_deep
+    if not pcommon.interpreter_or_none('tess'):
+        raise Refusal("TESS coverage: the site PYTHON['tess'] interpreter is not on this host - old entry kept")
+    if not TD.TESS_REFRESH_IN_READER:
+        from exopipe.phase3.lib.pages import tess_orbits
+        table = os.path.join(os.path.dirname(scripts.path('tess_coverage')), 'TESS_orbit_times.csv')
+        why = tess_orbits.stale_for_reader(table)
+        if why:
+            raise Refusal(f'TESS coverage: the orbit table {table} {why} - the refresh step (python -m exopipe.phase3.lib.pages.'
+                          f'tess_orbits) has not kept it current - old entry kept')
+    sci = [D, '--tier', S.SNAPSHOT_FILTER_TIER]
     cache = _parity_cache(plan, 'scintillation_table_index.json')
     if cache:
-        args += ['--cache', cache]
-    pctx = [D, '--served-from', view, '--workers', S.SNAPSHOT_PAGE_CONTEXT_WORKERS]
-    for name, a, cwd in (('scintillation_index', args, S.SNAPSHOT_STEP_CWD), ('page_context_snapshot', pctx, None)):
-        _step(u, name, a, os.path.join(D, f'{name}.log'), cwd=cwd, env=NOHUGE, what=f'(page {pg.key}) ', where=D,
-              after='old entry kept')
+        sci += ['--cache', cache]
+    steps = (('scintillation_index', sci, NOHUGE, 'default'),
+             ('bright_source_filter', [D, '--tier', S.FORCED_BRIGHT_TIER, '--workers', S.FORCED_BRIGHT_WORKERS], NOHUGE, 'default'),
+             ('page_context_snapshot', [D, '--served-from', view, '--workers', S.FORCED_PAGE_CONTEXT_WORKERS], NOHUGE, 'default'),
+             ('tess_coverage', ['--run', D, '--from-candidates'] + ([] if TD.TESS_REFRESH_IN_READER else ['--no-refresh']), None,
+              'tess'))
+    for name, a, env, py in steps:
+        _step(u, name, a, os.path.join(D, f'{name}.log'), cwd=S.SNAPSHOT_STEP_CWD, env=env, python=py, what=f'(page {pg.key}) ',
+              where=D, after='old entry kept')
     miss = [f for f in S.FORCED_PAGE_CONTEXT_REQUIRED if not os.path.exists(os.path.join(D, f))]
     if miss:
-        raise Refusal(f'{D} lacks {", ".join(miss)} after the page context - old entry kept')
+        raise Refusal(f'{D} lacks {", ".join(miss)} after the page inputs - old entry kept')
     page_output(u, pg, os.path.join(D, 'scintillation_index.csv'), 'scintillation_index', tier=S.SNAPSHOT_FILTER_TIER)
+    page_output(u, pg, os.path.join(D, 'bright_source_filter.npz'), 'bright_source_filter', tier=S.FORCED_BRIGHT_TIER,
+                stokes=pg.stokes, cadence=pg.kind)
     page_output(u, pg, D, 'snapshot_forced_page_context', view=view)
+    page_output(u, pg, os.path.join(D, 'tess_coverage.csv'), 'snapshot_forced_tess')
 
 
 def page_output(u, pg, path, cls, what=None, **ctx):
@@ -183,10 +213,10 @@ def check_page(u, plan, pg):
     """Checks 1-7 of the switch for ``pg`` inside the registration unit ``u`` (the in-place calls recorded there). Returns
     (run dir, expected sources, notes); raises Refusal (the page keeps its entry). Everything that only reads comes before
     anything changes: the tag's generation text (G26), readiness, the files, and whether a registry entry serves the run
-    already - a served run is refused (never rewritten in place: the QA block writes its sidecars, scintillation table and
-    frame_counts.json while its page reads them; a deliberate departure from gen5:38, which registered it again) - then the
-    parity copy, AD Leo, the exclusion gate and the App probe (it reads the queue and catalogue, which the QA block leaves
-    alone), and only then the QA block and the judgement carry."""
+    already - a served run is refused (never rewritten in place: the page inputs write its sidecars, scintillation table,
+    bright-source filter, frame_counts.json and TESS table while its page reads them; a deliberate departure from gen5:38, which registered it again) - then the
+    parity copy, AD Leo, the exclusion gate and the App probe (it reads the queue and catalogue, which the page inputs leave
+    alone), and only then the page inputs and the judgement carry."""
     from exopipe.phase3.lib.serve.plan import forced_generation
     S = _CFG().serve
     notes = []
@@ -201,7 +231,7 @@ def check_page(u, plan, pg):
     D = pg.root
     on = served_by(plan, D)
     if on:
-        raise Refusal(f'{D} is served already ({", ".join(on)}): the per-panel QA block would rewrite a served run in place - '
+        raise Refusal(f'{D} is served already ({", ".join(on)}): the page inputs would rewrite a served run in place - '
                       f'old entry kept (a new run name serves a new build)')
     if plan.parity:
         _parity_copy(pg)
@@ -215,7 +245,7 @@ def check_page(u, plan, pg):
     if scan.hits and refuses:
         raise Refusal(f'G17 serve-time exclusion gate: {scan.summary()} - old entry kept')
     exp = servers.app_probe(plan, pg, D, unit=u)        # before anything changes: a failed probe keeps the old entry
-    page_context(u, plan, pg, D, plan.forced_view)      # the per-panel QA block, on a run no page serves
+    page_context(u, plan, pg, D, plan.forced_view)      # the page inputs, on a run no page serves
     old = journals.served_run_of_port(pg.port_cfg)     # the carry source: the production registry's entry (read only)
     oj = os.path.join(old, 'judgements', 'judgements.jsonl') if old else None
     if old and journals.journal_nonempty(oj):
@@ -255,7 +285,7 @@ def switch(run, plan, state, utc):
         passed, refused = [], {}
         try:
             plan.forced_view = paired_view()
-        except Refusal as e:                      # no view to pair with: no page gets its QA block, none is registered
+        except Refusal as e:                      # no view to pair with: no page gets its inputs, none is registered
             for pg in plan.pages:
                 refused[pg.key] = str(e)
                 u.note(f'page {pg.key} REFUSED: {e}')

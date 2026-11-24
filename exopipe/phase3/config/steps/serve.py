@@ -625,17 +625,24 @@ class serve(_Section):
                                             # naming the review copy served; a run without it by its FORCED_READY_LOG
     FORCED_REQUIRED = ('queue_{S}.txt', 'source_catalogs_{S}', 'source_catalogs/localization_offsets.csv',
                        'forced_assoc_identity.csv')          # :66-67
-    # THE PER-PANEL QA BLOCK of the forced pages (lib/serve/forced.page_context): before a page is registered, on the run it will
-    # serve, production's two hand steps on its forced runs (2026-11-13/14; counts repointed 2026-11-20 by
-    # DONE-20261120-GEN5-FORCED-PAGES-COUNTS-REPOINTED-TO-SNAPCOMB-20261116): scintillation_index.py RUN --tier
-    # SNAPSHOT_FILTER_TIER, then page_context_snapshot.py RUN --served-from VIEW --workers SNAPSHOT_PAGE_CONTEXT_WORKERS
+    # THE PAGE INPUTS of the forced pages (lib/serve/forced.page_context): before a page is registered, on the run it will serve,
+    # the four steps production's page runner takes before FT-READY (snapshot_forced_pages_run_20261007.sh, exopipe_ops bd07263;
+    # by hand on the generation-5 runs 2026-11-12..20), in its order, each refusing: scintillation_index.py RUN --tier
+    # SNAPSHOT_FILTER_TIER; bright_source_filter_precompute.py RUN --tier FORCED_BRIGHT_TIER --workers FORCED_BRIGHT_WORKERS;
+    # page_context_snapshot.py RUN --served-from VIEW --workers FORCED_PAGE_CONTEXT_WORKERS; tess/tess_coverage.py --run RUN
+    # --from-candidates (site PYTHON 'tess'); all from SNAPSHOT_STEP_CWD, as the runner (cd /tmp)
+    FORCED_BRIGHT_TIER = 'forced'           # bright_source_filter_precompute.py --tier (bd07263; the tool's forced tier)
+    FORCED_BRIGHT_WORKERS = 6               # its --workers (bd07263; at most 6 Lustre readers)
+    FORCED_PAGE_CONTEXT_WORKERS = 4         # page_context_snapshot.py --workers on a forced run (bd07263)
     FORCED_PAGE_CONTEXT_VIEW_IDS = ('p8986', 'p8987', 'p8988', 'p8989')   # the production registry entries (read only, a parity
                                             # serve too) of the snapshot transient-search pages, 10 s and 1 min (snapshot_serve.sh
                                             # SNAP_REGISTER=1): their --run is the view the forced pages are paired with (its
                                             # member rows are the panels' 'served detections' and the n_i_epoch / n_v_epoch
                                             # sliders' counts); all four must name ONE run, else the page is refused
-    FORCED_PAGE_CONTEXT_REQUIRED = ('frame_counts.json', 'scintillation_index.csv', 'scintillation_index.json')   # after the two
-                                            # steps; the sidecars by content test snapshot_forced_page_context
+    FORCED_PAGE_CONTEXT_REQUIRED = ('scintillation_index.csv', 'scintillation_index.json', 'bright_source_filter.npz',
+                                    'frame_counts.json', 'tess_coverage.csv')   # after the four steps; their content by the
+                                            # classes scintillation_index, bright_source_filter, snapshot_forced_page_context
+                                            # (the sidecars) and snapshot_forced_tess
     FORCED_ADLEO_CHECK = ('test_snapshot_forced_reserve.py', ('adleo', '--absent-ok'))   # ops script + args, site PYTHON 'py36' (:68;
                                             # Gregg 2026-10-08 "don't label AD Leo unless you have a metric defined and measured")
     FORCED_GENERATIONS = {                   # forced run tag -> (the samples, the cutout generation) the title and hub name;

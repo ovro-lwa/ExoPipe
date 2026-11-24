@@ -2344,6 +2344,31 @@ def test_inplace_gate_agrees():
     ok(f'falsifier: scanning cell_load_review.csv as v2 did before 2026-11-18, the readers disagree ({detail_f})')
 
 
+def test_forced_page_inputs_production():
+    """The forced pages' page inputs (lib/serve/forced.page_context) are production's page-runner steps before FT-READY
+    (snapshot_forced_pages_run_20261007.sh, exopipe_ops bd07263), read in place: the four tools in its order with v2's
+    arguments (serve.SNAPSHOT_FILTER_TIER, FORCED_BRIGHT_TIER / _WORKERS, FORCED_PAGE_CONTEXT_WORKERS, --from-candidates), from
+    /tmp (serve.SNAPSHOT_STEP_CWD), the view refused without frame_counts.json first, and its view entry p8986 among
+    serve.FORCED_PAGE_CONTEXT_VIEW_IDS. The order and arguments v2 passes: tests/test_photometry_snapshot_stage2.py."""
+    S = CFG.serve
+    src = open(f'{OPS}/snapshot_forced_pages_run_20261007.sh').read()
+    code = [l_ for l_ in src.splitlines() if l_.strip() and not l_.lstrip().startswith('#')]
+    frag = [f'scintillation_index.py $D --tier {S.SNAPSHOT_FILTER_TIER} ',
+            f'bright_source_filter_precompute.py $D --tier {S.FORCED_BRIGHT_TIER} --workers {S.FORCED_BRIGHT_WORKERS} ',
+            f'page_context_snapshot.py $D --served-from $VIEW --workers {S.FORCED_PAGE_CONTEXT_WORKERS} ',
+            'tess/tess_coverage.py --run $D --from-candidates ', 'say "FT-READY']
+    at = [next((i for i, l_ in enumerate(code) if f in l_), -1) for f in frag]
+    view = next((i for i, l_ in enumerate(code) if 'test -s $VIEW/frame_counts.json' in l_), -1)
+    rhp = next((l_ for l_ in code if l_.startswith('RHP=')), '')
+    assert all(i >= 0 for i in at) and at == sorted(at) and 0 <= view < at[0], (dict(zip(frag, at)), view)
+    assert 'cd /tmp' in rhp and S.SNAPSHOT_STEP_CWD == '/tmp' and "'p8986'" in src and 'p8986' in S.FORCED_PAGE_CONTEXT_VIEW_IDS, rhp
+    assert 'cd /tmp && /fast/gh/main/envs/tess/bin/python $OPS/tess/tess_coverage.py' in src, 'the TESS interpreter moved'
+    ok('forced page inputs: production\'s page runner (bd07263) runs scintillation_index.py --tier snapshot, '
+       'bright_source_filter_precompute.py --tier forced --workers 6, page_context_snapshot.py --served-from VIEW --workers 4, '
+       'tess/tess_coverage.py --from-candidates, in that order from /tmp before FT-READY, after refusing a view without '
+       'frame_counts.json - v2\'s arguments and order')
+
+
 def test_forced_probe_before_stop():
     """forced switch: the App probe runs before anything is registered - a failed probe refuses that page and, no other page
     passing, nothing is registered (the page keeps the run its entry serves; snapshot_forced_gen5_serve_20261026.sh: 'A page
@@ -3410,6 +3435,7 @@ def main():
         test_serve_hold()
         test_card2_rejudge_go()
         test_inplace_gate_agrees()
+        test_forced_page_inputs_production()
         test_forced_probe_before_stop()
         test_register_matches_production()
         test_registry_lock()
