@@ -104,3 +104,5 @@ jobs:
         run: python tests/test_followup_snapshot_frames.py
       - name: TESS orbit table refresh step (content checks, refusals keep the table, complete only 14 days ahead)
         run: python tests/test_tess_orbits.py
+      - name: per-cell refusals in a runner chain (the per-hour chain goes on past a refused cell; complete with N refused cells)
+        run: python tests/test_runner_cell_refusal.py

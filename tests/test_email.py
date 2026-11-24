@@ -147,7 +147,12 @@ def test_block_states_chain_outcome_limits_targets_then_transients():
         recs = {'done': {'chain_status': 'done', 'steps': [step('search', 'done', 0), step('catalog', 'no-input', 3)]},
                 'refused': {'chain_status': 'refused', 'log': '/x/logs/04h.log',
                             'steps': [step('search', 'done', 0), step('catalog', 'refused', 2)]},
-                'failed': {'chain_status': 'failed', 'steps': [step('search', 'error', 1)]}}
+                'failed': {'chain_status': 'failed', 'steps': [step('search', 'error', 1)]},
+                # a step refused one cell (a <b> in its reason must be escaped) and the chain went on (core/runner.py)
+                'cells': {'chain_status': 'cells-refused', 'log': '/x/logs/04h.log',
+                          'steps': [step('masters', 'cells-refused', 2), step('catalog', 'done', 0)],
+                          'refused_cells': [{'cell': '04h_Red', 'name': 'masters --tier deep', 'code': 'G-M05',
+                                             'reason': 'excluded night <b>'}]}}
         for k, r in recs.items():
             json.dump(r, open(os.path.join(d, k + '.json'), 'w'))
         t, ok = block.chain_summary(os.path.join(d, 'done.json'))
@@ -156,6 +161,9 @@ def test_block_states_chain_outcome_limits_targets_then_transients():
         assert ok is False and 'REFUSED at step 2 (<code>catalog --tier</code>, exit code 2)' in t and '/x/logs/04h.log' in t, t
         t, ok = block.chain_summary(os.path.join(d, 'failed.json'))
         assert ok is False and 'FAILED at step 1' in t, t
+        t, ok = block.chain_summary(os.path.join(d, 'cells.json'))
+        assert ok is False and 'COMPLETE with 1 refused cell</strong> (2 steps: 1 cells-refused, 1 done)' in t, t
+        assert '<li>04h_Red: refused by <code>masters --tier deep</code>, refusal code G-M05: excluded night &lt;b&gt;' in t, t
         t, ok = block.chain_summary(None)
         assert ok is None and 'none given' in t
         t, ok = block.chain_summary(os.path.join(d, 'missing.json'))
