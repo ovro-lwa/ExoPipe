@@ -17,6 +17,7 @@ evaluations :151-162 with OMP_NUM_THREADS=1; the 8-row check :161; the grid, zon
 Units (records <out>/_records/photometry/): cutouts.<cell>.<band>[.<tags>] (steps_cutouts), measure.<cell>
 (measure.<cell>.<band+band> for a band subset), evaluate.<kind>.<tag>, evaluate.zones.<tag>. --out is the snapshot forced root (production /lustre/gh/main/phase3/snapshot_forced).
 """
+import csv
 import glob
 import hashlib
 import json
@@ -36,8 +37,12 @@ def cutout_root(args):
     return K.cutout_root(args)
 
 
-def stage1_root(run):
-    """Stage 1 of this run: <out>/photometry.STAGE1_DIR (production <OUT_ROOT[snapshot]>/stage1_gen5 since generation 5)."""
+def stage1_root(run, args=None):
+    """Stage 1 of this run: <out>/photometry.STAGE1_DIR (production <OUT_ROOT[snapshot]>/stage1_gen5 since generation 5); a
+    campaign's: <out>/<its generation's directory> (photometry_campaign.STAGE1_DIR_FMT)."""
+    if getattr(args, 'campaign', False):
+        from exopipe.phase3.lib.photometry import campaign
+        return os.path.join(run.out_root, campaign.stage1_dir())
     return os.path.join(run.out_root, K.cfg().photometry.STAGE1_DIR)
 
 
@@ -193,7 +198,47 @@ def gate_engine_samples():
     return got
 
 
+def stage_measure_campaign(run, args):
+    """A campaign's stage 1 (lib/photometry/campaign.py): per cell and band kind, measured once every cutouts unit of the kind
+    is terminal; a held kind holds only its cell (SM-HELD), a kind without any cutout ends 'no <kind>' (SM-NOBAND)."""
+    from exopipe.phase3.lib.photometry import campaign as CP
+    camp = CP.start(run, args)
+    root, stage1 = cutout_root(args), stage1_root(run, args)
+    K.plan(run, '[measure] campaign %s: %d cells, per band kind (subbands -> <cell>/%s, widebands -> <cell>/%s) under %s; '
+                'cutouts %s' % (camp.generation, len(camp.enum.cells), K.cfg().photometry_campaign.STAGE1_MANIFEST['sb'],
+                                K.cfg().photometry_campaign.STAGE1_MANIFEST['wb'], stage1, root))
+    units = []
+    for cell in camp.enum.cells:
+        for kind in ('sb', 'wb'):
+            units += CP.stage1_cell(run, args, camp, cell, kind, root, stage1)
+    return units
+
+
+def manifest_bands(path):
+    """The bands of a stage-1 manifest's rows (the directory above each cutout's object directory: <sample>/<band>/<object>/),
+    read with the manifest tests' own reader (tests._manifest_rows, as MM1 reads it). None when the manifest cannot be parsed
+    for its bands - unreadable, a header other than photometry_measure.MANIFEST_HEADER, a row whose file names no snapshot
+    band (photometry.SNAPSHOT_BANDS) at that place: the caller refuses SM-SUBSET, never reads it as an empty set."""
+    from exopipe.phase3.lib.photometry import tests as T
+    c = K.cfg()
+    try:
+        cols, rows = T._manifest_rows(path)
+    except (OSError, UnicodeDecodeError, csv.Error):
+        return None
+    if cols != c.photometry_measure.MANIFEST_HEADER.split(','):
+        return None
+    known, out = set(c.photometry.SNAPSHOT_BANDS), set()
+    for r in rows:
+        parts = (r.get('file') or '').split('/')
+        if len(parts) < 4 or parts[-3] not in known:
+            return None
+        out.add(parts[-3])
+    return out
+
+
 def stage_measure(run, args):
+    if getattr(args, 'campaign', False):
+        return stage_measure_campaign(run, args)
     c = K.cfg()
     m = c.photometry_measure
     root = cutout_root(args)
@@ -236,7 +281,10 @@ def stage_measure(run, args):
     return units
 
 
-def measure_cell(run, args, cell, bands, files, root, stage1, man_name, targets=()):
+def measure_cell(run, args, cell, bands, files, root, stage1, man_name, targets=(), kind_manifest=False, gate=None):
+    """One night cell's stage 1 for ``bands``. ``kind_manifest``: ``man_name`` is a campaign's manifest of one band kind
+    (photometry_campaign.STAGE1_MANIFEST): rewriting it is no band subset over a full-band manifest unless it holds rows of
+    another band (SM-SUBSET). ``gate``: called with the unit first (a campaign's pin, space and I/O guard)."""
     from exopipe.phase3.core import fitsio
     from exopipe.phase3.lib.photometry import tests as T
     c = K.cfg()
@@ -252,6 +300,8 @@ def measure_cell(run, args, cell, bands, files, root, stage1, man_name, targets=
     tspec = ['%s=%s' % t for t in targets]
     with run.unit(name, tier='snapshot', stage='measure', cell=cell, bands=bands, cutout_root=root,
                   manifest=man_name, cutout_listing_sha1=lsha, n_cutouts=len(allf), targets=tspec) as u:
+        if gate is not None:
+            gate(u)
         withc = [b for b in bands if files[b]]
         u.meta['bands_no_cutout'] = [b for b in bands if not files[b]]
         if not withc:
@@ -260,7 +310,13 @@ def measure_cell(run, args, cell, bands, files, root, stage1, man_name, targets=
         full = list(bands) == list(c.photometry.SNAPSHOT_BANDS)
         mpath = os.path.join(dst, man_name)
         if not full and man_name == m.MANIFEST_NAME and os.path.exists(mpath):
-            u.refuse('SM-SUBSET: a band subset would overwrite the full-band manifest %s; give --manifest-name' % mpath)
+            mb = manifest_bands(mpath) if kind_manifest else set()
+            if kind_manifest and mb is None:
+                u.refuse('SM-SUBSET: the manifest %s cannot be parsed for its bands (unreadable, another header than '
+                         'photometry_measure.MANIFEST_HEADER, or a row naming no snapshot band) - a band subset would '
+                         'overwrite it; nothing measured' % mpath)
+            if not (kind_manifest and mb <= set(bands)):
+                u.refuse('SM-SUBSET: a band subset would overwrite the full-band manifest %s; give --manifest-name' % mpath)
         for p in ([p for _, p in targets] or K.sample_paths('snapshot').values()):
             u.add_input(p)
         for b in withc:
@@ -696,11 +752,15 @@ STAGE_FUNCS = {'cutouts': _stage_cutouts, 'measure': stage_measure, 'evaluate': 
 def run_tier(run, args, stages):
     gate_full(args)
     args.photometry_stages = list(stages)      # a dry run plans a stage from an earlier stage of this invocation
+    if getattr(args, 'campaign', False):       # once, before any stage: generation, unit list, code pin, space
+        from exopipe.phase3.lib.photometry import campaign as CP
+        CP.start(run, args)
     for st in stages:
         units = STAGE_FUNCS[st](run, args)
         if run.dry_run:
             continue
-        if st != 'measure' and K.stop_after(args, st, units):
+        # a campaign's cutouts never stop its stage 1: readiness holds each cell whose units are not terminal (campaign.py)
+        if st != 'measure' and not getattr(args, 'campaign', False) and K.stop_after(args, st, units):
             break
     return None
 

@@ -462,6 +462,77 @@ class photometry_cutouts(_Section):
              'WEIGHT_REL_PRECISION': 'CONTENT-TEST-WIDEBAND-FIRST-ORDER-ROUNDING-BOUND-22H-20250817-BLUE-20261026'}
 
 
+class photometry_campaign(_Section):
+    """A cutout generation run as one campaign: `photometry --tier snapshot --campaign` (lib/photometry/campaign.py; port of the
+    generation-6 drivers exopipe_ops/gen6_20261117/: gen6_build_jobs_DRAFT.py, gen6_cutout_regen_DRAFT.sh, gen6_space_ok.sh,
+    gen6_forced_stage1*_DRAFT.sh, gen6_stage1_wb_no_wideband_20261122.py, gen6_complete_check_20261122.py; plan
+    GEN6_PORT_PLAN_20261123.md pull request 4). The campaign lists its (cell, band) units itself from the flow cubes, pins the
+    engine code at its start, checks the space before each unit and yields to the recorders' I/O guard; stage 1 of a cell runs
+    per band kind once every cutouts unit of that kind is terminal. The generation written is THIS section's GENERATION, never
+    the served one (photometry.GENERATION; a campaign writes a new generation, the serve switch is the serve step's)."""
+    # ---- the generation written (spec discrepancy 3 of the plan, decided 2026-11-23): both roots derive from one value
+    GENERATION = 'gen6'
+    GENERATION_RE = r'^gen\d+$'
+    CUTOUT_ROOT_FMT = '/lustre/pipeline/exopipe/phase3/photometry_{generation}'     # gen6: gen6_cutout_regen_DRAFT.sh ROOT
+    STAGE1_DIR_FMT = 'stage1_{generation}'      # <--out>/<this>; gen6: /lustre/gh/main/phase3/snapshot_forced/stage1_gen6
+    # stage 1 per band kind (gen6_forced_stage1_DRAFT.sh SF_MANIFEST default, gen6_forced_stage1_wb_DRAFT.sh :14): one merged
+    # manifest per kind in <stage1>/<cell>/, so a kind's measurement never rewrites the other kind's rows
+    STAGE1_MANIFEST = {'sb': 'forced_manifest.csv', 'wb': 'forced_manifest_wb.csv'}
+    RECORD_SUBDIR = '_campaign'                 # <out>/_records/photometry/_campaign/<generation>_<run id>.json: the campaign's
+                                                # start record (roots, unit list, exclusions, held, code pin, space)
+    # ---- the engine code pinned for the whole campaign (gen6_cutout_regen_DRAFT.sh :40, :51-53: md5 of the engines at the pass
+    #      start; a change stops the pass). The engines of these photometry.ENGINE / ENGINE_V2 keys and the files beside the
+    #      subband engine named here; the modules each engine child imported (its code fingerprint, core/legacy.run) join the
+    #      pin when first seen
+    PIN_ENGINES = ('cutouts_subband', 'cutouts_wideband', 'cutouts_probe', 'cutouts_stamp')
+    PIN_SIBLINGS = ('phase3_snapshot_cutouts.py',)
+    # ---- space before each unit (gen6_space_ok.sh): the run user's Lustre quota headroom (bytes AND files; `lfs quota -q -u`)
+    #      and the file system's free space (the filesystem_summary line of `lfs df`). Below a floor, or unreadable: the unit
+    #      refuses and every later unit of the campaign too (gen6: gen6_regen_STOP, no new claim)
+    SPACE_FILESYSTEM = '/lustre'
+    LFS = 'lfs'
+    LFS_TIMEOUT_S = 120
+    QUOTA_MIN_FREE_BYTES = 2 * 2 ** 40          # 2 TiB of the run user's block quota (gen6 2147483648 KiB)
+    QUOTA_MIN_FREE_FILES = 200000               # files of the run user's inode quota
+    FS_MIN_FREE_BYTES = 120 * 10 ** 12          # 120 TB free on the file system (gen6 117187500000 KiB)
+    # ---- the recorders' I/O guard (gen6_cutout_regen_DRAFT.sh, gen6_forced_stage1_DRAFT.sh): before each unit and each stage-1
+    #      cell, wait while this host's stop file has a line starting with IO_GUARD_STOP_PREFIX or the alert file exists. A
+    #      yield, not a gate: nothing is refused; polled every IO_GUARD_POLL_S ({ops} = paths.OPS_ROOT, {host} = this host)
+    IO_GUARD_STOP_FILE = '{ops}/sublst_stack_STOP_{host}'
+    IO_GUARD_STOP_PREFIX = 'io_guard'
+    IO_GUARD_ALERT_FILE = '{ops}/io_guard_ALERT'
+    IO_GUARD_POLL_S = 60
+    # ---- the complete-when content test (campaign.check; gen6_complete_check_20261122.py): the checks a done cutouts record
+    #      must carry as passed - every unit; per band kind (sb subband, wb wideband); per Stokes the engine counted cutouts for
+    #      ({stokes} = V, I); a subband of the generation-5 comparison sample (meta generation5_sample) per such Stokes - and the
+    #      outputs it must hold, exactly one of each class (steps_cutouts: W1/W2 settle and count, I1 identity, CM1/CM2 the
+    #      manifest, GP the cubes unchanged inside the placement, GA/GB/GC/GW the generation checks, fs1 the flux-scale record)
+    COMPLETE_CHECKS = ('photometry_cutout_manifest.W1_fsync_size', 'photometry_cutout_manifest.W2_count',
+                       'photometry_cutout_manifest.CM1_files', 'photometry_cutout_manifest.CM2_one_per_key',
+                       'photometry_cutout_manifest.GP_cubes_unchanged')
+    COMPLETE_KIND_CHECKS = {'sb': ('photometry_cutout_manifest.GA_fluxscale_record_V', 'photometry_cutout_manifest.GA_fluxscale_record_I',
+                                   'photometry_fluxscale_record.fs1_record'),
+                            'wb': ()}
+    COMPLETE_STOKES_CHECKS = {'sb': ('photometry_cutout_manifest.I1_identity_{stokes}', 'photometry_cutout_manifest.GC_targets_{stokes}'),
+                              'wb': ('photometry_cutout_manifest.I1_identity_{stokes}', 'photometry_cutout_manifest.GW_weights_{stokes}')}
+    COMPLETE_GEN5_CHECKS = ('photometry_cutout_manifest.GB_generation5_{stokes}',)
+    COMPLETE_OUTPUTS = {'sb': ('photometry_cutout_manifest', 'photometry_fluxscale_record'), 'wb': ('photometry_cutout_manifest',)}
+    # ---- GAPS (R-GREGG-20261027-LSRECON-SCALE-BOUND-0P5-2P0-LEVEL-REFUSALS-STAY-GAPS-55MHZ-06H-R0-N-MINUS-1, verbatim
+    #      "Refusals by the large-scale level test stay refused, as gaps, never forced"): a unit whose INPUTS a gate refused is a
+    #      recorded gap - terminal, listed by the complete-when check (COMPLETE with N gaps), never rerun into a pass. Refused
+    #      (status refused) by these codes, the reason holding the text given (None: any): the gap holds its cell's stage 1 of
+    #      that band kind (C-FLUXSCALE before the engine: a verdict on the cubes - not rescaled, off its rescale record, V != I,
+    #      an ambiguous record, no record; C-FLUXSCALE-READ, records or a header unreadable, is operational and no gap).
+    #      No input by these codes: a gap that holds nothing (C-NOCUBE: a flow cube gone since the unit list). Every
+    #      other refusal (output and content checks C-WRITE C-COUNT C-NAMES C-IDENTITY C-GENCHECK C-CONTENT C-PLACE C-STALE, the
+    #      flux-scale re-checks after the cut, C-ENGINE, PHOT-EXCL-*, CP-*), an error or a missing record is incomplete.
+    #      C-EXCLUDED and C-NOCUT whose engine counts promise no file (the night rule) are no gaps: terminal, no cutout
+    GAP_REFUSED = {'C-FLUXSCALE': 'the engine not started'}
+    GAP_NOINPUT = ('C-NOCUBE',)
+    RULED = {'GAP_REFUSED': 'R-GREGG-20261027-LSRECON-SCALE-BOUND-0P5-2P0-LEVEL-REFUSALS-STAY-GAPS-55MHZ-06H-R0-N-MINUS-1',
+             'GAP_NOINPUT': 'R-GREGG-20261027-LSRECON-SCALE-BOUND-0P5-2P0-LEVEL-REFUSALS-STAY-GAPS-55MHZ-06H-R0-N-MINUS-1'}
+
+
 class photometry_phase2(_Section):
     """The DORMANT Phase 2 sample photometry and Phase 2 flux-scale QA (lib/photometry/cutout.py, solar_system_cutout.py,
     flux_check_cutout.py after the pure git mv 4bccd14). Phase 1/2 import them; exopipe3 does not run them in the window

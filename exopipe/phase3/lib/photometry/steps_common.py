@@ -117,7 +117,11 @@ def gate_tier(tier, stages_arg=None):
 # ---------------------------------------------------------------------------------------------------------------------
 
 def cutout_root(args):
-    """The cutout generation a stage reads or writes: --cutout-root, else the served generation (photometry.CUTOUT_ROOT)."""
+    """The cutout generation a stage reads or writes: a campaign's generation (--campaign: photometry_campaign.GENERATION,
+    lib/photometry/campaign.py), else --cutout-root, else the served generation (photometry.CUTOUT_ROOT)."""
+    if getattr(args, 'campaign', False):
+        from exopipe.phase3.lib.photometry import campaign
+        return campaign.cutout_root()
     return os.path.abspath(args.cutout_root) if getattr(args, 'cutout_root', None) else cfg().photometry.CUTOUT_ROOT
 
 
@@ -312,14 +316,21 @@ def call(u, key, args, tier, env_name, run, log_name, env_extra=None, threads=No
     return res, text
 
 
+def code_sha12(path):
+    """sha1[:12] of a code file's bytes - the fingerprint core/legacy.run records per child module and the campaign pins
+    (lib/photometry/campaign.CodePin) - or None when it cannot be read."""
+    try:
+        with open(path, 'rb') as f:
+            return hashlib.sha1(f.read()).hexdigest()[:12]
+    except OSError:
+        return None
+
+
 def legacy_code_changed(rec):
     """Files of a record's child fingerprints whose sha1 differs now ('' when none)."""
     changed = []
     for f, h in ((rec.get('meta') or {}).get('legacy_code') or {}).items():
-        try:
-            now = hashlib.sha1(open(f, 'rb').read()).hexdigest()[:12]
-        except OSError:
-            now = None
+        now = code_sha12(f)
         if now != h:
             changed.append(os.path.basename(f))
     return ', '.join(changed[:5])
