@@ -551,6 +551,8 @@ def run(args, run):
             gpus = info.get('gpus') or []
             if refusal:
                 for sb in sbs:
+                    if run.upstream_refused(f'flow_{cell}_{sb}', tier='snapshot', cell=cell, subband=sb):
+                        continue   # refused by an earlier step of the chain item: recorded, never opened
                     with run.unit(f'flow_{cell}_{sb}', tier='snapshot', cell=cell, subband=sb) as u:
                         u.meta.update(info={k: v for k, v in info.items() if k != 'rec'})
                         raise Refusal(refusal)
@@ -566,6 +568,8 @@ def run(args, run):
                         if why:
                             _skip(run, name, why)
                             continue
+                        if run.upstream_refused(name, tier='snapshot', cell=cell, subband=sb):
+                            continue   # refused by an earlier step of the chain item: recorded, never opened
                         try:
                             with run.unit(name, tier='snapshot', cell=cell, subband=sb) as u:
                                 flow_subband(u, args, run, cell, sb, g, info, partial)
@@ -583,6 +587,8 @@ def run(args, run):
                 _skip(run, name, why)
                 continue
             recs = {sb: record.load_record(run.out_root, 'flow', f'flow_{cell}_{sb}') for sb in sbs}
+            if run.upstream_refused(name, tier='snapshot', cell=cell):   # refused upstream (core/record.py)
+                continue
             with run.unit(name, tier='snapshot', cell=cell) as u:
                 ship_cell(u, args, run, cell, sbs, recs)
     return None

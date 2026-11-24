@@ -558,6 +558,8 @@ def _unit(run, opts, root, lst, cell, sb, stokes, plan_files, how):
         if now is not None and not now['refuse'] and TS.resume_skip(run, opts, name, _inputs(now, plan_files),
                                                                     [f'{night}/{sb}']):
             return
+    if run.upstream_refused(name, lst=lst, cell=cell, subband=sb):   # refused upstream (core/record.py)
+        return
     with run.unit(name, lst=lst, cell=cell, subband=sb, stokes=list(stokes), stage=STAGE, stack_evidence=how) as u:
         ex, excluded = _exclusion_gate(lst, sb, night)
         if excluded:
@@ -643,6 +645,8 @@ def stage_nonmember(run, opts, sel, root, planned_now=False):
                         TS.say(f'[sublst {STAGE} {key}] NO-INPUT: {why}')
                         continue
                     for sb, m in sorted(every.items()):     # one unit per subband, as when the night has a plan
+                        if run.upstream_refused(unit_name(lst, night, sb), lst=lst, cell=cell, subband=sb):
+                            continue   # refused by an earlier step of the chain item: recorded, never opened
                         with run.unit(unit_name(lst, night, sb), lst=lst, cell=cell, subband=sb, stage=STAGE) as u:
                             u.meta['master_member'] = [list(x) for x in m]
                             raise NoInput(member_why(lst, night, sb, m))
@@ -652,6 +656,8 @@ def stage_nonmember(run, opts, sel, root, planned_now=False):
                 if run.dry_run:
                     TS.say(f'[sublst {STAGE} {key}] WOULD REFUSE: {e}')
                     bad += 1
+                    continue
+                if run.upstream_refused(f'{STAGE}_{key}', lst=lst, cell=cell):   # refused upstream (core/record.py)
                     continue
                 with run.unit(f'{STAGE}_{key}', lst=lst, cell=cell, stage=STAGE) as u:
                     u.refuse(str(e))
@@ -665,6 +671,8 @@ def stage_nonmember(run, opts, sel, root, planned_now=False):
             if not units:
                 if run.dry_run:
                     TS.say(f'[sublst {STAGE} {key}] NO-INPUT: no job of the night\'s plan in this selection ({plan_how})')
+                    continue
+                if run.upstream_refused(f'{STAGE}_{key}', lst=lst, cell=cell):   # refused upstream (core/record.py)
                     continue
                 with run.unit(f'{STAGE}_{key}', lst=lst, cell=cell, stage=STAGE):
                     raise NoInput(f'no stack job of the night\'s plan in this selection: nothing to subtract ({plan_how})')

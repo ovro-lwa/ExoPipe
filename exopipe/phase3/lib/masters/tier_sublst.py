@@ -1476,6 +1476,8 @@ def _stack_unit(run, opts, root, lst, cell, sb, stokes, croot, plan_files):
     inputs = cubes + [master, weights, script('stack'), solar_audit_path()] + pins + list(plan_files)
     if resume_skip(run, opts, name, [p for p in inputs if os.path.exists(p)], [f'{night}/{sb}']):
         return
+    if run.upstream_refused(name, lst=lst, cell=cell, subband=sb):   # refused upstream (core/record.py)
+        return
     with run.unit(name, lst=lst, cell=cell, subband=sb, stokes=stokes, cube_root=croot, stage='stack') as u:
         miss = [p for p in cubes + [master, weights] if not os.path.exists(p)]
         if miss:

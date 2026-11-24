@@ -46,9 +46,10 @@ exit its units give (Run.exit_code) is that 2, no refusal was made before or out
 name their cell (``cell_refusals``). In a chain of CELL_REFUSAL_CHAINS the step is then recorded 'cells-refused' with one
 entry per refused unit (cell, subband when the unit names one, unit, refusal code, reason) and the chain goes on: the
 hour's other cells continue through the later steps. Every later step gets the item's refused (cell, subband) pairs in
-``record.UPSTREAM_ENV``, and the unit framework (core/record.py Run.unit) refuses each later unit of a refused cell (of
-that subband, or of the whole cell) before its body runs, with code UPSTREAM-REFUSED naming the step that refused it:
-no step processes a refused cell. Any other exit 2 (a refusal before or outside the units, a refused unit without a
+``record.UPSTREAM_ENV``. Each per-cell unit loop calls the guard ``run.upstream_refused(name, **meta)`` before it opens
+a unit: a unit of a refused cell (of that subband, or of the whole cell) is recorded refused, code UPSTREAM-REFUSED
+naming the step that refused it, and never opened; a refused cell's unit opened without the guard refuses the whole
+step (core/record.py). Units of many cells (a shard, a run-wide stage) are not covered. Any other exit 2 (a refusal before or outside the units, a refused unit without a
 cell, no outcome handed back - e.g. a --code commit older than this protocol) and every error stop the item as before.
 An item that ran to its end with cell refusals ends 'cells-refused', never done; its ``summary`` reads "COMPLETE with N
 refused cells (<cell>: <step> [<refusal code>], ...)" (``chain_outcome``: each cell once), and ``refused_by_cell`` holds

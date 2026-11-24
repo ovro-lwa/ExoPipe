@@ -450,7 +450,7 @@ class runner(_Section):
     # prerequisite (2) of the refactor chat's decision of 2026-11-14 to put the admission steps into it,
     # DECISION-20261114-PR21-ADMIT-STEPS-NOT-IN-EPOCH-CHAIN-YET). A step's exit 2 whose refused units all name their cell, with
     # nothing refused before or outside a unit, is recorded per cell (cell, unit, refusal code, reason) and the chain goes on
-    # for the hour's other cells; every later step's units of a refused cell are refused before they run (core/record.py,
+    # for the hour's other cells; every later step's units of a refused cell are refused without being opened (core/record.py,
     # code UPSTREAM-REFUSED). The item then ends 'cells-refused' ("COMPLETE with N refused cells (...)"), never done. Any
     # other refusal and every error stop the item as in the other chains.
     CELL_REFUSAL_CHAINS = ('epoch',)

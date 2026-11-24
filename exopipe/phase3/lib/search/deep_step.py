@@ -1539,6 +1539,8 @@ def run(args, run):
           f'engine literals {len(engine_literals())} = config', flush=True)
     refused = 0
     for it in items:
+        if run.upstream_refused(it.name, tier=TIER, cell=it.cell, stokes=it.stokes):   # refused upstream (core/record.py)
+            continue
         if run.resume and not run.fresh and it.mode != 'replay':
             try:
                 pf = preflight(it, ctx, fix=False, resume_probe=True)
@@ -1611,6 +1613,8 @@ def gate_backfill(args, run, out):
     excl = exclusions.load()
     counts = {}
     for it in items:
+        if run.upstream_refused(f'gate-backfill_{it.cell}_{it.stokes}', tier=TIER, cell=it.cell, stokes=it.stokes):
+            continue   # refused by an earlier step of the chain item: recorded, never opened
         with run.unit(f'gate-backfill_{it.cell}_{it.stokes}', tier=TIER, cell=it.cell, stokes=it.stokes,
                       stage=GP.BACKFILL_STAGE) as u:
             att = resolve_published(it.cell, it.stokes, out)

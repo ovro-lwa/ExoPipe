@@ -435,6 +435,8 @@ def stage_stage(ctx, cell, lst, date, sbs):
             return
         except Refusal:
             pass                                       # not this unit's intact staging: the unit refuses below
+    if ctx.run.upstream_refused(name, tier=TIER, stage='stage', cell=cell):   # refused upstream (core/record.py)
+        return
     with ctx.run.unit(name, tier=TIER, stage='stage', cell=cell, chain=ctx.chain, discovery=ctx.discovery) as u:
         refuse_production_writes([d])
         ex = exclusions()
@@ -620,6 +622,8 @@ def stage_regrid(ctx, cell, lst, date, sbs):
              f'<stage>/<sb> <own Master> --nproc {S.REGRID_NPROC}')
         ctx.planned += 1
         return
+    if ctx.run.upstream_refused(name, tier=TIER, stage='regrid', cell=cell):   # refused upstream (core/record.py)
+        return
     with ctx.run.unit(name, tier=TIER, stage='regrid', cell=cell, chain=ctx.chain) as u:
         d, staged = stage_input(ctx, cell, u)
         refuse_production_writes([d])
@@ -747,6 +751,8 @@ def stage_cube(ctx, cell, lst, date, sbs):
                                                    f'content test (cube pass :35 skips a COMPLETE cell); --fresh rebuilds')
             say(f'frames: {name} skipped ({u.reason})')
             return
+    if ctx.run.upstream_refused(name, tier=TIER, stage='cube', cell=cell):   # refused upstream (core/record.py)
+        return
     with ctx.run.unit(name, tier=TIER, stage='cube', cell=cell) as u:
         d, staged = stage_input(ctx, cell, u)
         staged = {sb: v for sb, v in staged.items() if sb in sbs}
@@ -990,6 +996,8 @@ def stage_movies(ctx, cell, lst, date, sbs):
              + (f'--frames-root <staging>' if ctx.movie_source == 'staged' else '--cube-root <cubes root>')
              + (' ' + ' '.join(fargs) if fargs else ''))
         ctx.planned += 1
+        return
+    if ctx.run.upstream_refused(name, tier=TIER, stage='movies', cell=cell):   # refused upstream (core/record.py)
         return
     with ctx.run.unit(name, tier=TIER, stage='movies', cell=cell, source=ctx.movie_source) as u:
         refuse_production_writes([mv] + ([ship] if ctx.flow_movies else []))

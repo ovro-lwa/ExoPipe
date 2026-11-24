@@ -53,19 +53,17 @@ EXIT_DONE, EXIT_ERROR, EXIT_REFUSED, EXIT_NO_INPUT = 0, 1, 2, 3
 # ---- cells an earlier step of the same chain item refused (core/runner.py, runner.CELL_REFUSAL_CHAINS) ---------------
 # The runner hands every later step (and, through --after, the dependent job's items) the item's refused cells in this
 # variable: a JSON list of {'cell', 'subband', 'step', 'code'}. The unit framework refuses every unit whose meta names a
-# refused cell (and, when the refusal names a subband, that subband or no subband: a unit of the whole cell covers it)
-# before the unit's body runs, with code UPSTREAM-REFUSED naming the step that refused it - no later step processes it.
+# refused cell (and, when the refusal names a subband, that subband or no subband: a unit of the whole cell covers it),
+# with code UPSTREAM-REFUSED naming the step that refused it - no later step processes it. A step's unit loop asks
+# before it opens a unit: `if run.upstream_refused(name, **meta): continue` records the refused unit without opening it.
+# A unit of a refused cell opened without that guard refuses the whole step (UpstreamRefused): never processed.
 UPSTREAM_ENV = 'EXOPIPE3_UPSTREAM_REFUSED'
 UPSTREAM_CODE = 'UPSTREAM-REFUSED'
 
 
 class UpstreamRefused(Refusal):
-    """An upstream-refused unit that could not be skipped in place (not entered by a ``with`` statement): it stops the
-    step (a run-level refusal, so the runner stops the chain item) instead of letting the unit run."""
-
-
-class _SkipBody(Refusal):
-    """Raised at the first instruction of an upstream-refused unit's body; its own ``__exit__`` takes it."""
+    """A unit of an upstream-refused cell opened without the guard (Run.upstream_refused): it stops the step (a run-level
+    refusal, so the runner stops the chain item) instead of letting the unit run."""
 
 
 def upstream_refusals(env=None):
@@ -88,9 +86,10 @@ def _as_set(v):
 
 
 def upstream_hit(meta, refused):
-    """The first refusal in ``refused`` that covers a unit of this meta, or None: the unit's 'cell' (or one of its
-    'cells') is the refused cell, and the refusal names no subband, or the unit names that subband or none."""
-    cells = _as_set((meta or {}).get('cell')) | _as_set((meta or {}).get('cells'))
+    """The first refusal in ``refused`` that covers a unit of this meta, or None: the unit's 'cell' is the refused cell,
+    and the refusal names no subband, or the unit names that subband or none. A unit of many cells (meta 'cells': a
+    shard, a run-wide stage) is not one cell's unit and is not covered; such a step reads the list itself if it must."""
+    cells = _as_set((meta or {}).get('cell'))
     if not cells:
         return None
     sbs = _as_set((meta or {}).get('subband'))
@@ -571,11 +570,30 @@ class Run:
             h['injected'] = self.injected         # core/injected.py: why this run carries synthetic sources (record.injected)
         return h
 
-    def unit(self, name, **meta):
-        u = UnitRecord(self, name, meta)
+    def _upstream_list(self):
         if not hasattr(self, '_upstream'):
             self._upstream = upstream_refusals()
-        u.upstream = upstream_hit(meta, self._upstream)   # entered: refused before its body runs (UnitRecord.__enter__)
+        return self._upstream
+
+    def upstream_refused(self, name, **meta):
+        """The guard every unit loop calls before it opens a unit of one cell: True when an earlier step of the chain item
+        refused the cell (record.UPSTREAM_ENV) - the unit is then recorded refused (code UPSTREAM-REFUSED, naming that
+        step) WITHOUT being opened, and the loop goes on to its next unit: `if run.upstream_refused(name, **meta): continue`.
+        False otherwise (nothing is recorded)."""
+        hit = upstream_hit(meta, self._upstream_list())
+        if not hit:
+            return False
+        u = UnitRecord(self, name, meta)
+        u.upstream = hit
+        u.status, u.reason = 'refused', upstream_reason(hit)
+        self.units.append(u)
+        u._write_outcome()
+        print(f'REFUSED {name}: {u.reason}', flush=True)
+        return True
+
+    def unit(self, name, **meta):
+        u = UnitRecord(self, name, meta)
+        u.upstream = upstream_hit(meta, self._upstream_list())   # opened: refuses the step (UnitRecord.__enter__)
         self.units.append(u)
         return u
 
@@ -750,39 +768,12 @@ class UnitRecord:
     # ---- context ------------------------------------------------------------------------------------------------
     def __enter__(self):
         if getattr(self, 'upstream', None):
-            self._skip_body(sys._getframe(1))
-        return self
-
-    def _skip_body(self, frame):
-        """Refuse an upstream-refused unit (``Run.unit``) without running its body: the frame of the ``with`` statement
-        is traced instruction by instruction until the ``as`` target is stored, and the first instruction of the body
-        raises _SkipBody, which ``__exit__`` records as the refusal. A unit not entered by a ``with`` statement whose
-        target is a plain name (or none) cannot be skipped this way: it refuses the whole step (UpstreamRefused)."""
-        import dis
-        ins = list(dis.get_instructions(frame.f_code))
-        k = next((i for i, x in enumerate(ins) if x.offset == frame.f_lasti), None)
-        if (k is None or ins[k].opname not in ('SETUP_WITH', 'BEFORE_WITH') or k + 1 >= len(ins)
-                or not (ins[k + 1].opname in ('STORE_FAST', 'STORE_NAME', 'STORE_DEREF', 'STORE_GLOBAL', 'POP_TOP'))):
+            # a refused cell's unit opened without the guard (Run.upstream_refused): the step stops before the unit runs
             self.status, self.reason = 'refused', upstream_reason(self.upstream) + (
-                ' (the unit is not entered by a with statement: the step stops here)')
+                ' (its unit was opened without the guard run.upstream_refused: the step stops here)')
             self._write_outcome()
             raise UpstreamRefused(self.reason)
-        store = ins[k + 1].offset
-
-        def tracer(fr, event, arg):
-            if fr is frame and event == 'opcode' and fr.f_lasti > store:
-                raise _SkipBody(upstream_reason(self.upstream))
-            return tracer
-        self._trace = (frame, sys.gettrace(), frame.f_trace, frame.f_trace_opcodes)
-        frame.f_trace_opcodes = True
-        frame.f_trace = tracer
-        sys.settrace(self._trace[1] or (lambda *a: None))   # tracing on (a running tracer, e.g. coverage, stays)
-
-    def _untrace(self):
-        frame, glob, local, opcodes = self._trace
-        self._trace = None
-        frame.f_trace, frame.f_trace_opcodes = local, opcodes
-        sys.settrace(glob)
+        return self
 
     def _final_status(self):
         refused = {r['path'] for r in self.refused_items}
@@ -818,20 +809,6 @@ class UnitRecord:
 
     def __exit__(self, etype, exc, tb):
         from exopipe.phase3.core import fallback
-        if getattr(self, '_trace', None):
-            self._untrace()
-            if etype is None or not issubclass(etype, _SkipBody):
-                # the body ran (or failed before its first instruction): never a silent pass of a refused cell
-                self.status, self.reason = 'error', (upstream_reason(self.upstream) + ': the unit framework did not stop '
-                                                     'the unit before its body (' + (etype.__name__ if etype else 'it ran')
-                                                     + ')')
-                self._write_outcome()
-                return False
-        if etype is not None and issubclass(etype, _SkipBody):
-            fallback.take(self._fallback_mark)
-            self.status, self.reason = 'refused', str(exc)
-            self._write_outcome()
-            return True
         self._fallback_taken = fallback.take(self._fallback_mark)
         refs = self._fallback_taken[0]
         if refs and (etype is None or (issubclass(etype, Exception) and not issubclass(etype, Refusal))):

@@ -10,9 +10,10 @@ DECISION-20261114-PR21-ADMIT-STEPS-NOT-IN-EPOCH-CHAIN-YET): record a cell's refu
   2. the step side: a real record.Run whose units refuse, complete or refuse before any unit -> runner.step_outcome ->
      runner.cell_refusals (a cell refusal only when the units' exit is the step's 2, every refused unit names its cell and
      nothing refused before or outside a unit; a unit's subband is kept with its cell)
-  2b. the central exclusion: a real record.Run handed refused (cell, subband) pairs (record.UPSTREAM_ENV) refuses every
-     unit of a refused cell (of that subband, or of the whole cell) before its body runs, code UPSTREAM-REFUSED naming
-     the step; a unit it cannot skip in place (not entered by a with statement) stops the step
+  2b. the exclusion: a real record.Run handed refused (cell, subband) pairs (record.UPSTREAM_ENV): the guard
+     run.upstream_refused records each unit of a refused cell (of that subband, or of the whole cell) refused, code
+     UPSTREAM-REFUSED naming the step, without opening it; a refused cell's unit opened without the guard refuses the
+     whole step; every per-cell unit of the chain steps' modules is opened behind the guard (a source check)
   3. the protocol through a real step process: `exopipe3 verify` writes its outcome to EXOPIPE3_STEP_OUTCOME_FD and does
      not leave the variable to its children
   4. a synthetic chain (fake step processes from a pinned --code repository, whose outcomes are the real step_outcome
@@ -123,6 +124,8 @@ def _units(run, units):
         if sb:
             meta['subband'] = sb[0]
         if kind == 'body':
+            if run.upstream_refused(unit, **meta):         # the guard every unit loop calls before it opens a unit
+                continue
             with run.unit(unit, **meta) as u:
                 u.status = 'body-ran'
                 raise record.NoInput('the body ran')
@@ -230,36 +233,27 @@ def test_unit_framework_refuses_upstream_cells():
                          ('whole', '04h_2025-10-14', 'body', '')], upstream=up)
         st = {u['unit']: (u['status'], u['upstream'], u['reason']) for u in o['units']}
         assert st['04h_Full_I'][0] == 'done' and st['s36'] == ('no-input', False, 'x'), st
-        # the bodies never ran: each refused before its first instruction, naming the step that refused the cell
+        # the bodies never ran: each unit recorded refused by the guard without being opened, naming the step
         for n, step in (('04h_Red_I', 'search --tier deep [E3]'), ('s41', 'flow --tier snapshot [no code named]'),
                         ('whole', 'flow --tier snapshot [no code named]')):
             assert st[n][:2] == ('refused', True) and st[n][2].startswith('UPSTREAM-REFUSED: ') and step in st[n][2], st[n]
         assert o['rc'] == o['unit_exit'] == 2 and runner.cell_refusals(o, 2) == [], o      # no NEW refused cell: goes on
-        # a multi-line with statement, a closure target, nested blocks: the body still never runs
         os.environ[record.UPSTREAM_ENV] = json.dumps(up)
         try:
             run = record.Run('x', ['exopipe3 x'], d, CFG, dry_run=True)
+            # the fail-safe: a refused cell's unit opened WITHOUT the guard refuses the whole step, its body never run
             ran = []
-
-            def body():
-                for cell in ('04h_Red', '04h_Full'):
-                    with run.unit(
-                            f'{cell}_V',
-                            cell=cell,
-                            stokes='V') as u:
-                        ran.append(cell)
-                        u.status = 'done'
-                return u
-            last = body()
-            assert ran == ['04h_Full'] and last.name == '04h_Full_V' and run.units[0].status == 'refused', ran
-            assert sys.gettrace() is before
-            # a unit not entered by a with statement cannot be skipped in place: it stops the step (a refusal)
-            u = run.unit('04h_Red_X', cell='04h_Red')
             try:
-                u.__enter__()
-                raise AssertionError('entered')
+                with run.unit('04h_Red_V', cell='04h_Red', stokes='V'):
+                    ran.append(1)
+                raise AssertionError('opened')
             except record.UpstreamRefused as e:
-                assert 'not entered by a with statement' in str(e) and u.status == 'refused'
+                assert not ran and 'opened without the guard' in str(e) and run.units[-1].status == 'refused', e
+            # a unit of another cell opens as before; the guard says False and records nothing
+            n = len(run.units)
+            assert run.upstream_refused('04h_Full_V', cell='04h_Full') is False and len(run.units) == n
+            with run.unit('04h_Full_V', cell='04h_Full') as u:
+                u.status = 'done'
             # an unreadable list refuses the run (never a step without the list it was given)
             os.environ[record.UPSTREAM_ENV] = '{not json'
             run = record.Run('x', ['exopipe3 x'], d, CFG, dry_run=True)
@@ -270,10 +264,57 @@ def test_unit_framework_refuses_upstream_cells():
                 assert 'UPSTREAM-REFUSED' in str(e)
         finally:
             os.environ.pop(record.UPSTREAM_ENV, None)
+    assert sys.gettrace() is before
     assert runner.upstream_of([{'cell': 'a', 'subband': None, 'name': 's', 'code': 'E3'},
                                {'cell': 'a', 'subband': None, 'name': 't', 'code': None},
                                {'cell': 'a', 'subband': '41MHz', 'name': 't', 'code': None}]) == [
         {'cell': 'a', 'subband': None, 'step': 's', 'code': 'E3'}, {'cell': 'a', 'subband': '41MHz', 'step': 't', 'code': None}]
+
+
+# modules of the per-hour chain's steps (CELL_REFUSAL_CHAINS 'epoch'): every per-cell unit they open sits behind the guard
+GUARDED = ('lib/search/deep_step.py', 'lib/frames/tier_snapshot.py', 'lib/flow/steps_snapshot.py',
+           'lib/search/tier_snapshot.py', 'lib/search/tier_sublst.py', 'lib/masters/sublst_nonmember.py',
+           'lib/masters/tier_sublst.py', 'steps/curves.py')
+# modules with per-cell units in no CELL_REFUSAL_CHAIN today: the fail-safe applies (a refused cell refuses the step)
+FAILSAFE_ONLY = ('lib/dewarp/steps_cell.py', 'lib/flow/steps_deep.py', 'lib/jupiter/measure.py',
+                 'lib/jupiter/quarantine.py', 'lib/jupiter/v2.py', 'lib/masters/admit_stages.py', 'lib/masters/deep_stages.py',
+                 'lib/photometry/campaign.py', 'lib/photometry/steps_cutouts.py', 'lib/photometry/steps_snapshot.py')
+
+
+def test_every_chain_unit_of_a_cell_is_guarded():
+    """Every `with ... .unit(... cell=...)` of a module in GUARDED has the guard (run.upstream_refused) in the lines
+    before it, after the previous unit; a module with per-cell units in neither list fails (classify it)."""
+    import re
+    root = os.path.join(REPO, 'exopipe', 'phase3')
+    bad, seen = [], set()
+    for dp, _, fn in os.walk(root):
+        for f in fn:
+            if not f.endswith('.py'):
+                continue
+            path = os.path.join(dp, f)
+            rel = os.path.relpath(path, root)
+            lines = open(path).read().split('\n')
+            for k, ln in enumerate(lines):
+                if not re.search(r'\bwith\b.*\.unit\(', ln):
+                    continue
+                call = ' '.join(lines[k:k + 3])
+                if not re.search(r'\bcell=', call):
+                    continue
+                seen.add(rel)
+                if rel in FAILSAFE_ONLY:
+                    continue
+                if rel not in GUARDED:
+                    bad.append(f'{rel}:{k + 1}: a per-cell unit in a module in neither GUARDED nor FAILSAFE_ONLY')
+                    continue
+                back = []                      # the lines since the previous unit opened or the function began
+                for b in reversed(lines[max(0, k - 60):k]):
+                    if re.search(r'\bwith\b.*\.unit\(', b) or re.match(r'\s*def ', b):
+                        break
+                    back.append(b)
+                if not any('upstream_refused(' in b for b in back):
+                    bad.append(f'{rel}:{k + 1}: opened without the guard run.upstream_refused')
+    assert not bad, bad
+    assert set(GUARDED) <= seen, sorted(set(GUARDED) - seen)
 
 
 def test_step_process_hands_its_outcome():
@@ -521,7 +562,8 @@ def test_epoch_chain_is_a_cell_refusal_chain():
 def main(argv):
     names = argv or [n for n in sorted(globals()) if n.startswith('test_')]
     order = [n for n in ('test_refusal_code', 'test_chain_outcome_lists_each_cell_once', 'test_step_outcome_and_cell_refusals',
-                         'test_unit_framework_refuses_upstream_cells', 'test_step_process_hands_its_outcome',
+                         'test_unit_framework_refuses_upstream_cells', 'test_every_chain_unit_of_a_cell_is_guarded',
+                         'test_step_process_hands_its_outcome',
                          'test_chain_goes_on_past_cell_refusals', 'test_epoch_chain_is_a_cell_refusal_chain') if n in names]
     order += [n for n in names if n not in order]
     for n in order:
