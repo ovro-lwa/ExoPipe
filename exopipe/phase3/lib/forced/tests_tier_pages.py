@@ -1,12 +1,16 @@
-"""Content tests of snapshot family T (the HWJ / 10 pc forced-photometry pages of the 10-minute and deep tiers;
+"""Content tests of snapshot family T (the HWJ / 10 pc / LPT forced-photometry pages of the 10-minute and deep tiers;
 lib/forced/tier_pages.py). Code of their own: no import of tier_forced_page_20261027.py or planets_forced_page_20261026.py
 (the in-place verify / verify-chain are the stages' own content tests, run before these).
 
 Classes and the file each is registered on:
+  forced_tier_eval  <EVAL>/thresholds.csv      a stage-2 evaluation of every sample: thresholds per (sample, Stokes) of its
+                                               tier, clean target and control counts per sample, the cells = every LST of
+                                               its input, the event table the site reads
   forced_tier_site  <SITE>/page_record.json    the site lists exactly the clean events at or above their Gaussian thresholds
                                                in the four evaluations it names (and those are the configured ones), with the
-                                               thresholds of those files; one panel above the size floor, on the page, and
-                                               one yellow-number file per card
+                                               thresholds of those files - every sample's, each with its exceedance plot per
+                                               tier and its page section per tier and Stokes; one panel above the size floor,
+                                               on the page, and one yellow-number file per card
   forced_tier_run   <RUN>.new/queue_<S>.txt    every card of the site's (tier, Stokes) served exactly once, as a byte copy of
                                                the run's fitted card, with the card's numbers; radio position only; queue
                                                identities = catalogue identities; an astrometry figure for every multi-
@@ -47,12 +51,51 @@ def _key(r):
     return (r['sample'], r['target'], r['tier'], r['kind'], r['stokes'], r['cell'], r['band'], r['ts'])
 
 
+@content_test('forced_tier_eval')
+def tier_eval(path, tier=None, kind=None, samples=None, inp=None, **ctx):
+    """``path`` <EVAL>/thresholds.csv of snapshot_forced_eval.py --tier ``tier`` --kind ``kind`` --samples ``samples`` on the
+    tier tree ``inp`` (<FT>/<tier>)."""
+    t = _t()
+    samples = list(samples or t.SAMPLES)
+    D = os.path.dirname(os.path.abspath(path))
+    bad = []
+    th = [r for r in _rows(path) if r.get('tier') == tier]
+    for s in samples:
+        for S in ('I', 'V'):
+            n = sum(1 for r in th if r['sample'] == s and r['stokes'] == S)
+            if n != 1:
+                bad.append('%d threshold rows of %s Stokes %s %s' % (n, s, S, tier))
+    ex = _rows(os.path.join(D, 'exceedance.csv'))
+    for s in samples:
+        for S in ('I', 'V'):
+            for st in ('targets', 'controls'):
+                n = sum(int(r['n']) for r in ex if (r['sample'], r['stokes'], r['tier'], r['screen'], r['set'])
+                        == (s, S, tier, 'clean', st))
+                if n <= 0:
+                    bad.append('no clean %s measurement of %s Stokes %s %s' % (st, s, S, tier))
+    cells = sorted(r['cell'] for r in _rows(os.path.join(D, 'cells.csv')) if r.get('kind') == kind)
+    want = sorted(os.path.basename(d) for d in glob.glob(os.path.join(inp or '', '[0-2][0-9]h')) if os.path.isdir(d))
+    if not want or cells != want:
+        bad.append('cells %s, the input %s holds %s' % (cells[:6], inp, want[:6]))
+    if not os.path.exists(os.path.join(D, 'targets_ge4.csv')):
+        bad.append('no targets_ge4.csv (the site lists its events from it)')
+    other = sorted({r['sample'] for r in th} - set(samples))
+    if other:
+        bad.append('thresholds of samples not evaluated: %s' % other)
+    if bad:
+        return False, len(bad), _detail(bad)
+    return True, len(th), '%s %s: thresholds of %s, both Stokes; clean targets and controls of each; cells = the %d LSTs of %s' \
+                          % (tier, kind, '/'.join(samples), len(want), inp)
+
+
 @content_test('forced_tier_site')
-def tier_site(path, evals=None, **ctx):
-    """``evals`` {'<tier>|<kind>': directory}: the evaluations the site must have read (the stage passes
-    forced_tier_pages.EVAL_DIRS; default the same)."""
+def tier_site(path, evals=None, samples=None, **ctx):
+    """``evals`` {'<tier>|<kind>': directory}: the evaluations the site must have read (the stage passes those it chose:
+    tier_eval's, or forced_tier_pages.EVAL_DIRS; default the latter). ``samples``: the samples the page shows (default
+    forced_tier_pages.SAMPLES)."""
     from exopipe.phase3.lib.forced.tier_pages import selected_events
     t = _t()
+    samples = tuple(samples or t.SAMPLES)
     want_evs = {tuple(k.split('|')): v for k, v in evals.items()} if evals else dict(t.EVAL_DIRS)
     site = os.path.dirname(os.path.abspath(path))
     with open(path) as f:
@@ -69,7 +112,7 @@ def tier_site(path, evals=None, **ctx):
     if evs != want_evs:
         bad.append('the site read evaluations %s, configured %s' % (sorted(evs.items()), sorted(want_evs.items())))
     # the events: exactly the clean rows at or above their Gaussian thresholds in those files, recomputed here
-    want = {_key(r) for r in selected_events(t, want_evs)}
+    want = {_key(r) for r in selected_events(t, want_evs, samples)}
     have = {_key(c['row']) for c in cards if 'row' in c}
     if want != have:
         bad.append('events: %d listed, %d at or above threshold in the evaluations (%d listed not selected, %d selected not '
@@ -78,16 +121,31 @@ def tier_site(path, evals=None, **ctx):
     th = {}
     for (tier, kind), ev in sorted(want_evs.items()):
         for r in _rows(os.path.join(ev, 'thresholds.csv')):
-            if r['tier'] == tier and r['sample'] in t.SAMPLES:
+            if r['tier'] == tier and r['sample'] in samples:
                 th['|'.join((r['sample'], tier, kind, r['stokes']))] = r
     if th != rec.get('thresholds'):
         bad.append('thresholds differ from the evaluation files')
+    # every sample is on the page: its thresholds per (tier, kind, Stokes), its exceedance plot per tier (plots/exceedance_
+    # <sample>_<tier>.png, :204) and its section per tier and Stokes (<h3 id="<tier>-<S>-<sample>">, :298)
+    tiers = sorted({k[0] for k in want_evs})
+    nth = ['%s %s %s %s' % (s, ti, k, S) for s in samples for (ti, k) in sorted(want_evs) for S in ('I', 'V')
+           if '|'.join((s, ti, k, S)) not in (rec.get('thresholds') or {})]
+    if nth:
+        bad.append('%d (sample, tier, kind, Stokes) without thresholds on the page, e.g. %s' % (len(nth), nth[0]))
     try:
         with open(os.path.join(site, 'index.html')) as f:
             page = f.read()
     except OSError:
         page = ''
         bad.append('no index.html')
+    noplot = [(s, ti) for s in samples for ti in tiers
+              if not os.path.exists(os.path.join(site, 'plots', 'exceedance_%s_%s.png' % (s, ti)))
+              or 'plots/exceedance_%s_%s.png' % (s, ti) not in page]
+    nosec = [(s, ti, S) for s in samples for ti in tiers for S in ('I', 'V') if 'id="%s-%s-%s"' % (ti, S, s) not in page]
+    if noplot:
+        bad.append('%d (sample, tier) without their exceedance plot on the page, e.g. %s' % (len(noplot), noplot[0]))
+    if nosec:
+        bad.append('%d (sample, tier, Stokes) without their page section, e.g. %s' % (len(nosec), nosec[0]))
     small, off, noy = [], [], []
     for n in names:
         png = os.path.join(site, 'panels', '%s.png' % n)
@@ -103,9 +161,9 @@ def tier_site(path, evals=None, **ctx):
             bad.append('%d %s, e.g. %s' % (len(L), what, L[0]))
     if bad:
         return False, len(bad), _detail(bad)
-    return True, len(cards), '%d events = every clean measurement at or above its Gaussian threshold in %d evaluations; one ' \
-                             'panel (> %d bytes, on the page) and one yellow file per card' % (len(cards), len(evs),
-                                                                                              t.PANEL_MIN_BYTES)
+    return True, len(cards), '%d events = every clean measurement at or above its Gaussian threshold in %d evaluations; ' \
+                             'samples %s each with thresholds, exceedance plots and sections; one panel (> %d bytes, on the ' \
+                             'page) and one yellow file per card' % (len(cards), len(evs), '/'.join(samples), t.PANEL_MIN_BYTES)
 
 
 _QH = re.compile(r'^# queue_name: forced photometry \(HWJ \+ 10 pc\), Stokes ([IV]), (\S+) tier\s*$')

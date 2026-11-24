@@ -20,13 +20,14 @@ Families and stages
      the astrometry figure v2. Ported from the analysis scripts (review_items_20261031/forced_wide/), not run in place.
   N  the night-activity table of the astrometry figure v2 (--tier snapshot --stages activity; figure_v2/night_activity_build.py
      ported) -> night_activity_I10s.csv, night_activity_nights_I10s.csv.
-  T  the HWJ / 10 pc forced-photometry pages of the 10-minute and deep tiers (--tier snapshot --stages tier_site,tier_runs;
-     lib/forced/tier_pages.py): tier_forced_page_20261027.py in place - tier_site = its build + verify (the static site),
+  T  the HWJ / 10 pc / LPT forced-photometry pages of the 10-minute and deep tiers (--tier snapshot --stages tier_eval,tier_site,
+     tier_runs; lib/forced/tier_pages.py): tier_eval = the four stage-2 evaluations of the samples (snapshot_forced_eval.py
+     --tier in place); tier_forced_page_20261027.py in place - tier_site = its build + verify (the static site),
      tier_runs = its chain + verify-chain (the review runs Run_SNAPFORCED_{V,I}{10min,deep}_gen5.new, served on p9120-p9123
      once installed; installing is not ported).
   W, N and T are campaign stages, named only (never a default), one family per invocation; their flags are --wide-*,
-  --na-detections and --tier-site (`exopipe3 forced --help`; lib/forced/wide_stages.py and tier_pages.py document inputs,
-  outputs and gates W-* / N-* / T-*).
+  --na-detections and --tier-site, --tier-forced-root, --tier-cutout-root (`exopipe3 forced --help`; lib/forced/
+  wide_stages.py and tier_pages.py document inputs, outputs and gates W-* / N-* / T-*).
   sub-LST (--tier sublst): no production forced chain exists - ends NO-INPUT (exit 3).
 
 Unit of work / item kinds: deep catflux = the run directory (all its catalogues); deep panels = one page run; snapshot = one
@@ -60,8 +61,10 @@ Outputs (production names and layout unchanged; records at <out>/_records/forced
             candidates_v3.csv (forced_wide_candidates); <review root>/<run>/forced_wide_v3.csv (forced_wide_published).
   N         <out> = night_activity.OUT_ROOT by default: night_activity_I10s.csv (night_activity_bands),
             night_activity_nights_I10s.csv (night_activity_nights).
-  T         <out> = the site root (default forced_tier_pages.SITE_ROOT): <site>/page_record.json (forced_tier_site, with the
-            page, panels, yellow numbers, plots and the <site>_masters links); <review root>/<run>.new/queue_<S>.txt
+  T         <out> = the site root (default forced_tier_pages.SITE_ROOT): <out>/eval_<tier>_[wb_]gen5_hwj10pc/thresholds.csv
+            (forced_tier_eval, with exceedance, targets_ge4 and the evaluation's other tables); <site>/page_record.json
+            (forced_tier_site, with the page, panels, yellow numbers, plots and the <site>_masters links); <review root>/
+            <run>.new/queue_<S>.txt
             (forced_tier_run, one per run, with the run's fits, localization, association, cards and served tree).
   snapshot  <out> = the work root (default forced_snapshot.WORK_ROOT); work run <out>/<NAME>: queue.txt and the build tree
             (forced_event_build), forced_fits.csv (forced_fits), forced_ties.csv (forced_ties), forced_assoc_identity.csv
@@ -103,7 +106,7 @@ def add_arguments(p):
                    help='stages to run, in pipeline order whatever the order given. deep: catflux (default) or panels '
                         '(one per invocation: they write into different directories); snapshot: '
                         'build,fit,tie,loc,assoc,render,verify (default; family C), wide_jobs,wide_search,wide_test,'
-                        'wide_publish (family W), activity (family N) or tier_site,tier_runs (family T) - one family per '
+                        'wide_publish (family W), activity (family N) or tier_eval,tier_site,tier_runs (family T) - one family per '
                         'invocation, W, N and T only when named')
     g.add_argument('--from', dest='stage_from', metavar='STAGE', help='first stage of the selected list')
     g.add_argument('--until', dest='stage_until', metavar='STAGE', help='last stage of the selected list')
@@ -158,8 +161,10 @@ def run(args, run):
                 # families W and N run no in-place script: G37 (overrides of in-place literals) concerns families B and C
                 rc = wide.run(args, run, fam, stages)
                 return record.EXIT_DONE if (rc is None and run.dry_run) else rc
-        if getattr(args, 'tier_site', None):     # families A, B and C here; W and N refuse it in wide_stages.gate_args
-            raise record.Refusal('W-FAMILY --tier-site: a flag of family T only (--tier snapshot --stages tier_site,tier_runs)')
+        tflags = [f for f, a in importlib.import_module(WIDE_MODULE).TIER_FLAGS if getattr(args, a, None)]
+        if tflags:                               # families A, B and C here; W and N refuse them in wide_stages.gate_args
+            raise record.Refusal('W-FAMILY %s: a flag of family T only (--tier snapshot --stages tier_eval,tier_site,tier_runs)'
+                                 % ', '.join(tflags))
         common.check_overrides()
         rc = importlib.import_module(TIER_MODULES[args.tier]).run(args, run)
     except ValueError as e:

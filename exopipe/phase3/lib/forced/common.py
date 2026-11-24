@@ -30,6 +30,10 @@ STEERING = {
     'forced_snapshot.FLOW_ENV', 'forced_snapshot.EXCLUDED_EVENTS',
     'forced_tier_pages.SITE_ROOT', 'forced_tier_pages.SITE_NAME', 'forced_tier_pages.NPROC', 'forced_tier_pages.OK_LINES',
     'forced_tier_pages.EXCLUDED_EVENTS',
+    # passed to the in-place scripts (--globals SAMPLES / SAMPLE_LABEL; tier_eval's --survey-cells and environment): they
+    # change the products
+    'forced_tier_pages.SAMPLES', 'forced_tier_pages.SAMPLE_LABEL', 'forced_tier_pages.EVAL_SURVEY_CELLS',
+    'forced_tier_pages.EVAL_ENV',
 }
 OWN_SECTIONS = ('forced', 'forced_panels', 'forced_catflux', 'forced_snapshot', 'forced_assoc', 'forced_tier_pages')
 IN_PLACE_SHARED = ('fitting', 'astrometry')

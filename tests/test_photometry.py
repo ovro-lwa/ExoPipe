@@ -1638,7 +1638,14 @@ def served_generation_mismatches(pages=True):
     if not m or m.group(1) != ph.TIER_FORCED_ROOTS[ph.PLANET_SAMPLE]:
         out.append('the planets page reads %s, TIER_FORCED_ROOTS[%s] = %s' % (m and m.group(1), ph.PLANET_SAMPLE,
                                                                             ph.TIER_FORCED_ROOTS[ph.PLANET_SAMPLE]))
+    # the samples the serving pages show (tier_forced_page_20261027.py SAMPLES, the planets page) must have served rows; a
+    # configured sample the served page does not show yet (LPT, 2026-11-24: v2's tier pages) is served from the page's root
+    # once measured there - its rows, when present, name the configured cutouts
+    served = set(mod_literals(os.path.join(OPS, 'tier_forced_page_20261027.py')).get('SAMPLES') or ()) | {ph.PLANET_SAMPLE}
+    ft = re.search(r"^FT = os\.environ\.get\('P3_FORCED_TIERS', '([^']+)'\)", src, re.M)
     for smp, root in sorted(ph.TIER_FORCED_ROOTS.items()):
+        if smp not in served and (not ft or root != ft.group(1)):
+            out.append('TIER_FORCED_ROOTS[%s] = %s is not the root the tier pages read (%s)' % (smp, root, ft and ft.group(1)))
         for tier in ('10min', 'deep'):
             rows, lst = [], None
             for mp in sorted(glob.glob(os.path.join(root, tier, '[0-2][0-9]h', 'forced_manifest.csv'))):
@@ -1647,7 +1654,7 @@ def served_generation_mismatches(pages=True):
                     lst = os.path.basename(os.path.dirname(mp))
                     break
             bad = [r['file'] for r in rows if not r['file'].startswith(pre)]
-            if bad or not rows:
+            if bad or (not rows and smp in served):
                 out.append('%s %s %s: %d of %d %s rows measured cutouts outside %s' % (root, tier, lst, len(bad), len(rows),
                                                                                       smp, ph.CUTOUT_ROOT))
     return out
@@ -1794,7 +1801,7 @@ def test_cutout_mirrors():
     LF, fsrc = mod_literals(TIER_FORCED_TOOL), open(TIER_FORCED_TOOL).read()
     check('mirror photometry_tier_forced_20261026.py: SAMPLES, MOVING, the ad-hoc tags read from photometry.ADHOC_ENV, its '
           'manifest header and completion line',
-          tuple(LF.get('SAMPLES') or ()) == tuple(ph.TIER_FORCED_SAMPLES) and tuple(LF.get('MOVING') or ()) == (ph.PLANET_SAMPLE,)
+          tuple(LF.get('SAMPLES') or ()) == tuple(ph.TIER_FORCED_ENGINE_SAMPLES) and tuple(LF.get('MOVING') or ()) == (ph.PLANET_SAMPLE,)
           and "ADHOC = tuple(x.split('=', 1)[0] for x in os.environ.get('%s', '')" % ph.ADHOC_ENV in fsrc
           and "fieldnames=%r" % list(TC.TIER_MANIFEST_HEADER) in fsrc
           and 'PHOTOMETRY-TIER-FORCED-DONE %d cutouts measured, %d refused' in fsrc, (LF.get('SAMPLES'), LF.get('MOVING')))
@@ -3221,7 +3228,7 @@ def tier_review_fixes(adhoc, root, tout, out):
     # ---- F4: the served roots only with --in-place, the measurement chained (served roots patched to scratch here)
     sc, sf, sp = (os.path.join(TMP, 'served_tier', x) for x in ('photometry_genS', 'forced_tiers_genS', 'planets_genS'))
     base = ['photometry', '--tier', 'deep', '--cells', TIER_CELL, '--out', out, '--cores', 'none']
-    with patched(CFG.photometry, CUTOUT_ROOT=sc, TIER_FORCED_ROOTS={'HWJ': sf, '10pc': sf, 'SolarSystem': sp}):
+    with patched(CFG.photometry, CUTOUT_ROOT=sc, TIER_FORCED_ROOTS={'HWJ': sf, '10pc': sf, 'LPT': sf, 'SolarSystem': sp}):
         for extra, what in ((['--stages', 'cutouts'], 'tier cutouts into the served cutout root without --in-place'),
                             (['--stages', 'cutmeasure'], 'cutmeasure into the served tier forced roots without --in-place'),
                             (['--stages', 'cutouts', '--in-place'], '--in-place tier cutouts without cutmeasure chained'),
@@ -3240,6 +3247,10 @@ def tier_review_fixes(adhoc, root, tout, out):
         rc, txt = step(base + ['--stages', 'cutouts,cutmeasure', '--in-place', '--dry-run'])
         check('C-INPLACE: --in-place --stages cutouts,cutmeasure (into the served roots, cutmeasure chained) is planned (dry run, '
               'exit 0)', rc == 0 and 'WOULD REFUSE' not in txt and '[cutmeasure]' in txt, txt[-700:])
+        lpt_env = '%s=LPT=%s' % (CFG.photometry.ADHOC_ENV, os.path.join(CFG.paths.CLV15_ROOT, CFG.photometry.SAMPLE_FILES['LPT']))
+        check('cutmeasure measures LPT (photometry.TIER_FORCED_SAMPLES; the tool does not name it): its unit holds LPT with '
+              'HWJ / 10 pc, the tool given LPT as an ad-hoc tag (%s)' % lpt_env,
+              'cutmeasure.deep.18h.HWJ+10pc+LPT' in txt and ('ad hoc: %s' % lpt_env) in txt, txt[-700:])
         rc, txt = step(base + ['--stages', 'cutouts,cutmeasure', '--in-place'])
         recs = records(out)
         cu = recs.get('cutouts.deep.%s' % TIER_CELL, {})
@@ -3247,8 +3258,13 @@ def tier_review_fixes(adhoc, root, tout, out):
         check('--in-place regeneration of the (patched) served generation: the tier cutouts placed in the served cutout root and '
               'cutmeasure run in the same invocation into each sample\'s served tier forced root (exit 0)',
               rc == 0 and cu.get('status') == 'done' and glob.glob(os.path.join(sc, '*', '64MHz', '*', '*_18h_deep_[IV].fits'))
-              and cms.get('cutmeasure.deep.18h.HWJ+10pc') == 'done' and glob.glob(os.path.join(sf, 'deep', '18h', 'forced_*.npz')),
+              and cms.get('cutmeasure.deep.18h.HWJ+10pc+LPT') == 'done' and glob.glob(os.path.join(sf, 'deep', '18h', 'forced_*.npz')),
               (rc, cu.get('status'), cu.get('reason'), cms, txt[-900:]))
+        lc = sorted({os.path.basename(p_).rsplit('_', 3)[0] for p_ in glob.glob(os.path.join(sc, 'LPT', '*', '*', '*_18h_deep_[IV].fits'))})
+        ln = [p_ for p_ in glob.glob(os.path.join(sf, 'deep', '18h', 'forced_LPT_*.npz'))]
+        names = sorted({str(x) for p_ in ln for x in np.load(p_, allow_pickle=False)['names']})
+        check('... the LPT cutouts the tool cut (%d objects) are measured into the served tier forced root with HWJ / 10 pc '
+              '(forced_LPT_<band>_<S>.npz, the same objects)' % len(lc), names == lc, (lc, names, len(ln)))
     # ---- F4 helper: in place, the measurement runs once any cutouts unit placed its files
     U = [type('U', (), {'status': s_}) for s_ in ('done', 'refused')]
     check('stop_after: a stage with a refused unit stops the later stages, except --in-place cutouts once a unit placed its '
