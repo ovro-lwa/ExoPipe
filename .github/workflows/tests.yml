@@ -110,3 +110,5 @@ jobs:
         run: python tests/test_frames_tenmin_append_gate.py
       - name: combined snapshot view pages p8986-p8989 (serve plan, entries, hub, stages) and the false-positive filter step (flood and alignment hides, refusals, content test)
         run: python tests/test_snapview_pages.py
+      - name: per-hour driver (fake Slurm; catch-up windows, failed-parent resubmission, space booking, requeue resume, periodic jobs)
+        run: python tests/test_drive.py
