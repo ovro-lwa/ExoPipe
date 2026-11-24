@@ -742,13 +742,14 @@ def _e2e(run, nights, hdrs):
 def _cards_stage(out, sib, second='CURRENT (stub: cleaned from the installed V master)', extra=()):
     """--stages cards (= verify, vclean, cards) under --out, the siblings of the card gate read from sib, with
     vclean_masters.refresh_vclean_cell stubbed (the real refresh runs the sv2 clean; test_install_release1_cards tests it on a
-    synthetic cell): the first call reports OK, the second `second`. Returns (rc, the stub's calls)."""
+    synthetic cell): the first call reports OK, the second (check-only) `second`. Returns (rc, the stub's calls)."""
     from exopipe.phase3.lib.masters import vclean_masters as VM
     calls = []
 
-    def fake(cell, root=None, tmp_root=None, mdw_table=None):
+    def fake(cell, root=None, tmp_root=None, mdw_table=None, check_only=False):
         calls.append(dict(cell=cell, root=root, tmp=tmp_root, mdw=mdw_table, round=os.environ.get('P3_INSTALL_ROUND'),
-                          run=os.environ.get('P3_ARCHIVE_RUN'), archive=os.environ.get('P3_ARCHIVE_ROOT')))
+                          run=os.environ.get('P3_ARCHIVE_RUN'), archive=os.environ.get('P3_ARCHIVE_ROOT'),
+                          check_only=check_only))
         os.makedirs(tmp_root, exist_ok=True)
         open(f'{tmp_root}/sv2_scratch.txt', 'w').write('scratch')
         return cell, 'OK (stub: re-cleaned)' if len(calls) == 1 else second
@@ -765,10 +766,12 @@ def _cards_stage(out, sib, second='CURRENT (stub: cleaned from the installed V m
 def _e2e_cards(out, cdir, rnd):
     """B2: the Release 1 header-repair cards and the cleaned Stokes V refresh of the installed cell (install_cell.sh:28-54;
     CUTOVER_READINESS "INSTALL-CELL HEADER REPAIR"). Step b wrote the cards on the cell's co-adds and provenance_nights.csv
-    before the publish (archive = working); stage vclean calls refresh_vclean_cell twice under round <round>vclean and refuses
-    unless the second call reports CURRENT; stage cards checks the cards and runs the sibling card-key gate, the siblings read
-    from a synthetic tree (copies of this cell's archive under two other LSTs); one card removed from an archived file is refused
-    by CARDS and CARD-GATE. Returns the sibling root."""
+    before the publish (archive = working); stage vclean first checks that the cards stage would pass on the cell's other files,
+    then calls refresh_vclean_cell under round <round>vclean and, after an OK, once more check-only, and refuses unless that
+    call reports CURRENT; stage cards checks the cards and runs the sibling card-key gate, the siblings read from a synthetic
+    tree (copies of this cell's archive under two other LSTs); one card removed from an archived file is refused before the
+    refresh writes anything (VCLEAN's pre-check: the CARDS and CARD-GATE findings) and, in a dry run, by CARD-GATE. Returns
+    the sibling root."""
     from astropy.io import fits
     from exopipe.phase3.config import CFG
     from exopipe.phase3.lib.install import steps_common as SC
@@ -804,10 +807,11 @@ def _e2e_cards(out, cdir, rnd):
     ok('B2: stages cards -> done, gates VCLEAN CARDS CARD-GATE pass', rc == 0 and rec['status'] == 'done'
        and {'install.V', 'install.VCLEAN', 'install.CARDS', 'install.CARD-GATE'} <= passed,
        f'rc {rc} {rec and rec["reason"][:300]}; failed {[(t["name"], str(t.get("detail"))[:300]) for t in failed_tests(rec)]}')
-    ok('B2: refresh_vclean_cell called twice under round <round>vclean, the --out working and archive roots, the MDWSTAT table',
+    ok('B2: refresh_vclean_cell called twice (the second check-only) under round <round>vclean, the --out working and archive '
+       'roots, the MDWSTAT table',
        len(calls) == 2 and all(c['round'] == rnd + 'vclean' and c['root'] == f'{out}/coadd_sb' and c['run'] == run
                                and c['archive'] == f'{out}/archive' and c['mdw'] == mdw for c in calls)
-       and rec['meta'].get('vclean_round') == rnd + 'vclean', calls[:1])
+       and [c['check_only'] for c in calls] == [False, True] and rec['meta'].get('vclean_round') == rnd + 'vclean', calls[:2])
     ok('B2: the refresh scratch is under --out and removed after the two calls', calls
        and calls[0]['tmp'] == f'{out}/vclean_tmp/{CELL}' and not os.path.exists(calls[0]['tmp']))
     rc, calls = _cards_stage(out, sib, second='OK (stub: re-cleaned again)')
@@ -822,12 +826,14 @@ def _e2e_cards(out, cdir, rnd):
     with fits.open(victim[0], mode='update', memmap=False) as h:
         del h[0].header['FLUXREF']
     name = os.path.basename(victim[0])
-    rc, _ = _cards_stage(out, sib)
+    rc, calls = _cards_stage(out, sib)
     rec = record(out, f'{CELL}.verify')
     det = {t['name']: str(t.get('detail')) for t in rec.get('tests', []) if not t['passed']}
-    ok('B2: FLUXREF removed from one archived master -> refused at CARDS (its archive header differs from the working file\'s), '
-       'naming the file -> exit 2', rc == 2 and rec['status'] == 'refused' and 'another header' in det.get('install.CARDS', '')
-       and name in det.get('install.CARDS', ''), f'rc {rc} {sorted(det)} {str(det)[:600]}')
+    dv = det.get('install.VCLEAN', '')
+    ok('B2: FLUXREF removed from one archived master -> refused at VCLEAN before the refresh writes anything: the cards stage '
+       'would refuse (its archive header differs from the working file\'s; the sibling gate misses FLUXREF), naming the file '
+       '-> exit 2', rc == 2 and rec['status'] == 'refused' and calls == [] and dv.startswith('nothing written')
+       and 'another header' in dv and name in dv and 'FLUXREF' in dv, f'rc {rc} {len(calls)} calls {sorted(det)} {str(det)[:600]}')
     buf = io.StringIO()                         # a dry run prints every gate's verdict (collect), not only the first refusal
     with contextlib.redirect_stdout(buf):
         rc, _ = _cards_stage(out, sib, extra=('--dry-run',))

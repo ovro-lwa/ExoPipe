@@ -14,13 +14,22 @@ wiring in lib/install/). Data-free: synthetic FITS with the full standard header
   mdwstat    the table / MDWARP agreement, LSWBSB, a cell missing from the table, no MDWSTAT at the masters build
   gate       the sibling card-key gate: PASS; a missing card key, a missing repair HISTORY line, no repaired sibling, an
              MDWSTAT other than the table's, an uncorrected MDWMED1 each REFUSE; an exempt whole refusal; siblings read
-             from another root (the install under --out)
+             from another root (the install under --out); the table read by the writer's loader under the writer's key (an
+             unusable table refuses); excluded names left out
   vclean     vclean_source_check (current, no VCSRC, another VCSRC, another time block); build_vclean_cell refuses a stale
-             pair; refresh_vclean_cell re-cleans a stale pair (the sv2 clean and the data_decisions gate stubbed): old pair
-             quarantined with md5, new pair stamped, carded, archived and audited, and a second call reports CURRENT
-  install    install.RELEASE1_CARDS / MDWSTAT_TABLE reach phase3_install b through pi_context; the published and audited
-             cell files include provenance_nights.csv; the window check accepts the config; the masters build writes the
-             cards (no MDWSTAT) before its publish
+             pair; refresh_vclean_cell (the sv2 clean and the data_decisions gate stubbed): a check-only call on the stale pair
+             runs and writes nothing; the refresh re-cleans it - old pair quarantined with md5, new pair stamped, carded,
+             archived and audited - with every file map refused and astropy's switch turned on around the call (no FITS read
+             of the refresh or its helpers maps a file; FALSIFIER: the same stand-in refuses PB.sibling_check's map with the
+             switch on); a check-only call then reports CURRENT; a current pair without its cards is recarded through the
+             working copy, quarantine and publish path of a new round, with no sv2 run and the archived uncarded pair moved
+             to the archive quarantine unchanged
+  install    install.RELEASE1_CARDS / MDWSTAT_TABLE reach phase3_install b through pi_context only for the calls that run b
+             (cards=True); the switch decides the default stages and the gates the enqueue requires; b's writes are tried on
+             a trial copy of the staging before the first rename (a failure refuses with the staging unchanged and the trial
+             removed); the published and audited cell files are one list (coadd.ARCHIVED_CELL_FILES) including
+             provenance_nights.csv; the window check accepts the config; the masters build writes the cards (no MDWSTAT)
+             before its publish
 
 Run: python tests/test_install_release1_cards.py
 """
@@ -373,6 +382,24 @@ def test_gate(fd, table):
     os.remove(odd)
     passed, lines = R1.sibling_card_gate('12h_Blue', run, t, sibling_run=sib_run)
     ok('gate: no archived FITS - REFUSED', not passed and 'no archived FITS' in lines[-1])
+    bad_t = f'{ROOT}/mdw_twice.csv'
+    mdw_table(bad_t, [('12h Red', 'applied', '', ''), ('12h Red', 'applied', '', '')])
+    passed, lines = R1.sibling_card_gate(CELL, run, bad_t, sibling_run=sib_run)
+    ok('gate: the MDWSTAT table read by the writer\'s loader (load_mdw_table) - a table listing a cell twice is unusable and '
+       'REFUSES', not passed and 'cannot be used' in lines[-1] and R1.load_mdw_table(bad_t) in lines[-1], lines[-1])
+    ok('gate: the writer\'s key - the table row \'12h Red\' is the cell 12h_Red for both (load_mdw_table)',
+       '12h_Red' in R1.load_mdw_table(t))
+    keep = victim + '.keep'
+    shutil.copy2(victim, keep)
+    with fits.open(victim, mode='update', memmap=False) as h:
+        del h[0].header['FLUXREF']
+    passed, lines = R1.sibling_card_gate(CELL, run, t, sibling_run=sib_run)
+    passed_x, lines_x = R1.sibling_card_gate(CELL, run, t, sibling_run=sib_run,
+                                             exclude=(f'{SCOPE}_I_deep_Taper_R0_{SCOPE}_LST*.fits',))
+    ok('gate: exclude leaves the named files out (a card missing there no longer refuses)', not passed and passed_x
+       and f'{len(mine) - 1} of {len(mine) - 1} archived files' in lines_x[-1], lines_x[-1])
+    shutil.copy2(keep, victim)
+    os.remove(keep)
 
 
 def test_vclean():
@@ -389,7 +416,7 @@ def test_vclean():
         h[0].header['VCSRC'] = 'f' * 32
     ok('vclean: VCSRC of another V master - not current (STALE)', 'is not the current V master' in VM.vclean_source_check(ap, vp)[1])
     with fits.open(ap, mode='update', memmap=False) as h:
-        h[0].header['VCSRC'] = VM._md5(vp)
+        h[0].header['VCSRC'] = md5(vp)
     good = VM.vclean_source_check(ap, vp)
     ok('vclean: cleaned from the current V master, time block and constituents equal - current', good[0], good[1])
     with fits.open(ap, mode='update', memmap=False) as h:
@@ -412,10 +439,51 @@ def test_vclean():
     _refresh(root, cf, vp, ap, t)
 
 
+class _NoMap:
+    """A stand-in for mmap.mmap in this process: a map of a file under ROOT is recorded and refused (PermissionError, as the
+    production gate refuses a Lustre file); every other map (anonymous, astropy's own temporary probe) is made."""
+    seen = []
+
+    def __enter__(self):
+        import mmap as _mm
+        real, root, seen = _mm.mmap, os.path.realpath(ROOT), self.seen
+
+        class NoMap(real):
+            def __new__(cls, fileno, *a, **kw):
+                path = os.path.realpath(f'/proc/self/fd/{fileno}') if fileno != -1 else ''
+                if path.startswith(root + os.sep):
+                    seen.append(path)
+                    raise PermissionError(13, f'test stand-in: no map of {path}')
+                return real.__new__(cls, fileno, *a, **kw)
+        self.real, _mm.mmap = real, NoMap
+        del seen[:]
+        return self
+
+    def __exit__(self, *exc):
+        import mmap as _mm
+        _mm.mmap = self.real
+        return False
+
+
+def _strip_cards(paths):
+    """Remove every Release 1 card and the repair HISTORY line (synthetic test files only)."""
+    from exopipe.phase3.lib.masters import release1_cards as R1
+    for p in paths:
+        with fits.open(p, mode='update', memmap=False) as h:
+            hd = h[0].header
+            for k in ('FLUXREF', 'ASTREF', 'MDWSTAT', 'P2RUN', 'SCALE_A', 'P1RUN', 'CALBP'):
+                if k in hd:
+                    del hd[k]
+            hist = [str(x) for x in hd.get('HISTORY', []) if R1.REPAIR not in str(x) and 'added FLUXREF' not in str(x)]
+            hd.remove('HISTORY', ignore_missing=True, remove_all=True)
+            for x in hist:
+                hd.add_history(x)
+
+
 def _refresh(root, cf, vp, ap, table):
     """refresh_vclean_cell on the stale pair: the sv2 clean (a subprocess) and the data_decisions gate stubbed."""
     from exopipe.phase3.lib.install import install as PI, steps_common as SC
-    from exopipe.phase3.lib.masters import coadd as C, vclean_masters as VM
+    from exopipe.phase3.lib.masters import coadd as C, vclean_masters as VM, pb_apply as PB
     out = f'{ROOT}/vclean'
     roots = SC.Roots(out, True)
     mdir = roots.masters_dir(LST, SCOPE)
@@ -425,7 +493,8 @@ def _refresh(root, cf, vp, ap, table):
         p = f'{mdir}/{SCOPE}_V_deep_Taper_Robust+0.0_vclean_OLD_{nm}.fits'
         shutil.copy2(f'{cf}/V_deep_Taper_R0_{nm}_{SCOPE}.fits', p)
         old_arch.append((p, md5(p)))
-    old_pair = {f: md5(f'{cf}/{f}') for f in (os.path.basename(ap), f'V_deep_Taper_R0_clean_pbcorr_{SCOPE}.fits')}
+    pair = (os.path.basename(ap), f'V_deep_Taper_R0_clean_pbcorr_{SCOPE}.fits')
+    old_pair = {f: md5(f'{cf}/{f}') for f in pair}
     calls = {'sv2': 0, 'excl': 0}
 
     def fake_run(argv, **kw):
@@ -440,14 +509,34 @@ def _refresh(root, cf, vp, ap, table):
     from exopipe.phase3.config import CFG
     real_run, real_excl, real_t = VM.subprocess.run, C._refuse_excluded_constituents, CFG.install.MDWSTAT_TABLE
     VM.subprocess.run, C._refuse_excluded_constituents, CFG.install.MDWSTAT_TABLE = fake_run, fake_excl, table
+    tmp = f'{ROOT}/vtmp'
+    nomap = _NoMap()
     try:
         with SC.pi_context(PI, roots, 'r1vclean'):
-            st1 = VM.refresh_vclean_cell(CELL, root=f'{out}/coadd_sb', tmp_root=f'{ROOT}/vtmp', mdw_table=table)[1]
-            st2 = VM.refresh_vclean_cell(CELL, root=f'{out}/coadd_sb', tmp_root=f'{ROOT}/vtmp', mdw_table=table)[1]
+            st0 = VM.refresh_vclean_cell(CELL, root=f'{out}/coadd_sb', tmp_root=tmp, mdw_table=table, check_only=True)[1]
+            ok('vclean refresh: a check-only call on the stale pair reports NOT CURRENT, runs no sv2 and writes nothing',
+               st0.startswith('NOT CURRENT (') and calls['sv2'] == 0 and not os.path.exists(tmp)
+               and not os.path.exists(roots.wq('r1vclean')) and all(md5(f'{cf}/{f}') == m for f, m in old_pair.items())
+               and all(md5(p) == m for p, m in old_arch), st0)
+            with fits.conf.set_temp('use_memmap', True), nomap:        # the caller's switch on: the refresh holds it off
+                st1 = VM.refresh_vclean_cell(CELL, root=f'{out}/coadd_sb', tmp_root=tmp, mdw_table=table)[1]
+            refresh_maps = list(nomap.seen)
+            st2 = VM.refresh_vclean_cell(CELL, root=f'{out}/coadd_sb', tmp_root=tmp, mdw_table=table, check_only=True)[1]
+            with fits.conf.set_temp('use_memmap', True), nomap:
+                try:
+                    PB.sibling_check(f'{cf}/{pair[1]}', ap, np.ones((N, N)))
+                    fals = 'no refusal'
+                except PermissionError as e:
+                    fals = str(e)
+            fals_maps = list(nomap.seen)
     finally:
         VM.subprocess.run, C._refuse_excluded_constituents, CFG.install.MDWSTAT_TABLE = real_run, real_excl, real_t
-    ok('vclean refresh: a stale pair is re-cleaned, archived and audited (OK), then reported CURRENT',
+    ok('vclean refresh: a stale pair is re-cleaned, archived and audited (OK), then a check-only call reports CURRENT',
        st1.startswith('OK (') and st2.startswith('CURRENT (') and calls == {'sv2': 1, 'excl': 1}, f'{st1[:300]} / {st2[:200]}')
+    ok('vclean refresh: no FITS file was memory-mapped (every map of a test file refused by a stand-in, with the caller\'s '
+       'astropy switch on)', refresh_maps == [], refresh_maps)
+    ok('vclean refresh: FALSIFIER - the same stand-in refuses PB.sibling_check\'s map with the switch on outside the refresh',
+       fals_maps and 'no map of' in fals, (fals, fals_maps))
     ok('vclean refresh: the new master is cleaned from the installed V master', VM.vclean_source_check(ap, vp)[0])
     wq = f'{out}/working_quarantine_r1vclean/{CELL}/coadd_final'
     ok('vclean refresh: the old pair in the working quarantine of round <round>vclean with its md5',
@@ -461,33 +550,169 @@ def _refresh(root, cf, vp, ap, table):
        'cards and the repair line', len(now) == 2 and all(h.get('FLUXREF') == MREF and h.get('MDWSTAT') == 'applied'
                                                           and any('Release 1 header repair' in str(x) for x in h['HISTORY'])
                                                           for h in pub.values())
-       and sorted(md5(f'{mdir}/{f}') for f in now) == sorted(md5(f'{cf}/{f}') for f in old_pair), now)
+       and sorted(md5(f'{mdir}/{f}') for f in now) == sorted(md5(f'{cf}/{f}') for f in pair), now)
     steps = [r['step'] for r in csv.DictReader(open(roots.record_csv))]
     ok('vclean refresh: the action log holds the quarantine, publish and refresh rows',
        steps.count('vclean-archive-quarantine') == 2 and steps.count('vclean-published') == 2
        and steps.count('vclean-refreshed') == 1 and steps.count('working-quarantine') == 2, steps)
 
+    # a current pair whose cards are missing (working and archive copies equal): recarded through a new round's working copy,
+    # quarantine and publish - no sv2 run, never an in-place edit of the archived file
+    _strip_cards([f'{cf}/{f}' for f in pair])
+    for f in pair:                                    # the archived name is the working file's PRODNAME (vclean_masters dest)
+        nm = hdr(f'{cf}/{f}')['PRODNAME']
+        shutil.copy2(f'{cf}/{f}', f"{mdir}/{nm if nm.endswith('.fits') else nm + '.fits'}")
+    unc_w = {f: md5(f'{cf}/{f}') for f in pair}
+    unc_a = {f: md5(f'{mdir}/{f}') for f in now}
+    VM.subprocess.run, C._refuse_excluded_constituents, CFG.install.MDWSTAT_TABLE = fake_run, fake_excl, table
+    try:
+        with SC.pi_context(PI, roots, 'r1vclean2'):
+            sc = VM.refresh_vclean_cell(CELL, root=f'{out}/coadd_sb', tmp_root=tmp, mdw_table=table, check_only=True)[1]
+            st3 = VM.refresh_vclean_cell(CELL, root=f'{out}/coadd_sb', tmp_root=tmp, mdw_table=table)[1]
+            st4 = VM.refresh_vclean_cell(CELL, root=f'{out}/coadd_sb', tmp_root=tmp, mdw_table=table, check_only=True)[1]
+    finally:
+        VM.subprocess.run, C._refuse_excluded_constituents, CFG.install.MDWSTAT_TABLE = real_run, real_excl, real_t
+    ok('vclean recard: a current pair without its cards is NOT CURRENT under the MDWSTAT table',
+       sc.startswith('NOT CURRENT (') and 'Release 1 cards still to add' in sc, sc[:300])
+    ok('vclean recard: recarded with no sv2 run (OK, recarded), then CURRENT', st3.startswith('OK (recarded, no sv2 run')
+       and st4.startswith('CURRENT (') and calls == {'sv2': 1, 'excl': 2}, f'{st3[:300]} / {st4[:200]}')
+    wq2 = f'{out}/working_quarantine_r1vclean2/{CELL}/coadd_final'
+    aq2 = f'{out}/archive/Run_INSTALL_QUARANTINE_r1vclean2'
+    ok('vclean recard: the uncarded working pair in the new round\'s working quarantine and the uncarded archived pair in its '
+       'archive quarantine, bytes unchanged (md5)', all(md5(f'{wq2}/{f}') == m for f, m in unc_w.items())
+       and all(md5(f'{aq2}/{os.path.relpath(mdir, out + "/archive")}/{f}') == m for f, m in unc_a.items()))
+    pub2 = {f: hdr(f'{mdir}/{f}') for f in now}
+    ok('vclean recard: the archive holds the carded pair, equal to the working files, data unchanged',
+       sorted(f for f in os.listdir(mdir) if '_vclean_' in f) == now
+       and all(h.get('FLUXREF') == MREF and h.get('MDWSTAT') == 'applied' for h in pub2.values())
+       and sorted(md5(f'{mdir}/{f}') for f in now) == sorted(md5(f'{cf}/{f}') for f in pair)
+       and all(np.array_equal(fits.getdata(f'{cf}/{f}', memmap=False), fits.getdata(f'{wq2}/{f}', memmap=False),
+                              equal_nan=True) for f in pair))
+
+
+class _Gates:
+    """A stand-in for steps_common's gate collector: records (gate, passed, detail)."""
+    def __init__(self):
+        self.seen = []
+
+    def check(self, gate, ok, detail='', value=None):
+        self.seen.append((gate, bool(ok), str(detail)))
+
+
+def _tree(d):
+    return {os.path.relpath(os.path.join(a, f), d): md5(os.path.join(a, f)) for a, _s, fs in os.walk(d) for f in fs}
+
+
+def _trial(PI):
+    """install b's Release 1 writes tried on a copy of the staging before the first rename (install._release1_trial)."""
+    from exopipe.phase3.lib.install import steps_common as SC
+    cdir = f'{ROOT}/trial/coadd_sb/{CELL}'
+    stg = f'{cdir}/.install_staging'
+    master_cell(f'{stg}/coadd_final', MREF)
+    wdir = f'{cdir}/coadd_final'
+    os.makedirs(wdir)
+    weights(wdir)
+    t = mdw_table(f'{ROOT}/mdw_trial.csv', [('12h Red', 'applied', '', '')])
+    before = _tree(cdir)
+    old = PI.RELEASE1_MDW_TABLE, os.environ.get('P3_ARCHIVE_ROOT')
+    PI.RELEASE1_MDW_TABLE, os.environ['P3_ARCHIVE_ROOT'] = t, f'{ROOT}/trial/archive'
+    try:
+        lines = PI._release1_trial(CELL, cdir, stg, wdir, cdir, LST, SCOPE, 'Run_X')
+        ok('trial: b\'s cards and provenance_nights.csv pass on a trial copy of the staging; the trial is removed and the '
+           'staging and the working cell are byte-identical to before', any('added FLUXREF ASTREF MDWSTAT' in x for x in lines)
+           and any(x.startswith('provenance_nights.csv:') and 'constituent nights' in x for x in lines) and not os.path.exists(f'{cdir}/{PI.RELEASE1_TRIAL_DIRNAME}') and _tree(cdir) == before,
+           lines)
+        with open(f'{stg}/coadd_final/I_deep_Taper_R0_{SCOPE}.fits', 'wb') as f:     # a staged master b cannot read
+            f.write(b'NOT A FITS HEADER ' * 160)
+        before = _tree(cdir)
+        try:
+            PI._release1_trial(CELL, cdir, stg, wdir, cdir, LST, SCOPE, 'Run_X')
+            why = 'no refusal'
+        except RuntimeError as e:
+            why = str(e)
+        ok('trial: a staged master b cannot read - REFUSED before any move (gate b), the trial removed, staging and cell '
+           'unchanged', 'REFUSING (cell untouched)' in why and SC.pi_gate_of(why) == 'b'
+           and not os.path.exists(f'{cdir}/{PI.RELEASE1_TRIAL_DIRNAME}') and _tree(cdir) == before, why[:300])
+    finally:
+        PI.RELEASE1_MDW_TABLE = old[0]
+        if old[1] is None:
+            os.environ.pop('P3_ARCHIVE_ROOT', None)
+        else:
+            os.environ['P3_ARCHIVE_ROOT'] = old[1]
+    import inspect
+    src_i, src_r = inspect.getsource(PI.install), inspect.getsource(PI.resume)
+    ok('trial: install() tries b before the gates-passed row and the first move; resume (R1) before _finish',
+       src_i.index('_release1_trial(') < src_i.index("rec(cell, 'gates-passed'") < src_i.index('_move_to_wq(')
+       and src_r.index('_release1_trial(') < src_r.index('return _finish('))
+
+
+def _rounds(SC, SD, Refusal):
+    """The install round from the newest done install or recover record; the cleaned-V round unique per attempt."""
+    from exopipe.phase3.core import record
+    roots = SC.Roots(f'{ROOT}/rounds', True)
+    args = types.SimpleNamespace(round=None)
+    try:
+        SD.install_round(CELL, args, roots)
+        r0 = 'no refusal'
+    except Refusal as e:
+        r0 = str(e)
+    for unit, rnd, t in ((CELL, '20261120b', '2026-11-20T01:00:00Z'), (f'{CELL}.recover', '20261121a', '2026-11-21T01:00:00Z')):
+        record.atomic_write_json(record.record_path(roots.out, 'install', unit), dict(
+            unit=unit, status='done', started=t, finished=t, meta=dict(round=rnd)))
+    ok('rounds: no done record refuses; the newest done install OR recover record names the round (here the recover\'s)',
+       'no done install or recover record' in r0 and SD.install_round(CELL, args, roots) == '20261121a'
+       and SD.install_round(CELL, types.SimpleNamespace(round='20261122z'), roots) == '20261122z', r0)
+    rel = os.path.relpath(roots.masters_dir(LST, SCOPE), roots.archive)
+    r1 = SD.vclean_round(CELL, roots, '20261121a')
+    os.makedirs(os.path.join(roots.wq(r1), CELL))
+    r2 = SD.vclean_round(CELL, roots, '20261121a')
+    os.makedirs(os.path.join(roots.aq(r2), rel))
+    r3 = SD.vclean_round(CELL, roots, '20261121a')
+    os.makedirs(os.path.join(roots.wq(r3), '13h_Red'))         # another cell's quarantine does not take the round
+    ok('rounds: the cleaned-V round is the first free of <round>vclean, <round>vclean2, ... (a working or an archive '
+       'quarantine of this cell takes it)', (r1, r2, r3, SD.vclean_round(CELL, roots, '20261121a'))
+       == ('20261121avclean', '20261121avclean2', '20261121avclean3', '20261121avclean3'), (r1, r2, r3))
+
 
 def test_install_wiring():
     from exopipe.phase3.config import CFG
     from exopipe.phase3.core.record import Refusal
-    from exopipe.phase3.lib.install import install as PI, steps_common as SC
+    from exopipe.phase3.lib.install import install as PI, steps_common as SC, steps_deep as SD, steps_enqueue as SE
     from exopipe.phase3.lib.masters import release1_cards as R1
+    from exopipe.phase3.steps import install as S
     import inspect
     roots = SC.Roots(f'{ROOT}/wiring', True)
     t = mdw_table(f'{ROOT}/mdw_wiring.csv', [('12h Red', 'applied', '', '')])
     old = CFG.install.MDWSTAT_TABLE, CFG.install.RELEASE1_CARDS
     try:
         CFG.install.MDWSTAT_TABLE = t
+        with SC.pi_context(PI, roots, 'r1', cards=True):
+            inside = PI.RELEASE1_MDW_TABLE
+        ok('install: install.RELEASE1_CARDS (ruled True) sets phase3_install b\'s table for a call that runs b (cards=True), '
+           'and restores it', CFG.install.RELEASE1_CARDS is True and inside == t and PI.RELEASE1_MDW_TABLE is None)
+        CFG.install.MDWSTAT_TABLE = f'{ROOT}/absent.csv'
         with SC.pi_context(PI, roots, 'r1'):
             inside = PI.RELEASE1_MDW_TABLE
-        ok('install: install.RELEASE1_CARDS (ruled True) sets phase3_install b\'s table for the call, and restores it',
-           CFG.install.RELEASE1_CARDS is True and inside == t and PI.RELEASE1_MDW_TABLE is None)
+        ok('install: a call that does not run b loads no MDWSTAT table (an unreadable one does not refuse it)', inside is None)
+        CFG.install.MDWSTAT_TABLE = t
+        src_sd = inspect.getsource(SD)
+        ok('install: only install and recover (the calls that run b) ask pi_context for the table',
+           src_sd.count('cards=True') == 2 and src_sd.index('cards=True') > src_sd.index('def install_cell')
+           and src_sd.rindex('cards=True') > src_sd.index('def recover_cell'))
         CFG.install.RELEASE1_CARDS = False
-        with SC.pi_context(PI, roots, 'r1'):
+        with SC.pi_context(PI, roots, 'r1', cards=True):
             inside = PI.RELEASE1_MDW_TABLE
         ok('install: RELEASE1_CARDS False (the parity file\'s production) - no cards at b', inside is None)
+        ok('install: RELEASE1_CARDS False - default stages plan,install,verify; the enqueue requires install.V only',
+           S.default_stages() == ('plan', 'install', 'verify') and SE.verify_gates() == ('install.V',))
+        gates = _Gates()
+        SD.cards_cell(None, CELL, roots, types.SimpleNamespace(dry_run=False), gates, lambda *_: None)
+        ok('install: RELEASE1_CARDS False - stage cards refuses (CARDS), reading nothing', gates.seen
+           and gates.seen[0][:2] == ('CARDS', False) and 'RELEASE1_CARDS is False' in gates.seen[0][2], gates.seen)
         CFG.install.RELEASE1_CARDS = True
+        ok('install: RELEASE1_CARDS True - default stages add vclean,cards; the enqueue requires V VCLEAN CARDS CARD-GATE',
+           S.default_stages() == S.DEFAULT_STAGES == ('plan', 'install', 'verify', 'vclean', 'cards')
+           and SE.verify_gates() == SE.VERIFY_GATES == ('install.V', 'install.VCLEAN', 'install.CARDS', 'install.CARD-GATE'))
         CFG.install.MDWSTAT_TABLE = f'{ROOT}/absent.csv'
         try:
             SC.release1_mdw_table()
@@ -497,6 +722,8 @@ def test_install_wiring():
         ok('install: RELEASE1_CARDS True with no readable MDWSTAT table refuses', refused)
     finally:
         CFG.install.MDWSTAT_TABLE, CFG.install.RELEASE1_CARDS = old
+    _trial(PI)
+    _rounds(SC, SD, Refusal)
     ok('install: ruled - RELEASE1_CARDS names R-GREGG-20261107-HEADER-REPAIR-GO, the parity file sets it False',
        'R-GREGG-20261107-HEADER-REPAIR-GO' in CFG.ruled('install.RELEASE1_CARDS')
        and '\ninstall.RELEASE1_CARDS = False\n' in open(os.path.join(REPO, 'exopipe', 'phase3', 'parity',
@@ -506,9 +733,11 @@ def test_install_wiring():
        'quarantine', src_b.index('_refuse_excluded_constituents') < src_b.index('R1.write_cell')
        < src_b.index('# c: archive quarantine'))
     from exopipe.phase3.lib.masters import coadd as C
-    ok('install: the publish and both audits carry provenance_nights.csv',
-       R1.PROVENANCE_TABLE in inspect.getsource(C._archive_publish_cell) and R1.PROVENANCE_TABLE in
-       inspect.getsource(PI._archive_audit) and R1.PROVENANCE_TABLE in CFG.install.AUDIT_CELL_FILES)
+    from exopipe.phase3.lib.install import tests as IT
+    ok('install: the publish and both audits read one list of archived cell files (coadd.ARCHIVED_CELL_FILES), which holds '
+       'provenance_nights.csv', R1.PROVENANCE_TABLE in C.ARCHIVED_CELL_FILES
+       and all('ARCHIVED_CELL_FILES' in inspect.getsource(f) for f in (C._archive_publish_cell, PI._archive_audit, IT))
+       and not hasattr(CFG.install, 'AUDIT_CELL_FILES'))
     src_m = inspect.getsource(C.run_final_lst_freq)
     i_w = src_m.index('_R1.write_cell(final_dir')
     ok('masters: the build writes the cards (no MDWSTAT) and provenance_nights.csv under HEADER_STANDARD full, after the '
@@ -522,7 +751,6 @@ def test_install_wiring():
     except Refusal as e:
         okw = str(e)
     ok('install: the window check accepts the config', okw is True, okw)
-    from exopipe.phase3.steps import install as S
     ok('install: stages - default plan,install,verify,vclean,cards; cards implies vclean implies verify',
        S.DEFAULT_STAGES == ('plan', 'install', 'verify', 'vclean', 'cards')
        and S.parse_stages('cards') == ['verify', 'vclean', 'cards'] and S.parse_stages('vclean') == ['verify', 'vclean']
