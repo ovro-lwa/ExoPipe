@@ -126,3 +126,5 @@ jobs:
         run: python tests/test_serve_tess.py
       - name: tier npz content test TN1 refuses a planet file without orbit controls, naming the target
         run: python tests/test_tier_npz_planets.py
+      - name: per-hour 10-s/1-min catalog, the per-cell stage (prefit loop, tie pass) and the association phase's refusal
+        run: python tests/test_catalog_snapshot_incremental.py

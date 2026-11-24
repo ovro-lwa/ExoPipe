@@ -65,7 +65,9 @@ Failure modes (exit 2, gate named in the record): P-G1..P-G20 of spec section 5.
          directory: refused until the test is absorbed); a [lit] key differing from its module literal. Exit 1 = error.
 Per-hour vs intermittent: the chain associates over EVERY cell of the cumulative run at once (2 d 18 h on batch 2), so it is
          an intermittent (batch) step today; the per-hour chain 'snapshot-cell' stops at `curves` for a new cell and the
-         cell joins the next cumulative run. A per-cell incremental chain is not implemented (spec speed-up 9).
+         cell joins the next cumulative run. The per-hour step `catalog --tier snapshot --incremental` runs only the
+         per-cell pre-chain stage (prefit loop + tie pass, lib/catalog/incremental_snapshot.py) and refuses the cross-cell
+         association (SI-G9): a per-cell incremental chain is not ruled (spec speed-up 9).
 """
 import csv
 import glob
@@ -375,6 +377,42 @@ def argparse_defaults(path):
 # the snapshot context
 # =====================================================================================================================
 
+def chain_args(cfg, c, store, chain_py, restore=None, analysis=(), defaults=None):
+    """CHAINARGS of snapshot_rechain_batch.sh:280 plus every [arg] key whose config value differs from the script's own
+    default (production passes none of those) and the analysis switches. Module level so the per-hour cell phase
+    (lib/catalog/incremental_snapshot.py) passes the batch chain's own arguments, with its cell's store. ``defaults``: the
+    chain's argparse_defaults when the caller cached them (read here otherwise)."""
+    T = _T()
+    a = ['--proto-root', cfg.paths.SNAPSHOT_FLEET_OUT, '--master-catalogs', c.MASTER_CATALOGS,
+         '--curve-constants', c.CURVE_CONSTANTS, '--fit-store', store, '--lightcurves-root', c.LIGHTCURVES_ROOT]
+    if restore:                              # THE RESTORE-ONLY 3-D GATE: every chain call of the run (exopipe_ops fa90670)
+        a += ['--curve-constants-restore', restore]
+    d = defaults if defaults is not None else (argparse_defaults(chain_py) if os.path.exists(chain_py) else {})
+    for flag, val in (('--samples-dir', cfg.paths.CLV15_ROOT), ('--store-floor', c.STORE_FLOOR),
+                      ('--seed-floor', c.SEED_FLOOR), ('--assoc-floor', c.ASSOC_FLOOR),
+                      ('--repeat-floor', c.REPEAT_FLOOR), ('--singleton-floor', c.SINGLETON_FLOOR['I']),
+                      ('--singleton-floor-v', c.SINGLETON_FLOOR['V']), ('--struct-k', c.STRUCT['k']),
+                      ('--dirty-cells', c.DIRTY_CELLS), ('--dirty-i-floor', c.DIRTY_I_FLOOR)):
+        if flag not in d or T._norm(d[flag]) != T._norm(val):
+            a += [flag, str(val)]
+    for k, v in analysis:
+        a += ['--' + k] + ([v] if v else [])
+    return a
+
+
+def chain_env(c, refastro=None, **extra):
+    """The chain's environment: P3_SNAP_FIT_RAW unless catalog_snapshot.FLOW_MODE; P3_SNAP_REFASTRO_SCRATCH = ``refastro``
+    when given (a non-production run: refastro's default scratch lies under a production root); then ``extra``. Module
+    level so the per-hour cell phase (lib/catalog/incremental_snapshot.py) builds the batch chain's own environment."""
+    e = {}
+    if not c.FLOW_MODE:
+        e['P3_SNAP_FIT_RAW'] = '1'
+    if refastro:
+        e['P3_SNAP_REFASTRO_SCRATCH'] = refastro
+    e.update(dict((k, str(v)) for k, v in extra.items()))
+    return e
+
+
 def _cells_file(args):
     spec = (getattr(args, 'cells', None) or '').strip()
     if not (spec.startswith('@') and ',' not in spec):
@@ -481,29 +519,12 @@ class Ctx:
             return '<node-local scratch>/rechain_%s' % self.name
 
     def chainargs(self):
-        """CHAINARGS of snapshot_rechain_batch.sh:280 plus every [arg] key whose config value differs from the script's own
-        default (production passes none of those) and the analysis switches."""
-        c = self.c
-        a = ['--proto-root', self.cfg.paths.SNAPSHOT_FLEET_OUT, '--master-catalogs', c.MASTER_CATALOGS,
-             '--curve-constants', c.CURVE_CONSTANTS, '--fit-store', self.S, '--lightcurves-root', c.LIGHTCURVES_ROOT]
-        if self.restore:                     # THE RESTORE-ONLY 3-D GATE: every chain call of the run (exopipe_ops fa90670)
-            a += ['--curve-constants-restore', self.restore]
-        d = argparse_defaults(self.chain_py) if os.path.exists(self.chain_py) else {}
-        for flag, val in (('--samples-dir', self.cfg.paths.CLV15_ROOT), ('--store-floor', c.STORE_FLOOR),
-                          ('--seed-floor', c.SEED_FLOOR), ('--assoc-floor', c.ASSOC_FLOOR),
-                          ('--repeat-floor', c.REPEAT_FLOOR), ('--singleton-floor', c.SINGLETON_FLOOR['I']),
-                          ('--singleton-floor-v', c.SINGLETON_FLOOR['V']), ('--struct-k', c.STRUCT['k']),
-                          ('--dirty-cells', c.DIRTY_CELLS), ('--dirty-i-floor', c.DIRTY_I_FLOOR)):
-            if flag not in d or self.T._norm(d[flag]) != self.T._norm(val):
-                a += [flag, str(val)]
-        for k, v in self.analysis:
-            a += ['--' + k] + ([v] if v else [])
-        return a
+        if not hasattr(self, '_chain_defaults'):         # the chain's argparse defaults, read once per run
+            self._chain_defaults = argparse_defaults(self.chain_py) if os.path.exists(self.chain_py) else {}
+        return chain_args(self.cfg, self.c, self.S, self.chain_py, self.restore, self.analysis, self._chain_defaults)
 
     def chain_env(self, **extra):
-        e = {}
-        if not self.c.FLOW_MODE:
-            e['P3_SNAP_FIT_RAW'] = '1'
+        refastro = None
         if self.refastro_scratch:            # refastro's default scratch is under a production root (/fast/gh/main/phase3)
             from exopipe.phase3.core import fitsio
             from exopipe.phase3.core.record import Refusal
@@ -513,9 +534,8 @@ class Ctx:
                 if not self.dry:
                     raise
                 root = '<node-local scratch: --work or site SCRATCH_ROOT>'
-            e['P3_SNAP_REFASTRO_SCRATCH'] = os.path.join(root, 'catalog_snapshot_%s_refastro' % self.name)
-        e.update(dict((k, str(v)) for k, v in extra.items()))
-        return e
+            refastro = os.path.join(root, 'catalog_snapshot_%s_refastro' % self.name)
+        return chain_env(self.c, refastro, **extra)
 
     def waived(self, key):
         """A gate bypass: --waive <name> --ruling (recorded), or the production marker's switch line (window parity)."""

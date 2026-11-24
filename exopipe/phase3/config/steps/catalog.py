@@ -729,6 +729,50 @@ class catalog_snapshot(_Section):
     NODE_FAST_ROOT = '/fast/gh/main/phase3'               # NODE_FAST = <root>/rechain_<NAME> on every node (tie outputs, fit shards); snapshot_rechain_batch.sh:58
     APPROVAL_MARKER = '/lustre/gh/main/exopipe_ops/snapshot_rechain_{name}.APPROVED'   # production approval marker (read only; --snap-approval-marker); snapshot_rechain_batch.sh:53
     CODE_SHA256 = '/lustre/gh/main/exopipe_ops/snapshot_rechain_{name}.code_sha256'    # tested-code fingerprint (P-G3, window form); snapshot_rechain_batch.sh:53, :75-76
+    # ---- per-hour catalog of the tier (`catalog --tier snapshot --incremental`, lib/catalog/incremental_snapshot.py). Phase
+    # 'cell' = the per-cell pre-chain stage of ruling 2026-09-18 (ops/snapshot_cell_prestage.sh): the prefit loop
+    # (PREFIT_MAX_ITER, FIT_PROCS_RESERVE above) and the tie pass (TIE_SHARDS above) into BATCH_DIR's fits/, tiecache/, cells/.
+    # Phase 'associate' refuses (SI-G9): no ruled per-hour design for the cross-cell association and the combined view.
+    INC_PHASES_DEFAULT = ('cell', 'associate')            # --inc-phase default; the associate phase refuses every hour, so the
+                                                          # per-hour chain item stops at this step and is never complete [step]
+    INC_CHAIN_TIMEOUT_H = 36                              # h for the tie pass; snapshot_cell_prestage.sh:62 PRESTAGE_TIMEOUT 36h [step]
+    INC_PREFIT_TIMEOUT_H = 6                              # h per prefit-list pass; snapshot_cell_prefit.sh:153 PREFIT_TIMEOUT 6h [step]
+    INC_FORCED_STATE_DIR = '/lustre/gh/main/exopipe_ops/snapshot_forced_state'   # forced photometry stage 1 markers done/<cell>,
+                                                          # failed/<cell>, claims/<cell> (read only; gate SI-G8); prestage.sh:55 FST,
+                                                          # :61, :83; snapshot_cell_prefit.sh:74, :115-121 (Gregg 2026-10-04). The
+                                                          # gen5 state: it must follow gen6 when gen6 becomes the production
+                                                          # generation [step]
+    INC_PREFIT_MAX_FAILS = 3                              # THE ATTEMPT CAP: a cell with this many lines in <out>/cells/<cell>/
+                                                          # PREFIT_FAILS is parked (gate SI-G12); on the production root every failed
+                                                          # attempt after the claim appends one line, none under a stop file;
+                                                          # snapshot_cell_prefit.sh:25-28, :62-63, :71-72 (Gregg 2026-10-10 'Go on all
+                                                          # 3' item 2, IMPLEMENTED-SNAP-PREFIT-ATTEMPT-CAP-11-CELLS-PARKED-20261010) [step]
+    INC_STOP_FILES = ('PREFIT_STOP', 'PREFIT_STOP_{node}')   # under --out: present = stop before a cell and between fit shards
+                                                          # (gate SI-G13); snapshot_cell_prefit.sh:24, :68, :136 (not prestage.sh's
+                                                          # retired STOP_<node>) [step]
+    INC_FIT_SHARD_REQUESTS = 2000                         # fit-grouped shards: one per this many requests, at most groups / (
+    INC_FIT_TASKS_PER_WORKER = 3                          # TASKS_PER_WORKER x workers); snapshot_cell_prefit.sh:124-134 [step]
+    INC_FIT_GB_PER_WORKER = 3                             # GB per fit worker and GB kept free: workers = (core.nodemem
+    INC_FIT_MEM_MARGIN_GB = 120                           # .cgroup_available_gb, prefit.sh's reading (MemAvailable only when no
+                                                          # cgroup limit is read; incremental_snapshot.fit_memory_gb says why
+                                                          # not nodemem's min) - MARGIN) // GB_PER_WORKER, at most the free cores
+                                                          # less FIT_PROCS_RESERVE; fewer than 2 refuses SI-G15 at once (prefit.sh:122-123
+                                                          # waits up to 6 h, then runs 2); snapshot_cell_prefit.sh:20-21, :40-55 [step]
+    INC_FIT_NICE = 19                                     # niceness of the fit workers (spare capacity); snapshot_cell_prefit.sh:20, :32 [step]
+    INC_HOLD_LISTS = ('/lustre/gh/main/exopipe_ops/snapshot_rechain_b2_cells.txt',
+                      '/lustre/gh/main/exopipe_ops/snapshot_batch/prefit_hold_cells.txt')   # cells no per-cell stage takes
+                                                          # (with BATCH_DIR/rechain_active/*.cells; gate SI-G4);
+                                                          # snapshot_cell_prefit.sh:36 PREFIT_PROTECT default, :77, :112 [step]
+    INC_FRAMETIME_CLAIMS = '/lustre/gh/main/exopipe_ops/snapshot_frametime_claims'   # a claim <cell>/ without 'done' holds the
+                                                          # cell (frame-time catch-up running; gate SI-G4); snapshot_cell_prefit.sh:81 [step]
+    INC_CURVE_CONSTANTS_RESTORE = '/lustre/gh/main/clv15/snapshot_curve_constants_restore_only_linear_20261104.json'   # THE
+                                                          # RESTORE-ONLY 3-D GATE table passed to every chain call (as the batch
+                                                          # Ctx passes the approval marker's CURVE_CONSTANTS_RESTORE): the table
+                                                          # all 70 markers since the 2026-11-04 wave name; None = no table;
+                                                          # missing or empty refuses (gate SI-G11, as P-G21) [step]
+    INC_STORE_REPAIR_ROUNDS = 2                           # store repair rounds before the prefit loop; snapshot_cell_prefit.sh:144 [step]
+    INC_OWNERLESS_CLAIM_STALE_S = 600                     # s: a claim directory without its owner file older than this is stale
+                                                          # (its writer died between mkdir and the owner write) and is released [step]
     RULED = {'STORE_FLOOR': 'R-SNAP-STORE-FLOOR-8-SIGMA',          # 8 -> 7 by Gregg 2026-09-22 "Use floor 7" (no own ledger row found)
              'SINGLETON_FLOOR': 'R-SNAP-SINGLETON-FLOOR-10-SIGMA',
              'GHOST_DATES': 'RULINGS-GREGG-20261007-STATUS-ANSWERS',
