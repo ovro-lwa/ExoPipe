@@ -4,7 +4,9 @@
 The tier measurement (photometry_tier_forced_20261026.py, run in place) writes a planet file (sample photometry.PLANET_SAMPLE,
 'SolarSystem') with the planet's own track (ra10, dec10: one position per plane) and ORBIT controls: ctl_kind 'orbit' and
 ctl_ra / ctl_dec, nc control positions per plane along the planet's track (:148). TN1 refuses a planet file without them - a
-regression to ring controls - and names every planet target that lacks controls at a plane where it has a position.
+regression to ring controls - and names every planet target whose controls are non-finite at EVERY plane where it has a
+position and a time (the writer computes them only where the target pixel, position and mjd_mid are finite, :114-121). NaN
+controls at individual planes, and a planet with no plane of its own position, are allowed.
 A fixed-target sample (HWJ) needs none of these arrays.
 
 Run: python tests/test_tier_npz_planets.py [test names]   (exit 0 = all passed, 1 = a failure, 2 = imports missing)
@@ -97,19 +99,39 @@ def test_a_planet_target_without_controls_is_refused_by_name():
         ra10 = np.full((T, N), 10.0)
         ra10[1, -1] = np.nan
         cra = np.repeat(ra10[:, None, :], nc, axis=1) + 0.5
-        cra[2, 5, 1] = np.nan                                 # Uranus: one control missing at a plane with its position
+        cra[2] = np.nan                                       # Uranus: no control at any of its planes
         ok, n, why = TC.tn1(npz(tmp, P, ctl_ra=cra))
-        assert not ok and n == 1 and why == 'planet target(s) without orbit controls: Uranus (1 of 4 planes with its position ' \
-                                            'lack orbit controls)', why
+        assert not ok and n == 1 and why == 'planet target(s) without orbit controls: Uranus (no finite orbit control at any ' \
+                                            'of its 4 planes with a position and a time)', why
         cdec = np.repeat(ra10[:, None, :], nc, axis=1)
-        cdec[:, :, 0] = np.nan                               # every planet: no control at the first plane
+        cdec[:] = np.nan                                      # every planet: no control at any plane
         ok, n, why = TC.tn1(npz(tmp, P, ctl_dec=cdec))
         assert not ok and n == 3 and all(x in why for x in NAMES), why
+        c = np.repeat(ra10[:, None, :], nc, axis=1)
+        c[0, :, :-1] = np.nan                                 # Jupiter: controls only where ts is NaN -> none counted
+        ok, n, why = TC.tn1(npz(tmp, P, ctl_ra=c, ctl_dec=c.copy(), ts=np.array([0, 1, 2, np.nan])))
+        assert not ok and n == 1 and 'Jupiter (no finite orbit control at any of its 3 planes' in why, why
+
+
+def test_planet_controls_missing_at_some_planes_are_allowed():
+    """NaN controls where the writer legitimately leaves them (a plane without the pixel or the time, a control off the box),
+    and a planet with no plane of its own position (outside the field, no admitted cutout), are not refused."""
+    P = CFG.photometry.PLANET_SAMPLE
+    nc = CFG.photometry_measure.N_CONTROLS
+    with Tmp() as tmp:
+        ra10 = np.full((T, N), 10.0)
+        ra10[1, -1] = np.nan
+        cra = np.repeat(ra10[:, None, :], nc, axis=1) + 0.5
+        cra[2, 5, 1] = np.nan                                 # Uranus: one control off the box at one plane
+        cra[0, :, 2] = np.nan                                 # Jupiter: every control missing at one plane (no pixel there)
+        ok, n, why = TC.tn1(npz(tmp, P, ctl_ra=cra))
+        assert ok and n == T, why
         r = ra10.copy()
-        r[0] = np.nan                                        # Jupiter: no plane with its own position
-        ok, n, why = TC.tn1(npz(tmp, P, ra10=r))
-        assert not ok and n == 1 and 'Jupiter (no plane with its own position)' in why, why
-        # a control missing only where the planet has no position (Saturn, last plane) is not a lack
+        r[0] = np.nan                                         # Jupiter: no plane with its own position
+        c = np.repeat(r[:, None, :], nc, axis=1)
+        ok, n, why = TC.tn1(npz(tmp, P, ra10=r, ctl_ra=c, ctl_dec=c.copy()))
+        assert ok and n == T, why
+        # a control missing only where the planet has no position (Saturn, last plane)
         c = np.repeat(ra10[:, None, :], nc, axis=1)
         assert np.isnan(c[1, :, -1]).all()
         ok, n, why = TC.tn1(npz(tmp, P, ctl_ra=c, ctl_dec=c.copy()))

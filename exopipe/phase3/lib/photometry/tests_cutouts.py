@@ -641,27 +641,32 @@ PLANET_CONTROLS = 'orbit'      # ctl_kind of a planet file: controls along the p
 
 
 def _planets_without_orbit_controls(d):
-    """Planet targets of a tier npz whose orbit controls are missing: no plane with the planet's own position (ra10, dec10),
-    or a plane with that position where any of the controls (ctl_ra, ctl_dec) is not finite. [(name, why)]."""
+    """Planet targets of a tier npz whose orbit controls are all missing. The writer (photometry_tier_forced_20261026.py:114-121)
+    computes a plane's controls only where the target's pixel, its position and the plane's mid time (mjd_mid) are all finite,
+    and an individual control may be NaN where its offset leaves the box; the npz keeps no pixel, so a plane "with a position"
+    here is one with a finite ra10, dec10 and ts. A target is named when it has such planes and NOT ONE of them carries a finite
+    control (ctl_ra and ctl_dec). NaN controls at individual planes are allowed; a target with no plane of its own position
+    (outside the field, no admitted cutout) is not named. [(name, why)]."""
     import numpy as np
     out = []
+    ts = np.isfinite(np.asarray(d['ts'], float))
     for t, name in enumerate(d['names']):
-        pos = np.isfinite(d['ra10'][t]) & np.isfinite(d['dec10'][t])
-        ctl = (np.isfinite(d['ctl_ra'][t]) & np.isfinite(d['ctl_dec'][t])).all(axis=0)
+        pos = np.isfinite(d['ra10'][t]) & np.isfinite(d['dec10'][t]) & ts
         if not pos.any():
-            out.append((str(name), 'no plane with its own position'))
-        elif (pos & ~ctl).any():
-            out.append((str(name), '%d of %d planes with its position lack orbit controls' % (int((pos & ~ctl).sum()),
-                                                                                              int(pos.sum()))))
+            continue
+        ctl = (np.isfinite(d['ctl_ra'][t]) & np.isfinite(d['ctl_dec'][t])).any(axis=0)
+        if not (pos & ctl).any():
+            out.append((str(name), 'no finite orbit control at any of its %d planes with a position and a time' % int(pos.sum())))
     return out
 
 
 @content_test('photometry_tier_npz', 'TN1_shapes')
 def tn1(path, **ctx):
     """The arrays of a tier npz and their shapes (T targets, N planes, nc controls). The planet sample
-    (photometry.PLANET_SAMPLE) also needs its own track (ra10, dec10) and ORBIT controls: ctl_kind 'orbit', ctl_ra / ctl_dec,
-    and every planet target controls at every plane where it has a position (a file of ring controls, or a target without
-    them, is refused and named)."""
+    (photometry.PLANET_SAMPLE) also needs its own track (ra10, dec10) and ORBIT controls: ctl_kind 'orbit' and the arrays
+    ctl_ra / ctl_dec (a file of ring controls, or without them, is refused); a planet target with planes of its own position
+    whose controls are non-finite at EVERY such plane is refused and named (_planets_without_orbit_controls: NaN controls at
+    individual planes, and a target with no plane of its own position, are allowed)."""
     m = _NPZ_RE.match(os.path.basename(path))
     if not m:
         return False, None, 'file name is not forced_<sample>_<band>_<S>.npz'
