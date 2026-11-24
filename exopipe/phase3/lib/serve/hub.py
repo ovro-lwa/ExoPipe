@@ -18,10 +18,11 @@ tier. Then, below both Stokes, a separate set of links for 1. Jovian bursts, 2. 
 Phase 1->2->3" and no other links! remove the SSH commands"): per Stokes row (V, then I) and per tier (serve.HUB_TIERS, left
 to right) the tier's page - its combined view '<tier>-comb' when that entry is live, else '<tier>' - and under it the
 '<tier>-forced' button (HWJ + 10 pc forced photometry); a tier without an entry is a greyed placeholder. Then the 1-hour
-generation line of each Stokes, the three links (serve.HUB_LINKS) and the 'Page generated' note. No multiples, sub-LST,
+generation line of each Stokes, the links (serve.HUB_LINKS: the three, and the interim known-LPT page /s/lpt/ that Gregg keeps up
+until LPT is a sample of the standard forced pages, exopipe_ops 8cb1139) and the 'Page generated' note. No multiples, sub-LST,
 preview or batch button (their registry entries stay: the serve scripts still --set them), no Round-2 link, NO TUNNEL LINE.
-render() is also the reference of the content test (tests.registry_matches: index.html == render(registry.json) at the
-page's own 'Page generated' time) and is drift-tested against the in-place script (tests/test_serve.py test_hub_page).
+render() is also the reference of the content test (tests.registry_matches: index.html == render(registry.json) at the page's own
+'Page generated' time) and is drift-tested against the in-place script (tests/test_serve.py test_hub_page).
 
 The registry's 'tunnel_extra' (ports served without a button: the Jupiter pages) is still kept up to date with
 --tunnel-extra (build_review_hub.py:36-40 keeps the option and the key "for the serve scripts that still set it"); the page
