@@ -27,7 +27,8 @@ it - prefit.sh where the two differ - plus the tie pass, for ONE night cell:
             loop, store test) appends one line to BATCH_DIR/cells/<cell>/PREFIT_FAILS, none under a stop file; a cell with
             catalog_snapshot.INC_PREFIT_MAX_FAILS lines is parked (SI-G12) on every root (prefit.sh:25-28, :62-63, :71-72)
   fits      fit-grouped in shards (prefit.sh:124-140): the stop files are checked between shards; workers capped by the
-            node's memory (INC_FIT_GB_PER_WORKER, INC_FIT_MEM_MARGIN_GB) at niceness INC_FIT_NICE (prefit.sh:20-21, :40-55)
+            node's memory (INC_FIT_GB_PER_WORKER, INC_FIT_MEM_MARGIN_GB) at niceness INC_FIT_NICE (prefit.sh:20-21, :40-55);
+            memory for fewer than 2 workers refuses SI-G15 at once (prefit.sh's np waits up to 6 h, then runs 2)
   Every in-place module runs IN PLACE through core/legacy.run under the site interpreter 'py36', with the chain arguments
   and environment of the batch port (tier_snapshot.chain_args with the restore-only 3-D gate table
   catalog_snapshot.INC_CURVE_CONSTANTS_RESTORE, tier_snapshot.chain_env: what the batch driver passes).
@@ -112,6 +113,10 @@ GATES = {
               'and between fit shards (snapshot_cell_prefit.sh:68, :136); a stopped attempt is not a failure',
     'SI-G14': 'the chain would not refuse the cell: no search flow-unregistered or with a paused 1-minute tier, and a 1-minute '
               'table beside every candidate table of a subband not excluded (snapshot_cell_prefit.sh:82-95, run in place)',
+    'SI-G15': 'memory for at least 2 fit workers before each fit shard: (fit_memory_gb: core.nodemem.cgroup_available_gb, '
+              'prefit.sh\'s reading, else MemAvailable - catalog_snapshot.INC_FIT_MEM_MARGIN_GB) // INC_FIT_GB_PER_WORKER >= '
+              '2; refused at once, never waited on (prefit.sh:122-123 waits up to 6 h, then runs 2 anyway); a node short of '
+              'memory is not a failed attempt',
 }
 
 OPEN_CHOICES = (
@@ -455,7 +460,7 @@ class _Attempt:
         if et is not None and issubclass(et, Refusal) and self.on_fail:
             self.on_fail()
         if et is not None and issubclass(et, Refusal) and not issubclass(et, SpaceRefused) \
-                and not str(e).startswith('SI-G13'):
+                and not str(e).startswith(('SI-G13', 'SI-G15')):
             what = self.what(e) if callable(self.what) else self.what
             line = failrec(self.ctx, self.cell, what)
             if line:
@@ -728,28 +733,47 @@ def _chain(ctx, s, cell, W, name, extra, env, hours):
                       timeout=int(float(hours) * 3600))
 
 
-def memprocs(ctx):
-    """Fit workers the node's memory holds now (snapshot_cell_prefit.sh:40-55): (core.nodemem.mem_available_gb, v2's one
-    memory reading - MemAvailable bounded by the cgroup limits, e.g. the 400 GiB /user.slice cap - less
-    INC_FIT_MEM_MARGIN_GB) // INC_FIT_GB_PER_WORKER; 0 when nothing can be read."""
+def fit_memory_gb():
+    """(GB, source) the fit workers may use: prefit.sh's reading (snapshot_cell_prefit.sh:40-55, memprocs: the /user.slice
+    cgroup's limit less its usage net of reclaimable file cache) = core.nodemem.cgroup_available_gb(); only when no cgroup
+    limit can be read, core.nodemem.mem_available_gb() (MemAvailable). (None, why) when neither can be read.
+    Why not nodemem.mem_available_gb()'s min(MemAvailable, cgroup), v2's reading elsewhere: MemAvailable leaves out the ZFS
+    ARC of the recorder pools, which shrinks under pressure (267 GB on lwacalim07 on 2026-11-24, where the min() gave 2
+    workers and prefit.sh's reading about 72). The 2026-11-15 lwacalim02 MemoryError behind the min()
+    (INCIDENT-20261115-TENMIN-07H-TIE-MEMORYERROR-GROUP-202-LWACALIM02-REWRITE-WORKERS-CONTRIBUTED) was ONE 24.7 GiB
+    allocation refused by the kernel's overcommit estimate, which leaves out the ARC; prefit's 3 GB per-worker allocations
+    have run fleet-wide with memprocs since 2026-10-08 (Snapshot chat, PR 158 review). nodemem and its other callers keep
+    the min(). Units: nodemem's GB are 2**30 bytes (prefit.sh's 1e9), and it also counts active_file as reclaimable."""
     from exopipe.phase3.core import nodemem
+    c = nodemem.cgroup_available_gb()
+    if c is not None:
+        return float(c), 'core.nodemem.cgroup_available_gb (the cgroup limit less usage net of file cache; prefit.sh:40-55)'
     m = nodemem.mem_available_gb()
+    if m is not None:
+        return float(m), 'core.nodemem.mem_available_gb (MemAvailable: no cgroup limit could be read)'
+    return None, 'neither a cgroup limit nor MemAvailable could be read'
+
+
+def memprocs(ctx):
+    """Fit workers the memory holds now (snapshot_cell_prefit.sh:40-55): (fit_memory_gb - INC_FIT_MEM_MARGIN_GB) //
+    INC_FIT_GB_PER_WORKER; 0 when nothing can be read."""
+    m, _ = fit_memory_gb()
     return max(0, int((float(m or 0) - float(ctx.c.INC_FIT_MEM_MARGIN_GB)) // float(ctx.c.INC_FIT_GB_PER_WORKER)))
 
 
-def fit_procs(ctx, s):
-    """snapshot_cell_prefit.sh:122-123 np(): this process's cores less FIT_PROCS_RESERVE, at most memprocs, at least 2; while
-    memprocs < 2 it waits (every INC_FIT_MEM_POLL_S, at most INC_FIT_MEM_WAIT_S) for room for 2 workers."""
+def fit_procs(ctx):
+    """snapshot_cell_prefit.sh:122-123 np(): (this process's cores less FIT_PROCS_RESERVE, at most memprocs, at least 2,
+    None) - or (None, why) when memprocs < 2: SI-G15 refuses at once (np waits up to 6 h for room for 2 workers, then runs 2
+    anyway; v2 neither waits silently nor runs short of memory)."""
     c = ctx.c
     want = max(1, len(os.sched_getaffinity(0)) - int(c.FIT_PROCS_RESERVE))
-    m, waited = memprocs(ctx), 0
-    while m < 2 and waited < float(c.INC_FIT_MEM_WAIT_S):
-        time.sleep(float(c.INC_FIT_MEM_POLL_S))
-        waited += float(c.INC_FIT_MEM_POLL_S)
-        m = memprocs(ctx)
-    if waited:
-        s.u.note('fit workers: waited %.0f s for memory (room for %d)' % (waited, m))
-    return max(2, min(want, m))
+    m = memprocs(ctx)
+    if m < 2:
+        gb, src = fit_memory_gb()
+        return None, ('memory for %d fit workers, fewer than 2: %s GB from %s, less INC_FIT_MEM_MARGIN_GB %s, // '
+                      'INC_FIT_GB_PER_WORKER %s' % (m, 'none' if gb is None else '%.1f' % gb, src,
+                                                    c.INC_FIT_MEM_MARGIN_GB, c.INC_FIT_GB_PER_WORKER))
+    return max(2, min(want, m)), None
 
 
 def fit_groups(ctx, s, W, pending):
@@ -765,10 +789,12 @@ def _fit(ctx, s, cell, W, pending, store, logname):
     """fit-grouped of a request list into a store in shards (snapshot_cell_prefit.sh:128-140 fitg): k = ceil(requests /
     INC_FIT_SHARD_REQUESTS), at most groups // (INC_FIT_TASKS_PER_WORKER x workers), at least 1; the stop files checked
     before every shard; workers from fit_procs before every shard; OMP/BLAS 1 thread, niceness INC_FIT_NICE. Returns
-    ('ok' | 'stopped' | 'failed', the last LegacyResult or the stop file)."""
+    ('ok' | 'stopped' | 'memory' | 'failed', the last LegacyResult, the stop file or the memory reason)."""
     c = ctx.c
     n = rows_of(pending)
-    p = fit_procs(ctx, s)
+    p, why = fit_procs(ctx)
+    if p is None:
+        return 'memory', why + ' (before shard 0)'
     g = fit_groups(ctx, s, W, pending)
     k = max(1, min((n + int(c.INC_FIT_SHARD_REQUESTS) - 1) // int(c.INC_FIT_SHARD_REQUESTS),
                    g // (int(c.INC_FIT_TASKS_PER_WORKER) * p)))
@@ -784,14 +810,19 @@ def _fit(ctx, s, cell, W, pending, store, logname):
                          'py36', env=ctx.fit_env(), log=os.path.join(W, logname), cwd=W, nice=int(c.INC_FIT_NICE))
         if not res.ok:
             return 'failed', res
-        p = fit_procs(ctx, s)
+        if i + 1 < k:
+            p, why = fit_procs(ctx)
+            if p is None:
+                return 'memory', why + ' (before shard %d of %d)' % (i + 1, k)
     return 'ok', res
 
 
 def _fitted(ctx, cell, W, state, res, logname, what):
-    """Refuse a fit that did not end 'ok': SI-G13 for a stop file, SI-G6 for a failed shard."""
+    """Refuse a fit that did not end 'ok': SI-G13 for a stop file, SI-G15 for memory, SI-G6 for a failed shard."""
     if state == 'stopped':
         refuse('SI-G13: %s: stop file %s during the %s (snapshot_cell_prefit.sh:136): not a failed attempt' % (cell, res, what))
+    if state == 'memory':
+        refuse('SI-G15: %s: %s for the %s: refused, not waited on; not a failed attempt' % (cell, res, what))
     if state == 'failed':
         _need(ctx, cell, W, res, logname, what)
 
@@ -822,8 +853,9 @@ def cell_phase(ctx, s, cell, plan_lines):
                           '' if ctx.prod else ' --store %s' % store, W, ctx.opsc('snapshot_store_append.py'), ctx.fits))
     plan_lines.append('prefit loop (<= %d rounds; prefit.sh:153-166): %s %s %s --cells %s --out %s/prefit<i> --veto-record-root '
                       '"" --prefit-list-only (%s h limit); rows > 0 -> %s fit-grouped --pending %s/prefit<i>/prefit_requests.csv '
-                      '--store %s --proto-root %s --procs <min(free cores - %d, (available GB - %s) // %s), >= 2> --shard i '
-                      '--nshards <ceil(rows / %d), <= groups // (%d x procs)>, niceness %d, stop files checked between shards' % (
+                      '--store %s --proto-root %s --procs <min(free cores - %d, (cgroup headroom GB - %s) // %s), >= 2> --shard i '
+                      '--nshards <ceil(rows / %d), <= groups // (%d x procs)>, niceness %d, stop files checked between shards, SI-G15 when '
+                      'memory holds fewer than 2 workers' % (
                           maxit, ctx.py36, ctx.chain_py, ' '.join(ctx.chainargs(cell)), cell, W, c.INC_PREFIT_TIMEOUT_H,
                           ctx.fit_py, W, store, ctx.cfg.paths.SNAPSHOT_FLEET_OUT, c.FIT_PROCS_RESERVE,
                           c.INC_FIT_MEM_MARGIN_GB, c.INC_FIT_GB_PER_WORKER, c.INC_FIT_SHARD_REQUESTS,

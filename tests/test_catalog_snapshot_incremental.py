@@ -50,7 +50,8 @@ Asserts:
   done-by      PRESTAGE_DONE is done only with a tie_ or tie2_ file whose header is phase3_snapshot_tiecache.FIELDS (no file,
                or an older header: the unit runs); a dry run prints it and records nothing
   fits         shards (ceil(requests / INC_FIT_SHARD_REQUESTS), at most groups // (INC_FIT_TASKS_PER_WORKER x workers)),
-               workers = min(free cores - reserve, memory's), >= 2, waiting for memory; niceness 19; the prefit-list passes
+               workers = min(free cores - reserve, memory's) from the cgroup reading (prefit.sh's; MemAvailable only without
+               a cgroup), SI-G15 at once below 2 workers (no wait, no failed attempt); niceness 19; the prefit-list passes
                under a 6-h limit and the tie pass under INC_CHAIN_TIMEOUT_H; an SI-G6 reason quotes the chain's REFUSING
                line, not the 60 warning lines after it
   helpers      phases, seeds, the cell-list parse, the prestage.log filter, the stale-claim rule; tier_snapshot.chain_args
@@ -368,9 +369,11 @@ class Tree:
             (CFG.site, 'PYTHON', {'default': sys.executable, 'py36': sys.executable}),
             (CFG.site, 'LEGACY_CODE_ROOTS', [f'{self.stub}/clv15', f'{self.stub}/exopipe_ops']),
             (EX, 'for_tier', lambda tier, **k: _Excl(self.excluded)),
-            # room for exactly 2 fit workers (INC_FIT_MEM_MARGIN_GB + 2 x INC_FIT_GB_PER_WORKER): one worker count everywhere
-            (NM, 'mem_available_gb', lambda *a, **k: CFG.catalog_snapshot.INC_FIT_MEM_MARGIN_GB
-             + 2 * CFG.catalog_snapshot.INC_FIT_GB_PER_WORKER))
+            # the cgroup holds exactly 2 fit workers (INC_FIT_MEM_MARGIN_GB + 2 x INC_FIT_GB_PER_WORKER): one worker count
+            # everywhere; MemAvailable reads 1 GB, so a fit that ran used the cgroup reading, not nodemem's min()
+            (NM, 'cgroup_available_gb', lambda *a, **k: CFG.catalog_snapshot.INC_FIT_MEM_MARGIN_GB
+             + 2 * CFG.catalog_snapshot.INC_FIT_GB_PER_WORKER),
+            (NM, 'mem_available_gb', lambda *a, **k: 1))
         self._prod = Patch((CFG.paths, 'PRODUCTION_ROOTS', tuple(CFG.paths.PRODUCTION_ROOTS) + (self.batch,)))
 
     def __enter__(self):
@@ -848,16 +851,34 @@ def test_stop_files_and_fit_shards():
         u = unit(r, 'cell')
         assert u.status == 'refused' and u.reason.startswith('SI-G13: ') and 'during the fits of prefit round 1' in u.reason
         assert len(t.calls_of('fit')) == 1 and not fails(t.batch) and not os.path.exists(f'{t.batch}/prefit_claims/{CELL}')
-    # the worker count: free cores less FIT_PROCS_RESERVE, at most the memory's, >= 2; waits while memory holds < 2
-    seq = iter([c.INC_FIT_MEM_MARGIN_GB, c.INC_FIT_MEM_MARGIN_GB + 30 * c.INC_FIT_GB_PER_WORKER])
-    notes = []
+    with Tree(dets=dets) as t, Patch((NM, 'cgroup_available_gb', lambda *a, **k: c.INC_FIT_MEM_MARGIN_GB + 5)):
+        r, _ = t.run(prod=True)                                                 # room for 1 worker: SI-G15 at once
+        u = unit(r, 'cell')
+        assert u.status == 'refused' and u.reason.startswith('SI-G15: ') and 'memory for 1 fit workers' in u.reason, u.reason
+        assert 'cgroup_available_gb' in u.reason and 'before shard 0' in u.reason and 'not a failed attempt' in u.reason
+        assert not t.calls_of('fit') and not fails(t.batch) and not os.path.exists(f'{t.batch}/prefit_claims/{CELL}')
+
+
+def test_fit_memory_reading():
+    """The fit workers read prefit.sh's memory (snapshot_cell_prefit.sh:40-55): core.nodemem.cgroup_available_gb, not
+    nodemem.mem_available_gb's min(MemAvailable, cgroup) - MemAvailable leaves out the ZFS ARC (Snapshot chat, PR 158);
+    MemAvailable only when no cgroup limit can be read; 0 workers when neither can be read."""
+    c = CFG.catalog_snapshot
     ctx = argparse.Namespace(c=c)
-    s_ = argparse.Namespace(u=argparse.Namespace(note=notes.append))
-    with Patch((NM, 'mem_available_gb', lambda *a, **k: next(seq)), (c, 'INC_FIT_MEM_POLL_S', 0.01)):
-        assert IS.fit_procs(ctx, s_) == max(2, min(len(os.sched_getaffinity(0)) - c.FIT_PROCS_RESERVE, 30))
-    assert notes and notes[0].startswith('fit workers: waited'), notes
-    with Patch((NM, 'mem_available_gb', lambda *a, **k: None)):
-        assert IS.memprocs(ctx) == 0
+    want = len(os.sched_getaffinity(0)) - c.FIT_PROCS_RESERVE
+    # lwacalim07, 2026-11-24 23:24 UTC: cgroup headroom 316 GB, MemAvailable 127 GB (ZFS ARC 248 GiB)
+    with Patch((NM, 'cgroup_available_gb', lambda *a, **k: 315.9), (NM, 'mem_available_gb', lambda *a, **k: 127)):
+        assert IS.fit_memory_gb()[0] == 315.9 and 'cgroup_available_gb' in IS.fit_memory_gb()[1]
+        assert IS.memprocs(ctx) == 65 and IS.fit_procs(ctx) == (max(2, min(want, 65)), None)
+    with Patch((NM, 'cgroup_available_gb', lambda *a, **k: None), (NM, 'mem_available_gb', lambda *a, **k: 127)):
+        assert IS.fit_memory_gb() == (127.0, 'core.nodemem.mem_available_gb (MemAvailable: no cgroup limit could be read)')
+        assert IS.memprocs(ctx) == 2
+    with Patch((NM, 'cgroup_available_gb', lambda *a, **k: 125.0), (NM, 'mem_available_gb', lambda *a, **k: 400)):
+        p, why = IS.fit_procs(ctx)                                              # (125 - 120) // 3 = 1: refused, not waited
+        assert p is None and why.startswith('memory for 1 fit workers, fewer than 2: 125.0 GB from core.nodemem.cgroup'), why
+    with Patch((NM, 'cgroup_available_gb', lambda *a, **k: None), (NM, 'mem_available_gb', lambda *a, **k: None)):
+        assert IS.fit_memory_gb()[0] is None and IS.memprocs(ctx) == 0 and IS.fit_procs(ctx)[0] is None
+    assert not hasattr(c, 'INC_FIT_MEM_WAIT_S') and not hasattr(c, 'INC_FIT_MEM_POLL_S')     # no wait
 
 
 def test_gate_chain_refuses():
@@ -987,7 +1008,8 @@ TESTS = [test_happy_path_and_associate_refusal, test_done_by_production, test_as
          test_upstream_refused, test_gate_search_shipped, test_gate_dirty, test_gate_lightcurves, test_gate_forced,
          test_gate_holds_and_claim, test_production_root_layout, test_store_repair_and_ready, test_gate_not_converged,
          test_gate_chain_failure, test_no_input, test_seeding, test_attempt_cap, test_attempt_record_repair_tie_and_stop,
-         test_stop_files_and_fit_shards, test_gate_chain_refuses, test_call_limits, test_helpers, test_step_routes_here]
+         test_stop_files_and_fit_shards, test_fit_memory_reading, test_gate_chain_refuses, test_call_limits, test_helpers,
+         test_step_routes_here]
 
 
 def main(argv):

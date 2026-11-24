@@ -753,10 +753,11 @@ class catalog_snapshot(_Section):
     INC_FIT_SHARD_REQUESTS = 2000                         # fit-grouped shards: one per this many requests, at most groups / (
     INC_FIT_TASKS_PER_WORKER = 3                          # TASKS_PER_WORKER x workers); snapshot_cell_prefit.sh:124-134 [step]
     INC_FIT_GB_PER_WORKER = 3                             # GB per fit worker and GB kept free: workers = (core.nodemem
-    INC_FIT_MEM_MARGIN_GB = 120                           # .mem_available_gb - MARGIN) // GB_PER_WORKER, at most the free cores
-                                                          # less FIT_PROCS_RESERVE, at least 2; snapshot_cell_prefit.sh:20-21, :40-55 [step]
-    INC_FIT_MEM_WAIT_S = 21600                            # s waited (polled every INC_FIT_MEM_POLL_S) for room for 2 workers
-    INC_FIT_MEM_POLL_S = 120                              # before running with 2; snapshot_cell_prefit.sh:122-123 [step]
+    INC_FIT_MEM_MARGIN_GB = 120                           # .cgroup_available_gb, prefit.sh's reading (MemAvailable only when no
+                                                          # cgroup limit is read; incremental_snapshot.fit_memory_gb says why
+                                                          # not nodemem's min) - MARGIN) // GB_PER_WORKER, at most the free cores
+                                                          # less FIT_PROCS_RESERVE; fewer than 2 refuses SI-G15 at once (prefit.sh:122-123
+                                                          # waits up to 6 h, then runs 2); snapshot_cell_prefit.sh:20-21, :40-55 [step]
     INC_FIT_NICE = 19                                     # niceness of the fit workers (spare capacity); snapshot_cell_prefit.sh:20, :32 [step]
     INC_HOLD_LISTS = ('/lustre/gh/main/exopipe_ops/snapshot_rechain_b2_cells.txt',
                       '/lustre/gh/main/exopipe_ops/snapshot_batch/prefit_hold_cells.txt')   # cells no per-cell stage takes
