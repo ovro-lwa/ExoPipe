@@ -4607,6 +4607,18 @@ def run_final_lst_freq(lst, freq_str, exclusions):
         shutil.rmtree(prep_dir, ignore_errors=True)
     _stamp_all_masters(final_dir, lst, fl)
     _refuse_excluded_constituents(final_dir, lst, fl)
+    if HEADER_STANDARD == 'full':
+        # v2 (CUTOVER_READINESS "INSTALL-CELL HEADER REPAIR": the masters, install and dewarp steps write the Release 1 cards;
+        # DECISION-20261113-DEEP-REBUILD-CHAIN-WRITES-REPAIR-CARDS): the repair's provenance cards (FLUXREF ASTREF, and P2RUN
+        # SCALE_A P1RUN CALBP of a reference night) on the masters and PB maps and provenance_nights.csv, before the publish;
+        # MDWSTAT is the install's (the dewarp status is known after the dewarp). 'production': none (production's chain
+        # repairs the archived cell after the install, install_cell.sh:35-54). No reference (provenance_nights.csv not
+        # written) refuses the cell before the publish, as install step b does
+        from exopipe.phase3.lib.masters import release1_cards as _R1
+        _r1 = _R1.write_cell(final_dir, lst, fl, mdw_table=None, pbmaps=True, provenance=True)
+        print(f'  [{lst}/{fl}] Release 1 cards: ' + ' | '.join(_r1['lines']), flush=True)
+        if not _r1['provenance']:
+            raise RuntimeError(f"{lst} {fl}: Release 1 cards not written ({' | '.join(_r1['lines'])[:300]}); REFUSING to archive")
     _archive_publish_cell(final_dir, sub_dir, lst, fl)
     with open(done_marker, 'w') as f:
         f.write(f'{len(dates_good)}/{len(dates)} dates\n')
