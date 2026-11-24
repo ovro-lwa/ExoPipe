@@ -119,6 +119,11 @@ def add_arguments(p):
     g.add_argument('--supersede', metavar='TAG',
                    help='replace differing tables already published under <out>/<cell>/: the old files move to '
                         '<out>/_superseded/<TAG>/<cell>/ with a MANIFEST.csv; without it a differing table refuses (G12)')
+    g.add_argument('--only-missing', action='store_true', default=False,
+                   help='extract only the (subband, Stokes) pairs without a published table under <out>/<cell>/ '
+                        "(production's LCBF_ONLY_MISSING; plan.only_missing): a subband whose tables are all published is not "
+                        'extracted; a missing V beside a published I is extracted with its I and tested against the published '
+                        'I; a missing I beside a published V is refused (G10). Not with --supersede')
 
 
 def default_out(args):
@@ -301,6 +306,16 @@ def _environment(CFG, args, stages):
 # plan printing (--dry-run)
 # ---------------------------------------------------------------------------------------------------------------------
 
+def _only_missing_notes(om):
+    """The dry run's lines for --only-missing (plan.only_missing)."""
+    n = [f'--only-missing: {len(om["present"])} pairs published (kept, not extracted), {len(om["missing"])} missing: '
+         + (', '.join(f'{sb} {st}' for sb, st in om['missing']) or '-')]
+    n += [f'{sb}: Stokes I published - I and V extracted, only V published (tested against the published I)'
+          for sb in sorted(om['scale_only'])]
+    n += [f'{sb} {st} pair refused - {g}: {why}' for (sb, st), (g, why) in sorted(om['refused'].items())]
+    return n
+
+
 def _print_plan(name, plan, out, stokes, stage_root, stages, g1, stage_issues, notes):
     from exopipe.phase3.lib.curves.plan import table_name
     p = print
@@ -341,6 +356,8 @@ def run(args, run):
         if args.tier not in C.TIERS:
             raise ValueError(f'--tier {args.tier}: curves exists for {", ".join(C.TIERS)} only')
         units = items.select(args.cells, args.epochs, args.exclude_cells, args.scopes, CFG.paths.SNAPSHOT_FLEET_OUT)
+        if getattr(args, 'only_missing', False) and args.supersede:
+            raise ValueError('--only-missing keeps every published table; --supersede replaces them: give one')
         if args.stage_root and len(units) > 1 and '{cell}' not in args.stage_root:
             raise ValueError(f"--stage-root {args.stage_root} names ONE staged cell but {len(units)} cells are selected: "
                              f"write '{{cell}}' where the cell goes")
@@ -374,7 +391,11 @@ def run(args, run):
             issues, notes, g17 = {}, [], {}
             sroot = (_stage_root(args, cell, E['scratch_root'], len(units))
                      if 'stage' not in stages and not _archive(args) else None)
-            with_cat = [sb for sb in pl['planned'] if pl['subbands'][sb]['catalog_exists']]     # G6 for the others
+            om = P.only_missing(out, cell, pl['planned'], stokes) if getattr(args, 'only_missing', False) else None
+            if om is not None:
+                notes += _only_missing_notes(om)
+            todo = [sb for sb in pl['planned'] if om is None or sb in om['extract']]
+            with_cat = [sb for sb in todo if pl['subbands'][sb]['catalog_exists']]     # G6 for the others
             if _archive(args):
                 g17 = _archive_grid(cell, with_cat)
                 notes.append('frames: the Phase-1 archive, read by the extractor (curves.FRAME_SOURCE archive; no staging)')
@@ -384,7 +405,7 @@ def run(args, run):
             elif not sroot:
                 notes.append('REFUSE G4: no --stage-root and no scratch root to find frames\' staging')
             elif os.path.isdir(sroot):
-                issues = P.stage_problems(sroot, pl)
+                issues = P.stage_problems(sroot, dict(pl, planned=todo))
             else:
                 notes.append(f'REFUSE G4: staged cell {sroot} does not exist on this host')
             # the step's own order (_run_unit): G6, G17, then the per-pair plan of the subbands left (G18 / G10)
@@ -398,9 +419,13 @@ def run(args, run):
             if not pl['planned']:
                 print('   NO-INPUT: no planned subband')
                 continue
+            if om is not None and not om['missing']:
+                print(f'   NO-INPUT: --only-missing: every planned pair is published ({len(om["present"])} tables)')
+                continue
             any_input = True
             if (not g1[0] or issues or any(n.startswith('REFUSE') for n in notes)
-                    or not any(v[0] == 'extract' for v in pp.values())):   # every planned pair refused (G6/G17/G18/G10)
+                    or not any(v[0] == 'extract' for (sb_, st_), v in pp.items()
+                               if om is None or sb_ not in om['scale_only'] or st_ == 'V')):  # every planned pair refused
                 rc = record.EXIT_REFUSED
         return rc if any_input or rc == record.EXIT_REFUSED else record.EXIT_NO_INPUT
 
@@ -448,15 +473,35 @@ def _run_unit(u, args, run, pl, stokes, stages, ex, E, stage_root):
     u.note(f'G1: {detail}')
     for path, extra in P.inputs(pl, C, CFG.paths.PHASE1_ROOT, E['code_files']):
         u.add_input(path, extra=extra)
+    pairs = u.meta['pairs']
+    # --only-missing (plan.only_missing): a published pair is not planned; it is recorded as present and kept
+    om = P.only_missing(out, cell, pl['planned'], stokes) if getattr(args, 'only_missing', False) else None
+    if om is not None:
+        u.meta['only_missing'] = {'present': len(om['present']), 'missing': len(om['missing']),
+                                  'scale_only': sorted(om['scale_only'])}
+        for (sb, st), p in sorted(om['present'].items()):
+            pairs[f'{sb}_{st}'] = {'status': 'present', 'path': p}
+        if not om['missing']:
+            raise record.NoInput(f'--only-missing: every planned pair of {cell} is published ({len(om["present"])} tables '
+                                 f'under {os.path.join(out, cell)})')
+        for sb, p in sorted(om['scale_only'].items()):
+            u.add_input(p, extra={'role': 'published Stokes I: the scale the new V is tested against (--only-missing)'})
     dst = {}
     for sb in pl['planned']:
         for st in stokes:
-            dst[(sb, st)] = u.plan(os.path.join(out, cell, P.table_name(cell, sb, st)), 'light_curve')
-    pairs = u.meta['pairs']
+            if om is None or (sb, st) not in om['present']:
+                dst[(sb, st)] = u.plan(os.path.join(out, cell, P.table_name(cell, sb, st)), 'light_curve')
+    for (sb, st), (gate, why) in sorted((om or {}).get('refused', {}).items()):
+        u.refuse_item(dst[(sb, st)], f'{gate}: {why}', gate=gate)
+        pairs[f'{sb}_{st}'] = {'status': 'refused', 'gate': gate, 'reason': why}
     run_sbs = []
     for sb in pl['planned']:                                   # G6 checked in the plan (the module checks it too)
+        if om is not None and sb not in om['extract']:
+            continue
         if not pl['subbands'][sb]['catalog_exists']:
             for st in stokes:
+                if (sb, st) not in dst:
+                    continue
                 why = f'G6: no Master catalogue {pl["subbands"][sb]["catalog"]}'
                 u.refuse_item(dst[(sb, st)], why, gate='G6')
                 pairs[f'{sb}_{st}'] = {'status': 'refused', 'gate': 'G6', 'reason': why}
@@ -469,6 +514,8 @@ def _run_unit(u, args, run, pl, stokes, stages, ex, E, stage_root):
         g17 = _archive_grid(cell, run_sbs)
         for sb, why in g17.items():
             for st in stokes:
+                if (sb, st) not in dst:
+                    continue
                 u.refuse_item(dst[(sb, st)], why, gate='G17')
                 pairs[f'{sb}_{st}'] = {'status': 'refused', 'gate': 'G17', 'reason': why}
         run_sbs = [sb for sb in run_sbs if sb not in g17]
@@ -476,14 +523,23 @@ def _run_unit(u, args, run, pl, stokes, stages, ex, E, stage_root):
     # wrote the pair's frame list (a night-refused pair: the plain call, B-70); a pair with a runinfo and no list refuses (G18)
     pp = P.pair_plan(pl, C, stokes, run_sbs)
     run_st, sframes = {sb: [] for sb in run_sbs}, {}
+    scale_only = (om or {}).get('scale_only', {})
     for (sb, st), v in sorted(pp.items(), key=lambda kv: (run_sbs.index(kv[0][0]), stokes.index(kv[0][1]))):
         if v[0] == 'refused':
+            if (sb, st) not in dst:                     # --only-missing: the I a new V takes its scale from is refused
+                why = f'{v[1]}: the Stokes I extraction the new V takes its scale from is refused: {v[2]}'
+                u.refuse_item(dst[(sb, 'V')], why, gate=v[1])
+                pairs[f'{sb}_V'] = {'status': 'refused', 'gate': v[1], 'reason': why}
+                run_st[sb] = None
+                continue
+            if run_st[sb] is None:
+                continue
             u.refuse_item(dst[(sb, st)], f'{v[1]}: {v[2]}', gate=v[1])
             pairs[f'{sb}_{st}'] = {'status': 'refused', 'gate': v[1], 'reason': v[2]}
-        else:
+        elif run_st[sb] is not None:
             run_st[sb].append(st)
             sframes[(sb, st)] = v[1]
-    run_sbs = [sb for sb in run_sbs if run_st[sb]]
+    run_sbs = [sb for sb in run_sbs if run_st[sb] and any((sb, st) in dst for st in run_st[sb])]
     if not run_sbs:
         return
     # ---- stage ------------------------------------------------------------------------------------------------------
@@ -527,7 +583,7 @@ def _run_unit(u, args, run, pl, stokes, stages, ex, E, stage_root):
     conflicts, n_error = [], 0
     fb_tot = {'frames_absent_from_admission': 0, 'scale_from_all_frames': 0, 'zero_vis_frames_kept': 0,
               'admission_table_missing': 0}
-    published_i = {}
+    published_i = {sb: p for sb, p in scale_only.items() if sb in run_sbs}   # --only-missing: the published I is kept
     for sb in run_sbs:
         res = results.get(sb, {})
         for st in run_st[sb]:                                   # the pairs refused before extraction are recorded above
@@ -536,6 +592,11 @@ def _run_unit(u, args, run, pl, stokes, stages, ex, E, stage_root):
             ent = {k: r.get(k) for k in ('status', 'gate', 'reason', 'rc', 'wall_s', 'log', 'unpublished_table')
                    if r.get(k) is not None}
             ent['log_tail'] = r.get('tail', [])
+            if (sb, st) not in dst:                     # --only-missing: the I extracted for the new V's scale only
+                pairs[key]['scale_extraction'] = ent    # (not published; the published I stays)
+                if r['status'] != 'done':
+                    u.note(f"{key}: the Stokes I extraction for the V scale ended {r['status']}: {r.get('reason')}")
+                continue
             pairs[key] = ent
             d = dst[(sb, st)]
             if r['status'] == 'refused':
@@ -584,7 +645,8 @@ def _run_unit(u, args, run, pl, stokes, stages, ex, E, stage_root):
                 # same_as_previous compares the frames the two share; the counts are recorded here
                 ent['superseded_frames'] = W.frame_list_change(d, r['path'])
             if st == 'V':
-                ctx['sibling_i'] = os.path.join(os.path.dirname(r['path']), P.table_name(cell, sb, 'I'))
+                ctx['sibling_i'] = (scale_only[sb] if sb in scale_only else      # --only-missing: the published I
+                                    os.path.join(os.path.dirname(r['path']), P.table_name(cell, sb, 'I')))
             pre = validate.run('light_curve', r['path'], **ctx)
             failing = [t for t in pre if not t['passed'] and not run.waived(t['name'])]
             if failing:

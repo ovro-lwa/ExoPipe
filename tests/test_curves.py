@@ -1215,8 +1215,116 @@ def test_search_frames():
     assert "not discovered" in rec['meta']['pairs'][f'{SB}_I']['reason'], rec['meta']['pairs']
 
 
+def test_only_missing():
+    """--only-missing (plan.only_missing; production's LCBF_ONLY_MISSING, CUTOVER_READINESS.md:678): only the pairs without a
+    published table are extracted; the published ones are kept byte for byte and recorded as present."""
+    from astropy.io import fits
+    from exopipe.phase3.lib.curves import plan as P
+    # the selection alone, on placeholder files
+    d = _fresh('only_missing_sel')
+    os.makedirs(os.path.join(d, CELL))
+    def touch(sb, st):
+        open(os.path.join(d, CELL, P.table_name(CELL, sb, st)), 'w').close()
+    for sb, st in (('a', 'I'), ('a', 'V'), ('b', 'I'), ('c', 'V')):
+        touch(sb, st)
+    om = P.only_missing(d, CELL, ['a', 'b', 'c', 'e'], ('I', 'V'))
+    assert sorted(om['present']) == [('a', 'I'), ('a', 'V'), ('b', 'I'), ('c', 'V')], om['present']
+    assert om['missing'] == [('b', 'V'), ('c', 'I'), ('e', 'I'), ('e', 'V')], om['missing']
+    assert om['extract'] == {'b': ['I', 'V'], 'e': ['I', 'V']}, om['extract']        # a: skipped; c: refused
+    assert om['scale_only'] == {'b': os.path.join(d, CELL, P.table_name(CELL, 'b', 'I'))}
+    assert list(om['refused']) == [('c', 'I')] and om['refused'][('c', 'I')][0] == 'G10'
+    om = P.only_missing(d, CELL, ['a', 'b', 'c', 'e'], ('I',))                       # --stokes I
+    assert om['extract'] == {'e': ['I']} and list(om['refused']) == [('c', 'I')] and not om['scale_only'], om
+
+    # the step on a synthetic cell: two subbands published, then tables removed
+    root = _fresh('only_missing')
+    R = make_cell(root, subbands=('36MHz', '41MHz'), staged=('36MHz', '41MHz'), catalog_for=('36MHz', '41MHz'))
+    base = ['curves', '--cells', CELL, '--stage-root', R['stage'], '--out', R['out'], '--work', R['work'],
+            '--cores', 'none'] + _sets(R)
+    recp = os.path.join(R['out'], '_records', 'curves', f'{CELL}.json')
+    tab = {(sb, st): os.path.join(R['out'], CELL, P.table_name(CELL, sb, st)) for sb in ('36MHz', '41MHz') for st in 'IV'}
+    with _step_env(R):
+        rc, out, err = _cli(base)
+    assert rc == 0, (rc, err[-2000:])
+    full = {k: open(p, 'rb').read() for k, p in tab.items()}
+    mt = {k: os.stat(p).st_mtime_ns for k, p in tab.items()}
+    # with --supersede: refused as an argument error
+    with _step_env(R):
+        rc, out, err = _cli(base + ['--only-missing', '--supersede', 'x'])
+    assert rc == 1 and '--only-missing' in err, (rc, err[-500:])
+    # every pair published: no input, nothing extracted, nothing written
+    with _step_env(R):
+        rc, out, err = _cli(base + ['--only-missing'])
+    rec = json.load(open(recp))
+    assert rc == 3 and rec['status'] == 'no-input' and 'every planned pair' in rec['reason'], (rc, rec['status'], rec['reason'])
+    assert {k: os.stat(p).st_mtime_ns for k, p in tab.items()} == mt
+    # 41MHz I and V removed: only 41MHz is extracted (2 calls); the 36MHz tables are untouched and recorded present
+    hold = _fresh('only_missing_hold')
+    for st in 'IV':
+        shutil.move(tab[('41MHz', st)], hold)
+    with _step_env(R):
+        rc, out, err = _cli(base + ['--only-missing', '--dry-run'])
+    assert rc == 0 and '--only-missing: 2 pairs published (kept, not extracted), 2 missing: 41MHz I, 41MHz V' in out, out
+    with _step_env(R):
+        rc, out, err = _cli(base + ['--only-missing'])
+    rec = json.load(open(recp))
+    assert rc == 0 and rec['status'] == 'done', (rc, rec['status'], rec['reason'], err[-2000:])
+    assert sorted(o['path'] for o in rec['outputs']) == [tab[('41MHz', 'I')], tab[('41MHz', 'V')]], rec['outputs']
+    calls = rec['meta']['legacy_calls']
+    assert len(calls) == 2 and all('41MHz' in ' '.join(c['argv']) and '36MHz' not in ' '.join(c['argv']) for c in calls), calls
+    for st in 'IV':
+        assert rec['meta']['pairs'][f'36MHz_{st}'] == {'status': 'present', 'path': tab[('36MHz', st)]}
+        assert os.stat(tab[('36MHz', st)]).st_mtime_ns == mt[('36MHz', st)]
+        assert open(tab[('41MHz', st)], 'rb').read() != b''
+    assert rec['meta']['only_missing'] == {'present': 2, 'missing': 2, 'scale_only': []}, rec['meta']['only_missing']
+    assert all(t['passed'] for t in rec['tests']), [t for t in rec['tests'] if not t['passed']]
+    # 41MHz V removed: I and V extracted, only V published; its scale is tested against the PUBLISHED I (kept byte for byte)
+    i41 = open(tab[('41MHz', 'I')], 'rb').read()
+    shutil.move(tab[('41MHz', 'V')], os.path.join(hold, 'v2.fits'))
+    with _step_env(R):
+        rc, out, err = _cli(base + ['--only-missing'])
+    rec = json.load(open(recp))
+    assert rc == 0 and rec['status'] == 'done', (rc, rec['status'], rec['reason'], err[-2000:])
+    assert [o['path'] for o in rec['outputs']] == [tab[('41MHz', 'V')]], rec['outputs']
+    assert open(tab[('41MHz', 'I')], 'rb').read() == i41
+    pi = rec['meta']['pairs']['41MHz_I']
+    assert pi['status'] == 'present' and pi['scale_extraction']['status'] == 'done', pi
+    assert tab[('41MHz', 'I')] in rec['inputs'], 'the published I the V is tested against is not an input'
+    fsv = [t for t in rec['tests'] if t['name'] == 'light_curve.flux_scale']
+    assert len(fsv) == 1 and fsv[0]['passed'], fsv
+    # the published I carries another scale: the new V is refused before publishing (content test), the I is kept
+    shutil.move(tab[('41MHz', 'V')], os.path.join(hold, 'v3.fits'))
+    with fits.open(tab[('41MHz', 'I')]) as h:
+        hl = fits.HDUList([x.copy() for x in h])
+    hl[0].header['FLUXSCAL'] = float(hl[0].header['FLUXSCAL']) * 1.5
+    hl.writeto(tab[('41MHz', 'I')], overwrite=True)
+    i41b = open(tab[('41MHz', 'I')], 'rb').read()
+    with _step_env(R):
+        rc, out, err = _cli(base + ['--only-missing'])
+    rec = json.load(open(recp))
+    ri = [(os.path.basename(r['path']), r['gate']) for r in rec['refused_items']]
+    assert ri == [(os.path.basename(tab[('41MHz', 'V')]), 'content-test')], (ri, rec['reason'])
+    assert 'flux_scale' in rec['refused_items'][0]['reason'], rec['refused_items'][0]['reason']
+    assert not os.path.exists(tab[('41MHz', 'V')]) and open(tab[('41MHz', 'I')], 'rb').read() == i41b
+    # 41MHz I removed, V published: the I is refused (G10) before extraction - nothing extracted, the V kept
+    open(tab[('41MHz', 'I')], 'wb').write(i41)
+    shutil.move(os.path.join(hold, 'v3.fits'), tab[('41MHz', 'V')])
+    v41 = open(tab[('41MHz', 'V')], 'rb').read()
+    os.remove(tab[('41MHz', 'I')])
+    with _step_env(R):
+        rc, out, err = _cli(base + ['--only-missing'])
+    rec = json.load(open(recp))
+    ri = [(os.path.basename(r['path']), r['gate']) for r in rec['refused_items']]
+    assert ri == [(os.path.basename(tab[('41MHz', 'I')]), 'G10')], (ri, rec['reason'])
+    assert not rec['meta'].get('legacy_calls') and not rec['outputs'], rec['meta'].get('legacy_calls')
+    assert open(tab[('41MHz', 'V')], 'rb').read() == v41 and not os.path.exists(tab[('41MHz', 'I')])
+    for k in (('36MHz', 'I'), ('36MHz', 'V')):
+        assert open(tab[k], 'rb').read() == full[k]
+
+
 TESTS = [test_items, test_config, test_stages, test_plan, test_publish, test_lock_and_classify, test_end2end,
-         test_failures, test_negative, test_archive, test_search_frames, test_real_products]
+         test_failures, test_negative, test_archive, test_search_frames, test_only_missing,
+         test_real_products]
 
 
 def main(argv):
