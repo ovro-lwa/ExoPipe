@@ -16,8 +16,13 @@ out-of-master table and the archived screen record are read by the in-place memb
   e2e B  install --round auto with today's round partly taken -> round <today>b; every output passes its content test;
          old files in the working / archive quarantine with their md5; the _msub search frame untouched; screen
          quarantined and the applied=1 row written
+  e2e B2 the Release 1 header-repair cards (install_cell.sh:28-54): b wrote FLUXREF ASTREF MDWSTAT and provenance_nights.csv
+         before the publish (archive = working); --stages cards (verify, vclean, cards) with refresh_vclean_cell stubbed and the
+         card gate's siblings from a synthetic tree: VCLEAN CARDS CARD-GATE pass, the refresh called twice under round
+         <round>vclean, its scratch removed; a refresh that is not CURRENT the second time refuses at VCLEAN; one card removed
+         from an archived master refuses at CARDS and at CARD-GATE (A-D, F, P name --stages plan,install,verify)
   e2e C  re-install with --round <today>b (now taken): refused at G-DEST BEFORE staging (no staging, no action row)
-  e2e D  re-install with --round auto: round <today>c, done
+  e2e D  re-install with --round auto: round <today>c, done; --stages cards again (round <today>cvclean) for E's enqueue
   e2e E  enqueue into a mirror of a synthetic live search state: markers/parks retired, both Stokes assigned, flow-holder
          row, ready.txt, request + re-run items pass their tests; a second enqueue adds nothing; recover on a finished
          install refuses
@@ -31,9 +36,11 @@ out-of-master table and the archived screen record are read by the in-place memb
 The two snapshot_masters link scans (912 links, ~40 s each on Lustre) are stubbed in the e2e runs; the scan itself is
 tested on a synthetic tree (unit). Run: python tests/test_install.py   (about a minute)
 """
+import contextlib
 import csv
 import glob
 import hashlib
+import io
 import json
 import os
 import shutil
@@ -251,6 +258,10 @@ def test_units():
     from exopipe.phase3.core import cells
     ok('stages: install implies plan', S.parse_stages('install') == ['plan', 'install'])
     ok('stages: ordered', S.parse_stages('verify,plan') == ['plan', 'verify'])
+    ok('stages: cards implies vclean implies verify (install_cell.sh:28-54 run after the verify)',
+       S.parse_stages('cards') == ['verify', 'vclean', 'cards'] and S.parse_stages('vclean') == ['verify', 'vclean'])
+    ok('stages: the default adds the cleaned-V refresh and the cards check',
+       S.DEFAULT_STAGES == ('plan', 'install', 'verify', 'vclean', 'cards'))
     for bad in ('recover,plan', 'nonsense', '', 'supersede', 'handover'):
         try:
             S.parse_stages(bad)
@@ -381,16 +392,24 @@ def test_review_fixes():
     ok('local_to_host: a path under this host\'s node-local root', (not roots_here) or SC.local_to_host(
         os.path.join(roots_here[0], 'x', 'y')), str(roots_here))
     ok('local_to_host: a shared path is not node-local', not SC.local_to_host('/lustre/gh/main/phase3/x'))
-    # the enqueue / cleanup precondition: the NEWEST install/recover/verify record must be done with install.V passing
+    # the enqueue / cleanup precondition: the NEWEST install/recover/verify record must be done with install.V, install.VCLEAN,
+    # install.CARDS and install.CARD-GATE passing (install_cell.sh:25-54 run before every enqueue)
     out = f'{ROOT}/unit/vrec'
     rr = types.SimpleNamespace(out=out)
 
-    def put(unit, status, t, v=True):
+    def put(unit, status, t, v=True, gates=SE.VERIFY_GATES):
         record.atomic_write_json(record.record_path(out, 'install', unit), dict(
             unit=unit, status=status, started=t, finished=t,
-            tests=[dict(name='install.V', passed=v)] if v is not None else []))
+            tests=[dict(name=g, passed=v) for g in gates] if v is not None else []))
+    ok('verify rule: the gates are V, VCLEAN, CARDS, CARD-GATE',
+       SE.VERIFY_GATES == ('install.V', 'install.VCLEAN', 'install.CARDS', 'install.CARD-GATE'))
+    put('12h_Red', 'done', '2026-10-13T00:30:00Z', gates=('install.V',))
+    ok('verify rule: a done install with install.V only (no cleaned-V refresh, no card gate) refuses',
+       SE._verify_passed(rr, '12h_Red')[0] is False)
+    put('12h_Red', 'done', '2026-10-13T00:40:00Z', gates=('install.V', 'install.VCLEAN', 'install.CARDS'))
+    ok('verify rule: ... and without the sibling card gate refuses', SE._verify_passed(rr, '12h_Red')[0] is False)
     put('12h_Red', 'done', '2026-10-13T01:00:00Z')
-    ok('verify rule: a done install with install.V passes', SE._verify_passed(rr, '12h_Red') == (True, '12h_Red'))
+    ok('verify rule: a done install with every gate passes', SE._verify_passed(rr, '12h_Red') == (True, '12h_Red'))
     put('12h_Red.verify', 'done', '2026-10-13T02:00:00Z')
     put('12h_Red', 'error', '2026-10-13T03:00:00Z', v=None)
     ok('verify rule: an install attempt that failed AFTER the last verify refuses', SE._verify_passed(rr, '12h_Red')[0]
@@ -518,6 +537,7 @@ def _e2e(run, nights, hdrs):
     from exopipe.phase3.lib.install import steps_enqueue as SE
     out = f'{ROOT}/out'
     common = ['--out', out, '--cores', 'none', '--set', 'install.FREE_FLOOR_GB=0.0', '--kind', 'mdewarp', '--not-rebuilt']
+    inst = ['--stages', 'plan,install,verify']      # vclean, cards: B2 (a stubbed refresh, a synthetic sibling tree)
     cdir = build_current(out, hdrs, nights, run)
     arch = f'{out}/archive'
     today = time.strftime('%Y%m%d', time.gmtime())
@@ -525,7 +545,7 @@ def _e2e(run, nights, hdrs):
     # ---- A: refused after staging (epoch gate, in-master night)
     gen_bad = build_generation(f'{ROOT}/gen_bad/{CELL}/gen_mdewarp_rbf', hdrs, nights, seed=1, fail_night=nights[1])
     before_cell, before_arch = tree_md5(cdir), tree_md5(arch)
-    rc = cli('install', '--cells', CELL, '--gen', gen_bad, *common)
+    rc = cli('install', '--cells', CELL, '--gen', gen_bad, *inst, *common)
     rec = record(out, CELL)
     ok('A: refused after staging -> exit 2', rc == 2 and rec and rec['status'] == 'refused', f'rc {rc}, '
        f'{rec and rec["reason"][:160]}')
@@ -545,7 +565,7 @@ def _e2e(run, nights, hdrs):
             h['BUNIT'] = 'JY/BEAM'
     gen_sh = build_generation(f'{ROOT}/gen_sh/{CELL}/gen_mdewarp_rbf', hdrs_sh, nights, seed=3)
     n_log = len(list(csv.DictReader(open(f'{out}/install_record.csv')))) if os.path.exists(f'{out}/install_record.csv') else 0
-    rc = cli('install', '--cells', CELL, '--gen', gen_sh, *common)
+    rc = cli('install', '--cells', CELL, '--gen', gen_sh, *inst, *common)
     rec = record(out, CELL)
     ok('A2: PB map with an SH* card and BUNIT JY/BEAM refused at G-PROD -> exit 2', rc == 2 and rec and rec['status'] == 'refused'
        and 'G-PROD' in rec['reason'] and 'PB map header' in rec['reason'], f'rc {rc}, {rec and rec["reason"][:200]}')
@@ -579,7 +599,7 @@ def _e2e(run, nights, hdrs):
         open(f'{cdir}/{r}', 'w').write(f'admission file {r}')
     adm_md5 = {r: md5(f'{cdir}/{r}') for r in adm_files}
     t0 = time.time()
-    rc = cli('install', '--cells', CELL, '--gen', gen, *common)
+    rc = cli('install', '--cells', CELL, '--gen', gen, *inst, *common)
     rec = record(out, CELL)
     ok('B: install done -> exit 0', rc == 0 and rec and rec['status'] == 'done', f'rc {rc}, {rec and rec["reason"][:300]}, '
        f'{time.time() - t0:.0f} s')
@@ -654,9 +674,12 @@ def _e2e(run, nights, hdrs):
        ['time', 'cell', 'step', 'path', 'dest', 'md5', 'bytes', 'detail']
        and any(r['step'] == 'installed-and-audited' for r in log_rows))
 
+    # ---- B2: the Release 1 cards written at b, the cleaned-V refresh and the cards check (stages vclean, cards)
+    sib = _e2e_cards(out, cdir, rnd)
+
     # ---- C: named round now taken -> G-DEST before staging
     n_log = len(log_rows)
-    rc = cli('install', '--cells', CELL, '--gen', gen, '--round', today + 'b', *common)
+    rc = cli('install', '--cells', CELL, '--gen', gen, '--round', today + 'b', *inst, *common)
     rec = record(out, CELL)
     ok('C: named taken round refused at G-DEST -> exit 2', rc == 2 and rec['status'] == 'refused'
        and rec['reason'].startswith('G-DEST'), rec['reason'][:160])
@@ -665,10 +688,16 @@ def _e2e(run, nights, hdrs):
     ok('C: the earlier manifest kept', len(glob.glob(f'{out}/_records/install/{CELL}.manifest.*.csv')) >= 1)
 
     # ---- D: auto round again -> <today>c
-    rc = cli('install', '--cells', CELL, '--gen', gen, *common)
+    rc = cli('install', '--cells', CELL, '--gen', gen, *inst, *common)
     rec = record(out, CELL)
     ok('D: re-install, round auto -> <today>c, done', rc == 0 and rec['status'] == 'done'
        and rec['meta'].get('round') == today + 'c', f"rc {rc} {rec['meta'].get('round')} {rec['reason'][:200]}")
+
+    # the re-installed cell: stages vclean + cards again (the newest record vouches for the tree as it is now)
+    rc, _ = _cards_stage(out, sib)
+    rec = record(out, f'{CELL}.verify')
+    ok('D: stages cards on the re-installed cell -> done (round <today>c + vclean)', rc == 0 and rec['status'] == 'done'
+       and rec['meta'].get('vclean_round') == today + 'cvclean', f"rc {rc} {rec['meta'].get('vclean_round')} {rec['reason'][:300]}")
 
     # ---- E: enqueue into a mirror of a synthetic live state; recover on a finished install
     live = f'{ROOT}/live_state'
@@ -708,6 +737,116 @@ def _e2e(run, nights, hdrs):
     rc = cli('install', '--cells', CELL, '--tier', 'deep', '--stages', 'verify', '--out', out, '--cores', 'none')
     rec = record(out, f'{CELL}.verify')
     ok('E: verify alone done', rc == 0 and rec['status'] == 'done', rec['reason'][:200])
+
+
+def _cards_stage(out, sib, second='CURRENT (stub: cleaned from the installed V master)', extra=()):
+    """--stages cards (= verify, vclean, cards) under --out, the siblings of the card gate read from sib, with
+    vclean_masters.refresh_vclean_cell stubbed (the real refresh runs the sv2 clean; test_install_release1_cards tests it on a
+    synthetic cell): the first call reports OK, the second (check-only) `second`. Returns (rc, the stub's calls)."""
+    from exopipe.phase3.lib.masters import vclean_masters as VM
+    calls = []
+
+    def fake(cell, root=None, tmp_root=None, mdw_table=None, check_only=False):
+        calls.append(dict(cell=cell, root=root, tmp=tmp_root, mdw=mdw_table, round=os.environ.get('P3_INSTALL_ROUND'),
+                          run=os.environ.get('P3_ARCHIVE_RUN'), archive=os.environ.get('P3_ARCHIVE_ROOT'),
+                          check_only=check_only))
+        os.makedirs(tmp_root, exist_ok=True)
+        open(f'{tmp_root}/sv2_scratch.txt', 'w').write('scratch')
+        return cell, 'OK (stub: re-cleaned)' if len(calls) == 1 else second
+    real = VM.refresh_vclean_cell
+    VM.refresh_vclean_cell = fake
+    try:
+        rc = cli('install', '--cells', CELL, '--stages', 'cards', '--out', out, '--cores', 'none',
+                 '--set', f'install.CARD_GATE_SIBLING_ROOT={sib}', *extra)
+    finally:
+        VM.refresh_vclean_cell = real
+    return rc, calls
+
+
+def _e2e_cards(out, cdir, rnd):
+    """B2: the Release 1 header-repair cards and the cleaned Stokes V refresh of the installed cell (install_cell.sh:28-54;
+    CUTOVER_READINESS "INSTALL-CELL HEADER REPAIR"). Step b wrote the cards on the cell's co-adds and provenance_nights.csv
+    before the publish (archive = working); stage vclean first checks that the cards stage would pass on the cell's other files,
+    then calls refresh_vclean_cell under round <round>vclean and, after an OK, once more check-only, and refuses unless that
+    call reports CURRENT; stage cards checks the cards and runs the sibling card-key gate, the siblings read from a synthetic
+    tree (copies of this cell's archive under two other LSTs); one card removed from an archived file is refused before the
+    refresh writes anything (VCLEAN's pre-check: the CARDS and CARD-GATE findings) and, in a dry run, by CARD-GATE. Returns
+    the sibling root."""
+    from astropy.io import fits
+    from exopipe.phase3.config import CFG
+    from exopipe.phase3.lib.install import steps_common as SC
+    from exopipe.phase3.lib.masters import release1_cards as R1
+    CFG.reset()
+    mdw, run = CFG.install.MDWSTAT_TABLE, CFG.paths.ARCHIVE_RUN
+    mdir = SC.Roots(out, True).masters_dir(LST, SCOPE)
+    fd = f'{cdir}/coadd_final'
+    adds, cc = R1.planned_adds(fd, LST, SCOPE, mdw_table=mdw, name_dir=mdir)
+    carded = [f for f in cc.masters + cc.pbmaps if 'FLUXREF' in cc.hdrs[f] and 'ASTREF' in cc.hdrs[f]]
+    ok('B2: step b wrote the Release 1 cards - every master and PB map carries FLUXREF and ASTREF, every master MDWSTAT, '
+       'and the repair\'s dry run finds nothing left to add', cc.masters and len(carded) == len(cc.masters) + len(cc.pbmaps)
+       and all('MDWSTAT' in cc.hdrs[f] for f in cc.masters) and not any(adds.values()),
+       f'ref {cc.ref}; {len(carded)} of {len(cc.masters) + len(cc.pbmaps)} carded; adds {dict((k, v) for k, v in adds.items() if v)}')
+    hist = [str(x) for x in cc.hdrs[cc.masters[0]].get('HISTORY', [])] if cc.masters else []
+    ok('B2: ... with the repair HISTORY line', any(x.startswith(time.strftime('%Y-%m-%d', time.gmtime()) + ' ' + R1.REPAIR)
+                                                for x in hist), hist[-3:])
+    pw, pa = f'{fd}/{R1.PROVENANCE_TABLE}', f'{mdir}/{R1.PROVENANCE_TABLE}'
+    want = cc.provenance_table()
+    ok('B2: provenance_nights.csv written at b and published, equal to the table derived now', want and os.path.isfile(pw)
+       and os.path.isfile(pa) and open(pw).read() == open(pa).read() == want, cc.err)
+    log_rows = list(csv.DictReader(open(f'{out}/install_record.csv')))
+    ok('B2: the action log holds the release1-cards row of round ' + rnd, any(r['step'] == 'release1-cards' for r in log_rows))
+    sib = f'{ROOT}/sibling_archive'
+    for lst2 in ('13h', '14h'):
+        d = f'{sib}/Coadd/{run}/{lst2}/{SCOPE}'
+        os.makedirs(d, exist_ok=True)
+        for p in glob.glob(f'{mdir}/*.fits'):
+            shutil.copy2(p, f'{d}/{os.path.basename(p).replace(f"_LST{LST}_", f"_LST{lst2}_")}')
+    rc, calls = _cards_stage(out, sib)
+    rec = record(out, f'{CELL}.verify')
+    passed = {t['name'] for t in (rec or {}).get('tests', []) if t['passed']}
+    ok('B2: stages cards -> done, gates VCLEAN CARDS CARD-GATE pass', rc == 0 and rec['status'] == 'done'
+       and {'install.V', 'install.VCLEAN', 'install.CARDS', 'install.CARD-GATE'} <= passed,
+       f'rc {rc} {rec and rec["reason"][:300]}; failed {[(t["name"], str(t.get("detail"))[:300]) for t in failed_tests(rec)]}')
+    ok('B2: refresh_vclean_cell called twice (the second check-only) under round <round>vclean, the --out working and archive '
+       'roots, the MDWSTAT table',
+       len(calls) == 2 and all(c['round'] == rnd + 'vclean' and c['root'] == f'{out}/coadd_sb' and c['run'] == run
+                               and c['archive'] == f'{out}/archive' and c['mdw'] == mdw for c in calls)
+       and [c['check_only'] for c in calls] == [False, True] and rec['meta'].get('vclean_round') == rnd + 'vclean', calls[:2])
+    ok('B2: the refresh scratch is under --out and removed after the two calls', calls
+       and calls[0]['tmp'] == f'{out}/vclean_tmp/{CELL}' and not os.path.exists(calls[0]['tmp']))
+    rc, calls = _cards_stage(out, sib, second='OK (stub: re-cleaned again)')
+    rec = record(out, f'{CELL}.verify')
+    bad = {t['name'] for t in failed_tests(rec)}
+    ok('B2: a second refresh that does not report CURRENT is refused at VCLEAN -> exit 2', rc == 2
+       and rec['status'] == 'refused' and 'install.VCLEAN' in bad and not os.path.exists(calls[0]['tmp']), f'rc {rc} {bad}')
+    victim = sorted(glob.glob(f'{mdir}/*_I_deep_Taper_Robust-0.75_*.fits'))
+    victim = [v for v in victim if '_pbcorr' not in v][:1] or sorted(glob.glob(f'{mdir}/*.fits'))[:1]
+    keep = f'{ROOT}/card_victim.fits'
+    shutil.copy2(victim[0], keep)
+    with fits.open(victim[0], mode='update', memmap=False) as h:
+        del h[0].header['FLUXREF']
+    name = os.path.basename(victim[0])
+    rc, calls = _cards_stage(out, sib)
+    rec = record(out, f'{CELL}.verify')
+    det = {t['name']: str(t.get('detail')) for t in rec.get('tests', []) if not t['passed']}
+    dv = det.get('install.VCLEAN', '')
+    ok('B2: FLUXREF removed from one archived master -> refused at VCLEAN before the refresh writes anything: the cards stage '
+       'would refuse (its archive header differs from the working file\'s; the sibling gate misses FLUXREF), naming the file '
+       '-> exit 2', rc == 2 and rec['status'] == 'refused' and calls == [] and dv.startswith('nothing written')
+       and 'another header' in dv and name in dv and 'FLUXREF' in dv, f'rc {rc} {len(calls)} calls {sorted(det)} {str(det)[:600]}')
+    buf = io.StringIO()                         # a dry run prints every gate's verdict (collect), not only the first refusal
+    with contextlib.redirect_stdout(buf):
+        rc, _ = _cards_stage(out, sib, extra=('--dry-run',))
+    txt = buf.getvalue()
+    print(txt[-1500:])
+    gl = [x for x in txt.splitlines() if x.strip().startswith('gate CARD-GATE')]
+    ok('B2: ... and at CARD-GATE: the file misses the card key FLUXREF its repaired siblings hold (dry run, exit 2)', rc == 2
+       and gl and 'REFUSE' in gl[0] and 'missing 1 card keys' in gl[0] and gl[0].rstrip().endswith('FLUXREF'), gl)
+    shutil.copy2(keep, victim[0])
+    os.remove(keep)
+    rc, _ = _cards_stage(out, sib)
+    ok('B2: the file restored -> stages cards done again', rc == 0 and record(out, f'{CELL}.verify')['status'] == 'done')
+    return sib
 
 
 def promoted_generation(tag, hdrs, nights, seed):
@@ -767,7 +906,7 @@ def _e2e_rebuild_holds_18(run, nights, hdrs):
     rebuild_root(rr, drop_held_18=False)
     before = tree_md5(cdir)
     rc = cli('install', '--cells', CELL, '--kind', 'rebuild', '--gen', gen, '--rebuild-root', rr, '--out', out,
-             '--cores', 'none', '--set', 'install.FREE_FLOOR_GB=0.0')
+             '--cores', 'none', '--set', 'install.FREE_FLOOR_GB=0.0', '--stages', 'plan,install,verify')
     rec = record(out, CELL)
     ok('F0: a rebuild made after the 18 MHz enforcement whose record holds a night with its excluded 18 MHz is refused at '
        'G-MEM under the ruled default (strict) -> exit 2', rc == 2 and rec and rec['status'] == 'refused'
@@ -798,7 +937,7 @@ def _e2e_rebuild(run, nights, hdrs):
     old = {os.path.relpath(p, cdir): md5(p) for p in glob.glob(f'{cdir}/**/*', recursive=True) + glob.glob(f'{cdir}/flow/.*')
            if os.path.isfile(p)}
     rc = cli('install', '--cells', CELL, '--kind', 'rebuild', '--gen', gen, '--rebuild-root', rr, '--out', out,
-             '--cores', 'none', '--set', 'install.FREE_FLOOR_GB=0.0')
+             '--cores', 'none', '--set', 'install.FREE_FLOOR_GB=0.0', '--stages', 'plan,install,verify')
     rec = record(out, CELL)
     ok('F: kind rebuild with a rebuild root -> done', rc == 0 and rec and rec['status'] == 'done',
        f'rc {rc}, {rec and rec["reason"][:300]}')
@@ -846,7 +985,7 @@ def _e2e_parity(run, nights, hdrs):
     gen = build_generation(f'{ROOT}/genP/{CELL}/gen_mdewarp_rbf', hdrs, nights, seed=4)
     before_cell, before_arch = tree_md5(cdir), tree_md5(f'{out}/archive')
     rc = cli('install', '--cells', CELL, '--gen', gen, '--out', out, '--cores', 'none', '--set', 'install.FREE_FLOOR_GB=0.0',
-             '--kind', 'mdewarp', '--not-rebuilt', '--set', f'install.MASTER_HELD_18MHZ={val.group(1) if val else "missing"}')
+             '--kind', 'mdewarp', '--not-rebuilt', '--stages', 'plan,install,verify', '--set', f'install.MASTER_HELD_18MHZ={val.group(1) if val else "missing"}')
     rec = record(out, CELL)
     ok('P: under production\'s value (the parity file\'s install.MASTER_HELD_18MHZ) refused at G-MEM, naming the held 18 MHz '
        '-> exit 2', rc == 2 and rec and rec['status'] == 'refused' and rec['reason'].startswith('G-MEM')

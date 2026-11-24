@@ -1951,9 +1951,12 @@ def test_item7_parity_file_keys():
                                                                              # flag (KNIFE_EDGE_SE)
              'R-GREGG-20261118-GEN6-WITH-LPTS-SAMPLE-WIRED',                 # the LPT sample in every tier: the family T pages
                                                                              # (forced_tier_pages.SAMPLES; production HWJ / 10 pc)
-             'R-REFACTOR-20261104-ABSENT-WITH-SERVED-REFUSE'}   # the refactor chat under R-GREGG-20261016-REFACTOR-DECIDES-BY-
+             'R-REFACTOR-20261104-ABSENT-WITH-SERVED-REFUSE',   # the refactor chat under R-GREGG-20261016-REFACTOR-DECIDES-BY-
                                                                              # GOALS: catalog_omission.ABSENT_WITH_SERVED 'refuse'
                                                                              # (G6, a data-integrity guard; production 'production')
+             'R-GREGG-20261107-HEADER-REPAIR-GO'}                            # the Release 1 header-repair cards written by the
+                                                                             # producing steps (install.RELEASE1_CARDS True; the
+                                                                             # production of 2026-10-13 wrote none)
     PROPOSED = {'masters_pbmaps.PB_QA_MISSING_MAX_FRAC'}   # 2026-10-14: proposed to Gregg (DECISIONS_PENDING open item 4); MASTER_SPAN_SOURCE and
                                                              # EPOCH_GATE_MAX_PASSES ruled (DECISIONS-LIST-RECOMMENDATIONS)
     PROPOSED |= {'forced_wide.EVENT_ORDER', 'forced_wide.TARGET_MEMBER',   # 2026-11-03 (forced family W, the wide-area burst

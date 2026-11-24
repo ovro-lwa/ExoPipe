@@ -120,3 +120,5 @@ jobs:
         run: python tests/test_space_gate.py
       - name: two-week retention of the raw night data (retention table, holds, dry-run manifest, the ruled delete and its refusals)
         run: python tests/test_retention.py
+      - name: Release 1 header-repair cards, the sibling card-key gate, the cleaned Stokes V source check and refresh (install wiring)
+        run: python tests/test_install_release1_cards.py

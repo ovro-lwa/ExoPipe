@@ -384,7 +384,7 @@ def audit(path, **ctx):
             nm = None
         if nm:
             by_name[nm if nm.endswith('.fits') else nm + '.fits'] = p
-    for f in (f'PB_deep_{scope}.fits', f'PB_deep_R075_{scope}.fits') + tuple(C.AUDIT_CELL_FILES):
+    for f in (f'PB_deep_{scope}.fits', f'PB_deep_R075_{scope}.fits') + Cfp.ARCHIVED_CELL_FILES:
         by_name[f] = f'{fd}/{f}'
     unknown = [p for p in now if os.path.basename(p) not in by_name]
     sums = SC.md5_many([p for p in now if p not in unknown] + [by_name[os.path.basename(p)] for p in now if p not in unknown])
