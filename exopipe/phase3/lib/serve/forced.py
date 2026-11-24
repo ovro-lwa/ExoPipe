@@ -6,7 +6,8 @@ the two-port server, whose per-page servers were retired 2026-10-22 - and of the
 switch: unit snapshot_forced_<TAG>_register (flow.register_pages): the two-port server is checked first (nothing is carried
   for a registration that cannot happen), then per requested page (gen5:31-45; a page that fails a check keeps the run its
   entry serves):
-  1. the run ended FT-READY (last line of <OPS_ROOT>/snapshot_forced_pages_run_<run>.log);
+  1. the run is ready (ready(): an exopipe3 forced family-C run by its verify record - done, servable, for this review copy;
+     a production page run by the last line FT-READY of <OPS_ROOT>/snapshot_forced_pages_run_<run>.log);
   2. it holds its queue, catalogue view, localization offsets and association table;
   3. the AD Leo check (test_snapshot_forced_reserve.py adleo --absent-ok <run>, site PYTHON 'py36'; Gregg 2026-10-08 "don't
      label AD Leo unless you have a metric defined and measured");
@@ -21,8 +22,10 @@ switch: unit snapshot_forced_<TAG>_register (flow.register_pages): the two-port 
   Then ALL pages that passed are registered in ONE registration (one registry change), each with --sibling links to what every
   other forced page serves AFTER the switch - its new run where it passed, else the run its entry serves now (gen5:47-56;
   plan.forced_siblings) - and one unit per page waits on its build state (gen5:66-69 waited up to 60 min for the run name in
-  the title) and records it (class served_page); the title and hub generation in gen5's words (generation-5 cutouts); the
-  inspection pages built before requested once; the hub buttons (<S> <10-sec|1-min>-forced) in the hub unit.
+  the title) and records it (class served_page); the title and hub generation in the words of serve.FORCED_GENERATIONS for
+  the run's tag (gen5: HWJ + 10 pc, generation-5 cutouts; gen6: HWJ + 10 pc + LPT, generation-6 cutouts from the rescaled
+  cubes; another tag is refused, G26); the inspection pages built before requested once; the hub buttons
+  (<S> <10-sec|1-min>-forced) in the hub unit.
 refresh-siblings: the pages of a <TAG> run whose --sibling links differ from what the other pages serve now are registered
   again in one registration, with the current links and a new served time; judgements stay (journal on disk).
 Parity: each run is byte-copied (minus judgements/ and server logs) to <out>/snapshot/<run> and registered in <out>/two_port
@@ -43,14 +46,34 @@ def _CFG():
     return CFG
 
 
-def ready(name):
-    S = _CFG().serve
-    p = os.path.join(_CFG().paths.OPS_ROOT, S.FORCED_READY_LOG.format(name=name))
+def ready(name, review=None):
+    """(ok, text): run ``name`` is ready to serve. A run built by exopipe3 forced --tier snapshot (family C) by its verify
+    record (serve.FORCED_READY_RECORD, step forced, under forced_snapshot.WORK_ROOT): done, servable (associated, not
+    restricted to an hour or cells), and naming ``review`` (the run directory the page serves) as its review copy - a record
+    in any other state refuses, whatever log exists. A run without such a record (production's page runs): the last line of
+    its log serve.FORCED_READY_LOG under paths.OPS_ROOT holds FORCED_READY_MARK."""
+    from exopipe.phase3.core import record as recmod
+    C = _CFG()
+    S = C.serve
+    unit = S.FORCED_READY_RECORD.format(name=name)
+    rec = recmod.load_record(C.forced_snapshot.WORK_ROOT, 'forced', unit)
+    if rec is not None:
+        rp = recmod.record_path(C.forced_snapshot.WORK_ROOT, 'forced', unit)
+        meta = rec.get('meta') or {}
+        if rec.get('status') != 'done':
+            return False, f'exopipe3 forced record {rp}: {rec.get("status")} ({(rec.get("reason") or "")[:160]})'
+        if not meta.get('servable') or meta.get('partial'):
+            return False, (f'exopipe3 forced record {rp}: done but not servable (servable {meta.get("servable")}, partial '
+                           f'{meta.get("partial")}: an hour or cell restriction, or no association)')
+        if review and os.path.realpath(meta.get('review') or '') != os.path.realpath(review):
+            return False, f'exopipe3 forced record {rp} verified the review copy {meta.get("review")}, the page serves {review}'
+        return True, f'exopipe3 forced record {rp} done: {(meta.get("verify_line") or "")[:160]}'
+    p = os.path.join(C.paths.OPS_ROOT, S.FORCED_READY_LOG.format(name=name))
     try:
         with open(p) as f:
             lines = [l for l in f.read().splitlines() if l.strip()]
     except OSError:
-        return False, f'no log {p}'
+        return False, f'no record {unit} under {C.forced_snapshot.WORK_ROOT} and no log {p}'
     last = lines[-1] if lines else ''
     return S.FORCED_READY_MARK in last, last[29:200] if len(last) > 29 else last
 
@@ -72,9 +95,9 @@ def check_page(u, plan, pg):
     (run dir, expected sources, notes); raises Refusal (the page keeps its entry)."""
     S = _CFG().serve
     notes = []
-    ok, last = ready(pg.run_name)
+    ok, last = ready(pg.run_name, pg.root_src)
     if not ok:
-        raise Refusal(f'{pg.run_name} has not ended {S.FORCED_READY_MARK} ({last}) - old entry kept')
+        raise Refusal(f'{pg.run_name} is not ready to serve ({last}) - old entry kept')
     miss = missing_files(pg, pg.root_src)
     if miss:
         raise Refusal(f'{pg.root_src} lacks {", ".join(miss)} (queue, catalogue, localization offsets or association table) '
@@ -190,8 +213,20 @@ def run(args, run, plan, stages):
 
 
 def describe(plan, stages, args):
+    """The dry run: per page its run, readiness, required files, what it serves now, and the title and hub button text the
+    switch would register (G26 names a tag without serve.FORCED_GENERATIONS text). Writes nothing."""
+    utc = common.utc_text()
     for pg in plan.pages:
-        ok, last = ready(pg.run_name)
+        ok, last = ready(pg.run_name, pg.root_src)
         miss = missing_files(pg, pg.root_src) if os.path.isdir(pg.root_src) else ['(run absent)']
-        print(f'  {pg.key}: run {pg.root_src}  FT-READY {"yes" if ok else "NO (" + last + ")"}  '
+        print(f'  {pg.key}: run {pg.root_src}  ready {"yes (" + last + ")" if ok else "NO (" + last + ")"}  '
               f'files {"ok" if not miss else "MISSING " + ", ".join(miss)}  serves now: {plan.registered_run(pg) or "-"}')
+        if getattr(args, 'forced_refresh_siblings', False) or not plan.forced_tag:
+            continue
+        try:
+            print(f'    title: {plan.title(pg, utc)}')
+            h = plan.hub_entry(pg, utc)
+            if h:
+                print(f'    hub {h[0]} {h[1]}: {dict(kv.split("=", 1) for kv in h[2]).get("generation")}')
+        except Refusal as e:
+            print(f'    REFUSED: {e}')

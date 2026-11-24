@@ -620,15 +620,25 @@ class serve(_Section):
     FORCED_RUN_NAME = 'Run_SNAPFORCED_{S}{T}_{tag}'          # T = 10s | 1min; snapshot_forced_serve_20261007.sh:30
     FORCED_READY_LOG = 'snapshot_forced_pages_run_{name}.log'   # under paths.OPS_ROOT; its LAST line must hold FORCED_READY_MARK (:63-65)
     FORCED_READY_MARK = 'FT-READY'
+    FORCED_READY_RECORD = 'C_verify_{name}'  # a run built by exopipe3 forced --tier snapshot (family C) is ready by this unit's
+                                            # record (step forced, under forced_snapshot.WORK_ROOT): done, servable, not partial,
+                                            # naming the review copy served; a run without it by its FORCED_READY_LOG
     FORCED_REQUIRED = ('queue_{S}.txt', 'source_catalogs_{S}', 'source_catalogs/localization_offsets.csv',
                        'forced_assoc_identity.csv')          # :66-67
     FORCED_ADLEO_CHECK = ('test_snapshot_forced_reserve.py', ('adleo', '--absent-ok'))   # ops script + args, site PYTHON 'py36' (:68;
                                             # Gregg 2026-10-08 "don't label AD Leo unless you have a metric defined and measured")
-    FORCED_TITLE = ('Snapshot FORCED photometry (HWJ + 10 pc), Stokes {S}, {what} - pixel-distance screen, fitted, reference-tied, '
-                    'localized, associated (target / background source / ambiguous) - generation-5 cutouts from the current cubes '
+    FORCED_GENERATIONS = {                   # forced run tag -> (the samples, the cutout generation) the title and hub name;
+                                            # a tag without an entry is refused (G26): the text names what the page shows
+        'gen5': ('HWJ + 10 pc', 'generation-5 cutouts from the current cubes'),     # snapshot_forced_gen5_serve_20261026.sh:57, :72
+        'gen6': ('HWJ + 10 pc + LPT', 'generation-6 cutouts from the rescaled cubes (Master flux scale)'),
+                                            # gen6_20261117/gen6_forced_serve_SWITCH_DRAFT.sh:55, :71; LPT measured since 2026-11-18
+                                            # (Gregg "Approve gen6 with the LPTs included"; photometry.SAMPLES_MEASURED)
+    }
+    FORCED_TITLE = ('Snapshot FORCED photometry ({samples}), Stokes {S}, {what} - pixel-distance screen, fitted, reference-tied, '
+                    'localized, associated (target / background source / ambiguous) - {generation} '
                     '({run_name}) - served {utc}')   # snapshot_forced_gen5_serve_20261026.sh:57 (the live entries p8775/p8776/p8785/p8786)
     FORCED_SIBLING_LABEL = 'forced Stokes {S} {T} page'      # T = 10-s | 1-min; :34
-    FORCED_HUB_GENERATION = ('forced photometry at HWJ + 10 pc targets, generation-5 cutouts from the current cubes, Stokes {S} '
+    FORCED_HUB_GENERATION = ('forced photometry at {samples} targets, {generation}, Stokes {S} '
                              '{kind} events: pixel-distance screen, fitted, reference-tied, localized, associated')   # kind = 10s |
                                             # 1min; snapshot_forced_gen5_serve_20261026.sh:72-74 (the live hub entries)
 

@@ -142,10 +142,13 @@ class Plan:
     def server_env(self):
         return scripts.server_env(self.server_env_extra())
 
-    def title(self, page, utc):
+    def title(self, page, utc, root=None):
         S = _CFG().serve
         if page.family == 'forced':
-            return S.FORCED_TITLE.format(S=page.stokes, what=S.SNAPSHOT_WHAT.get(page.kind, ''), run_name=page.run_name, utc=utc)
+            run_name = os.path.basename(os.path.normpath(root)) if root else page.run_name
+            samples, gen = forced_generation(page, run_name)
+            return S.FORCED_TITLE.format(S=page.stokes, what=S.SNAPSHOT_WHAT.get(page.kind, ''), run_name=run_name, utc=utc,
+                                         samples=samples, generation=gen)
         t = S.TITLE.get((self.tier, page.title_kind()))
         if t is None:
             return None
@@ -189,7 +192,7 @@ class Plan:
         if page.family == 'forced':
             argv = [py, a0, '--run', U, '--queue', page.at('queue', U), '--catalog-dir', page.at('catalog', U),
                     '--port', str(page.port), '--loc-offsets', '--default-fp-reason', S.DEFAULT_FP_REASON['snapshot']]
-            argv += self.forced_siblings(page) + ['--title', self.title(page, utc)]
+            argv += self.forced_siblings(page) + ['--title', self.title(page, utc, U)]
             if self.parity:
                 argv += ['--lists-dir', self.lists_dir]
             return argv
@@ -230,11 +233,26 @@ class Plan:
             return None
         S = _CFG().serve
         if page.family == 'forced':
-            gen = S.FORCED_HUB_GENERATION.format(S=page.stokes, kind=page.kind)
+            samples, g = forced_generation(page, page.run_name)
+            gen = S.FORCED_HUB_GENERATION.format(S=page.stokes, kind=page.kind, samples=samples, generation=g)
         else:
             gen = S.HUB_GENERATION[self.tier].format(lsts=self.lsts_text, label=self.label or '')
         vals = {'run': page.run_name, 'generation': gen, 'served': utc, 'live': '1', 'port': str(page.port), 'note': ''}
         return page.hub[0], page.hub[1], [f'{k}={vals[k]}' for k in HUB_KV_ORDER[(self.tier, page.family)]]
+
+
+def forced_generation(page, run_name):
+    """(samples text, cutout generation text) of a forced page serving ``run_name`` = Run_SNAPFORCED_<S><T>_<tag>
+    (serve.FORCED_RUN_NAME): serve.FORCED_GENERATIONS[tag]. G26 refuses a run of another name or a tag without an entry -
+    the title and the hub button name the samples and the generation the page shows (generation 6 adds LPT)."""
+    S = _CFG().serve
+    pre = S.FORCED_RUN_NAME.format(S=page.stokes, T=page.kind, tag='')
+    tag = run_name[len(pre):] if run_name.startswith(pre) else None
+    if tag not in S.FORCED_GENERATIONS:
+        raise Refusal(f'G26 forced page {page.key}: run {run_name!r} - no serve.FORCED_GENERATIONS entry for its tag {tag!r} '
+                      f'(the samples and cutout generation its title and hub button name; known: '
+                      f'{", ".join(sorted(S.FORCED_GENERATIONS))})')
+    return S.FORCED_GENERATIONS[tag]
 
 
 def _strip_run(label):

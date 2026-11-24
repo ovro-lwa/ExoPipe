@@ -1088,7 +1088,7 @@ def test_mchain():
         want = ['--mchain-queue', f'{B}/judgements/queue_p3s3_{pg.stokes}_multi.txt'] if pg.kind == 'single' else []
         assert a[a.index('--title') + 2:] == want + ['--lists-dir', p2.lists_dir], (pg.key, a[-6:])
     others = [planmod.make(_ns(tier='snapshot', run_label='Run_SNAPTEST', source='/nowhere', label='t'), f'{T}/mchain_s'),
-              planmod.make(_ns(tier='snapshot', family='forced', forced_tag='20261007'), f'{T}/mchain_f')]
+              planmod.make(_ns(tier='snapshot', family='forced', forced_tag='gen5'), f'{T}/mchain_f')]
     assert not [x for p_ in others for pg in p_.pages for x in p_.argv(pg, 'UTC') if x.startswith('--mchain')]
     tree = ast.parse(open(f'{OPS}/classify_transients.py').read())
     opts = {n.args[0].value for n in ast.walk(tree) if isinstance(n, ast.Call) and getattr(n.func, 'attr', '') == 'add_argument'
@@ -2363,7 +2363,7 @@ def test_forced_probe_before_stop():
         raise Refusal('App probe of page forced-V-10s failed (rc 1): test')
     saved = (forced.ready, forced.missing_files, forced._parity_copy, scripts.run, eg.scan_snapshot_run, servers.app_probe,
              register.write, register.check_server)
-    forced.ready = lambda name: (True, 'FT-READY')
+    forced.ready = lambda name, review=None: (True, 'FT-READY')
     forced.missing_files = lambda pg_, D: []
     forced._parity_copy = lambda pg_: None
     scripts.run = lambda *x, **k: Res()

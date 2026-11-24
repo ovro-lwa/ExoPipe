@@ -13,7 +13,7 @@ Classes (one product each):
   photometry_blank_null   out/blank_NNN.csv                        B1 counts, admitted frames only
   photometry_admission    out/frames_NNN.csv                       A1 reasons, exclusions recomputed, coverage of the shard's cells
   photometry_eval         out/eval/ (deep) or eval[_wb]_<tag>/     deep E1 thresholds recomputed, E2 lists, E3 exceedance, E4 png;
-                          (snapshot)                               snapshot G1-G6 grid, V1 kind + exclusions, V2 rows, Z1 zones
+                          (snapshot)                               snapshot G1-G6 grid, V1 kind + exclusions, V2 classes, Z1 zones
                                                                    recomputed, S stage 1 present and newer than its search
   photometry_snapshot_npz stage1/<cell>/forced_<smp>_<band>_<S>.npz N1 shapes, N2 1-minute blocks, N3 ring, N4 re-measure from
                                                                    the cutout, N5 names
@@ -1224,6 +1224,54 @@ def stage1_cell(task):
     return bad, nband, nfile, nnocut
 
 
+def threshold_classes(cells, stage1, excl=None):
+    """{(sample, Stokes, tier): 'cell band'} - the classes thresholds.csv of a snapshot evaluation must hold, with the first
+    stage-1 file that calls for each: every sample of photometry.SAMPLES_MEASURED['snapshot'] with a stage-1 file
+    forced_<sample>_<band>_<Stokes>.npz of the evaluated kind in an evaluated cell (``cells``: the cells.csv rows; no Full,
+    no (cell, band) excluded under core.exclusions - both never reach the engine's histograms), times the tiers of
+    photometry_evaluate.THRESHOLD_CLASSES. One stage-1 directory listing per cell. ``excl``: the exclusion read (default
+    core.exclusions, scope snapshot)."""
+    stokes, tiers = _cfg().photometry_evaluate.THRESHOLD_CLASSES['snapshot']
+    smps = set(_samples_measured('snapshot'))
+    excl = excl or _excl('snapshot')
+    want = {}
+    for r in cells:
+        cell, kind = r['cell'], r['kind']
+        lst, date = cell.split('_', 1)
+        d = os.path.join(stage1, cell)
+        for f in sorted(os.listdir(d) if os.path.isdir(d) else ()):
+            m = re.match(r'^forced_([^_]+)_(.+)_([IV])\.npz$', f)
+            if not m or m.group(1) not in smps or m.group(3) not in stokes:
+                continue
+            smp, band, st = m.groups()
+            if band == 'Full' or (kind == 'sb') != ('MHz' in band) or excl.is_excluded(lst, band, date):
+                continue
+            for t in tiers:
+                want.setdefault((smp, st, t), '%s %s' % (cell, band))
+    return want
+
+
+def threshold_classes_check(th, cells, stage1, excl=None):
+    """V2: thresholds.csv holds exactly one row per class of threshold_classes (each sample measured in the evaluated cells,
+    times Stokes and tier) - LPT's four classes since 2026-11-18, none of a sample not measured or without stage 1."""
+    want = threshold_classes(cells, stage1, excl)
+    got = {}
+    for r in th:
+        k = (r.get('sample'), r.get('stokes'), r.get('tier'))
+        got[k] = got.get(k, 0) + 1
+    miss = sorted(k for k in want if k not in got)
+    extra = sorted(k for k in got if k not in want)
+    dup = sorted(k for k, n in got.items() if n > 1)
+    bad = ['no row of %s (stage 1 %s)' % ('/'.join(k), want[k]) for k in miss] + \
+          ['a row of %s, a class without a stage-1 file of the evaluated cells' % '/'.join(k) for k in extra] + \
+          ['%d rows of %s' % (got[k], '/'.join(k)) for k in dup]
+    if not want:
+        bad.append('no class expected: no stage-1 file of the evaluated kind in %d cells.csv rows under %s' % (len(cells), stage1))
+    smps = sorted({k[0] for k in want})
+    return (not bad, len(th), _fmt(bad) if bad else 'thresholds.csv rows %d = one per (sample, Stokes, tier) of the samples '
+            'measured here (%s) x %d' % (len(th), ', '.join(smps), len(want) // max(1, len(smps))))
+
+
 def _snapshot_eval(ev, ctx):
     c = _cfg()
     e = c.photometry_evaluate
@@ -1236,9 +1284,8 @@ def _snapshot_eval(ev, ctx):
     except Exception as x:      # noqa: BLE001
         res['G'] = (False, None, 'grid files unreadable: %s' % x)
     th = read_csv(os.path.join(ev, 'thresholds.csv'))[1] if os.path.exists(os.path.join(ev, 'thresholds.csv')) else []
-    n = len(th)
-    res['V2'] = (n == e.THRESHOLD_ROWS['snapshot'], n, 'thresholds.csv rows %d (want %d)' % (n, e.THRESHOLD_ROWS['snapshot']))
     cells = read_csv(os.path.join(ev, 'cells.csv'))[1] if os.path.exists(os.path.join(ev, 'cells.csv')) else []
+    res['V2'] = threshold_classes_check(th, cells, _stage1_root(ev, ctx))
     kinds = {r['kind'] for r in cells}
     T = read_csv(os.path.join(ev, 'targets_ge4.csv'))[1] if os.path.exists(os.path.join(ev, 'targets_ge4.csv')) else []
     bad = []

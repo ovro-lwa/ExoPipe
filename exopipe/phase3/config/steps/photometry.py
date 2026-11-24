@@ -362,6 +362,12 @@ class photometry_evaluate(_Section):
                                                            # RECHAIN-LABELS); MIRROR phase3_tier_rules.py:37
     THRESHOLD_ROWS = {'deep': 4, 'snapshot': 8}            # rows of thresholds.csv: sample x Stokes (x tier for snapshot);
                                                            # deep_forced_eval.py:93-94; snapshot_forced_reserve_20261007.sh:161
+    THRESHOLD_CLASSES = {'snapshot': (('V', 'I'), ('10s', '1min'))}   # thresholds.csv of a snapshot evaluation: one row per
+                                                           # (sample, Stokes, tier), Stokes x tier of each sample with a stage-1
+                                                           # file of the evaluated kind (snapshot_forced_eval.py:204, one class per
+                                                           # sample with clean controls :536-547). It replaces the fixed 8 rows
+                                                           # (THRESHOLD_ROWS['snapshot'], HWJ + 10 pc) since LPT is measured
+                                                           # (photometry.SAMPLES_MEASURED['snapshot'], 2026-11-18): 12 rows then
     SNAPSHOT_FWHM_ARCMIN = {18: 44.9, 27: 29.9, 36: 22.4, 46: 17.6, 55: 16.3, 64: 13.6, 73: 11.9, 82: 10.6}   # arcmin at MHz,
                                                            # interpolated; MIRROR phase3_snapshot_astro.py:50 (FWHM_ARCMIN)
     SNAPSHOT_BAND_REP_MHZ = {'Red': 27, 'Green': 50, 'Blue': 73}   # MIRROR phase3_snapshot_astro.py:52 (BAND_REP_FREQ)
@@ -370,7 +376,7 @@ class photometry_evaluate(_Section):
     CONTENT_TEST_PROCS = 8                                 # processes of the Z1 / S content tests of a snapshot evaluation
                                                            # (production 24, reserve :170); orchestration only
     PROTECTED_KEYS = ('THRESHOLD_GRID', 'HIST_EDGES', 'LIST_SNR', 'THRESHOLD_METHOD', 'COMPLETENESS_T', 'COMPLETENESS_A',
-                      'REFUSED_CELLS', 'DEEP_SEARCH_PIN', 'THRESHOLD_ROWS', 'SNAPSHOT_FWHM_ARCMIN',
+                      'REFUSED_CELLS', 'DEEP_SEARCH_PIN', 'THRESHOLD_ROWS', 'THRESHOLD_CLASSES', 'SNAPSHOT_FWHM_ARCMIN',
                       'SNAPSHOT_BAND_REP_MHZ', 'SNAPSHOT_SITE_LAT_DEG', 'PNG_DPI')
     RULED = {'THRESHOLD_GRID': 'IMPLEMENTED-FORCED-THRESHOLD-GRID-TO-SN-59.95-AND-NAN-NOTE-Q5',
              'THRESHOLD_METHOD': ('R-DEEP-FORCED-THRESHOLDS-ADOPTED', 'R-GREGG-20261011-KEEP-8767-THRESHOLDS-AT-RERUN'),

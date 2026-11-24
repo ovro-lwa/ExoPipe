@@ -6,7 +6,7 @@ review page (its port is its identity: entry p<port>) and the hub (8765-8801 exc
     exopipe3 serve --tier deep --run P3S5 --out /data07/gh/refactor_parity/serve --port-offset 10000 --parity
     exopipe3 serve --tier sublst [--lsts 00h,01h,...] --stages build,views,test          (plan a generation, nothing served)
     exopipe3 serve --tier snapshot --run Run_SNAPB2R_20261007 --source lwacalim05:/fast/... --label '...'
-    exopipe3 serve --tier snapshot --family forced --forced-tag 20261007 [--pages forced-V-10s]
+    exopipe3 serve --tier snapshot --family forced --forced-tag gen6 [--pages forced-V-10s]
     exopipe3 serve --tier jupiter                                                         (8800, 8801)
     exopipe3 serve --restart 8800,8801        exopipe3 serve --stop 8801     (servers of their own: the Jupiter pages)
 
@@ -43,7 +43,9 @@ Inputs (read, never rewritten unless listed under Outputs):
             queue_p3s3_<S>_f{wb,sb}_raw.txt, candidates/ (what the server reads)
   sublst    every Run_SLST<hh>B of --lsts (default all found), parent catalogues, the served Run_SLSTB (journals, figures)
   snapshot  the chain run (--source [HOST:]PATH, default site CHAIN_HOST + serve.SNAPSHOT_SOURCE), the served run (journal)
-  forced    Run_SNAPFORCED_<S><T>_<TAG> under paths.SNAPSHOT_REVIEW_ROOT and its FT-READY log under paths.OPS_ROOT
+  forced    Run_SNAPFORCED_<S><T>_<TAG> under paths.SNAPSHOT_REVIEW_ROOT and its readiness: the exopipe3 forced verify
+            record C_verify_<run> under forced_snapshot.WORK_ROOT, else its FT-READY log under paths.OPS_ROOT; the title and
+            hub text of <TAG> (serve.FORCED_GENERATIONS: gen5, gen6 with LPT)
   all       data_decisions.csv (read now, the serve-time exclusion gate), inspection_greenlit.csv, the hub registry
 Outputs (product classes; content tests run on every write and by `exopipe3 verify <class>`):
   served_queue   sectioned tier queues, queue_p3s3_<S>.txt, queue_p3s3_<S>_multi.txt
