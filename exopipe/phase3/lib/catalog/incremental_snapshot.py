@@ -481,8 +481,9 @@ def _cell_run(ctx, s, cell, W, store):
     if not (tc.get('from_cache') or 0) + (tc.get('tied_now') or 0):
         no_input('%s: no detection of the %d at the per-frame fit step reaches the association pool: nothing tied' % (cell, nat))
     s.out(os.path.join(cdir, 'chain_summary.json'), 'snapshot_tie_summary')
-    if os.path.exists(store):
-        s.out(store, 'csv_table')
+    for p in (store, ctx.S.template_of(store)):                          # the fit store and its template side store
+        if os.path.exists(p):
+            s.out(p, 'csv_table')
     for n in ('tie_%s.csv', 'tie2_%s.csv'):
         p = os.path.join(ctx.tiecache, n % cell)
         if os.path.exists(p):
