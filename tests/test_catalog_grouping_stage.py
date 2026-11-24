@@ -767,8 +767,9 @@ def test_carry_between_window():
            dict(cand_id='I1_05h_2030-01-02T03_46MHz_0002', band='46MHz', lst='05h', date='2030-01-02T03', ra=80.0, dec=30.0,
                 name='J0520+3000a', id='GTI-0000001')]
 
-    def cl(sid, conf, reason=''):
-        return json.dumps(dict(action='classify', scope='source', source_id=sid, judge_confidence=conf, judge_fp_reason=reason))
+    def cl(sid, conf, reason='', note=''):
+        return json.dumps(dict(action='classify', scope='source', source_id=sid, judge_confidence=conf, judge_fp_reason=reason,
+                               **({'judge_note': note} if note else {})))
 
     def rt(sid):
         return json.dumps(dict(action='retract', scope='source', source_id=sid))
@@ -814,6 +815,19 @@ def test_carry_between_window():
     check('F1 (5): an identity judged on the new page is never overridden by the window carry (reported)',
           f == {'J0520+3000a': ('real', '', False)} and c['judged_on_new_page'] == 1
           and rep[-1]['outcome'] == 'not carried: judged on the new page' and ok_[0], (c, f, rep[-1:], ok_))
+    # F1 residual (CUTOVER_READINESS 2026-11-04): a note changed in the window with the verdict unchanged re-carries the
+    # identity (the carried note quotes the new note); the same label sent again with the same note writes nothing
+    c, f, rep, ok_ = carry('c8', [cl('J0520+3000', 'FP', 'leakage', 'first note')],
+                           [cl('J0520+3000', 'FP', 'leakage', 'second note')])
+    n8 = [json.loads(l) for l in open(f'{D}/c8/new/judgements.jsonl')]
+    check('F1 residual: a note changed in the window with the verdict unchanged is carried (the last record quotes it)',
+          c['carried'] == 1 and c['unchanged'] == 0 and len(n8) == 2 and n8[-1]['judge_note'].endswith(
+              'original note: second note') and f == {'J0520+3000a': ('FP', 'leakage', True)} and ok_[0], (c, n8, ok_))
+    c, f, rep, ok_ = carry('c9', [cl('J0520+3000', 'FP', 'leakage', 'same note')],
+                           [cl('J0520+3000', 'FP', 'leakage', 'same note')])
+    n9 = [json.loads(l) for l in open(f'{D}/c9/new/judgements.jsonl')]
+    check('F1 residual: the same verdict and the same note sent again in the window write nothing (unchanged)',
+          c['carried'] == 0 and c['unchanged'] == 1 and len(n9) == 1 and ok_[0], (c, n9, ok_))
     # the review server keys a page's state by (source_id, presentation_id): a judgement made on a re-queue presentation (p2)
     # carries as p1 (production's carry tools: deep_carry_judgements.py:106), and the retract a conflict writes names p1
     p2 = json.dumps(dict(json.loads(cl('J0520+3001', 'real')), presentation_id='p2'))

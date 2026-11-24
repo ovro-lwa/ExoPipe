@@ -71,6 +71,8 @@ import time
 import urllib.parse
 from collections.abc import MutableMapping
 
+from exopipe.phase3.lib.serve import label_identity
+
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 _RUNTIME = os.environ.get('XDG_RUNTIME_DIR') or '/tmp'
 SOCK_DIR = os.path.join(_RUNTIME, 'two_port')          # backends' sockets and logs (default)
@@ -475,7 +477,17 @@ class _FakeServer:
 
 
 def run_request(page, method, path, headers, body=b''):
-    """(status, [(header, value)], body bytes) of the page module's Handler for one request, on a fake socket."""
+    """(status, [(header, value)], body bytes) of the page module's Handler for one request, on a fake socket. Under design B a
+    POST is first read against this build's identities and a served page's forms carry the identity's stable ID
+    (lib/serve/label_identity.py: a label lands on the identity it was made on, or is refused with nothing recorded)."""
+    maps = label_identity.page_maps(page)
+    if method == 'POST' and maps[0]:
+        sent = body
+        body, refused, _what = label_identity.resolve(path, body, maps)
+        if refused is not None:
+            return refused
+        if body is not sent:                     # source_id rewritten: the Handler reads Content-Length bytes
+            headers = {k: v for k, v in (headers or {}).items() if k.lower() != 'content-length'}
     H = page.mod.Handler
     h = H.__new__(H)
     h.server = _FakeServer(page.legacy_port)
@@ -499,6 +511,11 @@ def run_request(page, method, path, headers, body=b''):
     lines = head.decode('iso-8859-1').split('\r\n')
     status = int(lines[0].split()[1])
     hdrs = [tuple(x.split(': ', 1)) for x in lines[1:] if ': ' in x]
+    if maps[0] and method == 'GET' and dict((k.lower(), v) for k, v in hdrs).get('content-type', '').startswith('text/html'):
+        stamped = label_identity.stamp(payload.decode('utf-8'), maps[0]).encode('utf-8')
+        if stamped != payload:
+            payload = stamped
+            hdrs = [(k, str(len(payload)) if k.lower() == 'content-length' else v) for k, v in hdrs]
     return status, hdrs, payload
 
 

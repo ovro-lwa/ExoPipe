@@ -933,7 +933,7 @@ def carry_judgements(journal, old_members, new, out_dir, run_id, queue_name='', 
     append=True (review 2026-11-04, F1): ``lines`` is the FULL old journal and ``since`` the number of its lines the seed carry
     read. Every new identity an old page of the lines after ``since`` reaches is RE-DERIVED from the whole journal - the final
     state of EVERY judged old page reaching it, seed pages included - and compared with what the new journal shows now:
-    one verdict -> a carried classify (unless it already holds exactly that); a disagreement -> a CONFLICT row and, when the
+    one verdict -> a carried classify (unless it already holds exactly that verdict, those old pages and that note); a disagreement -> a CONFLICT row and, when the
     identity holds a carried judgement, a retract (never an override: the outcome does not depend on when a label was made);
     no judged page left (all retracted) -> a retract of its carried judgement. An identity judged directly on the new page (a
     record without carried_from_run) is never overridden ('not carried: judged on the new page'). Returns the counts."""
@@ -1029,8 +1029,12 @@ def carry_judgements(journal, old_members, new, out_dir, run_id, queue_name='', 
                 cnt['retracted'] += 1
             continue
         r = carried_record(name, iid, olds, share, shared)
+        # 'unchanged' compares the note too (F1 residual, CUTOVER_READINESS 2026-11-04: "a changed note with an unchanged
+        # verdict between carry and swap is dropped"): the carried note quotes the old page's note, so a note edited in the
+        # window re-carries the identity
         if now_rec is not None and _verdict(now_rec) == _verdict(r) and \
-                now_rec.get('carried_from_source') == r['carried_from_source']:
+                now_rec.get('carried_from_source') == r['carried_from_source'] and \
+                now_rec.get('judge_note', '') == r.get('judge_note', ''):
             cnt['unchanged'] += 1
             continue
         recs.append(r)

@@ -132,3 +132,5 @@ jobs:
         run: python tests/test_publish_pointer.py
       - name: snapshot forced stage 2 to served pages per generation (V2 with LPT, campaign stage 1, generation, serve text, readiness, per-panel QA block)
         run: python tests/test_photometry_snapshot_stage2.py
+      - name: two-port review server, a label from a page shown before a rebuild lands on its own identity by group_identity_id or is refused (409)
+        run: python tests/test_serve_label_identity.py
