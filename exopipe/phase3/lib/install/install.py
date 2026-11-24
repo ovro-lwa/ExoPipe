@@ -68,6 +68,12 @@ SCREEN_COLS = ['lst', 'scope', 'applied', 'status', 'n_anchors', 'vlssr_med_befo
 # 2026-09-27..10-01 archive replacements). No install until the other chat's frozen copy is in place and its checks passed,
 # as relayed by Gregg: this file holds his words and the time (written by the deep session, CLAUDE.md 3).
 FREEZE_MARKER = '/lustre/gh/main/exopipe_ops/mdewarp_rbf_20261004/SNAPSHOT_FREEZE_CONFIRMED'
+# RELEASE 1 CARDS AT b (v2; CUTOVER_READINESS "INSTALL-CELL HEADER REPAIR + SIBLING CARD GATE": "the v2 install step writes the
+# cards itself"; production repairs the archived cell after this install, membership_rebuild_20261007/install_cell.sh:35-54,
+# DECISION-20261113-DEEP-REBUILD-CHAIN-WRITES-REPAIR-CARDS): the MDWSTAT table path - b writes the Release 1 header-repair cards on
+# the cell's co-adds and its provenance_nights.csv (lib/masters/release1_cards.write_cell) before c publishes them; None = this
+# text's production behaviour (no cards). exopipe3 install sets it from install.RELEASE1_CARDS / install.MDWSTAT_TABLE for the call.
+RELEASE1_MDW_TABLE = None
 MASTER_HELD_18MHZ = 'refuse'   # WAVE2 18 MHz exception: 'keep' keeps, in a master built before the enforcement, a night held only for
 #                                its excluded 18 MHz at G-MEM (steps_common.keep_held_18); production's G-MEM is strict (this text);
 #                                exopipe3 install sets install.MASTER_HELD_18MHZ for the call
@@ -406,6 +412,14 @@ def _finish(cell, gen, cdir, stg, staged, tgt, erows, efail, lst, scope, run, sm
         # b: stamp + exclusion conformance
         C._stamp_all_masters(fd, lst, scope)
         C._refuse_excluded_constituents(fd, lst, scope)
+        # b (v2): the Release 1 cards and provenance_nights.csv, written before the publish so each archive copy equals its
+        # working source (d's md5 audit); RELEASE1_MDW_TABLE None = production (cards repaired on the archive afterwards)
+        if RELEASE1_MDW_TABLE:
+            from exopipe.phase3.lib.masters import release1_cards as R1
+            r1 = R1.write_cell(fd, lst, scope, mdw_table=RELEASE1_MDW_TABLE, provenance=True, name_dir=mdir)
+            if not r1['provenance']:
+                raise RuntimeError(f'{cell}: provenance_nights.csv not written ({" | ".join(r1["lines"])[:300]}) - STOPPED')
+            rec(cell, 'release1-cards', fd, r1['provenance'], md5(r1['provenance']), '', ' | '.join(r1['lines'])[:3000])
         # c: archive quarantine, then publish
         old = [p for p in sorted(glob.glob(f'{mdir}/*')) if os.path.isfile(p)]
         old += [p for p in sorted(glob.glob(f'{arch}/{lst}/*/{run}/{scope}/[IV]/deep/*.fits')) if '_msub' not in os.path.basename(p)]
@@ -541,7 +555,8 @@ def _archive_audit(cell, fd, sd, mdir, arch, run, lst, scope, n):
             nm = None
         if nm:
             by_name[nm if nm.endswith('.fits') else nm + '.fits'] = p
-    for f in ('PB_deep_%s.fits' % scope, 'PB_deep_R075_%s.fits' % scope, 'weights.csv', 'night_image_gate.csv', 'epoch_gate.csv', 'stage2_verdict.csv'):
+    for f in ('PB_deep_%s.fits' % scope, 'PB_deep_R075_%s.fits' % scope, 'weights.csv', 'night_image_gate.csv', 'epoch_gate.csv', 'stage2_verdict.csv',
+              'provenance_nights.csv'):    # v2: the Release 1 provenance table (R-GREGG-20261110-HEADER-REPAIR-SIX-DECISIONS decision 4)
         by_name[f] = f'{fd}/{f}'
     bad = [p for p in now if os.path.basename(p) not in by_name or md5(p) != md5(by_name[os.path.basename(p)])]
     if bad:

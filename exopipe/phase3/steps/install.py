@@ -8,31 +8,43 @@ its enqueue stage emits the per-hour items <LST>_<date> to re-run against the re
     exopipe3 run submit --chain epoch --items @<out>/_records/install/rerun_epochs/<run id>.txt
 
     exopipe3 install --cells 12h_Red --kind mdewarp --out /fast/gh/parity/install --dry-run
-    exopipe3 install --cells 12h_Red --kind mdewarp --stages plan,install,verify --out /fast/gh/parity/install
+    exopipe3 install --cells 12h_Red --kind mdewarp --stages plan,install,verify,vclean,cards --out /fast/gh/parity/install
+    exopipe3 install --cells 12h_Red --stages vclean,cards        (an installed cell: refresh the cleaned V, check the cards)
     exopipe3 install --cells 12h_Red --stages enqueue,cleanup --out /fast/gh/parity/install     (after masters --stages sources)
     exopipe3 install --cells 12h_Red --kind mdewarp --stages recover [--execute]
     exopipe3 install --stages screen-unapplied --table merged_table.csv
 
-Stages (--stages, comma list; default plan,install,verify):
+Stages (--stages, comma list; default plan,install,verify,vclean,cards):
   plan      resolve the generation, the kind and the rebuild root; evaluate every read-only gate; choose the quarantine
             round and check EVERY destination before staging; print the plan (with --dry-run the step stops here)
   install   one transaction - production's phase3_install.install called IN PLACE (exopipe/phase3/lib/install/install.py):
             staging + md5 (a0), epoch images and the epoch gate (a1, EG, G4), exclusion conformance on the staging (G0),
             the working-tree swap with md5-verified working quarantine (a), stamping + conformance (b), archive quarantine
             (same-filesystem rename, inode/size verified) and publish (c), audit (d), the applied screen (e, kind mdewarp).
-            Always preceded by plan. Not separable inside (no --from/--until).
+            With install.RELEASE1_CARDS (ruled) b also writes the Release 1 header-repair cards and provenance_nights.csv
+            (lib/masters/release1_cards) before c publishes them. Always preceded by plan. Not separable inside (no --from/--until).
   verify    the installed cell against every membership and product ruling (membership.verify + verify_products; today
             `python -m exopipe.phase3.membership verify <cell>`, install_cell.sh:23)
+  vclean    refresh the installed cell's cleaned Stokes V pair (install_cell.sh:28-34; FIX-20261113-DEEP-REBUILD-CLEANS-V-BEFORE-
+            FLUX-APPLY): vclean_masters.refresh_vclean_cell twice under the quarantine round '<round>vclean' - a pair not
+            cleaned from the installed V master (VCSRC) is re-cleaned, the old pair quarantined, the new one stamped, carded,
+            archived and audited; gate VCLEAN refuses unless the second call reports CURRENT. Implies verify.
+  cards     the Release 1 header-repair cards of the installed cell (install_cell.sh:35-54): gate CARDS refuses when a
+            sourced card is still to add, an archive copy's header differs from its working file, or provenance_nights.csv
+            differs from the one derived; gate CARD-GATE = the sibling card-key gate (sibling_card_gate.py): every archived
+            FITS of the cell carries every card key its repaired same-named siblings of the band's other LSTs all hold, and
+            MDWSTAT / MDWMED1 agree with install.MDWSTAT_TABLE. Read only. Implies vclean.
   enqueue   hand the cell to the re-search (install_cell.sh:27-42): retire its search markers / policy-skips / parks, assign
             both Stokes (node of the first line of assign_<S>.csv), flow-holder map row, ready.txt; write the request
-            record and the per-hour re-run items. Needs a passing verify record of the cell. With --out the live
+            record and the per-hour re-run items. Needs a record of the cell with V, VCLEAN, CARDS and CARD-GATE passed. With --out the live
             p3s5_state is NOT written: a mirror <out>/p3s5_state seeded from it is.
   cleanup   remove this round's node-local rebuild scratch of the cell (install_cell.sh:44) - only after a passing verify
             record, only node-local paths of this host, only when paths.PRODUCTION_WRITES and no --out
   Exclusive modes: recover (continue an install interrupted mid-way, states R1/R2 - reports only unless --execute),
   epochs-repair (an installed cell whose archive lacks its epoch images), screen-unapplied (applied=0 screen rows for
   measured cells that were not applied, --table).
-  The production sequence install_cell.sh = plan,install,verify -> masters --stages sources -> enqueue,cleanup.
+  The production sequence install_cell.sh = plan,install,verify,vclean,cards -> masters --stages sources -> enqueue,cleanup.
+  A parity run against the 2026-10-13 baseline (parity/production_20261013.cfg) names --stages plan,install,verify.
 
 Inputs (read in place, never written): the generation (--gen; default install.MDEWARP_GEN_FMT for --kind mdewarp,
   install.PROMOTED_GEN_FMT for --kind rebuild) with coadd_final/ (incl. loo/) and subtracted/, and beside it
@@ -63,10 +75,11 @@ Failure modes (exit 2 = refused, the gate named; nothing moves before the last p
   need + install.FREE_FLOOR_GB; STG unfinished staging (use --stages recover); G0-GEN / G0 / b excluded constituent;
   G-DEST a quarantine destination of the named round exists, or (auto) no free round today; a0 staging md5; EG an
   in-master night fails the epoch gate; G4 an epoch fails the epoch content check; V the installed cell violates a
-  ruling; Q held (install_enqueue.HOLD_LIST). A failure AFTER the first move is an error (exit 1) naming
+  ruling; VCLEAN the cleaned V pair not CURRENT after the refresh; CARDS / CARD-GATE the Release 1 cards incomplete or
+  a sibling's card key missing; Q held (install_enqueue.HOLD_LIST). A failure AFTER the first move is an error (exit 1) naming
   `--stages recover` (rebuilt cells: manual repair). Waivable with --waive install.<GATE> --ruling "...": H, G1-EXACT, Q
   only (the other gates run inside phase3_install during the refactor window, or are never waivable: G0, b, a0, SET,
-  AQ, d, e, G-1b, G-DEST). Exit 3 = no cell selected / a report-only recover.
+  AQ, d, e, G-1b, G-DEST, VCLEAN, CARDS, CARD-GATE). Exit 3 = no cell selected / a report-only recover.
 """
 import os
 
@@ -78,9 +91,9 @@ CONFIG = ('install', 'install_enqueue', 'dewarp', 'masters', 'masters_admit')   
 #                                                                  masters_admit: ADMITTED_NIGHTS (D-ADMIT)
 WRITES = True
 
-STAGES = ('plan', 'install', 'verify', 'enqueue', 'cleanup')
+STAGES = ('plan', 'install', 'verify', 'vclean', 'cards', 'enqueue', 'cleanup')
 MODES = ('recover', 'epochs-repair', 'screen-unapplied')
-DEFAULT_STAGES = ('plan', 'install', 'verify')
+DEFAULT_STAGES = ('plan', 'install', 'verify', 'vclean', 'cards')
 
 
 def add_arguments(p):
@@ -129,6 +142,10 @@ def parse_stages(text):
         return modes
     if 'install' in req and 'plan' not in req:
         req.append('plan')                       # the plan always runs first (G-DEST, round, manifest before staging)
+    if 'cards' in req and 'vclean' not in req:
+        req.append('vclean')                     # production's order: verify, cleaned-V refresh, cards (install_cell.sh:25-53)
+    if 'vclean' in req and 'verify' not in req:
+        req.append('verify')
     return [s for s in STAGES if s in req]
 
 

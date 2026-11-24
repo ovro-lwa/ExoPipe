@@ -74,7 +74,8 @@ class install(_Section):
     CELL_TOP = ('residuals_provisional.csv', 'outliers.csv', 'residuals.csv')     # cell directory; phase3_install.py:58; set on PI for the call
     CELL_DIRS = ('flow', 'coadd_provisional')                                     # cell directory; phase3_install.py:59; FINDING-GEN4-FLEET-DID-NOT-SHIP-FLOWS-BACK-RECOVERY-PLANNED (921); set on PI for the call
     ARCHIVE_SKIP_TOKENS = ('_msub',)                      # PI literal; per-night search frames: never quarantined or audited by install; phase3_install.py:393, :515
-    AUDIT_CELL_FILES = ('weights.csv', 'night_image_gate.csv', 'epoch_gate.csv', 'stage2_verdict.csv')  # PI literal; + PB_deep_<s>, PB_deep_R075_<s>; phase3_install.py:526 (= coadd_full_pipeline.py:3197)
+    AUDIT_CELL_FILES = ('weights.csv', 'night_image_gate.csv', 'epoch_gate.csv', 'stage2_verdict.csv',
+                        'provenance_nights.csv')          # PI literal; + PB_deep_<s>, PB_deep_R075_<s>; phase3_install.py:526 (= coadd_full_pipeline.py:3197); provenance_nights.csv: v2 (the Release 1 table, R-GREGG-20261110-HEADER-REPAIR-SIX-DECISIONS decision 4; published by coadd._archive_publish_cell)
     STAGING_DIRNAME = '.install_staging'                  # PI literal; <cell>/.install_staging; phase3_install.py:288
     # ---- quarantine (one pair per round)
     ROUND = 'auto'                                        # deep requirement (b) (DESIGN 8; RESULT-12HRED-INSTALLED-AFTER-STALE-STAGING-20261012, ledger 2283); production: env P3_INSTALL_ROUND default '20261004' (phase3_install.py:53), launchers 20261008b / P3_INSTALL_ROUND_REINSTALL (install_cell.sh:9-11); --round NAME = today's behaviour
@@ -87,6 +88,20 @@ class install(_Section):
     SCREEN_TABLE = 'mdewarp_screens.csv'                  # PI literal; phase3_install.py:137; read by membership.py:255 (DEWARP_ACCEPTED); CORRECTION-11-ACCEPTED-CELLS-NOT-DEWARPED-WAS-WRONG (2022)
     SCREEN_FILE_FMT = '{lst}_{scope}_warp_screen.fits'    # PI literal; phase3_install.py:151
     SCREEN_STATUS_MAXLEN = 120                            # PI literal; characters of the status column; phase3_install.py:185; dewarp_lst.sh:83 (= dewarp.SCREEN_STATUS_MAX_CHARS)
+    # ---- Release 1 header-repair cards (CUTOVER_READINESS "INSTALL-CELL HEADER REPAIR + SIBLING CARD GATE"; production:
+    # membership_rebuild_20261007/install_cell.sh:35-54 runs header_repair_release1.py --classes coadd on the installed cell, then
+    # sibling_card_gate.py, both refusing): True = step b writes the cards (FLUXREF ASTREF MDWSTAT, and P2RUN SCALE_A P1RUN CALBP
+    # of a reference night) and provenance_nights.csv before the publish (lib/masters/release1_cards); the cards stage then
+    # refuses unless every sourced card is present, the archive headers equal the working ones and the sibling card-key gate
+    # passes. False = production of 2026-10-13 (no cards; the parity file)
+    RELEASE1_CARDS = True
+    MDWSTAT_TABLE = '/lustre/gh/main/exopipe_ops/mdewarp_coverage_20261111/mdwstat_for_header_repair.csv'   # the deep chat's MDWSTAT table (header_repair_release1.py:231 --mdw-table, sibling_card_gate.py:27; install_cell.sh:41 "updates mdwstat_for_header_repair.csv BEFORE this step"); read only
+    CARD_GATE_SIBLING_ROOT = None                        # archive root whose Coadd/<run>/<other LSTs>/<band>/ are the gate's repaired siblings; None = paths.PHASE3_ARCHIVE_ROOT (sibling_card_gate.py:26 RUN; also under --out, where the re-rooted archive holds only this cell)
+    # ---- the cleaned Stokes V refresh after the verify (stage vclean; install_cell.sh:28-34, FIX-20261113-DEEP-REBUILD-CLEANS-V-
+    # BEFORE-FLUX-APPLY): vclean_masters.refresh_vclean_cell twice with the quarantine round '<round>vclean'; the second call must
+    # report CURRENT. Its sv2 scratch (removed after the two calls, install_cell.sh:33); under --out <out>/vclean_tmp/<cell>
+    VCLEAN_ROUND_SUFFIX = 'vclean'                       # install_cell.sh:32 (P3_INSTALL_ROUND=${P3_INSTALL_ROUND}vclean)
+    VCLEAN_TMP_FMT = '/fast/gh/main/phase3/rebuild_20261007/vclean_tmp_{cell}'   # install_cell.sh:32-33 ($R/vclean_tmp_$cell); node-local
     # ---- concurrency and I/O
     LANES = 1                                             # installs at a time per output root (lane locks under <out>/_records/install/_locks); install_cell.sh:18-20 (flock); 2 approved by APPROVED-RESUME-SPACE-D6-REVISION (1848), 3 in install_runner.sh:14 (superseded)
     PRODUCTION_LOCK = '/lustre/gh/main/exopipe_ops/membership_rebuild_20261007/.install.lock'   # PROTECTED; the production launchers' one-install-at-a-time lock (install_cell.sh:18-20 `exec 9> $D/.install.lock; flock 9`, shared by chain_cell.sh and dewarp_lst.sh): an install on the PRODUCTION roots also holds it (blocking), so it never overlaps an install_cell.sh install of the same working tree (ledger 1845); never taken under --out. None once no production launcher is left (after cutover)
@@ -100,7 +115,13 @@ class install(_Section):
              'MASTER_HELD_18MHZ': ('CORRECTION-12H-RED-18MHZ-IS-THE-CARVE-OUT-NOT-A-DEEP-ISSUE-20261023',
                                 'R-GREGG-20261017-18MHZ-CARVEOUT-MEANS-RED-FROM-4', 'R-GREGG-20261017-FULL-ALLOWED-WITHOUT-18MHZ',
                                 'IMPL-R-GREGG-20261017-18MHZ-ENFORCE-GOING-FORWARD'),
-             'MASTER_HELD_18MHZ_BUILT_BEFORE': 'IMPL-R-GREGG-20261017-18MHZ-ENFORCE-GOING-FORWARD'}
+             'MASTER_HELD_18MHZ_BUILT_BEFORE': 'IMPL-R-GREGG-20261017-18MHZ-ENFORCE-GOING-FORWARD',
+             'RELEASE1_CARDS': ('R-GREGG-20261107-HEADER-REPAIR-GO', 'R-GREGG-20261110-HEADER-REPAIR-SIX-DECISIONS',
+                                'R-GREGG-20261111-MDWSTAT-CARD', 'DECISION-20261113-DEEP-REBUILD-CHAIN-WRITES-REPAIR-CARDS',
+                                'IMPL-20261113-DEEP-INSTALL-CELL-HEADER-REPAIR-STEP-AND-SIBLING-CARD-GATE'),
+             'MDWSTAT_TABLE': 'R-GREGG-20261111-MDWSTAT-CARD',
+             'VCLEAN_ROUND_SUFFIX': ('R-GREGG-20261110-VCLEAN-REBUILD-ALL-456-V-MOSAICS-IN-FEATHER3',
+                                     'FIX-20261113-DEEP-REBUILD-CLEANS-V-BEFORE-FLUX-APPLY')}
 
 
 class install_enqueue(_Section):

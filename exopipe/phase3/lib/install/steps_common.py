@@ -28,9 +28,11 @@ MOVE_STEPS = ('working-quarantine', 'installed', 'cell-file', 'cell-dir', 'epoch
 # Gates, in evaluation order (spec section 5). WAIVABLE: evaluated by this step only (not re-evaluated inside PI) and not
 # structural; everything evaluated inside PI cannot be waived during the window (PI raises).
 GATES = ('H', 'R', 'G-1', 'G-1b', 'G1', 'G1-EXACT', 'CUB', 'RB', 'RB-FILES', 'CELL', 'G-MEM', 'G-PROD', 'G1b', 'Z',
-         'G2', 'G3', 'STG', 'G0-GEN', 'G-DEST', 'a0', 'EG', 'G4', 'G0', 'SET', 'b', 'AQ', 'd', 'e', 'V', 'Q')
+         'G2', 'G3', 'STG', 'G0-GEN', 'G-DEST', 'a0', 'EG', 'G4', 'G0', 'SET', 'b', 'AQ', 'd', 'e', 'V', 'VCLEAN', 'CARDS',
+         'CARD-GATE', 'Q')
 WAIVABLE = ('H', 'G1-EXACT', 'Q')
-NEVER_WAIVABLE = ('G0', 'G0-GEN', 'b', 'a0', 'SET', 'AQ', 'd', 'e', 'G-1b', 'G-DEST')        # DESIGN 11.6
+# VCLEAN / CARDS / CARD-GATE (stages vclean, cards): production's chain stops on them with no waiver path (install_cell.sh:34, :53)
+NEVER_WAIVABLE = ('G0', 'G0-GEN', 'b', 'a0', 'SET', 'AQ', 'd', 'e', 'G-1b', 'G-DEST', 'VCLEAN', 'CARDS', 'CARD-GATE')  # DESIGN 11.6
 # content tests that are never waivable (digest / set mismatches, excluded constituents)
 NEVER_WAIVABLE_TESTS = ('install_manifest.rows_match_files', 'archive_cell.audit', 'installed_cell.exclusion_conformance',
                         'screen_table.install_cell_row', 'screen_table.rows')
@@ -47,6 +49,7 @@ _PI_GATE_TEXT = (
     ('working quarantine destination exists', 'G-DEST'), ('archive quarantine destination exists', 'G-DEST'),
     ('screen quarantine destination exists', 'G-DEST'), ('working tree after install != the generation', 'SET'),
     ('archive quarantine move of', 'AQ'), ('archive audit', 'd'), ('published screen copy not verified', 'e'),
+    ('provenance_nights.csv not written', 'b'), ('the Release 1 cards', 'b'), ('an existing card is never changed', 'b'),
 )
 
 
@@ -183,8 +186,8 @@ def check_window_consistency(PI):
              'STAGING_SPACE_FACTOR': (1.05, 'phase3_install.py:279'),
              'STAGING_DIRNAME': ('.install_staging', 'phase3_install.py:288'),
              'ARCHIVE_SKIP_TOKENS': (('_msub',), 'phase3_install.py:393'),
-             'AUDIT_CELL_FILES': (('weights.csv', 'night_image_gate.csv', 'epoch_gate.csv', 'stage2_verdict.csv'),
-                                  'phase3_install.py:526'),
+             'AUDIT_CELL_FILES': (('weights.csv', 'night_image_gate.csv', 'epoch_gate.csv', 'stage2_verdict.csv',
+                                   'provenance_nights.csv'), 'phase3_install.py:526 + the v2 provenance table'),
              'SNAPSHOT_MASTERS_LINK_TREE': ('/lustre/pipeline/exopipe/phase3/snapshot_masters', 'phase3_install.py:203'),
              'ARCHIVE_MASTERS_FMT': ('{archive}/Coadd/{run}/{lst}/{scope}', 'phase3_install.py:375'),
              'ARCHIVE_NIGHT_GLOB': ('{archive}/{lst}/*/{run}/{scope}/[IV]/deep/*.fits', 'phase3_install.py:393'),
@@ -218,7 +221,8 @@ def check_waivers(run_obj):
                 raise Refusal(f'--waive {test}: no install gate {g!r} (gates: {", ".join(GATES)})')
             if g in NEVER_WAIVABLE:
                 raise Refusal(f'--waive {test}: gate {g} is never waivable (DESIGN 11.6: excluded constituent, digest or '
-                              f'set mismatch, freeze verification, quarantine collision)')
+                              f'set mismatch, freeze verification, quarantine collision; the cleaned-V source identity and '
+                              f'the Release 1 header cards, install_cell.sh:34, :53)')
             if g not in WAIVABLE:
                 raise Refusal(f'--waive {test}: gate {g} is evaluated inside phase3_install (called in place during the '
                               f'refactor window) and cannot be waived until absorption; waivable: {", ".join(WAIVABLE)}')
@@ -272,6 +276,19 @@ class Gates:
 def pi_module():
     from exopipe.phase3.lib.install import install as PI
     return PI
+
+
+def release1_mdw_table():
+    """The MDWSTAT table path when the install writes the Release 1 header-repair cards (install.RELEASE1_CARDS, ruled True),
+    else None (production of 2026-10-13: no cards). A True value with no readable table refuses: the cards would otherwise be
+    written without MDWSTAT."""
+    C = cfg().install
+    if not C.RELEASE1_CARDS:
+        return None
+    t = C.MDWSTAT_TABLE
+    if not t or not os.path.isfile(t):
+        raise Refusal(f'install.RELEASE1_CARDS is True but install.MDWSTAT_TABLE {t!r} is not a readable file')
+    return t
 
 
 MASTER_HELD_18 = ('keep', 'refuse')     # the values of install.MASTER_HELD_18MHZ (as search_detect.MASTER_HELD_18MHZ's)
@@ -328,7 +345,8 @@ def pi_context(PI, roots, rnd=None):
     C = cfg().install
     g = {'ROOT': roots.working, 'RECORD': roots.record_csv, 'FREEZE_MARKER': C.FREEZE_MARKER,
          'CELL_FILES': tuple(C.CELL_FILES), 'CELL_TOP': tuple(C.CELL_TOP), 'CELL_DIRS': tuple(C.CELL_DIRS),
-         'MASTER_HELD_18MHZ': master_held_18()}             # WAVE2 18 MHz exception at G-MEM (PI's text: production's 'refuse')
+         'MASTER_HELD_18MHZ': master_held_18(),             # WAVE2 18 MHz exception at G-MEM (PI's text: production's 'refuse')
+         'RELEASE1_MDW_TABLE': release1_mdw_table()}        # the Release 1 cards at b (PI's text: None, production)
     if rnd:
         g.update(INSTALL_ROUND=rnd, WQ=roots.wq(rnd), QROOT_NAME=roots.aq_name(rnd))
     env = {'P3_ARCHIVE_RUN': roots.run, 'P3_ARCHIVE_ROOT': roots.archive, 'P3_INSTALL_FREE_FLOOR_GB': repr(float(C.FREE_FLOOR_GB)),
