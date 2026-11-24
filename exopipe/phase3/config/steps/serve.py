@@ -33,7 +33,8 @@ class serve(_Section):
                       'SNAPVIEW_TIERS', 'SNAPVIEW_STOKES', 'SNAPVIEW_PAGE_SUFFIX',   # the combined view's layout: what the page code
                                                                                     # reads (mirrors of snapshot_combined_view.py)
                       'SNAPVIEW_FLOOD_FACTOR', 'SNAPVIEW_FLOOD_MIN', 'SNAPVIEW_ALIGN_FAILED', 'SNAPVIEW_ALIGN_HELD',
-                      'SNAPVIEW_FP_ALIGN', 'SNAPVIEW_FP_FLOOD')   # the view's default hides: the snapshot chat's ruled content
+                      'SNAPVIEW_FP_ALIGN', 'SNAPVIEW_FP_FLOOD',   # the view's default hides: the snapshot chat's ruled content
+                      'RUN_VERSIONS_SUFFIX')                                        # the pointer form (lib/serve/versions.py)
 
     # ---- served runs (production product roots, from config.paths; PROTECTED) ----------------------------------------
     RUN_ROOT_KEY = {'deep': 'TRANSIENTS_ROOT',        # /data07/gh/phase3/transients; p3s3_serve_stokes.sh:9
@@ -48,7 +49,21 @@ class serve(_Section):
     SUBLST_LST_RUN_GLOB = 'Run_SLST[0-9][0-9]B'   # sublst_publish_lst.sh:42; sublst_catalog_publish.sh:96
     SUBLST_BUILD_SUFFIX = '.build'          # sublst_cumulative.sh:15
     SUBLST_PREV_SUFFIX = '.prev_{utc}'      # utc = %Y%m%dT%H%M%S; sublst_cumulative.sh:102
-    SUBLST_PAGE_CONTEXT_WORKERS = 16        # page_context_tenmin.py --workers after the swap (sublst_cumulative.sh:298; the
+    # ---- run versions and the pointer (lib/serve/versions.py; plan/CUTOVER_REMAINING_20261124.md row 8, CUTOVER_READINESS.md:
+    # 333-344): a served run U is a symbolic link to <dir>/<name><RUN_VERSIONS_SUFFIX>/<vid>/<name>, switched by one atomic rename
+    # once the new version is sealed; the sub-LST swap places its build as a new version (production instead renames U to
+    # U.prev_<utc>, sublst_cumulative.sh:102, and keeps every previous build)
+    RUN_VERSIONS_SUFFIX = '.versions'       # PROTECTED: the pointer form readers recognize; a new value orphans every version
+    RUN_VERSIONS_KEEP = 3                   # retention: the newest 3 complete (sealed or adopted) versions are kept, and besides
+                                            # them every version the pointer or another link names, a held one and one being
+                                            # built; the others are retired only by `serve --stages retire` (a dry run first,
+                                            # then --retire-plan)
+    RUN_VERSIONS_MUTABLE = ('judgements*/judgements.jsonl', 'incremental.log', 'page_index/DIRTY',
+                            'PUBLISH_IN_PROGRESS.txt*')   # (fnmatch, relative to the run) the review state appended while a
+                                            # version is served: left out of its manifest (classify_transients.py:3147 journal,
+                                            # common.inc_log, build_detections_index.mark_run_dirty, register.lift_hold)
+    COALESCE_SLOT_DIR = '.coalesce'         # the coalescing builder's slot inside a run's versions root (lib/serve/coalesce.py)
+    SUBLST_PAGE_CONTEXT_WORKERS = 16        # page_context_tenmin.py --workers on the placed version (sublst_cumulative.sh:298; the
                                             # 10-minute panels' run context as page text, Gregg 2026-10-22)
     SUBLST_FILTER_TIER = 'tenmin'           # --tier of bright_source_filter_precompute.py and scintillation_index.py on the new build
                                             # (sublst_cumulative.sh:177-180; R-GREGG-20261112-FILTERS-FINALIZE-BRIGHT-AND-SCINTILLATION)
