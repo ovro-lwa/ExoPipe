@@ -186,8 +186,10 @@ class pages_deep(_Section):
     TESS_INTEGRATION_S = 10.03102041   # s; tess_coverage.py:77 (mirror; = instrument.INTEGRATION_S)
     TESS_ORBIT_AHEAD_DAYS = 14   # days; the orbit table refresh step (lib/pages/tess_orbits.py) is complete only when the table
                                  # reaches now + this (CUTOVER_READINESS, TESS item b; = tess_orbits.AHEAD_DAYS)
-    TESS_REFRESH_IN_READER = True   # True = production: tess_coverage.py refreshes the table beside itself when older than 7 days.
-                                    # False once tess_orbits runs daily: the reader is given --no-refresh and never writes it
+    TESS_REFRESH_IN_READER = False  # False: tess_orbits runs daily as a periodic job of the per-hour driver (config driver.PERIODIC
+                                    # 'tess-orbits'); the reader is given --no-refresh and never writes the table, and a table that
+                                    # does not reach now is recorded no-input. True = production's reader: tess_coverage.py
+                                    # refreshes the table beside itself when older than 7 days
     # ---- stratified judging queue (on request) ----
     STRAT_PER_STRATUM = None     # identities per stratum: REQUIRED (deep_stratified_queue.py:22); --deep-strat-per-stratum
     STRAT_SEED = 20260924        # deep_stratified_queue.py:23
