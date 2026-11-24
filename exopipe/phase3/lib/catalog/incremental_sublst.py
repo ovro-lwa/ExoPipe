@@ -39,6 +39,15 @@ first that does not end done stops the item):
         reaches) and the catalog view of every hour with the index hour_views.json (tier_sublst._build_delta, st_view).
   The grouping, builds and views of one item hold <grouping directory>/.night_items.lock (NightLock): an item of another
   hour waits up to catalog_sublst.NIGHT_LOCK_WAIT_S, then refuses (the grouping unit's own lock would refuse it at once).
+AN ITEM RUN AGAIN (a chain retry; the chain line passes --resume) runs the gate, then, with --resume, resumes at its first
+unit that does not stand: a unit stands when core/record.resume_check passes (its record is done, written from a clean
+tree, its recorded inputs, code and config unchanged, every output passing its content test now - night_grouping_record,
+catalog_view and hour_views_index fail once a later grouping run replaced the table they stand on). The units before it
+are recorded skipped-valid; every unit from it runs again (a night-pass stage through tier_sublst's own --stages gap
+check). The gate records the resume point (meta `resume`). Once the grouping holds the night from this directory, the
+night pass is never run again: the gate REFUSES an item run again without --resume, and one whose night-pass unit does
+not stand (re-running it would change rows the grouping holds; a grouped night is judged again only by the audit pass).
+A night is never appended twice: the grouping run lists the night directory once (I-G4, _group).
 What the chain runs next for the tier: `pages --tier sublst --epochs {item}` (the pages of the night from this directory's
 index, lib/pages/tier_sublst.py) and `serve --tier sublst --epochs {item}` (the cumulative Run_SLSTB with its reuses and the
 one-table gate on the views' certificates, lib/serve/sublst_build.py).
@@ -362,7 +371,35 @@ def _group(run, u, st, out):
     p = os.path.join(out, GROUP_RECORD)
     rec.atomic_write_json(p, doc)
     u.meta['grouping'] = doc
-    u.add_output(p, 'night_grouping_record', test=False)
+    u.add_output(p, 'night_grouping_record')
+
+
+def item_units():
+    """The units of an item after the gate, in order: the night pass's stages (tier_sublst.NIGHT_DEFAULT), `group`, then
+    BUILD_STAGES."""
+    return list(_ts().NIGHT_DEFAULT) + [STAGE_GROUP] + BUILD_STAGES.split(',')
+
+
+def resume_point(run, unit):
+    """Where an item run again with --resume resumes: (the first unit of item_units() whose record does not stand under
+    core/record.resume_check (None: every one stands), why, [(unit stage, why) of the units before it, which stand]). A
+    unit stands when its record is done, written from a clean tree, and its recorded inputs, code, config and outputs'
+    content tests pass now; every unit from the first that does not stand runs again."""
+    stood = []
+    for s in item_units():
+        ok, why = run.resume_check(f'{unit}.{s}', inputs=None, admitted=None)
+        if not ok:
+            return s, why, stood
+        stood.append((s, why))
+    return None, 'every unit of the item stands', stood
+
+
+def _skip(run, unit, stood, **meta):
+    """Record the units that stand as skipped-valid in this run (their done records are kept; deep_chain's form)."""
+    for s, why in stood:
+        x = run.unit(f'{unit}.{s}', stage=s, **meta)
+        x.status, x.reason = 'skipped-valid', f'resume: {why}'
+        print(f'{unit}.{s}: skipped (--resume: {why})', file=sys.stderr)
 
 
 def _plan_lines(st, lst, night, out):
@@ -436,22 +473,48 @@ def run(args, run, epochs):
         u.check('frozen-state.records', True, value=sum(len(v) for v in st['frozen_records'].values()),
                 detail=f'{len(st["scope"])} hour(s) in scope, frozen records of every build and key with rows; all-nights '
                        f'directory of {lst}: {st["frozen_from"]}')
+        # an item run again: the grouping may already hold the night from this directory (an earlier attempt grouped it)
+        grouped = any(L == lst and D == _real(out) for L, D in st['nights_before'])
+        start, why, stood = resume_point(run, unit) if run.resume else (TS.NIGHT_DEFAULT[0], 'no --resume', [])
+        u.meta['resume'] = dict(start=start, why=why, standing=[s for s, _w in stood], grouped=grouped)
+        if grouped and not run.resume:
+            u.refuse(f'the 10-minute grouping {gdir} already holds the night {night} of {lst} from this directory {out} '
+                     f'(an earlier attempt of the item grouped it): run the item with --resume (the chain line does), which '
+                     f'continues at its first unit that does not stand; a night pass run again over a grouped night would '
+                     f'change rows the grouping holds')
+        if grouped and start in TS.NIGHT_DEFAULT:
+            u.refuse(f'--resume: the night pass unit {unit}.{start} does not stand ({why}), but the 10-minute grouping {gdir} '
+                     f'already holds the night {night} of {lst} from this directory: a night pass run again would change '
+                     f'rows the grouping holds. A grouped night is judged again only by the audit pass (ruling 4 of '
+                     f'R-GREGG-20261112-PER-HOUR-STEPS-SIX-RULINGS, not built)')
         p = os.path.join(out, GATE_RECORD)
         rec.atomic_write_json(p, st)
         u.meta['frozen_state'] = dict(frozen_from=st['frozen_from'], grouping_dir=st['grouping_dir'], scope=st['scope'],
                                       nights_before=len(st['nights_before']))
-        u.add_output(p, 'night_frozen_state', test=False)
+        u.add_output(p, 'night_frozen_state')
     if u.status != 'done':
         return None
-    # 2. THE NIGHT PASS, preflight..veto
-    done = _night_pass(run, _night_args(args, lst, night, st['frozen_from'], gdir), unit, None)
-    m = done.get('merge')
-    if m is not None and m.status == 'no-input':
-        print(f'catalog --tier sublst --incremental {lst}_{night}: no row of the night in the search jobs ({m.reason})',
-              file=sys.stderr)
-        return rec.EXIT_NO_INPUT
-    if [s for s in TS.NIGHT_DEFAULT if s not in done or done[s].status != 'done']:
+    meta = dict(tier='sublst', lst=lst, arm=arm, night=night)
+    units = item_units()
+    if start is None:
+        _skip(run, unit, stood, **meta)
+        print(f'catalog --tier sublst --incremental {lst}_{night}: every unit stands (--resume)', file=sys.stderr)
         return None
+    _skip(run, unit, stood, **meta)
+    i0 = units.index(start)
+    # 2. THE NIGHT PASS, preflight..veto (from the resume point)
+    if start in TS.NIGHT_DEFAULT:
+        ran = list(TS.NIGHT_DEFAULT[TS.NIGHT_DEFAULT.index(start):])
+        done = _night_pass(run, _night_args(args, lst, night, st['frozen_from'], gdir,
+                                            None if ran == list(TS.NIGHT_DEFAULT) else ','.join(ran)), unit, None)
+        m = done.get('merge')
+        if m is not None and m.status == 'no-input':
+            print(f'catalog --tier sublst --incremental {lst}_{night}: no row of the night in the search jobs ({m.reason})',
+                  file=sys.stderr)
+            return rec.EXIT_NO_INPUT
+        if [s for s in ran if s not in done or done[s].status != 'done']:
+            return None
+    builds = [s for s in BUILD_STAGES.split(',') if units.index(s) >= i0]
     # 3. THE GROUPING, incremental, with the night, and 4. THE DELTA BUILDS AND THE VIEWS: one item at a time (NightLock)
     try:
         lock = NightLock(gdir, c.NIGHT_LOCK_WAIT_S, f'{lst}_{night}')
@@ -461,11 +524,12 @@ def run(args, run, epochs):
             u.refuse(str(e))
         return None
     try:
-        with run.unit(f'{unit}.{STAGE_GROUP}', tier='sublst', lst=lst, arm=arm, night=night, stage=STAGE_GROUP) as u:
-            _group(run, u, st, out)
-        if u.status != 'done':
-            return None
-        _night_pass(run, _night_args(args, lst, night, st['frozen_from'], gdir, BUILD_STAGES), unit, BUILD_STAGES)
+        if units.index(STAGE_GROUP) >= i0:
+            with run.unit(f'{unit}.{STAGE_GROUP}', tier='sublst', lst=lst, arm=arm, night=night, stage=STAGE_GROUP) as u:
+                _group(run, u, st, out)
+            if u.status != 'done':
+                return None
+        _night_pass(run, _night_args(args, lst, night, st['frozen_from'], gdir, ','.join(builds)), unit, ','.join(builds))
     finally:
         lock.__exit__()
     return None

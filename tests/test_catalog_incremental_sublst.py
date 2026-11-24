@@ -248,7 +248,7 @@ def test_the_gate_refuses_mixed_stokes_a_second_directory_and_production_groupin
 def _run(out, argv, dry=False):
     a = parsed('catalog', argv + ['--out', out])
     from exopipe.phase3.core import cells
-    r = record.Run('catalog', ['exopipe3', 'catalog'] + argv, out, CFG, dry_run=dry)
+    r = record.Run('catalog', ['exopipe3', 'catalog'] + argv, out, CFG, dry_run=dry, resume=a.resume)
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
         rc = INC.run(a, r, cells.expand_epochs(a.epochs))
@@ -353,16 +353,156 @@ def test_a_delta_catalog_is_tested_against_the_selection_its_build_read():
 def test_the_per_hour_chain_runs_the_ten_minute_catalog_pages_and_serve():
     from exopipe.phase3.core import runner
     steps = runner.chain_steps('epoch')
+    cat = ['catalog', '--tier', 'sublst', '--incremental', '--resume', '--epochs', '{item}']   # a retry resumes the item
     ten = [a for a in steps if '--tier' in a and a[a.index('--tier') + 1] == 'sublst']
-    assert ['catalog', '--tier', 'sublst', '--incremental', '--epochs', '{item}'] in ten
+    assert cat in ten, ten
     assert ['pages', '--tier', 'sublst', '--epochs', '{item}'] in ten and ['serve', '--tier', 'sublst', '--epochs', '{item}'] in ten
-    i = steps.index(['catalog', '--tier', 'sublst', '--incremental', '--epochs', '{item}'])
+    i = steps.index(cat)
     assert i < steps.index(['pages', '--tier', 'sublst', '--epochs', '{item}']) \
         < steps.index(['serve', '--tier', 'sublst', '--epochs', '{item}']) < len(steps) - 1
-    for argv in (['catalog', '--tier', 'sublst', '--incremental', '--epochs', f'{LST}_{NIGHT}'],
+    for argv in ([x.replace('{item}', f'{LST}_{NIGHT}') for x in cat],
                  ['pages', '--tier', 'sublst', '--epochs', f'{LST}_{NIGHT}'], ['serve', '--tier', 'sublst', '--epochs',
                                                                               f'{LST}_{NIGHT}']):
         parsed(argv[0], argv[1:])                                             # each line parses
+
+
+def test_every_class_the_item_and_the_night_pass_write_has_a_content_test():
+    """A class without a registered content test crashes the unit that writes it (KeyError in validate.run) and every
+    --resume re-test: the night pass's view crashed so on real data before tests_night.py. Every literal class of an
+    output call in the item and the 10-minute tier modules must resolve."""
+    import re
+    from exopipe.phase3.core import validate
+    pat = re.compile(r"(?:\bs\.out|\.add_output|_add_output)\(\s*[^,()]+(?:\([^()]*\))?[^,()]*,\s*'([a-z0-9_]+)'")
+    missing, seen = [], set()
+    for mod in ('lib/catalog/incremental_sublst.py', 'lib/catalog/tier_sublst.py'):
+        with open(os.path.join(REPO, 'exopipe', 'phase3', mod)) as f:
+            for cls in pat.findall(f.read()):
+                seen.add(cls)
+                try:
+                    validate.tests_for(cls)
+                except KeyError:
+                    missing.append(f'{mod}: {cls}')
+    for cls in ('catalog_view', 'hour_views_index', 'night_frozen_state', 'night_grouping_record'):
+        assert cls in seen, (cls, sorted(seen))
+    assert not missing, missing
+
+
+def _night_records(name):
+    """A night directory with a grouping record of an incremental run that took it, its tables and the run's record."""
+    g, out = tmp(name + '_g'), tmp(name + '_out')
+    F = all_nights(os.path.join(tmp(name + '_F'), 'F'))
+    rp = grouping(g, {LST: F}, nights=[(LST, out)])
+    tables = {S: dict(path=os.path.join(g, f'grouping_{S}', GS.DETECTIONS),
+                      sha1=GS.table_digest(os.path.join(g, f'grouping_{S}', GS.DETECTIONS))) for S in ('I', 'V')}
+    doc = dict(version=1, lst=LST, night=NIGHT, grouping_dir=g, mode='incremental', tables=tables, hours={LST: F},
+               nights=[[LST, out]], record=rp)
+    p = os.path.join(out, INC.GROUP_RECORD)
+    with open(p, 'w') as f:
+        json.dump(doc, f)
+    return g, out, F, p
+
+
+def test_the_night_records_fail_once_a_later_grouping_replaces_their_table():
+    """night_grouping_record and night_frozen_state pass on the state they name and FAIL once a later grouping run changed
+    a table (the record then stands for an earlier grouping: --resume runs the unit again)."""
+    from exopipe.phase3.core import validate
+    g, out, F, p = _night_records('rec')
+    r = validate.run('night_grouping_record', p)
+    assert all(x['passed'] for x in r), r
+    st = gate(g, out)
+    sp = os.path.join(out, INC.GATE_RECORD)
+    with open(sp, 'w') as f:
+        json.dump(st, f)
+    r = validate.run('night_frozen_state', sp)
+    assert all(x['passed'] for x in r), r
+    with open(os.path.join(g, 'grouping_I', GS.DETECTIONS), 'a') as f:      # a later grouping run's table
+        f.write('b,2\n')
+    for cls, path in (('night_grouping_record', p), ('night_frozen_state', sp)):
+        r = validate.run(cls, path)
+        assert not all(x['passed'] for x in r) and 'Stokes I' in ' '.join(x['detail'] for x in r), (cls, r)
+    with open(p) as f:                                                       # a record of another night directory
+        doc = json.load(f)
+    doc['nights'] = [[LST, '/elsewhere']]
+    with open(p, 'w') as f:
+        json.dump(doc, f)
+    assert 'holds this directory 0 time' in ' '.join(x['detail'] for x in validate.run('night_grouping_record', p))
+
+
+def test_a_view_index_and_a_view_root_are_tested_from_their_files():
+    """hour_views_index: an all-nights hour whose root is its all-nights directory passes; a view root that does not stand
+    for the recorded state, a key without a certificate, an index without tables FAIL. catalog_view: a root without its
+    record, or not complete, FAILS."""
+    from exopipe.phase3.core import validate
+    d = tmp('index')
+    F = all_nights(os.path.join(d, 'F'))
+    ix = dict(version=1, lst=LST, night=NIGHT, tags=['noveto'], tables={'I': dict(path='/t', sha1='x', sha256='y')},
+              hours={LST: dict(kind='all-nights', root=F, all_nights=F, state_digest='s',
+                               keys={'noveto_I_sb': dict(kind='all-nights', certificate={'ok': True})})})
+    p = os.path.join(d, DB.INDEX)
+    with open(p, 'w') as f:
+        json.dump(ix, f)
+    assert all(x['passed'] for x in validate.run('hour_views_index', p))
+    ix['hours']['18h'] = dict(kind='view', root=os.path.join(d, 'views', '18h'), state_digest='s',
+                              keys={'noveto_V_sb': dict(kind='delta', certificate=None)})
+    ix['tables'] = {}
+    with open(p, 'w') as f:
+        json.dump(ix, f)
+    why = ' '.join(x['detail'] for x in validate.run('hour_views_index', p))
+    assert 'does not stand' in why and 'without a certificate: noveto_V_sb' in why and 'no grouping table' in why, why
+    root = os.path.join(d, 'views', '17h')
+    os.makedirs(root)
+    assert 'holds no' in ' '.join(x['detail'] for x in validate.run('catalog_view', root))
+    with open(os.path.join(root, DB.ROOT_RECORD), 'w') as f:
+        json.dump({'complete': False}, f)
+    assert 'not complete' in ' '.join(x['detail'] for x in validate.run('catalog_view', root))
+
+
+class _ResumeRun:
+    """A run whose resume_check answers from a table {unit: (ok, why)} (units absent: no record)."""
+
+    def __init__(self, table):
+        self.table, self.units = table, []
+        self.resume = True
+
+    def resume_check(self, unit, inputs=None, admitted=None):
+        return self.table.get(unit, (False, 'no record'))
+
+    def unit(self, name, **meta):
+        u = argparse.Namespace(name=name, meta=meta, status=None, reason=None)
+        self.units.append(u)
+        return u
+
+
+def test_a_retried_item_resumes_at_its_first_unit_that_does_not_stand():
+    """resume_point: the first of the night pass's stages, group, build, buildv, view whose record does not stand; the
+    units before it are recorded skipped-valid. A grouped night is never passed again: without --resume the gate refuses,
+    and with --resume it refuses when a night-pass unit does not stand."""
+    u = f'{LST}_{ARM}'
+    units = INC.item_units()
+    assert units[:len(TS.NIGHT_DEFAULT)] == list(TS.NIGHT_DEFAULT) and units[len(TS.NIGHT_DEFAULT):] == ['group', 'build',
+                                                                                                       'buildv', 'view']
+    stand = {f'{u}.{s}': (True, 'current') for s in units[:units.index('view')]}
+    r = _ResumeRun(stand)
+    start, why, stood = INC.resume_point(r, u)
+    assert start == 'view' and why == 'no record' and [s for s, _ in stood] == units[:-1], (start, why, stood)
+    INC._skip(r, u, stood, lst=LST)
+    assert [x.status for x in r.units] == ['skipped-valid'] * (len(units) - 1)
+    r = _ResumeRun({**stand, f'{u}.view': (True, 'current')})
+    assert INC.resume_point(r, u)[0] is None
+    r = _ResumeRun({**stand, f'{u}.fitpos': (False, 'output changed')})
+    assert INC.resume_point(r, u)[:2] == ('fitpos', 'output changed')
+    # the gate on a night the grouping already holds from this directory
+    g, out, F, _p = _night_records('regate')
+    argv = ['--tier', 'sublst', '--incremental', '--epochs', f'{LST}_{NIGHT}', '--sublst-grouping', g,
+            '--sublst-view-hours', LST]
+    _a, r, rc, txt = _run(out, argv)
+    assert [x.status for x in r.units] == ['refused'] and 'run the item with --resume' in r.units[0].reason, \
+        [(x.name, x.status, x.reason) for x in r.units]
+    assert r.units[0].meta['resume']['grouped'] is True
+    _a, r, rc, txt = _run(out, argv + ['--resume'])
+    assert [x.status for x in r.units] == ['refused'] and 'night pass unit' in r.units[0].reason \
+        and 'audit pass' in r.units[0].reason, [(x.name, x.status, x.reason) for x in r.units]
+    assert r.units[0].meta['resume']['start'] == TS.NIGHT_DEFAULT[0]
 
 
 def test_the_pages_of_the_item_come_from_its_night_directory():

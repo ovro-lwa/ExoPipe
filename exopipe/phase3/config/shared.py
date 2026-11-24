@@ -402,7 +402,7 @@ class runner(_Section):
                   'flow --tier sublst --stages refine-nonmember --epochs {item}',
                   'frames --tier sublst --stages wideband,tree-nonmember --epochs {item}',
                   'search --tier sublst --epochs {item}',
-                  'catalog --tier sublst --incremental --epochs {item}',
+                  'catalog --tier sublst --incremental --resume --epochs {item}',
                   # the rest of the 10-second tier. Its catalog step refuses every night until the tier has an incremental
                   # path (plan/PER_HOUR_GAP_DESIGNS_20261111.md 2.2); without --incremental it was a usage error (exit 1, a
                   # failed item, not a refusal): steps/catalog.py takes --epochs only with it
