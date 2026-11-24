@@ -37,7 +37,7 @@ first that does not end done stops the item):
         Earlier detections keep their identities; only the night's are assigned.
   <LST>_<arm>.build, .buildv, .view   the night pass's delta builds (this hour and every other hour a touched identity
         reaches) and the catalog view of every hour with the index hour_views.json (tier_sublst._build_delta, st_view).
-  The grouping, builds and views of one item hold <grouping directory>/.night_items.lock (NightLock): an item of another
+  The grouping, builds and views of one item hold <grouping directory>/.night_items.lock (night_lock): an item of another
   hour waits up to catalog_sublst.NIGHT_LOCK_WAIT_S, then refuses (the grouping unit's own lock would refuse it at once).
 AN ITEM RUN AGAIN (a chain retry; the chain line passes --resume) runs the gate, then, with --resume, resumes at its first
 unit that does not stand (resume_point): before the grouping holds the night, at the first night-pass stage not done (the
@@ -59,9 +59,9 @@ re-admission question of ruling (1) the design leaves open (a touched identity r
 detection a singles gate removed earlier).
 """
 import argparse
+import contextlib
 import copy
 import csv
-import hashlib
 import json
 import os
 import sys
@@ -70,7 +70,7 @@ STAGE_GATE = 'frozen-state'
 STAGE_GROUP = 'group'
 GATE_RECORD = 'frozen_state.json'        # in the night directory: the frozen state the night stood on
 GROUP_RECORD = 'night_grouping.json'     # in the night directory: the grouping run that took the night
-NIGHT_LOCK = '.night_items.lock'         # in the grouping directory: one item at a time groups, builds and views (NightLock)
+NIGHT_LOCK = '.night_items.lock'         # in the grouping directory: one item at a time groups, builds and views (night_lock)
 BUILD_STAGES = 'build,buildv,view'
 # what writes the frozen state (named in every refusal of the gate)
 FIRST_RUN = ('The frozen state is written by the all-nights 10-minute pass under design B, for every LST hour L: `exopipe3 '
@@ -122,14 +122,6 @@ def default_out(args):
         lst, night = cells.parse_epoch(items[0])
         return night_dir(lst, night, getattr(args, 'sublst_arm', None), cfg)
     return cfg.catalog_sublst.NIGHT_DIR.split('{lst}')[0].format(transients_root=cfg.paths.TRANSIENTS_ROOT).rstrip('/')
-
-
-def _sha1(path):
-    h = hashlib.sha1()
-    with open(path, 'rb') as f:
-        for b in iter(lambda: f.read(1 << 20), b''):
-            h.update(b)
-    return h.hexdigest()
 
 
 def _has_rows(path):
@@ -231,8 +223,8 @@ def frozen_state(lst, night, arm, out, grouping_dir, builds, view_hours=None, cf
                 if not (os.path.isdir(cat) or any(_has_rows(os.path.join(d, sel)) for d in [FH] + appended)):
                     continue                     # as delta_build.key_state 'empty': no row of the key, no catalog, nothing frozen
                 frz = os.path.join(cat, DB.FROZEN_RECORD)
-                if os.path.isfile(frz):
-                    frozen.setdefault(H, {})[f'{tag}_{K}'] = dict(path=frz, sha1=_sha1(frz))
+                if os.path.isfile(frz):              # presence only: each delta build hashes the records it reads
+                    frozen.setdefault(H, {})[f'{tag}_{K}'] = frz
                 else:
                     missing.append(f'{H} {tag} {K}')
     if missing:
@@ -270,53 +262,61 @@ def _night_pass(run, args, unit, stages):
     return {x.name[len(unit) + 1:]: x for x in run.units[n0:] if x.name.startswith(unit + '.')}
 
 
-class NightLock:
-    """An exclusive flock on <grouping directory>/NIGHT_LOCK for the item's grouping run, delta builds and views: a second
-    item polls for up to catalog_sublst.NIGHT_LOCK_WAIT_S seconds, then REFUSES naming the holder. (The grouping unit's own
-    lock refuses a second run at once; without this one, two hours' items would refuse each other's grouping, and an item
-    could build on a grouping another item had changed after its own run.)"""
+def night_lock(gdir, wait_s, what):
+    """The items' lock <grouping directory>/NIGHT_LOCK (grouping_stage._Lock with a wait): a second item polls for up to
+    ``wait_s`` seconds (catalog_sublst.NIGHT_LOCK_WAIT_S), then REFUSES naming the holder. Held while the gate reads the
+    grouping and while the item groups, builds and views (the grouping unit's own state lock refuses a second run at once;
+    without this one, two hours' items would refuse each other, or read a grouping another item is replacing)."""
+    return _gs()._Lock(os.path.join(gdir, NIGHT_LOCK), f'per-hour 10-minute item {what}', wait_s=wait_s)
 
-    def __init__(self, gdir, wait_s, what):
-        self.path, self.wait_s, self.what, self.fd = os.path.join(gdir, NIGHT_LOCK), float(wait_s), what, None
 
-    def __enter__(self):
-        import fcntl
-        import time
-        os.makedirs(os.path.dirname(self.path), exist_ok=True)
-        self.fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o664)
-        t_end = time.time() + max(0.0, self.wait_s)
-        while True:
-            try:
-                fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except (BlockingIOError, PermissionError):
-                if time.time() >= t_end:
-                    try:
-                        holder = os.pread(self.fd, 400, 0).decode('utf-8', 'replace').strip()
-                    except OSError:
-                        holder = ''
-                    os.close(self.fd)
-                    self.fd = None
-                    raise _rec().Refusal(f'{self.what}: another per-hour 10-minute item holds {self.path} ('
-                                         f'{holder or "holder unknown"}) after {self.wait_s:.0f} s of waiting: one item at '
-                                         f'a time groups, builds and views')
-                time.sleep(min(10.0, max(0.1, t_end - time.time())))
-        os.ftruncate(self.fd, 0)
-        os.pwrite(self.fd, f'{self.what}: pid {os.getpid()} host {os.uname()[1]} since '
-                           f'{time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}\n'.encode(), 0)
-        return self
+def night_keys_refusal(st, out, builds):
+    """I-G7 for the night's own rows, checked after the night pass and BEFORE the grouping takes the night (else an item
+    whose night has rows of a key the all-nights build never catalogued would be grouped and then refused by its delta build
+    for good: delta_build.key_state 'no-record'). None, or the reason."""
+    from exopipe.phase3.lib.catalog import delta_build as DB
+    miss = []
+    for K in _ts().SPLIT_KEYS:
+        if not _has_rows(os.path.join(out, DB.SELECTED.format(key=K))):
+            continue
+        for tag in builds:
+            frz = os.path.join(st['frozen_from'], DB.CAT.format(tag=tag, key=K), DB.FROZEN_RECORD)
+            if not os.path.isfile(frz):
+                miss.append(f'{tag} {K}')
+    if miss:
+        return (f'I-G7 the night has rows of key(s) whose all-nights build of {st["lst"]} wrote no {DB.FROZEN_RECORD} in '
+                f'{st["frozen_from"]} ({", ".join(miss)}): its delta builds could not be made, so the grouping does not take '
+                f'the night. {FIRST_RUN}')
+    return None
 
-    def __exit__(self, *a):
-        import fcntl
-        if self.fd is not None:
-            fcntl.flock(self.fd, fcntl.LOCK_UN)
-            os.close(self.fd)
-            self.fd = None
+
+def _keep_last_done(gdir, gu, saved):
+    """After a grouping run that did not end done: move its unit record out of the records the gate reads
+    (<grouping directory>/_records/catalog/failed/) and put back the last done record it overwrote, so the gate and the
+    next item stand on the last done state (grouping_stage leaves the tables and state unchanged on a refusal; a table that
+    changed anyway fails the record's sha1 check and refuses). The run's own summary stays under _records/catalog/_runs/.
+    Returns the path the failed record was moved to, or None."""
+    import time
+    rec = _rec()
+    p = rec.record_path(gdir, 'catalog', gu.name) if gu is not None else None
+    moved = None
+    if p and os.path.isfile(p):
+        d = os.path.join(os.path.dirname(p), 'failed')
+        os.makedirs(d, exist_ok=True)
+        moved = os.path.join(d, f'{os.path.basename(p)[:-5]}.{time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())}.json')
+        os.replace(p, moved)
+    sp, data = saved
+    if not os.path.exists(sp):
+        tmp = f'{sp}.restore.{os.getpid()}'
+        with open(tmp, 'wb') as f:
+            f.write(data)
+        os.replace(tmp, sp)
+    return moved
 
 
 def _group(run, u, st, out):
     """The tier-wide grouping, incremental, with this night's directory appended last; its own run record in the grouping
-    directory. Records the run in out/GROUP_RECORD. Runs under NightLock: the inputs are read again here (another item may
+    directory. Records the run in out/GROUP_RECORD. Runs under night_lock: the inputs are read again here (another item may
     have appended its night since the gate), and the all-nights directories must be the gate's."""
     rec, GS = _rec(), _gs()
     lst, gdir = st['lst'], st['grouping_dir']
@@ -335,6 +335,9 @@ def _group(run, u, st, out):
                  f'run the item again')
     if len(nd) != len(st['nights_before']):
         u.note(f'{len(nd) - len(st["nights_before"])} night director(ies) appended by another item since the gate: kept')
+    why = night_keys_refusal(st, out, st['builds'])
+    if why:
+        u.refuse(why)
     if not any(L == lst and D == _real(out) for L, D in nd):
         nd.append((lst, _real(out)))
     hours = sorted(runs)
@@ -345,6 +348,9 @@ def _group(run, u, st, out):
              '--lsts', gargs.lsts] + [x for H in hours for x in ('--group-lst-dir', f'{H}={runs[H]}')]
             + [x for L, D in nd for x in ('--group-night-dir', f'{L}={D}')])
     u.note(f'grouping run: {" ".join(argv)} (from `{" ".join(run.argv)}`)')
+    _fin, last_p, _r = GS._latest_group_record(gdir, 'I')       # the last done record (the gate stood on it)
+    with open(last_p, 'rb') as f:
+        saved = (last_p, f.read())
     grun = rec.Run('catalog', argv, gdir, run.cfg, dry_run=False, config_sections=run.config_sections)
     grun.cores = getattr(run, 'cores', None)
     try:
@@ -353,8 +359,10 @@ def _group(run, u, st, out):
         summ = grun.write_summary()
     gu = [x for x in grun.units if x.name.endswith('.' + STAGE_GROUP)]
     if not gu or gu[-1].status != 'done':
-        u.refuse(f'the incremental 10-minute grouping run with the night ({summ}) ended '
-                 f'{gu[-1].status if gu else "without a unit"}: {(gu[-1].reason if gu else "")[:600]}')
+        moved = _keep_last_done(gdir, gu[-1] if gu else None, saved)
+        u.refuse(f'the incremental 10-minute grouping run with the night ({summ}; its unit record moved to {moved}) ended '
+                 f'{gu[-1].status if gu else "without a unit"}: {(gu[-1].reason if gu else "")[:600]}. The grouping stands on '
+                 f'its last done run ({last_p})')
     tables = {}
     for S in ('I', 'V'):
         try:
@@ -389,8 +397,9 @@ def resume_point(run, unit, out, grouped):
       does (tier_sublst.check_from, which also restores the files later stages rewrite in place, master_catalog.csv among
       them: a stage's recorded input changes by design, so core/record.resume_check cannot judge these stages). Once the
       grouping holds the night from this directory (``grouped``), the night pass is never judged again: its stages must
-      all be done (else the item REFUSES) and stand for the rows the grouping took.
-    - group, build, buildv, view stand when core/record.resume_check passes (record done, clean tree, recorded inputs,
+      all be done (else the item REFUSES) and stand for the rows the grouping took, and `group` stands too (the tier-wide
+      grouping is never run again for no new night).
+    - build, buildv, view stand when core/record.resume_check passes (record done, clean tree, recorded inputs,
       code and config unchanged, outputs passing their content tests now: a later grouping run fails them)."""
     rec = _rec()
     stood = []
@@ -405,9 +414,10 @@ def resume_point(run, unit, out, grouped):
             return s, f'{unit}.{s} is {st or "unrecorded"}', stood
         stood.append((s, 'the grouping holds the night from this directory: the night pass is not run again' if grouped
                       else 'record done (the next stage\'s --stages gap check vouches for its outputs)'))
-    for s in [STAGE_GROUP] + BUILD_STAGES.split(','):
-        if s == STAGE_GROUP and not grouped:
-            return s, 'the grouping does not hold the night yet', stood
+    if not grouped:
+        return STAGE_GROUP, 'the grouping does not hold the night yet', stood
+    stood.append((STAGE_GROUP, 'the grouping holds the night from this directory: never grouped again for no new night'))
+    for s in BUILD_STAGES.split(','):
         ok, why = run.resume_check(f'{unit}.{s}', inputs=None, admitted=None)
         if not ok:
             return s, why, stood
@@ -481,16 +491,17 @@ def run(args, run, epochs):
     os.makedirs(out, exist_ok=True)
     # 1. THE GATE: the frozen state must exist (refuses), and the night must not be in it already (no-input)
     with run.unit(f'{unit}.{STAGE_GATE}', tier='sublst', lst=lst, arm=arm, night=night, stage=STAGE_GATE) as u:
-        st = frozen_state(lst, night, arm, out, gdir, builds, view_hours, cfg)
+        try:                                      # read under the items' lock: never while another item's grouping runs
+            with night_lock(gdir, c.NIGHT_LOCK_WAIT_S, f'{lst}_{night} (gate)'):
+                st = frozen_state(lst, night, arm, out, gdir, builds, view_hours, cfg)
+        except GS.StageRefusal as e:
+            u.refuse(f'the gate could not read the grouping: {e}')
         for S, g in st['grouping'].items():
             u.add_input(g['record'])
             u.add_input(g['table'])
         u.add_input(st['conform']['record'])
         u.add_input(st['conform']['noise'])
         u.add_input(st['conform']['evidence'])
-        for H, keys in st['frozen_records'].items():
-            for k, v in keys.items():
-                u.add_input(v['path'])
         u.check('frozen-state.records', True, value=sum(len(v) for v in st['frozen_records'].values()),
                 detail=f'{len(st["scope"])} hour(s) in scope, frozen records of every build and key with rows; all-nights '
                        f'directory of {lst}: {st["frozen_from"]}')
@@ -531,22 +542,20 @@ def run(args, run, epochs):
             return rec.EXIT_NO_INPUT
         if [s for s in ran if s not in done or done[s].status != 'done']:
             return None
-    builds = [s for s in BUILD_STAGES.split(',') if units.index(s) >= i0]
-    # 3. THE GROUPING, incremental, with the night, and 4. THE DELTA BUILDS AND THE VIEWS: one item at a time (NightLock)
-    try:
-        lock = NightLock(gdir, c.NIGHT_LOCK_WAIT_S, f'{lst}_{night}')
-        lock.__enter__()
-    except rec.Refusal as e:
-        with run.unit(f'{unit}.{STAGE_GROUP}', tier='sublst', lst=lst, arm=arm, night=night, stage=STAGE_GROUP) as u:
-            u.refuse(str(e))
-        return None
-    try:
-        if units.index(STAGE_GROUP) >= i0:
+    bstages = [s for s in BUILD_STAGES.split(',') if units.index(s) >= i0]
+    first = STAGE_GROUP if units.index(STAGE_GROUP) >= i0 else bstages[0]
+    # 3. THE GROUPING, incremental, with the night, and 4. THE DELTA BUILDS AND THE VIEWS: one item at a time (night_lock)
+    with contextlib.ExitStack() as held:
+        try:
+            held.enter_context(night_lock(gdir, c.NIGHT_LOCK_WAIT_S, f'{lst}_{night}'))
+        except GS.StageRefusal as e:              # on the first unit that would run: a standing group record is kept
+            with run.unit(f'{unit}.{first}', tier='sublst', lst=lst, arm=arm, night=night, stage=first) as u:
+                u.refuse(str(e))
+            return None
+        if first == STAGE_GROUP:
             with run.unit(f'{unit}.{STAGE_GROUP}', tier='sublst', lst=lst, arm=arm, night=night, stage=STAGE_GROUP) as u:
                 _group(run, u, st, out)
             if u.status != 'done':
                 return None
-        _night_pass(run, _night_args(args, lst, night, st['frozen_from'], gdir, ','.join(builds)), unit, ','.join(builds))
-    finally:
-        lock.__exit__()
+        _night_pass(run, _night_args(args, lst, night, st['frozen_from'], gdir, ','.join(bstages)), unit, ','.join(bstages))
     return None

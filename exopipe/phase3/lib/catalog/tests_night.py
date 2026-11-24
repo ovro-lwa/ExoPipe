@@ -7,11 +7,12 @@ UnitRecord.add_output when the stage writes the product, and again by --resume (
   night_frozen_state    the item's gate record <night directory>/frozen_state.json (incremental_sublst.frozen_state)
   night_grouping_record the item's grouping record <night directory>/night_grouping.json (incremental_sublst._group)
 
-Each test reads the files again; none trusts the writer's own lists. A test of a record whose inputs have since changed
-(a later night's grouping run replaces the grouping table) FAILS and says so: the record stands for an earlier state.
+Each test reads the files again; none trusts the writer's own lists. A view and the index FAIL once a later grouping run
+replaced the table they were made under (they stand for an earlier grouping; --resume builds and views again). The item's
+two records are records of what the gate saw and what the grouping took: they are tested for their own claims, never
+against the grouping table's present bytes (a later night's run replaces it by design).
 """
 import glob
-import hashlib
 import json
 import os
 
@@ -21,22 +22,6 @@ from exopipe.phase3.core.validate import content_test
 def _json(p):
     with open(p) as f:
         return json.load(f)
-
-
-def _sha1(p):
-    h = hashlib.sha1()
-    with open(p, 'rb') as f:
-        for b in iter(lambda: f.read(1 << 20), b''):
-            h.update(b)
-    return h.hexdigest()
-
-
-def _sha256(p):
-    h = hashlib.sha256()
-    with open(p, 'rb') as f:
-        for b in iter(lambda: f.read(1 << 20), b''):
-            h.update(b)
-    return h.hexdigest()
 
 
 @content_test('catalog_view')
@@ -90,7 +75,7 @@ def catalog_view_root(path, **ctx):
     if not ok:
         msgs.append(f'conformance read: {why}')
     tp, want = os.path.join(path, DB.TIE), (rec.get('tie') or {}).get('sha256')
-    if (want is None) != (not os.path.exists(tp)) or (want and want != _sha256(tp)):
+    if (want is None) != (not os.path.exists(tp)) or (want and want != DB._sha256(tp)):
         msgs.append(f'{DB.TIE} is not the table the root recorded')
     for tag in rec.get('tags') or []:
         if glob.glob(os.path.join(path, DB.CAT.format(tag=tag, key='*'), '*_sources_survivors.csv')):
@@ -142,10 +127,11 @@ def hour_views_index(path, **ctx):
 
 @content_test('night_frozen_state')
 def night_frozen_state(path, **ctx):
-    """The per-hour item's gate record: it names the hour, the night, the all-nights directory (which holds the image
-    table) and both Stokes' grouping runs; every file it fingerprints is unchanged (the grouping tables by sha1, the
-    builder's frozen records by sha1, the conformance records as gate I-G6 checks them: tier_sublst.frozen_records_refusal
-    against the all-nights directory's own conformance record), so the night was judged by the state the record names."""
+    """The per-hour item's gate record, tested for its own claims: it names the hour, the arm, the night, the all-nights
+    directory (which holds the image table) and the done grouping run of each of Stokes I and V with its table and sha1; the
+    night's hour is in scope; every builder's frozen record it found is still there (the all-nights build's, never
+    rewritten); and gate I-G6 holds again (tier_sublst.frozen_records_refusal: the conformance records the night was judged
+    by, as the all-nights directory's own conformance record lists them)."""
     try:
         st = _json(path)
     except (OSError, ValueError) as e:
@@ -159,18 +145,18 @@ def night_frozen_state(path, **ctx):
     if sorted(st['grouping']) != ['I', 'V']:
         msgs.append(f'grouping runs of {sorted(st["grouping"])}, not I and V')
     for S, g in sorted(st['grouping'].items()):
-        if not (os.path.isfile(g.get('table') or '') and _sha1(g['table']) == g.get('sha1')):
-            msgs.append(f'the Stokes {S} grouping table {g.get("table")} changed since the gate (a later grouping run)')
+        if not all(g.get(k) for k in ('record', 'table', 'sha1', 'finished')):
+            msgs.append(f'the Stokes {S} grouping run is not named with its record, table, sha1 and finish time')
     if st['lst'] not in st['scope']:
         msgs.append(f'the night\'s own hour {st["lst"]} is not in scope')
     if not os.path.isfile(os.path.join(st['frozen_from'], 'v_deep_images.csv')):
         msgs.append(f'{st["frozen_from"]} holds no v_deep_images.csv')
     n = 0
     for H, keys in sorted((st.get('frozen_records') or {}).items()):
-        for k, v in sorted(keys.items()):
+        for k, fp in sorted(keys.items()):
             n += 1
-            if not (os.path.isfile(v['path']) and _sha1(v['path']) == v['sha1']):
-                msgs.append(f'{H} {k}: the frozen record {v["path"]} changed or is gone')
+            if not os.path.isfile(fp):
+                msgs.append(f'{H} {k}: the frozen record {fp} is gone')
     c = st['conform']
     paths = [c.get('noise'), c.get('evidence')]
     if not all(paths):
@@ -181,15 +167,15 @@ def night_frozen_state(path, **ctx):
         if why:
             msgs.append(f'the conformance records the night is judged by: {why}')
     return (not msgs, n, '; '.join(msgs) if msgs else
-            f'{st["lst"]} {st["night"]}: frozen from {st["frozen_from"]}; {n} frozen builder record(s) and both grouping tables '
-            f'unchanged')
+            f'{st["lst"]} {st["night"]}: frozen from {st["frozen_from"]}; {n} frozen builder record(s) present; both '
+            f'grouping runs named; I-G6 holds')
 
 
 @content_test('night_grouping_record')
 def night_grouping_record(path, **ctx):
-    """The per-hour item's grouping record: an incremental run whose night list holds this night directory (the record's
-    own directory) once; both Stokes' tables exist with the recorded sha1 (a later night's run replaces them: the record
-    then stands for an earlier grouping and fails); the run's own record exists."""
+    """The per-hour item's grouping record, tested for its own claims: an incremental run whose night list holds this night
+    directory (the record's own directory) once; both Stokes' tables named with their sha1; the run's record named (a later
+    run of the same unit name rewrites that file, so its present content is not this record's claim)."""
     try:
         g = _json(path)
     except (OSError, ValueError) as e:
@@ -205,11 +191,9 @@ def night_grouping_record(path, **ctx):
     if sorted(tables) != ['I', 'V']:
         msgs.append(f'tables of {sorted(tables)}, not I and V')
     for S, t in sorted(tables.items()):
-        if not os.path.isfile(t.get('path') or ''):
-            msgs.append(f'the Stokes {S} table {t.get("path")} is gone')
-        elif _sha1(t['path']) != t.get('sha1'):
-            msgs.append(f'the Stokes {S} table {t["path"]} is no longer the one this run wrote (a later grouping run)')
-    if not os.path.isfile(g.get('record') or ''):
-        msgs.append(f'the grouping run\'s record {g.get("record")} is gone')
+        if not (t.get('path') and t.get('sha1')):
+            msgs.append(f'the Stokes {S} table is not named with its sha1')
+    if not g.get('record'):
+        msgs.append('the grouping run\'s record is not named')
     return (not msgs, len(g.get('nights') or []), '; '.join(msgs) if msgs else
-            f'incremental grouping with {len(g.get("nights") or [])} night director(ies), this one once; tables unchanged')
+            f'incremental grouping with {len(g.get("nights") or [])} night director(ies), this one once; both tables named')

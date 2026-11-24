@@ -287,10 +287,10 @@ def test_the_item_refuses_before_any_unit_and_records_the_gate():
 
 def test_the_night_lock_waits_then_refuses():
     g = tmp('lock')
-    with INC.NightLock(g, 0, 'first'):
-        msg = raises(record.Refusal, INC.NightLock(g, 0.2, 'second').__enter__)
-        assert 'first: pid' in msg and 'after 0 s' in msg, msg
-    with INC.NightLock(g, 0, 'third'):                                       # released: taken again at once
+    with INC.night_lock(g, 0, 'first'):                                      # grouping_stage._Lock with a wait
+        msg = raises(GS.StageRefusal, INC.night_lock(g, 0.2, 'second').__enter__)
+        assert 'held by another grouping run (pid' in msg and 'after 0 s of waiting' in msg, msg
+    with INC.night_lock(g, 0, 'third'):                                       # released: taken again at once
         pass
 
 
@@ -402,30 +402,64 @@ def _night_records(name):
     return g, out, F, p
 
 
-def test_the_night_records_fail_once_a_later_grouping_replaces_their_table():
-    """night_grouping_record and night_frozen_state pass on the state they name and FAIL once a later grouping run changed
-    a table (the record then stands for an earlier grouping: --resume runs the unit again)."""
+def test_the_night_records_are_tested_for_their_own_claims():
+    """night_grouping_record and night_frozen_state are records of what the grouping took and what the gate saw: they still
+    pass once a later grouping run replaced the table (review of PR 161, finding 7), and FAIL when their own claims break (a
+    night list without this directory, a frozen record gone)."""
     from exopipe.phase3.core import validate
     g, out, F, p = _night_records('rec')
-    r = validate.run('night_grouping_record', p)
-    assert all(x['passed'] for x in r), r
     st = gate(g, out)
     sp = os.path.join(out, INC.GATE_RECORD)
     with open(sp, 'w') as f:
         json.dump(st, f)
-    r = validate.run('night_frozen_state', sp)
-    assert all(x['passed'] for x in r), r
     with open(os.path.join(g, 'grouping_I', GS.DETECTIONS), 'a') as f:      # a later grouping run's table
         f.write('b,2\n')
     for cls, path in (('night_grouping_record', p), ('night_frozen_state', sp)):
         r = validate.run(cls, path)
-        assert not all(x['passed'] for x in r) and 'Stokes I' in ' '.join(x['detail'] for x in r), (cls, r)
+        assert all(x['passed'] for x in r), (cls, r)
+    frz = st['frozen_records'][LST]['noveto_V_sb']
+    os.remove(frz)
+    assert 'is gone' in ' '.join(x['detail'] for x in validate.run('night_frozen_state', sp))
     with open(p) as f:                                                       # a record of another night directory
         doc = json.load(f)
     doc['nights'] = [[LST, '/elsewhere']]
     with open(p, 'w') as f:
         json.dump(doc, f)
     assert 'holds this directory 0 time' in ' '.join(x['detail'] for x in validate.run('night_grouping_record', p))
+
+
+def test_the_night_keys_are_checked_before_the_grouping_takes_the_night():
+    """I-G7 for the night's own rows (finding 6): a key with rows in the night whose all-nights build wrote no frozen record
+    refuses BEFORE the grouping (else the delta build would refuse a grouped night for good)."""
+    out = tmp('keys_out')
+    F = all_nights(os.path.join(tmp('keys_F'), 'F'), keys=('V_sb',))
+    st = dict(lst=LST, frozen_from=F)
+    wcsv(os.path.join(out, DB.SELECTED.format(key='V_sb')), ['det'], [['a']])
+    assert INC.night_keys_refusal(st, out, ('noveto', 'veto')) is None
+    wcsv(os.path.join(out, DB.SELECTED.format(key='I_wb')), ['det'], [['b']])
+    why = INC.night_keys_refusal(st, out, ('noveto', 'veto'))
+    assert why.startswith('I-G7') and 'noveto I_wb' in why and 'veto I_wb' in why and INC.FIRST_RUN in why, why
+
+
+def test_a_failed_grouping_run_leaves_the_last_done_state_standing():
+    """Finding 3: a grouping run that did not end done has its unit record moved to _records/catalog/failed/, and the last
+    done record it overwrote is put back, so the gate and the next item stand on it (grouping_stage leaves the tables and
+    state unchanged on a refusal)."""
+    g = tmp('failed_g')
+    F = all_nights(os.path.join(tmp('failed_F'), 'F'))
+    rp = grouping(g, {LST: F})
+    with open(rp, 'rb') as f:
+        saved = (rp, f.read())
+    with open(rp, 'w') as f:                                                 # the refused run's record, same unit name
+        json.dump({'unit': 'Run_SLSTB.group', 'status': 'refused', 'finished': '2026-11-25T00:00:00Z',
+                   'meta': {'stage': GS.STAGE, 'stokes': ['I', 'V']}}, f)
+    raises(GS.StageRefusal, GS.recorded_inputs, g, 'I')                      # the tier would refuse everywhere
+    moved = INC._keep_last_done(g, argparse.Namespace(name='Run_SLSTB.group'), saved)
+    assert os.path.dirname(moved) == os.path.join(os.path.dirname(rp), 'failed')
+    with open(moved) as f:
+        assert json.load(f)['status'] == 'refused'
+    runs, _n = GS.recorded_inputs(g, 'I')
+    assert runs == {LST: F}, runs
 
 
 def test_a_view_index_and_a_view_root_are_tested_from_their_files():
@@ -499,7 +533,7 @@ def test_a_retried_item_resumes_at_its_first_unit_that_does_not_stand():
     assert start == nd[3] and [s for s, _ in stood] == nd[:3], (start, why, stood)
     _stage_records(out, u, nd)
     assert INC.resume_point(r, u, out, False)[:2] == ('group', 'the grouping does not hold the night yet')
-    stand = {f'{u}.{s}': (True, 'current') for s in ('group', 'build', 'buildv')}
+    stand = {f'{u}.{s}': (True, 'current') for s in ('build', 'buildv')}
     r = _ResumeRun(stand)                                                    # grouped: resume_check from the grouping on
     start, why, stood = INC.resume_point(r, u, out, True)
     assert start == 'view' and why == 'no record' and [s for s, _ in stood] == units[:-1], (start, why, stood)
@@ -507,8 +541,10 @@ def test_a_retried_item_resumes_at_its_first_unit_that_does_not_stand():
     INC._skip(r, u, stood, lst=LST)
     assert [x.status for x in r.units] == ['skipped-valid'] * (len(units) - 1)
     assert INC.resume_point(_ResumeRun({**stand, f'{u}.view': (True, 'current')}), u, out, True)[0] is None
-    assert INC.resume_point(_ResumeRun({f'{u}.group': (False, 'output changed')}), u, out, True)[:2] == ('group',
-                                                                                                          'output changed')
+    # finding 4: a grouped night's group stands whatever resume_check would say (never grouped again for no new night)
+    start, why, stood = INC.resume_point(_ResumeRun({f'{u}.group': (False, 'output changed')}), u, out, True)
+    assert start == 'build' and ('group', 'the grouping holds the night from this directory: never grouped again for no new '
+                                          'night') in stood, (start, why, stood)
     _stage_records(out, u, nd[5:6], status='refused')
     msg = raises(record.Refusal, INC.resume_point, _ResumeRun(stand), u, out, True)
     assert f'{u}.{nd[5]} is refused' in msg, msg
@@ -522,6 +558,24 @@ def test_a_retried_item_resumes_at_its_first_unit_that_does_not_stand():
     _a, r, rc, txt = _run(out, argv + ['--resume'])
     assert [x.status for x in r.units] == ['refused'] and f'{u}.{nd[0]} is unrecorded' in r.units[0].reason, \
         [(x.name, x.status, x.reason) for x in r.units]
+    # finding 5: the items' lock times out after the gate; the refusal is the first unit that would run (build), and the
+    # done group record of the night directory is kept
+    _stage_records(out, u, nd + ['group'])
+
+    class _Held:
+        def __enter__(self):
+            raise GS.StageRefusal('held by another item after 0 s of waiting')
+
+        def __exit__(self, *a):
+            return False
+
+    def fake(gdir, wait_s, what):
+        return contextlib.nullcontext() if '(gate)' in what else _Held()
+    with Patch((INC, 'night_lock', fake)):
+        _a, r, rc, txt = _run(out, argv + ['--resume'])
+    st = [(x.name.split('.')[-1], x.status) for x in r.units]
+    assert st[0] == ('frozen-state', 'done') and st[-1] == ('build', 'refused') and ('group', 'skipped-valid') in st, st
+    assert record.load_record(out, 'catalog', f'{u}.group')['status'] == 'done'
 
 
 def test_the_pages_of_the_item_come_from_its_night_directory():

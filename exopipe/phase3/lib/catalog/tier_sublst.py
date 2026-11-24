@@ -734,7 +734,10 @@ class Ctx:
             self.coll = os.path.join(side, f'collect_{self.sfx}')
             self.state = os.path.join(side, f'state_{self.sfx}')
             self.cmp_new = os.path.join(side, f'compare_{self.lst}', f'new_{self.arm}')
-            self.lock = os.path.join(side, 'sublst_heavy.lock')
+            # a night pass under a production root (the per-hour chain) shares the node's heavy-stage lock with the
+            # production LST-wide passes (review of PR 161, finding 1); any other non-production run keeps its own
+            self.lock = (os.path.join(os.path.dirname(c.CAT_ROOT), 'sublst_heavy.lock')
+                         if cfg.production_root_of(self.U) is not None else os.path.join(side, 'sublst_heavy.lock'))
             self.scratch = os.path.join(arg(args, 'work', default=side), f'catalog_sublst_{self.unit}_scratch')
             self.chain_log = os.path.join(side, f'sublst_catalog_chain_{self.sfx}.log')
             self.pcheck_txt = os.path.join(side, f'sublst_parentcheck_{self.lst}.txt')

@@ -270,27 +270,36 @@ def _utc():
 
 
 class _Lock:
-    """An exclusive, NON-blocking flock on ``path`` held for a with-block: a second holder REFUSES at once (StageRefusal,
-    naming the holder written into the file) - two grouping runs never share a state (review 2026-11-04, F2)."""
+    """An exclusive flock on ``path`` held for a with-block: a second holder REFUSES (StageRefusal, naming the holder written
+    into the file) - two grouping runs never share a state (review 2026-11-04, F2). ``wait_s`` > 0: poll for up to that many
+    seconds first (the per-hour 10-minute items, lib/catalog/incremental_sublst.night_lock); default 0, refuse at once."""
 
-    def __init__(self, path, what):
-        self.path, self.what, self.fd = path, what, None
+    def __init__(self, path, what, wait_s=0):
+        self.path, self.what, self.fd, self.wait_s = path, what, None, float(wait_s or 0)
 
     def __enter__(self):
         import fcntl
+        import time
         os.makedirs(os.path.dirname(self.path) or '.', exist_ok=True)
         self.fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o664)
-        try:
-            fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except (BlockingIOError, PermissionError):
+        t_end = time.time() + max(0.0, self.wait_s)
+        while True:
             try:
-                holder = os.pread(self.fd, 400, 0).decode('utf-8', 'replace').strip()
-            except OSError:
-                holder = '?'
-            os.close(self.fd)
-            self.fd = None
-            raise StageRefusal(f'{self.what}: the lock {self.path} is held by another grouping run ({holder or "holder unknown"}) - '
-                               f'two runs never group one state at once - REFUSING') from None
+                fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except (BlockingIOError, PermissionError):
+                if time.time() < t_end:
+                    time.sleep(min(10.0, max(0.1, t_end - time.time())))
+                    continue
+                try:
+                    holder = os.pread(self.fd, 400, 0).decode('utf-8', 'replace').strip()
+                except OSError:
+                    holder = '?'
+                os.close(self.fd)
+                self.fd = None
+                raise StageRefusal(f'{self.what}: the lock {self.path} is held by another grouping run ({holder or "holder unknown"})'
+                                   + (f' after {self.wait_s:.0f} s of waiting' if self.wait_s else '')
+                                   + ' - two runs never group one state at once - REFUSING') from None
         os.ftruncate(self.fd, 0)
         os.pwrite(self.fd, f'pid {os.getpid()} host {os.uname()[1]} since {_utc()}\n'.encode(), 0)
         return self
