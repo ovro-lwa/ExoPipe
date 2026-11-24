@@ -60,7 +60,9 @@ this host a record is alive while its pid runs with the same start time; on anot
 (written before leases, or unreadable) counts as alive - it is never retired or moved back automatically. hold(), a placed or
 begun version's BUILDING.json and the coalescing builder renew their lease in this process (a renewer thread, every quarter
 lease: the new record written and fsynced outside the renewer's lock, only its rename under it) until they end, so a reader
-or builder on another node is never taken for gone while it runs, and a dead one is not kept for ever.
+or builder on another node is never taken for gone while it runs, and a dead one is not kept for ever. renew_stop(path) returns
+only after a renewal of that path in flight has ended (its temporary file removed; the caller then removes or moves the
+directory), waiting for it outside the lock: a slow fsync delays only the stop of its own path.
 
 OWED CATCH-UP. A switch is followed by the catch-up of the journal lines written on the old version (sublst_build). If that
 fails after the switch, owe_catchup() records it (R/CATCHUP_OWED.json: the old and new versions, the marks); until
@@ -166,16 +168,22 @@ def alive(who):
 
 # ---- lease renewal ----------------------------------------------------------------------------------------------------
 _RENEW = {}                        # path of a holder/builder JSON -> stop test (callable -> True when the lease may end)
-_RENEW_LOCK = threading.Lock()     # held while a renewed lease file is renamed into place: renew_stop() returns only after it
+_RENEW_LOCK = threading.Lock()     # held while a renewed lease file is renamed into place (never during its write or fsync)
 _RENEWER = [None]
 _RENEW_WAKE = threading.Event()   # set by renew(): a new lease is renewed on the period of now, not of the last sleep
+_INFLIGHT = {}                     # path -> Event set when the renewal of it in progress has ended (renew_stop waits for it)
 
 
 def _renew_one(path, done):
     """One renewal of ``path``: read, written to a temporary file beside it and fsynced OUTSIDE _RENEW_LOCK (a slow file
     system never blocks renew_stop), renamed over ``path`` under the lock only while ``path`` is still renewed with this
-    stop test (after renew_stop() the file is never rewritten)."""
+    stop test (after renew_stop() the file is never rewritten). While it runs it is in _INFLIGHT, so renew_stop(path) waits
+    until its temporary file is gone."""
     tmp = os.path.join(os.path.dirname(path), f'.{os.path.basename(path)}.lease.{os.getpid()}')
+    with _RENEW_LOCK:
+        if _RENEW.get(path) is not done:
+            return                                    # stopped (or renewed anew) since the renewer's snapshot
+        ev = _INFLIGHT[path] = threading.Event()
     try:
         if done() or not os.path.exists(path):
             with _RENEW_LOCK:
@@ -200,6 +208,10 @@ def _renew_one(path, done):
     finally:
         with contextlib.suppress(OSError):
             os.unlink(tmp)
+        with _RENEW_LOCK:
+            if _INFLIGHT.get(path) is ev:
+                del _INFLIGHT[path]
+        ev.set()
 
 
 def _renew_loop():
@@ -227,9 +239,13 @@ def renew(path, done=lambda: False):
 
 
 def renew_stop(path):
-    """Stop renewing ``path``; returns after any rewrite of it in progress (a caller then removes or moves it safely)."""
+    """Stop renewing ``path``; returns after any renewal of it in progress has ended, its temporary file removed (a caller
+    then removes or moves it, or its directory, safely). The wait is outside _RENEW_LOCK: other paths are never held up."""
     with _RENEW_LOCK:
         _RENEW.pop(path, None)
+        ev = _INFLIGHT.get(path)
+    if ev is not None and threading.current_thread() is not _RENEWER[0]:
+        ev.wait()
 
 
 # ---- where ----------------------------------------------------------------------------------------------------------

@@ -96,6 +96,13 @@ def read(path):
         return f.read()
 
 
+def placer_gone(v):
+    """v's building process is gone: it no longer renews its lease (renew_stop first, so the renewal of this process never
+    rewrites the record after it), and its record names a process start that is not this process's."""
+    versions.renew_stop(v.path('BUILDING.json'))
+    versions._atomic_json(v.path('BUILDING.json'), dict(v.builder(), start=-1))
+
+
 def new_version(U, tag, files=('a.txt', 'sub/b.txt')):
     v = versions.begin(U, note=f'test {tag}')
     for fn in files:
@@ -260,8 +267,7 @@ def test_place():
     check('unplace: the run back at the build directory, the version gone', read(f'{B}/candidates/x.txt') == 'b'
           and not os.path.exists(v.dir), os.listdir(versions.root_of(U)))
     v = versions.place(U, B)
-    b = v.builder()
-    versions._atomic_json(v.path('BUILDING.json'), dict(b, start=-1))       # its placing process is gone
+    placer_gone(v)
     check('a placed build whose placer is gone is found', versions.placed_abandoned(U, B).vid == v.vid)
     versions.seal(v)
     check('a sealed version is not moved back without sealed=True; one never switched to (no pointer log) whose placer is '
@@ -285,7 +291,7 @@ def test_retention():
     old_served = vs[1]
     building = new_version(U, 'G')             # being built by this process (live)
     dead = new_version(U, 'H')                 # an abandoned build
-    versions._atomic_json(dead.path('BUILDING.json'), dict(dead.builder(), start=-1))
+    placer_gone(dead)
     held = vs[0]
     os.makedirs(held.path('holds'))
     hold_file = held.path('holds/x.json')
@@ -470,7 +476,7 @@ def test_sublst_switch():
         # a swap killed between its place and its switch: the next serve moves the build back
         write(f'{B}/candidates/V/x.txt', 'newer')
         w = versions.place(U, B)
-        versions._atomic_json(w.path('BUILDING.json'), dict(w.builder(), start=-1))
+        placer_gone(w)
         got = sublst_build.recover_placed(plan)
         check('an abandoned placed build is moved back to the build directory by the next serve',
               got is not None and got.vid == w.vid and read(f'{B}/candidates/V/x.txt') == 'newer'
@@ -496,7 +502,7 @@ def test_sublst_switch():
         # ... and a swap killed between its seal and its switch: the next serve moves the sealed, never served build back
         w3 = versions.place(U, B)
         versions.seal(w3)
-        versions._atomic_json(w3.path('BUILDING.json'), dict(w3.builder(), start=-1))
+        placer_gone(w3)
         got = sublst_build.recover_placed(plan)
         check('a sealed build never switched to, its swap gone, is moved back to the build directory by the next serve',
               got is not None and got.vid == w3.vid and os.path.isdir(B) and not os.path.exists(w3.dir), got)
@@ -1173,33 +1179,46 @@ def test_review_round2():
     r2 = TV.sealed_complete(vl.path('VERSION.json'))
     check('run_version content test: a file added after the seal fails it (the run walked against MANIFEST.tsv)',
           not r[0] and 'added' in r[2] and r2[0], (r, r2))
-    # finding 7: leases - a renewal's write and fsync outside the renewer lock
-    hf = f'{d}/lease/h.json'
+    # finding 7: leases - a renewal's write and fsync outside the renewer lock; renew_stop waits only for its own path
+    hf, hf2 = f'{d}/lease/h.json', f'{d}/lease/h2.json'
     write(hf, json.dumps(versions.me()))
+    write(hf2, json.dumps(versions.me()))
     before = read(hf)
     real_lease, real_fsync = versions._lease_s, os.fsync
-    slow = threading.Event()
+    slow, synced = threading.Event(), []
 
     def slow_fsync(fd):
-        if threading.current_thread().name == 'versions-lease':
+        if (threading.current_thread().name == 'versions-lease' and not slow.is_set()
+                and os.path.basename(os.readlink(f'/proc/self/fd/{fd}')).startswith('.h.json.lease')):
             slow.set()
             time.sleep(0.6)
+            r = real_fsync(fd)
+            synced.append(time.time())
+            return r
         return real_fsync(fd)
-    versions._lease_s = lambda: 0.4
+    versions._lease_s = lambda: 60.0                 # one renewal (at renew()), none after it during the test
     os.fsync = slow_fsync
     try:
         versions.renew(hf)
         slow.wait(5)
         t0 = time.time()
+        versions.renew(hf2)
+        versions.renew_stop(hf2)
+        dt_other = time.time() - t0
         versions.renew_stop(hf)
-        dt = time.time() - t0
-        time.sleep(0.9)
+        t_stop = time.time()
+        left = sorted(os.listdir(f'{d}/lease'))
         after = read(hf)
+        shutil.rmtree(f'{d}/lease')                    # what unplace does with a version directory right after its stop
+        time.sleep(0.3)
+        gone = not os.path.exists(f'{d}/lease')
     finally:
         os.fsync, versions._lease_s = real_fsync, real_lease
-    check('a renewal is written and fsynced outside the renewer lock: renew_stop returns at once during a slow fsync, and the '
-          'renewal in flight is dropped (the file not rewritten after renew_stop, no temporary left)',
-          slow.is_set() and dt < 0.3 and after == before and os.listdir(f'{d}/lease') == ['h.json'], (dt, os.listdir(f'{d}/lease')))
+    check('a renewal is written and fsynced outside the renewer lock: during a slow fsync another path is renewed and stopped '
+          'at once', slow.is_set() and dt_other < 0.3, dt_other)
+    check('renew_stop of the path in flight returns only after its renewal ended: no temporary file left, the record not '
+          'rewritten, the directory removable at once and not recreated', synced and synced[0] <= t_stop
+          and left == ['h.json', 'h2.json'] and after == before and gone, (synced, t_stop, left))
     # findings 5 and 6: the lock files
     VR = f'{d}/locks/Run_K'
     vk = new_version(VR, 'K')
