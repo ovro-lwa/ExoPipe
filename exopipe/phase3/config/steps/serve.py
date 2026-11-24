@@ -30,8 +30,10 @@ class serve(_Section):
     PROTECTED_KEYS = ('RUN_ROOT_KEY', 'HUB_DIR', 'LISTS_DIR', 'INSPECTION_GREENLIT', 'EXCLUSION_GATE_TIERS',
                       'OTHER_SERVED_PORTS', 'JUPITER_ROOTS', 'HUB_TIERS', 'HUB_LINKS', 'TWO_PORT_DIR', 'TWO_PORT_REGISTRY',
                       'TWO_PORT_REGISTERED', 'TWO_PORT_GREENLIT', 'TWO_PORT_LOCK',
-                      'SNAPVIEW_TIERS', 'SNAPVIEW_STOKES', 'SNAPVIEW_PAGE_SUFFIX')   # the combined view's layout: what the page code
+                      'SNAPVIEW_TIERS', 'SNAPVIEW_STOKES', 'SNAPVIEW_PAGE_SUFFIX',   # the combined view's layout: what the page code
                                                                                     # reads (mirrors of snapshot_combined_view.py)
+                      'SNAPVIEW_FLOOD_FACTOR', 'SNAPVIEW_FLOOD_MIN', 'SNAPVIEW_ALIGN_FAILED', 'SNAPVIEW_ALIGN_HELD',
+                      'SNAPVIEW_FP_ALIGN', 'SNAPVIEW_FP_FLOOD')   # the view's default hides: the snapshot chat's ruled content
 
     # ---- served runs (production product roots, from config.paths; PROTECTED) ----------------------------------------
     RUN_ROOT_KEY = {'deep': 'TRANSIENTS_ROOT',        # /data07/gh/phase3/transients; p3s3_serve_stokes.sh:9
@@ -179,6 +181,28 @@ class serve(_Section):
                                      queue='queue_I_1min.txt', catalog='source_catalogs_I_1min', labels='judgements',
                                      loc_dir='source_catalogs_loc_1min', loc_offsets=True, hub=('I', '1-min'), twin=None,
                                      log='classify_8782.log'),
+        # THE COMBINED VIEW's pages (`serve --tier snapshot --family comb`, lib/serve/snapshot_view.py): production serves the
+        # view with snapshot_serve.sh SNAP_REGISTER=1 SNAP_PORTS="8986 8987 8988 8989" SNAP_HUB_SUFFIX=comb (snapshot_batch/
+        # next_wave_20261113/serve_release1_20261117.sh; the live registry entries p8986-p8989 and hub rows '<tier>-comb' of
+        # Run_SNAPCOMB_20261116): the batch serve's four pages on their own ports, in snapshot_serve.sh's order (V 10-s, I 10-s,
+        # V 1-min, I 1-min - the --sibling order); one page per tier and Stokes (Gregg 2026-10-26, R-GREGG-20261026-5-LST-REBUILD-
+        # AFTER-EVERYTHING-DONE-COMBINED-VIEW-ONE-PAGE-PER-TIER-POLARIZATION)
+        ('snapshot', 'comb-V-10s'): dict(port=8986, family='comb', program='classify', start='stages', stokes='V', kind='10s',
+                                         queue='queue_V_10s.txt', catalog='source_catalogs_V_10s', labels='judgements',
+                                         loc_dir='source_catalogs_loc_10s', loc_offsets=True, hub=('V', '10-sec-comb'),
+                                         twin=None, log='classify_8986.log'),
+        ('snapshot', 'comb-I-10s'): dict(port=8987, family='comb', program='classify', start='stages', stokes='I', kind='10s',
+                                         queue='queue_I_10s.txt', catalog='source_catalogs_I_10s', labels='judgements',
+                                         loc_dir='source_catalogs_loc_10s', loc_offsets=True, hub=('I', '10-sec-comb'),
+                                         twin=None, log='classify_8987.log'),
+        ('snapshot', 'comb-V-1min'): dict(port=8988, family='comb', program='classify', start='stages', stokes='V', kind='1min',
+                                          queue='queue_V_1min.txt', catalog='source_catalogs_V_1min', labels='judgements',
+                                          loc_dir='source_catalogs_loc_1min', loc_offsets=True, hub=('V', '1-min-comb'),
+                                          twin=None, log='classify_8988.log'),
+        ('snapshot', 'comb-I-1min'): dict(port=8989, family='comb', program='classify', start='stages', stokes='I', kind='1min',
+                                          queue='queue_I_1min.txt', catalog='source_catalogs_I_1min', labels='judgements',
+                                          loc_dir='source_catalogs_loc_1min', loc_offsets=True, hub=('I', '1-min-comb'),
+                                          twin=None, log='classify_8989.log'),
         # snapshot FORCED photometry pages (snapshot_forced_serve_20261007.sh:29-54, 96-98; ports ruled 2026-10-03, ledger 1765):
         # each page serves its own run FORCED_RUN_NAME (S, T, --forced-tag); queue/catalog per Stokes; journal = <run>/judgements
         ('snapshot', 'forced-V-10s'): dict(port=8786, family='forced', program='classify', start='stages', stokes='V',
@@ -229,8 +253,8 @@ class serve(_Section):
     TWO_PORT_ENV_PREFIXES = ('P3_',)                # an entry's env: these variables of the page's server environment
                                                     # (snapshot_register_page.py:50, SNAP_REGISTER_ENV default)
     # THE FITS CUTOUTS BUTTON (2026-11-12; classify_transients.py:4541 P3_CUTOUTS_TIER, :4584 P3_PAGE_ID): a registered page of
-    # family 'review' carries its tier's cutouts tier, keyed (tier, page kind), and its own registry id; the other families
-    # (strat, deep-forced, forced) carry neither. Live registry 2026-11-14: p8766 p8768 p8772 p8773 deep, p8787-p8790 10min,
+    # family 'review' or 'comb' (the combined view's pages, the same snapshot_serve.sh path) carries its tier's cutouts tier,
+    # keyed (tier, page kind), and its own registry id; the other families (strat, deep-forced, forced) carry neither. Live registry 2026-11-14: p8766 p8768 p8772 p8773 deep, p8787-p8790 10min,
     # p8986 p8987 snap, p8988 p8989 1min; production snapshot_serve.sh sets them since exopipe_ops 607f7a2, the deep and
     # 10-minute re-registrations keep the current entry's env
     CUTOUTS_TIER = {('deep', 'single'): 'deep', ('deep', 'multi'): 'deep', ('sublst', 'single'): '10min',
@@ -490,6 +514,63 @@ class serve(_Section):
                                             # lines on the 3-batch test view) [step]
     SNAPVIEW_TEST_SAMPLE_DIRS = 0           # page directories the snapshot_view content test reads back (0 = every one; N = a
                                             # seeded sample of N for a full view's re-test - the build's own T1-T6 cover all) [step]
+    # THE VIEW'S FALSE-POSITIVE FILTERS, the two default hides (stage 'hides', lib/serve/fp_filters.py): <view>/fp_filters.csv +
+    # fp_filters.json in review_filters.py's format (exopipe_ops review_filters.py:80-92), from the view's own listed detections
+    # before its pages are registered. Port of the refactor chat's tools review_items_20261031/hides_20261115/ (parallel_collect.py,
+    # newview_hides.py flood + write; run_hides.sh), which wrote the served Run_SNAPCOMB_20261116's files. THE CONTENT IS THE
+    # SNAPSHOT CHAT'S: the cells, factors, states, labels and help texts below are production's, unchanged (a filter that hides
+    # sources needs Gregg's go). Memory note 2026-10-31 'snapshot hides: alignment + flood': rebuilt from every new view's own
+    # detections, never carried from the old view.
+    SNAPVIEW_HIDES_READERS = 12             # threads reading the listed sources' detections.csv (run_hides.sh: parallel_collect.py
+                                            # ... 12; speed only, the order of the output is the input order) [step]
+    SNAPVIEW_FLOOD_FACTOR = 100             # a flood hour: served detections >= this x the median of the other nights at the same
+                                            # LST and band (same Stokes and tier) ... (newview_hides.py K; Gregg 2026-10-31
+                                            # "recommendations approved", IMPL-SNAPSHOT-FLOOD-HOURS-HIDDEN-BY-DEFAULT-20261031; "100x
+                                            # works", R-GREGG-20261108-GEN4-REPLACE-FLOOD-100X-JOVIAN-WAITS-FOR-CUBES)
+    SNAPVIEW_FLOOD_MIN = 50                 # ... and >= this many detections (newview_hides.py N_MIN; same rulings)
+    # the frame-alignment cells (LST, night) -> bands: FAILED = still on the corrupt September 23h 82 MHz reference (state 0, hidden
+    # by default); HELD = re-searched from the cubes 2026-11-01 with counts still above the clean nights (state 1, shown by default:
+    # Gregg 2026-11-03 "Only 10-30", R-GREGG-20261103-ALIGNMENT-HIDE-ONLY-1030-SHOW-REPAIRED-NIGHTS). FAILED is empty since
+    # 2026-11-15 (newview_hides.py ALIGN_STILL: 23h 2025-10-30 is excluded by data_decisions, lost the sky, 2026-11-13)
+    SNAPVIEW_ALIGN_FAILED = {}
+    SNAPVIEW_ALIGN_HELD = {('23h', '2025-08-27'): ('82MHz', 'Blue', 'Full'), ('23h', '2025-09-01'): ('82MHz', 'Blue', 'Full'),
+                           ('23h', '2025-09-02'): ('82MHz', 'Blue', 'Full')}   # newview_hides.py ALIGN_HELD
+    # the two categories of fp_filters.json, production's metadata (the served Run_SNAPCOMB_20261116/fp_filters.json; newview_hides.py
+    # write: the live view's states and labels, help texts with this view's counts). default_off: the alignment-failed state only
+    # ("Only 10-30"); the flood state's default_off is written as production writes it and ignored by the pages since Gregg 2026-11-12
+    # (review_filters.py NO_DEFAULT_CATS, R-GREGG-20261112-TRACKING-AND-FLOOD-DEFAULTS-OFF); neither category has a control on the panel
+    # (review_filters.py PANEL_HIDDEN_CATS / NO_DEFAULT_CATS, R-GREGG-20261112-PANEL-ONE-SET-ALL-TIERS-BOTH-PORTS). Help placeholders:
+    # {n_held} the held-state detections, {factor} {n_min} the flood rule, {n_hours} {n_det} {n_nights} the view's flood hours.
+    SNAPVIEW_FP_ALIGN = dict(
+        key='fp_c_align', stokes=None,
+        states=['frame alignment failed (corrupt reference Master; re-search queued) - hidden until the re-search',
+                're-searched from the cubes 2026-11-01, counts still above the clean nights - held hidden until Gregg looks',
+                'frame alignment not in question'],
+        default_off=['frame alignment failed (corrupt reference Master; re-search queued) - hidden until the re-search'],
+        label='10-s frame alignment failed - hidden until the re-search (Gregg 2026-10-31)',
+        help=('The 10-s frames of 23h 82 MHz were aligned (per-frame flow) in September to a corrupt Taper Robust 0 Master; the '
+              'alignment moved bright sources by up to ~30 arcmin and made false transients (e.g. 3C 103 and 3C 91). In this view NO '
+              'cell remains on the corrupt reference: 23h 2025-10-30 82 MHz (with the Blue and Full wideband images) is excluded by '
+              'the data decisions (lost the sky, 2026-11-13) and has no detections here, so nothing is hidden by default. The other '
+              'eight nights are repaired: 2025-08-27, 09-01, 09-02, 09-03, 09-06 and 09-13 re-searched from the cubes, 08-23 and '
+              '08-26 on the cube flow fields. Of those, 08-27, 09-01 and 09-02 still show more 23h 82 MHz detections than the clean '
+              'nights (Stokes I 28, 32, 62 against 0-4 when measured): SHOWN by default (Gregg 2026-11-03: "Only 10-30") for his '
+              'review ({n_held:,} detections in this view); untick the second box to hide them.'))
+    SNAPVIEW_FP_FLOOD = dict(
+        key='fp_c_flood', stokes=None,
+        states=['flood hour: >= 100x the usual night at this LST and band (Gregg 2026-10-31) - hidden by default',
+                'not a flood hour'],
+        default_off=['flood hour: >= 100x the usual night at this LST and band (Gregg 2026-10-31) - hidden by default'],
+        label='Flood hour (>= 100x the usual night) - hidden by default (Gregg 2026-10-31)',
+        help=('An hour of one night in one band (this tier and Stokes) whose served detections are at least {factor} times the '
+              'median of the other nights at the same LST and band, and at least {n_min}: ionospheric storm hours. Measured on THIS '
+              'view: {n_hours} flood hours, {n_det:,} detections, {n_nights} nights. A source drops out of the default view only '
+              'when all its detections fall in flood hours. Tick the first box to see them. The rule: /s/fp_deep/flood_nights/'))
+    SNAPVIEW_FP_NOTE = ("# frame-alignment states and flood hours at {factor}x from this view's own listed detections (exopipe3 serve "
+                        "--tier snapshot --family comb, stage hides; lib/serve/fp_filters.py, the port of review_items_20261031/"
+                        "hides_20261115/newview_hides.py): {n_failed} alignment failed (hidden by default), {n_held} re-searched "
+                        "and held (shown by default), {n_flood} in flood hours (no default since "
+                        "R-GREGG-20261112-TRACKING-AND-FLOOD-DEFAULTS-OFF)\n")   # the CSV's first line (the pages skip '#' lines)
 
     # ---- snapshot forced photometry pages (port of snapshot_forced_gen5_serve_20261026.sh and the 'refresh-siblings' mode of
     # snapshot_forced_serve_20261007.sh; ruled 2026-10-03 / 2026-10-07 Q5/Q7/Q8, ledger 1765) -------------------------------
@@ -546,6 +627,17 @@ class serve(_Section):
         'SNAPVIEW_TIERS': 'R-GREGG-20261026-5-LST-REBUILD-AFTER-EVERYTHING-DONE-COMBINED-VIEW-ONE-PAGE-PER-TIER-POLARIZATION',
         'SNAPVIEW_STOKES': 'R-GREGG-20261026-5-LST-REBUILD-AFTER-EVERYTHING-DONE-COMBINED-VIEW-ONE-PAGE-PER-TIER-POLARIZATION',
         'SNAPVIEW_PAGE_SUFFIX': ('SNAP-PAGES-ONE-TIER-PER-PAGE', 'DEFECT-SNAPCOMB-PAGE-DIRS-HOLD-BOTH-TIERS-20261031'),
+        # the view's two default hides (the snapshot chat's content, ported unchanged)
+        'SNAPVIEW_FLOOD_FACTOR': ('IMPL-SNAPSHOT-FLOOD-HOURS-HIDDEN-BY-DEFAULT-20261031',
+                                  'R-GREGG-20261108-GEN4-REPLACE-FLOOD-100X-JOVIAN-WAITS-FOR-CUBES'),
+        'SNAPVIEW_FLOOD_MIN': 'IMPL-SNAPSHOT-FLOOD-HOURS-HIDDEN-BY-DEFAULT-20261031',
+        'SNAPVIEW_ALIGN_FAILED': ('IMPL-SNAPSHOT-ALIGNMENT-HIDE-NARROWED-20261031',
+                                  'R-GREGG-20261103-ALIGNMENT-HIDE-ONLY-1030-SHOW-REPAIRED-NIGHTS'),
+        'SNAPVIEW_ALIGN_HELD': 'R-GREGG-20261103-ALIGNMENT-HIDE-ONLY-1030-SHOW-REPAIRED-NIGHTS',
+        'SNAPVIEW_FP_ALIGN': ('R-GREGG-20261103-ALIGNMENT-HIDE-ONLY-1030-SHOW-REPAIRED-NIGHTS',
+                              'R-GREGG-20261112-PANEL-ONE-SET-ALL-TIERS-BOTH-PORTS'),
+        'SNAPVIEW_FP_FLOOD': ('IMPL-SNAPSHOT-FLOOD-HOURS-HIDDEN-BY-DEFAULT-20261031', 'R-GREGG-20261112-TRACKING-AND-FLOOD-DEFAULTS-OFF',
+                              'R-GREGG-20261112-PANEL-ONE-SET-ALL-TIERS-BOTH-PORTS'),
         'EXCLUSION_GATE_TIERS': ('RULINGS-GREGG-20261013-DECISIONS-1-7-AND-TENMIN-TABLES',
                                  'R-GREGG-20261014-REFACTOR-DECISIONS-LIST-RECOMMENDATIONS'),
     }

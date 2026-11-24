@@ -386,9 +386,16 @@ def agree(scan, refusals, rc):
                    f'{dict(mine)}')
 
 
+# families gated under their tier's own key: the review pages, and the combined snapshot view's pages (family comb) - a snapshot run
+# served by snapshot_serve.sh exactly as a batch run, its gate the snapshot gate (snapshot_serve.sh:26-27, 47-48; ruling 2 of
+# RULINGS-GREGG-20261013-DECISIONS-1-7-AND-TENMIN-TABLES)
+TIER_KEY_FAMILIES = ('review', 'comb')
+
+
 def gate_key(tier, family='review'):
-    """The key of serve.EXCLUSION_GATE_TIERS for a page family: the tier for its review pages, '<tier>-<family>' else."""
-    return tier if family == 'review' else f'{tier}-{family}'
+    """The key of serve.EXCLUSION_GATE_TIERS for a page family: the tier for its review pages (and the combined view's),
+    '<tier>-<family>' else."""
+    return tier if family in TIER_KEY_FAMILIES else f'{tier}-{family}'
 
 
 def refuses(tier, family='review'):
