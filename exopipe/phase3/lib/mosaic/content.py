@@ -34,6 +34,25 @@ def _cfg():
     return CFG.mosaic_content
 
 
+def parent_catalogs(u, scope, label, cfg):
+    """The parent-catalog union TEST 1 reads and the scope's catalogs in it (sorted names): mosaic_content.PARENTS, None =
+    paths.PARENT_UNION (the current union). REFUSES (u.refuse) when the scope has no catalog there, or when the digest gate
+    refuses (core/manifest.gate_union over exactly those catalogs: the union's MANIFEST.md5 is a pinned one, the directory holds
+    exactly its files and each catalog read matches its line; FINDING-20261118-PARENT-UNION-OTHER-STEPS-AND-NO-MANIFEST)."""
+    from exopipe.phase3.core import manifest as MF
+    parents = MF.parent_union(cfg.mosaic_content.PARENTS, cfg)
+    pat = f'master_R075_*_{scope}.gaul.csv'
+    cats = sorted(os.path.basename(x) for x in glob.glob(os.path.join(glob.escape(parents), pat)))
+    if not cats:
+        u.refuse(f'{scope} {label}: no parent catalog {pat} in the parent union {parents} (mosaic_content.PARENTS) - REFUSED')
+    try:
+        gate = MF.gate_union(parents, cats, cfg=cfg)
+    except MF.ManifestRefusal as e:
+        u.refuse(f'{scope} {label}: parent union digest gate: {e} - REFUSED')
+    u.meta['parents'] = {'dir': parents, 'n_catalogs': len(cats), 'union': gate['union'], 'manifest_md5': gate['manifest_md5']}
+    return parents, cats
+
+
 def _sources(parents, band, nmax, beam_deg):
     """MT 27-48: the nmax brightest cataloged sources of the band, Dec >= DEC_MIN + 3 beams, isolated by ISOLATION_BEAMS beams
     (array of (RA, Dec, peak); empty when no catalog row parses)."""

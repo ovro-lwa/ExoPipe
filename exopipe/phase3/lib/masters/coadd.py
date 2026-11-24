@@ -3558,7 +3558,8 @@ def _atomic_copy(src, dst):
     if _ss != _ds:
         os.remove(dst + '.part')
         raise RuntimeError(f'archive copy short: {dst} got {_ds} of {_ss} bytes; REFUSING (source {src})')
-    os.replace(dst + '.part', dst)
+    from exopipe.phase3.core import placement
+    placement.replace(dst + '.part', dst, drop=True)   # the archive's group and ACL, not the copy2 source's (core/placement.py)
 
 
 def _refuse_excluded_constituents(final_dir, lst, fl):

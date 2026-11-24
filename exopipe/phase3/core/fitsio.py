@@ -39,7 +39,8 @@ def write_fits(path, data, header=None, overwrite=False):
     os.makedirs(d, exist_ok=True)
     tmp = os.path.join(d, f'.{os.path.basename(path)}.tmp.{os.getpid()}')
     fits.writeto(tmp, data, header, overwrite=True)
-    os.replace(tmp, path)
+    from exopipe.phase3.core import placement
+    placement.replace(tmp, path, drop=True)             # the product's group and ACL (core/placement.py)
     return path
 
 

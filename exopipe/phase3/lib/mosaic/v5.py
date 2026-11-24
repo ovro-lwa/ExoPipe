@@ -478,7 +478,6 @@ def pkcorr_unit(u, scope, w, out, work):
 # ---- content ----------------------------------------------------------------------------------------------------------------------
 
 def content_unit(u, scope, w, out, work):
-    import glob
     from exopipe.phase3.core import fitsio
     from exopipe.phase3.lib.mosaic import content as CT
     from exopipe.phase3.lib.mosaic import tests_v5  # noqa: F401
@@ -492,11 +491,7 @@ def content_unit(u, scope, w, out, work):
     _same_tiles(u, scope, w, t['json_md5'], co, 'coadd')
     _coadd_maps(u, out, scope, w, co, ('jysr', 'jybeam'))
     _engine_as_coadd(u, scope, w, co)
-    parents = C.mosaic_content.PARENTS
-    cats = sorted(os.path.basename(x) for x in glob.glob(os.path.join(glob.escape(parents), f'master_R075_*_{scope}.gaul.csv')))
-    if not cats:
-        u.refuse(f'{scope} {w}: no parent catalog master_R075_*_{scope}.gaul.csv in mosaic_content.PARENTS {parents} - REFUSED')
-    u.meta['parents'] = {'dir': parents, 'n_catalogs': len(cats)}
+    parents, _cats = CT.parent_catalogs(u, scope, w, C)
     v = variant_of(w)
     sd = fitsio.scratch_dir(f'mosaic_v5_content_{scope}_{w}', work)
     try:

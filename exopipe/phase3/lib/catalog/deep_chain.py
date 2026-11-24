@@ -257,6 +257,14 @@ class DeepRun:
     def parent_dir(self):
         return self.chain.meta(self.u('preflight'), 'parent_dir')
 
+    def _gate_unions(self, u, dirs):
+        """The parent-union digest gate (core/manifest.gate_pinned) on the pinned unions among ``dirs``; refuses the unit."""
+        from exopipe.phase3.core import manifest as MF
+        try:
+            MF.gate_pinned(dirs, cfg=self.cfg)
+        except MF.ManifestRefusal as e:
+            u.refuse(f'parent union digest gate: {e}')
+
     def env(self, extra=None, state_dir=None, parent_dir=None):
         """(full environment for a non-legacy child (rsync), the stage's own values for core.legacy.run). The production
         pass exports, for every stage (ops/fork_serve_p3s5_20261008.sh:31-32): P3S_LABEL P3_CADENCE=deep P3_TABLE_ELEV=1
@@ -278,6 +286,13 @@ class DeepRun:
         par = parent_dir or (self.parent_dir() if hasattr(self, 'chain') else None)
         if par:
             own['P3_PARENT_DIR'] = par
+        elif hasattr(self, 'chain'):            # the modules fall back to their default (catalog.DEEP_PARENT_DIR_DEFAULT)
+            from exopipe.phase3.core import manifest as MF
+            from exopipe.phase3.core.record import Refusal
+            try:
+                MF.gate_union(c.catalog.DEEP_PARENT_DIR_DEFAULT, cfg=c)
+            except MF.ManifestRefusal as e:
+                raise Refusal(f'parent union digest gate (catalog.DEEP_PARENT_DIR_DEFAULT): {e}')
         own.update(extra or {})
         full = {k: v for k, v in os.environ.items() if not k.startswith(ENV_PREFIXES + ('P3_',))}
         full.update({k: v for k, v in own.items() if v != ''})
@@ -573,7 +588,9 @@ class DeepRun:
                 par = os.path.abspath(self.args.deep_parents)
                 if not os.path.isdir(par):
                     u.refuse(f'--parents {par}: no such directory')
+                self._gate_unions(u, [par])
             else:
+                self._gate_unions(u, c.DEEP_PARENT_CANDIDATES)     # the pinned union among the in-place script's sources
                 par = (c.DEEP_PARENT_SNAPSHOT.format(utc=self.ts) if self.prod
                        else os.path.join(self.U, '_parents', f'p3s5_parents_union_{self.ts}'))
                 rc, tail, _ = self.call(u, 'p3s5_parent_union.py', [par], self.env(), f'{par}.union_1.log', mode='w')

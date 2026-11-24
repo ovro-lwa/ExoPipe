@@ -62,7 +62,8 @@ def write_atomic(path, data, header):
     from astropy.io import fits
     tmp = f'{path}.part'
     fits.writeto(tmp, data, header, overwrite=True, output_verify='exception')
-    os.replace(tmp, path)
+    from exopipe.phase3.core import placement
+    placement.replace(tmp, path, drop=True)     # the product's group and ACL (core/placement.py)
 
 
 def hybrid_filter(N, cdelt_deg):

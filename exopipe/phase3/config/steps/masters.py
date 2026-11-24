@@ -6,6 +6,7 @@ ledger ID of the ruling behind a key. Per run: --set SECTION.KEY=VALUE or --conf
 """
 import os
 from exopipe.phase3.config import _Section
+from exopipe.phase3.config.shared import paths as _paths
 
 _PHASE3 = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))   # exopipe/phase3
 
@@ -351,8 +352,11 @@ class masters_striation(_Section):
     WIN = 8                                   # pass-2 RA running-median window [beams] (striation_restore.py correct(): 8)
     PASS1_WIN = 4                             # pass-1 window [beams] (striation_restore.py pass1(): 4)
     REF_CEILING = {'Taper_R075': 1.126, 'Taper_R0': 1.224}   # striation_restore.py:47: census 2026-10-22, max over the 23-55 MHz masters
-    PARENTS = '/lustre/gh/main/phase3/deep_parent_catalogs_union_20261014T0203'   # master_R075_<LST>_<band>.gaul.csv (production
-    #   default /fast/gh/main/phase3/p3s5_parents_union_20261014T0203 is the node-local copy of the same catalogs)
+    PARENTS = None                            # master_R075_<LST>_<band>.gaul.csv in the union: None = paths.PARENT_UNION,
+    #   the 11-18 union on the current Masters (Gregg 2026-11-24; production's default /fast/gh/main/phase3/
+    #   p3s5_parents_union_20261014T0203 is a node-local copy of the 10-14 union, stale on 47 of 456 cells:
+    #   FINDING-20261118-PARENT-UNION-OTHER-STEPS-AND-NO-MANIFEST). Every read passes the digest gate core/manifest.gate_union.
+    NULLABLE_KEYS = ('PARENTS',)
     TAG = 'ssub-rst8'                         # striation_restore.py:48: the grammar token after the master's own tokens
     ARCHIVE_PBCORR_TOL = 1e-3                 # working master / PB vs the archived PB-corrected master, x its rms (striation_restore.py:211)
     CACHE_SUBDIR = 'striation_pass1'          # node-local pass-1 cache under --work / the site SCRATCH_ROOT (keyed by input size + mtime)

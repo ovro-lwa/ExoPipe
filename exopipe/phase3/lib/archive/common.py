@@ -204,7 +204,8 @@ def commit_part(part, dst, replace=False):
     push_mosaic_v2:66-67); True uses os.replace (the old file was quarantined first; p3s5_archive_sync.py:100)."""
     if not replace and os.path.lexists(dst):
         raise Refusal(f'push: {dst} exists - never overwritten')
-    os.replace(part, dst)
+    from exopipe.phase3.core import placement
+    placement.replace(part, dst, drop=True)     # the archive directory's group and ACL, not the copy's (core/placement.py)
 
 
 def free_space_ok(path, floor_gb):

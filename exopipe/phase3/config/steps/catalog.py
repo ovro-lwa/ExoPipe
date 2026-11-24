@@ -5,6 +5,7 @@ Units folded here: catalog-deep, catalog-incremental, catalog-tiers. A key in it
 ledger ID of the ruling behind a key. Per run: --set SECTION.KEY=VALUE or --config FILE; `exopipe3 config --step catalog` lists the sections.
 """
 from exopipe.phase3.config import _Section
+from exopipe.phase3.config.shared import paths as _paths
 
 
 # =====================================================================================================================
@@ -53,8 +54,8 @@ class catalog(_Section):
     DEEP_PARENT_SNAPSHOT = '/fast/gh/main/phase3/p3s5_parents_union_{utc}'  # per-pass parent snapshot (production); ops/fork_serve_p3s5_20261008.sh:15 [env:P3_PARENT_DIR]; non-production --out: <out>/_parents/p3s5_parents_union_{utc} (never lwacalim07 /fast)
     DEEP_PARENT_CANDIDATES = ('/lustre/gh/main/phase3_collect/p3s5_collect_lwacalim07/parent_catalogs',
                               '/lustre/gh/main/phase3_collect/p3s5_collect_lwacalim09/parent_catalogs',
-                              '/lustre/gh/main/phase3/deep_parent_catalogs_union_20261014T0203')   # ops/p3s5_parent_union.py:13-14 [lit] (production 8176bc3, 2026-10-17: the Lustre copy of the 10-14 union replaced Run_P3S4/parent_catalogs)
-    DEEP_PARENT_DIR_DEFAULT = '/lustre/gh/main/phase3/deep_parent_catalogs_union_20261118T0130'   # ops/gate_inputs.py:22 module default (production da8f20e, 2026-11-18: the 10-14 union was stale on 47 cells after Master rebuilds); the step ALWAYS sets P3_PARENT_DIR (B-59) [lit]
+                              _paths.PARENT_UNION_20261014)   # ops/p3s5_parent_union.py:13-14 [lit] (production 8176bc3, 2026-10-17: the Lustre copy of the 10-14 union replaced Run_P3S4/parent_catalogs)
+    DEEP_PARENT_DIR_DEFAULT = _paths.PARENT_UNION   # ops/gate_inputs.py:22 module default (production da8f20e, 2026-11-18: the 10-14 union was stale on 47 cells after Master rebuilds); the step ALWAYS sets P3_PARENT_DIR (B-59) [lit]
     DEEP_PARENT_TEST_SAMPLE = 24                          # cells whose parent catalogue digest the parent_snapshot content test re-reads against the master (seeded sample; every cell is checked structurally) [step] (new: content test)
     SEARCH_QUARANTINE_FALLBACK = True                     # target beam read from Run_SEARCH_QUARANTINE_* when the frame moved (2026-10-08); ops/gate_inputs.py:144-153 (B-30, B-59: fallback kept, counted)
     INSTALL_LOCK = '{ops_root}/membership_rebuild_20261007/.install.lock'   # held from the parent snapshot to the fork I content test; ops/fork_serve_p3s5_20261008.sh:18-19, 38-39 [step] -> runner lease 'deep-install' (K7). Taken only by a run that writes a production root

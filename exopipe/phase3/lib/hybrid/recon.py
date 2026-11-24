@@ -43,11 +43,13 @@ def bind():
     """Bind the module's constants from the config (call before any computation; cheap, idempotent). Names and values as
     production's module constants (NL 62-80, 828-831, 949)."""
     from exopipe.phase3.config import CFG
+    from exopipe.phase3.core import manifest as MF
     R, H = CFG.hybrid_recon, CFG.hybrid
     g = dict(SCALES=tuple(R.SCALES), NITER=int(R.NITER), GAIN=float(R.GAIN), MGAIN=float(R.MGAIN), BIAS=float(R.BIAS),
              AUTOMASK=float(R.AUTOMASK), AUTOTHRESH=float(R.AUTOTHRESH), PATCH=int(R.PATCH), MAXACT=int(R.MAXACT),
              MAXLOOP=int(R.MAXLOOP), MAXCYC=int(R.MAXCYC), TAU=float(R.TAU), STEP_FWHM_DEG=float(R.STEP_FWHM_DEG),
-             CG_TOL=float(R.CG_TOL), CG_MAX=int(R.CG_MAX), LFSS_DIR=R.LFSS_DIR, CATALOGS=R.CATALOGS,
+             CG_TOL=float(R.CG_TOL), CG_MAX=int(R.CG_MAX), LFSS_DIR=R.LFSS_DIR,
+             CATALOGS=MF.parent_union(R.CATALOGS, CFG), CATALOG_PINS=MF.union_pins(CFG),
              PRIOR_SCALE_RANGE=tuple(R.PRIOR_SCALE_RANGE), PRIOR_RMS_FRAC=float(R.PRIOR_RMS_FRAC),
              COMPACT_TOL=float(R.COMPACT_TOL), COMPACT_TOL_LOW=float(R.COMPACT_TOL_LOW), COMPACT_LOW_SCOPES=tuple(R.COMPACT_LOW_SCOPES),
              COMPACT_N_SOURCES=int(R.COMPACT_N_SOURCES), COMPACT_N_MIN=int(R.COMPACT_N_MIN),
@@ -404,9 +406,15 @@ def test_compact_sources(new, master, hdr, lst, band):
 def compact_ratio(new, master, hdr, lst, band):
     """test_compact_sources' measurement: the ratios of background-subtracted aperture sums of new / master at the 200 brightest
     catalogued sources (n, median, 16th / 84th percentiles) and the tolerance; no verdict."""
+    from exopipe.phase3.core import manifest as MF
     src = []
-    READS.add(f'{CATALOGS}/master_R075_{lst}_{band}.gaul.csv')
-    for ln in open(f'{CATALOGS}/master_R075_{lst}_{band}.gaul.csv'):
+    name = f'master_R075_{lst}_{band}.gaul.csv'
+    try:            # the digest gate: the union's MANIFEST.md5 is a pinned one and this catalog matches its line (B15)
+        MF.gate_union(CATALOGS, [name], CATALOG_PINS)
+    except MF.ManifestRefusal as e:
+        raise ReconRefusal(f'test_compact_sources: parent catalog {name}: {e} - REFUSING')
+    READS.add(f'{CATALOGS}/{name}')
+    for ln in open(f'{CATALOGS}/{name}'):
         if ln.startswith('#') or not ln.strip():
             continue
         q = ln.split(',')

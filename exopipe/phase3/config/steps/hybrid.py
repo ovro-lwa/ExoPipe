@@ -262,13 +262,15 @@ class hybrid_recon(_Section):
     #   NL 870: CLEAN, step and prior to the true horizon ('elev10' = the 10-degree cut of the earlier generation)
     LFSS_DIR = '/lustre/gh/main/catalogs/lwa1_lfss'
     #   NL 64: the LWA1 Low Frequency Sky Survey maps (the prior)
-    CATALOGS = '/lustre/gh/main/phase3/deep_parent_catalogs_union_20261118T0130'
-    #   NL 65: the parent catalogs test_compact_sources reads (positions and peaks of the brightest sources only; no digest
-    #   check). CHANGE FROM PRODUCTION (2026-11-18, spec section 7 B15): production reads deep_parent_catalogs_union_20261014T0203,
-    #   which predates the Release 1 master rebuilds and is stale on 47 of 456 cells (RESULT-20261118-DEEP-PARENT-UNION-REFRESH).
-    #   v2 reads the union rebuilt on the current Robust -0.75 Masters (456/456 cells: each catalog's .gen.json sidecar names the
-    #   Master md5 it was made from, checked against the Masters; the directory has no MANIFEST.md5, spec section 7 B15), as
-    #   production's gate_inputs.PARENT_DIR does since 2026-11-18 02:07 UTC (DONE-20261118-NEAREST-MASTER-FIX-INSTALLED)
+    CATALOGS = None
+    #   NL 65: the parent catalogs test_compact_sources reads (positions and peaks of the brightest sources only).
+    #   None = paths.PARENT_UNION, the current parent-catalog union (one config value, FINDING-20261118-PARENT-UNION-OTHER-STEPS-AND-
+    #   NO-MANIFEST); a path pins another union. Every catalog read passes the digest gate core/manifest.gate_union (production
+    #   had no digest check). CHANGE FROM PRODUCTION (2026-11-18, spec section 7 B15): production reads
+    #   deep_parent_catalogs_union_20261014T0203, which predates the Release 1 master rebuilds and is stale on 47 of 456 cells
+    #   (RESULT-20261118-DEEP-PARENT-UNION-REFRESH). v2 reads the union rebuilt on the current Robust -0.75 Masters (456/456 cells:
+    #   each catalog's .gen.json sidecar names the Master md5 it was made from, checked against the Masters), as production's
+    #   gate_inputs.PARENT_DIR does since 2026-11-18 02:07 UTC (DONE-20261118-NEAREST-MASTER-FIX-INSTALLED)
     RULED = {'PRIOR_SCALE_RANGE': 'R-GREGG-20261027-LSRECON-SCALE-BOUND-0P5-2P0-LEVEL-REFUSALS-STAY-GAPS-55MHZ-06H-R0-N-MINUS-1',
              'COMPACT_TOL_LOW': 'R-GREGG-20261026-LSRECON-18-59MHZ-FLEET-APPROVED-KEEP-MASTERS-WIDEBAND-HIGH-PRIORITY-SPLIT-PB-COADD-ARCHIVE',
              'CLEAN_REGION': 'R-GREGG-20261028-HYBRID-NOTAPER-RERUN-APPROVED-CLEAN-TO-TRUE-HORIZON-HYBRID-RESIDUAL',
@@ -276,6 +278,7 @@ class hybrid_recon(_Section):
              'LEVEL_LIMITS': ('R-GREGG-20261027-LSRECON-SCALE-BOUND-0P5-2P0-LEVEL-REFUSALS-STAY-GAPS-55MHZ-06H-R0-N-MINUS-1',
                               'R-GREGG-20261031-HIGH-BAND-CAVEATS-APPROVED-GO-ON-EVERYTHING')}
     PROTECTED_KEYS = ('LFSS_DIR', 'CATALOGS')
+    NULLABLE_KEYS = ('CATALOGS',)             # None = paths.PARENT_UNION
 
 
 class hybrid_unit(_Section):

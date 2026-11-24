@@ -35,7 +35,8 @@ def _atomic_copy(src, dst):
     os.makedirs(d, exist_ok=True)
     tmp = os.path.join(d, f'.{os.path.basename(dst)}.tmp.{os.getpid()}')
     shutil.copyfile(src, tmp)
-    os.replace(tmp, dst)
+    from exopipe.phase3.core import placement
+    placement.replace(tmp, dst, drop=True)      # the product's group and ACL (core/placement.py)
 
 
 def _supersede(dst, out_root, tag, cell, reason):

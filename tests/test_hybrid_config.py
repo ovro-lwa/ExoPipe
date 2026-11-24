@@ -128,7 +128,8 @@ def test_psf2x_files_match_registry():
 
 def test_protected_keys_refuse_override():
     for key in ('hybrid.STRIATION_SELECTION', 'hybrid.STRIATION_SELECTION_MD5', 'hybrid.ARCHIVE_MASTERS',
-                'hybrid_psf2x.REGISTRY', 'hybrid_tilefill.UNFILLED_INPUTS', 'hybrid_recon.CATALOGS'):
+                'hybrid_psf2x.REGISTRY', 'hybrid_tilefill.UNFILLED_INPUTS', 'hybrid_recon.CATALOGS',
+                'paths.PARENT_UNION', 'paths.PARENT_UNION_MANIFEST_MD5'):
         _raises((ConfigRefusal, KeyError, ValueError), CFG.set, key, "'x'", source='test')
 
 
@@ -412,7 +413,9 @@ def test_values_equal_production():
     assert not bad, bad
     # the one value changed on purpose (spec section 7, 2026-11-18): the parent-catalog union rebuilt on the current Masters
     assert NL['CATALOGS'] == '/lustre/gh/main/phase3/deep_parent_catalogs_union_20261014T0203', NL['CATALOGS']
-    assert C.hybrid_recon.CATALOGS == '/lustre/gh/main/phase3/deep_parent_catalogs_union_20261118T0130', C.hybrid_recon.CATALOGS
+    # None = paths.PARENT_UNION, the one config value of the current union (FINDING-20261118-PARENT-UNION-OTHER-STEPS-AND-NO-MANIFEST)
+    assert C.hybrid_recon.CATALOGS is None, C.hybrid_recon.CATALOGS
+    assert C.paths.PARENT_UNION == '/lustre/gh/main/phase3/deep_parent_catalogs_union_20261118T0130', C.paths.PARENT_UNION
     assert tuple(NL['WIDEBANDS'].get('Full', ())) in ((), SUBBANDS)       # Full is assigned after the literal (NL 947)
     assert C.hybrid_full.MEMBERS == SUBBANDS
     # the TPCAVEAT units of the per-tile fill driver (literal set CAVEAT)

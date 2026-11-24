@@ -162,6 +162,45 @@ def pair_plan(plan, C, stokes, sbs):
     return out
 
 
+def only_missing(out, cell, sbs, stokes):
+    """--only-missing: the pair selection of production's LCBF_ONLY_MISSING (snapshot_lightcurve_backfill.sh:48-50, exopipe_ops
+    bb801b7, 2026-11-01; CUTOVER_READINESS.md "a pair selection that extracts only the pairs without a published table"): only
+    the (subband, Stokes) pairs of ``stokes`` without a published table <out>/<cell>/<table_name> (a path that exists, as
+    production's `[ -e ]`) are planned; a published table is never extracted again for publishing, replaced or re-tested.
+    Returns {'present': {(sb, st): path}, 'missing': [(sb, st)], 'extract': {sb: [Stokes]}, 'scale_only': {sb: published I},
+    'refused': {(sb, st): (gate, reason)}} for the subbands ``sbs`` (in order):
+    - every pair of ``stokes`` present: the subband is not extracted (production skips it before staging);
+    - Stokes V missing, I present: I and V are extracted (the V child takes the I scale from the I table it finds in its own
+      output directory, as production's run does); only V is published, and its scale is tested against the PUBLISHED I
+      (flux_scale, sibling_i) before publishing - production extracts both and its `cp -n` keeps the published I untested;
+    - Stokes I missing, V present (published, whether or not V is requested): the I pair is refused before extraction (G10) -
+      V carries the scale of the I it was extracted with, and an I extracted now need not match it; production would ship the
+      new I beside the old V. Replace both with --supersede;
+    - otherwise the missing pairs are extracted and published."""
+    present, missing, extract, scale_only, refused = {}, [], {}, {}, {}
+    for sb in sbs:
+        path = {st: os.path.join(out, cell, table_name(cell, sb, st)) for st in ('I', 'V')}
+        have = {st for st in ('I', 'V') if os.path.exists(path[st])}
+        for st in stokes:
+            if st in have:
+                present[(sb, st)] = path[st]
+        miss = [st for st in stokes if st not in have]
+        missing += [(sb, st) for st in miss]
+        if not miss:
+            continue
+        if 'I' in miss and 'V' in have:
+            refused[(sb, 'I')] = ('G10', f'--only-missing: the Stokes V table {path["V"]} is published without its Stokes I '
+                                         f'table; V carries the scale of the I it was extracted with and an I extracted now '
+                                         f'need not match it (replace both with --supersede)')
+            continue
+        if miss == ['V']:
+            extract[sb] = ['I', 'V']
+            scale_only[sb] = path['I']
+        else:
+            extract[sb] = miss
+    return {'present': present, 'missing': missing, 'extract': extract, 'scale_only': scale_only, 'refused': refused}
+
+
 def stage_problems(stage_root, plan):
     """Gate G4 on a staged cell: {subband: problem} for planned subbands whose staging is not complete: no directory, no
     decompressed frame, compressed or temporary leftovers (.fs/.fz/.tmp), or a staging list (.filelist, as the fleet and
