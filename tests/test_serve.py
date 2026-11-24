@@ -1753,8 +1753,9 @@ def test_sublst_filters():
 
 
 def test_snapshot_steps():
-    """THE FOUR STEPS ON THE SNAPSHOT REVIEW COPY (snapshot_serve.sh:164-198, exopipe_ops 607f7a2 + acfa685): after the carry and
-    before any page starts, snapshot_copy runs scintillation_index.py, page_context_snapshot.py, bright_source_filter_precompute.py
+    """THE FIVE STEPS ON THE SNAPSHOT REVIEW COPY (snapshot_serve.sh:164-210, exopipe_ops 607f7a2 + acfa685 + 1a9f9c8): after the carry
+    and before any page starts, snapshot_copy runs scintillation_index.py, page_context_snapshot.py, tess/tess_coverage.py (under the
+    site's TESS interpreter; refused when it is not on the host), bright_source_filter_precompute.py
     (after its --help names the snapshot tier; per served Stokes, I first, and cadence) and build_detections_index.py on DST with
     production's arguments, working directories and environment (a parity run's tool caches under --out); each output is recorded
     under its class and its content tests pass; a failure of any refuses its unit and stops the later stages; a start without them
@@ -1775,6 +1776,7 @@ def test_snapshot_steps():
             f'cd {OPS} && NUMPY_MADVISE_HUGEPAGE=0 {PY} page_context_snapshot.py $DST --workers {S.SNAPSHOT_PAGE_CONTEXT_WORKERS} > '
             f'$DST/page_context_snapshot.log 2>&1',
             'REFUSING: the page context of $NAME was not built',
+            'tess_coverage.py --run $DST --epoch-from-cand-id > $DST/tess_coverage.log 2>&1',   # 1a9f9c8 (its own interpreter)
             'BSF_STOKES="I V"; [ "$SNAP_STOKES" = V ] && BSF_STOKES=V',
             f'{PY} {scripts.path("bright_source_filter")} --help 2>&1 | grep -qw {tier}',
             f'for S in $BSF_STOKES; do for C in {" ".join(S.SNAPSHOT_BRIGHT_CADENCES)}; do',
@@ -1787,11 +1789,13 @@ def test_snapshot_steps():
     pos = [sh.find(f_) for f_ in frag]
     assert all(p_ >= 0 for p_ in pos) and pos == sorted(pos), [f_[:70] for f_, p_ in zip(frag, pos) if p_ < 0] or pos
     rf = sh[pos[2]:sh.find('\n', pos[2])]
-    assert 'exit 4' in rf and all(os.path.isfile(scripts.path(n_)) for n_ in
-                                  ('scintillation_index', 'page_context_snapshot', 'bright_source_filter', 'build_detections_index')), rf
-    ok('snapshot steps: production runs the scintillation index, the page context (refusing, acfa685), the bright-source filter '
-       '(after its --help check; I and V, or V for SNAP_STOKES=V; per cadence) and the page index on $DST in this order before the '
-       'pages, with the port\'s arguments, working directories, environment and peak cache; all four resolve in place')
+    rt = sh[pos[3]:sh.find('exit 4', pos[3]) + 6]
+    assert 'exit 4' in rf and 'REFUSING: the TESS coverage' in rt and all(os.path.isfile(scripts.path(n_)) for n_ in (
+        'scintillation_index', 'page_context_snapshot', 'tess_coverage', 'bright_source_filter', 'build_detections_index')), (rf, rt)
+    ok('snapshot steps: production runs the scintillation index, the page context (refusing, acfa685), the TESS coverage '
+       '(refusing, 1a9f9c8), the bright-source filter (after its --help check; I and V, or V for SNAP_STOKES=V; per cadence) and the '
+       'page index on $DST in this order before the pages, with the port\'s arguments, working directories, environment and peak '
+       'cache; all five resolve in place')
 
     D = f'{T}/snap_steps'
     a = _ns(tier='snapshot', run_label='Run_SNAPSTEP', source=f'{D}/src/Run_SNAPSTEP', label='steps test')
@@ -1897,6 +1901,9 @@ def test_snapshot_steps():
                 w_sci()
             elif name == 'page_context_snapshot':
                 w_pctx()
+            elif name == 'tess_coverage':
+                with open(f'{DST}/tess_coverage.csv', 'w') as f:
+                    f.write(f'# tess_coverage.py (stand-in)\ncand_id,status,sector,camera,ccd\n{cid},not observed,,,\n')
             elif name == 'bright_source_filter':
                 w_bsf(args[args.index('--out') + 1], args[args.index('--stokes') + 1], args[args.index('--cadence') + 1])
             else:
@@ -1909,6 +1916,8 @@ def test_snapshot_steps():
               f'{DST}/scintillation_index.log', cw, NH),
              ('page_context_snapshot', [DST, '--workers', S.SNAPSHOT_PAGE_CONTEXT_WORKERS], f'{DST}/page_context_snapshot.log', None,
               NH),
+             ('tess_coverage', ['--run', DST, '--epoch-from-cand-id'] + ([] if CFG.pages_deep.TESS_REFRESH_IN_READER else
+                                                                          ['--no-refresh']), f'{DST}/tess_coverage.log', cw, {}),
              ('bright_source_filter', ['--help'], None, cw, {})]
             + [('bright_source_filter', [DST, '--tier', tier, '--stokes', s_, '--cadence', c_, '--out',
                                          f'{DST}/bright_source_filter_{s_}_{c_}.npz', '--workers', S.SNAPSHOT_BRIGHT_WORKERS,
@@ -1917,33 +1926,38 @@ def test_snapshot_steps():
             + [('build_detections_index', ['--run', DST], f'{DST}/page_index_build.log', None, {})])
     steps = tuple(st for st, _ in SC.STEP_STAGES)
     unit_of = {st: f'snapshot_Run_SNAPSTEP_{st.replace("-", "_")}' for st in steps}
-    orig = (scripts.run, S.SNAPSHOT_SERVE_HOLD, CFG.paths.SNAPSHOT_FLEET_OUT)
+    orig = (scripts.run, S.SNAPSHOT_SERVE_HOLD, CFG.paths.SNAPSHOT_FLEET_OUT, scripts.interpreter_or_none)
     scripts.run, S.SNAPSHOT_SERVE_HOLD, CFG.paths.SNAPSHOT_FLEET_OUT = fake_run, f'{D}/NO_HOLD', fleet
+    scripts.interpreter_or_none = lambda key: sys.executable          # the site's TESS interpreter need not be on this host
     try:
         res = {}
-        for case in ('ok', 'scintillation_index', 'page_context_snapshot', 'help', 'bright_source_filter', 'build_detections_index'):
+        for case in ('ok', 'scintillation_index', 'page_context_snapshot', 'tess_coverage', 'help', 'bright_source_filter',
+                     'build_detections_index'):
             calls.clear()
             mode['fail'] = case
-            for f_ in glob.glob(f'{DST}/scintillation_index.*') + glob.glob(f'{DST}/bright_source_filter_*.npz') + [sidecar]:
+            for f_ in (glob.glob(f'{DST}/scintillation_index.*') + glob.glob(f'{DST}/bright_source_filter_*.npz') + [sidecar]
+                       + [f'{DST}/tess_coverage.csv']):
                 if os.path.exists(f_):
                     os.remove(f_)
             shutil.rmtree(f'{DST}/page_index', ignore_errors=True)
             run = Run('serve', ['test'], f'{out}_{case}', CFG, config_sections=None)
             SC.run(a, run, plan, steps)
             res[case] = run
-            n_want = {'ok': len(want), 'scintillation_index': 1, 'page_context_snapshot': 2, 'help': 3,
-                      'bright_source_filter': 4, 'build_detections_index': len(want)}[case]
+            n_want = {'ok': len(want), 'scintillation_index': 1, 'page_context_snapshot': 2, 'tess_coverage': 3, 'help': 4,
+                      'bright_source_filter': 5, 'build_detections_index': len(want)}[case]
             assert calls == want[:n_want], (case, calls[len(calls) - 1:], want[n_want - 1:n_want])
         u = {x.name: x for x in res['ok'].units}
         assert [x.name for x in res['ok'].units] == [unit_of[st] for st in steps] and all(x.status == 'done' for x in u.values()), \
             [(x.name, x.status, x.reason) for x in res['ok'].units]
         cls = Counter(o['class'] for x in u.values() for o in x.outputs)
-        assert cls == {'scintillation_index': 1, 'snapshot_page_context': 1, 'bright_source_filter': 4, 'detections_index': 1}, cls
+        assert cls == {'scintillation_index': 1, 'snapshot_page_context': 1, 'tess_coverage': 1, 'bright_source_filter': 4,
+                       'detections_index': 1}, cls
         tests_ = [t for x in u.values() for t in x.tests]
         assert tests_ and all(t['passed'] for t in tests_), [t for t in tests_ if not t['passed']]
         assert res['ok'].exit_code() == 0
         for case, st, text in (('scintillation_index', 'scintillation', 'scintillation_index.py on the review copy'),
                                ('page_context_snapshot', 'page-context', 'page_context_snapshot.py on the review copy'),
+                               ('tess_coverage', 'tess', 'tess/tess_coverage.py on the review copy'),
                                ('help', 'bright-filter', f'has no {tier} tier'),
                                ('bright_source_filter', 'bright-filter', 'bright_source_filter_precompute.py I 10s on the review copy'),
                                ('build_detections_index', 'page-index', 'page index: build_detections_index.py --run')):
@@ -1960,11 +1974,20 @@ def test_snapshot_steps():
         xk = run_k.units[-1]
         assert (xk.name == unit_of['page-index'] and xk.status == 'done' and not calls and any('current, kept' in n_ for n_ in xk.notes)
                 and xk.tests and all(t['passed'] for t in xk.tests)), (xk.name, xk.status, xk.reason, calls, xk.notes)
-        ok(f'snapshot steps: {len(want)} calls in production\'s order with its arguments (parity: caches under --out); 7 outputs '
+        # no TESS interpreter on the host: the tess unit refuses before any call; nothing later runs
+        scripts.interpreter_or_none = lambda key: None
+        calls.clear()
+        run_n = Run('serve', ['test'], f'{out}_notess', CFG, config_sections=None)
+        SC.run(a, run_n, plan, steps)
+        xn = run_n.units[-1]
+        assert (xn.name == unit_of['tess'] and xn.status == 'refused' and "PYTHON['tess']" in xn.reason and run_n.exit_code() == 2
+                and [c_[0] for c_ in calls] == ['scintillation_index', 'page_context_snapshot']), (xn.name, xn.status, xn.reason, calls)
+        scripts.interpreter_or_none = lambda key: sys.executable
+        ok(f'snapshot steps: {len(want)} calls in production\'s order with its arguments (parity: caches under --out); 8 outputs '
            f'recorded, their {len(tests_)} content tests and checks pass; a failure of each tool (and a --help without the {tier} tier) '
            f'refuses its unit and nothing later runs - exit 2; the page index goes through flow.page_index_stage (no working '
-           f'directory, a current index kept without a tool call)')
-        # G28: a start without the four steps in the same invocation needs their records
+           f'directory, a current index kept without a tool call); no TESS interpreter refuses the tess unit before its call')
+        # G28: a start without the five steps in the same invocation needs their records
         req = []
         o_req, o_start, o_exp = flow.require_done, flow.start_stage, flow.expected_from_record
         flow.require_done = lambda run_, unit, what: req.append(unit)
@@ -1975,10 +1998,10 @@ def test_snapshot_steps():
         finally:
             flow.require_done, flow.start_stage, flow.expected_from_record = o_req, o_start, o_exp
         assert req == ['snapshot_Run_SNAPSTEP_gate_copy'] + [unit_of[st] for st in steps], req
-        ok('snapshot steps: a start without them in the invocation requires the records of the gate on the copy and of all four '
+        ok('snapshot steps: a start without them in the invocation requires the records of the gate on the copy and of all five '
            '(G28)')
     finally:
-        scripts.run, S.SNAPSHOT_SERVE_HOLD, CFG.paths.SNAPSHOT_FLEET_OUT = orig
+        scripts.run, S.SNAPSHOT_SERVE_HOLD, CFG.paths.SNAPSHOT_FLEET_OUT, scripts.interpreter_or_none = orig
     # negative controls on the content tests (the files of the 'ok' case rewritten one fault at a time)
     neg = []
     w_sci()
