@@ -127,11 +127,8 @@ def _pin(cores):
         if not cores:
             raise SystemExit('refused: could not read the recorder-free cores (runner.FREE_CORES_CMD); '
                              'pass --cores LIST or --cores none')
-    cpus = set()
-    for part in cores.split(','):
-        a, _, b = part.partition('-')
-        cpus.update(range(int(a), int(b or a) + 1))
-    os.sched_setaffinity(0, cpus)
+    from exopipe.phase3.core.env import parse_cores
+    os.sched_setaffinity(0, parse_cores(cores))
     return cores
 
 

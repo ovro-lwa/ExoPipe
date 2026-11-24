@@ -9,13 +9,18 @@ driver against a fake Slurm (tests/fake_slurm.py). Every call is one subprocess;
     accounting(ids)                            -> {job id: {'state', 'exit', 'elapsed', 'maxrss', 'nodes'}} (sacct; jobs
                                                   slurmdbd does not know yet are absent)
     cancel(ids)                                -> scancel of exactly these job ids (the driver passes only ids it submitted)
+    node_states(nodes)                         -> {node: sinfo state} (driver.SINFO); None when sinfo failed
+    node_usable(state)                         -> whether a node in that state can start a job
 """
+import re
 import shlex
 import subprocess
 
 SQUEUE_FORMAT = '%i|%T|%r|%j'
 SACCT_FIELDS = 'JobIDRaw,State,ExitCode,Elapsed,MaxRSS,NodeList'
 TIMEOUT_S = 60
+NODE_USABLE = ('idle', 'mixed', 'allocated', 'completing', 'planned')   # sinfo %T base states that start jobs
+NODE_BAD_FLAGS = '*~#!%$@^'    # sinfo state suffixes: not responding, powered down, powering up/down, maintenance, reboot
 
 
 class SlurmError(RuntimeError):
@@ -133,3 +138,32 @@ def cancel(ids):
     if ids:
         _run(_cmd('SCANCEL') + ids)
     return ids
+
+
+def node_states(nodes):
+    """{node: state} from sinfo (one line per node, %T: the long state with its suffix flags, e.g. 'mixed', 'drained',
+    'down*') for the given node names; None when sinfo failed (the caller then acts on no node's state)."""
+    nodes = [n for n in dict.fromkeys(nodes) if n]
+    if not nodes:
+        return {}
+    try:
+        out = _run(_cmd('SINFO') + ['-h', '-N', '-n', ','.join(nodes), '-o', '%N|%T'])
+    except SlurmError as e:
+        print(f'sinfo failed: {e}', flush=True)
+        return None
+    states = {}
+    for line in out.splitlines():
+        p = line.strip().split('|')
+        if len(p) == 2 and p[0]:
+            states[p[0]] = p[1]
+    return states
+
+
+def node_usable(state):
+    """Whether a node in sinfo state ``state`` can start a job: base state idle, mixed, allocated, completing or planned,
+    with no flag of a node that is not responding, powered down, in maintenance or rebooting. Down, drained, draining,
+    failing, unknown and absent (None) are not usable."""
+    if not state:
+        return False
+    base = re.split(r'[^a-z_]', state.lower(), 1)[0]
+    return base in NODE_USABLE and not set(state) & set(NODE_BAD_FLAGS)

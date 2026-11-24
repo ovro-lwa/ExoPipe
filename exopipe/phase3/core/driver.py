@@ -11,27 +11,38 @@ The step commands carry --resume (forwarded to every step), so a stage that runs
 
 THE JOBS. Each chain step k of an hour is one Slurm job `exopipe3 drive stage <job> <epoch> <k>` named <prefix><epoch>.s<k>,
 submitted with --dependency=afterok:<the job of step k-1>,singleton on the hour's node (one node per hour: the chain's steps
-share node-local scratch, the runner's rule). `drive stage` (run_stage) is requeue-safe: it does nothing for a step its record
-shows done or no-input, and otherwise runs the step (pinned to the job's allowed cores that are not recorder cores) and records
-it in the item record as the runner does. After the chain ends (done, no-input, refused or failed) one closing job
-`drive finally <job> <epoch>` runs the chain's closing steps (runner.CHAIN_FINALLY: the hour's email).
+share node-local scratch, the runner's rule; an hour that has jobs keeps its node). Each job's command runs as a Slurm job step
+(driver.SRUN): a cancelled, preempted or timed-out job then sends SIGTERM to the stage process, which passes it on to the
+chain step once (_Term), and the step records 'interrupted'.
+`drive stage` (run_stage) is requeue-safe: it does nothing for a step its record shows done, no-input or cells-refused, and
+otherwise runs the step (pinned to the job's allowed cores that are not recorder cores) and records it in the item record as
+the runner's chain does, cell refusals included (runner.CELL_REFUSAL_CHAINS, the 'epoch' chain: a step's exit 2 whose
+refusals all name their cell is recorded 'cells-refused' and the chain goes on; every later step gets the refused cells in
+record.UPSTREAM_ENV; the hour then ends 'cells-refused' with refused_cells, refused_by_cell and summary for the email). After
+the chain ends (done, no-input, cells-refused, refused or failed) one closing job `drive finally <job> <epoch>` runs the
+chain's closing steps (runner.CHAIN_FINALLY: the hour's email).
 
 EACH PASS (tick, once a minute under `drive loop`):
   1. requests of `drive add` / `drive retry` (files under requests/; the loop is the only writer of the hour records);
   2. discovery (driver.FIRST_NIGHT set): every hour <LST>_<date>, date >= FIRST_NIGHT, whose latest Phase 2 run holds
-     driver.PHASE2_READY_FILE (Phase 2's last write in per-hour mode) enters as a 'night' hour;
+     driver.PHASE2_READY_FILE (Phase 2's last write in per-hour mode) enters as a 'night' hour (an hour not ready is looked
+     at again after a delay doubling up to driver.DISCOVER_BACKOFF_MAX_S);
   3. squeue once (a failed squeue: nothing is done this pass); sacct for the jobs that ended (state, exit, elapsed, peak memory,
      node: recorded per submission, requirement 8 of the design);
-  4. each hour in flight, from its record: the first step not done or no-input is the open step. A live job of it: wait.
-     None (it ended without finishing - error, killed, timeout, out of memory, node failure - or a parent's job failed and
-     left it pending with DependencyNeverSatisfied): cancel the hour's remaining jobs (exact ids) and resubmit the chain from
-     the open step; a step that had started counts one failure, and after driver.RETRY failures the hour ends 'failed'.
-     A refused step ends the hour 'refused' (its pending children are cancelled). An ended chain gets its closing job; when
-     that has ended the hour is finished and its space booking released;
+  4. each hour in flight, from its record: the first step not done, no-input or cells-refused is the open step. A live job
+     of it: wait - unless it is pending on a node Slurm reports down or drained (sinfo): then its jobs are cancelled and the
+     hour waits again with the reason recorded (rebooked on any node when none of its stages has run; else it waits for its
+     node). None (it ended without finishing - error, killed, timeout, out of memory, node failure - or a parent's job failed
+     and left it pending with DependencyNeverSatisfied): cancel the hour's remaining jobs (exact ids) and resubmit the chain;
+     a step that had started counts one failure and the steps run again by the runner's retry rule (resume_steps), and after
+     driver.RETRY failures the hour ends 'failed'. A refused step ends the hour 'refused' (its pending children are
+     cancelled). An ended chain gets its closing job (a refused sbatch is retried, not counted); when that has ended the
+     hour's space booking is released, and once sacct has every submission's end it moves to finished/;
   5. waiting hours are submitted in catch-up windows (driver.WINDOW_HOURS per tier, night before backlog, newest night first),
      each after its space booking: driver.SCRATCH_BOOK_BYTES on the chosen node's scratch disk (and driver.SHARED_BOOK),
      against the disk's real free space minus every other booking minus the floor; an hour that does not fit waits;
   6. periodic jobs (driver.PERIODIC: the daily TESS orbit table refresh) are submitted when due.
+Each hour record is written as soon as a submission, cancellation or runner job is made, not only at the end of the pass.
 Every pass with --dry-run prints the actions and the sbatch command lines, submits and cancels nothing and writes nothing.
 
 Not here (design, other items): page-build coalescing (the publish builder: the chain's pages step is the build request); the
@@ -47,17 +58,25 @@ import shlex
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 
 from exopipe.phase3.core import slurm
+from exopipe.phase3.core.record import UPSTREAM_ENV
+from exopipe.phase3.core.env import cores_text, parse_cores
 
-DONE_STEP = ('done', 'no-input')          # a chain step after which the chain goes on (runner: exit 0, or 3 = nothing to do)
-CHAIN_END = ('done', 'no-input', 'refused', 'failed')    # the item statuses that end an hour's chain (runner.TERMINAL)
+CELLS_REFUSED = 'cells-refused'           # runner.CELLS_REFUSED: a step (or item) that went on past refused cells
+# a chain step after which the chain goes on: done (exit 0), no-input (exit 3: nothing to do) or cells-refused (exit 2 whose
+# refusals are all per cell, in a chain of runner.CELL_REFUSAL_CHAINS: the hour's other cells go on)
+DONE_STEP = ('done', 'no-input', CELLS_REFUSED)
+CHAIN_END = ('done', 'no-input', 'refused', 'failed', CELLS_REFUSED)    # item statuses that end an hour (runner.TERMINAL)
 TIERS = ('night', 'backlog')
 IN_FLIGHT = ('active', 'closing')
+# hour states: waiting -> active -> closing (the closing job) -> accounting (every submission's sacct record) -> finished
 DEP_NEVER = 'DependencyNeverSatisfied'
 STALE_ACCT_S = 86400                       # s: a submission sacct still does not list after this is recorded 'unknown'
 _DATE_RE = re.compile(r'^\d{4}-\d{2}-\d{2}$')
+_NOT_READY = {}     # epoch -> (time of its next look, delay s): discovery back-off of the hours not ready, per driver process
 
 
 def _cfg():
@@ -146,6 +165,13 @@ def _note(h, text):
     del h['notes'][:-20]
 
 
+def _persist(ps, h):
+    """Write the hour's record now, not only at the end of the pass: each submission, cancellation and new runner job is on
+    disk before anything later in the pass can fail, so the next pass never submits the hour a second time."""
+    if not ps.dry and h.get('state') not in (None, 'finished'):
+        _wjson(hour_path(h['epoch']), h)
+
+
 class Lock:
     """One driver at a time: an exclusive flock on <root>/LOCK (Lustre is mounted with flock: coherent across nodes), held
     for the process's life (released when it exits, however it exits). The file names the holder."""
@@ -175,7 +201,8 @@ def request(action, epochs, tier=None):
     """`drive add` / `drive retry`: a request file the driver applies at its next pass (it is the only writer of the hour
     records). Returns its path."""
     d = os.path.join(root(), 'requests')
-    p = os.path.join(d, f'{time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())}_{_host()}_{os.getpid()}_{action}.json')
+    p = os.path.join(d, f'{time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())}_{_host()}_{os.getpid()}_{os.urandom(4).hex()}_'
+                        f'{action}.json')     # unique: two requests of one process in one second never share a file
     _wjson(p, {'action': action, 'epochs': list(epochs), 'tier': tier, 'made': _now(), 'by': getpass.getuser()})
     return p
 
@@ -198,30 +225,52 @@ def open_step(j, rec):
     return None
 
 
-def chain_outcome(j, rec):
-    """The item status once every step is done or no-input: 'no-input' when every step had nothing to do, else 'done'
-    (the runner's rule)."""
+def item_outcome(j, rec):
+    """The item status once every step is done, no-input or cells-refused (the runner's rule): 'cells-refused' when a step
+    refused cells (complete with refused cells, never done), 'no-input' when every step had nothing to do, else 'done'."""
+    steps = (rec.get('steps') or [])[:len(j['chain_steps'])]
+    if any(s.get('status') == CELLS_REFUSED for s in steps):
+        return CELLS_REFUSED
+    return 'no-input' if steps and all(s.get('status') == 'no-input' for s in steps) else 'done'
+
+
+def close_record(j, rec, status):
+    """Set the item's end status with what the runner records beside it (runner._run_item): every cell refusal of the
+    item (refused_cells), one entry per refused cell (refused_by_cell, the hour's email reads it) and the one-line
+    outcome (summary). The entries of this attempt are those not queued again (a later entry from an earlier attempt was
+    set back to queued when the chain was resubmitted)."""
+    r = _runner()
+    steps_now = [e for e in rec.get('steps') or [] if e.get('status') != 'queued']
+    refused = r.refused_cells_of(steps_now)
+    rec.update(status=status, refused_cells=refused, refused_by_cell=r.refused_by_cell(refused),
+               summary=r.chain_outcome(status, steps_now, len(j['chain_steps'])))
+    return rec
+
+
+def resume_steps(j, rec):
+    """The chain steps a retried hour runs again, by the runner's rule (runner._run_item): every step that did not end
+    done (no-input included), and in a chain of runner.CELL_REFUSAL_CHAINS (job.json cell_refusals) every step from its
+    first step that ended neither done nor no-input on. Indexes, in order."""
     steps = rec.get('steps') or []
-    return 'no-input' if steps and all(s.get('status') == 'no-input' for s in steps[:len(j['chain_steps'])]) else 'done'
+    at = len(steps)
+    if j.get('cell_refusals'):
+        at = next((k for k, e in enumerate(steps) if e.get('status') not in ('done', 'no-input')), len(steps))
+    return [k for k in range(len(j['chain_steps'])) if k >= at or k >= len(steps) or steps[k].get('status') != 'done']
 
 
-def _parse_cores(text):
-    cpus = set()
-    for part in (text or '').strip().split(','):
-        if part:
-            a, _, b = part.partition('-')
-            cpus.update(range(int(a), int(b or a) + 1))
-    return cpus
-
-
-def _cores_text(cpus):
-    cpus, runs = sorted(cpus), []
-    for c in cpus:
-        if runs and c == runs[-1][1] + 1:
-            runs[-1][1] = c
-        else:
-            runs.append([c, c])
-    return ','.join(f'{a}-{b}' if b > a else f'{a}' for a, b in runs)
+def requeue(job, item, rec, ks):
+    """Set the entries of steps ``ks`` back to 'queued' (their earlier status kept as previous_status); written when one
+    changed. The steps then run again (run_stage); --resume still skips their finished units."""
+    steps = rec.get('steps') or []
+    changed = False
+    for k in ks:
+        if k < len(steps) and steps[k].get('status') != 'queued':
+            steps[k]['previous_status'] = steps[k].get('status')
+            steps[k]['status'] = 'queued'
+            changed = True
+    if changed:
+        _write_item(job, item, rec)
+    return changed
 
 
 def stage_cores():
@@ -232,29 +281,44 @@ def stage_cores():
     allowed = os.sched_getaffinity(0)
     try:
         out = subprocess.run(_cfg().runner.FREE_CORES_CMD, shell=True, capture_output=True, text=True, timeout=60)
-        free = _parse_cores(out.stdout) if out.returncode == 0 else set()
+        free = parse_cores(out.stdout) if out.returncode == 0 else set()
     except (OSError, ValueError, subprocess.TimeoutExpired):
         free = set()
     if not free:
         return None, f'the recorder-free cores of this node could not be read ({_cfg().runner.FREE_CORES_CMD})'
     use = allowed & free
     if not use:
-        return None, (f'the job\'s allocation (cores {_cores_text(allowed)}) holds only data-recorder cores (free: '
-                      f'{_cores_text(free)})')
-    return _cores_text(use), None
+        return None, (f'the job\'s allocation (cores {cores_text(allowed)}) holds only data-recorder cores (free: '
+                      f'{cores_text(free)})')
+    return cores_text(use), None
 
 
 class _Term:
+    """SIGTERM to the stage process: passed on to the chain step ONCE. Slurm signals only the job step's task - this
+    process, run under driver.SRUN - not its children (Slurm 24.05.2 on this cluster, 2026-11-24: a srun task got SIGTERM
+    at scancel and at the time limit, jobs 264227 and 264229, while the step it had started ran on to SIGKILL after
+    KillWait, 30 s, job 264219; without srun even the batch script's processes got none, job 264102). The step runs in a
+    session of its own (start_new_session), so a signal to this process's group never reaches it a second time: a second
+    SIGTERM would end it at once, without clean-up (cli._sigterm_interrupts). The step then records 'interrupted' and
+    stops; this process records it and exits 143. A step killed without a record stays 'running' with no live job, which
+    the driver reads as killed (advance) and resubmits; --resume redoes only the unfinished units."""
+
     def __init__(self):
         self.got = False
+        self.child = None
+        self.sent = False
+
+    def forward(self):
+        if self.got and self.child is not None and not self.sent:
+            self.sent = True
+            try:
+                os.kill(self.child, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
 
     def __call__(self, signum, frame):
-        # A SIGTERM to this process is not forwarded to the step: when Slurm signals every process of the job the step has
-        # its own, and a second SIGTERM would end it at once (cli._sigterm_interrupts). Observed on this cluster (Slurm
-        # 24.05.2, 2026-11-24, job 264102): scancel of a running stage job delivered no SIGTERM to the step, which ran on
-        # until SIGKILL 30 s later (KillWait; sacct exit 0:9). Its entry then stays 'running' with no live job, which the
-        # driver reads as killed (advance) and resubmits; --resume redoes only the unfinished units.
         self.got = True
+        self.forward()
 
 
 def _write_item(job, item, rec):
@@ -309,25 +373,56 @@ def run_stage(job, item, k):
     full = [j['python']] + list(cfg.driver.STEP_HEAD) + argvs[k] + ['--cores', cores]
     entry.update(argv=full, cores=cores)
     rec['argv'] = full
+    cellwise = bool(j.get('cell_refusals'))
+    env = r._child_env(j, root_)
+    env.pop(r.OUTCOME_FD_ENV, None)
+    env.pop(UPSTREAM_ENV, None)
+    if cellwise:
+        # the cells earlier steps of the hour refused: the unit framework refuses them in this step before any work
+        # (record.UPSTREAM_ENV, code UPSTREAM-REFUSED) - the runner's chain rule
+        upstream = r.upstream_of(r.refused_cells_of(steps[:k]))
+        if upstream:
+            env[UPSTREAM_ENV] = json.dumps(upstream, sort_keys=True)
     print(f'\n===== {_now()} {_host()} slurm job {entry["slurm_job"]} (restart {entry["slurm_restart"]}) attempt '
           f'{entry["attempt"]} {tag}: {" ".join(map(shlex.quote, full))}'
           + (f'  [code {j["code_commit"]}]' if j.get('code_commit') else ''), flush=True)
     term = _Term()
     old = signal.signal(signal.SIGTERM, term)
+    ofile = tempfile.TemporaryFile(prefix='exopipe3_step_outcome_')      # the step's outcome (runner.step_outcome)
     try:
-        p = subprocess.Popen(full, stdin=subprocess.DEVNULL, cwd=root_, env=r._child_env(j, root_))
+        env[r.OUTCOME_FD_ENV] = str(ofile.fileno())
+        p = subprocess.Popen(full, stdin=subprocess.DEVNULL, cwd=root_, env=env, pass_fds=(ofile.fileno(),),
+                             start_new_session=True)
+        term.child = p.pid
+        term.forward()                             # a SIGTERM that came while the step was being started
         entry['pid'] = rec['pid'] = p.pid
         _write_item(job, item, rec)
         rc = p.wait()
+        outcome = r.read_outcome(ofile)
     finally:
         signal.signal(signal.SIGTERM, old)
+        ofile.close()
     s = 'interrupted' if term.got else r.RC_STATUS.get(rc, 'error')
-    entry.update(status=s, rc=rc, finished=_now())
+    cells = r.cell_refusals(outcome, rc) if cellwise and not term.got else None
+    entry.update(status=CELLS_REFUSED if cells is not None else s, rc=rc, finished=_now())
+    if outcome is not None:
+        entry['units'] = r.unit_counts(outcome)
+    if cells is not None:
+        entry['refused_cells'] = cells
+        entry['upstream_refused_units'] = sum(1 for u in outcome.get('units') or [] if u.get('upstream'))
+        for c in cells:
+            print(f'===== {_now()} {tag}: refused cell {c["cell"]}' + (f' {c["subband"]}' if c.get('subband') else '')
+                  + f' (unit {c["unit"]}, code {c["code"] or "none named"}): {c["reason"]}', flush=True)
+    s = entry['status']
     if s in DONE_STEP:
-        last = k == len(argvs) - 1
-        rec['status'] = chain_outcome(j, rec) if last else 'running'
+        if k == len(argvs) - 1:
+            close_record(j, rec, item_outcome(j, rec))
+        else:
+            rec['status'] = 'running'
+    elif s == 'refused':
+        close_record(j, rec, 'refused')
     else:
-        rec['status'] = 'refused' if s == 'refused' else 'error'
+        rec['status'] = 'error'
     rec.update(rc=rc, finished=_now())
     _write_item(job, item, rec)
     print(f'===== {_now()} {tag}: {s} (exit {rc}); item {rec["status"]}', flush=True)
@@ -371,7 +466,10 @@ def run_finally(job, item):
         term = _Term()
         old = signal.signal(signal.SIGTERM, term)
         try:
-            p = subprocess.Popen(full, stdin=subprocess.DEVNULL, cwd=root_, env=r._child_env(j, root_))
+            p = subprocess.Popen(full, stdin=subprocess.DEVNULL, cwd=root_, env=r._child_env(j, root_),
+                                 start_new_session=True)
+            term.child = p.pid
+            term.forward()
             entry['pid'] = p.pid
             _write_item(job, item, rec)
             frc = p.wait()
@@ -403,17 +501,23 @@ def periodic_name(name):
 
 
 def _job_env(pkg_root, site_file):
-    rest = [p for p in (os.environ.get('PYTHONPATH') or '').split(os.pathsep) if p and p != pkg_root]
-    env = {'PYTHONPATH': os.pathsep.join([pkg_root] + rest)}      # the package root first (runner._child_env)
-    if site_file:
-        env['EXOPIPE3_SITE'] = site_file
-    env.update(_cfg().runner.ENV_DEFAULTS)
-    return env
+    """The variables of the runner's step environment (runner._child_env: the package root first on PYTHONPATH,
+    EXOPIPE3_SITE, runner.ENV_DEFAULTS) that differ from this process's; the job gets the rest from it (--export=ALL)."""
+    env = _runner()._child_env({'pkg_root': pkg_root, 'site_file': site_file})
+    return {k: v for k, v in env.items() if os.environ.get(k) != v}
 
 
-def shell_command(pkg_root, site_file, argv):
-    """A job's command line: cd to the package tree, then exec the command with the runner's step environment."""
+def srun_argv(cpus):
+    """The job-step prefix of a job's command (driver.SRUN; [] when ''): one task with every core of the job."""
+    head = shlex.split(_cfg().driver.SRUN or '')
+    return head + ['--ntasks=1', '--nodes=1', f'--cpus-per-task={int(cpus)}', '--export=ALL'] if head else []
+
+
+def shell_command(pkg_root, site_file, argv, cpus=None):
+    """A job's command line: cd to the package tree, then exec the command with the runner's step environment, as a job
+    step (srun_argv) when ``cpus`` is given."""
     env = _job_env(pkg_root, site_file)
+    argv = (srun_argv(cpus) if cpus else []) + list(argv)
     return (f'cd {shlex.quote(pkg_root)} && exec env ' + ' '.join(f'{k}={shlex.quote(v)}' for k, v in sorted(env.items()))
             + ' ' + ' '.join(map(shlex.quote, argv)))
 
@@ -455,6 +559,22 @@ class Pass:
         self.actions = []
         self.out = out or (lambda s: print(s, flush=True))
         self.changed = set()
+        self._free = {}             # (host, path) -> free bytes, read once per pass (free_bytes runs ssh for another host)
+        self._states = {}           # node -> sinfo state, read once per pass (None: sinfo failed)
+
+    def free(self, host, path):
+        if (host, path) not in self._free:
+            self._free[(host, path)] = free_bytes(host, path)
+        return self._free[(host, path)]
+
+    def node_state(self, host):
+        """The node's sinfo state ('' when sinfo failed or does not list it); one sinfo per pass for the pool's nodes."""
+        if host not in self._states:
+            ask = [n for n in dict.fromkeys(self.nodes() + [host]) if n not in self._states]
+            got = slurm.node_states(ask)
+            for n in ask:
+                self._states[n] = (got or {}).get(n, '')
+        return self._states[host]
 
     def act(self, text):
         self.actions.append(text)
@@ -501,7 +621,6 @@ def submit_chain(ps, h, j, k0, why):
     epoch = h['epoch']
     part = ps.partition_of(h['tier'])
     job = h['job'] or '<new job>'
-    _reset_after(ps, h, k0)
     jobs_root = j.get('jobs_root') or r.jobs_root()
     log = os.path.join(jobs_root, job, 'logs', f'{r._safe(epoch)}.log')
     prev = None
@@ -511,7 +630,8 @@ def submit_chain(ps, h, j, k0, why):
         res = resources(j['chain_steps'][k][0])
         dep = ','.join(([f'afterok:{prev}'] if prev else []) + ['singleton'])
         cmd = shell_command(j['pkg_root'], j.get('site_file'),
-                            [j['python'], '-m', 'exopipe.phase3'] + _stage_argv(job, epoch, k, ps.forward, jobs_root))
+                            [j['python'], '-m', 'exopipe.phase3'] + _stage_argv(job, epoch, k, ps.forward, jobs_root),
+                            cpus=res['cpus'])
         kw = dict(name=stage_name(epoch, k), partition=part, time_limit=res['time'], mem=res['mem'], cpus=res['cpus'],
                   output=log, chdir=j['pkg_root'], nodelist=h['node'], dependency=dep,
                   licenses=cfg.driver.LICENSES or None)
@@ -527,40 +647,37 @@ def submit_chain(ps, h, j, k0, why):
             break
         h['submissions'].append({'kind': 'stage', 'step': k, 'jobid': jid, 'submitted': _now(), 'why': why,
                                  'partition': part, 'node': h['node'], 'acct': None})
+        _persist(ps, h)
         ps.out(f'  {stage_name(epoch, k)} -> Slurm job {jid}' + (f' (after {prev})' if prev else ''))
         prev = jid
+    _persist(ps, h)
     ps.changed.add(epoch)
 
 
-def _reset_after(ps, h, k0):
-    """Before the chain is submitted from step k0: a later step whose record shows an end from an earlier pass runs again
-    (its inputs come from step k0 on), so its entry goes back to 'queued' (the earlier status kept as previous_status); its
-    finished units are still skipped by --resume when their inputs are unchanged."""
-    if ps.dry or not h.get('job'):
-        return
-    rec = _runner().item_state(h['job'], h['epoch'])
-    later = (rec.get('steps') or [])[k0 + 1:]
-    if any(e.get('status') != 'queued' for e in later):
-        for e in later:
-            if e.get('status') != 'queued':
-                e['previous_status'] = e.get('status')
-                e['status'] = 'queued'
-        _write_item(h['job'], h['epoch'], rec)
+def _usable(ps, node):
+    """False only when Slurm reports the node unusable (an unknown state counts as usable: no action on it)."""
+    state = ps.node_state(node)
+    return not state or slurm.node_usable(state)
 
 
 def submit_finally(ps, h, j, why):
+    """Submit the hour's closing job: on the hour's node, or, when Slurm reports that node unusable, on the first usable node
+    of the pool (the closing steps read the item record, not the node's scratch)."""
     cfg = _cfg()
     r = _runner()
     epoch = h['epoch']
+    node = h['node'] if _usable(ps, h['node']) else next((n for n in ps.nodes() if _usable(ps, n)), h['node'])
     part = ps.partition_of(h['tier'])
     jobs_root = j.get('jobs_root') or r.jobs_root()
     res = cfg.driver.FINALLY_RESOURCES
     cmd = shell_command(j['pkg_root'], j.get('site_file'),
-                        [j['python'], '-m', 'exopipe.phase3'] + _fin_argv(h['job'], epoch, ps.forward, jobs_root))
+                        [j['python'], '-m', 'exopipe.phase3'] + _fin_argv(h['job'], epoch, ps.forward, jobs_root),
+                        cpus=res['cpus'])
     kw = dict(name=fin_name(epoch), partition=part, time_limit=res['time'], mem=res['mem'], cpus=res['cpus'],
               output=os.path.join(jobs_root, h['job'], 'logs', f'{r._safe(epoch)}.log'), chdir=j['pkg_root'],
-              nodelist=h['node'], dependency='singleton')
-    ps.act(f'CLOSE {epoch}: chain {h["outcome"]}; closing steps {len(j["chain_finally"])} ({why})')
+              nodelist=node, dependency='singleton')
+    ps.act(f'CLOSE {epoch}: chain {h["outcome"]}; closing steps {len(j["chain_finally"])} ({why})'
+           + (f'; on {node}: Slurm reports {h["node"]} {ps.node_state(h["node"])}' if node != h['node'] else ''))
     if ps.dry:
         ps.out('    ' + ' '.join(map(shlex.quote, slurm.sbatch_argv(cmd, **kw))))
         return
@@ -569,9 +686,11 @@ def submit_finally(ps, h, j, why):
     except slurm.SlurmError as e:
         _note(h, f'sbatch of the closing job refused: {e}')
         ps.out(f'  sbatch of {epoch} closing job refused: {e}')
+        _persist(ps, h)
         return
     h['submissions'].append({'kind': 'finally', 'step': None, 'jobid': jid, 'submitted': _now(), 'why': why,
-                             'partition': part, 'node': h['node'], 'acct': None})
+                             'partition': part, 'node': node, 'acct': None})
+    _persist(ps, h)
     ps.out(f'  {fin_name(epoch)} -> Slurm job {jid}')
     ps.changed.add(epoch)
 
@@ -590,6 +709,7 @@ def _cancel(ps, h, ids, why):
     for i in ids:
         ps.live.pop(i, None)
     _note(h, f'cancelled {",".join(ids)}: {why}')
+    _persist(ps, h)
     ps.changed.add(h['epoch'])
 
 
@@ -602,8 +722,13 @@ def _end_chain(ps, h, j, rec, outcome, why):
     ps.changed.add(h['epoch'])
     live = [jid for key, js in ps.hour_jobs(h['epoch']).items() if key != 'fin' for jid, _, _ in js]
     _cancel(ps, h, live, f'the chain ended {outcome}; these stages can no longer run')
+    if rec.get('status') != outcome and not ps.dry:
+        close_record(j, rec, outcome)           # e.g. every step ended in an earlier pass: the record gets its end
+        rec['finished'] = _now()
+        _write_item(h['job'], h['epoch'], rec)
     if j.get('chain_finally'):
         h['state'] = 'closing'
+        h['closing_from'] = len(h['submissions'])     # closing-job failures count only this closing's submissions
         submit_finally(ps, h, j, why)
     else:
         finish(ps, h, why)
@@ -615,7 +740,7 @@ def mark_failed(ps, h, j, rec, k, why):
     ps.act(f'FAIL {h["epoch"]} at stage {k + 1}: {why}')
     if ps.dry:
         return
-    rec['status'] = 'failed'
+    close_record(j, rec, 'failed')
     rec['failed_reason'] = f'stage {k + 1} ({j["chain_steps"][k][0]}): {why}'
     rec['finished'] = _now()
     _write_item(h['job'], h['epoch'], rec)
@@ -636,26 +761,46 @@ def advance(ps, h):
     jobs = ps.hour_jobs(epoch)
     n = len(j['chain_steps'])
     if h['state'] == 'closing':
-        if jobs.get('fin'):
+        fins = jobs.get('fin') or []
+        subs = [x for x in h['submissions'][int(h.get('closing_from') or 0):] if x['kind'] == 'finally']
+        fnode = subs[-1]['node'] if subs else h['node']
+        if fins and all(st == 'PENDING' for _, st, _ in fins) and not _usable(ps, fnode):
+            # pending on a node Slurm cannot use: cancelled and submitted again on a usable node (no failure counted)
+            _cancel(ps, h, [jid for jid, _, _ in fins], f'the closing job is pending on {fnode}, which Slurm reports '
+                                                         f'{ps.node_state(fnode)}')
+            if not ps.dry and subs:
+                h['fin_counted'] = subs[-1]['jobid']
+            submit_finally(ps, h, j, f'rebooked: {fnode} is {ps.node_state(fnode)}')
+            return
+        if fins:
             return
         fin = rec.get('finally') or []
         nfin = len(j.get('chain_finally') or [])
         if len(fin) >= nfin and all(e.get('status') not in (None, 'running') for e in fin[:nfin]):
             finish(ps, h, 'closing steps ended')
             return
-        h['fin_failures'] = int(h.get('fin_failures', 0)) + 1
-        if h['fin_failures'] > cfg.driver.RETRY:
-            _note(h, f'closing job ended {h["fin_failures"]} times without finishing its steps')
-            finish(ps, h, f'closing steps unfinished after {h["fin_failures"]} jobs')
-            return
-        submit_finally(ps, h, j, f'resubmit: the closing job ended without finishing (failure {h["fin_failures"]})')
+        # a failure is a closing JOB of this closing that ended without finishing the steps; a pass whose sbatch refused
+        # the closing job (no new submission) submits it again without counting one
+        if subs and h.get('fin_counted') != subs[-1]['jobid']:
+            f = int(h.get('fin_failures', 0)) + 1
+            if not ps.dry:
+                h['fin_failures'], h['fin_counted'] = f, subs[-1]['jobid']
+            if f > cfg.driver.RETRY:
+                _note(h, f'closing job ended {f} times without finishing its steps')
+                finish(ps, h, f'closing steps unfinished after {f} jobs')
+                return
+            why = (f'resubmit: closing job {subs[-1]["jobid"]} ended without finishing its steps (failure {f}; '
+                   f'driver.RETRY {cfg.driver.RETRY})')
+        else:
+            why = 'the closing job is not in Slurm (its sbatch was refused): submitted again'
+        submit_finally(ps, h, j, why)
         return
     status = rec.get('status')
     k = open_step(j, rec)
     steps = rec.get('steps') or []
     s = steps[k].get('status') if k is not None and k < len(steps) else None
     if k is None:
-        _end_chain(ps, h, j, rec, chain_outcome(j, rec), 'every stage done or no-input')
+        _end_chain(ps, h, j, rec, item_outcome(j, rec), 'every stage done, no-input or cells-refused')
         return
     if status in ('refused', 'failed') or s == 'refused':
         _end_chain(ps, h, j, rec, 'refused' if s == 'refused' or status == 'refused' else 'failed',
@@ -664,8 +809,10 @@ def advance(ps, h):
     mine = jobs.get(k) or []
     dep_never = [jid for jid, st, why in mine if why == DEP_NEVER]
     if mine and not dep_never:
-        return                                     # the open stage's job is pending or running: wait
+        _node_unusable(ps, h, j, rec, jobs, k)     # pending on a node Slurm cannot use: cancelled, back to waiting
+        return                                     # else the open stage's job is pending or running: wait
     others = [jid for key, js in jobs.items() if key != 'fin' for jid, _, _ in js]
+    k0 = k
     if dep_never:
         why = f'stage {k + 1}\'s job waits on a parent job that failed ({DEP_NEVER}) although the record shows the parent done'
     elif s in ('error', 'interrupted', 'running'):
@@ -674,6 +821,10 @@ def advance(ps, h):
         why = f'stage {k + 1} has no live job and never started (cancelled or lost while pending)'
     else:
         why = f'first submission from stage {k + 1}'
+    if h.get('why_next') and not (s in ('error', 'interrupted', 'running') and not dep_never):
+        why = f'{h["why_next"]}; {why}'
+    if not ps.dry:
+        h.pop('why_next', None)
     _cancel(ps, h, others, f'resubmitting from stage {k + 1}')
     if s in ('error', 'interrupted', 'running') and not dep_never:
         # one failure per ended attempt (its start and Slurm job): a pass that could not resubmit (sbatch refused) does not
@@ -691,24 +842,83 @@ def advance(ps, h):
             h['failures'][str(k)] = f
             counted[str(k)] = attempt
         why += f'; resubmission {f} of {cfg.driver.RETRY}'
-    submit_chain(ps, h, j, k, why)
+        # the runner's retry rule (resume_steps): the steps that did not end done run again (no-input included), and in a
+        # cell-refusal chain every step from the first that ended neither done nor no-input
+        ks = resume_steps(j, rec)
+        k0 = ks[0] if ks else k
+        if not ps.dry:
+            requeue(h['job'], epoch, rec, ks)
+        if k0 != k:
+            why += f'; the runner\'s retry rule runs again from stage {k0 + 1}'
+    submit_chain(ps, h, j, k0, why)
+
+
+def _node_unusable(ps, h, j, rec, jobs, k):
+    """The open stage's job is pending on the hour's node and Slurm reports that node unusable (down, drained, draining,
+    not responding, ...; slurm.node_usable): cancel the hour's jobs (exact ids) and put the hour back to waiting with the
+    reason recorded. An hour none of whose stages has run is rebooked on any node; one whose stages ran there keeps the node
+    (their scratch is on it) and waits for it, holding no window place. True when it acted."""
+    mine = jobs.get(k) or []
+    node = h.get('node')
+    if not node or not mine or any(st != 'PENDING' for _, st, _ in mine):
+        return False
+    state = ps.node_state(node)
+    if not state or slurm.node_usable(state):       # unknown (sinfo failed or does not list it) or usable: wait
+        return False
+    reasons = ','.join(sorted({why for _, _, why in mine}))
+    bound = bool(rec.get('steps'))
+    why = (f'stage {k + 1}\'s Slurm job {",".join(jid for jid, _, _ in mine)} is pending ({reasons}) on {node}, which Slurm '
+           f'reports {state}')
+    ids = [jid for key, js in jobs.items() if key != 'fin' for jid, _, _ in js]
+    _cancel(ps, h, ids, why)
+    ps.act(f'REBOOK {h["epoch"]}: {why}; ' + (f'its stages ran on {node} (scratch): it waits for that node' if bound else
+                                              'no stage has run: booked again on any usable node'))
+    if ps.dry:
+        return True
+    h.setdefault('rebooked', []).append({'time': _now(), 'node': node, 'node_state': state, 'pending_reason': reasons,
+                                         'kept_node': bound})
+    h.update(state='waiting', booking={}, why_next=f'rebooked after {node} became {state}')
+    if not bound:
+        h['node'] = None
+    h['waiting_reason'] = why + (f'; waits for {node} (its stages\' scratch is there)' if bound else '; rebooking')
+    _note(h, h['waiting_reason'])
+    _persist(ps, h)
+    ps.changed.add(h['epoch'])
+    return True
 
 
 def finish(ps, h, why):
+    """The hour has ended: its booking is released, and it moves to finished/ once every submission has its sacct record
+    (settle); until then it stays in hours/ as 'accounting' (no booking, no window place)."""
     ps.act(f'FINISH {h["epoch"]}: {h.get("outcome")}; booking released ({why})')
     if ps.dry:
         return
-    h['state'] = 'finished'
+    h['state'] = 'accounting'
     h['finished'] = _now()
     h['released'] = dict(h.get('booking') or {})
     h['booking'] = {}
     _note(h, f'finished {h.get("outcome")}: {why}')
+    ps.changed.add(h['epoch'])
+    account(ps, {h['epoch']: h})
+    settle(ps, h)
+
+
+def settle(ps, h):
+    """An 'accounting' hour whose every submission has its sacct record (account: an end state, or 'unknown' a day after
+    submission) moves to finished/. True when it moved."""
+    if ps.dry or h.get('state') != 'accounting':
+        return False
+    if any(x.get('acct') is None for x in h.get('submissions') or []):
+        _persist(ps, h)
+        return False
+    h['state'] = 'finished'
     _wjson(hour_path(h['epoch'], finished=True), h)
     try:
         os.unlink(hour_path(h['epoch']))
     except FileNotFoundError:
         pass
     ps.changed.discard(h['epoch'])
+    return True
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -740,22 +950,34 @@ def booked(hours, key, skip=None):
                for k, b in (h.get('booking') or {}).items() if k == key)
 
 
+def pinned_node(h):
+    """The node an hour must run on, or None: an hour that already has a runner job and a node keeps it (its finished
+    stages' scratch is there; a retry or a rebook never moves it)."""
+    return h.get('node') if h.get('job') else None
+
+
 def book(ps, hours, h):
-    """(node, booking, None) for the hour, or (None, None, why): the node of ps.nodes() whose scratch disk has the most room
-    after the other hours' bookings and the floor, if that room holds driver.SCRATCH_BOOK_BYTES; and every
-    driver.SHARED_BOOK path with room for its bytes."""
+    """(node, booking, None) for the hour, or (None, None, why): the node (the hour's own node when it has one, pinned_node;
+    else of ps.nodes()) that Slurm reports usable and whose scratch disk has the most room after the other hours' bookings
+    and the floor, if that room holds driver.SCRATCH_BOOK_BYTES; and every driver.SHARED_BOOK path with room for its bytes.
+    Free space and node states are read once per pass (Pass.free, Pass.node_state)."""
     cfg = _cfg()
     need, floor = float(cfg.driver.SCRATCH_BOOK_BYTES), float(cfg.driver.SCRATCH_FLOOR_BYTES)
-    nodes = ps.nodes()
+    pin = pinned_node(h)
+    nodes = [pin] if pin else ps.nodes()
     if not nodes:
         return None, None, 'no nodes: give --nodes or set driver.NODE_POOL'
     best, why = None, []
     for host in nodes:
+        state = ps.node_state(host)
+        if state and not slurm.node_usable(state):
+            why.append(f'{host}: Slurm reports it {state}')
+            continue
         path = (cfg.site.SCRATCH_ROOT or {}).get(host)
         if not path:
             why.append(f'{host}: no site SCRATCH_ROOT')
             continue
-        free = free_bytes(host, path)
+        free = ps.free(host, path)
         if free is None:
             why.append(f'{host}: free space of {path} unreadable')
             continue
@@ -768,10 +990,11 @@ def book(ps, hours, h):
         if best is None or room > best[0]:
             best = (room, host, key)
     if best is None:
-        return None, None, 'space: ' + '; '.join(why)
+        return None, None, 'space: ' + '; '.join(why) + (f' (the hour keeps {pin}: its stages\' scratch is there)'
+                                                         if pin else '')
     booking = {best[2]: need}
     for path, (b, fl) in (cfg.driver.SHARED_BOOK or {}).items():
-        free = free_bytes(None, path)
+        free = ps.free(None, path)
         key = f':{path}'
         if free is None or free - booked(hours, key, h['epoch']) - float(fl) < float(b):
             return None, None, (f'space: {path} {_gb(free or 0)} free, {_gb(booked(hours, key, h["epoch"]))} booked, '
@@ -818,10 +1041,13 @@ def start_hour(ps, hours, h):
     else:
         h['job'] = r.submit(f'drive_{h["epoch"]}', [], [h['epoch']], [(node, 1)], chain=cfg.driver.CHAIN, start=False,
                             forward=forward, code=ps.code)
+        h['state'] = 'active'
+        _persist(ps, h)                            # the runner job is on disk with the hour: never a second one
         j = r.load_job(h['job'])
     h['state'] = 'active'
     hours[h['epoch']] = h
     ps.changed.add(h['epoch'])
+    _persist(ps, h)
     if ps.dry and not h.get('job'):
         submit_chain(ps, h, j, 0, 'first submission')
     else:
@@ -847,6 +1073,8 @@ def submit_waiting(ps, hours):
                 break
             if start_hour(ps, hours, h):
                 inflight += 1
+            elif pinned_node(h):
+                continue                           # it waits for its own node; the hours after it may go elsewhere
             else:
                 for w in waiting[i + 1:]:
                     why = f'behind {h["epoch"]} ({h["waiting_reason"]})'
@@ -882,6 +1110,7 @@ def discover(ps, hours, known):
         return
     from exopipe.phase3.core import cells
     p2 = cfg.paths.PHASE2_ROOT
+    now, poll, cap = time.time(), float(cfg.driver.POLL_S), float(cfg.driver.DISCOVER_BACKOFF_MAX_S)
     for lst in cells.LSTS:
         d = os.path.join(p2, lst)
         try:
@@ -892,14 +1121,21 @@ def discover(ps, hours, known):
             epoch = f'{lst}_{date}'
             if epoch in known:
                 continue
+            nxt = _NOT_READY.get(epoch)
+            if nxt and now < nxt[0]:
+                continue                           # not ready at the last look: looked at again after its back-off delay
             ok, sci, _ = phase2_ready(lst, date)
-            if ok:
-                h = new_hour(epoch, 'night', 'discovered')
-                h['phase2_run'] = sci
-                hours[epoch] = h
-                known.add(epoch)
-                ps.changed.add(epoch)
-                ps.act(f'DISCOVERED {epoch} (night): Phase 2 run {sci}')
+            if not ok:
+                delay = min(cap, 2 * nxt[1] if nxt else poll)
+                _NOT_READY[epoch] = (now + delay, delay)
+                continue
+            _NOT_READY.pop(epoch, None)
+            h = new_hour(epoch, 'night', 'discovered')
+            h['phase2_run'] = sci
+            hours[epoch] = h
+            known.add(epoch)
+            ps.changed.add(epoch)
+            ps.act(f'DISCOVERED {epoch} (night): Phase 2 run {sci}')
 
 
 def apply_requests(ps, hours, known):
@@ -951,22 +1187,23 @@ def retry_hour(ps, hours, epoch):
         return
     r = _runner()
     rec = r.item_state(h['job'], epoch) if h.get('job') else {}
-    ps.act(f'RETRY {epoch}: ended {h.get("outcome")}; resumes at its first step not done')
+    ks = resume_steps(r.load_job(h['job']), rec) if h.get('job') else []
+    ps.act(f'RETRY {epoch}: ended {h.get("outcome")}; '
+           + (f'steps {",".join(str(k + 1) for k in ks)} run again (the runner\'s retry rule)' if ks else
+              'every step ended done: its closing steps run again'))
     if ps.dry:
         return
-    if rec.get('status') in ('refused', 'failed', 'error'):
-        for e in rec.get('steps') or []:
-            if e.get('status') not in DONE_STEP:
-                e['previous_status'] = e.get('status')
-                e['status'] = 'queued'
+    if ks:
+        requeue(h['job'], epoch, rec, ks)
         rec['status'] = 'queued'
-        for k in ('chain_status', 'finally', 'failed_reason'):
+        for k in ('chain_status', 'finally', 'failed_reason', 'summary', 'refused_cells', 'refused_by_cell'):
             rec.pop(k, None)
         _write_item(h['job'], epoch, rec)
-    elif h.get('outcome') in ('done', 'no-input') and rec.get('finally') is not None:
+    elif rec.get('finally') is not None:
         rec.pop('finally', None)
         _write_item(h['job'], epoch, rec)
-    h.update(state='waiting', failures={}, fin_failures=0, outcome=None, booking={}, waiting_reason=None)
+    h.update(state='waiting', failures={}, fin_failures=0, outcome=None, booking={}, waiting_reason=None,
+             why_next='retry requested (drive retry)')
     _note(h, 'retry requested')
     hours[epoch] = h
     _wjson(hour_path(epoch), h)
@@ -1064,6 +1301,8 @@ def tick(ps, explicit=(), explicit_tier='backlog'):
         return ps
     ps.live = live
     account(ps, hours)
+    for h in [x for x in hours.values() if x['state'] == 'accounting']:
+        settle(ps, h)
     flight = sorted((h for h in hours.values() if h['state'] in IN_FLIGHT), key=_order_key, reverse=True)
     for h in sorted(flight, key=lambda x: TIERS.index(x['tier'])):      # night first, newest night first
         advance(ps, h)

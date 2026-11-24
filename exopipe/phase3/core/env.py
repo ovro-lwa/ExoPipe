@@ -24,6 +24,28 @@ def apply(threads=None):
             os.environ[k] = str(threads)
 
 
+def parse_cores(text):
+    """The set of core numbers in a core list '0-23,28-39' (the form of node_free_cores.sh, taskset and --cores); blank
+    parts are skipped. One parser for cli._pin, lib/jupiter/common.pin_free_cores and core/driver.stage_cores."""
+    cpus = set()
+    for part in (text or '').strip().split(','):
+        if part.strip():
+            a, _, b = part.strip().partition('-')
+            cpus.update(range(int(a), int(b or a) + 1))
+    return cpus
+
+
+def cores_text(cpus):
+    """A core list '0-23,28-39' of a set of core numbers (the inverse of parse_cores)."""
+    runs = []
+    for c in sorted(cpus):
+        if runs and c == runs[-1][1] + 1:
+            runs[-1][1] = c
+        else:
+            runs.append([c, c])
+    return ','.join(f'{a}-{b}' if b > a else f'{a}' for a, b in runs)
+
+
 def legacy():
     """Refactor window (DESIGN 11.1): let clv15 / exopipe_ops modules be called in place. Appends the site file's
     LEGACY_CODE_ROOTS to sys.path (after the package, so nothing in them shadows it) and installs the import finder that

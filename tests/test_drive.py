@@ -21,7 +21,20 @@ Checked:
  7. a refused sbatch counts no failure and is retried at the next pass; a failed squeue does nothing in that pass;
  8. discovery: only hours on or after driver.FIRST_NIGHT whose latest Phase 2 run holds driver.PHASE2_READY_FILE naming the hour;
  9. periodic jobs: submitted when due and none live, accounted, an ALARM line when one fails; every_h 0 = not scheduled;
-10. one driver at a time (LOCK); the dry run (CLI) prints the sbatch command lines and submits and writes nothing.
+10. one driver at a time (LOCK); the dry run (CLI) prints the sbatch command lines and submits and writes nothing;
+11. a retried hour keeps its node (waiting for room there without holding back other hours) and runs its steps again by the
+    runner's retry rule: no-input steps included, earlier done steps not (resume_steps, both chain kinds);
+12. each hour record is written right after its submissions: a pass that fails later never submits the hour twice;
+13. a job pending on a drained or down node (sinfo): cancelled and rebooked on another node when no stage has run; an hour
+    whose stages ran there keeps the node and waits for it, holding no window place;
+14. the closing job: a refused sbatch is submitted again without counting a failure; a closing job that ended without
+    finishing counts one, and after driver.RETRY the hour finishes; one pending on a drained node is rebooked elsewhere;
+15. an ended hour moves to finished/ only once sacct lists every submission ('accounting' until then, booking released);
+16. discovery back-off: an hour not ready is looked at again after a delay doubling from POLL_S up to the cap;
+17. free space is read once per node per pass; the core-list parser and the job environment are the shared ones;
+18. per-cell refusals (runner.CELL_REFUSAL_CHAINS): a step that refuses one cell is recorded cells-refused, its job exits 0
+    and the chain goes on; the later steps get the refused cell (record.UPSTREAM_ENV); the hour ends cells-refused with
+    refused_by_cell and summary, and its closing job runs; every job runs its command as a job step (srun).
 """
 import json
 import os
@@ -73,7 +86,7 @@ class Scenario:
                  f"runner.CHAINS[epoch] = {chain!r}",
                  f"runner.CHAIN_FINALLY[epoch] = {['fin --epochs {item} --record {record} --out ' + self.out] if self.fin else []!r}",
                  f"driver.STEP_HEAD = {(STEP,)!r}"]
-        for k in ('SBATCH', 'SQUEUE', 'SACCT', 'SCANCEL'):
+        for k in ('SBATCH', 'SQUEUE', 'SACCT', 'SCANCEL', 'SINFO', 'SRUN'):
             lines.append(f"driver.{k} = {f'{PY} {FAKE} {k.lower()}'!r}")
         drv = dict(PARTITIONS={'night': 'nightp', 'backlog': 'backp'}, NODE_POOL='nodeA,nodeB', SCRATCH_BOOK_BYTES=50e9,
                    SCRATCH_FLOOR_BYTES=10e9, RETRY=1,
@@ -93,6 +106,7 @@ class Scenario:
         CFG.set('site.SCRATCH_ROOT', dict(CFG.site.SCRATCH_ROOT, nodeA='/scratchA', nodeB='/scratchB'))
         self._free = driver.free_bytes
         driver.free_bytes = lambda host, path: FREE.get(host)
+        driver._NOT_READY.clear()
         FREE.clear()
         FREE.update(nodeA=1000e9, nodeB=1000e9)
         self.printed = []
@@ -172,6 +186,7 @@ def test_chain_end_to_end_booking_and_window():
             assert o['partition'] == 'backp' and o['time'] == '00:05:00' and o['mem'] == '1G' and o['cpus-per-task'] == '2'
             assert '--requeue' in j['flags'] and o['nodelist'] in ('nodeA', 'nodeB') and o['open-mode'] == 'append'
             assert ' drive stage ' in j['cmd'] and '--cores none' in j['cmd']
+            assert f'{FAKE} srun --ntasks=1 --nodes=1 --cpus-per-task=2 --export=ALL ' in j['cmd'], j['cmd']   # a job step
         # the runner's job record of the hour
         h = S.hour('05h_2026-01-03')
         from exopipe.phase3.core import runner
@@ -194,7 +209,8 @@ def test_chain_end_to_end_booking_and_window():
         res = S.run_ready()
         assert sorted(r[1] for r in res) == ['exo3_04h_2026-01-02.fin', 'exo3_05h_2026-01-03.fin'], res
         fin = json.load(open(os.path.join(S.out, 'fin_05h_2026-01-03.json')))
-        assert fin == {'chain_status': 'done', 'status': 'done', 'steps': ['done'] * 3}, fin
+        assert fin == {'chain_status': 'done', 'status': 'done', 'steps': ['done'] * 3, 'summary': 'COMPLETE (3 steps)',
+                       'refused_by_cell': []}, fin
         out = S.tick()
         assert any(l.startswith('FINISH 05h_2026-01-03: done') for l in out), out
         # bookings released: 03h starts on nodeA, 06h on nodeB
@@ -397,7 +413,32 @@ def test_discovery():
         assert {j['opts']['partition'] for j in S.jobs().values()} == {'nightp'}
         S.tick()
         assert sorted(driver.load_hours()) == ['07h_2026-01-03']                         # found once
-    print('  8 discovery: ok')
+        # back-off: an hour not ready is looked at again only after its delay (POLL_S 60 s, doubling, capped)
+        NR = '07h_2026-01-02'
+        assert driver._NOT_READY[NR][1] == 60 and sorted(driver._NOT_READY) == ['07h_2026-01-02', '08h_2026-01-03',
+                                                                                 '09h_2026-01-03'], driver._NOT_READY
+        looks, orig = [], driver.phase2_ready
+        driver.phase2_ready = lambda lst, date: (looks.append(f'{lst}_{date}'), orig(lst, date))[1]
+        try:
+            S.tick()
+            assert looks == [], looks
+            driver._NOT_READY[NR] = (0, 60)
+            S.tick()
+            assert looks == [NR] and driver._NOT_READY[NR][1] == 120, (looks, driver._NOT_READY[NR])
+            CFG.set('driver.DISCOVER_BACKOFF_MAX_S', 100)
+            driver._NOT_READY[NR] = (0, 120)
+            S.tick()
+            assert driver._NOT_READY[NR][1] == 100                                       # the cap
+            json.dump({'lst': '07h', 'date': '2026-01-02'},
+                      open(os.path.join(p2, '07h', '2026-01-02', 'Science_20260103_000000', 'QA', 'email_deferred.json'), 'w'))
+            S.tick()
+            assert NR not in driver.load_hours()                                         # ready, but not looked at yet
+            driver._NOT_READY[NR] = (0, 100)
+            S.tick()
+            assert NR in driver.load_hours() and NR not in driver._NOT_READY, driver._NOT_READY
+        finally:
+            driver.phase2_ready = orig
+    print('  8, 16 discovery and its back-off: ok')
 
 
 def test_periodic():
@@ -424,10 +465,10 @@ def test_periodic():
         S.run_ready()
         out = S.tick()
         assert any(l.startswith('ALARM periodic tess-orbits') and 'FAILED' in l for l in out), out
-    # production config: the TESS refresh daily; the reader no longer refreshes
+    # production config: the TESS refresh daily under the driver; the reader keeps refreshing until the cutover starts the loop
     from exopipe.phase3.config.steps.drive import driver as D
     from exopipe.phase3.config.steps.pages import pages_deep
-    assert D.PERIODIC['tess-orbits']['every_h'] == 24 and pages_deep.TESS_REFRESH_IN_READER is False
+    assert D.PERIODIC['tess-orbits']['every_h'] == 24 and pages_deep.TESS_REFRESH_IN_READER is True
     print('  9 periodic jobs: ok')
 
 
@@ -462,6 +503,233 @@ def test_lock_and_dry_run_cli():
     print('  10 lock, dry run: ok')
 
 
+def test_retry_keeps_node_and_reruns_no_input():
+    from exopipe.phase3.core import driver
+    # the runner's retry rule, both chain kinds (runner._run_item)
+    st = lambda *a: {'steps': [{'status': x} for x in a]}       # noqa: E731
+    assert driver.resume_steps({'chain_steps': [['s']] * 4}, st('done', 'no-input', 'done', 'error')) == [1, 3]
+    assert driver.resume_steps({'chain_steps': [['s']] * 5, 'cell_refusals': True},
+                               st('done', 'no-input', 'cells-refused', 'done', 'error')) == [1, 2, 3, 4]
+    assert driver.resume_steps({'chain_steps': [['s']] * 4, 'cell_refusals': True}, st('done', 'error')) == [1, 2, 3]
+    assert driver.resume_steps({'chain_steps': [['s']] * 2, 'cell_refusals': True}, st('done', 'done')) == []
+    chain = ['s1 --epochs {item} --out OUT --units 1', 's2 --epochs {item} --out OUT --units 1 --rc 3',
+             's3 --epochs {item} --out OUT --units 1 --rc 2 --fail-once FLAG']
+    E, E2 = '23h_2026-08-10', '22h_2026-08-09'
+    with Scenario('retrynode', chain) as S:
+        FREE.update(nodeA=200e9, nodeB=100e9)
+        S.tick([E])
+        S.run_ready()
+        S.tick()
+        S.run_ready()
+        S.tick()
+        h = S.hour(E)
+        assert h['state'] == 'finished' and h['outcome'] == 'refused' and h['node'] == 'nodeA', h
+        # nodeB now has far more room, nodeA too little: the retried hour keeps nodeA and waits; E2 is not held back
+        FREE.update(nodeA=20e9, nodeB=1000e9)
+        driver.request('retry', [E])
+        out = S.tick([E2])
+        assert any(l.startswith(f'RETRY {E}') and 'steps 2,3 run again' in l for l in out), out
+        hrs = driver.load_hours()
+        assert hrs[E]['state'] == 'waiting' and hrs[E]['node'] == 'nodeA' and 'keeps nodeA' in hrs[E]['waiting_reason'], hrs[E]
+        assert hrs[E2]['state'] == 'active' and hrs[E2]['node'] == 'nodeB', hrs[E2]
+        FREE.update(nodeA=200e9)
+        out = S.tick()
+        assert any(l.startswith(f'SUBMIT {E} (backlog, node nodeA') and 'stages 2..3' in l and 'retry requested' in l
+                   for l in out), out
+        assert {j['opts']['nodelist'] for j in S.jobs().values() if j['name'].startswith(f'exo3_{E}.')} == {'nodeA'}
+        for _ in range(3):
+            S.run_ready()
+            S.tick()
+        h = S.hour(E)
+        assert h['outcome'] == 'done' and h['node'] == 'nodeA', h
+        it = S.item(E)
+        assert [e['status'] for e in it['steps']] == ['done', 'no-input', 'done'] and it['status'] == 'done', it
+        assert S.count(f's1 {E} u0 start') == 1 and S.count(f's1 {E} u0 skip') == 0          # done: not run again
+        assert S.count(f's2 {E} u0 start') == 1 and S.count(f's2 {E} u0 skip') == 1          # no-input: run again
+    print('  11 retry keeps the node; the runner\'s retry rule: ok')
+
+
+def test_save_each_submission():
+    from exopipe.phase3.core import driver
+    with Scenario('persist', CHAIN3) as S:
+        orig = driver.periodic
+
+        def boom(ps):
+            raise RuntimeError('a failure later in the pass')
+        driver.periodic = boom
+        try:
+            raises(RuntimeError, S.tick, ['16h_2026-08-01'])
+        finally:
+            driver.periodic = orig
+        h = driver.load_hours()['16h_2026-08-01']
+        assert h['state'] == 'active' and h['job'] and len(h['submissions']) == 3, h
+        S.tick()
+        assert len(S.jobs()) == 3 and sorted(os.listdir(S.jobs_root)) == sorted(['_driver', h['job']]), S.jobs()
+    print('  12 hour saved after each submission: ok')
+
+
+def test_node_down_rebook():
+    from exopipe.phase3.core import driver
+    E = '17h_2026-08-02'
+    with Scenario('nodedown', CHAIN3) as S:
+        FREE.update(nodeA=1000e9, nodeB=500e9)
+        S.tick([E])
+        old = {j['id'] for j in S.jobs().values()}
+        assert driver.load_hours()[E]['node'] == 'nodeA'
+        with FS.State(S.state) as st:
+            st['nodes'] = {'nodeA': 'drained'}
+        out = S.tick()
+        assert any(l.startswith(f'CANCEL {E} Slurm jobs') for l in out), out
+        assert any(l.startswith(f'REBOOK {E}') and 'drained' in l and 'ReqNodeNotAvail' in l and 'no stage has run' in l
+                   for l in out), out
+        h = driver.load_hours()[E]
+        assert h['state'] == 'active' and h['node'] == 'nodeB' and h['rebooked'][0]['node'] == 'nodeA', h
+        assert all(S.jobs()[i]['state'] == 'CANCELLED' for i in old)
+        new = {j['name'].split('.')[-1]: j for j in S.jobs().values() if j['id'] not in old}
+        assert {j['opts']['nodelist'] for j in new.values()} == {'nodeB'} and len(new) == 3, new
+        # stage 1 runs on nodeB; then nodeB goes down: the hour keeps nodeB (its scratch) and waits, holding no window place
+        FS.wait(S.state, new['s0']['id'], FS.start(S.state, new['s0']['id']))
+        with FS.State(S.state) as st:
+            st['nodes'] = {'nodeA': 'drained', 'nodeB': 'down*'}
+        out = S.tick(['18h_2026-08-01'])
+        assert any(l.startswith(f'REBOOK {E}') and 'down*' in l and 'it waits for that node' in l for l in out), out
+        hrs = driver.load_hours()
+        assert hrs[E]['state'] == 'waiting' and hrs[E]['node'] == 'nodeB' and 'keeps nodeB' in hrs[E]['waiting_reason'], hrs[E]
+        assert 'nodeA: Slurm reports it drained' in hrs['18h_2026-08-01']['waiting_reason'], hrs['18h_2026-08-01']
+        assert not [j for j in S.jobs().values() if j['state'] == 'PENDING'], 'a job left pending'
+        with FS.State(S.state) as st:
+            st['nodes'] = {}
+        out = S.tick()
+        assert any(l.startswith(f'SUBMIT {E} (backlog, node nodeB') and 'stages 2..3' in l for l in out), out
+        for _ in range(3):
+            S.run_ready()
+            S.tick()
+        assert S.hour(E)['outcome'] == 'done' and S.count(f's1 {E} u0 start') == 1
+    print('  13 pending on a drained/down node: rebooked or waits for its node: ok')
+
+
+def test_closing_job_failures():
+    from exopipe.phase3.core import driver
+    E = '19h_2026-08-03'
+    with Scenario('fin', CHAIN3, RETRY=1) as S:
+        S.tick([E])
+        S.run_ready()
+        with FS.State(S.state) as st:
+            st['refuse_sbatch'] = True
+        out = S.tick()
+        assert any(l.startswith(f'CLOSE {E}') for l in out) and any('closing job refused' in l for l in out), out
+        for _ in range(3):
+            out = S.tick()
+            assert any('the closing job is not in Slurm (its sbatch was refused)' in l for l in out), out
+        h = driver.load_hours()[E]
+        assert h['state'] == 'closing' and h['fin_failures'] == 0, h
+        with FS.State(S.state) as st:
+            st['refuse_sbatch'] = False
+        S.tick()
+        # a closing job that ends without finishing its steps (cancelled before it ran) counts one failure
+        fin = [j['id'] for j in S.jobs().values() if j['name'].endswith('.fin')]
+        assert len(fin) == 1, fin
+        subprocess.run([PY, FAKE, 'scancel', fin[0]], check=True)
+        out = S.tick()
+        assert any(f'closing job {fin[0]} ended without finishing its steps (failure 1' in l for l in out), out
+        fin2 = [j['id'] for j in S.jobs().values() if j['name'].endswith('.fin') and j['id'] != fin[0]]
+        subprocess.run([PY, FAKE, 'scancel', fin2[0]], check=True)
+        out = S.tick()
+        assert any(l.startswith(f'FINISH {E}') and 'closing steps unfinished after 2 jobs' in l for l in out), out
+    with Scenario('findrain', CHAIN3) as S:
+        FREE.update(nodeA=1000e9, nodeB=500e9)
+        S.tick([E])
+        S.run_ready()
+        S.tick()                                             # the closing job, on nodeA
+        fin = [j for j in S.jobs().values() if j['name'].endswith('.fin')]
+        assert len(fin) == 1 and fin[0]['opts']['nodelist'] == 'nodeA', fin
+        with FS.State(S.state) as st:
+            st['nodes'] = {'nodeA': 'drained'}
+        out = S.tick()
+        assert any(l.startswith(f'CANCEL {E} Slurm jobs {fin[0]["id"]}') for l in out), out
+        assert any(l.startswith(f'CLOSE {E}') and 'rebooked' in l and 'on nodeB' in l for l in out), out
+        fin2 = [j for j in S.jobs().values() if j['name'].endswith('.fin') and j['id'] != fin[0]['id']]
+        assert len(fin2) == 1 and fin2[0]['opts']['nodelist'] == 'nodeB', fin2
+        S.run_ready()
+        S.tick()
+        h = S.hour(E)
+        assert h['state'] == 'finished' and h['outcome'] == 'done' and h['fin_failures'] == 0, h
+    print('  14 closing job: refused sbatch not counted, ended jobs counted, rebooked off a drained node: ok')
+
+
+def test_accounting_before_finished():
+    from exopipe.phase3.core import driver
+    E = '20h_2026-08-04'
+    with Scenario('acct', CHAIN3) as S:
+        S.tick([E])
+        S.run_ready()
+        S.tick()
+        S.run_ready()
+        fin = [j['id'] for j in S.jobs().values() if j['name'].endswith('.fin')][0]
+        with FS.State(S.state) as st:
+            st['sacct_hide'] = [fin]                         # slurmdbd has not recorded the closing job yet
+        out = S.tick()
+        assert any(l.startswith(f'FINISH {E}: done') for l in out), out
+        h = driver.load_hours()[E]
+        assert h['state'] == 'accounting' and h['booking'] == {} and not os.path.exists(driver.hour_path(E, True)), h
+        assert [x['acct'] is None for x in h['submissions']] == [False, False, False, True], h['submissions']
+        with FS.State(S.state) as st:
+            st['sacct_hide'] = []
+        S.tick()
+        assert E not in driver.load_hours()
+        f = S.hour(E)
+        assert f['state'] == 'finished' and all(x['acct']['state'] == 'COMPLETED' for x in f['submissions']), f
+    print('  15 accounted before finished: ok')
+
+
+def test_free_space_cache_and_shared_helpers():
+    from exopipe.phase3.core import driver, runner
+    from exopipe.phase3.core.env import cores_text, parse_cores
+    assert parse_cores('0-3,8,10-11') == {0, 1, 2, 3, 8, 10, 11} and cores_text({0, 1, 2, 3, 8, 10, 11}) == '0-3,8,10-11'
+    assert parse_cores(' 0-1,\n') == {0, 1} and cores_text(set()) == ''
+    env = driver._job_env('/pkgroot', '/site.json')
+    full = runner._child_env({'pkg_root': '/pkgroot', 'site_file': '/site.json'})
+    assert env == {k: v for k, v in full.items() if os.environ.get(k) != v}, env
+    assert env['PYTHONPATH'].split(os.pathsep)[0] == '/pkgroot' and env['EXOPIPE3_SITE'] == '/site.json', env
+    with Scenario('freecache', CHAIN3) as S:
+        calls = []
+        driver.free_bytes = lambda host, path: (calls.append(host), FREE.get(host))[1]
+        FREE.update(nodeA=20e9, nodeB=20e9)                  # nothing fits: both hours look at both nodes
+        driver.request('add', ['21h_2026-08-05'], 'backlog')
+        driver.request('add', ['22h_2026-08-05'], 'night')
+        S.tick()
+        hrs = driver.load_hours()
+        assert hrs['21h_2026-08-05']['state'] == hrs['22h_2026-08-05']['state'] == 'waiting', hrs
+        assert sorted(calls) == ['nodeA', 'nodeB'], calls    # one read per node per pass
+    print('  17 free space once per node per pass; shared helpers: ok')
+
+
+def test_cells_refused():
+    from exopipe.phase3.core import driver
+    E = '02h_2026-09-01'
+    chain = ['s1 --epochs {item} --out OUT --units 1', 's2 --epochs {item} --out OUT --units 1 --refuse-cell c1',
+             's3 --epochs {item} --out OUT --units 1']
+    with Scenario('cells', chain) as S:
+        S.tick([E])
+        res = S.run_ready()
+        assert [(r[1].split('.')[-1], r[2], r[3]) for r in res] == [('s0', 'COMPLETED', 0), ('s1', 'COMPLETED', 0),
+                                                                    ('s2', 'COMPLETED', 0)], res
+        assert S.count(f's2 {E} refused-cell c1') == 1 and S.count(f's3 {E} upstream c1') == 1, S.ran()
+        it = S.item(E)
+        assert [e['status'] for e in it['steps']] == ['done', 'cells-refused', 'done'] and it['status'] == 'cells-refused', it
+        assert it['steps'][1]['refused_cells'][0]['cell'] == 'c1' and it['steps'][1]['refused_cells'][0]['code'] == 'G-T01'
+        assert [e['cell'] for e in it['refused_by_cell']] == ['c1'] and it['summary'].startswith('COMPLETE with 1 refused cell')
+        out = S.tick()
+        assert any(l.startswith(f'CLOSE {E}: chain cells-refused') for l in out), out
+        S.run_ready()
+        fin = json.load(open(os.path.join(S.out, f'fin_{E}.json')))
+        assert fin['chain_status'] == 'cells-refused' and fin['refused_by_cell'][0]['cell'] == 'c1', fin
+        out = S.tick()
+        assert any(l.startswith(f'FINISH {E}: cells-refused') for l in out), out
+        assert S.hour(E)['outcome'] == 'cells-refused' and S.hour(E)['failures'] == {}
+    print('  18 cells-refused: the chain goes on, the hour ends cells-refused: ok')
+
+
 def main():
     t0 = time.time()
     test_chain_end_to_end_booking_and_window()
@@ -472,6 +740,13 @@ def main():
     test_discovery()
     test_periodic()
     test_lock_and_dry_run_cli()
+    test_retry_keeps_node_and_reruns_no_input()
+    test_save_each_submission()
+    test_node_down_rebook()
+    test_closing_job_failures()
+    test_accounting_before_finished()
+    test_free_space_cache_and_shared_helpers()
+    test_cells_refused()
     print(f'test_drive: PASS ({time.time() - t0:.0f} s)')
 
 

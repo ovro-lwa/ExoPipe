@@ -4,8 +4,9 @@
 Production's reader (exopipe_ops/tess/tess_coverage.py:57-64) fetched TESS_orbit_times.csv from tess.mit.edu and wrote it BESIDE
 ITSELF whenever its copy was older than 7 days. That makes the reader write into a code tree (a frozen tree's data symlink would
 become a file), and a failed fetch went unnoticed: the table stopped at 2026-12-03 after the certificate failures of 2026-11-13/15.
-In v2 the table is a data input that this step refreshes, daily, as a periodic job of the per-hour driver (config
-driver.PERIODIC 'tess-orbits', core/driver.py). Readers get --no-refresh (config pages_deep.TESS_REFRESH_IN_READER False).
+In v2 the table is a data input that this step refreshes; the per-hour driver schedules it daily (config driver.PERIODIC
+'tess-orbits', core/driver.py). Readers then get --no-refresh once the driver's loop runs, at cutover (config
+pages_deep.TESS_REFRESH_IN_READER).
 
 A fetched table replaces the current one only when its content passes these checks (otherwise the current table stays):
   - it is UTF-8 CSV text; the header is exactly Sector,Orbit,Start of Orbit,End of Orbit; every line other than a blank or a

@@ -1,17 +1,22 @@
 #!/usr/bin/env python3
-"""A fake Slurm for tests/test_drive.py: sbatch, squeue, sacct and scancel over one JSON state file (env FAKE_SLURM_STATE),
-in the output formats core/slurm.py reads; and, for the test itself, run_ready() / start() / wait(), which run the jobs.
+"""A fake Slurm for tests/test_drive.py: sbatch, squeue, sacct, scancel and sinfo over one JSON state file (env
+FAKE_SLURM_STATE), in the output formats core/slurm.py reads, and srun (it runs its command in place); and, for the test
+itself, run_ready() / start() / wait(), which run the jobs.
 
     python tests/fake_slurm.py sbatch --parsable --job-name=N ... --dependency=afterok:1001,singleton --wrap CMD
     python tests/fake_slurm.py squeue -h -u USER -o '%i|%T|%r|%j'
     python tests/fake_slurm.py sacct -n -P -j 1001,1002 -o JobIDRaw,State,ExitCode,Elapsed,MaxRSS,NodeList
     python tests/fake_slurm.py scancel 1001 1002
+    python tests/fake_slurm.py sinfo -h -N -n nodeA,nodeB -o '%N|%T'
+    python tests/fake_slurm.py srun --ntasks=1 ... CMD ARGS     (exec CMD ARGS)
 
 Jobs run only when the test calls run_ready() (every eligible job, one at a time, in id order) or start() (one job, in the
 background, so the test can scancel it mid-way). Eligible: PENDING, every afterok parent COMPLETED, and (singleton) no RUNNING
 job of the same name. A pending job whose afterok parent ended other than COMPLETED shows the reason DependencyNeverSatisfied
 and stays pending (Slurm without kill_invalid_depend, design 5.3). scancel ends a running job with SIGTERM to its process group
-(as Slurm signals every process of the job) and marks it CANCELLED.
+(as Slurm signals every process of a job step) and marks it CANCELLED. Node states: state['nodes'] {node: sinfo state}
+(default 'idle'); a pending job whose --nodelist node is not usable shows 'ReqNodeNotAvail, UnavailableNodes:<node>' and
+never starts. state['sacct_hide']: job ids sacct does not list yet (slurmdbd lag).
 """
 import fcntl
 import json
@@ -50,9 +55,16 @@ class State:
         self.lf.close()
 
 
+def node_ok(s, node):
+    return (s.get('nodes') or {}).get(node, 'idle') in ('idle', 'mixed', 'allocated')
+
+
 def reason(s, j):
     if j['state'] == 'RUNNING':
         return 'None'
+    node = j['opts'].get('nodelist')
+    if node and not node_ok(s, node):
+        return f'ReqNodeNotAvail, UnavailableNodes:{node}'
     for p in j['afterok']:
         pj = s['jobs'].get(p)
         if pj and pj['state'] in ENDED and not (pj['state'] == 'COMPLETED' and pj['rc'] == 0):
@@ -114,7 +126,7 @@ def sacct(argv):
     with State() as s:
         for jid in ids:
             j = s['jobs'].get(jid)
-            if not j:
+            if not j or jid in (s.get('sacct_hide') or []):
                 continue
             rc = j['rc'] if j['rc'] is not None else 0
             sig = 15 if j['state'] == 'CANCELLED' else 0
@@ -140,6 +152,21 @@ def scancel(argv):
             j['state'] = 'CANCELLED'
             s['cancelled'].append(jid)
     return 0
+
+
+def sinfo(argv):
+    nodes = argv[argv.index('-n') + 1].split(',')
+    with State() as s:
+        for n in nodes:
+            print(f'{n}|{(s.get("nodes") or {}).get(n, "idle")}')
+    return 0
+
+
+def srun(argv):
+    i = 0
+    while i < len(argv) and argv[i].startswith('-'):
+        i += 1
+    os.execvp(argv[i], argv[i:])
 
 
 # ---- used by the test: run the jobs ---------------------------------------------------------------------------------
@@ -202,7 +229,7 @@ def jobs(path):
 
 def main(argv):
     cmd, rest = argv[0], argv[1:]
-    return {'sbatch': sbatch, 'squeue': squeue, 'sacct': sacct, 'scancel': scancel}[cmd](rest)
+    return {'sbatch': sbatch, 'squeue': squeue, 'sacct': sacct, 'scancel': scancel, 'sinfo': sinfo, 'srun': srun}[cmd](rest)
 
 
 if __name__ == '__main__':

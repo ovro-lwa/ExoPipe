@@ -42,6 +42,8 @@ class driver(_Section):
     # Space booking (design 5.3, requirement 9): before an hour's chain is submitted, SCRATCH_BOOK_BYTES are booked on the
     # chosen node's scratch disk (site SCRATCH_ROOT[host]), and refused unless the disk's real free space minus every other
     # booking minus SCRATCH_FLOOR_BYTES holds them. The bookings are the hours' records (released when an hour finishes).
+    # SCRATCH_BOOK_BYTES is a provisional default: plan step 2 (one hour of Phase 2-3 run as Slurm jobs) measures the per-hour
+    # scratch peak and sets it. An hour that has submitted jobs keeps its node on every later booking (its scratch is there).
     SCRATCH_BOOK_BYTES = 520e9   # B per hour: /fast peak of the 10-s/1-min search per hour of data (design section 2 table)
     SCRATCH_FLOOR_BYTES = 400e9  # B kept free on that disk (the 400 GB /fast floor of the speed-up runs, plan/STAGE_MAP_20261111.md)
     # Destination bookings on shared storage: {path: (B per hour, B floor)}, checked with statvfs on the driver's host.
@@ -62,11 +64,15 @@ class driver(_Section):
     # How a chain step runs: <runner job's python> STEP_HEAD <step argv> (the runner's chain: python -m exopipe.phase3 <step>).
     STEP_HEAD = ('-m', 'exopipe.phase3')
     POLL_S = 60                  # s between two passes of `drive loop` (design 5.3: each minute)
+    # Discovery back-off: an hour whose Phase 2 run is not ready is looked at again after a delay that starts at POLL_S and
+    # doubles up to this cap (so a date that never becomes ready costs one Lustre look per cap, not one per pass); the cap is
+    # also the longest wait between Phase 2's ready file and the hour's discovery.
+    DISCOVER_BACKOFF_MAX_S = 900     # s
     # Periodic jobs: name -> argv after the interpreter, period (hours; 0 = not scheduled), tier, resources. Each is submitted
     # when its period has passed since its last submission and no job of it is live; one that ends other than COMPLETED with
     # exit 0 prints an ALARM line in the driver's log. The TESS orbit table refresh runs
-    # daily (plan/CUTOVER_READINESS.md TESS item: complete when the table reaches now + 14 days; the readers then run with
-    # --no-refresh: pages_deep.TESS_REFRESH_IN_READER False).
+    # daily (plan/CUTOVER_READINESS.md TESS item: complete when the table reaches now + 14 days). The readers keep refreshing
+    # it themselves (pages_deep.TESS_REFRESH_IN_READER True) until the cutover starts `drive loop`; that switch is the cutover's.
     PERIODIC = {'tess-orbits': {'argv': ('-m', 'exopipe.phase3.lib.pages.tess_orbits'), 'every_h': 24, 'tier': 'backlog',
                                 'cpus': 1, 'mem': '2G', 'time': '00:15:00'}}
     # Slurm commands (a command line each; the data-free tests point them at tests/fake_slurm.py)
@@ -74,3 +80,10 @@ class driver(_Section):
     SQUEUE = 'squeue'
     SACCT = 'sacct'
     SCANCEL = 'scancel'
+    SINFO = 'sinfo'              # node states: a pending job's node that is down or drained is rebooked (core/driver.advance)
+    # Each job's command runs as a job step under SRUN (with --ntasks=1 --cpus-per-task=<the job's cpus> --export=ALL): a
+    # cancelled, preempted or timed-out job then sends SIGTERM to the step's task (the stage process, which passes it on to
+    # the chain step once; core/driver._Term), before SIGKILL after KillWait. Without a job step the batch script's processes
+    # got no SIGTERM (2026-11-24, Slurm 24.05.2: job 264102 SIGKILLed after 30 s; with srun, jobs 264227 and 264229 got
+    # SIGTERM at scancel and at the time limit). '' = no step (the command runs in the batch script).
+    SRUN = 'srun'

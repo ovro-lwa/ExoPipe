@@ -308,11 +308,8 @@ def pin_free_cores(args):
         txt = ''
     if not txt:
         raise Refusal('could not read the recorder-free cores (runner.FREE_CORES_CMD); pass --cores LIST or --cores none')
-    cpus = set()
-    for part in txt.split(','):
-        a, _, b = part.partition('-')
-        cpus.update(range(int(a), int(b or a) + 1))
-    os.sched_setaffinity(0, cpus)
+    from exopipe.phase3.core.env import parse_cores
+    os.sched_setaffinity(0, parse_cores(txt))
     return txt
 
 

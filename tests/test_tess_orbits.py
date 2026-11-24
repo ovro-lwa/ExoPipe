@@ -162,7 +162,7 @@ def main():
         # config mirrors the module; tier_deep's reader flag
         from exopipe.phase3.config.steps.pages import pages_deep
         assert pages_deep.TESS_ORBIT_URL == T.URL and pages_deep.TESS_ORBIT_AHEAD_DAYS == T.AHEAD_DAYS
-        assert pages_deep.TESS_REFRESH_IN_READER is False  # the refresh runs daily under the driver (config driver.PERIODIC)
+        assert pages_deep.TESS_REFRESH_IN_READER is True   # production behavior until the driver's loop runs (cutover)
         from exopipe.phase3.config.steps.drive import driver as _drv
         tj = _drv.PERIODIC['tess-orbits']
         assert tuple(tj['argv']) == ('-m', 'exopipe.phase3.lib.pages.tess_orbits') and 0 < tj['every_h'] <= 24, tj
