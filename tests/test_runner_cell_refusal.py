@@ -125,6 +125,23 @@ def test_refusal_code():
     assert rc('') is None and rc(None) is None
 
 
+def test_chain_outcome_lists_each_cell_once():
+    from exopipe.phase3.core import runner
+    argv = ['py', '-m', 'exopipe.phase3', 'search', '--tier', 'deep', '--epochs', '07h_2025-10-14']
+    why = '07h_23MHz %s: 2025-10-14 already searched in 07h_23MHz_%s_20261111T102537 (an append would duplicate its rows)'
+    steps = [{'step': 0, 'argv': argv, 'status': 'cells-refused', 'refused_cells': [
+        {'cell': '07h_23MHz', 'unit': f'07h_23MHz_{s}_2025-10-14', 'code': None, 'reason': why % (s, s)} for s in 'VI']},
+        {'step': 1, 'argv': argv[:3] + ['catalog'], 'status': 'done'}]
+    assert runner.chain_outcome('cells-refused', steps, 2) == \
+        'COMPLETE with 1 refused cell (07h_23MHz: search --tier deep [no code named])'
+    assert len(runner.refused_cells_of(steps)) == 2                   # every refused unit stays in the record
+    assert runner.chain_outcome('done', steps[1:], 2) == 'COMPLETE (2 steps)'
+    assert runner.chain_outcome('no-input', [], 3) == 'NO INPUT (none of the 3 steps had anything to do)'
+    stop = dict(steps[1], status='refused', rc=2)
+    assert runner.chain_outcome('refused', [steps[0], stop], 5) == \
+        'REFUSED at step 2 (catalog, exit 2); refused cells before it: 1 (07h_23MHz: search --tier deep [no code named])'
+
+
 def test_step_outcome_and_cell_refusals():
     from exopipe.phase3.core import runner
     with Scratch('outcome') as d:
@@ -335,7 +352,8 @@ def test_epoch_chain_is_a_cell_refusal_chain():
 
 def main(argv):
     names = argv or [n for n in sorted(globals()) if n.startswith('test_')]
-    order = [n for n in ('test_refusal_code', 'test_step_outcome_and_cell_refusals', 'test_step_process_hands_its_outcome',
+    order = [n for n in ('test_refusal_code', 'test_chain_outcome_lists_each_cell_once', 'test_step_outcome_and_cell_refusals',
+                         'test_step_process_hands_its_outcome',
                          'test_chain_goes_on_past_cell_refusals', 'test_epoch_chain_is_a_cell_refusal_chain') if n in names]
     order += [n for n in names if n not in order]
     for n in order:

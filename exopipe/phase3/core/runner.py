@@ -569,11 +569,14 @@ def refused_cells_of(steps):
 
 def chain_outcome(status, steps, n_steps):
     """A chain item's one-line outcome (record 'summary', `run status`, the hour's email). 'COMPLETE (N steps)'; 'COMPLETE with
-    N refused cells (<cell>: <step> [<refusal code>], ...; ...)' - N counts distinct cells, each listed with every step that
-    refused it; or the status and the step that stopped the item, with the cells refused before it."""
+    N refused cells (<cell>: <step> [<refusal code>], ...; ...)' - N counts distinct cells, each listed once with every step
+    and code that refused it (a cell's I and V units refused alike are one entry); or the status and the step that stopped
+    the item, with the cells refused before it."""
     by = {}
     for c in refused_cells_of(steps):
-        by.setdefault(c['cell'], []).append(f"{c['name']} [{c.get('code') or 'no code named'}]")
+        e, seen = f"{c['name']} [{c.get('code') or 'no code named'}]", by.setdefault(c['cell'], [])
+        if e not in seen:
+            seen.append(e)
     listing = '; '.join(f'{cell}: {", ".join(v)}' for cell, v in by.items())
     if status == 'done':
         return f'COMPLETE ({n_steps} steps)'
