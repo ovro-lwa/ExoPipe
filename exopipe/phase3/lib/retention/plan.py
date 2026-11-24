@@ -23,10 +23,15 @@ each link inside an MS (link) and each directory of an MS, the MS itself include
 directory or link), modification time (ns) and inode from os.lstat (an MS is listed directory by directory: os.scandir and
 os.lstat inside that MS only) and, with checksum 'content', the sha256 of each file's bytes; per item the file count, total
 bytes and an identity sha256 over its paths (relative to the item), kinds, sizes, mtimes and inodes. The sidecar holds the
-manifest's sha256, the raw root, the retention days, the checksum kind and the totals.
-THE DELETE (preflight, then delete_item per item) refuses before it deletes anything unless EVERY item of the manifest still
-holds exactly the paths listed with the same kind, size, mtime and inode (and content sha256 for a content manifest), is still
-expired by the records now and is not held now (RT-MATCH, RT-NOT-EXPIRED, RT-HELD); then, item by item, it unlinks the listed
+manifest's sha256, the raw root, the retention days, the checksum kind, the totals, and the records the plan read: the real
+path of its --out and the size and sha256 of the retention table and of the holds file as read (records_digests).
+A plan with --dry-run lists and classifies only: no lstat, no checksum, nothing written (make_plan stat=False).
+THE DELETE (preflight, then delete_item per item) refuses before it deletes anything unless the manifest was planned from the
+records the delete reads (the same --out; RT-MANIFEST), those records only GREW since (the table's and the holds file's first
+bytes still hash to the planned digests: append-only, RT-RECORDS; rows appended since are judged by re-classifying), and
+EVERY item of the manifest still holds exactly the paths listed with the same kind, size, mtime and inode (and content sha256
+for a content manifest), is still expired by the records now and is not held now (RT-MATCH, RT-NOT-EXPIRED, RT-HELD); then,
+item by item, it unlinks the listed
 files and links (each re-checked by lstat right before), removes the listed directories deepest first with os.rmdir (an empty
 directory only: never shutil.rmtree), writes every removed path to <out>/manifests/APPLIED_RETENTION_<UTC>.csv (fsynced per
 item), and removes the emptied hour directory (and its date directory when that is empty).
@@ -112,7 +117,11 @@ def list_tree(root, nights=None, subbands=None):
         dates, rest = _dirs(os.path.join(root, sb))
         odd += [os.path.join(root, sb, n) for n in rest]
         for date in dates:
-            if not re.match(c.DATE_RE, date):
+            try:
+                if not re.match(c.DATE_RE, date):
+                    raise ValueError(date)
+                d0 = T.parse_utc(date)       # a name of the pattern that is no date (2026-13-45) is odd, never a crash
+            except ValueError:
                 odd.append(os.path.join(root, sb, date) + '/')
                 continue
             if nights and date not in nights:
@@ -123,7 +132,7 @@ def list_tree(root, nights=None, subbands=None):
                 if not re.match(c.HOUR_RE, hh) or int(hh) > 23:
                     odd.append(os.path.join(root, sb, date, hh) + '/')
                     continue
-                t0 = T.parse_utc(date) + int(hh) * HOUR_S
+                t0 = d0 + int(hh) * HOUR_S
                 items.append(dict(item='%s/%s/%s' % (sb, date, hh), subband=sb, date=date, hour=hh,
                                   path=os.path.join(root, sb, date, hh), t0=t0, t1=t0 + HOUR_S))
     return items, odd
@@ -255,7 +264,7 @@ class Plan:
 
     def __init__(self):
         self.items, self.odd, self.batch, self.n_expired = [], [], [], 0
-        self.root, self.now, self.days, self.checksum = None, None, None, None
+        self.root, self.now, self.days, self.checksum, self.records = None, None, None, None, None
 
     def counts(self):
         by = {}
@@ -264,9 +273,31 @@ class Plan:
         return by
 
 
-def make_plan(root, out, now=None, nights=None, subbands=None, checksum=None, max_items=None):
+def prefix_digest(path, n=None):
+    """(bytes, sha256) of the first ``n`` bytes of ``path`` (all of it when n is None); a missing file is (0, sha256 of
+    nothing). With n larger than the file: (its size, None) - the file shrank."""
+    h = hashlib.sha256()
+    try:
+        with open(path, 'rb') as f:
+            data = f.read() if n is None else f.read(n)
+    except FileNotFoundError:
+        data = b''
+    if n is not None and len(data) < n:
+        return len(data), None
+    h.update(data)
+    return len(data), h.hexdigest()
+
+
+def records_digests(out):
+    """{'root': real path of <out>, 'table': [bytes, sha256], 'holds': [bytes, sha256]}: what a plan read its records from."""
+    return dict(root=os.path.realpath(out), table=list(prefix_digest(T.table_path(out))),
+                holds=list(prefix_digest(T.holds_path(out))))
+
+
+def make_plan(root, out, now=None, nights=None, subbands=None, checksum=None, max_items=None, stat=True):
     """Classify every item of the tree under ``root`` against <out>'s production records and holds at ``now`` and stat the
-    paths of the oldest-expiring ``max_items`` expired items (the manifest batch). Writes nothing."""
+    paths of the oldest-expiring ``max_items`` expired items (the manifest batch). With stat=False (a dry run of the plan)
+    the batch is chosen but not statted (its paths None): no lstat, no checksum. Writes nothing."""
     c = _c()
     checksum = checksum or c.CHECKSUM
     if checksum not in ('identity', 'content'):
@@ -275,6 +306,7 @@ def make_plan(root, out, now=None, nights=None, subbands=None, checksum=None, ma
     pl = Plan()
     pl.root, pl.now, pl.days, pl.checksum = os.path.realpath(root), time.time() if now is None else now, c.RETENTION_DAYS, \
         checksum
+    pl.records = records_digests(out)        # before the read: a row appended in between is judged at the delete
     records, holds = T.read_records(out), T.read_holds(out)
     items, pl.odd = list_tree(root, nights, subbands)
     for it in items:
@@ -283,7 +315,7 @@ def make_plan(root, out, now=None, nights=None, subbands=None, checksum=None, ma
                       if cls['status'] == 'expired'], key=lambda x: x[:4])
     pl.n_expired = len(expired)
     for _e, _d, _h, _s, it, cls in expired[:max_items]:
-        pl.batch.append((it, cls, stat_entries(it['path'], cls['entries'], checksum)))
+        pl.batch.append((it, cls, stat_entries(it['path'], cls['entries'], checksum) if stat else None))
     return pl
 
 
@@ -325,6 +357,8 @@ def write_plan(pl, out, when=None):
     _write_csv(plan_csv, PLAN_COLUMNS, rows)
     if not pl.batch:
         return plan_csv, None, None
+    if any(paths is None for _it, _cls, paths in pl.batch):
+        raise Refusal('RT-MANIFEST: a plan made without stat (a dry run) has no manifest to write')
     mrows, items, nfiles, ndirs, nbytes = [], [], 0, 0, 0
     for it, cls, paths in pl.batch:
         b = sum(r['bytes'] for r in paths)
@@ -346,7 +380,7 @@ def write_plan(pl, out, when=None):
                 raw_root=pl.root, retention_days=pl.days, checksum=pl.checksum, evaluated_utc=T.iso(pl.now),
                 written_utc=T.iso(time.time()), n_items=len(items), n_files=nfiles, n_dirs=ndirs, bytes=nbytes,
                 n_expired_in_tree=pl.n_expired, n_expired_not_in_manifest=pl.n_expired - len(items),
-                plan_csv=os.path.basename(plan_csv), items=items)
+                plan_csv=os.path.basename(plan_csv), records=pl.records, items=items)
     man_json = os.path.splitext(man_csv)[0] + '.json'
     tmp = man_json + '.part'
     with open(tmp, 'w') as f:
@@ -408,19 +442,38 @@ def preflight(man_csv, root, out, now=None):
     if os.path.realpath(side.get('raw_root') or '') != root:
         raise Refusal('RT-MANIFEST: the manifest is of the tree %s, this delete is of %s (retention.RAW_ROOT)' % (
             side.get('raw_root'), root))
+    rec = side.get('records') or {}
+    if rec.get('root') != os.path.realpath(out):
+        raise Refusal('RT-MANIFEST: the manifest was planned from the records of %s, this delete reads those of %s: plan '
+                      'again with --out %s' % (rec.get('root') or 'an unknown --out', os.path.realpath(out), out))
     now = time.time() if now is None else now
-    records, holds = T.read_records(out), T.read_holds(out)
     probs, codes = [], []
+    for what, path in (('table', T.table_path(out)), ('holds', T.holds_path(out))):
+        try:
+            n, sha = (rec.get(what) or [None, None])
+            got = prefix_digest(path, int(n))[1]
+        except (TypeError, ValueError, OSError) as x:
+            got, sha = None, 'unreadable (%s)' % x
+        if got is None or got != sha:
+            # appended rows are fine (judged below by re-classifying every item); a rewritten or shortened file is not
+            probs.append('the %s %s is not the one the plan read plus appended rows (its first %s bytes do not hash to the '
+                         'planned %s): plan again' % (what, path, n, str(sha)[:12]))
+            codes.append('RT-RECORDS')
+    records, holds = T.read_records(out), T.read_holds(out)
     for key in sorted(items):
         e = items[key]
         parts = key.split('/')
         path = os.path.join(root, *parts) if len(parts) == 3 else None
-        if path is None or os.path.realpath(e['row']['path']) != path:
+        try:
+            t0 = T.parse_utc(parts[1]) + int(parts[2]) * HOUR_S if path else None
+        except (ValueError, IndexError):
+            t0 = None
+        if path is None or t0 is None or os.path.realpath(e['row']['path']) != path:
             probs.append('%s: item path %s is not <root>/%s' % (key, e['row']['path'], key))
             codes.append('RT-MANIFEST')
             continue
         sb, date, hh = parts
-        it = dict(item=key, subband=sb, date=date, hour=hh, path=path, t0=T.parse_utc(date) + int(hh) * HOUR_S)
+        it = dict(item=key, subband=sb, date=date, hour=hh, path=path, t0=t0)
         it['t1'] = it['t0'] + HOUR_S
         if not os.path.isdir(path):
             probs.append('%s: the directory is gone' % key)
@@ -467,10 +520,24 @@ def preflight(man_csv, root, out, now=None):
     return side, items
 
 
-def ruling_names_manifest(row, man_csv, side):
-    """Does the ledger row name this manifest: its file name, or the first 12 hex digits of its sha256?"""
-    text = ' '.join(str(v) for v in row.values())
-    return os.path.basename(man_csv) in text or str(side.get('csv_sha256', ''))[:12] in text
+def ruling_problem(row, side, c=None):
+    """None when the ledger row (core/ledger.rows) is Gregg's go for THIS manifest, else why not: authorized_by begins with
+    the word retention.RULING_AUTHORIZED_BY, status begins with retention.RULING_STATUS_PREFIX (any case), and the row's text
+    quotes the manifest's sha256 - in full or its first RULING_SHA_MIN_HEX hex digits or more (its file name alone does not
+    count: a manifest regenerated or edited under the same name must not match). Code cannot prove who wrote a row: the guard
+    is procedural (no session writes an R-GREGG row without Gregg's words) plus these checks."""
+    c = c or _c()
+    who = (row.get('authorized_by') or '').split()
+    if not who or who[0].rstrip(',;:') != c.RULING_AUTHORIZED_BY:
+        return 'authorized_by is %r, not %s' % (row.get('authorized_by'), c.RULING_AUTHORIZED_BY)
+    if not (row.get('status') or '').strip().upper().startswith(c.RULING_STATUS_PREFIX.upper()):
+        return 'status is %r, not %s...' % (row.get('status'), c.RULING_STATUS_PREFIX)
+    sha = str(side.get('csv_sha256') or '').lower()
+    text = ' '.join(str(v) for k, v in row.items() if k not in ('authorized_by', 'status')).lower()
+    n = int(c.RULING_SHA_MIN_HEX)
+    if len(sha) != 64 or not any(sha.startswith(h) for h in re.findall(r'(?<![0-9a-f])[0-9a-f]{%d,64}(?![0-9a-f])' % n, text)):
+        return 'its text does not quote this manifest\'s sha256 (%s..., at least %d hex digits)' % (sha[:n], n)
+    return None
 
 
 def delete_item(e, applied_csv):

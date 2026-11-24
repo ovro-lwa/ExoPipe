@@ -20,18 +20,25 @@ Actions and units (records <out>/_records/retention/<unit>.json):
            (class retention_manifest): the oldest-expiring retention.MAX_ITEMS_PER_MANIFEST expired items and every path a
            delete would remove - each file, and each file and directory of an MS directory (listed inside that MS only) - with
            its size, mtime (ns) and inode from os.lstat (and its sha256 with --checksum content), per item an identity sha256. No
-           expired item: no manifest (the note says so). --now UTC evaluates the expiry at another time (a what-if; the delete
-           always uses the clock).
+           expired item: no manifest (the note says so). The sidecar records the records the plan read (the real path of
+           --out, the size and sha256 of the table and the holds file). --now UTC evaluates the expiry at another time (a
+           what-if; the delete always uses the clock). With --dry-run: listed and classified only - no lstat, no checksum,
+           nothing written; the counts are printed.
   record   unit record_<UTC>: appends a production record to <out>/retention.TABLE_NAME (class retention_records): the raw
            sets of --scopes (default every subband) that start in [--start, --end) went through the pipeline at --produced
            (default now); --source names the chain, job or ledger ID. Expiry = the latest covering production + RETENTION_DAYS.
   hold     unit hold_<UTC>: appends a hold of [--start, --end) on --scopes to <out>/retention.HOLDS_NAME (retention_holds).
   release  unit release_<UTC>: appends the release of --hold-id.
-  delete   one unit per item, delete_<subband>_<date>_<hour>. REFUSES unless: --manifest is a dry-run manifest of this tree
-           whose sidecar sha256 still matches (RT-MANIFEST); --ruling-for retention.DELETE=<ledger ID> names a row of
-           paths.FIX_LEDGER whose fix_id starts with retention.RULING_PREFIX (R-GREGG-, Gregg's rulings) and whose text names
-           this manifest - its file name or the first 12 hex digits of its sha256 (RT-RULING: Gregg's go is for one manifest);
-           and, checked for EVERY item before anything is deleted, the item directory holds exactly the paths listed with the
+  delete   one unit per item, delete_<subband>_<date>_<hour>. REFUSES unless: --out is retention.ROOT, so the records and holds
+           are the production ones (RT-ROOT); --manifest is a dry-run manifest of this tree whose sidecar sha256 still matches,
+           planned from the records of this --out (RT-MANIFEST); --ruling-for retention.DELETE=<ledger ID> names a row of
+           paths.FIX_LEDGER whose fix_id starts with retention.RULING_PREFIX (R-GREGG-), whose authorized_by begins with the word
+           Gregg, whose status begins with RULED (any case) and whose text quotes this manifest's sha256 - in full or its first
+           12 hex digits or more; its file name alone does not count (RT-RULING: Gregg's go is for one manifest; code cannot
+           prove who wrote a row - the guard is procedural, no session writes an R-GREGG row without Gregg's words, plus these
+           checks); the table and the holds file only grew since the plan (their planned bytes still hash to the planned
+           digests: RT-RECORDS); and, checked for EVERY item before anything is deleted, the item directory holds exactly the
+           paths listed with the
            same kind, size, mtime and inode (and sha256 for a content manifest) (RT-MATCH), is still expired by the records now
            (RT-NOT-EXPIRED) and is not held now (RT-HELD). Then, item by item, it unlinks the listed files (each re-checked right
            before), removes the listed MS directories deepest first with os.rmdir (empty directories only; never a recursive
@@ -41,9 +48,10 @@ Actions and units (records <out>/_records/retention/<unit>.json):
            delete in this step.
 Inputs:  the raw tree retention.RAW_ROOT (names; os.lstat of the paths of manifest items only); <out>/retention.TABLE_NAME and
          <out>/retention.HOLDS_NAME; paths.FIX_LEDGER (delete). Every key: `exopipe3 config --section retention`.
-Failure modes (exit 2 = refused): RT-ROOT the raw root is not a directory; RT-TABLE a table or holds row that cannot be read;
+Failure modes (exit 2 = refused): RT-ROOT the raw root is not a directory, or a delete's --out is not retention.ROOT;
+         RT-TABLE a table or holds row that cannot be read;
          RT-RECORD / RT-HOLD an invalid record, hold or release; RT-CHECKSUM an unknown checksum kind; RT-MANIFEST, RT-RULING,
-         RT-MATCH, RT-NOT-EXPIRED, RT-HELD (delete, above). No space gate (SPACE_GATE below). Exit 3: the tree holds no item
+         RT-RECORDS, RT-MATCH, RT-NOT-EXPIRED, RT-HELD (delete, above). No space gate (SPACE_GATE below). Exit 3: the tree holds no item
          in the selection.
 Selectors: --nights (UT dates of the tree) and --scopes (subbands) restrict plan; record and hold take --scopes as the
          subbands they cover.
@@ -136,17 +144,21 @@ def run(args, run):
     if args.action == 'plan':
         now = _time(args.now, '--now') if args.now else None
         pl = P.make_plan(c.RAW_ROOT, out, now=now, nights=_nights(args), subbands=_set(args.scopes),
-                         checksum=args.checksum, max_items=args.max_items)
+                         checksum=args.checksum, max_items=args.max_items, stat=not run.dry_run)
         by = pl.counts()
+        if run.dry_run:                  # names and statuses only: no lstat, no checksum, nothing written
+            print('retention plan (dry run: listed and classified only - no stat, no checksum, nothing written): %d items '
+                  '(%s); %d expired, %d would be in the manifest%s' % (
+                      len(pl.items), ', '.join('%s %d' % (k, by[k]) for k in P.STATUSES if k in by) or 'none',
+                      pl.n_expired, len(pl.batch), '; %d names outside the layout' % len(pl.odd) if pl.odd else ''),
+                  file=sys.stderr)
+            return record.EXIT_DONE
         nb = sum(r['bytes'] for _i, _c, rs in pl.batch for r in rs)
         line = ('%d items (%s); %d expired, %d in the manifest (%d files, %d directories, %.3f TB)%s' % (
             len(pl.items), ', '.join('%s %d' % (k, by[k]) for k in P.STATUSES if k in by) or 'none', pl.n_expired,
             len(pl.batch), sum(r['kind'] != 'dir' for _i, _c, rs in pl.batch for r in rs),
             sum(r['kind'] == 'dir' for _i, _c, rs in pl.batch for r in rs), nb / 1e12,
             '; %d names outside the layout' % len(pl.odd) if pl.odd else ''))
-        if run.dry_run:
-            print('retention plan (dry run, nothing written): ' + line, file=sys.stderr)
-            return record.EXIT_DONE
         if not pl.items and not pl.odd:
             with run.unit('plan_%s' % st, action='plan'):
                 raise record.NoInput('no item under %s in this selection' % c.RAW_ROOT)
@@ -156,9 +168,9 @@ def run(args, run):
             u.add_output(plan_csv, 'retention_plan')
             if man_csv:
                 u.add_output(man_csv, 'retention_manifest')
-                u.note('dry-run manifest %s (sha256 %s): Gregg\'s go for it is a ledger row naming it; then exopipe3 '
-                       'retention delete --manifest %s --ruling-for %s=<ID>' % (man_csv, P.sha256_file(man_csv)[:12],
-                                                                                man_csv, c.DELETE_RULING_KEY))
+                u.note('dry-run manifest %s (sha256 %s): Gregg\'s go for it is a ledger row quoting that sha256; then '
+                       'exopipe3 retention delete --out %s --manifest %s --ruling-for %s=<ID>' % (
+                           man_csv, P.sha256_file(man_csv), c.ROOT, man_csv, c.DELETE_RULING_KEY))
             else:
                 u.note('no expired item: no manifest written')
             u.note(line)
@@ -206,6 +218,9 @@ def run(args, run):
     if not args.manifest:
         raise Refusal('RT-MANIFEST: delete needs --manifest <the dry-run manifest Gregg approved>')
     man = os.path.abspath(args.manifest)
+    if os.path.realpath(out) != os.path.realpath(c.ROOT):
+        raise Refusal('RT-ROOT: a delete reads the production records and holds: --out must be retention.ROOT (%s), not %s'
+                      % (c.ROOT, out))
     lid = _delete_ruling(args, CFG)
     if not lid:
         raise Refusal('RT-RULING: a delete of raw data needs Gregg\'s go: --ruling-for %s=<ledger ID of his ruling naming '
@@ -214,9 +229,12 @@ def run(args, run):
     rows = ledger.rows(lid, CFG.paths.FIX_LEDGER)
     if not lid.startswith(c.RULING_PREFIX):
         raise Refusal('RT-RULING: %s is not one of Gregg\'s rulings (fix_id %s*)' % (lid, c.RULING_PREFIX))
-    if not rows or not any(P.ruling_names_manifest(r, man, side) for r in rows):
-        raise Refusal('RT-RULING: the ledger row %s does not name this manifest (%s, or the first 12 hex digits of its sha256 '
-                      '%s): Gregg\'s go is for one manifest' % (lid, os.path.basename(man), side['csv_sha256'][:12]))
+    why = [P.ruling_problem(r, side) for r in rows] or ['no row']
+    if all(why):
+        raise Refusal('RT-RULING: the ledger row %s is not Gregg\'s go for this manifest (%s): it needs authorized_by %s, a '
+                      'status %s... and the manifest\'s sha256 %s (at least %d hex digits) in its text' % (
+                          lid, '; '.join(why), c.RULING_AUTHORIZED_BY, c.RULING_STATUS_PREFIX,
+                          side['csv_sha256'][:c.RULING_SHA_MIN_HEX], c.RULING_SHA_MIN_HEX))
     side, items = P.preflight(man, c.RAW_ROOT, out)
     if run.dry_run:
         print('delete (dry run): the manifest holds - %d items, %d files, %.3f TB would be deleted under ruling %s' % (

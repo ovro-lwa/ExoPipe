@@ -7,7 +7,8 @@ Asserts:
   - the table: production records and holds append one row each, read back; an empty range, a production before the range or
     in the future, no source, a name that is not a subband refuse (RT-RECORD / RT-HOLD); a damaged row or header refuses
     (RT-TABLE); a release ends a hold; a release of a hold that is not active refuses;
-  - the tree is listed by name; names outside the layout are reported, never items;
+  - the tree is listed by name; names outside the layout are reported, never items (a date-shaped name that is no date
+    among them: never a crash);
   - the status of each item: unprocessed (no record), held (a hold overlaps its hour, whatever its expiry), unrecognized (a
     subdirectory in it), empty, partial (a file no record covers), retained (expiry ahead), expired; the expiry is the
     latest covering production + RETENTION_DAYS (a re-processing restarts the clock);
@@ -15,9 +16,14 @@ Asserts:
     up to the batch limit, each file's size, mtime and inode, an MS directory path by path (dir and file rows), per item an
     identity sha256; the sidecar's sha256 is the CSV's;
     no expired item -> no manifest; the content tests of retention_plan / retention_manifest pass and fail a tampered copy;
-  - the delete refuses, deleting nothing, without --ruling-for retention.DELETE (RT-RULING), with an ID that is not a ledger
-    row (config refusal), with a row that is not Gregg's (not R-GREGG-*), with Gregg's row that does not name this manifest
-    (RT-RULING); with a file of an item changed (RT-MATCH; restoring the file's size and mtime makes it match again), a new
+    the sidecar records the --out, table and holds digests the plan read; plan --dry-run lists and classifies only (no
+    lstat, no checksum, nothing written);
+  - the delete refuses, deleting nothing, with --out other than retention.ROOT (RT-ROOT), without --ruling-for
+    retention.DELETE (RT-RULING), with an ID that is not a ledger row (config refusal), with a row that is not Gregg's (not
+    R-GREGG-*, or authorized_by not Gregg, or a status not RULED), with Gregg's row that does not quote this manifest's
+    sha256 (another manifest, the file name only, 11 hex digits, a longer hex string) (RT-RULING) - a row quoting the full
+    sha256 passes; with a manifest planned from another --out (RT-MANIFEST); with the table rewritten since the plan
+    (RT-RECORDS; appended rows are re-classified instead); with a file of an item changed (RT-MATCH; restoring the file's size and mtime makes it match again), a new
     file in an item or inside an MS directory (RT-MATCH), a hold made after the dry run (RT-HELD), a re-processing record (RT-NOT-EXPIRED), a manifest
     edited after its dry run (RT-MANIFEST), a manifest of another raw root (RT-MANIFEST); --dry-run deletes nothing;
   - then, with Gregg's row naming the manifest: only the listed paths are removed (an MS directory file by file, then its
@@ -108,6 +114,7 @@ class World:
             f.write('x')
         os.makedirs(os.path.join(self.root, 'notes'))
         os.makedirs(os.path.join(self.root, '73MHz', 'notadate'))
+        os.makedirs(os.path.join(self.root, '73MHz', '2026-13-45', '02'))   # the date pattern, no date: odd, never a crash
         os.makedirs(os.path.join(self.root, '73MHz', self.OLD, 'xx'))
 
     def _f(self, sb, date, hh, offs, sizes):
@@ -203,7 +210,8 @@ def test_classify(W):
     names = {it['item'] for it in items}
     check('the tree by name: 9 items', len(items) == 9, sorted(names))
     want_odd = {os.path.join(W.root, 'README'), os.path.join(W.root, 'notes') + '/',
-                os.path.join(W.root, '73MHz', 'notadate') + '/', os.path.join(W.root, '73MHz', W.OLD, 'xx') + '/'}
+                os.path.join(W.root, '73MHz', 'notadate') + '/', os.path.join(W.root, '73MHz', W.OLD, 'xx') + '/',
+                os.path.join(W.root, '73MHz', '2026-13-45') + '/'}
     check('names outside the layout reported, never items', set(odd) == want_odd, odd)
     pl = P.make_plan(W.root, W.out, max_items=10)
     st = {it['item']: cls['status'] for it, cls in pl.items}
@@ -271,6 +279,20 @@ def test_step(W):
           and len(mans) == 1 and W.present() == before, (rc, err[-800:]))
     man = mans[0]
     side = json.load(open(os.path.splitext(man)[0] + '.json'))
+    Pd = Patch()
+    try:
+        def no_stat(*a, **k):
+            raise AssertionError('stat_entries called in a dry run')
+        Pd.set(P, 'stat_entries', no_stat)
+        Pd.set(P, 'sha256_file', no_stat)
+        rc, err = go(['plan', '--out', W.out, '--dry-run'])
+    finally:
+        Pd.undo()
+    check('plan --dry-run: exit 0, the counts printed (3 expired, 3 would be in the manifest), no lstat or checksum of an '
+          'entry, nothing written', rc == 0 and 'no stat' in err and '3 expired, 3 would be in the manifest' in err
+          and sorted(glob.glob(os.path.join(W.out, 'plans', '*'))) == plans
+          and sorted(glob.glob(os.path.join(W.out, 'manifests', '*'))) == mans + [os.path.splitext(man)[0] + '.json'],
+          (rc, err[-600:]))
     check('the sidecar: 3 items, 9 files, 2 directories (an MS and its subdirectory), 1565 bytes, identity checksum, the raw '
           'root, 14 days', side['n_items'] == 3 and side['n_files'] == 9 and side['n_dirs'] == 2 and side['bytes'] == 1565 and side['checksum'] == 'identity'
           and side['raw_root'] == os.path.realpath(W.root) and side['retention_days'] == 14
@@ -297,14 +319,39 @@ def test_step(W):
     check('content test retention_manifest fails a manifest whose file size disagrees with its item row',
           res and not all(r['passed'] for r in res), res)
 
+    # a plan of the same tree from a copy of the records (another --out): a manifest a delete must not take
+    out2 = os.path.join(W.d, 'out_copy')
+    os.makedirs(out2)
+    for f in (T.table_path(W.out), T.holds_path(W.out)):
+        shutil.copy2(f, out2)
+    rc, err = go(['plan', '--out', out2])
+    man2 = (sorted(glob.glob(os.path.join(out2, 'manifests', 'DRYRUN_RETENTION_*.csv'))) or [None])[0]
+    check('a plan from a copy of the records (another --out) writes its own manifest', rc == 0 and man2, err[-400:])
+    side2 = json.load(open(os.path.splitext(man2)[0] + '.json'))
+    check('the sidecar records what the plan read: the real --out, the table and holds sizes and sha256s',
+          side['records']['root'] == os.path.realpath(W.out) and side['records']['table'] == list(
+              P.prefix_digest(T.table_path(W.out))) and side['records']['holds'] == list(P.prefix_digest(T.holds_path(W.out)))
+          and side2['records']['root'] == os.path.realpath(out2), (side.get('records'), side2.get('records')))
+
     led = os.path.join(W.d, 'fix_ledger.csv')
-    sha12 = side['csv_sha256'][:12]
+    sha = side['csv_sha256']
+    sha12 = sha[:12]
     write_ledger(led, [
-        ['2026-11-24', 'R-GREGG-TEST-GO', 'Gregg: go to delete the raw data of manifest %s' % os.path.basename(man),
-         'Gregg 2026-11-24', 'RULED'],
-        ['2026-11-24', 'R-GREGG-TEST-SHA', 'Gregg: go for the manifest whose sha256 starts %s' % sha12, 'Gregg', 'RULED'],
-        ['2026-11-24', 'R-GREGG-TEST-OTHER', 'Gregg: go for DRYRUN_RETENTION_20990101T000000Z.csv', 'Gregg', 'RULED'],
-        ['2026-11-24', 'FIX-TEST-NOT-GREGG', 'a fix naming %s' % os.path.basename(man), 'refactor chat', 'DONE']])
+        ['2026-11-24', 'R-GREGG-TEST-GO', 'Gregg: go to delete the raw data of the manifest with sha256 %s' % sha12,
+         'Gregg 2026-11-24', 'RULED - test'],
+        ['2026-11-24', 'R-GREGG-TEST-FULL', 'Gregg: go for sha256 %s (%s)' % (sha.upper(), os.path.basename(man)),
+         'Gregg Hallinan (terminal)', 'ruled'],
+        ['2026-11-24', 'R-GREGG-TEST-NAME', 'Gregg: go to delete the raw data of manifest %s' % os.path.basename(man),
+         'Gregg', 'RULED'],
+        ['2026-11-24', 'R-GREGG-TEST-SHORT', 'Gregg: go for the manifest whose sha256 starts %s' % sha[:11], 'Gregg', 'RULED'],
+        ['2026-11-24', 'R-GREGG-TEST-INSIDE', 'Gregg: go for 0%s' % sha12, 'Gregg', 'RULED'],
+        ['2026-11-24', 'R-GREGG-TEST-NOTRULED', 'Gregg asked about manifest %s' % sha12, 'Gregg', 'RECEIVED, NOT RULED'],
+        ['2026-11-24', 'R-GREGG-TEST-NOTGREGG', 'a go for manifest %s' % sha12, 'refactor chat', 'RULED'],
+        ['2026-11-24', 'R-GREGG-TEST-OTHER', 'Gregg: go for DRYRUN_RETENTION_20990101T000000Z.csv, sha256 0123456789abcdef',
+         'Gregg', 'RULED'],
+        ['2026-11-24', 'R-GREGG-TEST-M2', 'Gregg: go for the manifest with sha256 %s' % side2['csv_sha256'][:16], 'Gregg',
+         'RULED'],
+        ['2026-11-24', 'FIX-TEST-NOT-GREGG', 'a fix naming %s' % sha12, 'refactor chat', 'DONE']])
     Pt = Patch()
     try:
         Pt.set(CFG.paths, 'FIX_LEDGER', led)
@@ -312,15 +359,50 @@ def test_step(W):
         assert root_real.startswith(os.path.realpath(W.d) + os.sep), 'the raw root of a delete test is the scratch tree'
         assert os.path.realpath(CFG.retention.RAW_ROOT) == root_real
         dele = ['delete', '--out', W.out, '--manifest', man]
+        go_ = ['--ruling-for', 'retention.DELETE=R-GREGG-TEST-GO']
+        rc, err = go(dele + go_ + ['--dry-run'])
+        check('delete with --out other than retention.ROOT: RT-ROOT (the production records only), nothing deleted',
+              rc == 2 and 'RT-ROOT' in err and W.present() == before, (rc, err[-600:]))
+        Pt.set(CFG.retention, 'ROOT', W.out)
+        assert os.path.realpath(CFG.retention.ROOT).startswith(os.path.realpath(W.d) + os.sep)
         for what, extra, code in (
                 ('no --ruling-for', [], 'RT-RULING'),
                 ('an ID that is not a ledger row', ['--ruling-for', 'retention.DELETE=R-GREGG-NO-SUCH-ROW'], 'no row'),
                 ('a row that is not Gregg\'s', ['--ruling-for', 'retention.DELETE=FIX-TEST-NOT-GREGG'], 'RT-RULING'),
-                ('Gregg\'s row naming another manifest', ['--ruling-for', 'retention.DELETE=R-GREGG-TEST-OTHER'], 'RT-RULING')):
+                ('Gregg\'s row naming another manifest', ['--ruling-for', 'retention.DELETE=R-GREGG-TEST-OTHER'], 'RT-RULING'),
+                ('Gregg\'s row naming the manifest by FILE NAME only', ['--ruling-for', 'retention.DELETE=R-GREGG-TEST-NAME'],
+                 'RT-RULING'),
+                ('a row quoting 11 hex digits of the sha256', ['--ruling-for', 'retention.DELETE=R-GREGG-TEST-SHORT'],
+                 'RT-RULING'),
+                ('a row whose hex string only contains the sha256 prefix', ['--ruling-for',
+                                                                           'retention.DELETE=R-GREGG-TEST-INSIDE'],
+                 'RT-RULING'),
+                ('an R-GREGG row whose status is not RULED', ['--ruling-for', 'retention.DELETE=R-GREGG-TEST-NOTRULED'],
+                 'RT-RULING'),
+                ('an R-GREGG row not authorized by Gregg', ['--ruling-for', 'retention.DELETE=R-GREGG-TEST-NOTGREGG'],
+                 'RT-RULING')):
             rc, err = go(dele + extra)
             check('delete refused (%s): exit 2, %s, nothing deleted' % (what, code), rc == 2 and code in err
                   and W.present() == before, (rc, err[-600:]))
-        go_ = ['--ruling-for', 'retention.DELETE=R-GREGG-TEST-GO']
+        rc, err = go(dele + ['--ruling-for', 'retention.DELETE=R-GREGG-TEST-FULL', '--dry-run'])
+        check('a row quoting the full sha256 (any case), authorized_by "Gregg Hallinan (terminal)", status "ruled": accepted '
+              '(--dry-run: exit 0, nothing deleted)', rc == 0 and 'the manifest holds' in err and W.present() == before,
+              err[-600:])
+        rc, err = go(['delete', '--out', W.out, '--manifest', man2, '--ruling-for', 'retention.DELETE=R-GREGG-TEST-M2'])
+        check('a manifest planned from another --out (a copy of the records), with Gregg\'s row for it: RT-MANIFEST, '
+              'nothing deleted', rc == 2 and 'RT-MANIFEST' in err and 'planned from the records' in err
+              and W.present() == before, err[-600:])
+        tab = T.table_path(W.out)
+        tab0 = open(tab, 'rb').read()
+        with open(tab, 'wb') as f:
+            f.write(tab0.replace(b'test chain new night', b'Test chain new night'))
+        rc, err = go(dele + go_ + ['--dry-run'])
+        check('the retention table REWRITTEN after the dry run (a row edited in place): RT-RECORDS, nothing deleted',
+              rc == 2 and 'RT-RECORDS' in err and W.present() == before, err[-600:])
+        with open(tab, 'wb') as f:
+            f.write(tab0)
+        rc, err = go(dele + go_ + ['--dry-run'])
+        check('... restored byte for byte: the preflight holds', rc == 0, err[-600:])
         # a file changed, then restored to the same size and mtime
         p = rows[[r['kind'] for r in rows].index('file')]['path']
         st0 = os.lstat(p)
@@ -360,18 +442,23 @@ def test_step(W):
         check('a hold made after the dry run: RT-HELD, nothing deleted', rc == 2 and 'RT-HELD' in err
               and W.present() == before, err[-600:])
         T.release(W.out, hid, 'test release')
-        out_h = os.path.join(W.d, 'out_reprocessed')
-        shutil.copytree(W.out, out_h)
-        T.record_production(out_h, o + 2 * 3600, o + 3 * 3600, '73MHz', time.time() - 60, 'test re-processing')
-        rc, err = go(['delete', '--out', out_h, '--manifest', man] + go_)
-        check('a re-processing record after the dry run: RT-NOT-EXPIRED, nothing deleted', rc == 2
-              and 'RT-NOT-EXPIRED' in err and W.present() == before, err[-600:])
+        rc, err = go(dele + go_ + ['--dry-run'])
+        check('... released (the holds file grew by two rows, its planned bytes unchanged): the preflight holds', rc == 0,
+              err[-600:])
+        tab0 = open(tab, 'rb').read()
+        T.record_production(W.out, o + 2 * 3600, o + 3 * 3600, '73MHz', time.time() - 60, 'test re-processing')
+        rc, err = go(dele + go_)
+        check('a re-processing record appended after the dry run: RT-NOT-EXPIRED (not RT-RECORDS: the table only grew), '
+              'nothing deleted', rc == 2 and 'RT-NOT-EXPIRED' in err and 'RT-RECORDS' not in err
+              and W.present() == before, err[-600:])
+        with open(tab, 'wb') as f:          # the test's own scratch table back to the bytes the plan read plus nothing
+            f.write(tab0)
         ed = os.path.join(W.out, 'manifests', 'DRYRUN_RETENTION_19990101T000000Z.csv')
         with open(man) as f, open(ed, 'w') as g:
             g.write(f.read() + 'file,x,y,1,1,1,,,,,,\n')
         json.dump(dict(side, csv=os.path.basename(ed)), open(os.path.splitext(ed)[0] + '.json', 'w'))
-        write_ledger(led, [['2026-11-24', 'R-GREGG-TEST-GO', 'go for %s and %s' % (os.path.basename(man),
-                                                                                   os.path.basename(ed)), 'Gregg', 'RULED']])
+        write_ledger(led, [['2026-11-24', 'R-GREGG-TEST-GO', 'go for the manifest of sha256 %s, and its copy' % sha12,
+                            'Gregg', 'RULED']])
         rc, err = go(['delete', '--out', W.out, '--manifest', ed] + go_)
         check('a manifest edited after its dry run: RT-MANIFEST, nothing deleted', rc == 2 and 'RT-MANIFEST' in err
               and W.present() == before, err[-600:])

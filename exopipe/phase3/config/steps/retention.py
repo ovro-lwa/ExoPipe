@@ -22,7 +22,9 @@ class retention(_Section):
     MS_DIR_RE = r'\.ms$'                # a directory entry named <stamp>_... and matching this is an MS: a data entry whose
                                         # every file and subdirectory the manifest lists and the delete removes one by one
     RETENTION_DAYS = 14                 # days from production to expiry (Gregg 2026-11-17: "2 weeks retention")
-    # default --out: the retention table (production records), the holds, the dry-run and applied manifests, the records
+    # default --out: the retention table (production records), the holds, the dry-run and applied manifests, the records.
+    # A DELETE runs only with --out at this root (realpath; RT-ROOT), so its records and holds are the production ones; a plan
+    # may run elsewhere (a what-if), but a delete refuses its manifest (RT-MANIFEST: planned from another table)
     ROOT = '/lustre/gh/main/phase3/retention'
     TABLE_NAME = 'retention_table.csv'  # <out>/<this>: production records, one row per recorded range (append only)
     HOLDS_NAME = 'retention_holds.csv'  # <out>/<this>: holds and their releases (append only)
@@ -35,10 +37,17 @@ class retention(_Section):
     # subband (718 entries), ~16 s per 10-s MS directory (~1.6 h for an MS-directory hour of one subband).
     MAX_ITEMS_PER_MANIFEST = 240
     # a real delete needs --ruling-for <DELETE_RULING_KEY>=<ledger ID>: a row of paths.FIX_LEDGER whose fix_id starts with
-    # RULING_PREFIX (Gregg's rulings) and whose text names the manifest (its file name or the first 12 hex digits of its
-    # sha256): Gregg's go is for that manifest, never a standing permission
+    # RULING_PREFIX, whose authorized_by begins with the word RULING_AUTHORIZED_BY, whose status begins with
+    # RULING_STATUS_PREFIX (any case), and whose text names the manifest's sha256 - in full or its first RULING_SHA_MIN_HEX hex
+    # digits or more (never its file name alone: a manifest regenerated or edited under the same name must not match).
+    # Gregg's go is for that manifest, never a standing permission. Code cannot prove who wrote a ledger row: the guard is
+    # procedural (no session writes an R-GREGG row without Gregg's words) plus these checks
     DELETE_RULING_KEY = 'retention.DELETE'
     RULING_PREFIX = 'R-GREGG-'
+    RULING_AUTHORIZED_BY = 'Gregg'      # the first word of authorized_by (the ledger has 'Gregg', 'Gregg Hallinan',
+                                        # 'Gregg 2026-11-17', ... in its 250 R-GREGG rows on 2026-11-24)
+    RULING_STATUS_PREFIX = 'RULED'      # status begins with this, any case ('RULED - ...', 'ruled'); not 'RECEIVED, NOT RULED'
+    RULING_SHA_MIN_HEX = 12             # hex digits of the manifest's sha256 the row must quote, at least
     CHECKSUM = 'identity'               # 'identity': per file size, mtime (ns) and inode, sha256 per item over them (reads no
                                         # data); 'content': also sha256 of every file's bytes (reads all of it: ~45 GB per
                                         # subband hour of .ms.tar sets; a question for Gregg, see the pull request)
