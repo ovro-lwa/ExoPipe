@@ -19,9 +19,17 @@ own code is unchanged:
           - its source_id names the stamped identity: sent on unchanged;
           - exactly one other page of this build has the stamped key (the identity was renamed): source_id is rewritten to
             that page, so the label lands on the identity it was made on;
-          - no page or several pages have it (a regroup issued new IDs, the identity merged into another or retired, or
-            gained or lost a member identity): REFUSED with HTTP 409 - nothing is recorded, the message names the identity and
-            echoes the label, the reviewer reloads.
+          - no page has it because a grouping run MERGED it into another identity (the build's merge table, <run>/stokes_link/
+            identity_merges.csv, lib/catalog/stokes_link.py; R-GREGG-20261124-CROSS-STOKES-LINK-TEST-APPROVED, Q2: "carry
+            labels along the grouping's merge events"): the label follows the merge to the survivor's page when exactly one
+            page holds the survivor. A source-scope label whose verdict (confidence, reason, second reason) differs from a
+            verdict the survivor already holds is NOT made the survivor's verdict ("When the merged identities carry
+            conflicting verdicts, show both and mark the source ambiguous; never pick one"): it is kept in the labels
+            directory's merge_conflicts.jsonl with the verdicts it conflicts with, HTTP 409 says so, and the survivor's page
+            opens with both verdicts, marked AMBIGUOUS (ambiguous_html), until a reviewer judges it on its page;
+          - no page or several pages have it otherwise (a regroup issued new IDs, the identity retired, or gained or lost a
+            member identity): REFUSED with HTTP 409 - nothing is recorded, the message names the identity and echoes the label,
+            the reviewer reloads.
           A POST /label WITHOUT the stamp to a stamped build is REFUSED the same way when its source_id names a stamped page
           or no page of the build (a form shown before stamping, e.g. by a production page before the first design-B serve):
           its source_id cannot be checked against the identity it was made on, and a guess could record the label on another
@@ -33,8 +41,13 @@ NOT COVERED (stated in the PR): notes, note deletions and the reviewed mark are 
 (classify_transients.py:2949, 4875, 4883), not from a form, so they carry no stamp and pass as before; covering them needs the
 page code to send the stamp. The per-person lists post their form (FormData) and so carry the stamp."""
 import collections
+import csv
 import html
+import json
+import os
 import re
+import threading
+import time
 import urllib.parse
 
 FIELD = 'group_identity_id'
@@ -44,6 +57,11 @@ REFUSED_STATUS = 409
 # :4940, :4946); the value is html.escape(sid)
 _HIDDEN_SID = re.compile(r'<input type="hidden" name="source_id" value="([^"]*)">')
 _MAPS_ATTR = '_label_identity_maps'
+_MERGES_ATTR = '_label_identity_merges'
+MERGE_CONFLICTS = 'merge_conflicts.jsonl'      # in the labels directory, beside judgements.jsonl
+LINK_DIR, MERGES = 'stokes_link', 'identity_merges.csv'   # = lib/catalog/stokes_link.py DIRNAME, MERGES
+VERDICT = ('judge_confidence', 'judge_fp_reason', 'judge_fp_reason_2')
+_LOCK = threading.Lock()
 
 
 def identity_maps(app):
@@ -70,6 +88,100 @@ def page_maps(page):
         m = identity_maps(app) if app is not None else ({}, {}, frozenset())
         setattr(page, _MAPS_ATTR, m)
     return m
+
+
+def _argv_value(entry, flag):
+    a = (entry or {}).get('argv') or []
+    i = a.index(flag) + 1 if flag in a else len(a)
+    return a[i] if i < len(a) else None
+
+
+def merge_map(page):
+    """{merged identity ID: the live ID it stands for} of the page's run (<run>/stokes_link/identity_merges.csv, read once per
+    version of the file); {} when the run has none (production's grouping)."""
+    d = _argv_value(getattr(page, 'entry', None), '--run')
+    p = os.path.join(d, LINK_DIR, MERGES) if d else None
+    try:
+        st = os.stat(p) if p else None
+    except OSError:
+        st = None
+    if st is None:
+        return {}
+    key = (st.st_mtime_ns, st.st_size)
+    with _LOCK:
+        c = getattr(page, _MERGES_ATTR, None)
+        if c is None or c[0] != key:
+            with open(p, newline='') as f:
+                c = (key, {r['identity_id']: r['into_id'] for r in csv.DictReader(f)})
+            setattr(page, _MERGES_ATTR, c)
+        return c[1]
+
+
+def _app(page):
+    return getattr(getattr(getattr(page, 'mod', None), 'Handler', None), 'app', None)
+
+
+def held_verdicts(page, sid):
+    """[the source-scope records the page's journal holds now for page id sid, every presentation] (App.state())"""
+    app = _app(page)
+    if app is None or not hasattr(app, 'state'):
+        return []
+    return [st['source'] for (s, _p), st in sorted(app.state().items()) if s == sid and st.get('source')]
+
+
+def conflicts_path(page):
+    """<labels directory>/merge_conflicts.jsonl of the page (the directory of its App's journal), or None"""
+    j = getattr(_app(page), 'journal', None)
+    return os.path.join(os.path.dirname(j), MERGE_CONFLICTS) if j else None
+
+
+def append_conflict(path, rec):
+    with open(path, 'a') as f:
+        f.write(json.dumps(rec, sort_keys=True) + '\n')
+        f.flush()
+        os.fsync(f.fileno())
+
+
+def _vtext(v):
+    t = v.get('judge_confidence') or '?'
+    for k in ('judge_fp_reason', 'judge_fp_reason_2'):
+        if v.get(k):
+            t += f' / {v[k]}'
+    return t
+
+
+def ambiguous_html(page, sid, gids):
+    """The AMBIGUOUS banner of page id sid: the newest merge-conflict record of the identity (merge_conflicts.jsonl: written by
+    resolve for a stale form, by grouping_stage.carry_judgements for merged pages with conflicting verdicts) while the page
+    holds no verdict but the ones the record lists (a verdict recorded on the page since - a reviewer's, or a later carry's -
+    settles it); '' otherwise."""
+    p = conflicts_path(page)
+    if not p or not os.path.exists(p):
+        return ''
+    last = None
+    with open(p) as f:
+        for line in f:
+            if line.strip():
+                r = json.loads(line)
+                if r.get('source_id') == sid or r.get('group_identity_id') in gids:
+                    last = r
+    if last is None:
+        return ''
+    def key(v):
+        return tuple(v.get(k) or '' for k in VERDICT) + (str(v.get('ts', '')),)
+    listed = {key(v) for v in last.get('verdicts', [])}
+    if any(key(v) not in listed for v in held_verdicts(page, sid)):
+        return ''
+    items = ''.join(f'<li><b>{html.escape(_vtext(v))}</b>, made on {html.escape(str(v.get("source", "")))} '
+                    f'({html.escape(str(v.get("identity", "")))}) at {html.escape(str(v.get("ts", "")))}'
+                    + (f': {html.escape(str(v.get("judge_note")))}' if v.get('judge_note') else '') + '</li>'
+                    for v in last.get('verdicts', []))
+    how = ('a label from a page shown before the merge' if last.get('origin') == 'post'
+           else 'the carry of the earlier pages\' judgements')
+    return ('<div class="merge-conflict" style="font-family:sans-serif;font-size:14px;border:2px solid #b00;background:#fee;'
+            'padding:6px 10px;margin:4px 0 8px 0"><b>AMBIGUOUS</b>: identities merged into this one carry conflicting '
+            f'verdicts ({html.escape(how)}, {html.escape(str(last.get("ts", "")))}); neither was chosen:<ul style="margin:2px 0">'
+            f'{items}</ul>Judge the source here to settle it.</div>')
 
 
 def stamp(text, by_sid):
@@ -102,9 +214,29 @@ def refusal(why, form, links=()):
     return REFUSED_STATUS, [('Content-Type', 'text/html; charset=utf-8')], body.encode('utf-8')
 
 
-def resolve(path, body, maps):
+def ambiguous_response(sid, g, target, live, posted, held):
+    """(status, headers, body) of a label kept as a conflicting verdict of a merged identity"""
+    vs = ''.join(f'<li>{html.escape(_vtext(v))} (held by {html.escape(target)})</li>' for v in held)
+    body = (f'<html><head><title>Kept as a conflicting verdict</title></head><body style="font-family:sans-serif;max-width:760px;'
+            f'margin:24px"><h2>Kept as a conflicting verdict, not as the source\'s verdict</h2><p>The identity this label was '
+            f'made on ({html.escape(g)}, shown then as {html.escape(sid)!s}) was merged into the identity of page '
+            f'<a href="/source/{urllib.parse.quote(target)}">{html.escape(target)}</a> ({html.escape(live)}), which holds a '
+            f'different verdict:</p><ul>{vs}</ul><p>Your verdict, <b>{html.escape(_vtext(posted))}</b>, was kept with them. Both '
+            f'are shown at the top of that page and the source is marked AMBIGUOUS; neither verdict was chosen. Judge it on '
+            f'its page to settle it.</p></body></html>')
+    return REFUSED_STATUS, [('Content-Type', 'text/html; charset=utf-8')], body.encode('utf-8')
+
+
+def _rewrite(text, to):
+    pairs = [(k, to if k == 'source_id' else v) for k, v in urllib.parse.parse_qsl(text, keep_blank_values=True)]
+    return urllib.parse.urlencode(pairs).encode('utf-8')
+
+
+def resolve(path, body, maps, merges=None, held=None, record=None):
     """(body to send on, refusal or None, what happened) of one POST to a review page whose build has ``maps``
-    (identity_maps). what: 'unstamped' | 'same' | 'carried <old> -> <new>' | 'refused'."""
+    (identity_maps). merges: {merged ID: live ID} of the build (merge_map); held(page id): the source-scope records it holds
+    now (held_verdicts); record(rec): keeps a conflicting verdict (append_conflict). what: 'unstamped' | 'same' |
+    'carried <old> -> <new>' | 'merged <old> -> <new>' | 'ambiguous <old> -> <new>' | 'refused'."""
     by_sid, by_gid, pages = maps
     route = path.split('?', 1)[0]
     try:
@@ -125,9 +257,29 @@ def resolve(path, body, maps):
         return body, None, 'same'
     there = by_gid.get(g, [])
     if len(there) == 1:
-        pairs = [(k, there[0] if k == 'source_id' else v)
-                 for k, v in urllib.parse.parse_qsl(text, keep_blank_values=True)]
-        return urllib.parse.urlencode(pairs).encode('utf-8'), None, f'carried {sid} -> {there[0]}'
+        return _rewrite(text, there[0]), None, f'carried {sid} -> {there[0]}'
+    live = (merges or {}).get(g) if not there else None
+    target = by_gid.get(live, []) if live else []
+    if len(target) == 1:
+        to = target[0]
+        if route == LABEL_PATH and form.get('scope', [''])[0] == 'source' and form.get('confidence', [''])[0]:
+            posted = dict(judge_confidence=form['confidence'][0], judge_fp_reason=form.get('fp_reason', [''])[0],
+                          judge_fp_reason_2=form.get('fp_reason_2', [''])[0])
+            have = list(held(to)) if held else []
+            differ = [v for v in have if tuple(v.get(k) or '' for k in VERDICT) != tuple(posted[k] for k in VERDICT)]
+            if differ:
+                now = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+                rec = dict(ts=now, origin='post', source_id=to, group_identity_id=live, merged_id=g,
+                           verdicts=[dict({k: v.get(k, '') for k in VERDICT + ('judge_note',)}, source=to, identity=live,
+                                          ts=v.get('ts', '')) for v in differ]
+                           + [dict(posted, judge_note=form.get('note', [''])[0].strip(), source=sid, identity=g, ts=now)])
+                if record is None:
+                    return body, refusal(f'The identity this label was made on ({g}, shown then as {sid!r}) was merged into '
+                                         f'{to!r}, which holds a different verdict; there is nowhere to keep both.', form,
+                                         target), 'refused'
+                record(rec)
+                return body, ambiguous_response(sid, g, to, live, posted, differ), f'ambiguous {sid} -> {to}'
+        return _rewrite(text, to), None, f'merged {sid} -> {to}'
     why = (f'The page was rebuilt since this form was shown. The identity it was made on ({g}, shown then as {sid!r}) is '
            + ('on several pages now.' if there else 'on no page of the rebuilt page (merged into another identity, retired, '
                                                     'or given a new ID by a regrouping).'))

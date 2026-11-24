@@ -17,6 +17,13 @@ leaves (merged) and GTI-0000004 is new. Forms rendered by build 1 are posted to 
   pass      a stamped POST of the same build, an unstamped non-label POST, an unstamped label of a page of the build that has no
             stable ID, and every POST to a production page go through as before
   served    serve_request answers a source page with the stamped form
+  merged    (R-GREGG-20261124-CROSS-STOKES-LINK-TEST-APPROVED, Q2) build 3 = build 2 with the run's merge table (GTI-0000006
+            merged into GTI-0000003): build 1's label of GTI-0000006 follows the merge to J0200+0200; a label of a different
+            verdict is NOT made its verdict - it is kept with the verdict it conflicts with (merge_conflicts.jsonl), 409 says
+            so, and the page opens AMBIGUOUS with both verdicts until a verdict is recorded on it; the same verdict follows the
+            merge; a non-label POST follows it; without the merge table the label is refused as before
+  banner    the cross-Stokes link banner (lib/serve/stokes_banner.py) through run_request: after <body>, on a source page of a
+            build whose entry names its other-Stokes pages; the forms stamped as before
 
 Run: env PYTHONPATH=$PWD NUMPY_MADVISE_HUGEPAGE=0 /opt/devel/pipeline/envs/py38_orca_nkosogor/bin/python3
      tests/test_serve_label_identity.py
@@ -52,7 +59,7 @@ def check(what, ok, detail=''):
 
 
 PAGE = r'''
-import argparse, csv, html, json, os, urllib.parse
+import argparse, csv, datetime, html, json, os, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 INSPECT = False
 
@@ -64,6 +71,7 @@ class Source:
 class App:
     def __init__(self, run, labels):
         self.labels = labels
+        self.journal = os.path.join(labels, 'judgements.jsonl')
         self.sources = {}
         with open(os.path.join(run, 'rows.csv'), newline='') as f:
             for r in csv.DictReader(f):
@@ -81,9 +89,21 @@ class App:
         if sid not in self.sources or not form.get('scope'):
             return None
         os.makedirs(self.labels, exist_ok=True)
-        with open(os.path.join(self.labels, 'judgements.jsonl'), 'a') as f:
-            f.write(json.dumps({k: v[0] for k, v in form.items()}) + '\n')
+        rec = {k: v[0] for k, v in form.items()}
+        rec['ts'] = datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.%fZ')
+        with open(self.journal, 'a') as f:
+            f.write(json.dumps(rec) + '\n')
         return '/source/' + urllib.parse.quote(sid)
+    def state(self):
+        st = {}
+        if os.path.exists(self.journal):
+            for line in open(self.journal):
+                r = json.loads(line)
+                if r.get('scope') == 'source':
+                    st[(r['source_id'], 'p1')] = {'source': dict(r, judge_confidence=r.get('confidence', ''),
+                                                                 judge_fp_reason=r.get('fp_reason', ''),
+                                                                 judge_fp_reason_2=r.get('fp_reason_2', ''))}
+        return st
 
 class Handler(BaseHTTPRequestHandler):
     app = None
@@ -142,11 +162,12 @@ def write_run(d, rows, with_id=True):
     return d
 
 
-def build(pid, run, labels):
+def build(pid, run, labels, **extra):
     code = os.path.join(TMP, 'page.py')
     if not os.path.exists(code):
         open(code, 'w').write(PAGE)
-    entry = {'id': pid, 'kind': 'review', 'code': code, 'argv': ['--run', run, '--labels-dir', labels], 'legacy_port': 9911}
+    entry = dict({'id': pid, 'kind': 'review', 'code': code, 'argv': ['--run', run, '--labels-dir', labels], 'legacy_port': 9911},
+                 **extra)
     return TP.build_page(entry, False, {}, threading.Lock())
 
 
@@ -310,6 +331,81 @@ def test_pages():
           (st, hd, J))
 
 
+def with_set(form_body, **kv):
+    pairs = [(k, kv.pop(k) if k in kv else v) for k, v in urllib.parse.parse_qsl(form_body.decode(), keep_blank_values=True)]
+    return urllib.parse.urlencode(pairs + list(kv.items())).encode()
+
+
+def conflicts(labels):
+    p = os.path.join(labels, LI.MERGE_CONFLICTS)
+    return [json.loads(x) for x in open(p)] if os.path.exists(p) else []
+
+
+def test_merged():
+    run1 = os.path.join(TMP, 'run1')
+    run3 = write_run(os.path.join(TMP, 'run3'), BUILD2)
+    os.makedirs(os.path.join(run3, 'stokes_link'))
+    with open(os.path.join(run3, 'stokes_link', 'identity_merges.csv'), 'w') as f:
+        f.write('stokes,identity_id,into_id,run\nI,GTI-0000006,GTI-0000003,R2\n')
+    lab1, lab3 = os.path.join(TMP, 'labels1m'), os.path.join(TMP, 'labels3')
+    p1, p3 = build('m1', run1, lab1), build('m3', run3, lab3)
+    f6 = form_bodies(get(p1, 'J0600+0600')[2])
+    st, hd, body = post(p3, *f6[0])
+    J = journal(lab3)
+    check('merged: build 1\'s label of GTI-0000006 (merged into GTI-0000003) lands on J0200+0200, its verdict unchanged',
+          st == 303 and len(J) == 1 and (J[0]['source_id'], J[0]['confidence'], J[0]['fp_reason']) ==
+          ('J0200+0200', 'FP', 'leakage') and dict(hd).get('Location') == '/source/J0200%2B0200', (st, J))
+    st, hd, body = post(p3, '/label', with_set(f6[0][1], confidence='real', fp_reason=''))
+    J, C = journal(lab3), conflicts(lab3)
+    check('merged: a label of ANOTHER verdict is not made the verdict (journal unchanged), it is kept with the verdict it '
+          'conflicts with, and 409 says so',
+          st == 409 and len(J) == 1 and b'Kept as a conflicting verdict' in body and len(C) == 1
+          and C[0]['source_id'] == 'J0200+0200' and C[0]['group_identity_id'] == 'GTI-0000003'
+          and [(v['judge_confidence'], v['source']) for v in C[0]['verdicts']] == [('FP', 'J0200+0200'),
+                                                                                   ('real', 'J0600+0600')], (st, body[:300], C))
+    st, hd, h = get(p3, 'J0200+0200')
+    check('merged: the survivor\'s page opens AMBIGUOUS with both verdicts, its form stamped as before',
+          h.startswith('<html><body><div class="merge-conflict"') and 'AMBIGUOUS' in h and '<b>FP / leakage</b>' in h
+          and '<b>real</b>' in h and 'name="group_identity_id" value="GTI-0000003"' in h
+          and dict(hd).get('Content-Length') == str(len(h.encode())), h[:600])
+    st, hd, body = post(p3, *f6[0])
+    check('merged: a label of the SAME verdict follows the merge', st == 303 and len(journal(lab3)) == 2
+          and journal(lab3)[-1]['source_id'] == 'J0200+0200', (st, journal(lab3)))
+    st, hd, body = post(p3, *f6[1])
+    check('merged: a stamped /list POST follows the merge', st == 200 and body == b'list ok J0200+0200', (st, body))
+    f3 = form_bodies(get(p3, 'J0200+0200')[2])
+    st, hd, body = post(p3, '/label', with_set(f3[0][1], confidence='probably-real', fp_reason=''))
+    st2, hd2, h = get(p3, 'J0200+0200')
+    check('merged: a verdict recorded on the page settles it: no AMBIGUOUS banner', st == 303 and 'AMBIGUOUS' not in h, h[:300])
+    p2 = build('m2', os.path.join(TMP, 'run2'), os.path.join(TMP, 'labels2m'))
+    st, hd, body = post(p2, *f6[0])
+    check('merged: without the run\'s merge table the label is refused as before (409, nothing written)',
+          st == 409 and not journal(os.path.join(TMP, 'labels2m')), (st, body[:200]))
+
+
+def test_banner():
+    run3 = os.path.join(TMP, 'run3')
+    d = os.path.join(run3, 'stokes_link')
+    with open(os.path.join(d, 'stokes_links.csv'), 'w') as f:
+        f.write('link_id,link_name,link_size,link_ambiguous,stokes,identity_id,identity_name,linked_ids,linked_names\n'
+                'GTI-0000001,J0100+0101,2,0,I,GTI-0000001,J0100+0101,GTV-0000005,J0100+0102\n'
+                'GTI-0000001,J0100+0101,2,0,V,GTV-0000005,J0100+0102,GTI-0000001,J0100+0101\n')
+    with open(os.path.join(d, 'stokes_link_pairs.csv'), 'w') as f:
+        f.write('link_id,link_ambiguous,I_identity_id,I_identity_name,V_identity_id,V_identity_name,offset_arcsec,u,p,'
+                'offset_pct,p_chance\nGTI-0000001,0,GTI-0000001,J0100+0101,GTV-0000005,J0100+0102,12.5,0.4,0.991,8.1,0.0012\n')
+    pb = build('mb', run3, os.path.join(TMP, 'labelsb'), stokes_partner=[dict(port=8787, stokes='V', kind='single')])
+    st, hd, h = get(pb, 'J0100+0101')
+    check('banner: a source page of a build naming its other-Stokes pages opens with the link (the V identity, its page, P, '
+          'the offset, its percentile, the chance-coincidence probability), its forms stamped as before',
+          h.startswith('<html><body><div class="stokes-link"') and 'Stokes V J0100+0102' in h
+          and 'http://localhost:8787/source/J0100%2B0102' in h and 'P = 0.991' in h and 'offset percentile 8' in h
+          and 'probability 0.0012' in h and 'name="group_identity_id" value="GTI-0000001"' in h, h[:700])
+    st, hd, h = get(pb, 'J0500+0500')
+    check('banner: an identity of that build without a link says so', 'Not linked to a Stokes V identity' in h, h[:400])
+    st, hd, h = get(build('mc', run3, os.path.join(TMP, 'labelsc')), 'J0100+0101')
+    check('banner: a build whose entry names no other-Stokes pages has no link banner', 'stokes-link' not in h, h[:300])
+
+
 def main():
     shutil.rmtree(TMP, ignore_errors=True)
     os.makedirs(TMP)
@@ -317,6 +413,8 @@ def main():
     try:
         test_unit()
         test_pages()
+        test_merged()
+        test_banner()
     finally:
         shutil.rmtree(TMP, ignore_errors=True)
     print(f'{N[0] - len(FAILS)} of {N[0]} checks passed')

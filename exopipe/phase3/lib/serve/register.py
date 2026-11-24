@@ -317,8 +317,15 @@ def page_entry(plan, page, utc, root=None):
     if ct:
         env.update(P3_CUTOUTS_TIER=ct, P3_PAGE_ID=f'p{page.port}')
     title = a[a.index('--title') + 1] if '--title' in a else ''
-    return dict(id=f'p{page.port}', kind='review', code=code, argv=a, env=env, legacy_port=page.port, greenlit=False,
-                inspection_legacy_port=page.twin, inspection_title=None, title=title)
+    e = dict(id=f'p{page.port}', kind='review', code=code, argv=a, env=env, legacy_port=page.port, greenlit=False,
+             inspection_legacy_port=page.twin, inspection_title=None, title=title)
+    from exopipe.phase3.lib.catalog import grouping_stage as GS
+    if GS.design_b():                  # the cross-Stokes link banner names the other Stokes' pages (lib/serve/stokes_banner.py)
+        from exopipe.phase3.lib.serve import stokes_banner
+        partners = stokes_banner.partners_of(page, getattr(plan, 'all_pages', None) or [])
+        if partners:
+            e[stokes_banner.ENTRY_KEY] = partners
+    return e
 
 
 def registered_entry(d, page_id):

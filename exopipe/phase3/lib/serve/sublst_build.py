@@ -245,8 +245,9 @@ def figure_key(loc_row, off_rows):
     return hashlib.md5(repr((sorted(loc_row.items()), sorted(sorted(o.items()) for o in off_rows))).encode()).hexdigest()
 
 
-def figures(B, served, unit=None, log=None):
-    """Port of the PYF heredoc (sublst_cumulative.sh:36-61). Returns (n multi, n linked, n drawn, [failures])."""
+def figures(B, served, unit=None, log=None, env=None):
+    """Port of the PYF heredoc (sublst_cumulative.sh:36-61); env: extra variables of the figure script (the cross-Stokes
+    link's P3_LOC_LINKS: the figure localizes again, as the table did). Returns (n multi, n linked, n drawn, [failures])."""
     S = _CFG().serve
     F, P = f'{B}/localization_figs', f'{served}/localization_figs'
     os.makedirs(F, exist_ok=True)
@@ -268,7 +269,7 @@ def figures(B, served, unit=None, log=None):
             linked += 1
         else:
             todo.append(i)
-    env = {'P3_LOC_CATS': S.SUBLST_LOC_ENV['P3_LOC_CATS']}
+    env = dict({'P3_LOC_CATS': S.SUBLST_LOC_ENV['P3_LOC_CATS']}, **(env or {}))
 
     def draw(i):
         res = scripts.run('astrometry_panel', [i, f'{F}/{i}.png', B], env=env, timeout=S.SUBLST_FIG_TIMEOUT_S,
@@ -382,6 +383,36 @@ def batch_grouping(B, G, label, u=None):
         if u is not None:
             u.add_output(paths['detections'], 'grouping_table', tier='10min', stokes=S, input=mc)
     return out
+
+
+def stokes_link_stage(B, u):
+    """G30, the cross-Stokes link of the build (lib/catalog/stokes_link.py; R-GREGG-20261124-CROSS-STOKES-LINK-TEST-APPROVED):
+    under design B with both Stokes served, the link the grouping stage computed from the very tables G8 read (their sha1) is
+    copied into B/stokes_link/ - the build's own copy, which its localization and figures (P3_LOC_LINKS) and its pages (the
+    link at the top of each source page, lib/serve/stokes_banner.py) read. A missing or stale link REFUSES. Returns the
+    localization's extra environment ({} under production's grouping or with one Stokes served)."""
+    from exopipe.phase3.lib.catalog import grouping_stage as GS
+    from exopipe.phase3.lib.catalog import stokes_link as SL
+    present = u.meta.get('grouping_present') or {}
+    if not GS.mode().design_b or not {'I', 'V'} <= set(_served_stokes(B)):
+        u.meta['stokes_link'] = None
+        return {}
+    if not {'I', 'V'} <= set(present):
+        u.refuse(f'G30 cross-Stokes link: both Stokes are served but G8 read the grouping of {sorted(present)} only')
+    out = {os.path.dirname(os.path.dirname(present[S]['path'])) for S in ('I', 'V')}
+    if len(out) != 1:
+        u.refuse(f'G30 cross-Stokes link: the I and V grouping tables are in two directories {sorted(out)}')
+    try:
+        p = SL.publish(out.pop(), B, {S: present[S]['sha1'] for S in ('I', 'V')})
+    except SL.LinkRefused as e:
+        u.refuse(f'G30 cross-Stokes link: {e}')
+    u.add_output(p, 'stokes_link')
+    with open(os.path.join(os.path.dirname(p), SL.SUMMARY)) as f:
+        counts = json.load(f)['counts']
+    u.meta['stokes_link'] = counts
+    u.note(f"G30 cross-Stokes link: {counts['linked_pairs']} linked I/V pairs, {counts['ambiguous_components']} ambiguous "
+           f"components; the localization merges on it")
+    return {SL.LOC_ENV: p}
 
 
 def master_identity(plan, B, u):
@@ -537,14 +568,15 @@ def build_stage(run, plan):
         u.add_output(os.path.join(B, 'deep_omission_dropped.csv'), 'omission_record', tier='sublst',
                      decisions=os.path.join(B, 'deep_omission.csv'))
         master_identity(plan, B, u)                      # G13: right after the merge, before the combined positions
+        links = stokes_link_stage(B, u)                  # G30: the cross-Stokes link the localization and the pages merge on
         # SPEED (design 2.3a stage 4): production's own row-index and shard switches - the same tables (serve.SUBLST_LOC_SPEED_ENV)
         env = dict(S.SUBLST_LOC_ENV, **dict(S.SUBLST_LOC_SPEED_ENV or {}), P3_TENMIN_PERTIE=f'{B}/pertie_detections.csv',
-                   P3_LOC_OUT=f'{B}/source_catalogs')
+                   P3_LOC_OUT=f'{B}/source_catalogs', **links)
         u.meta['localization_speed_env'] = dict(S.SUBLST_LOC_SPEED_ENV or {})
         res = scripts.run('build_localizations', [B], env=env, log=log, unit=u)
         if not res.ok:
             u.refuse(f'G9 localizations failed: {res.reason or scripts.last_line(res.tail)}')
-        n, linked, drawn, failed = figures(B, plan.U_src if plan.parity else plan.U, unit=u, log=log)
+        n, linked, drawn, failed = figures(B, plan.U_src if plan.parity else plan.U, unit=u, log=log, env=links)
         u.note(f'localization figures: {n} multi-detection identities, {linked} carried unchanged, {drawn} drawn, '
                f'{len(failed)} failed')
         if failed:

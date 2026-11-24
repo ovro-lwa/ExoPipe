@@ -72,6 +72,7 @@ import urllib.parse
 from collections.abc import MutableMapping
 
 from exopipe.phase3.lib.serve import label_identity
+from exopipe.phase3.lib.serve import stokes_banner
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 _RUNTIME = os.environ.get('XDG_RUNTIME_DIR') or '/tmp'
@@ -479,11 +480,15 @@ class _FakeServer:
 def run_request(page, method, path, headers, body=b''):
     """(status, [(header, value)], body bytes) of the page module's Handler for one request, on a fake socket. Under design B a
     POST is first read against this build's identities and a served page's forms carry the identity's stable ID
-    (lib/serve/label_identity.py: a label lands on the identity it was made on, or is refused with nothing recorded)."""
+    (lib/serve/label_identity.py: a label lands on the identity it was made on, or is refused with nothing recorded), and a
+    source page opens with its cross-Stokes link (lib/serve/stokes_banner.py)."""
     maps = label_identity.page_maps(page)
     if method == 'POST' and maps[0]:
         sent = body
-        body, refused, _what = label_identity.resolve(path, body, maps)
+        cp = label_identity.conflicts_path(page)
+        body, refused, _what = label_identity.resolve(
+            path, body, maps, merges=label_identity.merge_map(page), held=lambda sid: label_identity.held_verdicts(page, sid),
+            record=(lambda rec: label_identity.append_conflict(cp, rec)) if cp else None)
         if refused is not None:
             return refused
         if body is not sent:                     # source_id rewritten: the Handler reads Content-Length bytes
@@ -512,7 +517,10 @@ def run_request(page, method, path, headers, body=b''):
     status = int(lines[0].split()[1])
     hdrs = [tuple(x.split(': ', 1)) for x in lines[1:] if ': ' in x]
     if maps[0] and method == 'GET' and dict((k.lower(), v) for k, v in hdrs).get('content-type', '').startswith('text/html'):
-        stamped = label_identity.stamp(payload.decode('utf-8'), maps[0]).encode('utf-8')
+        text = payload.decode('utf-8')
+        if status == 200:
+            text = stokes_banner.insert(page, path, text, maps[0], first=(label_identity.ambiguous_html,))
+        stamped = label_identity.stamp(text, maps[0]).encode('utf-8')
         if stamped != payload:
             payload = stamped
             hdrs = [(k, str(len(payload)) if k.lower() == 'content-length' else v) for k, v in hdrs]
