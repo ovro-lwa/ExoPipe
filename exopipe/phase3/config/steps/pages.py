@@ -177,7 +177,8 @@ class pages_deep(_Section):
     FIGURE_FAILURE = 'refuse'    # B-30 (a): a missing astrometry figure (a failed sub-product) refuses the build; 'record' = production
                                  # (build_i14:966-970 swallows figure failures; the missing ones counted in the record)
     # ---- TESS coverage (an annotation, never a gate) ----
-    TESS_ENABLED = True          # tiers with tess_coverage.csv today: deep only (p3s3_pass.sh:62); HANDOFF-TESS-COVERAGE-SNAPSHOT-SUBLST-RUNS open (spec 12.8)
+    TESS_ENABLED = True          # the deep pages' TESS stage (p3s3_pass.sh:62); the snapshot and 10-minute serves compute the file
+                                 # too, always, as production's serves do (lib/serve/tess.py; FIX-20261115-TESS-COVERAGE-PRODUCER-...)
     TESS_IS_GATE = False         # a failure is recorded (unit no-input with the reason), never refused; p3s3_pass.sh:62-63
     TESS_STATUSES = ('simultaneous', 'not observed', 'no epoch time')   # tess_coverage.py:13-14, 120-140
     TESS_STOKES = 'I,V'          # tess_coverage.py:60 default
