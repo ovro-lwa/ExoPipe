@@ -177,10 +177,15 @@ class pages_deep(_Section):
     FIGURE_FAILURE = 'refuse'    # B-30 (a): a missing astrometry figure (a failed sub-product) refuses the build; 'record' = production
                                  # (build_i14:966-970 swallows figure failures; the missing ones counted in the record)
     # ---- TESS coverage (an annotation, never a gate) ----
-    TESS_ENABLED = True          # tiers with tess_coverage.csv today: deep only (p3s3_pass.sh:62); HANDOFF-TESS-COVERAGE-SNAPSHOT-SUBLST-RUNS open (spec 12.8)
+    TESS_ENABLED = True          # the deep pages' TESS stage (p3s3_pass.sh:62); the snapshot and 10-minute serves compute the file
+                                 # too, always, as production's serves do (lib/serve/tess.py; FIX-20261115-TESS-COVERAGE-PRODUCER-...)
     TESS_IS_GATE = False         # a failure is recorded (unit no-input with the reason), never refused; p3s3_pass.sh:62-63
     TESS_STATUSES = ('simultaneous', 'not observed', 'no epoch time')   # tess_coverage.py:13-14, 120-140
     TESS_STOKES = 'I,V'          # tess_coverage.py:60 default
+    TESS_PYTHON = 'tess'         # site PYTHON key of tess/tess_coverage.py for every caller: the deep pages (p3s3_pass.sh:62) and the
+                                 # snapshot and 10-minute serves (snapshot_serve.sh 1a9f9c8, sublst_cumulative.sh:198 run
+                                 # /fast/gh/main/envs/tess/bin/python; the site file's copy is the shared environment on /opt with
+                                 # the same packages, OPS-20261116-TESS-ENV-SHARED-ON-OPT)
     TESS_ORBIT_REFRESH_DAYS = 7  # days; orbit table re-fetched when older (tess_coverage.py:44) (mirror; B-58)
     TESS_ORBIT_URL = 'https://tess.mit.edu/public/files/TESS_orbit_times.csv'   # tess_coverage.py:39 (mirror)
     TESS_INTEGRATION_S = 10.03102041   # s; tess_coverage.py:77 (mirror; = instrument.INTEGRATION_S)

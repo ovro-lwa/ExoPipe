@@ -166,9 +166,24 @@ def main():
         from exopipe.phase3.config.steps.drive import driver as _drv
         tj = _drv.PERIODIC['tess-orbits']
         assert tuple(tj['argv']) == ('-m', 'exopipe.phase3.lib.pages.tess_orbits') and 0 < tj['every_h'] <= 24, tj
+        # the readers' call (tess_orbits.reader_args, shared by tier_deep.stage_tess and lib/serve/tess.py): --no-refresh only
+        # when the refresh step owns the table or in a parity run, and then the stale check's reason
         src = open(os.path.join(REPO, 'exopipe/phase3/lib/pages/tier_deep.py')).read()
-        assert "+ ([] if D.TESS_REFRESH_IN_READER else ['--no-refresh'])" in src
-        assert 'why = tess_orbits.stale_for_reader(table)' in src and 'if not D.TESS_REFRESH_IN_READER:' in src
+        assert 'tess_orbits.reader_args(table)' in src
+        from exopipe.phase3.config import CFG
+        fresh, stale = os.path.join(d, 'fresh.csv'), os.path.join(d, 'stale.csv')
+        for path, days in ((fresh, 20), (stale, -2)):
+            end = datetime.datetime.utcnow() + datetime.timedelta(days=days)
+            open(path, 'w').write(f'Sector,Orbit,Start of Orbit,End of Orbit\n100,200,2026-01-01 00:00:00,{end:%Y-%m-%d %H:%M:%S}\n')
+        assert T.reader_args(stale) == ([], None)                       # production: the reader refreshes its own table
+        assert T.reader_args(fresh, parity=True) == (['--no-refresh'], None)
+        assert T.reader_args(stale, parity=True)[0] == ['--no-refresh'] and 'before now' in T.reader_args(stale, parity=True)[1]
+        old = CFG.pages_deep.TESS_REFRESH_IN_READER
+        try:
+            CFG.pages_deep.TESS_REFRESH_IN_READER = False
+            assert T.reader_args(fresh) == (['--no-refresh'], None) and 'before now' in T.reader_args(stale)[1]
+        finally:
+            CFG.pages_deep.TESS_REFRESH_IN_READER = old
         print('test_tess_orbits: PASS')
     finally:
         shutil.rmtree(d, ignore_errors=True)

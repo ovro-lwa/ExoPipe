@@ -1038,6 +1038,79 @@ def wideband_products(root, x2, lst, night, G, S, k):
             os.path.join(d, b + '_resid_loo.fits'), os.path.join(dx, b + '_resid_loo.fits')]
 
 
+WB_SET_B = 4      # the set-B (x2) residual's index in wideband_products
+
+
+def set_primary_card(path, key, value=None, comment=None):
+    """Set (``value`` not None) or remove the primary-header card ``key`` of the FITS file ``path`` without touching its data:
+    the header read with astropy (Header.fromfile, which leaves the file at the data's first byte), the card changed, the new
+    header's bytes (whole 2880-byte records) followed by every byte after the old header copied verbatim with ordinary reads (no
+    memory map, no pixel decode), into a temporary file beside it, fsync'd, then os.replace - never a rewrite in place, so a
+    reader keeps the file it opened. Structural cards (SIMPLE, BITPIX, NAXIS*, EXTEND, BSCALE, BZERO, BLANK) are refused."""
+    import shutil
+    from astropy.io import fits
+    from exopipe.phase3.core import fitsio
+    if key in ('SIMPLE', 'BITPIX', 'EXTEND', 'BSCALE', 'BZERO', 'BLANK') or key.startswith('NAXIS'):
+        raise ValueError(f'{key} describes the data: not changed by a header-only rewrite')
+    d = os.path.dirname(os.path.abspath(path))
+    tmp = os.path.join(d, f'.{os.path.basename(path)}.part.{os.getpid()}')
+    with open(path, 'rb') as src:
+        h = fits.Header.fromfile(src)
+        if value is None:
+            h.remove(key, ignore_missing=True)
+        else:
+            h[key] = (value, comment) if comment else value
+        try:
+            with open(tmp, 'wb') as dst:
+                dst.write(h.tostring(padding=True).encode('ascii'))
+                shutil.copyfileobj(src, dst, 16 << 20)
+                dst.flush()
+                fitsio.fsync_fd(dst.fileno())
+            shutil.copymode(path, tmp)
+            os.replace(tmp, path)
+        finally:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+    fitsio.fsync_path(d)
+    return path
+
+
+def name_wideband_residual(u, root, lst, night, G, S, k, path, members=None):
+    """THE WIDEBAND x2 RESIDUAL'S NAME (R-GREGG-20261113-SPEEDUP-CHECKIN-TEN-ANSWERS (9b)): every set-B residual of a group carries
+    the GROUP's own name, built from the group itself and independent of whatever the engine copied in. The engine
+    (clv15/phase3_sublst_wideband.py, run in place as a subprocess) takes no name and copies its first member's header into every
+    product it writes (wideband:145-185), so the set-B residual inherits that subband's PRODNAME when the members were named
+    (lib/flow/sublst_nonmember_refine.residual_header) and none when they were not (the batch refine, production's
+    phase3_sublst_refine.py). Either way, on a file this unit just wrote, PRODNAME is set to sublst_nonmember.window_residual_name
+    of group ``G``, epoch = the earliest DATE-OBS of the member window stacks (tenmin_archive_release1.py:770-778). The members
+    are the group window stack's WBMEMB, which must equal the residual's own WBMEMB and the engine's log line (``members``).
+    Written header-only (set_primary_card: the data bytes copied verbatim, a temporary file and os.replace). A group that cannot
+    be named refuses the unit, and any inherited card is removed first, so no file keeps a name that is not its own. Returns
+    the name."""
+    from astropy.io import fits
+    from exopipe.phase3.lib.masters import sublst_nonmember as NM
+    h = fits.getheader(path, memmap=False)
+    inherited = str(h['PRODNAME']) if 'PRODNAME' in h else None
+    try:
+        stack = wideband_products(root, root, lst, night, G, S, k)[0]      # the group's window stack (x2 not used)
+        group = [x for x in str(fits.getheader(stack, memmap=False).get('WBMEMB', '') or '').split(',') if x]
+        own = [x for x in str(h.get('WBMEMB', '') or '').split(',') if x]
+        if group != own:
+            raise ValueError(f'WBMEMB of the group window stack {group} != the residual\'s {own}')
+        if members is not None and list(members) != group:
+            raise ValueError(f'the engine\'s log names members {list(members)}, the group window stack {group}')
+        name = NM.window_residual_name(G, S, lst, k, NM.wideband_window_epoch(root, lst, night, group, S, k))
+    except (OSError, KeyError, ValueError) as e:
+        if inherited is not None:
+            set_primary_card(path, 'PRODNAME', None)
+        u.refuse(f'the wideband x2 residual {path} cannot be named as {G} ({type(e).__name__}: {e})'
+                 + (f'; the PRODNAME it inherited from a member subband ({inherited}) was removed - no file keeps a name that '
+                    f'is not its own' if inherited is not None else ''))
+    set_primary_card(path, 'PRODNAME', name, NM.PRODNAME_COMMENT)
+    u.meta.setdefault('wideband_names', {})[os.path.basename(path)] = dict(name=name, inherited=inherited)
+    return name
+
+
 def stage_wideband(ctx, lst, nights, per_hour):
     from exopipe.phase3.core.record import NoInput
     from exopipe.phase3.lib.masters import sublst_nonmember as NM
@@ -1171,13 +1244,15 @@ def stage_wideband(ctx, lst, nights, per_hour):
                 u.meta['wideband_counts'][n] = o['counts']
                 for kk in tally:
                     tally[kk] += o['counts'][kk]
-                for k, built, _members, l in o['windows']:
+                for k, built, wmembers, l in o['windows']:
                     nwin += 1
                     n_one += len(built) == 1
                     for St in built:                 # a window built in one Stokes only has that Stokes' products only
-                        for p in wideband_products(root, x2, lst, n, G, St, k):
+                        for i, p in enumerate(wideband_products(root, x2, lst, n, G, St, k)):
                             if not (os.path.exists(p) and mtime(p) >= t0 - 2):
                                 raise RuntimeError(f'wideband reported "{l[:120]}" but did not write {p}')
+                            if i == WB_SET_B:        # the group's own name, never a member subband's (9b)
+                                name_wideband_residual(u, root, lst, n, G, St, k, p, members=wmembers)
                             u.add_output(p, 'sublst_wideband')
                 for St, k, _missing, l in o['incomplete']:
                     # S-G9 required members (clv15 582c92e): no wideband from a partial set, 18 MHz the one exception

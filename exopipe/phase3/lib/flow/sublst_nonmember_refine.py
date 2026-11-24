@@ -29,7 +29,9 @@ Inputs (read only; fingerprinted in the unit record): as the arm-A unit (sublst_
 stack with the evidence that the stack jobs completed, the installed window Masters and their weights records,
 data_decisions.csv), under --sublst-stack-root (default paths.SUBLST_ROOT).
 Outputs (production's names and cards, in production's order: SUBTRACT, LOONCOAD = the Master's weighted nights, LOOMSTR,
-CODE, LSTBIN, DURATION, REFINE, REFREF, FLOWMEDP, JUPMASK = the Master's card; no BINMSTR):
+CODE, LSTBIN, DURATION, REFINE, REFREF, FLOWMEDP, JUPMASK = the Master's card; no BINMSTR; then PRODNAME, the window's
+product name in the archive writer's form, sublst_nonmember.window_residual_name - one card more than production, ruling
+R-GREGG-20261113-SPEEDUP-CHECKIN-TEN-ANSWERS (9b); the file keeps production's name until the next full rebuild):
   <out>/<LST>_x2/<LST>_<night>/<sb>/<S>/sublst_<LST>_<night>_<sb>_<S>_w<k>_resid_loo.fits      [sublst_x2_residual]
   <out>/<LST>_x2/logs/<LST>_<sb>.log    the subband's refine log, which the frames tier's refine gate and the approvals
                                         judge read. The unit MERGES into it (merge_log): the lines of the batch stage
@@ -141,10 +143,13 @@ def flow_median_px(flow):
     return float(np.median(np.hypot(flow[..., 0], flow[..., 1]))) / 2.0
 
 
-def residual_header(stack_header, master_header, master_path, k, n_weighted, code, fmed):
+def residual_header(stack_header, master_header, master_path, k, n_weighted, code, fmed, lst, sb, S):
     """The residual's header: the stack's own header (its own time block) plus the cards of refine.py:225-244, same
     keywords, values, comments and order. n_weighted = the Master's weighted nights (LOONCOAD; for a non-member none is
-    left out). JUPMASK is the Master's card (the mask radius used when the Master was built)."""
+    left out). JUPMASK is the Master's card (the mask radius used when the Master was built). Then PRODNAME: this x2
+    residual (set B) is the window's product - the file the 10-minute search reads and the archive writer names - so it
+    carries the window's name (sublst_nonmember.window_residual_name of subband ``sb``, Stokes ``S``, ``lst``, window ``k``,
+    epoch = its own DATE-OBS, the stack's); a name that cannot be built refuses. The arm-A residual (set A) carries none."""
     from exopipe.phase3.lib.masters import sublst_nonmember as NM
     rh = stack_header.copy()
     rh['SUBTRACT'] = ('leave-one-out window Master', 'sub-LST arm B: x2-aligned to that Master first')
@@ -159,6 +164,11 @@ def residual_header(stack_header, master_header, master_path, k, n_weighted, cod
     rh['REFREF'] = ('LOO window Master, this night left out, Stokes I', 'flow reference')
     rh['FLOWMEDP'] = (round(fmed, 4), 'median |x2 flow|, native pixels')
     rh['JUPMASK'] = (master_header['JUPMASK'], 'arcmin, Jupiter masked per night in the leave-one-out Master')
+    try:
+        rh['PRODNAME'] = (NM.window_residual_name(sb, S, lst, k, rh['DATE-OBS']), NM.PRODNAME_COMMENT)
+    except (KeyError, ValueError) as e:
+        raise Refusal(f'the x2 residual of {lst} {sb} {S} w{k} cannot be named ({type(e).__name__}: {e}) - no residual is '
+                      f'written without its own name')
     return rh
 
 
@@ -513,7 +523,7 @@ def refine_unit(u, args, run, lst, sb, night, base, plan_files=()):
                 m, mh = _read(it['master'])
                 up = fft_upsample2(d, W)
             res_px = x2_residual(d, up, fl, m, W, float(fr.X2_VALID_FOOTPRINT))
-            rh = residual_header(hh, mh, it['master'], k, it['n_weighted'], run.commit, fmed)
+            rh = residual_header(hh, mh, it['master'], k, it['n_weighted'], run.commit, fmed, lst, sb, S)
             written.append(fitsio.write_fits(T.residual_path(x2, lst, night, sb, S, k), res_px, rh, overwrite=False))
         return fmed
 
@@ -548,7 +558,7 @@ def refine_unit(u, args, run, lst, sb, night, base, plan_files=()):
         timing['residuals'] = round(time.time() - t0 - sum(timing.values()), 1)
         for ln in night_lines:
             u.note(ln)
-        SS.verdict(u, run, args, lst, sb, [night], rc_child=3 if n_ref else 0)
+        SS.verdict(u, run, args, lst, sb, [night], rc_child=3 if n_ref else 0, named=written)   # each written with its PRODNAME
         mine = {os.path.abspath(p) for p in written}
         failed = [t for t in u.failed_tests() if t.get('path') in mine]
         if failed:

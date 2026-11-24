@@ -887,10 +887,13 @@ REQUIRED_CARDS = ('SUBTRACT', 'LOONCOAD', 'LOOMSTR', 'CODE', 'LSTBIN', 'DURATION
 
 
 @content_test('sublst_x2_residual')
-def cards(path, masters_root=None, stack_root=None, **ctx):
+def cards(path, masters_root=None, stack_root=None, named=False, **ctx):
     """REFINE, REFREF, FLOWMEDP, JUPMASK, LOOMSTR, LSTBIN, DURATION (and SUBTRACT, LOONCOAD, CODE) present, BINMSTR absent
     (phase3_sublst_refine.py:222-243); LOOMSTR names an existing arm-A window Master (sublst_resume_from_x2.sh x2ok, G-C9);
-    LSTBIN = the window of the name; every pixel where the window stack has no finite data is NaN."""
+    LSTBIN = the window of the name; every pixel where the window stack has no finite data is NaN; a PRODNAME is the window's
+    own name (sublst_nonmember.window_residual_name, epoch DATE-OBS), and REQUIRED when ``named`` (a residual the per-hour
+    non-member refine wrote: it names every one, R-GREGG-20261113-SPEEDUP-CHECKIN-TEN-ANSWERS (9b); the batch refine,
+    production's phase3_sublst_refine.py in place, writes none)."""
     import numpy as np
     k = _residual_key(path)
     if not k:
@@ -902,6 +905,18 @@ def cards(path, masters_root=None, stack_root=None, **ctx):
         problems.append('BINMSTR present')
     if C.card(c, 'LSTBIN') not in (None, kk):
         problems.append(f'LSTBIN {C.card(c, "LSTBIN")} != window {kk}')
+    if named and 'PRODNAME' not in c:
+        problems.append('no PRODNAME (the per-hour non-member refine names every residual it writes, 9b)')
+    if 'PRODNAME' in c:      # the window's own name (sublst_nonmember_refine.residual_header; the batch refine writes none)
+        from astropy.io import fits
+        from exopipe.phase3.lib.masters import sublst_nonmember as NM
+        h = fits.getheader(path, memmap=False)       # the name spans CONTINUE cards, which header_cards does not join
+        try:
+            want = NM.window_residual_name(sb, S, lst, kk, h['DATE-OBS'])
+        except (KeyError, ValueError) as e:
+            want = f'(not buildable: {e})'
+        if str(h['PRODNAME']) != want:
+            problems.append(f'PRODNAME {h["PRODNAME"]!r} is not the window\'s name {want}')
     st_root, mroot = _x2_roots(path, lst, stack_root, masters_root)
     lm = C.card(c, 'LOOMSTR')
     if lm and not os.path.isfile(os.path.join(mroot, sb, S, str(lm))):

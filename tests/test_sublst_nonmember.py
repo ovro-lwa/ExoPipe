@@ -320,6 +320,7 @@ def test_residual_is_window_minus_installed_master():
                     assert h.comments['LOONCOAD'] == 'nights in the leave-one-out Master'
                     assert h.comments['CODE'] == NM.CODE_COMMENT and h['CODE'] == run.commit[:68]
                     assert 'BINMSTR' not in h
+                    assert 'PRODNAME' not in h       # set A is an intermediate: only the x2 residual (set B) is named (9b)
                     # the stack's own header is kept (its own time block; the stacker's non-member mark is inherited)
                     sh = fits.getheader(t.window(sb, S, k))
                     for key in ('DATE-OBS', 'DATE-END', 'LSTHOUR', 'LSTWIN', 'NFRAMES', 'BMAJ', 'SHSCALE', 'FLUXCORR',

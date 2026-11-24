@@ -34,7 +34,7 @@ try:
     if F._IMPORT_ERROR is not None:
         raise F._IMPORT_ERROR
     from exopipe.phase3.config import CFG
-    from exopipe.phase3.core import fitsio, legacy, record
+    from exopipe.phase3.core import fitsio, legacy, products, record
     from exopipe.phase3.core.record import Refusal
     from exopipe.phase3.lib.flow import steps_common as C
     from exopipe.phase3.lib.flow import steps_sublst as SS
@@ -213,10 +213,25 @@ def test_residual_header():
     sh['BINMSTR'] = 'a card the residual must not carry'
     mh = fits.Header()
     mh['JUPMASK'] = 25.15
-    h = R.residual_header(sh, mh, '/x/09h_masters/55MHz/I/sublst_master_09h_55MHz_I_w3.fits', 3, 8, 'abc1234', 0.06543219)
-    # production's cards in production's order (clv15/phase3_sublst_refine.py:225-244), after the stack's own
+    h = R.residual_header(sh, mh, '/x/09h_masters/55MHz/I/sublst_master_09h_55MHz_I_w3.fits', 3, 8, 'abc1234', 0.06543219,
+                          '09h', '55MHz', 'I')
+    # production's cards in production's order (clv15/phase3_sublst_refine.py:225-244), after the stack's own; then the
+    # window's name (R-GREGG-20261113-SPEEDUP-CHECKIN-TEN-ANSWERS (9b): the one card more than production)
     assert list(h.keys()) == ['BUNIT', 'DATE-OBS', 'DATE-END', 'NONMEMB', 'SUBTRACT', 'LOONCOAD', 'LOOMSTR', 'CODE',
-                              'LSTBIN', 'DURATION', 'REFINE', 'REFREF', 'FLOWMEDP', 'JUPMASK'], list(h.keys())
+                              'LSTBIN', 'DURATION', 'REFINE', 'REFREF', 'FLOWMEDP', 'JUPMASK', 'PRODNAME'], list(h.keys())
+    assert h['PRODNAME'] == '55MHz_I_10min_Taper_Robust+0.0_shflux_dewarped_aligned_msub_LST09h_bin3_20240201T100000.fits'
+    p = products.parse_name(h['PRODNAME'])
+    assert p['grammar'] == 'phase3' and products.build_name(**p) == h['PRODNAME']
+    assert (p['scope'], p['stokes'], p['cadence'], p['lst'], p['lst_bin'], p['epoch']) == ('55MHz', 'I', '10min', '09h', 3,
+                                                                                         '20240201T100000')
+    assert h.comments['PRODNAME'] == 'Phase 3 product name (grammar; CONTINUE cards)'
+    del sh['DATE-OBS']                                       # no time block: no name, and no residual (refused, not unnamed)
+    try:
+        R.residual_header(sh, mh, '/x/m.fits', 3, 8, 'abc1234', 0.06, '09h', '55MHz', 'I')
+        raise AssertionError('a residual header without a buildable name was accepted')
+    except Refusal:
+        pass
+    sh['DATE-OBS'] = '2024-02-01T10:00:00.000'
     assert h['SUBTRACT'] == 'leave-one-out window Master'
     assert h.comments['SUBTRACT'] == 'sub-LST arm B: x2-aligned to that Master first'
     assert h['LOONCOAD'] == 8 and h.comments['LOONCOAD'] == 'weighted nights in the leave-one-out Master'
@@ -357,6 +372,12 @@ def test_unit_writes_the_residuals():
                     assert h['JUPMASK'] == 30.52 and h['LSTBIN'] == k and h['DURATION'] == 50.2 and h['FLOWMEDP'] == 0.0
                     assert h['CODE'] == r.commit[:68] and h.comments['CODE'] == R.CODE_COMMENT and 'BINMSTR' not in h
                     sh = fits.getheader(t.window(sb, S, k))
+                    # set B carries the window's own name (9b), round-tripping through parse_name; its epoch = DATE-OBS
+                    p = products.parse_name(h['PRODNAME'])
+                    assert p['grammar'] == 'phase3' and products.build_name(**p) == h['PRODNAME'], h['PRODNAME']
+                    assert (p['scope'], p['stokes'], p['lst'], p['lst_bin']) == (sb, S, LST, k)
+                    assert p['epoch'] == sh['DATE-OBS'][:19].replace('-', '').replace(':', ''), (p['epoch'], sh['DATE-OBS'])
+                    assert 'PRODNAME' not in sh                              # the stack is not named here
                     for key in ('DATE-OBS', 'DATE-END', 'LSTHOUR', 'LSTWIN', 'NFRAMES', 'NONMEMB', 'FLUXBAKE', 'BUNIT'):
                         assert h[key] == sh[key], key                        # the stack's own time block and flux cards
             # production's log lines, in window order, and the final line the frames tier's refine gate reads
@@ -381,6 +402,21 @@ def test_unit_writes_the_residuals():
         # no other night's residual, and nothing under the stack tree
         assert len(s.on_disk()) == 16 and all(f'{LST}_{NEW}' in p for p in s.on_disk())
         assert not t.residuals()
+        # the cards test REQUIRES the name on every residual the unit wrote (named=True in each output's context, which
+        # --resume and verify pass back; 9b): without the card the same test fails
+        from exopipe.phase3.core import validate
+        u = s.unit(r, t.sbs[0])
+        assert all(o['ctx']['named'] is True for o in u.outputs), u.outputs[:1]
+        o = u.outputs[0]
+        with fits.open(o['path'], memmap=False) as hd:
+            d, h = hd[0].data, hd[0].header.copy()
+        del h['PRODNAME']
+        fits.writeto(o['path'], d, h, overwrite=True)
+        res = [x for x in validate.run('sublst_x2_residual', o['path'], **o['ctx']) if x['name'].endswith('cards')]
+        assert len(res) == 1 and not res[0]['passed'] and 'no PRODNAME' in res[0]['detail'], res
+        ctx = dict(o['ctx'], named=False)                     # a batch-refine residual: no name required
+        res = [x for x in validate.run('sublst_x2_residual', o['path'], **ctx) if x['name'].endswith('cards')]
+        assert len(res) == 1 and res[0]['passed'], res
 
 
 def test_the_displacement_is_applied_to_both_stokes():

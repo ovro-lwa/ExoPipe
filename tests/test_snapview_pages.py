@@ -226,7 +226,9 @@ def test_tess_step():
         open(table, 'w').write(fresh)                 # the tool's refresh
         with open(os.path.join(DST, 'tess_coverage.csv'), 'w') as f:
             f.write(f'# tess_coverage.py (stand-in)\ncand_id,status,sector,camera,ccd\n{cid},not observed,,,\n')
-        return types.SimpleNamespace(ok=True, rc=0, reason='', tail='wrote tess_coverage')
+        return types.SimpleNamespace(ok=True, rc=0, reason='', tail=(       # the tool's summary line, its counts tested
+            f'{DST}/tess_coverage.csv: 1 detections (frame times the cand_id); orbit table cached; written 1 (left out, page says '
+            f'not computed: 0)'))
     saved = (scripts.run, pcommon.interpreter_or_none, CFG.pages_deep.TESS_REFRESH_IN_READER)
     plan = types.SimpleNamespace(U=DST, run_name='Run_SNAPTESS')
     try:

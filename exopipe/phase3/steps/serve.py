@@ -120,7 +120,7 @@ Failure modes (exit 2 = refused, the gate named in the record; a refused page ke
   the combined view (--family comb): G-V1..G-V6, G-K, T1-T6, F-G1..F-G3 (lib/serve/snapshot_view.py);
   the pages merge absent or stale (deep). Exit 3: nothing to do (no page selected, nothing to carry). Exit 1: error.
   A refused (or errored) run-level stage stops every later stage of the invocation (views/test/carry; build/views/test/
-  swap; gate/copy/localize/gate-copy/carry/scintillation/page-context/bright-filter/page-index/test): nothing is copied,
+  swap; gate/copy/localize/gate-copy/carry/scintillation/page-context/tess/bright-filter/page-index/test): nothing is copied,
   swapped in or registered after a refusal.
   --resume is not used: a served page is live state - every selected page is re-registered and the verify stage re-tests it.
 Per-hour and intermittent use: serve is in the per-hour chain (runner.CHAINS['epoch'], after pages): a page loads its

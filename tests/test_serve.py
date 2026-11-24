@@ -34,6 +34,7 @@ the live argv), the planned multiples-chain arguments and the planned registry e
 entries, `serve --tier deep --run P3S5 --dry-run`, content tests on real queues and views and on the review hub.
 """
 import csv
+import datetime
 import glob
 import json
 import os
@@ -1157,12 +1158,13 @@ def test_mchain():
     run5 = Run('serve', ['test'], p5.out, CFG, config_sections=None)
     st5 = flow.new_state()
     filt, sublst_build.filters = sublst_build.filters, lambda u_, B_, log_: filt_calls.append(B_)   # test_sublst_filters
-    filt_calls = []
+    tcov, sublst_build.tess_coverage = sublst_build.tess_coverage, lambda u_, p_, B_, log_: filt_calls.append(('tess', B_))
+    filt_calls = []                                                                     # tests/test_serve_tess.py
     try:
         u5 = sublst_build.views_stage(run5, p5, st5)
     finally:
-        sublst_build.filters = filt
-    assert u5.status == 'done' and not st5['refused'] and filt_calls == [B5], (u5.status, u5.reason, st5, filt_calls)
+        sublst_build.filters, sublst_build.tess_coverage = filt, tcov
+    assert u5.status == 'done' and not st5['refused'] and filt_calls == [B5, ('tess', B5)], (u5.status, u5.reason, st5, filt_calls)
     assert common.has_j_line(f'{B5}/judgements/queue_p3s3_V_multi.txt') and not os.path.exists(f'{B5}/source_catalogs_V_multi')
     assert not os.path.exists(f'{B5}/judgements/queue_p3s3_I_multi.txt')
     ok('multiples chain, sub-LST: the views stage writes the multi-integration queue of every Stokes it builds (the singles '
@@ -1754,6 +1756,30 @@ def test_sublst_filters():
     ok(f'filters content tests fail on {", ".join(n_ for n_, _ in neg)}')
 
 
+def test_sublst_tess():
+    """THE 10-MINUTE TESS COVERAGE (sublst_cumulative.sh:192-200): production runs frame_times_tenmin.py on the new build with
+    --image-root the x2 tree [and --reuse the served run's frame_times.csv when that file is not empty], then tess_coverage.py
+    --run $B, after the filters, refusing; the port (sublst_build.tess_coverage, lib/serve/tess.py) passes the same arguments
+    (its stand-in runs: tests/test_serve_tess.py, data-free, in CI)."""
+    from exopipe.phase3.core import legacy
+    sh = open(f'{OPS}/sublst_cumulative.sh').read()
+    cs = CFG.catalog_sublst
+    tree = cs.TENMIN_TREE.format(root=CFG.paths.SUBLST_ROOT, tree=cs.ARM_TREES['B'])
+    frag = ['$PY8 $OPSC/bright_source_filter_precompute.py $B',
+            'REUSE=; [ -s $U/frame_times.csv ] && REUSE="--reuse $U/frame_times.csv"',
+            f'$PY8 $OPSC/{scripts.SCRIPTS["frame_times_tenmin"][0]} --run $B --image-root {tree} $REUSE >> $LOG 2>&1',
+            f'/fast/gh/main/envs/tess/bin/python $OPSC/{scripts.SCRIPTS["tess_coverage"][0]} --run $B >> $LOG 2>&1',
+            'REFUSING: TESS coverage']
+    pos = [sh.find(f_) for f_ in frag]
+    assert all(p_ >= 0 for p_ in pos) and pos == sorted(pos), [f_[:70] for f_, p_ in zip(frag, pos) if p_ < 0] or pos
+    rf = sh[pos[4]:sh.find('\n', sh.find('exit', pos[4]))]
+    assert 'exit 1' in rf, rf
+    assert all(os.path.isfile(scripts.path(n_)) for n_ in ('frame_times_tenmin', 'tess_coverage'))
+    assert os.path.isfile(legacy.interpreter(CFG.pages_deep.TESS_PYTHON))
+    ok(f'10-minute TESS: production runs frame_times_tenmin.py --image-root {tree} [--reuse], then tess_coverage.py --run $B, '
+       f'after the filters, refusing (exit 1); both tools resolve in place, the TESS environment from the site file')
+
+
 def test_snapshot_steps():
     """THE FIVE STEPS ON THE SNAPSHOT REVIEW COPY (snapshot_serve.sh:164-210, exopipe_ops 607f7a2 + acfa685 + 1a9f9c8): after the carry
     and before any page starts, snapshot_copy runs scintillation_index.py, page_context_snapshot.py, tess/tess_coverage.py (under the
@@ -1910,16 +1936,18 @@ def test_snapshot_steps():
                 w_bsf(args[args.index('--out') + 1], args[args.index('--stokes') + 1], args[args.index('--cadence') + 1])
             else:
                 w_index()
+        summary = (f'{DST}/tess_coverage.csv: 1 detections (frame times the cand_id); orbit table cached; written 1 (left out, '
+                   f'page says not computed: 0)\n' if name == 'tess_coverage' else '')     # the tool's summary line
         return types.SimpleNamespace(ok=good, rc=0 if good else 1, reason='' if good else 'exit 1 - error',
-                                     tail=f'wrote {name}' if good else 'REFUSED: no input')
+                                     tail=summary + f'wrote {name}' if good else 'REFUSED: no input')
     NH = {'NUMPY_MADVISE_HUGEPAGE': '0'}
     pc = f'{out}/_cache'
     want = ([('scintillation_index', [DST, '--tier', tier, '--cache', f'{pc}/scintillation_table_index.json'],
               f'{DST}/scintillation_index.log', cw, NH),
              ('page_context_snapshot', [DST, '--workers', S.SNAPSHOT_PAGE_CONTEXT_WORKERS], f'{DST}/page_context_snapshot.log', None,
               NH),
-             ('tess_coverage', ['--run', DST, '--epoch-from-cand-id'] + ([] if CFG.pages_deep.TESS_REFRESH_IN_READER else
-                                                                          ['--no-refresh']), f'{DST}/tess_coverage.log', cw, {}),
+             ('tess_coverage', ['--run', DST, '--epoch-from-cand-id', '--no-refresh'],     # a parity run: the shared orbit
+              f'{DST}/tess_coverage.log', cw, {}),                                        # table is never written
              ('bright_source_filter', ['--help'], None, cw, {})]
             + [('bright_source_filter', [DST, '--tier', tier, '--stokes', s_, '--cadence', c_, '--out',
                                          f'{DST}/bright_source_filter_{s_}_{c_}.npz', '--workers', S.SNAPSHOT_BRIGHT_WORKERS,
@@ -1929,9 +1957,15 @@ def test_snapshot_steps():
     steps = tuple(st for st, _ in SC.STEP_STAGES)
     unit_of = {st: f'snapshot_Run_SNAPSTEP_{st.replace("-", "_")}' for st in steps}
     from exopipe.phase3.lib.pages import common as pcommon
-    orig = (scripts.run, S.SNAPSHOT_SERVE_HOLD, CFG.paths.SNAPSHOT_FLEET_OUT, pcommon.interpreter_or_none)
+    from exopipe.phase3.lib.serve import tess as stess
+    orig = (scripts.run, S.SNAPSHOT_SERVE_HOLD, CFG.paths.SNAPSHOT_FLEET_OUT, pcommon.interpreter_or_none, stess.orbit_table)
     scripts.run, S.SNAPSHOT_SERVE_HOLD, CFG.paths.SNAPSHOT_FLEET_OUT = fake_run, f'{D}/NO_HOLD', fleet
     pcommon.interpreter_or_none = lambda key: sys.executable          # the site's TESS interpreter need not be on this host
+    table = f'{D}/TESS_orbit_times.csv'                               # an orbit table that reaches now (the parity reader's
+    with open(table, 'w') as f:                                       # --no-refresh), not the production table's state
+        f.write('Sector,Orbit,Start of Orbit,End of Orbit\n100,200,2026-01-01 00:00:00,%s\n'
+                % (datetime.datetime.utcnow() + datetime.timedelta(days=20)).strftime('%Y-%m-%d %H:%M:%S'))
+    stess.orbit_table = lambda: table
     try:
         res = {}
         for case in ('ok', 'scintillation_index', 'page_context_snapshot', 'tess_coverage', 'help', 'bright_source_filter',
@@ -1955,12 +1989,13 @@ def test_snapshot_steps():
         cls = Counter(o['class'] for x in u.values() for o in x.outputs)
         assert cls == {'scintillation_index': 1, 'snapshot_page_context': 1, 'tess_coverage': 1, 'bright_source_filter': 4,
                        'detections_index': 1}, cls
+        assert u[unit_of['tess']].meta['tess_coverage'] == {'written': 1, 'left_out': 0}, u[unit_of['tess']].meta
         tests_ = [t for x in u.values() for t in x.tests]
         assert tests_ and all(t['passed'] for t in tests_), [t for t in tests_ if not t['passed']]
         assert res['ok'].exit_code() == 0
         for case, st, text in (('scintillation_index', 'scintillation', 'scintillation_index.py on the review copy'),
                                ('page_context_snapshot', 'page-context', 'page_context_snapshot.py on the review copy'),
-                               ('tess_coverage', 'tess', 'tess/tess_coverage.py on the review copy'),
+                               ('tess_coverage', 'tess', f'tess/tess_coverage.py failed on {DST}'),
                                ('help', 'bright-filter', f'has no {tier} tier'),
                                ('bright_source_filter', 'bright-filter', 'bright_source_filter_precompute.py I 10s on the review copy'),
                                ('build_detections_index', 'page-index', 'page index: build_detections_index.py --run')):
@@ -2004,7 +2039,7 @@ def test_snapshot_steps():
         ok('snapshot steps: a start without them in the invocation requires the records of the gate on the copy and of all five '
            '(G28)')
     finally:
-        scripts.run, S.SNAPSHOT_SERVE_HOLD, CFG.paths.SNAPSHOT_FLEET_OUT, pcommon.interpreter_or_none = orig
+        scripts.run, S.SNAPSHOT_SERVE_HOLD, CFG.paths.SNAPSHOT_FLEET_OUT, pcommon.interpreter_or_none, stess.orbit_table = orig
     # negative controls on the content tests (the files of the 'ok' case rewritten one fault at a time)
     neg = []
     w_sci()
@@ -3350,6 +3385,7 @@ def main():
         test_stage_halting()
         test_page_context_stage()
         test_sublst_filters()
+        test_sublst_tess()
         test_snapshot_steps()
         test_cumulative_reuses()
         test_serve_hold()

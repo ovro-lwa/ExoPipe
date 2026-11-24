@@ -37,6 +37,9 @@ cards, in production's order: SUBTRACT, LOONCOAD = the Master's weighted nights,
 card, LSTBIN, DURATION; no BINMSTR):
   <root>/<LST>/<LST>_<night>/<sb>/<S>/sublst_<LST>_<night>_<sb>_<S>_w<k>_resid_loo.fits   [sublst_nonmember_residual]
   run records <out>/_records/<caller's step>/nonmember_<LST>_<night>_<sb>.json
+No PRODNAME: this residual (set A, the arm-A tree) is an intermediate, not a product. It is not archived; the wideband stage
+averages it, and the search and the archive read the x2 residual of the same window (set B, lib/flow/sublst_nonmember_refine.py),
+which carries the window's name (window_residual_name). A name here would give two files one name.
 The non-member mark: production's residual carries no card of its own for it. The mark is the stack's NONMEMB card
 (written by the stacker, inherited here through the header copy) and, for this stage's products, the product class and
 the Master's weights record, which does not weight the night. No card is invented here.
@@ -236,6 +239,45 @@ def duration_s(header):
     except Exception as e:
         raise Refusal(f'N-10: the stack\'s own time block (DATE-OBS, DATE-END) cannot be read ({type(e).__name__}: {e}) - '
                       f'no DURATION is assumed')
+
+
+# THE NAME OF A 10-MINUTE WINDOW RESIDUAL, in the archive writer's form (exopipe_ops tenmin_archive_release1.py:140-141 PROC['resid'],
+# :382-393 make_name): <scope>_<S>_10min_Taper_Robust+0.0_shflux_dewarped_aligned_msub_LST<hh>_bin<k>_<epoch>.fits, the epoch the
+# window's first frame start (a subband: the residual's own DATE-OBS, the stack's; a wideband: the earliest DATE-OBS of its member
+# window stacks, :770-778). Stamped as PRODNAME on the x2 residual (set B) only, the file the search reads and the archive names:
+# R-GREGG-20261113-SPEEDUP-CHECKIN-TEN-ANSWERS (9b); the file keeps its production name until the next full rebuild.
+RESIDUAL_NAME_FORM = dict(cadence='10min', taper='Taper', robust=0.0, proc=('shflux', 'dewarped', 'aligned', 'msub'))
+PRODNAME_COMMENT = 'Phase 3 product name (grammar; CONTINUE cards)'
+
+
+def window_residual_name(scope, stokes, lst, k, epoch):
+    """products.build_name of the residual of window ``k`` of ``lst`` (scope a subband or a wideband group, epoch the ISO time of
+    the window's first frame start), checked to round-trip through products.parse_name; ValueError when it cannot be built or
+    does not round-trip (the caller refuses: no residual carries a name that is not its own)."""
+    from exopipe.phase3.core import products
+    f = RESIDUAL_NAME_FORM
+    name = products.build_name(scope=scope, stokes=stokes, cadence=f['cadence'], taper=f['taper'], robust=f['robust'],
+                               proc=list(f['proc']), lst=lst, lst_bin=int(k), epoch=str(epoch).strip())
+    p = products.parse_name(name)
+    if p.get('grammar') != 'phase3' or products.build_name(**p) != name:
+        raise ValueError(f'the window residual name {name} does not round-trip through products.parse_name')
+    return name
+
+
+def wideband_window_epoch(stack_dir, lst, night, members, S, k):
+    """The epoch of a wideband window's name: the earliest DATE-OBS (by MJD) of its members' window stacks
+    <stack_dir>/<lst>_<night>/<sb>/<S>/sublst_<lst>_<night>_<sb>_<S>_w<k>.fits (stack_dir = <sublst root>/<lst>;
+    tenmin_archive_release1.py:774-776). Headers read without a memory map. OSError / KeyError / ValueError when a member stack
+    or its DATE-OBS cannot be read."""
+    from astropy.io import fits
+    from astropy.time import Time
+    if not members:
+        raise ValueError('no member subbands')
+    t = []
+    for sb in members:
+        mp = os.path.join(stack_dir, f'{lst}_{night}', sb, S, f'sublst_{lst}_{night}_{sb}_{S}_w{int(k)}.fits')
+        t.append(str(fits.getheader(mp, memmap=False)['DATE-OBS']).strip())
+    return min(t, key=lambda x: Time(x, format='isot', scale='utc').mjd)
 
 
 def residual_header(stack_header, master_header, master_path, k, n_weighted, code):

@@ -29,7 +29,9 @@ views  (unit sublst_<run>_views)  on B: the union with the Stokes key (G5), the 
        built inside this build), the tier queues sectioned (sb, wb when present), p3s3_stokes_queue.py, the per-Stokes
        views (G6), the multi-integration queues and views (sublst_cumulative.sh:77-95), then the bright-source filter and
        the scintillation index on B (bright_source_filter_precompute.py, scintillation_index.py --tier tenmin; refusing,
-       sublst_cumulative.sh:172-181). G11: a refusal here leaves the served product and its servers untouched.
+       sublst_cumulative.sh:172-181), then the TESS coverage on B (tess/frame_times_tenmin.py, tess/tess_coverage.py;
+       refusing, sublst_cumulative.sh:192-200; lib/serve/tess.py). G11: a refusal here leaves the served product and its
+       servers untouched.
 test   App probes and content tests on B (expected index sources), G17 report.
 carry/swap/start  journals copied into B, B swapped in (U -> U.prev_<utc>), the between lines appended, the page context
        (unit sublst_<run>_page_context: page_context_tenmin.py U --workers serve.SUBLST_PAGE_CONTEXT_WORKERS, the panels'
@@ -56,7 +58,7 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 
 from exopipe.phase3.core.record import NoInput, Refusal
-from exopipe.phase3.lib.serve import common, flow, journals, queues, scripts, views
+from exopipe.phase3.lib.serve import common, flow, journals, queues, scripts, tess, views
 
 STAGES = ('build', 'views', 'test', 'carry', 'swap', 'page-index', 'start', 'hub', 'verify')
 
@@ -589,6 +591,7 @@ def views_stage(run, plan, state):
             u.note(f'{ST} multi view: {mv["sources"]} sources')
             u.add_output(mv['dir'], 'served_view', tier='sublst')
         filters(u, B, log)
+        tess_coverage(u, plan, B, log)
         u.meta['refused_pages'] = dict(state['refused'])
     return u
 
@@ -611,6 +614,21 @@ def filters(u, B, log):
                      f'in (sublst_cumulative.sh:177-180)')
         u.note(f'{name}: {scripts.last_line(res.tail)[:200]}')
         u.add_output(os.path.join(B, fn), name, tier=S.SUBLST_FILTER_TIER)
+
+
+def tess_coverage(u, plan, B, log):
+    """TESS COVERAGE (sublst_cumulative.sh:192-200; FIX-20261115-TESS-COVERAGE-PRODUCER-SNAPSHOT-FORCED-10MIN-WIDEBAND), after the
+    filters and before the carry and the swap, in place on the new build B (lib/serve/tess.py): tess/frame_times_tenmin.py --run B
+    --image-root <the 10-minute tree B> [--reuse <the served run>/frame_times.csv when that file is not empty: a window whose image
+    is unchanged keeps its times] - <B>/frame_times.csv, the window times (B has no page_context_frames.csv yet: the page context
+    runs after the swap) - then tess/tess_coverage.py --run B - <B>/tess_coverage.csv, which the server reads at page build. A
+    failure refuses the views unit, so nothing is swapped in (G11; production: the served product and its pages untouched). A parity
+    build reads the orbit table with --no-refresh (never writes the shared table; lib/pages/tess_orbits.reader_args)."""
+    cs = _CFG().catalog_sublst
+    tree = cs.TENMIN_TREE.format(root=_CFG().paths.SUBLST_ROOT, tree=cs.ARM_TREES['B'])   # sublst_cumulative.sh:197 --image-root
+    after = 'nothing swapped in (sublst_cumulative.sh:197-199)'
+    tess.tenmin_frame_times(u, B, tree, os.path.join(plan.U, 'frame_times.csv'), log, after=after)
+    tess.coverage(u, B, [], log, after=after, parity=bool(getattr(plan, 'parity', False)))
 
 
 def carry_page_context_cache(src, B, u=None):
