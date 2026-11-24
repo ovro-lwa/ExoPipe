@@ -118,3 +118,5 @@ jobs:
         run: python tests/test_drive.py
       - name: space gate of every writer step (Lustre quota headroom and free space, statvfs elsewhere; codes, bookings, sticky gate, cli wiring)
         run: python tests/test_space_gate.py
+      - name: two-week retention of the raw night data (retention table, holds, dry-run manifest, the ruled delete and its refusals)
+        run: python tests/test_retention.py

@@ -583,7 +583,7 @@ def _load_site(cfg):
     return path
 
 
-STEP_CONFIG_MODULES = ('frames', 'flow', 'search', 'catalog', 'forced', 'curves', 'pages', 'serve', 'archive', 'masters', 'dewarp', 'install', 'calibrate', 'hybrid', 'mosaic', 'photometry', 'followup', 'jupiter', 'status', 'notify', 'drive')   # exopipe/phase3/config/steps/<step>.py, pipeline order
+STEP_CONFIG_MODULES = ('frames', 'flow', 'search', 'catalog', 'forced', 'curves', 'pages', 'serve', 'archive', 'masters', 'dewarp', 'install', 'calibrate', 'hybrid', 'mosaic', 'photometry', 'followup', 'jupiter', 'status', 'notify', 'drive', 'retention')   # exopipe/phase3/config/steps/<step>.py, pipeline order
 
 
 def _load_step_configs():

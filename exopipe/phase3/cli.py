@@ -53,6 +53,8 @@ STEPS = [
     ('jupiter', 'the Jupiter reflection program', 'survey'),
     # tools
     ('status', 'completion, exclusion conformance, stale products, coverage, rebuild due; emits item lists', 'tools'),
+    ('retention', 'raw night data kept 2 weeks: retention table, extraction holds, expiry plan (dry run), the ruled '
+                  'delete', 'tools'),
     ('verify', 'run the content test of any product class alone; compare two product roots (parity)', 'tools'),
     ('run', 'multi-node runner: jobs, chains (e.g. the per-hour chain), --after, --code, hold/release/drain/retry', 'tools'),
     ('drive', 'per-hour driver: each hour\'s chain as Slurm jobs over the stage records; catch-up windows; periodic jobs', 'tools'),
