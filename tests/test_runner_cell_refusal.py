@@ -5,9 +5,14 @@ The per-hour chain 'epoch' runs every cell of an hour through each step. Before 
 the whole hour at that step. Prerequisite (2) of the refactor chat's decision of 2026-11-14 (ledger
 DECISION-20261114-PR21-ADMIT-STEPS-NOT-IN-EPOCH-CHAIN-YET): record a cell's refusal and continue the hour's other cells.
 
-  1. refusal_code: the gate code a reason names (leading code, 'gate X', a code-shaped token; never a ledger ID)
+  1. refusal_code: the gate code a reason names (leading code or 'gate X'; v2 has no registry of gate codes, so no other
+     token is taken; never a ledger ID)
   2. the step side: a real record.Run whose units refuse, complete or refuse before any unit -> runner.step_outcome ->
-     runner.cell_refusals (a cell refusal only when every refused unit names its cell and nothing refused outside a unit)
+     runner.cell_refusals (a cell refusal only when the units' exit is the step's 2, every refused unit names its cell and
+     nothing refused before or outside a unit; a unit's subband is kept with its cell)
+  2b. the central exclusion: a real record.Run handed refused (cell, subband) pairs (record.UPSTREAM_ENV) refuses every
+     unit of a refused cell (of that subband, or of the whole cell) before its body runs, code UPSTREAM-REFUSED naming
+     the step; a unit it cannot skip in place (not entered by a with statement) stops the step
   3. the protocol through a real step process: `exopipe3 verify` writes its outcome to EXOPIPE3_STEP_OUTCOME_FD and does
      not leave the variable to its children
   4. a synthetic chain (fake step processes from a pinned --code repository, whose outcomes are the real step_outcome
@@ -17,7 +22,11 @@ DECISION-20261114-PR21-ADMIT-STEPS-NOT-IN-EPOCH-CHAIN-YET): record a cell's refu
   5. what still stops the item: an error (no later step runs, the cells refused before it are kept), a refusal before any
      unit, a refused unit without a cell, an exit 2 without an outcome (a --code commit older than the protocol), and any
      refusal in a chain that is not in CELL_REFUSAL_CHAINS
-  6. a retried cells-refused item resumes at the first step that refused a cell and runs every later step again
+  6. a retried cells-refused item resumes at the first step that refused a cell and runs every later step again; a
+     'running' step of a dead worker resumes there; a later done entry is never dropped; a chain that is not in
+     CELL_REFUSAL_CHAINS keeps the old resume (every done step skipped)
+  7. --after with after_ok: an upstream item that ended cells-refused counts as finished well, and its refused cells carry
+     over to the dependent job's steps through the same exclusion
 
 Run standalone:  python tests/test_runner_cell_refusal.py [test_name ...]
 """
@@ -83,15 +92,41 @@ def _git(repo, *args):
 # outcomes from real records
 # ---------------------------------------------------------------------------------------------------------------------
 
-def _outcome(out, units, run_reason=None, name='search'):
+def _outcome(out, units, run_reason=None, name='search', upstream=None):
     """The real step_outcome of a real record.Run (dry run: no record written) whose units end as listed:
-    (unit name, cell or None, 'done' | 'no-input' | 'refused', reason)."""
+    (unit name, cell or None, 'done' | 'no-input' | 'refused' | 'body', reason[, subband]); 'body' runs a body that would
+    complete the unit (the unit framework refuses it first when ``upstream``, record.UPSTREAM_ENV's list, names its cell)."""
     from exopipe.phase3.config import CFG
     from exopipe.phase3.core import record, runner
-    run = record.Run(name, [f'exopipe3 {name}'], out, CFG, dry_run=True)
-    for unit, cell, kind, reason in units:
+    old = os.environ.pop(record.UPSTREAM_ENV, None)
+    if upstream:
+        os.environ[record.UPSTREAM_ENV] = json.dumps(upstream)
+    try:
+        run = record.Run(name, [f'exopipe3 {name}'], out, CFG, dry_run=True)
+        _units(run, units)
+    finally:
+        os.environ.pop(record.UPSTREAM_ENV, None)
+        if old is not None:
+            os.environ[record.UPSTREAM_ENV] = old
+    if run_reason:
+        run.run_reason = run_reason
+        rc = record.EXIT_REFUSED
+    else:
+        rc = run.exit_code()
+    return runner.step_outcome(name, rc, run)
+
+
+def _units(run, units):
+    from exopipe.phase3.core import record
+    for unit, cell, kind, reason, *sb in units:
         meta = {'cell': cell} if cell else {}
-        if kind == 'refused':
+        if sb:
+            meta['subband'] = sb[0]
+        if kind == 'body':
+            with run.unit(unit, **meta) as u:
+                u.status = 'body-ran'
+                raise record.NoInput('the body ran')
+        elif kind == 'refused':
             with run.unit(unit, **meta):
                 raise record.Refusal(reason)          # the unit's own context manager records it and swallows it
         elif kind == 'no-input':
@@ -100,12 +135,6 @@ def _outcome(out, units, run_reason=None, name='search'):
         else:
             u = run.unit(unit, **meta)
             u.status, u.reason = 'done', ''
-    if run_reason:
-        run.run_reason = run_reason
-        rc = record.EXIT_REFUSED
-    else:
-        rc = run.exit_code()
-    return runner.step_outcome(name, rc, run)
 
 
 def test_refusal_code():
@@ -115,7 +144,9 @@ def test_refusal_code():
     assert rc('FE-10MIN-APPEND: 09h_Red: the frames-only engine refuses') == 'FE-10MIN-APPEND'
     assert rc('04h_Red: the master violates the membership rulings (gate E3): x') == 'E3'
     assert rc('04h_Red: residuals_provisional.csv missing - gate E14 cannot run; refused (never skipped)') == 'E14'
-    assert rc('flow record /x status refused (r) - G-M05') == 'G-M05'
+    assert rc('UPSTREAM-REFUSED: 04h_Red was refused by search --tier deep [E3] earlier') == 'UPSTREAM-REFUSED'
+    # a code-shaped token elsewhere is not taken (v2 has no registry of gate codes to check it against)
+    assert rc('flow record /x status refused (r) - G-M05') is None
     assert rc('04h_Red: no deep I master at /x - inputs missing (gate E1)') == 'E1'
     # ledger IDs are never codes; a reason without a code has none
     assert rc('searched by a full re-search (R-SIGMA-STACK-INCLUDES-THE-RE-ADMITTED-EPOCH-BACKFILL-BY-RE-SEARCH)') is None
@@ -152,9 +183,17 @@ def test_step_outcome_and_cell_refusals():
         assert o['protocol'] == runner.OUTCOME_PROTOCOL and o['rc'] == 2 and o['refusals_outside_units'] == 0, o
         assert [(u['unit'], u['status'], u['cell']) for u in o['units']] == [
             ('04h_Full_I', 'done', '04h_Full'), ('04h_Red_I', 'refused', '04h_Red'), ('04h_Blue_I', 'no-input', '04h_Blue')]
+        assert o['unit_exit'] == 2 and [u['upstream'] for u in o['units']] == [False] * 3, o
         c = runner.cell_refusals(o, 2)
-        assert c == [{'cell': '04h_Red', 'unit': '04h_Red_I', 'code': 'E3',
+        assert c == [{'cell': '04h_Red', 'subband': None, 'unit': '04h_Red_I', 'code': 'E3',
                       'reason': '04h_Red: the master violates the membership rulings (gate E3): x'}], c
+        # the exit the units give must be the step's 2 (a step that returned 2 itself is not a cell refusal)
+        assert runner.cell_refusals(dict(o, unit_exit=0), 2) is None and runner.cell_refusals(dict(o, unit_exit=None), 2) is None
+        # a unit with a subband: the refusal is that (cell, subband) pair
+        o = _outcome(d, [('flow_x_41MHz', '04h_2025-10-14', 'refused', 'C-NOCUBE: x', '41MHz'),
+                         ('flow_x_36MHz', '04h_2025-10-14', 'done', '', '36MHz')])
+        assert [(x['cell'], x['subband'], x['code']) for x in runner.cell_refusals(o, 2)] == [
+            ('04h_2025-10-14', '41MHz', 'C-NOCUBE')]
         assert runner.cell_refusals(o, 1) is None                 # the process exit decides: an error is never a cell refusal
         assert runner.cell_refusals(None, 2) is None              # no outcome handed back
         # every cell refused: still cell refusals (each recorded; the hour's other tiers go on)
@@ -177,6 +216,64 @@ def test_step_outcome_and_cell_refusals():
         # reasons are kept to REASON_CHARS in the item record
         o = _outcome(d, [('a', '04h_Red', 'refused', 'E3 ' + 'x' * 5000)])
         assert len(runner.cell_refusals(o, 2)[0]['reason']) == runner.REASON_CHARS
+
+
+def test_unit_framework_refuses_upstream_cells():
+    from exopipe.phase3.config import CFG
+    from exopipe.phase3.core import record, runner
+    up = [{'cell': '04h_Red', 'subband': None, 'step': 'search --tier deep', 'code': 'E3'},
+          {'cell': '04h_2025-10-14', 'subband': '41MHz', 'step': 'flow --tier snapshot', 'code': None}]
+    before = sys.gettrace()
+    with Scratch('upstream') as d:
+        o = _outcome(d, [('04h_Red_I', '04h_Red', 'body', ''), ('04h_Full_I', '04h_Full', 'done', ''),
+                         ('s41', '04h_2025-10-14', 'body', '', '41MHz'), ('s36', '04h_2025-10-14', 'no-input', 'x', '36MHz'),
+                         ('whole', '04h_2025-10-14', 'body', '')], upstream=up)
+        st = {u['unit']: (u['status'], u['upstream'], u['reason']) for u in o['units']}
+        assert st['04h_Full_I'][0] == 'done' and st['s36'] == ('no-input', False, 'x'), st
+        # the bodies never ran: each refused before its first instruction, naming the step that refused the cell
+        for n, step in (('04h_Red_I', 'search --tier deep [E3]'), ('s41', 'flow --tier snapshot [no code named]'),
+                        ('whole', 'flow --tier snapshot [no code named]')):
+            assert st[n][:2] == ('refused', True) and st[n][2].startswith('UPSTREAM-REFUSED: ') and step in st[n][2], st[n]
+        assert o['rc'] == o['unit_exit'] == 2 and runner.cell_refusals(o, 2) == [], o      # no NEW refused cell: goes on
+        # a multi-line with statement, a closure target, nested blocks: the body still never runs
+        os.environ[record.UPSTREAM_ENV] = json.dumps(up)
+        try:
+            run = record.Run('x', ['exopipe3 x'], d, CFG, dry_run=True)
+            ran = []
+
+            def body():
+                for cell in ('04h_Red', '04h_Full'):
+                    with run.unit(
+                            f'{cell}_V',
+                            cell=cell,
+                            stokes='V') as u:
+                        ran.append(cell)
+                        u.status = 'done'
+                return u
+            last = body()
+            assert ran == ['04h_Full'] and last.name == '04h_Full_V' and run.units[0].status == 'refused', ran
+            assert sys.gettrace() is before
+            # a unit not entered by a with statement cannot be skipped in place: it stops the step (a refusal)
+            u = run.unit('04h_Red_X', cell='04h_Red')
+            try:
+                u.__enter__()
+                raise AssertionError('entered')
+            except record.UpstreamRefused as e:
+                assert 'not entered by a with statement' in str(e) and u.status == 'refused'
+            # an unreadable list refuses the run (never a step without the list it was given)
+            os.environ[record.UPSTREAM_ENV] = '{not json'
+            run = record.Run('x', ['exopipe3 x'], d, CFG, dry_run=True)
+            try:
+                run.unit('a', cell='04h_Full')
+                raise AssertionError('accepted')
+            except record.Refusal as e:
+                assert 'UPSTREAM-REFUSED' in str(e)
+        finally:
+            os.environ.pop(record.UPSTREAM_ENV, None)
+    assert runner.upstream_of([{'cell': 'a', 'subband': None, 'name': 's', 'code': 'E3'},
+                               {'cell': 'a', 'subband': None, 'name': 't', 'code': None},
+                               {'cell': 'a', 'subband': '41MHz', 'name': 't', 'code': None}]) == [
+        {'cell': 'a', 'subband': None, 'step': 's', 'code': 'E3'}, {'cell': 'a', 'subband': '41MHz', 'step': 't', 'code': None}]
 
 
 def test_step_process_hands_its_outcome():
@@ -221,6 +318,7 @@ a = sys.argv[1:]
 name, path, rc = a[0], a[1], int(a[2])
 fd = os.environ.get('EXOPIPE3_STEP_OUTCOME_FD')
 print('FAKE-STEP', name, 'fd' if fd else 'nofd', ' '.join(a[3:]), flush=True)
+print('FAKE-UPSTREAM', name, os.environ.get('EXOPIPE3_UPSTREAM_REFUSED') or '-', flush=True)
 if fd and path != '-':
     data = open(path, 'rb').read()
     os.write(int(fd), data)
@@ -260,12 +358,16 @@ def test_chain_goes_on_past_cell_refusals():
             ('admit-prep_04h_Full', '04h_Full', 'done', ''),
             ('admit-prep_04h_Red', '04h_Red', 'refused', 'admit-prep: 04h_Red holds an excluded night - G-M05'),
             ('admit-prep_04h_Blue', '04h_Blue', 'refused', 'admit-prep: no build statistics')], name='masters'))
+        # photometry gets 04h_Red from search's refusal: the unit framework refuses its 04h_Red unit (UPSTREAM-REFUSED)
+        upred = _write(d, 'upred', _outcome(d, [('04h_Full_I', '04h_Full', 'done', ''), ('04h_Red_I', '04h_Red', 'body', '')],
+                                            name='photometry', upstream=[{'cell': '04h_Red', 'subband': None,
+                                                                          'step': 'search --tier deep', 'code': 'E3'}]))
         runlevel = _write(d, 'runlevel', _outcome(d, [], run_reason='refused: --epochs is refused for --tier deep'))
         nocell = _write(d, 'nocell', _outcome(d, [('04h_Full_I', '04h_Full', 'done', ''),
                                                   ('incremental.associate', None, 'refused', 'G-C1: x')]))
         hour = '04h_2025-10-14'
         chains = {
-            'tc': [f'search {red} 2 --tier deep --epochs {{item}}', 'photometry - 0 --tier deep --epochs {item}',
+            'tc': [f'search {red} 2 --tier deep --epochs {{item}}', f'photometry {upred} 2 --tier deep --epochs {{item}}',
                    f'masters {two} 2 --tier deep --stages admit-prep --epochs {{item}}', 'catalog - 3 --epochs {item}',
                    'pages - 0 --epochs {item}'],
             'te': [f'search {red} 2 --epochs {{item}}', 'photometry - 1 --epochs {item}', 'pages - 0 --epochs {item}'],
@@ -273,10 +375,11 @@ def test_chain_goes_on_past_cell_refusals():
             'tn': [f'catalog {nocell} 2 --epochs {{item}}', 'pages - 0 --epochs {item}'],
             'tx': [f'search - 2 --epochs {{item}}', 'pages - 0 --epochs {item}'],          # exit 2, no outcome handed back
             'to': [f'search {red} 2 --epochs {{item}}', 'pages - 0 --epochs {item}'],      # not a cell-refusal chain
+            'tu': ['pages - 0 --epochs {item}'],                                       # a job --after 'tc'
         }
         fin = {'tc': ['notify - 0 --chain-record {record}'], 'te': ['notify - 0 --chain-record {record}']}
         with runner_cfg(JOBS_ROOT=jobs, CODE_REPO=repo, CODE_WORKTREES_ROOT=os.path.join(d, '_code'), POLL_S=1,
-                        CHAINS=chains, CHAIN_FINALLY=fin, CELL_REFUSAL_CHAINS=('tc', 'te', 'tw', 'tn', 'tx')):
+                        CHAINS=chains, CHAIN_FINALLY=fin, CELL_REFUSAL_CHAINS=('tc', 'te', 'tw', 'tn', 'tx', 'tu')):
             host = socket.gethostname()
 
             def run(chain):
@@ -287,33 +390,66 @@ def test_chain_goes_on_past_cell_refusals():
             # --- one step refuses a cell, a later one two cells: every step runs, the item is complete with 2 refused cells
             job, st = run('tc')
             assert runner.load_job(job)['cell_refusals'] is True
-            assert [s['status'] for s in st['steps']] == ['cells-refused', 'done', 'cells-refused', 'no-input', 'done'], st
+            assert [s['status'] for s in st['steps']] == ['cells-refused'] * 3 + ['no-input', 'done'], st
             assert st['status'] == 'cells-refused' and st['chain_status'] == 'cells-refused' and st['rc'] == 2, st
-            assert st['steps'][0]['units'] == {'done': 1, 'refused': 1} and st['steps'][1].get('units') is None, st['steps']
-            assert st['steps'][0]['refused_cells'] == [{'cell': '04h_Red', 'unit': '04h_Red_I', 'code': 'E3', 'reason':
-                                                        '04h_Red: the master violates the membership rulings (gate E3): x'}]
+            assert st['steps'][0]['units'] == {'done': 1, 'refused': 1} and st['steps'][4].get('units') is None, st['steps']
+            assert st['steps'][0]['refused_cells'] == [{'cell': '04h_Red', 'subband': None, 'unit': '04h_Red_I', 'code': 'E3',
+                                                        'reason': '04h_Red: the master violates the membership rulings '
+                                                        '(gate E3): x'}]
+            # the later step's 04h_Red unit was refused by the unit framework: no new refusal, the cell is counted once
+            assert st['steps'][1]['refused_cells'] == [] and st['steps'][1]['upstream_refused_units'] == 1, st['steps'][1]
+            assert [x['cell'] for x in st['refused_by_cell']] == ['04h_Red', '04h_Blue'], st['refused_by_cell']
             assert [(c['step'], c['name'], c['cell'], c['code']) for c in st['refused_cells']] == [
                 (0, 'search --tier deep', '04h_Red', 'E3'),
-                (2, 'masters --tier deep --stages admit-prep', '04h_Red', 'G-M05'),
+                (2, 'masters --tier deep --stages admit-prep', '04h_Red', None),
                 (2, 'masters --tier deep --stages admit-prep', '04h_Blue', None)], st['refused_cells']
             assert st['summary'] == ('COMPLETE with 2 refused cells (04h_Red: search --tier deep [E3], masters --tier deep '
-                                     '--stages admit-prep [G-M05]; 04h_Blue: masters --tier deep --stages admit-prep '
+                                     '--stages admit-prep [no code named]; 04h_Blue: masters --tier deep --stages admit-prep '
                                      '[no code named])'), st['summary']
             assert [f['status'] for f in st['finally']] == ['done'], st['finally']
             log = open(st['log']).read()
             assert log.count('FAKE-STEP') == 6 and 'FAKE-STEP pages fd' in log and 'FAKE-STEP notify nofd' in log, log
+            # every later step was handed the refused cells so far (record.UPSTREAM_ENV); the closing step is not
+            ups = {ln.split()[1]: ln.split(' ', 2)[2] for ln in log.splitlines() if ln.startswith('FAKE-UPSTREAM')}
+            assert ups['search'] == '-' and ups['notify'] == '-', ups
+            assert [e['cell'] for e in json.loads(ups['photometry'])] == ['04h_Red'], ups
+            assert [(e['cell'], e['step'], e['code']) for e in json.loads(ups['pages'])] == [
+                ('04h_Red', 'search --tier deep', 'E3'), ('04h_Blue', 'masters --tier deep --stages admit-prep', None)], ups
             assert 'refused cell 04h_Red (unit 04h_Red_I, code E3)' in log and 'the chain goes on for the other cells' in log
             assert runner.job_state(job) == ('finished', {'cells-refused': 1})
             # the hour's email lists every refused cell with its step and code
             t, ok = block.chain_summary(os.path.join(runner.job_dir(job), 'items', f'{hour}.json'))
             assert ok is False and 'COMPLETE with 2 refused cells' in t and "other cells went on through every step" in t, t
-            assert t.count('<li>') == 3 and 'refusal code E3' in t and 'refusal code none named' in t, t
-            assert '<code>masters --tier deep --stages admit-prep</code>, refusal code G-M05' in t, t
+            # one bullet per cell, from the record's per-cell list (the summary's)
+            assert t.count('<li>') == 2 and '<code>search --tier deep [E3]</code>' in t, t
+            assert ('04h_Red: refused by <code>search --tier deep [E3]</code>, <code>masters --tier deep --stages '
+                    'admit-prep [no code named]</code>: 04h_Red: the master violates') in t, t
+            assert '04h_Blue: refused by <code>masters --tier deep --stages admit-prep [no code named]</code>' in t, t
             # `run status` prints the line
             r = subprocess.run([PY, '-m', 'exopipe.phase3', 'run', 'status', job, '--cores', 'none', '--set',
                                 f'runner.JOBS_ROOT={jobs}'], cwd=REPO, capture_output=True, text=True, timeout=120,
                                env=dict(os.environ, PYTHONPATH=REPO))
             assert r.returncode == 0 and 'COMPLETE with 2 refused cells (04h_Red' in r.stdout, (r.stdout, r.stderr)
+            assert 'cells-refused ' in r.stdout and 'steps 5/5' in r.stdout, r.stdout     # every step finished
+
+            # --- --after with after_ok: cells-refused is a good end, and its refused cells carry over to the dependent job
+            import threading
+            job2 = runner.submit(None, [], [hour], [], after=job, after_ok=True, start=False, chain='tu', code=sha)
+            sup = threading.Thread(target=runner.supervise, args=(job2,), daemon=True)
+            sup.start()
+            for _ in range(60):
+                if os.path.exists(os.path.join(runner.job_dir(job2), runner.UPSTREAM_FILE)):
+                    break
+                import time
+                time.sleep(0.5)
+            runner.worker(job2)
+            sup.join(30)
+            st3 = runner.item_state(job2, hour)
+            assert not sup.is_alive() and st3['status'] == 'cells-refused', st3
+            assert st3['summary'].startswith('COMPLETE with 2 refused cells (04h_Red: job ') and 'search --tier deep [E3]' \
+                in st3['summary'], st3['summary']
+            ups = [ln for ln in open(st3['log']).read().splitlines() if ln.startswith('FAKE-UPSTREAM pages')]
+            assert len(ups) == 1 and [e['cell'] for e in json.loads(ups[0].split(' ', 2)[2])] == ['04h_Red', '04h_Blue'], ups
 
             # --- a retry resumes at the first step that refused a cell and runs every later step again
             first = st['steps'][0]['started']
@@ -324,6 +460,20 @@ def test_chain_goes_on_past_cell_refusals():
             assert all(s['attempt'] == 1 for s in st2['steps']) and open(st2['log']).read().count('FAKE-STEP pages') == 2
             assert st2['steps'][0]['started'] >= first and len(st2['refused_cells']) == 3
 
+            # --- a 'running' step (a dead worker) resumes there; earlier done steps are skipped, later ones run again
+            ipath = os.path.join(runner.job_dir(job), 'items', f'{hour}.json')
+            dead = dict(st2, status='failed')
+            dead['steps'] = [dict(st2['steps'][0], status='done', refused_cells=[]), dict(st2['steps'][1], status='running')] \
+                + st2['steps'][2:]
+            runner._wjson(ipath, dead)
+            n_search = open(st2['log']).read().count('FAKE-STEP search')
+            assert runner.retry(job, ('failed',), start=False) == 1
+            runner.worker(job)
+            st4 = runner.item_state(job, hour)
+            log = open(st4['log']).read()
+            assert log.count('FAKE-STEP search') == n_search and log.count('FAKE-STEP pages') == 3, log
+            assert [s['status'] for s in st4['steps']] == ['done', 'cells-refused', 'cells-refused', 'no-input', 'done'], st4
+
             # --- an error still stops the item; the cell refused before it is kept and said
             job, st = run('te')
             assert [s['status'] for s in st['steps']] == ['cells-refused', 'error'] and st['status'] == 'failed', st
@@ -332,6 +482,16 @@ def test_chain_goes_on_past_cell_refusals():
             assert 'FAKE-STEP pages' not in open(st['log']).read().split('closing step')[0]
             t, _ = block.chain_summary(os.path.join(runner.job_dir(job), 'items', f'{hour}.json'))
             assert 'FAILED at step 2' in t and 'Cells refused before it:' in t and '04h_Red' in t, t
+            # a later done entry is never dropped: the item resumes at its failed step and stops there again; the done
+            # entry of the earlier attempt after it stays in the record (its attempt says which)
+            ipath = os.path.join(runner.job_dir(job), 'items', f'{hour}.json')
+            later = {'step': 2, 'name': 'pages', 'argv': ['pages'], 'status': 'done', 'rc': 0, 'attempt': 1}
+            runner._wjson(ipath, dict(st, steps=[dict(st['steps'][0], status='done', refused_cells=[]), st['steps'][1], later]))
+            assert runner.retry(job, ('failed',), start=False) == 1
+            runner.worker(job)
+            st5 = runner.item_state(job, hour)
+            assert [s['status'] for s in st5['steps']] == ['done', 'error', 'done'] and st5['steps'][2] == later, st5['steps']
+            assert st5['summary'] == 'FAILED at step 2 (photometry, exit 1)', st5['summary']
 
             # --- what is not a cell refusal stops the item at that step, as before
             for chain in ('tw', 'tn', 'tx', 'to'):
@@ -340,6 +500,14 @@ def test_chain_goes_on_past_cell_refusals():
                 assert st['refused_cells'] == [] and st['summary'].startswith('REFUSED at step 1'), (chain, st['summary'])
                 assert 'FAKE-STEP pages' not in open(st['log']).read(), chain
             assert runner.load_job(job)['cell_refusals'] is False                # 'to' is not in CELL_REFUSAL_CHAINS
+            # a chain that is not in CELL_REFUSAL_CHAINS keeps the old resume: every done step is skipped, wherever it is
+            ipath = os.path.join(runner.job_dir(job), 'items', f'{hour}.json')
+            runner._wjson(ipath, dict(st, steps=[st['steps'][0], dict(st['steps'][0], step=1, name='pages', status='done')]))
+            assert runner.retry(job, ('refused',), start=False) == 1
+            runner.worker(job)
+            st6 = runner.item_state(job, hour)
+            assert [s['status'] for s in st6['steps']] == ['refused', 'done'] and 'FAKE-STEP pages' not in open(
+                st6['log']).read(), st6
 
 
 def test_epoch_chain_is_a_cell_refusal_chain():
@@ -347,13 +515,13 @@ def test_epoch_chain_is_a_cell_refusal_chain():
     from exopipe.phase3.core import runner
     assert 'epoch' in CFG.runner.CELL_REFUSAL_CHAINS and 'epoch' in CFG.runner.CHAINS
     assert set(CFG.runner.CELL_REFUSAL_CHAINS) <= set(CFG.runner.CHAINS)
-    assert runner.CELLS_REFUSED in runner.TERMINAL and runner.CELLS_REFUSED not in runner.AFTER_OK
+    assert runner.CELLS_REFUSED in runner.TERMINAL and runner.CELLS_REFUSED in runner.AFTER_OK
 
 
 def main(argv):
     names = argv or [n for n in sorted(globals()) if n.startswith('test_')]
     order = [n for n in ('test_refusal_code', 'test_chain_outcome_lists_each_cell_once', 'test_step_outcome_and_cell_refusals',
-                         'test_step_process_hands_its_outcome',
+                         'test_unit_framework_refuses_upstream_cells', 'test_step_process_hands_its_outcome',
                          'test_chain_goes_on_past_cell_refusals', 'test_epoch_chain_is_a_cell_refusal_chain') if n in names]
     order += [n for n in names if n not in order]
     for n in order:

@@ -50,6 +50,61 @@ class NoInput(Exception):
 
 EXIT_DONE, EXIT_ERROR, EXIT_REFUSED, EXIT_NO_INPUT = 0, 1, 2, 3
 
+# ---- cells an earlier step of the same chain item refused (core/runner.py, runner.CELL_REFUSAL_CHAINS) ---------------
+# The runner hands every later step (and, through --after, the dependent job's items) the item's refused cells in this
+# variable: a JSON list of {'cell', 'subband', 'step', 'code'}. The unit framework refuses every unit whose meta names a
+# refused cell (and, when the refusal names a subband, that subband or no subband: a unit of the whole cell covers it)
+# before the unit's body runs, with code UPSTREAM-REFUSED naming the step that refused it - no later step processes it.
+UPSTREAM_ENV = 'EXOPIPE3_UPSTREAM_REFUSED'
+UPSTREAM_CODE = 'UPSTREAM-REFUSED'
+
+
+class UpstreamRefused(Refusal):
+    """An upstream-refused unit that could not be skipped in place (not entered by a ``with`` statement): it stops the
+    step (a run-level refusal, so the runner stops the chain item) instead of letting the unit run."""
+
+
+class _SkipBody(Refusal):
+    """Raised at the first instruction of an upstream-refused unit's body; its own ``__exit__`` takes it."""
+
+
+def upstream_refusals(env=None):
+    """The refused cells the runner handed this process ([] when none). A value that does not parse refuses the run: the
+    step never runs without the list it was given."""
+    raw = (os.environ if env is None else env).get(UPSTREAM_ENV)
+    if not raw:
+        return []
+    try:
+        out = json.loads(raw)
+        if not isinstance(out, list) or not all(isinstance(e, dict) and e.get('cell') for e in out):
+            raise ValueError('not a list of {cell, subband, step, code}')
+    except ValueError as e:
+        raise Refusal(f'{UPSTREAM_CODE}: {UPSTREAM_ENV} is not readable ({e}): the cells an earlier step refused are unknown')
+    return out
+
+
+def _as_set(v):
+    return {str(x) for x in v} if isinstance(v, (list, tuple, set)) else ({str(v)} if v not in (None, '') else set())
+
+
+def upstream_hit(meta, refused):
+    """The first refusal in ``refused`` that covers a unit of this meta, or None: the unit's 'cell' (or one of its
+    'cells') is the refused cell, and the refusal names no subband, or the unit names that subband or none."""
+    cells = _as_set((meta or {}).get('cell')) | _as_set((meta or {}).get('cells'))
+    if not cells:
+        return None
+    sbs = _as_set((meta or {}).get('subband'))
+    for e in refused or ():
+        if str(e['cell']) in cells and (not e.get('subband') or not sbs or str(e['subband']) in sbs):
+            return e
+    return None
+
+
+def upstream_reason(e):
+    pair = f"{e['cell']}" + (f" {e['subband']}" if e.get('subband') else '')
+    return (f"{UPSTREAM_CODE}: {pair} was refused by {e.get('step') or 'an earlier step'} "
+            f"[{e.get('code') or 'no code named'}] earlier in this chain item; no later step processes it")
+
 
 def utcnow():
     return time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
@@ -518,6 +573,9 @@ class Run:
 
     def unit(self, name, **meta):
         u = UnitRecord(self, name, meta)
+        if not hasattr(self, '_upstream'):
+            self._upstream = upstream_refusals()
+        u.upstream = upstream_hit(meta, self._upstream)   # entered: refused before its body runs (UnitRecord.__enter__)
         self.units.append(u)
         return u
 
@@ -691,7 +749,40 @@ class UnitRecord:
 
     # ---- context ------------------------------------------------------------------------------------------------
     def __enter__(self):
+        if getattr(self, 'upstream', None):
+            self._skip_body(sys._getframe(1))
         return self
+
+    def _skip_body(self, frame):
+        """Refuse an upstream-refused unit (``Run.unit``) without running its body: the frame of the ``with`` statement
+        is traced instruction by instruction until the ``as`` target is stored, and the first instruction of the body
+        raises _SkipBody, which ``__exit__`` records as the refusal. A unit not entered by a ``with`` statement whose
+        target is a plain name (or none) cannot be skipped this way: it refuses the whole step (UpstreamRefused)."""
+        import dis
+        ins = list(dis.get_instructions(frame.f_code))
+        k = next((i for i, x in enumerate(ins) if x.offset == frame.f_lasti), None)
+        if (k is None or ins[k].opname not in ('SETUP_WITH', 'BEFORE_WITH') or k + 1 >= len(ins)
+                or not (ins[k + 1].opname in ('STORE_FAST', 'STORE_NAME', 'STORE_DEREF', 'STORE_GLOBAL', 'POP_TOP'))):
+            self.status, self.reason = 'refused', upstream_reason(self.upstream) + (
+                ' (the unit is not entered by a with statement: the step stops here)')
+            self._write_outcome()
+            raise UpstreamRefused(self.reason)
+        store = ins[k + 1].offset
+
+        def tracer(fr, event, arg):
+            if fr is frame and event == 'opcode' and fr.f_lasti > store:
+                raise _SkipBody(upstream_reason(self.upstream))
+            return tracer
+        self._trace = (frame, sys.gettrace(), frame.f_trace, frame.f_trace_opcodes)
+        frame.f_trace_opcodes = True
+        frame.f_trace = tracer
+        sys.settrace(self._trace[1] or (lambda *a: None))   # tracing on (a running tracer, e.g. coverage, stays)
+
+    def _untrace(self):
+        frame, glob, local, opcodes = self._trace
+        self._trace = None
+        frame.f_trace, frame.f_trace_opcodes = local, opcodes
+        sys.settrace(glob)
 
     def _final_status(self):
         refused = {r['path'] for r in self.refused_items}
@@ -727,6 +818,20 @@ class UnitRecord:
 
     def __exit__(self, etype, exc, tb):
         from exopipe.phase3.core import fallback
+        if getattr(self, '_trace', None):
+            self._untrace()
+            if etype is None or not issubclass(etype, _SkipBody):
+                # the body ran (or failed before its first instruction): never a silent pass of a refused cell
+                self.status, self.reason = 'error', (upstream_reason(self.upstream) + ': the unit framework did not stop '
+                                                     'the unit before its body (' + (etype.__name__ if etype else 'it ran')
+                                                     + ')')
+                self._write_outcome()
+                return False
+        if etype is not None and issubclass(etype, _SkipBody):
+            fallback.take(self._fallback_mark)
+            self.status, self.reason = 'refused', str(exc)
+            self._write_outcome()
+            return True
         self._fallback_taken = fallback.take(self._fallback_mark)
         refs = self._fallback_taken[0]
         if refs and (etype is None or (issubclass(etype, Exception) and not issubclass(etype, Refusal))):

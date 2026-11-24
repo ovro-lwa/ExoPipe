@@ -152,7 +152,10 @@ def test_block_states_chain_outcome_limits_targets_then_transients():
                 'cells': {'chain_status': 'cells-refused', 'log': '/x/logs/04h.log',
                           'steps': [step('masters', 'cells-refused', 2), step('catalog', 'done', 0)],
                           'refused_cells': [{'cell': '04h_Red', 'name': 'masters --tier deep', 'code': 'G-M05',
-                                             'reason': 'excluded night <b>'}]}}
+                                             'reason': 'excluded night <b>'}] * 2}}     # its I and V units
+        # the per-cell list the runner writes beside the summary (one implementation: runner.refused_by_cell)
+        from exopipe.phase3.core import runner
+        recs['cells']['refused_by_cell'] = runner.refused_by_cell(recs['cells']['refused_cells'])
         for k, r in recs.items():
             json.dump(r, open(os.path.join(d, k + '.json'), 'w'))
         t, ok = block.chain_summary(os.path.join(d, 'done.json'))
@@ -163,7 +166,8 @@ def test_block_states_chain_outcome_limits_targets_then_transients():
         assert ok is False and 'FAILED at step 1' in t, t
         t, ok = block.chain_summary(os.path.join(d, 'cells.json'))
         assert ok is False and 'COMPLETE with 1 refused cell</strong> (2 steps: 1 cells-refused, 1 done)' in t, t
-        assert '<li>04h_Red: refused by <code>masters --tier deep</code>, refusal code G-M05: excluded night &lt;b&gt;' in t, t
+        assert t.count('<li>') == 1, t                                  # one bullet per cell (I and V together)
+        assert '<li>04h_Red: refused by <code>masters --tier deep [G-M05]</code>: excluded night &lt;b&gt;' in t, t
         t, ok = block.chain_summary(None)
         assert ok is None and 'none given' in t
         t, ok = block.chain_summary(os.path.join(d, 'missing.json'))

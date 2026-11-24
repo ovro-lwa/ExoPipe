@@ -123,11 +123,11 @@ def submit_injected_gate(args):
 
 
 def _status_line(j, it, s):
-    line = (f"  {it:20s} {s.get('status'):9s} {s.get('host', ''):12s} attempts {s.get('attempts', 0)} "
+    line = (f"  {it:20s} {s.get('status'):13s} {s.get('host', ''):12s} attempts {s.get('attempts', 0)} "
             f"rc {s.get('rc', '')} {s.get('finished', s.get('started', ''))}")
     if j.get('chain_steps'):
         steps = s.get('steps') or []
-        n_done = sum(1 for x in steps if x.get('status') == 'done')
+        n_done = sum(1 for x in steps if x.get('status') in ('done', 'no-input', 'cells-refused'))   # finished steps
         line += f"  steps {n_done}/{len(j['chain_steps'])}"
         last = steps[-1] if steps else None
         if last and last.get('status') not in ('done', 'cells-refused'):

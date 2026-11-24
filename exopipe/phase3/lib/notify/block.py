@@ -87,18 +87,19 @@ def chain_summary(record_path):
     for s in steps:
         by[s.get('status')] = by.get(s.get('status'), 0) + 1
     counts = ', '.join(f'{n} {k}' for k, n in sorted(by.items()))
-    # cells a step refused while the chain went on (core/runner.py, runner.CELL_REFUSAL_CHAINS): every one listed
-    cells = rec.get('refused_cells') or []
+    # cells a step refused while the chain went on (core/runner.py, runner.CELL_REFUSAL_CHAINS): one bullet per cell (its
+    # I and V units together), from the record's per-cell list that the runner's chain_outcome summary is built from
+    cells = rec.get('refused_by_cell') or []
     refused = ('<ul>' + ''.join(
-        f'<li>{esc(c.get("cell"))}: refused by <code>{esc(c.get("name"))}</code>, refusal code '
-        f'{esc(c.get("code") or "none named")}: {esc(str(c.get("reason") or "")[:300])}</li>' for c in cells) + '</ul>'
-               if cells else '')
+        f'<li>{esc(c.get("cell"))}: refused by '
+        + ', '.join(f'<code>{esc(r)}</code>' for r in c.get('refusals') or [])
+        + f': {esc(str(c.get("reason") or "")[:300])}</li>' for c in cells) + '</ul>' if cells else '')
     if status == 'done':
         return f'Phase 3 chain: done ({len(steps)} steps: {esc(counts)}).', True
     if status == 'no-input':
         return f'Phase 3 chain: every step had nothing to do for this hour ({len(steps)} steps).', False
     if status == 'cells-refused':
-        n = len({c.get('cell') for c in cells})
+        n = len(cells)
         return (f'<strong>Phase 3 chain: COMPLETE with {n} refused cell{"" if n == 1 else "s"}</strong> ({len(steps)} '
                 f'steps: {esc(counts)}); the hour\'s other cells went on through every step. Log: '
                 f'<code>{esc(rec.get("log"))}</code>. Refused:{refused}'), False

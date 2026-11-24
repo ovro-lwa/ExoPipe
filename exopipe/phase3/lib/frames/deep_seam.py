@@ -92,15 +92,16 @@ def _edits():
         # gate FE-10MIN-APPEND (ledger FINDING-20261113-FRAMES-ONLY-ENGINE-TENMIN-APPEND-READS-FROZEN-POPULATIONS): a
         # 10-minute call with included nights is a per-hour append judged by the frozen gate populations of its base
         # attempt, which a frames-only attempt does not hold - the engine refuses it before any work (its callers,
-        # lib/frames/deep_engine.UnitSpec and deep_child, refuse first)
+        # lib/frames/deep_engine.UnitSpec and deep_child, refuse first). The condition and the text are the gate's one
+        # implementation, deep_engine.tenmin_append_refusal (TENMIN_APPEND_GATE), imported at the call
         ('tenmin-append-refusal',
          "        raise ValueError(f'cadence {cadence!r}: deep or 10min')\n",
          "        raise ValueError(f'cadence {cadence!r}: deep or 10min')\n"
-         "    if frames_only and cadence == '10min' and included_dates:\n"
-         "        raise RuntimeError(f'FE-10MIN-APPEND: {lst}_{scope}: the frames-only engine refuses a 10-minute append '\n"
-         "                           f'(included nights {list(included_dates)}): it would read the frozen gate populations '\n"
-         "                           f'of a base attempt (gate_population.csv) that a frames-only attempt does not hold '\n"
-         "                           f'- REFUSING')\n"),
+         "    if frames_only:\n"
+         "        from exopipe.phase3.lib.frames.deep_engine import tenmin_append_refusal as _fe_10min\n"
+         "        _fe_why = _fe_10min(f'{lst}_{scope}', cadence, included_dates)\n"
+         "        if _fe_why:\n"
+         "            raise RuntimeError(_fe_why + ' - REFUSING')\n"),
         ('policy-skip-epochs',
          "P3-POLICY-SKIP only {len(dates)} epochs (minimum {_minE}, cadence {cadence})'); return 0\n",
          "P3-POLICY-SKIP only {len(dates)} epochs (minimum {_minE}, cadence {cadence})'); return "
