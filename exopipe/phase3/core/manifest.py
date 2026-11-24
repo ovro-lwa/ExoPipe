@@ -95,6 +95,44 @@ def verify_union(dirpath, pins, names=None):
     return {'dir': dirpath, 'union': label, 'manifest_md5': mmd5, 'n_files': len(man), 'checked': len(want)}
 
 
+_VERIFIED = {}     # (real directory, md5 of its MANIFEST.md5) -> {name: (size, mtime_ns, inode) when its md5 matched}
+
+
+def gate_union(dirpath, names=None, pins=None, cfg=None):
+    """THE union reader's gate: verify_union, once per process per directory, cached on the md5 of its MANIFEST.md5. Every
+    call re-reads the manifest (its md5 is the cache key: M1, M2) and the listing (M3); a file whose md5 matched before is
+    hashed again only when its size, mtime or inode changed. ``names`` None = every listed file. ``pins`` default: the
+    configured pins (paths.PARENT_UNION_MANIFEST_MD5)."""
+    pins = union_pins(cfg) if pins is None else pins
+    mpath = os.path.join(dirpath or '', MANIFEST)
+    mmd5 = md5_file(mpath) if dirpath and os.path.isfile(mpath) else None
+    key = (os.path.realpath(dirpath), mmd5) if mmd5 else None
+    seen = _VERIFIED.get(key, {}) if key else {}
+    if key and names is None:
+        names = sorted(read_manifest(mpath))
+    todo = None
+    if key:
+        def sig(n):
+            st = os.stat(os.path.join(dirpath, n))
+            return st.st_size, st.st_mtime_ns, st.st_ino
+        todo = [n for n in names if n not in seen or not os.path.exists(os.path.join(dirpath, n)) or seen[n] != sig(n)]
+    r = verify_union(dirpath, pins, names=todo if key else names)
+    done = dict(seen)
+    for n in (todo or []):
+        st = os.stat(os.path.join(dirpath, n))
+        done[n] = (st.st_size, st.st_mtime_ns, st.st_ino)
+    _VERIFIED[(os.path.realpath(dirpath), r['manifest_md5'])] = done
+    return dict(r, checked=len(names or []), hashed=len(todo or []))
+
+
+def gate_pinned(dirs, cfg=None):
+    """Gate every directory of ``dirs`` that is a pinned union (its name is a key of paths.PARENT_UNION_MANIFEST_MD5): every
+    file, once per process. Other directories (the collect harvests) are not unions and are returned unchecked. Returns
+    {dir: gate result or None}."""
+    pins = union_pins(cfg)
+    return {d: (gate_union(d, None, pins) if os.path.basename(os.path.normpath(d)) in pins else None) for d in dirs}
+
+
 def parent_union(step_value, cfg=None):
     """The union a step reads: its own key's value (a pinned path) or, when that is None, paths.PARENT_UNION."""
     if step_value:

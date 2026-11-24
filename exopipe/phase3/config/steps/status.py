@@ -287,19 +287,19 @@ class status_pages(_Section):
     # refuses when one is absent - production reads a missing source as empty and builds the page without that tier's data).
     # Templates: {snapreview} = paths.SNAPSHOT_REVIEW_ROOT, {transients} = paths.TRANSIENTS_ROOT, {ops} = paths.OPS_ROOT.
     # The served page (hub data_processing.html + coverage.json built 2026-11-17 21:42:59 UTC) was built with exactly these values.
-    DATA_PAGE_SNAP_VIEW = '{snapreview}/Run_SNAPCOMB_20261107'
+    DATA_PAGE_SNAP_VIEW = '{snapreview}/Run_SNAPCOMB_20261116'
     #   build_qa_release1.py:44 SNAPV: the 10-s/1-min view whose deep_omission.csv gives the snapshot omission verdicts and whose
-    #   name the page prints (its tier title, build_qa_release1.py:243, is a literal in main(): S-G19 refuses a page that names a
-    #   Run_SNAPCOMB_* view other than this one). The hub serves Run_SNAPCOMB_20261116 since 2026-11-17 23:37 UTC and
-    #   Run_SNAPCOMB_20261107 was deleted 2026-11-18 (CLEANUP-20261118-DATA07-RETIRED-SNAPCOMB-20261107-AND-19-SUPERSEDED-
-    #   BATCH-RUNS): until this key, DATA_PAGE_SNAP_CELL_LISTS and the builder's title move to the served view, S-G18 refuses.
+    #   name the page prints: the view the hub serves since 2026-11-17 23:37 UTC (Gregg 2026-11-24; the 11-07 view was deleted
+    #   2026-11-18). The builder's tier title (build_qa_release1.py:243) is a literal naming the 11-07 view: run_data_page runs
+    #   production's main() with that literal's view name replaced by this key's (steps_hub.builder_main; S-G18 refuses when
+    #   the literal changes, S-G19 when the page still names another Run_SNAPCOMB_* view).
     DATA_PAGE_TENMIN_VIEW = '{transients}/Run_SLSTB'
     #   build_qa_release1.py:45 TENV and :89 TENMIN_VIEW (both the served 10-minute view; one key): deep_omission.csv and
     #   v_deep_images.csv (the searched windows); its title (:242) is a literal too (S-G19: no other Run_SLST* name)
-    DATA_PAGE_SNAP_CELL_LISTS = '{ops}/snapshot_rechain_Run_SNAPB*3_20261104.cells'
-    #   build_qa_release1.py:106 (snap_cov, a literal inside the function: run_data_page replaces snap_cov with a reader of this
-    #   glob, the function body otherwise production's): the cell lists of the 36 batch runs the 11-07 view combines; S-G18 needs
-    #   at least one match
+    DATA_PAGE_SNAP_CELL_LISTS = '{ops}/snapshot_rechain_Run_SNAP{batch}_*.cells'
+    #   build_qa_release1.py:106 (snap_cov, a glob literal inside the function: run_data_page replaces it with the list of the
+    #   view's member batches' cell lists, the function body otherwise production's): {batch} = each member batch of the view's
+    #   combined_view_summary.json 'batches' (48 for the 11-16 view); S-G18 refuses unless each matches exactly one list
     DATA_PAGE_DEC_PENDING = '{ops}/snapshot_batch/dec18_27_20261109/worklist_dec18_27.txt'
     #   build_qa_release1.py:46 DEC: the Dec 18-27 2024 LST-nights whose 10-s/1-min search is pending (GPU-pipeline frames)
     REGISTER_PAGE = 'ratified_steps.html'      # build_ratified_register.py:15

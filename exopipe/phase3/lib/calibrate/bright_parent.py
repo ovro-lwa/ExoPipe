@@ -462,6 +462,11 @@ def parents_union(ctx, u, sdir_harvest):
     for p in B.PARENT_UNION_SOURCES:      # lock: the in-place script's literal list
         if repr(p) not in src and f"'{p}'" not in src:
             raise Refusal(f'lock: {script} no longer lists the parent source {p} (calibrate_bright_parent.PARENT_UNION_SOURCES)')
+    from exopipe.phase3.core import manifest as MF
+    try:                                  # the parent-union digest gate on the pinned union among the sources
+        MF.gate_pinned(B.PARENT_UNION_SOURCES, cfg=ctx.C)
+    except MF.ManifestRefusal as e:
+        raise Refusal(f'parent union digest gate (calibrate_bright_parent.PARENT_UNION_SOURCES): {e}')
     root = fitsio.scratch_root(ctx.args.work)
     out = os.path.join(root, f'calibrate_parents_union_{ctx.version}')
     if os.path.exists(out):

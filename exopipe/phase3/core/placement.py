@@ -78,6 +78,13 @@ def inherited_acl(default_acl, mode=CREATE_MODE):
     return acl, acl_mode(acl)
 
 
+def directory_mode(dmode):
+    """The permission bits of a new product in a directory without a default ACL: owner read and write; group read, and group
+    write only when the directory grants it; other read only when the directory grants it. The source's mode is never kept
+    (a copy2 or a scratch umask would otherwise carry group write or its absence into the archive)."""
+    return 0o640 | (dmode & 0o020) | (dmode & 0o004)
+
+
 def target_attrs(dst, like=None):
     """{'gid', 'acl' (bytes or None), 'mode' (permission bits, or None = leave as written), 'source'} the file placed at
     ``dst`` must carry (module docstring)."""
@@ -90,8 +97,8 @@ def target_attrs(dst, like=None):
     st = os.stat(d)
     gid = st.st_gid if st.st_mode & stat.S_ISGID else os.getegid()
     dacl = get_acl(d, ACL_DEFAULT)
-    if dacl is None:
-        return {'gid': gid, 'acl': None, 'mode': None, 'source': 'directory'}
+    if dacl is None:                    # no default ACL: the mode from the directory's rules, never the source's
+        return {'gid': gid, 'acl': None, 'mode': directory_mode(st.st_mode), 'source': 'directory'}
     acl, mode = inherited_acl(dacl)
     return {'gid': gid, 'acl': acl, 'mode': mode, 'source': 'directory'}
 
@@ -104,8 +111,10 @@ def _attrs(path):
 def apply(src, want):
     """Give ``src`` the group, ACL and permission bits of ``want`` (target_attrs); PlacementRefusal when it cannot."""
     gid, acl, mode = _attrs(src)
+    if want['source'] == 'directory' and want['acl'] is None and mode & 0o100:
+        want = dict(want, mode=want['mode'] | ((want['mode'] & 0o444) >> 2))   # an executable stays executable (r -> rx)
     try:
-        if gid != want['gid']:
+        if gid != want['gid']:                  # equal (a temporary file made in a set-group-ID directory): no chown
             os.chown(src, -1, want['gid'])
         if want['acl'] is not None:
             if acl != want['acl']:
@@ -136,12 +145,16 @@ def replace(src, dst, like=None, drop=False):
     from exopipe.phase3.core import guard
     if guard.active():
         guard.check(src, 'placement (source: group and ACL)')        # chown / setxattr reach the file itself
-        guard.check(dst, 'placement (destination)', entry=True)
     try:
+        if guard.active():
+            guard.check(dst, 'placement (destination)', entry=True)
         want = apply(src, target_attrs(dst, like))
-    except PlacementRefusal:
-        if drop:
-            os.remove(src)
+        os.replace(src, dst)
+    except BaseException:
+        if drop and os.path.lexists(src):       # any failure before the rename, wherever dst is: the temporary file goes
+            try:
+                os.remove(src)
+            except OSError:
+                pass                            # the original failure is the one raised
         raise
-    os.replace(src, dst)
     return want

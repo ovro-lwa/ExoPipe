@@ -44,9 +44,10 @@ def test_config_one_value():
     assert CFG.hybrid_recon.CATALOGS is None and CFG.mosaic_content.PARENTS is None
     assert MF.parent_union(CFG.hybrid_recon.CATALOGS, CFG) == MF.parent_union(CFG.mosaic_content.PARENTS, CFG) == P.PARENT_UNION
     assert CFG.catalog.DEEP_PARENT_DIR_DEFAULT == P.PARENT_UNION
-    # kept on the 10-14 union: the production-script locks and the striation step (open for Gregg)
+    # the production-script locks name what production's p3s5_parent_union.py CANDS names (the 10-14 union today); they move
+    # with that script (Gregg 2026-11-24): the lock refuses the step once the script names another source
     assert CFG.catalog.DEEP_PARENT_CANDIDATES[-1] == CFG.calibrate_bright_parent.PARENT_UNION_SOURCES[-1] == P.PARENT_UNION_20261014
-    assert CFG.masters_striation.PARENTS == P.PARENT_UNION_20261014
+    assert CFG.masters_striation.PARENTS is None       # the 11-18 union (Gregg 2026-11-24)
     for key in ('paths.PARENT_UNION', 'paths.PARENT_UNION_20261014', 'paths.PARENT_UNION_MANIFEST_MD5'):
         _raises((ConfigRefusal, KeyError, ValueError), CFG.set, key, "'x'", source='test')
     assert MF.parent_union('/elsewhere', CFG) == '/elsewhere'                     # a step's pin wins
@@ -93,6 +94,26 @@ def test_gate():
         shutil.rmtree(TMP, ignore_errors=True)
 
 
+def test_gate_cache():
+    """gate_union: once per process per directory (cached on the manifest md5); a changed file is hashed again and refused;
+    gate_pinned gates only pinned unions."""
+    d = _union(os.path.join(TMP, 'uc'))
+    try:
+        n, mmd5 = MF.write_manifest(d, os.path.join(d, MF.MANIFEST))
+        pins = {'uc': mmd5}
+        assert MF.gate_union(d, None, pins)['hashed'] == 6
+        r = MF.gate_union(d, None, pins)
+        assert r['hashed'] == 0 and r['checked'] == 6, r                       # cached: nothing hashed again
+        assert MF.gate_union(d, ['master_R075_01h_Blue.gaul.csv'], pins)['hashed'] == 0
+        f = os.path.join(d, 'master_R075_01h_Blue.gaul.csv')
+        open(f, 'a').write('0,0,0,0,0,0,0,0,0,0,9\n')                          # changed after its check
+        assert _raises(MF.ManifestRefusal, MF.gate_union, d, None, pins).startswith('M4')
+        assert _raises(MF.ManifestRefusal, MF.gate_union, d, None, {'uc': '0' * 32}).startswith('M2')
+        assert MF.gate_pinned([os.path.join(TMP, 'not_a_union')], cfg=CFG) == {os.path.join(TMP, 'not_a_union'): None}
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def test_hybrid_compact_ratio_gate():
     """recon.compact_ratio reads one catalog; the gate refuses it (ReconRefusal) before any measurement."""
     from exopipe.phase3.lib.hybrid import recon as REC
@@ -131,7 +152,7 @@ def test_real_unions():
         assert len(MF.read_manifest(m)) == 912, name
 
 
-TESTS = [test_config_one_value, test_gate, test_hybrid_compact_ratio_gate, test_real_unions]
+TESTS = [test_config_one_value, test_gate, test_gate_cache, test_hybrid_compact_ratio_gate, test_real_unions]
 
 
 def main():

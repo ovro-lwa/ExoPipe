@@ -1188,14 +1188,14 @@ def striation_paths(args, out, cell):
 
 def _striation_parents(u, lst, sc):
     """The parents catalog the striation measures read: masters_striation.PARENTS (None = paths.PARENT_UNION), after the digest
-    gate (core/manifest.verify_union on that one catalog; FINDING-20261118-PARENT-UNION-OTHER-STEPS-AND-NO-MANIFEST). Refuses."""
+    gate (core/manifest.gate_union on that one catalog; FINDING-20261118-PARENT-UNION-OTHER-STEPS-AND-NO-MANIFEST). Refuses."""
     from exopipe.phase3.core import manifest as MF
     from exopipe.phase3.lib.masters import striation as SR
     c = _cfg()
     pdir = MF.parent_union(c.masters_striation.PARENTS, c)
     pcsv = SR.parents_csv(pdir, lst, sc)
     try:
-        gate = MF.verify_union(pdir, MF.union_pins(c), names=[os.path.basename(pcsv)])
+        gate = MF.gate_union(pdir, [os.path.basename(pcsv)], cfg=c)
     except MF.ManifestRefusal as e:
         u.refuse(f'parent union digest gate: {e}')
     u.meta['parents'] = {k: gate[k] for k in ('dir', 'union', 'manifest_md5')}
@@ -1638,7 +1638,7 @@ def _plan_simple(stage):
                     gates.append(f'{v}: parents catalog {SR.parents_csv(pdir, lst, sc)} missing')
                 else:
                     try:
-                        MF.verify_union(pdir, MF.union_pins(s), names=[os.path.basename(SR.parents_csv(pdir, lst, sc))])
+                        MF.gate_union(pdir, [os.path.basename(SR.parents_csv(pdir, lst, sc))], cfg=s)
                     except MF.ManifestRefusal as e:
                         gates.append(f'{v}: parent union digest gate: {e}')
                 try:

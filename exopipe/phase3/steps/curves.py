@@ -584,6 +584,7 @@ def _run_unit(u, args, run, pl, stokes, stages, ex, E, stage_root):
     fb_tot = {'frames_absent_from_admission': 0, 'scale_from_all_frames': 0, 'zero_vis_frames_kept': 0,
               'admission_table_missing': 0}
     published_i = {sb: p for sb, p in scale_only.items() if sb in run_sbs}   # --only-missing: the published I is kept
+    n_scale_fail = 0                                            # --only-missing: scale-only I extractions not done
     for sb in run_sbs:
         res = results.get(sb, {})
         for st in run_st[sb]:                                   # the pairs refused before extraction are recorded above
@@ -594,8 +595,13 @@ def _run_unit(u, args, run, pl, stokes, stages, ex, E, stage_root):
             ent['log_tail'] = r.get('tail', [])
             if (sb, st) not in dst:                     # --only-missing: the I extracted for the new V's scale only
                 pairs[key]['scale_extraction'] = ent    # (not published; the published I stays)
-                if r['status'] != 'done':
-                    u.note(f"{key}: the Stokes I extraction for the V scale ended {r['status']}: {r.get('reason')}")
+                if r['status'] != 'done':                # the new V's scale has no I: V is refused (G10 below), counted
+                    published_i.pop(sb, None)
+                    n_scale_fail += 1
+                    if r['status'] != 'refused':
+                        n_error += 1
+                    u.note(f"{key}: the Stokes I extraction for the V scale ended {r['status']}: {r.get('reason')} "
+                           f"- the {sb} V pair is refused")
                 continue
             pairs[key] = ent
             d = dst[(sb, st)]
@@ -691,6 +697,10 @@ def _run_unit(u, args, run, pl, stokes, stages, ex, E, stage_root):
         u.check('curves.complete', not unacc, value=f'{n_pub} published + {n_ref} refused of {len(u.planned)} planned',
                 detail=('every planned (subband, Stokes) pair published and tested, or refused by a named gate'
                         if not unacc else f'{len(unacc)} planned pairs unaccounted: ' + ', '.join(unacc[:4])))
+    if scale_only:
+        u.check('curves.scale_extraction', n_scale_fail == 0, value=n_scale_fail,
+                detail=('every scale-only Stokes I extraction (--only-missing) done' if not n_scale_fail else
+                        f'{n_scale_fail} scale-only Stokes I extraction(s) not done: their V pairs are refused (G10)'))
     bad = _excluded_products(out, cell, ex)
     u.check('curves.no_excluded_products', not bad, value=len(bad),
             detail=('no table of an excluded (LST, subband, date) under ' + os.path.join(out, cell)) if not bad else

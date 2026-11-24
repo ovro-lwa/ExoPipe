@@ -1292,6 +1292,28 @@ def test_only_missing():
     assert tab[('41MHz', 'I')] in rec['inputs'], 'the published I the V is tested against is not an input'
     fsv = [t for t in rec['tests'] if t['name'] == 'light_curve.flux_scale']
     assert len(fsv) == 1 and fsv[0]['passed'], fsv
+    # the scale-only I extraction fails: the new V is refused (G10), the failure counted (curves.scale_extraction), the I kept
+    from exopipe.phase3.lib.curves import workers as W
+    shutil.move(tab[('41MHz', 'V')], os.path.join(hold, 'v2b.fits'))
+    real = W.run_all
+
+    def failing_i(*a, **kw):
+        res = real(*a, **kw)
+        res['41MHz']['I'] = {'status': 'error', 'reason': 'test: scale-only I failed'}
+        return res
+    W.run_all = failing_i
+    try:
+        with _step_env(R):
+            rc, out, err = _cli(base + ['--only-missing'])
+    finally:
+        W.run_all = real
+    rec = json.load(open(recp))
+    ri = [(os.path.basename(r['path']), r['gate']) for r in rec['refused_items']]
+    assert ri == [(os.path.basename(tab[('41MHz', 'V')]), 'G10')], (ri, rec['reason'])
+    sx = [t for t in rec['tests'] if t['name'] == 'curves.scale_extraction']
+    assert len(sx) == 1 and not sx[0]['passed'] and sx[0]['value'] == 1, sx
+    assert rc != 0 and not os.path.exists(tab[('41MHz', 'V')]) and open(tab[('41MHz', 'I')], 'rb').read() == i41
+    shutil.move(os.path.join(hold, 'v2b.fits'), tab[('41MHz', 'V')])
     # the published I carries another scale: the new V is refused before publishing (content test), the I is kept
     shutil.move(tab[('41MHz', 'V')], os.path.join(hold, 'v3.fits'))
     with fits.open(tab[('41MHz', 'I')]) as h:

@@ -1585,10 +1585,25 @@ def test_conformance_pages_ledger_register():
     wcsv(f'{W}/qa_sources/Run_SNAPCOMB_20261116/deep_omission.csv', ['lst', 'night', 'tier', 'stokes', 'verdict'], [])
     rc, txt = step(['status', 'pages', '--stages', 'data-processing', '--out', out, '--cores', 'none',
                     '--set', f'status_pages.DATA_PAGE_SNAP_VIEW={W}/qa_sources/Run_SNAPCOMB_20261116'])
-    check('S-G19: another snapshot view configured while the builder\'s tier title (a literal) names Run_SNAPCOMB_20261107: '
-          'refused, not installed (the hub keeps its page)',
-          rc == 2 and 'S-G19' in txt and 'Run_SNAPCOMB_20261107' in txt
-          and sha(os.path.join(out, 'review_hub', 'data_processing.html')) == before, txt[-400:])
+    page_now = open(os.path.join(out, 'review_hub', 'data_processing.html')).read()
+    check('another snapshot view configured: the builder\'s tier title literal names it (production main() with the view name '
+          'replaced), S-G19 passes and the page is installed',
+          rc == 0 and 'the served view (Run_SNAPCOMB_20261116)' in page_now and 'Run_SNAPCOMB_20261107' not in page_now,
+          txt[-400:])
+    from exopipe.phase3.lib.status import steps_hub as SH
+    src_ = dict(snap_view=f'{W}/qa_sources/Run_SNAPCOMB_20261116', tenmin_view=f'{W}/qa_sources/Run_SLSTB')
+    check('S-G19: the archive family is the generation name only (a quarantine Run_* is not a generation)',
+          SH.page_run_mismatches('Coadd/Run_TESTARCH/x Run_20261031_054115 Run_SNAPCOMB_20261116 Run_SLSTB', src_,
+                                 'Run_TESTARCH') == []
+          and SH.page_run_mismatches('Coadd/Run_20250101_000000/x', src_, 'Run_TESTARCH') != [])
+    json.dump({'batches': ['B13', 'B23']}, open(f'{W}/qa_sources/Run_SNAPCOMB_20261116/combined_view_summary.json', 'w'))
+    pat = f'{W}/qa_sources/snapshot_rechain_Run_SNAP{{batch}}_*.cells'
+    f_, bad_ = SH.snap_cell_lists(dict(src_, cell_lists=pat))
+    check('the view\'s member batches give its cell lists (one each)', len(f_) == 2 and not bad_, (f_, bad_))
+    json.dump({'batches': ['B13', 'B99']}, open(f'{W}/qa_sources/Run_SNAPCOMB_20261116/combined_view_summary.json', 'w'))
+    f_, bad_ = SH.snap_cell_lists(dict(src_, cell_lists=pat))
+    check('S-G18: a member batch without exactly one cell list is a missing source', bad_ and 'B99' in bad_[0], (f_, bad_))
+    os.remove(f'{W}/qa_sources/Run_SNAPCOMB_20261116/combined_view_summary.json')
     neg('qa_coverage_count', 'qa_coverage', os.path.join(out, 'review_hub', 'coverage.json'),
         lambda p: json.dump(dict(cov, nights=dict(list(cov['nights'].items())[1:])), open(p, 'w')),
         siblings=[os.path.join(out, 'review_hub', 'data_processing.html')])

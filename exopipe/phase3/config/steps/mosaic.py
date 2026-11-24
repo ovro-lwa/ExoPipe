@@ -381,7 +381,7 @@ class mosaic_content(_Section):
     PARENTS = None
     NULLABLE_KEYS = ('PARENTS',)              # None = paths.PARENT_UNION
     #   None = paths.PARENT_UNION, the current parent-catalog union (one config value, FINDING-20261118-PARENT-UNION-OTHER-STEPS-AND-
-    #   NO-MANIFEST); a path pins another union. The catalogs read pass the digest gate core/manifest.verify_union.
+    #   NO-MANIFEST); a path pins another union. The catalogs read pass the digest gate core/manifest.gate_union.
     #   MT 201 (--parents default): master_R075_<LST>_<scope>.gaul.csv, positions and peaks of the brightest sources only.
     #   CHANGE FROM PRODUCTION (2026-11-18, spec section 7 B15), with hybrid_recon.CATALOGS: one rebuilt chain is tested against one
     #   parent union, the one rebuilt on the current Masters. Production's MT reads deep_parent_catalogs_union_20261014T0203, stale on

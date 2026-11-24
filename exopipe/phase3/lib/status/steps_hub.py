@@ -104,7 +104,12 @@ def run_nights(out, nights, unit, log, allowed):
 # build_qa_release1.py:106, the cell-list glob written inside snap_cov(); replaced by status_pages.DATA_PAGE_SNAP_CELL_LISTS
 SNAP_COV_LITERAL = "f'{OPS}/snapshot_rechain_Run_SNAPB*3_20261104.cells'"
 # S-G19: run-name families the page prints -> the configured name each must equal (the page's text, its tier titles included)
-PAGE_RUN_TOKENS = (('snap', r'Run_SNAPCOMB_[A-Za-z0-9_]+'), ('tenmin', r'Run_SLST[A-Za-z0-9_]*'), ('archive', r'Run_2\d{7}_\d{6}'))
+# build_qa_release1.py:243, the snapshot tier title written inside main(); its view name replaced by DATA_PAGE_SNAP_VIEW's
+SNAP_TITLE_LITERAL = '10-second and 1-minute: the served view (Run_SNAPCOMB_20261107)'
+# The archive family is the Phase 3 archive generation's run names only (paths.ARCHIVE_RUN, Run_YYYYMMDD_000000: generation
+# runs start at midnight; the page also links other Run_* trees, e.g. quarantine runs, which this pattern does not match)
+PAGE_RUN_TOKENS = (('snap', r'Run_SNAPCOMB_[A-Za-z0-9_]+'), ('tenmin', r'Run_SLST[A-Za-z0-9_]*'),
+                   ('archive', r'(?<![A-Za-z0-9_])Run_20\d{6}_000000(?![A-Za-z0-9_])'))
 
 
 def data_page_sources(C=None):
@@ -113,7 +118,30 @@ def data_page_sources(C=None):
     P = C.status_pages
     kw = dict(snapreview=C.paths.SNAPSHOT_REVIEW_ROOT, transients=C.paths.TRANSIENTS_ROOT)
     return dict(snap_view=K.expand(P.DATA_PAGE_SNAP_VIEW, **kw), tenmin_view=K.expand(P.DATA_PAGE_TENMIN_VIEW, **kw),
-                cell_lists=K.expand(P.DATA_PAGE_SNAP_CELL_LISTS, **kw), dec_pending=K.expand(P.DATA_PAGE_DEC_PENDING, **kw))
+                cell_lists=K.expand(P.DATA_PAGE_SNAP_CELL_LISTS, batch='{batch}', **kw),
+                dec_pending=K.expand(P.DATA_PAGE_DEC_PENDING, **kw))
+
+
+def snap_cell_lists(src):
+    """The cell lists of the snapshot view's member batches: the view's combined_view_summary.json 'batches', each
+    expanded into src['cell_lists'] ({batch} = the member) with exactly one match. Returns (files, problems)."""
+    import glob
+    import json
+    summ = os.path.join(src['snap_view'], 'combined_view_summary.json')
+    if '{batch}' not in src['cell_lists']:
+        return sorted(glob.glob(src['cell_lists'])), []
+    try:
+        batches = json.load(open(summ))['batches']
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        return [], [f'{summ}: no member batch list ({type(e).__name__})']
+    files, bad = [], []
+    for b in batches:
+        m = sorted(glob.glob(src['cell_lists'].format(batch=b)))
+        if len(m) == 1:
+            files.append(m[0])
+        else:
+            bad.append(f'member batch {b}: {len(m)} cell lists match {src["cell_lists"]} (need exactly one)')
+    return files, bad + ([] if batches else [f'{summ}: an empty member batch list'])
 
 
 def data_page_missing(src):
@@ -122,15 +150,17 @@ def data_page_missing(src):
     need = [os.path.join(src['snap_view'], 'deep_omission.csv'), os.path.join(src['tenmin_view'], 'deep_omission.csv'),
             os.path.join(src['tenmin_view'], 'v_deep_images.csv'), src['dec_pending']]
     missing = [p for p in need if not os.path.isfile(p)]
-    lists = sorted(glob.glob(src['cell_lists']))
-    if not lists:
+    lists, bad = snap_cell_lists(src)
+    missing += bad
+    if not lists and not bad:
         missing.append(f'{src["cell_lists"]} (no cell list matches)')
     return missing, [p for p in need if p not in missing] + lists
 
 
-def snap_cov_reader(builder_file, pattern):
-    """The builder's snap_cov() with its cell-list glob literal (SNAP_COV_LITERAL) replaced by ``pattern``; the rest of the
-    body is production's own source, compiled from the builder file. Refusal when the literal is not there exactly once."""
+def snap_cov_reader(builder_file, files):
+    """The builder's snap_cov() with its cell-list glob literal (SNAP_COV_LITERAL) replaced by the list ``files``
+    (snap_cell_lists); the rest of the body is production's own source, compiled from the builder file. Refusal when the
+    literal is not there exactly once."""
     import ast
     import glob
     import re
@@ -141,9 +171,36 @@ def snap_cov_reader(builder_file, pattern):
     if seg.count(SNAP_COV_LITERAL) != 1:
         raise Refusal(f'S-G18: {builder_file} snap_cov() no longer reads {SNAP_COV_LITERAL} (exactly once): the configured '
                       f'status_pages.DATA_PAGE_SNAP_CELL_LISTS cannot replace it')
-    ns = dict(glob=glob, re=re, DATA_PAGE_SNAP_CELL_LISTS=pattern)
+    import types
+    ns = dict(glob=types.SimpleNamespace(glob=lambda pat: list(pat)), re=re, DATA_PAGE_SNAP_CELL_LISTS=tuple(files))
     exec(compile(seg.replace(SNAP_COV_LITERAL, 'DATA_PAGE_SNAP_CELL_LISTS'), builder_file, 'exec'), ns)   # noqa: S102
     return ns['snap_cov']
+
+
+def builder_main(builder_name, builder_file, view):
+    """A stand-in for the builder's main() that, called on the imported module, compiles production's main() from the
+    builder file with its snapshot tier title literal (SNAP_TITLE_LITERAL) naming ``view`` instead, into the module's own
+    namespace, and calls it. Refusal when the literal is not there exactly once or ``view`` is not a Run_SNAPCOMB_* name."""
+    import ast
+    import re
+    import sys
+    from exopipe.phase3.core.record import Refusal
+    if not re.fullmatch(dict(PAGE_RUN_TOKENS)['snap'], view):
+        raise Refusal(f'S-G18: status_pages.DATA_PAGE_SNAP_VIEW names {view!r}, not a Run_SNAPCOMB_* view')
+    text = open(builder_file).read()
+    fn = [n for n in ast.parse(text).body if isinstance(n, ast.FunctionDef) and n.name == 'main']
+    seg = ast.get_source_segment(text, fn[0]) if len(fn) == 1 else ''
+    if seg.count(SNAP_TITLE_LITERAL) != 1:
+        raise Refusal(f'S-G18: {builder_file} main() no longer titles the snapshot tier {SNAP_TITLE_LITERAL} (exactly once): '
+                      f'the configured status_pages.DATA_PAGE_SNAP_VIEW cannot replace it')
+    code = compile('\n' * (fn[0].lineno - 1) + seg.replace(SNAP_TITLE_LITERAL, SNAP_TITLE_LITERAL.replace(
+        re.search(dict(PAGE_RUN_TOKENS)['snap'], SNAP_TITLE_LITERAL).group(0), view)), builder_file, 'exec')
+
+    def main(*args):
+        ns = sys.modules[builder_name].__dict__
+        exec(code, ns)                    # noqa: S102 - production's main(), the title literal replaced, in its module
+        return ns['main'](*args)
+    return main
 
 
 def page_run_mismatches(page_text, src, archive_run):
@@ -196,10 +253,13 @@ def run_data_page(out, unit, log, allowed):
             setattr(B, k, v)
         with IP.redirect({}, allowed, env=env):           # the builder's file on the legacy path (found, not imported)
             spec = importlib.util.find_spec(P.DATA_PAGE_BUILDER)
+        if spec is None or not spec.origin or not os.path.isfile(spec.origin):
+            raise Refusal(f'S-G18: the builder {P.DATA_PAGE_BUILDER} is not found on the legacy path (find_spec: {spec})')
         attrs = dict(OUT=site, HUB=hub, A=C.paths.PHASE3_ARCHIVE_ROOT, GEN=C.paths.ARCHIVE_RUN, OPS=C.paths.OPS_ROOT,
                      P1=C.paths.PHASE1_ROOT, P2=C.paths.PHASE2_ROOT, SNAPV=src['snap_view'], TENV=src['tenmin_view'],
                      TENMIN_VIEW=src['tenmin_view'], DEC=src['dec_pending'],
-                     snap_cov=snap_cov_reader(spec.origin, src['cell_lists']))
+                     snap_cov=snap_cov_reader(spec.origin, snap_cell_lists(src)[0]),
+                     main=builder_main(P.DATA_PAGE_BUILDER, spec.origin, os.path.basename(src['snap_view'].rstrip('/'))))
         rc, text, mod = IP.call_attr(P.DATA_PAGE_BUILDER, attrs, 'main', allowed_roots=allowed, log=log,
                                      unit=unit, env=env, argv=[P.DATA_PAGE_BUILDER + '.py', os.path.dirname(site)])
     finally:

@@ -244,7 +244,63 @@ def test_wired_helpers():
     assert not [n for n in os.listdir(d) if n.startswith('.r.fits')] and not os.path.exists(os.path.join(d, 'r.fits'))
 
 
-TESTS = [test_inherited_acl, test_rename_from_elsewhere, test_replacement_keeps_existing, test_refusals, test_wired_helpers]
+def test_directory_rule_drop():
+    """Without a default ACL the mode comes from the directory's rules (owner rw; group r, group w only when the directory
+    grants it; other r only when it grants it; an executable stays executable), never the source's mode or ACL mask; drop=True
+    removes the temporary file on ANY failure, wherever dst is."""
+    _fresh()
+    e = _plain_dir('src')
+    for dmode, want in ((0o755, 0o644), (0o775, 0o664), (0o750, 0o640), (0o700, 0o640)):
+        d = _plain_dir('d%o' % dmode)
+        os.chmod(d, dmode)
+        s = _write(os.path.join(e, 's%o.fits' % dmode))
+        os.chmod(s, 0o666)
+        if ACL_OK:                         # a source ACL (its mask too) is never kept
+            os.setxattr(s, PL.ACL_ACCESS, _acl([(0x01, 6, None), (0x02, 6, os.getuid()), (0x04, 6, None),
+                                                 (0x10, 6, None), (0x20, 6, None)]))
+        PL.replace(s, os.path.join(d, 'p.fits'))
+        g, acl, mode = _attrs(os.path.join(d, 'p.fits'))
+        assert acl is None and mode == want, (oct(dmode), acl, oct(mode))
+    x = _write(os.path.join(e, 'run.sh'))
+    os.chmod(x, 0o700)
+    PL.replace(x, os.path.join(TMP, 'd755', 'run.sh'))
+    assert _attrs(os.path.join(TMP, 'd755', 'run.sh'))[2] == 0o755
+    # drop=True: the temporary file goes on any exception (in apply, or before it)
+    real = PL.apply
+
+    def boom(*a, **k):
+        raise ValueError('test')
+    PL.apply = boom
+    try:
+        s = _write(os.path.join(e, 't1.fits'))
+        _raises(ValueError, PL.replace, s, os.path.join(TMP, 'd755', 'q.fits'), drop=True)
+        assert not os.path.exists(s) and not os.path.exists(os.path.join(TMP, 'd755', 'q.fits'))
+    finally:
+        PL.apply = real
+    s = _write(os.path.join(e, 't2.fits'))
+    _raises(OSError, PL.replace, s, os.path.join(TMP, 'no_such_dir', 'q.fits'), drop=True)
+    assert not os.path.exists(s)
+    s = _write(os.path.join(e, 't3.fits'))
+    _raises(OSError, PL.replace, s, os.path.join(TMP, 'no_such_dir', 'q.fits'))
+    assert os.path.exists(s)                                   # drop=False: kept
+    # a destination the parity guard refuses: the temporary file goes too
+    from exopipe.phase3.core import guard
+    real_active, real_check = guard.active, guard.check
+
+    def check(path, what, entry=False):
+        if 'destination' in what:
+            raise PL.PlacementRefusal('test: destination refused')
+    guard.active, guard.check = (lambda: True), check
+    try:
+        s = _write(os.path.join(e, 't4.fits'))
+        _raises(PL.PlacementRefusal, PL.replace, s, os.path.join(TMP, 'd755', 'g.fits'), drop=True)
+        assert not os.path.exists(s) and not os.path.exists(os.path.join(TMP, 'd755', 'g.fits'))
+    finally:
+        guard.active, guard.check = real_active, real_check
+
+
+TESTS = [test_inherited_acl, test_rename_from_elsewhere, test_replacement_keeps_existing, test_refusals, test_wired_helpers,
+         test_directory_rule_drop]
 
 
 def main():

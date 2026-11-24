@@ -37,7 +37,7 @@ def _cfg():
 def parent_catalogs(u, scope, label, cfg):
     """The parent-catalog union TEST 1 reads and the scope's catalogs in it (sorted names): mosaic_content.PARENTS, None =
     paths.PARENT_UNION (the current union). REFUSES (u.refuse) when the scope has no catalog there, or when the digest gate
-    refuses (core/manifest.verify_union over exactly those catalogs: the union's MANIFEST.md5 is a pinned one, the directory holds
+    refuses (core/manifest.gate_union over exactly those catalogs: the union's MANIFEST.md5 is a pinned one, the directory holds
     exactly its files and each catalog read matches its line; FINDING-20261118-PARENT-UNION-OTHER-STEPS-AND-NO-MANIFEST)."""
     from exopipe.phase3.core import manifest as MF
     parents = MF.parent_union(cfg.mosaic_content.PARENTS, cfg)
@@ -46,7 +46,7 @@ def parent_catalogs(u, scope, label, cfg):
     if not cats:
         u.refuse(f'{scope} {label}: no parent catalog {pat} in the parent union {parents} (mosaic_content.PARENTS) - REFUSED')
     try:
-        gate = MF.verify_union(parents, MF.union_pins(cfg), names=cats)
+        gate = MF.gate_union(parents, cats, cfg=cfg)
     except MF.ManifestRefusal as e:
         u.refuse(f'{scope} {label}: parent union digest gate: {e} - REFUSED')
     u.meta['parents'] = {'dir': parents, 'n_catalogs': len(cats), 'union': gate['union'], 'manifest_md5': gate['manifest_md5']}

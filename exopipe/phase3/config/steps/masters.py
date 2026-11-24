@@ -352,11 +352,10 @@ class masters_striation(_Section):
     WIN = 8                                   # pass-2 RA running-median window [beams] (striation_restore.py correct(): 8)
     PASS1_WIN = 4                             # pass-1 window [beams] (striation_restore.py pass1(): 4)
     REF_CEILING = {'Taper_R075': 1.126, 'Taper_R0': 1.224}   # striation_restore.py:47: census 2026-10-22, max over the 23-55 MHz masters
-    PARENTS = _paths.PARENT_UNION_20261014    # master_R075_<LST>_<band>.gaul.csv (production
-    #   default /fast/gh/main/phase3/p3s5_parents_union_20261014T0203 is the node-local copy of the same catalogs). The 10-14 union,
-    #   not paths.PARENT_UNION (the current one): which union the striation measures read is open for Gregg (stale on 47 of 456
-    #   cells; FINDING-20261118-PARENT-UNION-OTHER-STEPS-AND-NO-MANIFEST). None = paths.PARENT_UNION. Every read passes the
-    #   digest gate core/manifest.verify_union.
+    PARENTS = None                            # master_R075_<LST>_<band>.gaul.csv in the union: None = paths.PARENT_UNION,
+    #   the 11-18 union on the current Masters (Gregg 2026-11-24; production's default /fast/gh/main/phase3/
+    #   p3s5_parents_union_20261014T0203 is a node-local copy of the 10-14 union, stale on 47 of 456 cells:
+    #   FINDING-20261118-PARENT-UNION-OTHER-STEPS-AND-NO-MANIFEST). Every read passes the digest gate core/manifest.gate_union.
     NULLABLE_KEYS = ('PARENTS',)
     TAG = 'ssub-rst8'                         # striation_restore.py:48: the grammar token after the master's own tokens
     ARCHIVE_PBCORR_TOL = 1e-3                 # working master / PB vs the archived PB-corrected master, x its rms (striation_restore.py:211)
