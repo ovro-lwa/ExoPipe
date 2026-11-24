@@ -28,7 +28,8 @@ INSTALL (each step verified before the next):
     quarantine WQ/<cell>/<rel> and md5-verified, then removed; each staged file is renamed to its canonical name (same
     filesystem); manifest rows in RECORD;
   b stamp + exclusion conformance: coadd_full_pipeline._stamp_all_masters and _refuse_excluded_constituents (the co-add's
-    own completion steps);
+    own completion steps); v2, with RELEASE1_MDW_TABLE: the Release 1 cards and provenance_nights.csv, first on a trial copy
+    of the staging before the working tree moves (_release1_trial: a failure leaves the cell untouched), then on the tree;
   c archive: every top-level file of the cell's masters directory (Coadd/<run>/<lst>/<scope>/; its 10min/ subdirectory
     belongs to the 10-minute tier and is never touched) and every per-night deep file that is not a search frame ('_msub')
     is moved to QROOT (same filesystem: rename, inode and size verified, md5 manifest), then
@@ -74,6 +75,9 @@ FREEZE_MARKER = '/lustre/gh/main/exopipe_ops/mdewarp_rbf_20261004/SNAPSHOT_FREEZ
 # the cell's co-adds and its provenance_nights.csv (lib/masters/release1_cards.write_cell) before c publishes them; None = this
 # text's production behaviour (no cards). exopipe3 install sets it from install.RELEASE1_CARDS / install.MDWSTAT_TABLE for the call.
 RELEASE1_MDW_TABLE = None
+# b's Release 1 writes are first made on a trial copy of the staged generation BEFORE THE FIRST RENAME (_release1_trial), so a
+# card or provenance failure refuses with the working tree untouched; <cell>/<RELEASE1_TRIAL_DIRNAME> is removed afterwards
+RELEASE1_TRIAL_DIRNAME = '.install_release1_trial'
 MASTER_HELD_18MHZ = 'refuse'   # WAVE2 18 MHz exception: 'keep' keeps, in a master built before the enforcement, a night held only for
 #                                its excluded 18 MHz at G-MEM (steps_common.keep_held_18); production's G-MEM is strict (this text);
 #                                exopipe3 install sets install.MASTER_HELD_18MHZ for the call
@@ -360,6 +364,13 @@ def install(cell, gen, kind, rebuild_root=None, root=ROOT, omit_vclean=False):
         C._refuse_excluded_constituents(f'{stg}/coadd_final', lst, scope)
     except Exception:
         shutil.rmtree(stg); raise
+    # b (v2) on a trial copy, before the first move (a failure refuses with the cell untouched)
+    if RELEASE1_MDW_TABLE:
+        try:
+            tlines = _release1_trial(cell, cdir, stg, wfin, rebuild_root or cdir, lst, scope, run)
+        except Exception:
+            shutil.rmtree(stg); raise
+        rec(cell, 'release1-cards-trial', stg, '', '', '', ' | '.join(tlines)[:3000])
     rec(cell, 'gates-passed', gen, '', '', '', f'kind {kind}; {len(new)} new (staged, md5-verified), {len(cur)} current, '
                                                f'{len(orphans)} without a new counterpart; {nderiv} epochs derived, {nchk} '
                                                f'publishable epochs pass the epoch content check; epoch gate FAIL nights {sorted(efail)}')
@@ -388,6 +399,47 @@ def install(cell, gen, kind, rebuild_root=None, root=ROOT, omit_vclean=False):
     return _finish(cell, gen, cdir, stg, staged, tgt, erows, efail, lst, scope, run, smeta)
 
 
+def _release1_trial(cell, cdir, stg, weights_dir, flow_root, lst, scope, run):
+    """b (v2) BEFORE THE FIRST RENAME: the Release 1 cards and provenance_nights.csv are built and validated on a trial copy of
+    the staged generation, so that a failure refuses with the working tree untouched (b writes them again, on the same inputs,
+    after the renames). The staged top-level coadd_final FITS (masters, variants, PB maps) and the weights.csv b will see
+    (``weights_dir``) are copied to <cell>/.install_release1_trial/coadd_final, with the flow record the stamp reads
+    (<flow_root>/flow/.reference_resolved, the one the installed tree will hold); the copies are stamped as b stamps them
+    (coadd._stamp_all_masters), carded (release1_cards.write_cell: validate=True, every card read back) and the provenance
+    table written - it must be. The trial is removed whatever the outcome. Returns the write_cell report lines."""
+    from exopipe.phase3.lib.masters import coadd as C, release1_cards as R1
+    tri = f'{cdir}/{RELEASE1_TRIAL_DIRNAME}'
+    if os.path.exists(tri):
+        shutil.rmtree(tri)                       # an earlier trial's leftover (scratch of this step only)
+    srcs = sorted(glob.glob(f'{stg}/coadd_final/*.fits'))
+    need = (sum(os.path.getsize(p) for p in srcs) + os.path.getsize(f'{weights_dir}/weights.csv')) * 1.05
+    floor = float(os.environ.get('P3_INSTALL_FREE_FLOOR_GB', '0')) * 1e9; free = shutil.disk_usage(cdir).free
+    if free < need + floor:
+        raise RuntimeError(f'{cell}: {need / 1e9:.1f} GB needed for the Release 1 trial copy + a {floor / 1e9:.0f} GB floor, '
+                           f'{free / 1e9:.1f} GB free - REFUSING on the Release 1 trial copy (cell untouched)')
+    try:
+        os.makedirs(f'{tri}/coadd_final')
+        for p in srcs:
+            shutil.copy2(p, f'{tri}/coadd_final/{os.path.basename(p)}')
+        shutil.copy2(f'{weights_dir}/weights.csv', f'{tri}/coadd_final/weights.csv')
+        mk = f'{flow_root}/flow/.reference_resolved'
+        if os.path.exists(mk):
+            os.makedirs(f'{tri}/flow')
+            shutil.copy2(mk, f'{tri}/flow/.reference_resolved')
+        mdir = f'{C._archive_root()}/Coadd/{run}/{lst}/{scope}'
+        try:
+            C._stamp_all_masters(f'{tri}/coadd_final', lst, scope)
+            r1 = R1.write_cell(f'{tri}/coadd_final', lst, scope, mdw_table=RELEASE1_MDW_TABLE, provenance=True, name_dir=mdir)
+        except Exception as e:
+            raise RuntimeError(f'{cell}: b failed on the Release 1 trial copy before any move ({e}) - REFUSING (cell untouched)')
+        if not r1['provenance']:
+            raise RuntimeError(f'{cell}: provenance_nights.csv not written on the Release 1 trial copy ('
+                               f'{" | ".join(r1["lines"])[:300]}) - REFUSING (cell untouched)')
+        return r1['lines']
+    finally:
+        shutil.rmtree(tri, ignore_errors=True)
+
+
 def _finish(cell, gen, cdir, stg, staged, tgt, erows, efail, lst, scope, run, smeta, old=None):
     """Everything after the working-quarantine moves: install step a's renames, the set check, the epoch-gate record, b,
     c, d, e. Shared by install() and resume() (2026-10-05). old (resume state R2) = the archive files this attempt already
@@ -413,7 +465,8 @@ def _finish(cell, gen, cdir, stg, staged, tgt, erows, efail, lst, scope, run, sm
         C._stamp_all_masters(fd, lst, scope)
         C._refuse_excluded_constituents(fd, lst, scope)
         # b (v2): the Release 1 cards and provenance_nights.csv, written before the publish so each archive copy equals its
-        # working source (d's md5 audit); RELEASE1_MDW_TABLE None = production (cards repaired on the archive afterwards)
+        # working source (d's md5 audit); RELEASE1_MDW_TABLE None = production (cards repaired on the archive afterwards). The
+        # same writes passed on a trial copy before the first rename (_release1_trial): a failure here is not expected
         if RELEASE1_MDW_TABLE:
             from exopipe.phase3.lib.masters import release1_cards as R1
             r1 = R1.write_cell(fd, lst, scope, mdw_table=RELEASE1_MDW_TABLE, provenance=True, name_dir=mdir)
@@ -510,6 +563,9 @@ def resume(cell, gen, kind, root=ROOT, omit_vclean=False, execute=False):
             print(f'{cell} DRY RUN - would rename {len(staged)} files into the working tree, then the epoch-gate record, stamp, '
                   f'archive quarantine, publish, audit, screen', flush=True)
             return None
+        if RELEASE1_MDW_TABLE:                   # b (v2) on a trial copy before the first rename, as install()
+            tlines = _release1_trial(cell, cdir, stg, f'{cdir}/coadd_final', cdir, lst, scope, run)
+            rec(cell, 'release1-cards-trial', stg, '', '', '', ' | '.join(tlines)[:3000])
         return _finish(cell, gen, cdir, stg, staged, tgt, erows, efail, lst, scope, run, smeta)
     if steps['installed'] and steps['archive-quarantine'] and not os.path.exists(stg):
         inst = {os.path.relpath(r['dest'], cdir) for r in att if r['step'] == 'installed'}
@@ -555,8 +611,7 @@ def _archive_audit(cell, fd, sd, mdir, arch, run, lst, scope, n):
             nm = None
         if nm:
             by_name[nm if nm.endswith('.fits') else nm + '.fits'] = p
-    for f in ('PB_deep_%s.fits' % scope, 'PB_deep_R075_%s.fits' % scope, 'weights.csv', 'night_image_gate.csv', 'epoch_gate.csv', 'stage2_verdict.csv',
-              'provenance_nights.csv'):    # v2: the Release 1 provenance table (R-GREGG-20261110-HEADER-REPAIR-SIX-DECISIONS decision 4)
+    for f in ('PB_deep_%s.fits' % scope, 'PB_deep_R075_%s.fits' % scope) + C.ARCHIVED_CELL_FILES:   # the publish's own list
         by_name[f] = f'{fd}/{f}'
     bad = [p for p in now if os.path.basename(p) not in by_name or md5(p) != md5(by_name[os.path.basename(p)])]
     if bad:

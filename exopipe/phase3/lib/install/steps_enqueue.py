@@ -235,15 +235,17 @@ def enqueue_cell(u, cell, roots, run_obj, stages, echo, verified_now=False):
                                'production builds them here, install_cell.sh:26, and queues the cell even when that fails)')
     # V: a cell is queued only after its installed tree passed the membership + product verify, the cleaned-V refresh and the
     # Release 1 cards with the sibling card-key gate (install_cell.sh:23-26, :34, :53 stop the chain before the enqueue) - a done
-    # install/verify record of this out root with install.V, install.VCLEAN, install.CARDS and install.CARD-GATE passed
+    # install/verify record of this out root with install.V, install.VCLEAN, install.CARDS and install.CARD-GATE passed (V only
+    # with install.RELEASE1_CARDS False: verify_gates)
     ok, name = _verify_passed(roots, cell)
+    need, first = verify_gates(), ('verify,vclean,cards' if _cfg().install.RELEASE1_CARDS else 'verify')
     if dry and not ok and verified_now:
-        gates.check('V', True, f'verify, vclean and cards run in this invocation before the enqueue (dry run: not run)')
+        gates.check('V', True, f'{first} run in this invocation before the enqueue (dry run: not run)')
     else:
         gates.check('V', ok, (f'record {name} (the newest install/recover/verify record) holds passing '
-                              f'{", ".join(VERIFY_GATES)}' if ok else
+                              f'{", ".join(need)}' if ok else
                               f'the newest install/recover/verify record of {cell} under {roots.records} is not done '
-                              f'with passing {", ".join(VERIFY_GATES)} (run --stages verify,vclean,cards first)'))
+                              f'with passing {", ".join(need)} (run --stages {first} first)'))
     gates.finish()
     out_path = None
     if 'enqueue' in stages:
@@ -297,13 +299,20 @@ def enqueue_cell(u, cell, roots, run_obj, stages, echo, verified_now=False):
 
 
 # the gates a record must hold passing before the cell is queued or its scratch removed: the verify (install_cell.sh:25-26), the
-# cleaned-V refresh (:28-34) and the Release 1 cards with the sibling card-key gate (:35-53)
+# cleaned-V refresh (:28-34) and the Release 1 cards with the sibling card-key gate (:35-53) - with install.RELEASE1_CARDS True
+# (production, ruled); with it False (the parity file of 2026-10-13, before the refresh and the cards) the verify alone
 VERIFY_GATES = ('install.V', 'install.VCLEAN', 'install.CARDS', 'install.CARD-GATE')
+VERIFY_GATES_NO_CARDS = ('install.V',)
+
+
+def verify_gates():
+    """The gates of VERIFY_GATES the current configuration requires (one switch: install.RELEASE1_CARDS)."""
+    return VERIFY_GATES if _cfg().install.RELEASE1_CARDS else VERIFY_GATES_NO_CARDS
 
 
 def _verify_passed(roots, cell):
     """(True, record) when the NEWEST record of this out root that installed, recovered or verified the cell (<cell>,
-    <cell>.recover, <cell>.verify) is done and holds every gate of VERIFY_GATES passing - production runs the verify, the
+    <cell>.recover, <cell>.verify) is done and holds every gate of verify_gates() passing - production runs the verify, the
     cleaned-V refresh and the card gate right before the enqueue every time (install_cell.sh:19-53, also for kind
     'installed'), so a verify older than a later install attempt (refused, failed mid-way) or a recover never vouches for
     the tree as it is now."""
@@ -314,7 +323,7 @@ def _verify_passed(roots, cell):
         return False, None
     name, rec = max(recs, key=lambda x: (x[1].get('finished') or '', x[1].get('started') or '', x[0].endswith('.verify')))
     passed = {t.get('name') for t in rec.get('tests') or [] if t.get('passed')}
-    if rec.get('status') == 'done' and all(g in passed for g in VERIFY_GATES):
+    if rec.get('status') == 'done' and all(g in passed for g in verify_gates()):
         return True, name
     return False, None
 
@@ -341,7 +350,7 @@ def cleanup_cell(u, cell, roots, run_obj, echo, enqueue_too=False):
     ok, name = _verify_passed(roots, cell)
     if not ok:
         raise Refusal(f'V: cleanup of {cell} refused: the newest install/recover/verify record under {roots.records} is '
-                      f'not done with passing {", ".join(VERIFY_GATES)} (install_cell.sh removes the scratch only after the '
+                      f'not done with passing {", ".join(verify_gates())} (install_cell.sh removes the scratch only after the '
                       f'verify, the cleaned-V refresh and the card gate passed)')
     notlocal = [t for t in existing if not SC.local_to_host(t)]
     if notlocal:

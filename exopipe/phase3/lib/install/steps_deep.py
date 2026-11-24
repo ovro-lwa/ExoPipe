@@ -445,7 +445,7 @@ def install_cell(u, plan, gates, echo):
         if plock:
             u.note(f'holding the production install lock {plock} (install_cell.sh:18-20)')
         off = SC.log_offset(roots.record_csv)
-        with SC.pi_context(PI, roots, plan.round) as settings:
+        with SC.pi_context(PI, roots, plan.round, cards=True) as settings:
             u.note(f'lane {lane}; in-place phase3_install.install(cell={cell}, gen={plan.gen}, kind={plan.kind}, '
                    f'rebuild_root={plan.rebuild_root}, root={roots.working}, omit_vclean={plan.omit_vclean}) with '
                    f'{json.dumps(settings, sort_keys=True)}')
@@ -624,58 +624,108 @@ def verify_cell(u, cdir, gates, echo):
 
 
 def install_round(cell, args, roots):
-    """The quarantine round of the cell's install when this invocation did not install it: --round NAME, else the round
-    its install record names (stages vclean on an installed cell; install_cell.sh:13, :32 take P3_INSTALL_ROUND of the
-    install)."""
+    """The round of the cell's install when this invocation did not install it: --round NAME, else the round the NEWEST done
+    record of the cell's install or recover (<cell>, <cell>.recover) names (stages vclean on an installed cell;
+    install_cell.sh:13, :32 take P3_INSTALL_ROUND of the install)."""
     from exopipe.phase3.core import record
     if args.round and args.round != 'auto':
         return args.round
-    rnd = ((record.load_record(roots.out, 'install', cell) or {}).get('meta') or {}).get('round')
-    if not rnd:
-        raise Refusal(f'{cell}: no install record naming the round under {roots.records}: name the round of the cell\'s '
-                      f'install with --round (the cleaned-V refresh quarantines into <round>{_cfg().install.VCLEAN_ROUND_SUFFIX})')
-    return rnd
+    recs = [(n, record.load_record(roots.out, 'install', n)) for n in (cell, f'{cell}.recover')]
+    recs = [(n, r) for n, r in recs if r and r.get('status') == 'done' and ((r.get('meta') or {}).get('round'))]
+    if not recs:
+        raise Refusal(f'{cell}: no done install or recover record naming the round under {roots.records}: name the round of '
+                      f'the cell\'s install with --round (the cleaned-V refresh quarantines into <round>'
+                      f'{_cfg().install.VCLEAN_ROUND_SUFFIX})')
+    _n, rec = max(recs, key=lambda x: (x[1].get('finished') or '', x[1].get('started') or ''))
+    return rec['meta']['round']
+
+
+# the cleaned Stokes V pair: its working names (coadd_final/) and its archive names (vclean_masters._refresh patt)
+VCLEAN_PAIR = ('V_deep_Taper_R0_clean_{scope}.fits', 'V_deep_Taper_R0_clean_pbcorr_{scope}.fits')
+VCLEAN_ARCHIVE_GLOB = '{scope}_V_deep_Taper_Robust+0.0_vclean_*.fits'
+VCLEAN_ROUNDS_MAX = 99
+
+
+def vclean_round(cell, roots, rnd):
+    """The cleaned-V refresh's quarantine round: the first of '<rnd>vclean', '<rnd>vclean2', ... in which this cell has
+    neither a working-quarantine directory (<wq>/<cell>) nor an archive-quarantine directory (<aq>/Coadd/<run>/<lst>/<scope>),
+    so an attempt never collides with an earlier one (production: '<round>vclean' every time, install_cell.sh:32; a second
+    attempt there stops at its first quarantine destination)."""
+    from exopipe.phase3.core import cells
+    lst, scope = cells.parse_cell(cell)
+    sfx = _cfg().install.VCLEAN_ROUND_SUFFIX
+    rel = os.path.relpath(roots.masters_dir(lst, scope), roots.archive)
+    for k in range(1, VCLEAN_ROUNDS_MAX + 1):
+        vr = f'{rnd}{sfx}' + (str(k) if k > 1 else '')
+        if not (os.path.exists(os.path.join(roots.wq(vr), cell)) or os.path.exists(os.path.join(roots.aq(vr), rel))):
+            return vr
+    raise Refusal(f'VCLEAN: {cell}: rounds {rnd}{sfx} .. {rnd}{sfx}{VCLEAN_ROUNDS_MAX} all hold a quarantine of the cell')
 
 
 def vclean_cell(u, cell, roots, run_obj, gates, echo, rnd):
     """Stage vclean: the installed cell's cleaned Stokes V pair refreshed from its installed V master and checked CURRENT
     (install_cell.sh:28-34, exopipe_ops 532ea6b; FIX-20261113-DEEP-REBUILD-CLEANS-V-BEFORE-FLUX-APPLY: the rebuild cleans V before
     the flux apply rescales the cell, so an installed rebuild's pair names the pre-flux V master and is STALE).
-    vclean_masters.refresh_vclean_cell is called twice under the quarantine round '<round>vclean' (a CURRENT pair is left; else
-    the old pair goes to that round's working and archive quarantine, md5-verified, and the new pair is stamped, carded and
-    archived); gate VCLEAN refuses unless the second call reports CURRENT. Its sv2 scratch is removed after the two calls
-    (install_cell.sh:33). Dry run: the source identity of the installed pair is reported, nothing runs."""
+    The quarantine round is vclean_round (unique per attempt). With install.RELEASE1_CARDS the refresh also writes the pair's
+    Release 1 cards, and CURRENT requires them; BEFORE anything is written, the cards stage's own checks (CARDS and CARD-GATE)
+    must pass on every other file of the cell - the refresh never writes when the cards stage would then refuse.
+    vclean_masters.refresh_vclean_cell is called once (a CURRENT pair is left; else the old pair goes to the round's working
+    and archive quarantine, md5-verified, and the new or recarded pair is stamped, carded and archived), then once more with
+    check_only - which never runs sv2 - only when the first call reported OK; gate VCLEAN refuses unless the pair is CURRENT
+    (production calls the refresh twice, install_cell.sh:32-34; a refused first call is not repeated here, so a refused
+    attempt never re-runs the two-hour sv2 job in the same invocation). Its sv2 scratch is removed afterwards
+    (install_cell.sh:33). Dry run: the pair's state and the pre-check are reported, nothing runs."""
     from exopipe.phase3.core import cells
     from exopipe.phase3.lib.masters import vclean_masters as VM
     C = _cfg().install
     lst, scope = cells.parse_cell(cell)
     cf = os.path.join(roots.cdir(cell), 'coadd_final')
     vp = os.path.join(cf, f'V_deep_Taper_R0_{scope}.fits')
-    ap = os.path.join(cf, f'V_deep_Taper_R0_clean_{scope}.fits')
-    vround = f'{rnd}{C.VCLEAN_ROUND_SUFFIX}'
+    ap = os.path.join(cf, VCLEAN_PAIR[0].format(scope=scope))
+    vround = vclean_round(cell, roots, rnd)
     u.meta.update(vclean_round=vround)
+    mdw = SC.release1_mdw_table()                 # None with install.RELEASE1_CARDS False: production's pair, no cards
+    if mdw:
+        cok, cdetail, _ = cards_check(cell, roots, mdw, skip=tuple(n.format(scope=scope) for n in VCLEAN_PAIR))
+        gok, glines = card_gate(cell, roots, mdw, exclude=(VCLEAN_ARCHIVE_GLOB.format(scope=scope),))
+        u.note(f'vclean pre-check (every file but the cleaned V pair): CARDS {cdetail[:1500]}; {glines[-1][:600]}')
+        if not (cok and gok):
+            gates.check('VCLEAN', False, f'nothing written: the cards stage would refuse after the refresh - on the cell\'s '
+                                         f'other files CARDS {cdetail[:900]}; {" | ".join([glines[-1]] + glines[:-1])[:900]}')
+            if run_obj.dry_run:
+                return
     if run_obj.dry_run:
         state = VM.vclean_source_check(ap, vp) if os.path.isfile(vp) else (False, f'no installed V master {vp}')
-        echo(f'  vclean: the installed cleaned V pair is {"CURRENT" if state[0] else "not current"} ({state[1]}); would call '
-             f'refresh_vclean_cell twice with quarantine round {vround}; the second call must report CURRENT')
+        echo(f'  vclean: the installed cleaned V pair is {"CURRENT" if state[0] else "not current"} by its source ({state[1]}); '
+             f'would call refresh_vclean_cell with quarantine round {vround}'
+             + (' (Release 1 cards: CURRENT requires them; the pre-check of the cell\'s other files passed)' if mdw else '')
+             + ', then a check-only call that must report CURRENT')
         return
     tmp = os.path.join(roots.out, 'vclean_tmp', cell) if roots.rerooted else C.VCLEAN_TMP_FMT.format(cell=cell)
-    mdw = SC.release1_mdw_table()
-    res = []
+    first = second = None
     try:
         with SC.pi_context(SC.pi_module(), roots, vround) as settings:
-            u.note(f'vclean: refresh_vclean_cell twice, tmp {tmp}, Release 1 cards table {mdw}, with '
+            u.note(f'vclean: refresh_vclean_cell, tmp {tmp}, Release 1 cards table {mdw}, with '
                    f'{json.dumps(settings, sort_keys=True)}')
-            for _ in range(2):
+            with SC.captured_stdout() as buf:
+                first = VM.refresh_vclean_cell(cell, root=roots.working, tmp_root=tmp, mdw_table=mdw)[1]
+            if buf.getvalue().strip():
+                u.note(buf.getvalue().strip()[-2000:])
+            if first.startswith('OK ('):
                 with SC.captured_stdout() as buf:
-                    res.append(VM.refresh_vclean_cell(cell, root=roots.working, tmp_root=tmp, mdw_table=mdw)[1])
-                if buf.getvalue().strip():
-                    u.note(buf.getvalue().strip()[-2000:])
+                    second = VM.refresh_vclean_cell(cell, root=roots.working, tmp_root=tmp, mdw_table=mdw, check_only=True)[1]
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
-    echo(f'  vclean: {res[0][:400]} -> {res[1][:400]}')
-    u.note(f'vclean first call: {res[0][:1500]}')
-    gates.check('VCLEAN', res[1].startswith('CURRENT ('), f'first call: {res[0][:900]}; second call: {res[1][:900]}')
+    echo(f'  vclean: {first[:400]}' + (f' -> {second[:400]}' if second else ''))
+    u.note(f'vclean first call: {first[:1500]}')
+    if first.startswith('CURRENT ('):
+        ok, detail = True, f'first call: {first[:900]} (nothing written)'
+    elif second is None:
+        ok, detail = False, (f'first call: {first[:900]} - not repeated in this invocation (a refused attempt never re-runs '
+                             f'the sv2 job); round {vround}')
+    else:
+        ok, detail = second.startswith('CURRENT ('), f'first call: {first[:900]}; check-only call: {second[:900]}; round {vround}'
+    gates.check('VCLEAN', ok, detail)
 
 
 def _header_bytes(path):
@@ -692,35 +742,27 @@ def _header_bytes(path):
                 return b''.join(out)
 
 
-def cards_cell(u, cell, roots, run_obj, gates, echo):
-    """Stage cards: the Release 1 header-repair cards of the installed cell (install_cell.sh:35-54, exopipe_ops 2421f36;
-    DECISION-20261113-DEEP-REBUILD-CHAIN-WRITES-REPAIR-CARDS, IMPL-20261113-DEEP-INSTALL-CELL-HEADER-REPAIR-STEP-AND-SIBLING-
-    CARD-GATE). Production runs the repair's dry run on the installed cell, applies the partial manifest and then the sibling
-    gate; in v2 the producing steps write the cards, so this stage only checks, read only:
-    CARDS      the repair's dry run of the working cell finds no sourced card left to add (release1_cards.planned_adds; a file
-               the repair refuses whole is reported and left to CARD-GATE, as install_cell.sh:39-40 expects), every coadd-class
-               file's archive copy (a master's named by its PRODNAME, a PB map by its own name) has the working file's header
-               bytes, and provenance_nights.csv in the working cell and the archive equals the table derived now;
-    CARD-GATE  the sibling card-key gate (release1_cards.sibling_card_gate = sibling_card_gate.py) on the archived cell, the
-               siblings read from install.CARD_GATE_SIBLING_ROOT (None = paths.PHASE3_ARCHIVE_ROOT)."""
+def cards_check(cell, roots, mdw, skip=()):
+    """(passed, detail, value) of gate CARDS on the installed cell, read only: the repair's dry run of the working cell finds no
+    sourced card left to add (release1_cards.planned_adds; a file the repair refuses whole is reported and left to CARD-GATE,
+    as install_cell.sh:39-40 expects), every coadd-class file's archive copy (a master's named by its PRODNAME, a PB map by its
+    own name) has the working file's header bytes, and provenance_nights.csv in the working cell and the archive equals the
+    table derived now. ``skip``: working file names left out (the cleaned-V refresh's pre-check of the cell's other files)."""
     from exopipe.phase3.core import cells
     from exopipe.phase3.lib.masters import release1_cards as R1
-    C = _cfg().install
     lst, scope = cells.parse_cell(cell)
     fd = os.path.join(roots.cdir(cell), 'coadd_final')
     mdir = roots.masters_dir(lst, scope)
-    mdw = C.MDWSTAT_TABLE
-    if not mdw or not os.path.isfile(mdw):
-        gates.check('CARDS', False, f'install.MDWSTAT_TABLE {mdw!r} is not a readable file')
-        return
     if not os.path.isdir(fd):
-        gates.check('CARDS', False, f'installed cell {fd} absent')
-        return
+        return False, f'installed cell {fd} absent', None
     adds, cc = R1.planned_adds(fd, lst, scope, mdw_table=mdw, name_dir=mdir)
+    adds = {f: a for f, a in adds.items() if f not in skip}
     whole = {f: a[0] for f, a in adds.items() if a and a[0].startswith('(refused whole')}
     todo = {f: a for f, a in adds.items() if a and f not in whole}
     hdr_bad, nhdr = [], 0
     for f in cc.masters + cc.pbmaps:
+        if f in skip:
+            continue
         nm = f if f in cc.pbmaps else str(cc.hdrs[f].get('PRODNAME') or '')     # PB maps keep their name (coadd.py:3674)
         dest = os.path.join(mdir, nm if nm.endswith('.fits') else nm + '.fits') if nm else None
         if not dest or not os.path.isfile(dest):
@@ -737,19 +779,49 @@ def cards_cell(u, cell, roots, run_obj, gates, echo):
             break
         if not os.path.isfile(p):
             prov.append(f'{where} {R1.PROVENANCE_TABLE} absent')
-        elif open(p, newline='').read() != want:
+            continue
+        with open(p, newline='') as fh:
+            got = fh.read()
+        if got != want:
             prov.append(f'{where} {R1.PROVENANCE_TABLE} differs from the table derived now')
     ok = not todo and not hdr_bad and not prov
     detail = (f'{"PASS" if ok else "REFUSED"} {cell}: reference {cc.ref[0]} {str(cc.ref[1])[:80]}; '
               f'{len(adds) - len(todo) - len(whole)} of {len(adds)} coadd-class files carry every sourced card'
+              + (f' ({len(skip)} left out: {list(skip)})' if skip else '')
               + (f'; cards still to add: {todo}' if todo else '') + (f'; refused whole by the repair: {whole}' if whole else '')
               + f'; {nhdr} archive headers compared' + (f', differing: {hdr_bad}' if hdr_bad else ', all equal to the working files')
               + (f'; {"; ".join(prov)}' if prov else f'; {R1.PROVENANCE_TABLE} equal to the derived table (working and archive)'))
+    return ok, detail, sum(len(a) for a in todo.values()) + len(hdr_bad) + len(prov)
+
+
+def card_gate(cell, roots, mdw, exclude=()):
+    """(passed, lines) of the sibling card-key gate (release1_cards.sibling_card_gate = sibling_card_gate.py) on the archived
+    cell, the siblings read from install.CARD_GATE_SIBLING_ROOT (None = paths.PHASE3_ARCHIVE_ROOT)."""
+    from exopipe.phase3.lib.masters import release1_cards as R1
+    sib_root = _cfg().install.CARD_GATE_SIBLING_ROOT or _cfg().paths.PHASE3_ARCHIVE_ROOT
+    return R1.sibling_card_gate(cell, f'{roots.archive}/Coadd/{roots.run}', mdw, sibling_run=f'{sib_root}/Coadd/{roots.run}',
+                                exclude=exclude)
+
+
+def cards_cell(u, cell, roots, run_obj, gates, echo):
+    """Stage cards: the Release 1 header-repair cards of the installed cell (install_cell.sh:35-54, exopipe_ops 2421f36;
+    DECISION-20261113-DEEP-REBUILD-CHAIN-WRITES-REPAIR-CARDS, IMPL-20261113-DEEP-INSTALL-CELL-HEADER-REPAIR-STEP-AND-SIBLING-
+    CARD-GATE). Production runs the repair's dry run on the installed cell, applies the partial manifest and then the sibling
+    gate; in v2 the producing steps write the cards, so this stage only checks, read only: CARDS = cards_check, CARD-GATE =
+    card_gate. With install.RELEASE1_CARDS False (one switch) the stage refuses: the cards are not that configuration's."""
+    C = _cfg().install
+    if not C.RELEASE1_CARDS:
+        gates.check('CARDS', False, 'install.RELEASE1_CARDS is False (the parity configuration of 2026-10-13): the Release 1 '
+                                    'cards are not written in this configuration, so stage cards does not apply')
+        return
+    mdw = C.MDWSTAT_TABLE
+    if not mdw or not os.path.isfile(mdw):
+        gates.check('CARDS', False, f'install.MDWSTAT_TABLE {mdw!r} is not a readable file')
+        return
+    ok, detail, value = cards_check(cell, roots, mdw)
     echo(f'  cards: {detail[:600]}')
-    gates.check('CARDS', ok, detail, value=sum(len(a) for a in todo.values()) + len(hdr_bad) + len(prov))
-    sib_root = C.CARD_GATE_SIBLING_ROOT or _cfg().paths.PHASE3_ARCHIVE_ROOT
-    gok, lines = R1.sibling_card_gate(cell, f'{roots.archive}/Coadd/{roots.run}', mdw,
-                                      sibling_run=f'{sib_root}/Coadd/{roots.run}')
+    gates.check('CARDS', ok, detail, value=value)
+    gok, lines = card_gate(cell, roots, mdw)
     echo('  ' + lines[-1][:400])
     u.note('sibling card-key gate:\n' + '\n'.join(lines)[-3000:])
     gates.check('CARD-GATE', gok, ' | '.join([lines[-1]] + lines[:-1]))
@@ -778,7 +850,7 @@ def recover_cell(u, cell, args, roots, run_obj, echo):
     execute = bool(args.execute) and not run_obj.dry_run
     u.meta.update(kind=kind, gen=gen, round=rnd, execute=execute)
     off = SC.log_offset(roots.record_csv)
-    with SC.pi_context(PI, roots, rnd) as settings:
+    with SC.pi_context(PI, roots, rnd, cards=True) as settings:
         u.note(f'in-place phase3_install.resume(execute={execute}) with {json.dumps(settings, sort_keys=True)}')
         buf = None
         try:
@@ -958,7 +1030,8 @@ def run(args, run_obj, stages, out):
                 echo(f'  enqueue/cleanup of {cell} not attempted: unit {name} {u.status}')
                 continue
             with run_obj.unit(f'{cell}.enqueue', stages=[s for s in stages if s in ('enqueue', 'cleanup')]) as ue:
-                path = SE.enqueue_cell(ue, cell, roots, run_obj, stages, echo, verified_now='cards' in stages)
+                path = SE.enqueue_cell(ue, cell, roots, run_obj, stages, echo,
+                                       verified_now=('cards' if _cfg().install.RELEASE1_CARDS else 'verify') in stages)
                 if dry:
                     ue.reason = 'dry run: plan printed, nothing written'
             echo(f'  unit {cell}.enqueue: {ue.status}' + (f' ({ue.reason[:300]})' if ue.reason else ''))
@@ -1008,8 +1081,9 @@ def _main_unit(u, cell, args, roots, run_obj, stages, echo):
             if 'verify' in stages:
                 echo(f'  verify: would run membership.verify + verify_products on {plan.cdir}')
             if 'vclean' in stages:
-                echo(f'  vclean: would refresh the cleaned V pair (quarantine round {plan.round}'
-                     f'{_cfg().install.VCLEAN_ROUND_SUFFIX}); the second call must report CURRENT')
+                echo(f'  vclean: would refresh the cleaned V pair (quarantine round {vclean_round(cell, roots, plan.round)}, '
+                     f'the first free of {plan.round}{_cfg().install.VCLEAN_ROUND_SUFFIX}...); a check-only call must then '
+                     f'report CURRENT')
             if 'cards' in stages:
                 echo('  cards: would check the Release 1 cards of the installed cell and run the sibling card-key gate')
             return

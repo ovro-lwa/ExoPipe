@@ -14,7 +14,8 @@ its enqueue stage emits the per-hour items <LST>_<date> to re-run against the re
     exopipe3 install --cells 12h_Red --kind mdewarp --stages recover [--execute]
     exopipe3 install --stages screen-unapplied --table merged_table.csv
 
-Stages (--stages, comma list; default plan,install,verify,vclean,cards):
+Stages (--stages, comma list; default plan,install,verify,vclean,cards with install.RELEASE1_CARDS True (production, ruled),
+plan,install,verify with it False):
   plan      resolve the generation, the kind and the rebuild root; evaluate every read-only gate; choose the quarantine
             round and check EVERY destination before staging; print the plan (with --dry-run the step stops here)
   install   one transaction - production's phase3_install.install called IN PLACE (exopipe/phase3/lib/install/install.py):
@@ -28,15 +29,22 @@ Stages (--stages, comma list; default plan,install,verify,vclean,cards):
   vclean    refresh the installed cell's cleaned Stokes V pair (install_cell.sh:28-34; FIX-20261113-DEEP-REBUILD-CLEANS-V-BEFORE-
             FLUX-APPLY): vclean_masters.refresh_vclean_cell twice under the quarantine round '<round>vclean' - a pair not
             cleaned from the installed V master (VCSRC) is re-cleaned, the old pair quarantined, the new one stamped, carded,
-            archived and audited; gate VCLEAN refuses unless the second call reports CURRENT. Implies verify.
+            archived and audited; with install.RELEASE1_CARDS a current pair that still lacks a sourced Release 1 card is
+            carded through the same working-copy, quarantine and publish path (no sv2 run); before anything is written the
+            cards stage's checks must already pass on every other file of the cell. The quarantine round is the first of
+            '<round>vclean', '<round>vclean2', ... with no destination of the cell taken, <round> the round of the newest
+            done install or recover record of the cell; a failed or refused first call is not repeated, and the second call
+            only checks (gate VCLEAN refuses unless it reports CURRENT). Implies verify.
   cards     the Release 1 header-repair cards of the installed cell (install_cell.sh:35-54): gate CARDS refuses when a
             sourced card is still to add, an archive copy's header differs from its working file, or provenance_nights.csv
             differs from the one derived; gate CARD-GATE = the sibling card-key gate (sibling_card_gate.py): every archived
             FITS of the cell carries every card key its repaired same-named siblings of the band's other LSTs all hold, and
-            MDWSTAT / MDWMED1 agree with install.MDWSTAT_TABLE. Read only. Implies vclean.
+            MDWSTAT / MDWMED1 agree with install.MDWSTAT_TABLE. Read only. Implies vclean. Refused when
+            install.RELEASE1_CARDS is False.
   enqueue   hand the cell to the re-search (install_cell.sh:27-42): retire its search markers / policy-skips / parks, assign
             both Stokes (node of the first line of assign_<S>.csv), flow-holder map row, ready.txt; write the request
-            record and the per-hour re-run items. Needs a record of the cell with V, VCLEAN, CARDS and CARD-GATE passed. With --out the live
+            record and the per-hour re-run items. Needs a record of the cell with V passed, and VCLEAN, CARDS and CARD-GATE
+            when install.RELEASE1_CARDS is True. With --out the live
             p3s5_state is NOT written: a mirror <out>/p3s5_state seeded from it is.
   cleanup   remove this round's node-local rebuild scratch of the cell (install_cell.sh:44) - only after a passing verify
             record, only node-local paths of this host, only when paths.PRODUCTION_WRITES and no --out
@@ -44,7 +52,8 @@ Stages (--stages, comma list; default plan,install,verify,vclean,cards):
   epochs-repair (an installed cell whose archive lacks its epoch images), screen-unapplied (applied=0 screen rows for
   measured cells that were not applied, --table).
   The production sequence install_cell.sh = plan,install,verify,vclean,cards -> masters --stages sources -> enqueue,cleanup.
-  A parity run against the 2026-10-13 baseline (parity/production_20261013.cfg) names --stages plan,install,verify.
+  A parity run against the 2026-10-13 baseline (parity/production_20261013.cfg, install.RELEASE1_CARDS False) runs the
+  default plan,install,verify.
 
 Inputs (read in place, never written): the generation (--gen; default install.MDEWARP_GEN_FMT for --kind mdewarp,
   install.PROMOTED_GEN_FMT for --kind rebuild) with coadd_final/ (incl. loo/) and subtracted/, and beside it
@@ -93,14 +102,23 @@ WRITES = True
 
 STAGES = ('plan', 'install', 'verify', 'vclean', 'cards', 'enqueue', 'cleanup')
 MODES = ('recover', 'epochs-repair', 'screen-unapplied')
-DEFAULT_STAGES = ('plan', 'install', 'verify', 'vclean', 'cards')
+DEFAULT_STAGES = ('plan', 'install', 'verify', 'vclean', 'cards')       # install.RELEASE1_CARDS True (production, ruled)
+DEFAULT_STAGES_NO_CARDS = ('plan', 'install', 'verify')                 # install.RELEASE1_CARDS False (the parity file)
+
+
+def default_stages():
+    """The default --stages: one switch, install.RELEASE1_CARDS, decides whether vclean and cards are in it (read when the
+    step runs, after --config / --set)."""
+    from exopipe.phase3.config import CFG
+    return DEFAULT_STAGES if CFG.install.RELEASE1_CARDS else DEFAULT_STAGES_NO_CARDS
 
 
 def add_arguments(p):
     g = p.add_argument_group('install')
-    g.add_argument('--stages', default=','.join(DEFAULT_STAGES),
-                   help=f'comma list of {", ".join(STAGES)} (default {",".join(DEFAULT_STAGES)}); or ONE mode of '
-                        f'{", ".join(MODES)}. install implies plan.')
+    g.add_argument('--stages', default=None,
+                   help=f'comma list of {", ".join(STAGES)} (default {",".join(DEFAULT_STAGES)} with install.RELEASE1_CARDS '
+                        f'True, {",".join(DEFAULT_STAGES_NO_CARDS)} with it False); or ONE mode of {", ".join(MODES)}. '
+                        f'install implies plan.')
     g.add_argument('--kind', choices=('mdewarp', 'rebuild'),
                    help='kind of generation (required for plan, install, recover): mdewarp = the RBF master-dewarp '
                         'generation (names carry _mdewarp); rebuild = a rebuilt cell in canonical names (promoted)')
@@ -154,7 +172,7 @@ def run(args, run):
     from exopipe.phase3.lib.install import steps_deep
     if getattr(args, 'tier', 'deep') != 'deep':
         raise Refusal(f'install is deep only (refactor-chat decision 6); --tier {args.tier}')
-    stages = parse_stages(args.stages)
+    stages = parse_stages(args.stages or ','.join(default_stages()))
     out = args.out or default_out(args)
     if stages != ['screen-unapplied'] and not args.cells:
         from exopipe.phase3.core.record import NoInput

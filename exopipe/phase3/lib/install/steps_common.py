@@ -39,6 +39,7 @@ NEVER_WAIVABLE_TESTS = ('install_manifest.rows_match_files', 'archive_cell.audit
 
 # PI RuntimeError text -> the gate it is (phase3_install.py raise sites; coadd_full_pipeline for G0)
 _PI_GATE_TEXT = (
+    ('on the Release 1 trial copy', 'b'),             # v2: b's Release 1 writes on a trial copy, before the first move
     ('P3_ARCHIVE_RUN unset', 'R'), ('freeze is not confirmed', 'G-1'), ('snapshot_masters links resolve', 'G-1b'),
     ('no content-test record', 'G1'), ('content record (D1-D6)', 'CUB'), ('lack MDWINTP', 'CUB'),
     ('needs --rebuild-root with REBUILD_CONTENT_OK', 'RB'), ('master membership violates', 'G-MEM'),
@@ -186,8 +187,6 @@ def check_window_consistency(PI):
              'STAGING_SPACE_FACTOR': (1.05, 'phase3_install.py:279'),
              'STAGING_DIRNAME': ('.install_staging', 'phase3_install.py:288'),
              'ARCHIVE_SKIP_TOKENS': (('_msub',), 'phase3_install.py:393'),
-             'AUDIT_CELL_FILES': (('weights.csv', 'night_image_gate.csv', 'epoch_gate.csv', 'stage2_verdict.csv',
-                                   'provenance_nights.csv'), 'phase3_install.py:526 + the v2 provenance table'),
              'SNAPSHOT_MASTERS_LINK_TREE': ('/lustre/pipeline/exopipe/phase3/snapshot_masters', 'phase3_install.py:203'),
              'ARCHIVE_MASTERS_FMT': ('{archive}/Coadd/{run}/{lst}/{scope}', 'phase3_install.py:375'),
              'ARCHIVE_NIGHT_GLOB': ('{archive}/{lst}/*/{run}/{scope}/[IV]/deep/*.fits', 'phase3_install.py:393'),
@@ -339,14 +338,15 @@ def keep_held_18(cell_dir, value, built_before=None):
 
 
 @contextlib.contextmanager
-def pi_context(PI, roots, rnd=None):
+def pi_context(PI, roots, rnd=None, cards=False):
     """Set PI's module globals and the environment it and coadd_full_pipeline read, for one call; restore afterwards.
-    Yields the settings (recorded by the caller)."""
+    Yields the settings (recorded by the caller). ``cards``: the call runs PI's step b (install, recover), which writes the
+    Release 1 cards - only then is the MDWSTAT table resolved (release1_mdw_table); every other call leaves it None."""
     C = cfg().install
     g = {'ROOT': roots.working, 'RECORD': roots.record_csv, 'FREEZE_MARKER': C.FREEZE_MARKER,
          'CELL_FILES': tuple(C.CELL_FILES), 'CELL_TOP': tuple(C.CELL_TOP), 'CELL_DIRS': tuple(C.CELL_DIRS),
          'MASTER_HELD_18MHZ': master_held_18(),             # WAVE2 18 MHz exception at G-MEM (PI's text: production's 'refuse')
-         'RELEASE1_MDW_TABLE': release1_mdw_table()}        # the Release 1 cards at b (PI's text: None, production)
+         'RELEASE1_MDW_TABLE': release1_mdw_table() if cards else None}   # the Release 1 cards at b (PI's text: None, production)
     if rnd:
         g.update(INSTALL_ROUND=rnd, WQ=roots.wq(rnd), QROOT_NAME=roots.aq_name(rnd))
     env = {'P3_ARCHIVE_RUN': roots.run, 'P3_ARCHIVE_ROOT': roots.archive, 'P3_INSTALL_FREE_FLOOR_GB': repr(float(C.FREE_FLOOR_GB)),

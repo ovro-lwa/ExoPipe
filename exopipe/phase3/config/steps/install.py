@@ -74,8 +74,8 @@ class install(_Section):
     CELL_TOP = ('residuals_provisional.csv', 'outliers.csv', 'residuals.csv')     # cell directory; phase3_install.py:58; set on PI for the call
     CELL_DIRS = ('flow', 'coadd_provisional')                                     # cell directory; phase3_install.py:59; FINDING-GEN4-FLEET-DID-NOT-SHIP-FLOWS-BACK-RECOVERY-PLANNED (921); set on PI for the call
     ARCHIVE_SKIP_TOKENS = ('_msub',)                      # PI literal; per-night search frames: never quarantined or audited by install; phase3_install.py:393, :515
-    AUDIT_CELL_FILES = ('weights.csv', 'night_image_gate.csv', 'epoch_gate.csv', 'stage2_verdict.csv',
-                        'provenance_nights.csv')          # PI literal; + PB_deep_<s>, PB_deep_R075_<s>; phase3_install.py:526 (= coadd_full_pipeline.py:3197); provenance_nights.csv: v2 (the Release 1 table, R-GREGG-20261110-HEADER-REPAIR-SIX-DECISIONS decision 4; published by coadd._archive_publish_cell)
+    # the cell files the archive audit expects beside the masters are not a key: one list, lib/masters/coadd.ARCHIVED_CELL_FILES,
+    # is what the publish copies and what the audit and its content test read (phase3_install.py:526 = coadd_full_pipeline.py:3197)
     STAGING_DIRNAME = '.install_staging'                  # PI literal; <cell>/.install_staging; phase3_install.py:288
     # ---- quarantine (one pair per round)
     ROUND = 'auto'                                        # deep requirement (b) (DESIGN 8; RESULT-12HRED-INSTALLED-AFTER-STALE-STAGING-20261012, ledger 2283); production: env P3_INSTALL_ROUND default '20261004' (phase3_install.py:53), launchers 20261008b / P3_INSTALL_ROUND_REINSTALL (install_cell.sh:9-11); --round NAME = today's behaviour

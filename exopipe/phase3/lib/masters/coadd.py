@@ -187,7 +187,7 @@ def _update_sigma(val):
 # ═══════════════════════════════════════════════════════════════════
 
 def load_image(path):
-    with fits.open(path) as hdul:
+    with fits.open(path, memmap=False) as hdul:      # never a memory map (R-GREGG-20261117-NO-MMAP-OF-LUSTRE-FILES-READ-OR-WRITE)
         data = hdul[0].data.astype(np.float64)
         header = hdul[0].header.copy()
     while data.ndim > 2:
@@ -3647,6 +3647,13 @@ def epoch_standard_header(src, fl, st, lst, sh=None, md=None):
     return name
 
 
+# The cell files the publish copies beside the masters, besides the two PB maps - the one list the install's archive audit
+# (lib/install/install._archive_audit, phase3_install.py:526 = coadd_full_pipeline.py:3197) and its content test
+# (lib/install/tests.py archive_cell) also read: weights.csv; the night-image gate record (2026-10-02); the epoch-gate
+# record; the stage-2 verdict; v2: the Release 1 provenance table (R-GREGG-20261110-HEADER-REPAIR-SIX-DECISIONS decision 4)
+ARCHIVED_CELL_FILES = ('weights.csv', 'night_image_gate.csv', 'epoch_gate.csv', 'stage2_verdict.csv', 'provenance_nights.csv')
+
+
 def _archive_publish_cell(final_dir, sub_dir, lst, fl):
     """Write the cell's products into the ratified archive tree (contract 0.1/0.4)."""
     if os.environ.get('P3_ARCHIVE_WRITE') == '0':
@@ -3672,8 +3679,7 @@ def _archive_publish_cell(final_dir, sub_dir, lst, fl):
             if not name:
                 raise RuntimeError(f"{lst} {fl}: {f} has no PRODNAME - not stamped; REFUSING to archive")
             _atomic_copy(src, f'{cdir}/{name if name.endswith(".fits") else name + ".fits"}'); n += 1
-        elif f in (f'PB_deep_{fl}.fits', f'PB_deep_R075_{fl}.fits', 'weights.csv', 'night_image_gate.csv', 'epoch_gate.csv', 'stage2_verdict.csv',
-                   'provenance_nights.csv'):   # one PB map per robust (2026-10-01); night-image gate record (2026-10-02); v2: the Release 1 provenance table (R-GREGG-20261110-HEADER-REPAIR-SIX-DECISIONS decision 4)
+        elif f in (f'PB_deep_{fl}.fits', f'PB_deep_R075_{fl}.fits') + ARCHIVED_CELL_FILES:   # one PB map per robust (2026-10-01)
             _atomic_copy(src, f'{cdir}/{f}'); n += 1
     loo = f'{final_dir}/loo'
     if os.path.isdir(loo):
