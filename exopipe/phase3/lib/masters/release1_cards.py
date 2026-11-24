@@ -613,19 +613,29 @@ def header_keys(path):
     return keys, repaired, h
 
 
-def sibling_card_gate(cell, archive_run, mdw_table, sibling_run=None, refusals=()):
+def sibling_card_gate(cell, archive_run, mdw_table, sibling_run=None, refusals=(), exclude=()):
     """(passed, lines) of the gate for cell '<LST>_<band>': every FITS of <archive_run>/<LST>/<band>/ against the repaired
     same-named products of the band's other LSTs in <sibling_run>/[0-2][0-9]h/<band>/ (default the same run) (sibling_card_gate.py
-    main, :69-117). The last line is 'SIBLING-CARD-GATE PASS|REFUSED <cell> ...'."""
+    main, :69-117). The last line is 'SIBLING-CARD-GATE PASS|REFUSED <cell> ...'. The MDWSTAT table is read by load_mdw_table,
+    the writer's loader, and the cell's row is looked up under the writer's key '<LST>_<band>' (the table's 'LST band' cell
+    column, stripped, spaces to '_'; sibling_card_gate.py:83-84 read it with csv and the key '<LST> <band>' - the same row for
+    the table's 'LST band' format); a table that cannot be used refuses. ``exclude``: fnmatch patterns of archived file names
+    left out (the cleaned Stokes V refresh's pre-check of every other file, before it writes)."""
+    import fnmatch
     m = re.fullmatch(r'(\d\dh)_(\w+)', cell)
     if not m:
         return False, [f'SIBLING-CARD-GATE usage: bad cell {cell!r}']
     lst, band = m.groups()
     sibling_run = sibling_run or archive_run
     lines = []
-    mine = sorted(glob.glob(f'{archive_run}/{lst}/{band}/*.fits'))
+    table = load_mdw_table(mdw_table)
+    if isinstance(table, str):
+        return False, [f'SIBLING-CARD-GATE REFUSED {cell}: {table}']
+    mine = [f for f in sorted(glob.glob(f'{archive_run}/{lst}/{band}/*.fits'))
+            if not any(fnmatch.fnmatchcase(os.path.basename(f), x) for x in exclude)]
     if not mine:
-        return False, [f'SIBLING-CARD-GATE REFUSED {cell}: no archived FITS in {archive_run}/{lst}/{band}']
+        return False, [f'SIBLING-CARD-GATE REFUSED {cell}: no archived FITS in {archive_run}/{lst}/{band}'
+                       + (f' outside {list(exclude)}' if exclude else '')]
     sib = {}
     for f in sorted(glob.glob(f'{sibling_run}/[0-2][0-9]h/{band}/*.fits')):
         if f.split('/')[-3] == lst:
@@ -633,8 +643,7 @@ def sibling_card_gate(cell, archive_run, mdw_table, sibling_run=None, refusals=(
         keys, repaired, _ = header_keys(f)
         if repaired:
             sib.setdefault(product_key(f), []).append(keys)
-    with open(mdw_table, newline='') as fh:
-        trow = {r['cell']: r for r in csv.DictReader(fh)}.get(f'{lst} {band}')
+    trow = table.get(f'{lst}_{band}')
     exempt_of = whole_refusals(refusals)
     refused = exempt = 0
     for f in mine:
