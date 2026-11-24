@@ -48,7 +48,6 @@ class serve(_Section):
     SUBLST_LST_RUN = 'Run_SLST{hh}B'        # sublst_cumulative.py:23; sublst_publish_lst.sh:16
     SUBLST_LST_RUN_GLOB = 'Run_SLST[0-9][0-9]B'   # sublst_publish_lst.sh:42; sublst_catalog_publish.sh:96
     SUBLST_BUILD_SUFFIX = '.build'          # sublst_cumulative.sh:15
-    SUBLST_PREV_SUFFIX = '.prev_{utc}'      # utc = %Y%m%dT%H%M%S; sublst_cumulative.sh:102
     # ---- run versions and the pointer (lib/serve/versions.py; plan/CUTOVER_REMAINING_20261124.md row 8, CUTOVER_READINESS.md:
     # 333-344): a served run U is a symbolic link to <dir>/<name><RUN_VERSIONS_SUFFIX>/<vid>/<name>, switched by one atomic rename
     # once the new version is sealed; the sub-LST swap places its build as a new version (production instead renames U to

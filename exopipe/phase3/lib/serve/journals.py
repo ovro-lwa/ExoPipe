@@ -12,7 +12,8 @@
                               grouping's identity names, so the journals are CARRIED by member detections, not copied
                               (lib/catalog/grouping_stage.carry_judgements); sublst_carry_between carries the lines journalled
                               on the old servers between the carry and the swap (append_between's design-B counterpart)
-  sublst_swap                 sublst_cumulative.sh:101-105 (U -> U.prev_<utc>, build -> U)
+  (the swap itself)           sublst_cumulative.sh:101-105 renames U -> U.prev_<utc> and the build -> U; here the build is
+                              placed as a new version of U and U switched to it (lib/serve/versions.py, sublst_build)
   append_between              sublst_cumulative.sh:108-120 (lines journalled on the old servers between copy and swap)
 """
 import csv
@@ -216,16 +217,6 @@ def sublst_carry_between(P, U, marks):
                                      os.path.basename(U.rstrip('/')), carried_from_run=os.path.basename(P.rstrip('/')),
                                      lines=lines, append=True, since=since)
     return out
-
-
-def sublst_swap(U, B, prev):
-    """mv U prev (when U exists); mv B U (sublst_cumulative.sh:102-104). Returns prev or None."""
-    moved = None
-    if os.path.isdir(U):
-        os.rename(U, prev)
-        moved = prev
-    os.rename(B, U)
-    return moved
 
 
 def append_between(P, U):

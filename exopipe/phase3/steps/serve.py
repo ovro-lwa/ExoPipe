@@ -21,7 +21,8 @@ build, copy, carry, register, hub, verify ...). Pages (config serve.PAGES; famil
   jupiter   p1 8800 (jupiter_server.py), v2-site 8801 (http.server)
 Stages (--stages/--from/--until; default all, in order):
   deep      views, test, carry (only with --carry-from), start, hub, verify
-  sublst    build, views, test, carry, swap, start (carry+swap+start only together), hub, verify
+  sublst    build, views, test, carry, swap, start (carry+swap+start only together), hub, verify; retire (only when named:
+            the retention of Run_SLSTB's versions - a dry run, or with --retire-plan the planned deletions)
   snapshot  gate, copy, localize, gate-copy, carry, scintillation, page-context, tess, bright-filter, page-index, test, start,
             hub, verify (the five filter / page-text / TESS / index steps on the copy before any page starts, snapshot_serve.sh)
   snapshot --family comb  build stages omit, build, filtercat, localize, ready (the default): THE COMBINED SNAPSHOT VIEW, the
@@ -174,7 +175,10 @@ def add_arguments(p):
                                                      'and environment (a server of its own: the Jupiter pages; a registered '
                                                      'page is rebuilt by serving it again); nothing else runs')
     g.add_argument('--stop', metavar='PORTS', help='stop the servers on these ports by exact pid; nothing else runs')
-    g.add_argument('--stages', help='comma list of stages (default all, in order; see above)')
+    g.add_argument('--stages', help='comma list of stages (default all but those run only when named, in order; see above)')
+    g.add_argument('--retire-plan', metavar='PLAN',
+                   help='sub-LST --stages retire: delete the versions of this dry-run plan (RETIRE_PLAN_<UTC>.json written by '
+                        'a --stages retire without it); refused unless every planned version is still to be retired')
     g.add_argument('--from', dest='from_stage', help='first stage')
     g.add_argument('--until', help='last stage')
 
@@ -191,9 +195,11 @@ def _module(plan):
     return {'deep': deep, 'sublst': sublst_build, 'snapshot': snapshot_copy, 'jupiter': jupiter}[plan.tier]
 
 
-def select_stages(all_stages, args):
+def select_stages(all_stages, args, default_off=()):
+    """The stages to run: --stages (any stage), else every stage but ``default_off`` (run only when named); then --from /
+    --until."""
     from exopipe.phase3.core.record import Refusal
-    st = list(all_stages)
+    st = [s for s in all_stages if s not in default_off]
     if args.stages:
         want = [s.strip() for s in args.stages.split(',') if s.strip()]
         bad = [s for s in want if s not in all_stages]
@@ -290,7 +296,9 @@ def run(args, run):
         from exopipe.phase3.core.record import NoInput
         raise NoInput(f'no page selected (tier {plan.tier}, family {plan.family}, --pages {args.pages}, --stokes {args.stokes})')
     mod = _module(plan)
-    stages = select_stages(mod.STAGES, args)
+    stages = select_stages(mod.STAGES, args, getattr(mod, 'DEFAULT_OFF', ()))
+    if getattr(args, 'retire_plan', None) and 'retire' not in stages:
+        raise Refusal('--retire-plan is the retire stage\'s: give --stages retire')
     if getattr(args, 'epochs', None):
         from exopipe.phase3.core import cells
         plan.notes.append(f'epochs {cells.expand_epochs(args.epochs)}: a re-serve of the tier pages (the servers load '
