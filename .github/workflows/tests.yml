@@ -108,3 +108,5 @@ jobs:
         run: python tests/test_runner_cell_refusal.py
       - name: the frames-only engine refuses a 10-minute append (gate FE-10MIN-APPEND)
         run: python tests/test_frames_tenmin_append_gate.py
+      - name: combined snapshot view pages p8986-p8989 (serve plan, entries, hub, stages) and the false-positive filter step (flood and alignment hides, refusals, content test)
+        run: python tests/test_snapview_pages.py
