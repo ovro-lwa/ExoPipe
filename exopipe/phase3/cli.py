@@ -7,6 +7,13 @@
 Every step is independently runnable by a person or by Claude, documents its inputs, outputs and failure modes in
 --help, refuses (exit 2) instead of warning, has --dry-run, and writes a machine-readable record of what it did under
 <out>/_records/<step>/. Exit codes: 0 done (every content test passed), 1 error, 2 refused by a gate, 3 nothing to do.
+Every writer step that is not a dry run passes the space gate first (core/space.py, config section space): on Lustre the run
+user's quota headroom (bytes and files) and the file system's free space, elsewhere statvfs, for --out and --work; it reads
+again before a unit every space.RECHECK_S seconds and, once low or unreadable, refuses that unit (its refused record is
+written, cell meta included) and stops the step. Exempt (SPACE_GATE = False): retention (its writes free room), notify,
+status and serve (small writes, needed most when room is low); a step's space_gate(args, out) picks roots and floors per
+invocation (archive: push and sync only, on the archive root too; photometry: a campaign with its own floors). See
+space_gate_of.
 While a step runs, SIGTERM interrupts it as Ctrl-C does (Terminated, a KeyboardInterrupt: every rollback runs, the unit is
 recorded 'interrupted'); a second SIGTERM terminates at once. A process forked from the step (a pool worker) takes SIGTERM's
 default action.
@@ -49,6 +56,8 @@ STEPS = [
     ('jupiter', 'the Jupiter reflection program', 'survey'),
     # tools
     ('status', 'completion, exclusion conformance, stale products, coverage, rebuild due; emits item lists', 'tools'),
+    ('retention', 'raw night data kept 2 weeks: retention table, extraction holds, expiry plan (dry run), the ruled '
+                  'delete', 'tools'),
     ('verify', 'run the content test of any product class alone; compare two product roots (parity)', 'tools'),
     ('run', 'multi-node runner: jobs, chains (e.g. the per-hour chain), --after, --code, hold/release/drain/retry', 'tools'),
     ('drive', 'per-hour driver: each hour\'s chain as Slurm jobs over the stage records; catch-up windows; periodic jobs', 'tools'),
@@ -330,6 +339,25 @@ def build_parser():
     return p
 
 
+def space_gate_of(mod, args, out):
+    """(roots, floors section name) the space gate checks for this run of step ``mod``, or None (no gate): a step that
+    writes nothing has none; SPACE_GATE = False exempts a step (its writes free room - retention - or are small and needed
+    most when room is low - notify, status, serve); a module function space_gate(args, out) decides per invocation (archive:
+    push and sync, with the archive root; photometry: a campaign's cutout file system with its own floors). Otherwise --out
+    and --work with the floors of section space."""
+    if not getattr(mod, 'WRITES', True) or getattr(mod, 'SPACE_GATE', True) is False:
+        return None
+    work = [args.work] if getattr(args, 'work', None) else []
+    hook = getattr(mod, 'space_gate', None)
+    if hook is not None:
+        got = hook(args, out)
+        if not got:
+            return None
+        roots, floors = got
+        return [r for r in dict.fromkeys(list(roots) + work) if r], floors or 'space'
+    return [out] + work, 'space'
+
+
 def main(argv=None):
     # a chain step of `exopipe3 run` hands its outcome back on this descriptor (core/runner.py step_outcome); taken out of
     # the environment first, so no process this step starts inherits it
@@ -437,6 +465,13 @@ def main(argv=None):
     record.mark_injected(run)                  # an injected run's start record, before the step writes anything
     with _sigterm_interrupts(name):            # SIGTERM unwinds the step as Ctrl-C does (Terminated)
         try:
+            gate_on = space_gate_of(mod, args, out) if not args.dry_run else None
+            if gate_on:
+                # the space gate of the writer steps (core/space.py; config section space): the run user's Lustre quota
+                # headroom and the free space of each root it writes, now and again before its units (record.Run.unit)
+                from exopipe.phase3.core import space as _space
+                run.space_gate = _space.Gate(gate_on[0], floors=getattr(CFG, gate_on[1]))
+                run.space_gate.require()
             if getattr(mod, 'WRITES', True) and getattr(mod, 'PRODUCTS', True):
                 record.check_code_identity()   # B-30 GITTAG_FALLBACK: before the step's run() (core/record.py)
             rc = mod.run(args, run)

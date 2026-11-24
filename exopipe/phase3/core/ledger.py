@@ -41,3 +41,24 @@ def has_id(ledger_id, path):
     """True when ``ledger_id`` is a row of the ledger at ``path``. A missing or unreadable ledger raises OSError."""
     lid = (ledger_id or '').strip()
     return bool(lid) and lid in ids(path)
+
+
+def rows(ledger_id, path):
+    """The rows of the ledger at ``path`` whose fix_id (or, in a shifted row, first field) is ``ledger_id``, each a dict
+    {column: value} by the header (a shifted row: its fields from the date column on, keyed by the header from fix_id on).
+    A missing or unreadable ledger raises OSError. Read only."""
+    lid = (ledger_id or '').strip()
+    out = []
+    if not lid:
+        return out
+    with open(path, newline='', encoding='utf-8', errors='replace') as f:
+        rd = csv.reader(f)
+        header = [h.strip().lstrip('﻿').lower() for h in next(rd, [])]
+        col = header.index('fix_id') if 'fix_id' in header else 1
+        for row in rd:
+            row = [c.strip() for c in row]
+            if len(row) > col and row[col] == lid:
+                out.append(dict(zip(header, row)))
+            elif row and row[0] == lid and not _DATE.match(row[0]):
+                out.append(dict(zip(header[col:], row)))
+    return out

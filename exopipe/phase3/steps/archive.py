@@ -89,6 +89,7 @@ CONFIG = ('archive', 'archive_quarantine', 'archive_sync', 'archive_retire', 'ar
           'masters_admit',                  # ADMITTED_NIGHTS: the quarantine precheck's reading of admitted nights (G7)
           'photometry')                     # CUTOUT_ROOT / RETIRED_CUTOUT_ROOTS: supersede's default photometry cutout root
 WRITES = True
+SPACE_GATED_ACTIONS = ('push', 'sync')   # the actions that copy new bytes into the archive (cli's space gate, space_gate below)
 
 ACTIONS = ('push', 'sync', 'quarantine', 'retire-excluded', 'retire-refused', 'supersede', 'quarantine-rows', 'rollback',
            'audit')
@@ -118,6 +119,19 @@ def apply_guard(ctx, args):
     from exopipe.phase3.cli import _allow_key
     ctx.guard_writes([ctx.archive_root], f'archive {args.action} --apply', allow=_allow_key('archive', args))
 
+
+
+def space_gate(args, out):
+    """The space gate of this invocation (cli.space_gate_of): push and sync copy new bytes into the archive (nothing is ever
+    deleted, archive.NEVER_DELETE), so they are gated on --out and on the archive root (--archive-root or
+    paths.PHASE3_ARCHIVE_ROOT) with the floors of section space. The other actions move files within one file system (G3
+    refuses a cross-filesystem move: quarantine, retire-excluded, retire-refused, rollback, supersede, quarantine-rows) or
+    write only records (audit): they need no new room and are not gated."""
+    if args.action not in SPACE_GATED_ACTIONS:
+        return None
+    import os
+    from exopipe.phase3.config import CFG
+    return [out, os.path.abspath(getattr(args, 'archive_root', None) or CFG.paths.PHASE3_ARCHIVE_ROOT)], 'space'
 
 def add_arguments(p):
     p.add_argument('action', choices=ACTIONS, help='what to do (see the list above)')

@@ -123,6 +123,17 @@ _TIER_MODULES = {'deep': 'exopipe.phase3.lib.photometry.steps_deep', 'snapshot':
                  'sublst': 'exopipe.phase3.lib.photometry.steps_cutouts'}
 
 
+
+def space_gate(args, out):
+    """The space gate of this invocation (cli.space_gate_of): a campaign (--campaign) writes its cutout generation on
+    photometry_campaign.SPACE_FILESYSTEM and keeps its own floors (photometry_campaign: 2 TiB, 200000 files, 120 TB; read before
+    every unit, RECHECK_S 0); the campaign reports this gate's verdict and reads no lfs itself (lib/photometry/campaign.space).
+    Any other invocation: --out with the floors of section space."""
+    if getattr(args, 'campaign', False):
+        from exopipe.phase3.config import CFG
+        return [out, CFG.photometry_campaign.SPACE_FILESYSTEM], 'photometry_campaign'
+    return [out], 'space'
+
 def add_arguments(p):
     g = p.add_argument_group('stages (deep: cutouts,cutmeasure,frames,stage,measure,evaluate; snapshot: cutouts,measure,'
                              'evaluate; sublst: cutouts,cutmeasure; default photometry.DEFAULT_STAGES - cutouts and cutmeasure '

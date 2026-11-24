@@ -94,7 +94,7 @@ class _Section:
 # The settings: shared.py (every step) and one module per command (STEP_CONFIG_MODULES), all in this package. They import
 # _Section from here, so they are imported after it.
 from exopipe.phase3.config.shared import (PROTECTED, astrometry, exclusions, fallbacks, fitting,  # noqa: E402
-                                          instrument, paths, runner, site)
+                                          instrument, paths, runner, site, space)
 
 
 
@@ -583,7 +583,7 @@ def _load_site(cfg):
     return path
 
 
-STEP_CONFIG_MODULES = ('frames', 'flow', 'search', 'catalog', 'forced', 'curves', 'pages', 'serve', 'archive', 'masters', 'dewarp', 'install', 'calibrate', 'hybrid', 'mosaic', 'photometry', 'followup', 'jupiter', 'status', 'notify', 'drive')   # exopipe/phase3/config/steps/<step>.py, pipeline order
+STEP_CONFIG_MODULES = ('frames', 'flow', 'search', 'catalog', 'forced', 'curves', 'pages', 'serve', 'archive', 'masters', 'dewarp', 'install', 'calibrate', 'hybrid', 'mosaic', 'photometry', 'followup', 'jupiter', 'status', 'notify', 'drive', 'retention')   # exopipe/phase3/config/steps/<step>.py, pipeline order
 
 
 def _load_step_configs():

@@ -40,6 +40,7 @@ SELECTORS = ('epochs',)
 CONFIG = ('notify', 'paths', 'runner')
 WRITES = True
 PRODUCTS = False   # writes no data product (no GITTAG to stamp): cli.main skips the code-identity check
+SPACE_GATE = False  # no space gate (cli.space_gate_of): a notice is kilobytes, and an alert must go out when room is low
 
 
 def add_arguments(p):
