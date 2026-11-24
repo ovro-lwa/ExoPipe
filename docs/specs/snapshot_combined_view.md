@@ -429,13 +429,41 @@ None of these is ruled; each is production's today and changes only with a rulin
   a write the refactor does not make. A view built before 2026-10-31 is not repairable by production's code either.
 - The test-build switch `SNAPCOMB_DEEP_OMISSION=0`: the served view always applies the rule; the stage always applies a kept
   product (a view without the rule would be indistinguishable on the pages).
-- The registration of the view's pages (p8986-p8989, `snapshot_serve.sh` with `SNAP_REGISTER=1`, `CARRY_FROM` the served view,
-  `SNAP_LOCALIZED_ON_NODE=1`, the page context `page_context_snapshot.py`, the hub's `snapshot-comb` entries): serve.PAGES holds
-  no combined-view page and the refactor has no page-context step; the snapshot serve's stages (gate, carry, test, start, hub,
-  verify) apply once the four pages are configured. Until then production registers the views.
-- The two snapshot hides and the cross-tier pair files the refactor chat writes between VIEW-READY and the registration (FOLD_IN
-  10-31 16:40-17:38, 22:00): there is no FP-filter step yet (CUTOVER_READINESS "FP-study page filters must exist BEFORE the pages
-  register").
+- The cross-tier pair files the refactor chat writes after the hides (`xtier_panel_links.py`, reading the hides' collected
+  detections, which the hides stage keeps as its records `flood_dets_p89xx.csv`) and the `pinned_pages.json` repoint after the
+  registration (`post_register.sh`): owed to the cross-tier and hub steps, not to this one.
+- The serve's second localization of the view (`snapshot_serve.sh` step 2, which re-ran `snapshot_localize_tiers.sh` on the
+  Release 1 view): the view's localize stage ran the same script in the same environment, and the serve stages require the
+  ready record (which requires the localize record) done and current.
+
+## The serve of the view (rows 10 and 11 of the cutover plan, 2026-11-24)
+
+Production: `run_hides.sh` (refactor_analysis/review_items_20261031/hides_20261115: `parallel_collect.py`, `newview_hides.py`
+flood + write), then `snapshot_serve.sh` with `SNAP_REGISTER=1`, `SNAP_PORTS="8986 8987 8988 8989"`, `SNAP_HUB_SUFFIX=comb`,
+`CARRY_FROM` the served view (serve_release1_20261117.sh). v2: the serve stages of `--family comb`, named explicitly (the
+default is the build stages): `hides`, then the batch serve's stages from `gate-copy` on (`lib/serve/snapshot_copy.py`) with
+the view as its own review copy, the pages `serve.PAGES` family comb (8986 V 10-s, 8987 I 10-s, 8988 V 1-min, 8989 I 1-min;
+hub `<S> 10-sec-comb` / `<S> 1-min-comb`).
+
+- `hides` (`lib/serve/fp_filters.py`): `<view>/fp_filters.csv` + `fp_filters.json` as `review_filters.py` reads them. The
+  content is the Snapshot chat's, ported unchanged into config: alignment (`SNAPVIEW_ALIGN_FAILED` hidden by default - empty
+  since R-GREGG-20261103-ALIGNMENT-HIDE-ONLY-1030-SHOW-REPAIRED-NIGHTS - and `SNAPVIEW_ALIGN_HELD` shown by default) and flood
+  hours (a night-band of one Stokes, tier and LST with at least `SNAPVIEW_FLOOD_MIN` = 50 distinct detections and at least
+  `SNAPVIEW_FLOOD_FACTOR` = 100 times the median of the other nights' counts in that band; IMPL-SNAPSHOT-FLOOD-HOURS-HIDDEN-BY-
+  DEFAULT-20261031, R-GREGG-20261108-GEN4-REPLACE-FLOOD-100X-JOVIAN-WAITS-FOR-CUBES). Refusals: the files exist; a listed
+  detection on an excluded cell-band (core.exclusions - production named three 23h 82 MHz cells literally; a stricter check);
+  no listed detection; a listed source's page directory without `detections.csv` (production's collector read it as no
+  detections); the content test (class `fp_filters`). What the page hides by default is the page code's: `review_filters.py`
+  overrides the flood category's `default_off` (R-GREGG-20261112-TRACKING-AND-FLOOD-DEFAULTS-OFF: no default, no control), and
+  the alignment-failed state (hidden by default) holds no detection of Run_SNAPCOMB_20261116; the file keeps production's
+  `default_off` lists byte for byte. Deliberate differences from production: the CSV's first (comment) line names this step;
+  flood-list rows of equal ratio follow their key (production's tie order was its process's set order); the two refusals above
+  that production did not have.
+- `gate-copy`, `carry` (from the run served on 8986, or `--carry-from`), `scintillation`, `page-context`, `tess`,
+  `bright-filter`, `page-index`, `test`, `start` (the four servers in one flush; `P3_CUTOUTS_TIER` per page), `hub`, `verify`:
+  as the batch serve. G29 and G27 before every stage; the restore-only go reads the member runs under the snapshot review root
+  (`plan.member_root`), also for a parity view.
+
 - An incremental append (one new batch into an existing view): production rebuilds the view whole; a cumulative step that
   merges only the new batch's identities into the existing combined identities is a design change (the merge's order is by
   |S/N| over all clusters), owed to the real-time pipeline, not a port.

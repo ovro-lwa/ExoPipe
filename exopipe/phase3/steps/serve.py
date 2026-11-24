@@ -16,18 +16,22 @@ build, copy, carry, register, hub, verify ...). Pages (config serve.PAGES; famil
             entries' inspection_legacy_port); strat-I/V 8791/8792 and tableflip-V/I 8798/8799 (family deep-forced: the
             Run_P3S5 table-flip samples since 2026-10-17) are restart-only (no production launcher defines their argv)
   sublst    review V 8787, I 8788, V-multi 8789, I-multi 8790 (the cumulative Run_SLSTB)
-  snapshot  review V-10s 8779, I-10s 8780, V-1min 8781, I-1min 8782; forced pages 8786, 8785, 8775, 8776 (--family forced)
+  snapshot  review V-10s 8779, I-10s 8780, V-1min 8781, I-1min 8782; forced pages 8786, 8785, 8775, 8776 (--family forced);
+            the combined view's pages V-10s 8986, I-10s 8987, V-1min 8988, I-1min 8989 (--family comb)
   jupiter   p1 8800 (jupiter_server.py), v2-site 8801 (http.server)
 Stages (--stages/--from/--until; default all, in order):
   deep      views, test, carry (only with --carry-from), start, hub, verify
   sublst    build, views, test, carry, swap, start (carry+swap+start only together), hub, verify
-  snapshot  gate, copy, localize, gate-copy, carry, scintillation, page-context, bright-filter, page-index, test, start, hub,
-            verify (the four filter / page-text / index steps on the copy before any page starts, snapshot_serve.sh:164-198)
-  snapshot --family comb  omit, build, filtercat, localize, ready: THE COMBINED SNAPSHOT VIEW, the snapshot tier's cumulative step
-            (lib/serve/snapshot_view.py; spec docs/specs/snapshot_combined_view.md): the deep-omission kept product of the
-            --view-runs applied, the batch identities merged with the chain's merge (in place), one page per tier and Stokes
-            with hard-linked panels, production's tests T1-T6, the filter catalogue, the per-tier localization; ends
-            VIEW-READY-FOR-HIDES (the registration of its pages on p8986-p8989 is not ported: production registers it)
+  snapshot  gate, copy, localize, gate-copy, carry, scintillation, page-context, tess, bright-filter, page-index, test, start,
+            hub, verify (the five filter / page-text / TESS / index steps on the copy before any page starts, snapshot_serve.sh)
+  snapshot --family comb  build stages omit, build, filtercat, localize, ready (the default): THE COMBINED SNAPSHOT VIEW, the
+            snapshot tier's cumulative step (lib/serve/snapshot_view.py; spec docs/specs/snapshot_combined_view.md): the
+            deep-omission kept product of the --view-runs applied, the batch identities merged with the chain's merge (in
+            place), one page per tier and Stokes with hard-linked panels, production's tests T1-T6, the filter catalogue, the
+            per-tier localization; ends VIEW-READY-FOR-HIDES. Serve stages hides, gate-copy, carry, scintillation, page-context,
+            tess, bright-filter, page-index, test, start, hub, verify (only when named: --from hides --label ...): the view's
+            false-positive filters fp_filters.csv / .json (lib/serve/fp_filters.py), then the snapshot serve's stages on the
+            view as its own review copy, registering p8986-p8989
   forced    switch, hub, verify            jupiter   start, hub, verify
 
 Inputs (read, never rewritten unless listed under Outputs):
@@ -52,6 +56,10 @@ Outputs (product classes; content tests run on every write and by `exopipe3 veri
   snapshot_view  the combined view (<SNAPSHOT_REVIEW_ROOT>/<view>, parity <out>/snapshot/<view>): V1-V6 read back - queues,
                  page directories, identities against the kept product, the record against the omit stage's;
                  filter_catalog (per detection) and snapshot_card2_union its filter inputs; omission_* its omit product
+  fp_filters     a served view's false-positive filters fp_filters.csv with its fp_filters.json, as the pages read them (categories,
+                 states, header, one row per detection key, every row with a state)
+  tess_coverage  the snapshot copy's TESS coverage per detection (lib/pages/tests.py: the tool's header, statuses, the cand_ids =
+                 master_catalog.csv's)
   hub_page       review hub registry.json / index.html (served on both listeners of the two-port server; the separate
                  inspection hub page and the hub HTTP servers were retired by production on 2026-10-27)
   page_registration  <out>/_records/serve/registrations/<unit>_<UTC>_<hash>.json: the ONE registration of a serve
@@ -136,7 +144,8 @@ def add_arguments(p):
                    help="page family of the tier (default: review; jupiter for --tier jupiter): forced = the snapshot forced "
                         "photometry pages; strat / deep-forced = restart-only deep pages (deep-forced: the table-flip "
                         "samples on 8798/8799); comb = the COMBINED SNAPSHOT VIEW, the snapshot tier's cumulative step "
-                        "(lib/serve/snapshot_view.py: stages omit, build, filtercat, localize, ready)")
+                        "(lib/serve/snapshot_view.py: build stages omit, build, filtercat, localize, ready; serve stages hides "
+                        "... verify on its pages 8986-8989)")
     g.add_argument('--view-runs', metavar='RUN,RUN|@FILE',
                    help='--family comb: the served batch runs of the view, in order (directories, a comma list or @FILE; bare '
                         'names under paths.SNAPSHOT_REVIEW_ROOT)')
@@ -268,7 +277,7 @@ def run(args, run):
         if args.restart and args.stop:
             raise Refusal('give --restart or --stop, not both')
         return restart_or_stop(args, run)
-    if getattr(args, 'family', None) == 'comb':        # the combined snapshot view: a cumulative build, no page of its own yet
+    if getattr(args, 'family', None) == 'comb':        # the combined snapshot view: its build, then the serve of its pages
         if args.tier != 'snapshot':
             raise Refusal(f'--family comb is the snapshot tier\'s combined view (--tier snapshot), not --tier {args.tier}')
         from exopipe.phase3.lib.serve import snapshot_view

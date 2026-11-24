@@ -18,7 +18,8 @@ merge is two-level (batch identities, then across batches) and can differ from o
     exopipe3 serve --tier snapshot --family comb --run Run_SNAPCOMB_PARITY --view-runs R1,R2 --out SCRATCH \
         --set catalog_omission.REFUSALS=DIR --stages omit,build,filtercat,localize,ready
 
-Stages (--stages / --from / --until; default all, in this order); each runs only after the previous one ended done:
+Stages (--stages / --from / --until; default the BUILD stages omit..ready, in this order; the SERVE stages hides..verify only when
+--stages / --from / --until name them); each runs only after the previous one ended done:
   omit       (unit snapshot_<view>_omit) the deep-omission stage on the view's batch runs (lib/catalog/deep_omission.run_snapshot,
              the products of `catalog --tier snapshot --stages omit`) into the view's omission directory serve.SNAPVIEW_OMIT_DIR
              (production location <SNAPSHOT_REVIEW_ROOT>/deep_omission/<view>; parity <out>/snapshot/deep_omission/<view>):
@@ -63,6 +64,25 @@ Stages (--stages / --from / --until; default all, in this order); each runs only
   ready      (unit snapshot_<view>_ready) the driver's step 4 'VIEW-READY-FOR-HIDES': the serve-time exclusion gate on the view
              (G17, the gate snapshot_serve.sh runs on it before registering), the snapshot_view tests again on the final files
              (filter catalogue and localization in place), and the note VIEW-READY-FOR-HIDES <view>.
+THE VIEW'S SERVE (rows 10 and 11 of the cutover plan; production: run_hides.sh of review_items_20261031/hides_20261115, then
+snapshot_serve.sh with SNAP_REGISTER=1, SNAP_PORTS="8986 8987 8988 8989", SNAP_HUB_SUFFIX=comb, CARRY_FROM the served view,
+serve_release1_20261117.sh). The pages are serve.PAGES family comb (8986 V 10-s, 8987 I 10-s, 8988 V 1-min, 8989 I 1-min; hub
+'<S> 10-sec-comb' / '<S> 1-min-comb'); the serve plan is lib/serve/plan.make with --family comb (--run the view, --label the
+serve label of the titles and the hub generation, required for test / start / hub; no --source: the view is its own review copy).
+A serve stage after a build stage in another invocation requires the ready record done and current (G28).
+  hides      (unit snapshot_<view>_hides) THE FALSE-POSITIVE FILTER STEP, lib/serve/fp_filters.py: <view>/fp_filters.csv + .json,
+             the combined view's two default hides (alignment: serve.SNAPVIEW_ALIGN_*; flood hours: serve.SNAPVIEW_FLOOD_*) from
+             the view's listed detections on its four pages; refused when the files exist, a listed detection sits on an excluded
+             cell-band, nothing is listed, or a listed source's page directory has no detections.csv (class fp_filters). A start
+             without hides in the same invocation requires its record done.
+  gate-copy, carry, scintillation, page-context, tess, bright-filter, page-index, test, start, hub, verify
+             the batch serve's stages (lib/serve/snapshot_copy.py) on the view: G29 serve hold and G27 goes first (the restore-only
+             go reads the member runs under the snapshot review root, plan.member_root); the gate on the view; the carry of the
+             review labels from the run served on 8986 (or --carry-from); the five page steps; the content tests of the pages;
+             the four servers registered in one flush (lib/serve/register.page_entry, P3_CUTOUTS_TIER per page); the hub rows
+             '--set <S> <10-sec|1-min>-comb port= run= generation= served= live=1'; the identity check. Not run here: production's
+             second localization at serve (snapshot_serve.sh step 2: the view's localize stage ran the same script in the same
+             environment) and the copy (the view is built in place).
 Gates (refuse, exit 2): G-V1 view name (--run, the snapshot prefix) and runs (--view-runs: none, a run twice, a run without
 source_catalogs); G-V2 the view or its .part exists (never overwritten); G-V3 the omit product: its files, its content tests now,
 its runs = the view's runs in order; G-V4 the served set changed since the omit stage (the served digest of the runs as read now
@@ -102,9 +122,9 @@ Production details carried for parity, not ruled (spec 'Pending Gregg'): the nam
 row of a combined source (its member row of largest |best S/N|), the duplicate batch_members column of production's survivors
 files.
 NOT PORTED (spec 'Not ported'): production's REPAIR MODE (SNAPCOMB_REPAIR_OF), the test-build switch SNAPCOMB_DEEP_OMISSION=0,
-the registration of the view's pages on p8986-p8989 with its carry, page context and hub (snapshot_serve.sh SNAP_REGISTER=1;
-serve.PAGES holds no combined-view page), the two snapshot hides the refactor chat writes before it (no FP-filter step yet), an
-incremental append of one new batch to an existing view (production rebuilds the view whole).
+an incremental append of one new batch to an existing view (production rebuilds the view whole); of the serve: the cross-tier
+pair files written after the hides (xtier_panel_links.py, reading the hides' collected detections) and the pinned_pages.json
+repoint after the registration (post_register.sh).
 """
 import collections
 import csv
@@ -117,7 +137,12 @@ import shutil
 import sys
 import time
 
-STAGES = ('omit', 'build', 'filtercat', 'localize', 'ready')
+BUILD_STAGES = ('omit', 'build', 'filtercat', 'localize', 'ready')
+# the view's serve (snapshot_serve.sh SNAP_REGISTER=1 on SNAP_PORTS 8986-8989, preceded by the refactor chat's hides): the hides,
+# then the batch serve's stages from the gate on the review copy on (lib/serve/snapshot_copy.py; the view IS the review copy)
+SERVE_STAGES = ('hides', 'gate-copy', 'carry', 'scintillation', 'page-context', 'tess', 'bright-filter', 'page-index', 'test',
+                'start', 'hub', 'verify')
+STAGES = BUILD_STAGES + SERVE_STAGES
 FAMILY = 'comb'
 
 # ---- production's texts (snapshot_combined_view.py; drift-tested in tests/test_snapshot_view.py) -------------------------------
@@ -1030,8 +1055,13 @@ class ViewPlan:
 
 
 def select_stages(args):
+    """The stages asked for. With no --stages / --from / --until: the BUILD stages only (production built the view and served it
+    in separate launchers, comb_build_wave_20261104.sh then run_hides.sh + snapshot_serve.sh; the serve needs --label). The serve:
+    --from hides, or --stages naming serve stages."""
     from exopipe.phase3.steps.serve import select_stages as sel
     st = sel(STAGES, args)
+    if not (getattr(args, 'stages', None) or getattr(args, 'from_stage', None) or getattr(args, 'until', None)):
+        st = [s for s in st if s in BUILD_STAGES]
     if getattr(args, 'view_omit', None) and 'omit' in st:
         if getattr(args, 'stages', None) and 'omit' in [s.strip() for s in args.stages.split(',')]:
             _refuse('--view-omit DIR names an omit product made earlier: do not also run the omit stage (--stages omit)')
@@ -1044,7 +1074,7 @@ def view_exists(plan):
     return [p for p in (plan.U, plan.U + '.part') if os.path.exists(p)]
 
 
-def gate_runs(plan, stages=STAGES):
+def gate_runs(plan, stages=BUILD_STAGES):
     """G-V1 (runs), G-V2 (the view exists: a run with the omit or build stage refuses BEFORE any stage - the omit product of an
     existing view is its product of record and is never rewritten; V_combview review F2), G-V6 (injected) - before any stage."""
     if set(stages) & {'omit', 'build'} and view_exists(plan):
@@ -1445,9 +1475,8 @@ def ready_stage(run, plan):
             u.add_input(os.path.join(plan.U, f'source_catalogs_loc_{T}', 'localizations.csv'))
         u.add_output(plan.U, 'snapshot_view', kept=os.path.join(plan.omit_dir, 'deep_omission_kept.csv'), runs=plan.runs,
                      final=True)
-        u.note(f'VIEW-READY-FOR-HIDES {plan.U}: the two snapshot hides and the cross-tier pair files are written next (the '
-               f'refactor chat; no FP-filter step yet), then the registration on p8986-p8989 (not ported: snapshot_serve.sh '
-               f'SNAP_REGISTER=1 with CARRY_FROM the served view)')
+        u.note(f'VIEW-READY-FOR-HIDES {plan.U}: the two snapshot hides next (stage hides, lib/serve/fp_filters.py), then the '
+               f'serve on p8986-p8989 (stages gate-copy..verify: --from hides --label ...)')
     return u
 
 
@@ -1466,14 +1495,38 @@ def _deep_omission_py():
     return os.path.abspath(deep_omission.__file__)
 
 
+def serve_plan(args, run_):
+    """The serve Plan of the view's pages (lib/serve/plan.make, family comb: serve.PAGES 8986-8989, the view under the snapshot
+    review root - parity: under --out - its own review copy, no source). G26: the serve label (--label: the page titles and the hub
+    generation, snapshot_serve.sh's LABEL) is required for the stages that use it."""
+    from exopipe.phase3.lib.serve import plan as planmod
+    return planmod.make(args, run_.out_root)
+
+
 def run(args, run_):
     """`exopipe3 serve --tier snapshot --family comb` (steps/serve.py dispatches here before the page plan)."""
+    from exopipe.phase3.core.record import NoInput
     from exopipe.phase3.lib.serve import flow, snapshot_copy
     plan = ViewPlan(args, run_.out_root)
     stages = select_stages(args)
-    gate_runs(plan, stages)
+    build_st = [s for s in stages if s in BUILD_STAGES]
+    serve_st = [s for s in stages if s in SERVE_STAGES]
+    if build_st:
+        gate_runs(plan, build_st)
+    sp = None
+    if serve_st:
+        sp = serve_plan(args, run_)
+        if os.path.abspath(sp.U) != os.path.abspath(plan.U):
+            _refuse(f'the view {plan.U} and its pages\' run {sp.U} differ (config serve.RUN_ROOT_KEY / SNAPVIEW layout)')
+        if set(serve_st) & {'test', 'start', 'hub'} and not sp.label:
+            sp.refuse_later('G26', "label required: --label '...' (the pages' titles and the hub generation; snapshot_serve.sh "
+                                   "RUNDIR LABEL)")
+        if not sp.pages:
+            raise NoInput(f'no page selected (--pages {getattr(args, "pages", None)}, --stokes {getattr(args, "stokes", None)})')
     if run_.dry_run:
-        return describe(plan, stages)
+        return describe(plan, stages, sp, args)
+    if sp is not None and sp.gates:
+        _refuse('; '.join(f'{g}: {m}' for g, m in sp.gates))
     if 'omit' in stages and flow.halts(omit_stage(run_, plan), 'omit', need_done=True):
         return None
     if 'build' in stages:
@@ -1492,8 +1545,50 @@ def run(args, run_):
         for st in ('filtercat', 'localize', 'figures'):
             if (st if st != 'figures' else 'localize') not in stages:
                 flow.require_done(run_, plan.unit(st), f'the view\'s {st} stage')
-        ready_stage(run_, plan)
+        if flow.halts(ready_stage(run_, plan), 'ready', need_done=True):
+            return None
+    if not serve_st:
+        return None
+    if 'ready' not in stages:                           # G28: the view's own tests passed on its final files
+        flow.require_done(run_, plan.unit('ready'), 'the view\'s pages (its ready stage, VIEW-READY-FOR-HIDES)')
+    if 'hides' in serve_st:
+        if flow.halts(hides_stage(run_, plan, sp), 'hides', need_done=True):
+            return None
+    rest = [s for s in serve_st if s != 'hides']
+    if 'start' in rest and 'hides' not in serve_st:     # production never registered a view before its hides (run_hides.sh)
+        flow.require_done(run_, plan.unit('hides'), 'start (the view\'s false-positive filters, stage hides)')
+    if rest:
+        snapshot_copy.run(args, run_, sp, rest)
     return None
+
+
+def hides_stage(run, plan, sp):
+    """THE VIEW'S FALSE-POSITIVE FILTERS (unit snapshot_<view>_hides; lib/serve/fp_filters.py): <view>/fp_filters.csv + .json, the
+    alignment and flood-hour hides from the view's own listed detections on its four pages (all four, whatever --pages selects:
+    the flood counts are over every page), refused when they exist, when a listed detection sits on an excluded cell-band, when
+    nothing is listed, or when a listed source's page directory has no detections.csv; the collected detections and the flood list
+    kept in <out>/_records/serve/snapshot_view/<view>_hides/ (the cross-tier pair builder's input). Class fp_filters."""
+    from exopipe.phase3.lib.serve import flow, fp_filters
+    pages = fp_filters.pages_of([pg for pg in sp.all_pages if pg.family == FAMILY])
+    with run.unit(plan.unit('hides'), stage='hides', tier='snapshot', view=plan.U) as u:
+        if not os.path.isdir(plan.U):
+            u.refuse(f'no view {plan.U} (run the build stage)')
+        flow.excl_note(u, 'snapshot')
+        for pg in pages:
+            q = os.path.join(plan.U, pg['queue'])
+            if os.path.exists(q):
+                u.add_input(q)
+            for f in sorted(glob.glob(os.path.join(plan.U, pg['catalog'], '*_sources_survivors.csv'))):
+                u.add_input(f)
+        recs = os.path.join(plan.out, '_records', 'serve', 'snapshot_view', f'{plan.run_name}_hides')
+        try:
+            res = fp_filters.build(plan.U, plan.U, pages, records=recs, log=u.note)
+        except fp_filters.HidesRefusal as e:
+            u.refuse(f'hides: {e}')
+        u.meta['hides'] = {k: res[k] for k in ('pages', 'counts', 'missing')}
+        u.add_output(res['csv'], 'fp_filters', rows=res['counts']['rows'])
+        u.note(f'HIDES {plan.run_name}: {res["counts"]}')
+    return u
 
 
 def figures_stage(run, plan):
@@ -1523,11 +1618,15 @@ def figures_stage(run, plan):
     return u
 
 
-def describe(plan, stages):
+def describe(plan, stages, sp=None, args=None):
     """--dry-run: the plan and the gates read now."""
     S = _CFG().serve
     print(f'serve --tier snapshot --family {FAMILY}: the combined snapshot view (lib/serve/snapshot_view.py)')
     print(f'  stages: {", ".join(stages)}')
+    if sp is not None:
+        describe_serve(plan, [s for s in stages if s in SERVE_STAGES], sp, args)
+    if not [s for s in stages if s in BUILD_STAGES]:
+        return 0
     print(f'  view: {plan.U}' + ('   [EXISTS - the omit and build stages refuse (G-V2); filtercat, localize and ready run on it]'
                                   if os.path.exists(plan.U) else '')
           + ('   (parity: under --out)' if plan.parity else ''))
@@ -1560,6 +1659,31 @@ def describe(plan, stages):
     except _DryRefusal as e:
         print(f'  G-V11 restore-only wave: WOULD REFUSE ({str(e)[:600]})')
     return 0
+
+
+def describe_serve(plan, stages, sp, args):
+    """--dry-run of the serve stages: the pages, their registry entries as they would be written, the hides' inputs, the
+    snapshot serve's own plan lines (hold, go, carry, the steps; the G17 scan of every CSV is left to the gate stage)."""
+    from exopipe.phase3.lib.serve import common, flow, register, snapshot_copy
+    flow.print_plan_header(sp, stages)
+    utc = common.utc_text()
+    for pg in sp.pages:
+        q = pg.at('queue', sp.U)
+        print(f'  page {pg.key}: p{pg.port} [{flow.describe_page(sp, pg)}]; queue {q}: '
+              + (f'{len(common.queue_ids(q))} ids' if os.path.exists(q) else 'ABSENT'))
+        e = register.page_entry(sp, pg, utc)
+        print(f'    entry: code {e["code"]}; argv {" ".join(e["argv"])}; env {json.dumps(e["env"])}; legacy_port {e["legacy_port"]}')
+        h = sp.hub_entry(pg, utc)
+        if h:
+            print(f'    hub: --set {h[0]} {h[1]} {" ".join(h[2])}')
+    if 'hides' in stages:
+        ex = [p for p in ('fp_filters.csv', 'fp_filters.json') if os.path.lexists(os.path.join(sp.U, p))]
+        print(f'  hides: fp_filters.csv / .json into {sp.U}' + (f'   [{" and ".join(ex)} EXIST - WOULD REFUSE]' if ex else '')
+              + f'; flood >= {_CFG().serve.SNAPVIEW_FLOOD_FACTOR}x and >= {_CFG().serve.SNAPVIEW_FLOOD_MIN}; alignment failed '
+              f'{_CFG().serve.SNAPVIEW_ALIGN_FAILED or "none"}, held {sorted(_CFG().serve.SNAPVIEW_ALIGN_HELD)}')
+    rest = [s for s in stages if s != 'hides']
+    if rest:
+        snapshot_copy.describe(sp, rest, args, scan=False)
 
 
 if __name__ == '__main__':          # the child entry point through core/legacy.run (Python 3.6 + clv15 + deep_omission.py)
