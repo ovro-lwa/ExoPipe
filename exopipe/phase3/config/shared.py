@@ -339,8 +339,8 @@ class runner(_Section):
     CODE_WORKTREES_ROOT = '/lustre/gh/main/exopipe_ops/jobs/_code'
     CODE_REPO = None             # repository the --code commits come from; None = the repository this package runs from
     # Named chains for `run submit --chain NAME --items ...` (DESIGN 11.3): each item runs through the steps in order,
-    # on one node, and stops at its first non-zero exit (refused / no-input / error recorded per step); a retried item
-    # resumes at its first step not done. A step is a command-line template: {item} is replaced by the item; a
+    # on one node (exit codes recorded per step; what stops an item: the next paragraph); a retried item resumes at its first
+    # step that ended neither done nor no-input. A step is a command-line template: {item} is replaced by the item; a
     # template without {item} gets '--cells <item>' appended. Example (for when the steps exist):
     #   'deep-cell': ['masters --tier deep --cells {item} --stages build,vclean,fluxscale,pbmaps',
     #                 'dewarp --tier deep --cells {item}', 'install --tier deep --cells {item}',
