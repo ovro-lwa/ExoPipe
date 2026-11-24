@@ -9,7 +9,8 @@ passes, any other status refuses) and keeps the LST-wide evidence for a subband 
 reads the LST-wide evidence only.
 
 The engine (clv15/phase3_sublst_wideband.py, production code) is replaced by a stub that refuses: a unit whose reason is
-the stub's line passed every gate before the engine. The engine's own run on real data is in the record
+the stub's line passed every gate before the engine. The x2 residual's name tests replace it by a stand-in that writes the
+group's products with the engine's header rule (the first member's header of each kind). The engine's own run on real data is in the record
 exopipe_ops refactor_20261012/plan/stage_map_tools/perhour_wideband_nonmember_20261113/RECORD.md.
 
 Run: python tests/test_sublst_wideband_perhour.py [test names]   (exit 0 = all passed, 1 = a failure, 2 = imports missing)
@@ -628,6 +629,157 @@ def test_the_stack_of_a_member_subband_ends_no_input():
         del got[:]
         units, _out = t.run(stages='stack', scopes=f'{a},{b}')
         assert sorted(x.status for x in units) == ['no-input', 'no-input'] and not got, ([(x.name, x.status) for x in units], got)
+
+
+# =====================================================================================================================
+# the wideband x2 residual's name (R-GREGG-20261113-SPEEDUP-CHECKIN-TEN-ANSWERS (9b))
+# =====================================================================================================================
+
+KINDS = {'stack': '.fits', 'pb': '_pb.fits', 'nf': '_nframes.fits', 'rA': '_resid_loo.fits', 'rB': '_resid_loo.fits'}
+
+
+def product(t, sb, S, kind, k=0):
+    d = os.path.join(t.root, f'{LST}_x2' if kind == 'rB' else LST, f'{LST}_{NIGHT}', sb, S)
+    return os.path.join(d, f'sublst_{LST}_{NIGHT}_{sb}_{S}_w{k}{KINDS[kind]}')
+
+
+def members_written(t, named=True):
+    """Every member's five window-0 products in both Stokes (64 x 64 px, value 1 + member index), DATE-OBS staggered so
+    the EARLIEST is the third member's, never the first's (the engine copies the first member's header); the x2 residual
+    (set B) carries the member's own name when ``named`` (lib/flow/sublst_nonmember_refine.residual_header), as the
+    per-hour refine writes it. Returns {sb: DATE-OBS}."""
+    import numpy as np
+    from astropy.io import fits
+    dob = {sb: f'{NIGHT}T10:0{5 - i if i != 2 else 0}:01.000' for i, sb in enumerate(t.members)}
+    assert min(dob.values()) == dob[t.members[2]] and dob[t.members[0]] != dob[t.members[2]], dob
+    for i, sb in enumerate(t.members):
+        for S in ('I', 'V'):
+            for kind in KINDS:
+                h = fits.Header()
+                h['DATE-OBS'], h['DATE-END'] = dob[sb], f'{NIGHT}T10:09:59.000'
+                h['LSTBIN'] = 0
+                if kind == 'rB' and named:
+                    h['PRODNAME'] = (NM.window_residual_name(sb, S, LST, 0, dob[sb]), NM.PRODNAME_COMMENT)
+                p = product(t, sb, S, kind)
+                os.makedirs(os.path.dirname(p), exist_ok=True)
+                fits.writeto(p, np.full((64, 64), 1.0 + i, np.float32), h, overwrite=True)
+    later = os.stat(product(t, t.members[-1], 'V', 'rB')).st_mtime + 2     # the refine logs after the stacks (S-G8)
+    for sb in t.members:
+        os.utime(os.path.join(t.root, f'{LST}_x2', 'logs', f'{LST}_{sb}.log'), (later, later))
+    return dob
+
+
+def wideband_engine(t, wbmemb_of_rb=None):
+    """A stand-in for clv15/phase3_sublst_wideband.py that does what it does to a header (wideband:145-185): every product
+    of the group takes its FIRST member's header of that kind, plus WIDEBAND / WBMEMB / WBWGTS; pixels = the equal-weight
+    member mean (the minimum for _nframes). ``wbmemb_of_rb``: a WBMEMB written on the x2 residual only (to make its name unbuildable)."""
+    import numpy as np
+    from astropy.io import fits
+
+    def engine(script, args_, python, log, unit=None, env=None, refusal_codes=(2,), refusal_text=None):
+        t.calls.append(list(args_))
+        w = ','.join(['0.2'] * len(t.members))
+        for S in ('I', 'V'):
+            for kind in KINDS:
+                with fits.open(product(t, t.members[0], S, kind), memmap=False) as hd:
+                    h0 = hd[0].header.copy()
+                arr = (np.min if kind == 'nf' else np.mean)([fits.getdata(product(t, sb, S, kind), memmap=False)
+                                                            for sb in t.members], axis=0)
+                h0['WIDEBAND'] = G
+                h0['WBMEMB'] = wbmemb_of_rb if (kind == 'rB' and wbmemb_of_rb) else ','.join(t.members)
+                h0['WBWGTS'] = w
+                p = product(t, G, S, kind)
+                os.makedirs(os.path.dirname(p), exist_ok=True)
+                fits.PrimaryHDU(arr.astype(np.float32), h0).writeto(p + '.part.fits', overwrite=True)
+                os.replace(p + '.part.fits', p)
+        lines = [f'WIDEBAND {LST} {NIGHT} {G} w0 members={",".join(t.members)} weights={w}',
+                 f'SUBLST-WIDEBAND {LST} groups={G} windows=1 skipped=0 refused_band_rule=0 refused_incomplete=0']
+        res = types.SimpleNamespace(ok=True, refused=False, rc=0, reason='', tail='\n'.join(lines), fallback_refusals=[])
+        return res, lines
+    return engine
+
+
+def test_the_red_x2_residual_carries_the_red_name_never_a_members():
+    """The engine copies the first member's header, so the Red x2 residual inherits 18 MHz's PRODNAME; the stage replaces
+    it with Red's own name in the archive writer's form, epoch = the earliest member window stack DATE-OBS (the third
+    member's here), pixels unchanged; no other product carries a name; no temporary file is left."""
+    import numpy as np
+    from astropy.io import fits
+    from exopipe.phase3.core import products
+    with Root() as t:
+        dob = members_written(t)
+        for sb in t.members:
+            t.night_record(sb)
+        with Patch((FT, 'engine', wideband_engine(t))):
+            u = only(t.run()[0], f'{LST}_wideband_{G}_{NIGHT}')
+        assert u.status == 'done', (u.status, u.reason)
+        assert len(t.calls) == 1 and len(u.outputs) == 10 and all(x['passed'] for x in u.tests), u.tests
+        for S in ('I', 'V'):
+            rb = product(t, G, S, 'rB')
+            h = fits.getheader(rb, memmap=False)
+            want = NM.window_residual_name(G, S, LST, 0, dob[t.members[2]])
+            assert h['PRODNAME'] == want and h.comments['PRODNAME'] == NM.PRODNAME_COMMENT, (h['PRODNAME'], want)
+            p = products.parse_name(h['PRODNAME'])
+            assert p['grammar'] == 'phase3' and products.build_name(**p) == h['PRODNAME']
+            assert (p['scope'], p['stokes'], p['cadence'], p['lst'], p['lst_bin'], p['epoch']) == \
+                (G, S, '10min', LST, 0, dob[t.members[2]][:19].replace('-', '').replace(':', '')), p
+            for sb in t.members:          # never a member subband's name, of any member's epoch
+                assert h['PRODNAME'] != NM.window_residual_name(sb, S, LST, 0, dob[sb]), sb
+                assert not h['PRODNAME'].startswith(sb + '_'), h['PRODNAME']
+            assert u.meta['wideband_names'][os.path.basename(rb)] == {
+                'name': want, 'inherited': NM.window_residual_name(t.members[0], S, LST, 0, dob[t.members[0]])}
+            data = fits.getdata(rb, memmap=False)
+            assert data.dtype == np.dtype('>f4') and np.array_equal(data, np.mean(
+                [fits.getdata(product(t, sb, S, 'rB'), memmap=False) for sb in t.members], axis=0).astype(np.float32))
+            for kind in ('stack', 'pb', 'nf', 'rA'):
+                assert 'PRODNAME' not in fits.getheader(product(t, G, S, kind), memmap=False), kind
+            assert sorted(os.listdir(os.path.dirname(rb))) == [os.path.basename(rb)]       # no temporary file left
+        # the content test refuses an inherited (member's) name on the group's x2 residual, and a name on any other product
+        from exopipe.phase3.lib.frames import tests_sublst as TS
+        rb = product(t, G, 'I', 'rB')
+        with fits.open(rb, memmap=False) as hd:
+            d, h = hd[0].data, hd[0].header.copy()
+        h['PRODNAME'] = NM.window_residual_name(t.members[0], 'I', LST, 0, dob[t.members[0]])
+        fits.writeto(rb, d, h, overwrite=True)
+        ok, _n, why = TS.wideband_content(rb)
+        assert not ok and 'is not the group\'s name' in why, why
+        st = product(t, G, 'I', 'stack')
+        with fits.open(st, memmap=False) as hd:
+            d, h = hd[0].data, hd[0].header.copy()
+        h['PRODNAME'] = NM.window_residual_name(G, 'I', LST, 0, dob[t.members[2]])
+        fits.writeto(st, d, h, overwrite=True)
+        ok, _n, why = TS.wideband_content(st)
+        assert not ok and 'on a stack product' in why, why
+
+
+def test_an_unnamed_x2_residual_set_keeps_production_s_wideband_header():
+    """Members written by the batch refine (production's phase3_sublst_refine.py in place) carry no PRODNAME: the group's
+    x2 residual inherits none and is left exactly as the engine wrote it."""
+    from astropy.io import fits
+    with Root() as t:
+        members_written(t, named=False)
+        for sb in t.members:
+            t.night_record(sb)
+        with Patch((FT, 'engine', wideband_engine(t))):
+            u = only(t.run()[0], f'{LST}_wideband_{G}_{NIGHT}')
+        assert u.status == 'done', (u.status, u.reason)
+        for S in ('I', 'V'):
+            assert 'PRODNAME' not in fits.getheader(product(t, G, S, 'rB'), memmap=False)
+        assert 'wideband_names' not in u.meta, u.meta
+
+
+def test_a_group_name_that_cannot_be_built_refuses_and_leaves_no_member_name():
+    """WBMEMB of the x2 residual differs from the group window stack's: the group's name cannot be built, so the unit
+    refuses and the inherited member name is removed - no file keeps a name that is not its own."""
+    from astropy.io import fits
+    with Root() as t:
+        members_written(t)
+        for sb in t.members:
+            t.night_record(sb)
+        with Patch((FT, 'engine', wideband_engine(t, wbmemb_of_rb=','.join(t.members[1:])))):
+            u = only(t.run()[0], f'{LST}_wideband_{G}_{NIGHT}')
+        assert u.status == 'refused' and f'cannot be named as {G}' in u.reason and 'was removed' in u.reason, u.reason
+        assert 'PRODNAME' not in fits.getheader(product(t, G, 'I', 'rB'), memmap=False)
 
 
 def test_the_per_hour_chain_names_the_ten_minute_stages_in_order():

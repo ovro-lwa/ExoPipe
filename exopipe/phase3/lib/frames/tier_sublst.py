@@ -1038,6 +1038,46 @@ def wideband_products(root, x2, lst, night, G, S, k):
             os.path.join(d, b + '_resid_loo.fits'), os.path.join(dx, b + '_resid_loo.fits')]
 
 
+WB_SET_B = 4      # the set-B (x2) residual's index in wideband_products
+
+
+def name_wideband_residual(u, root, lst, night, G, S, k, path):
+    """THE WIDEBAND x2 RESIDUAL'S NAME (R-GREGG-20261113-SPEEDUP-CHECKIN-TEN-ANSWERS (9b)). The engine copies its first member's
+    header into every product it writes (wideband:145-185), so the set-B residual of a group inherits that subband's PRODNAME
+    (lib/flow/sublst_nonmember_refine.residual_header names each subband's x2 residual). On a file this unit just wrote, that
+    inherited card is replaced by the group's own name in the archive writer's form: sublst_nonmember.window_residual_name of
+    group ``G``, epoch = the earliest DATE-OBS of the member window stacks (WBMEMB of the group's window stack, which the
+    residual's own WBMEMB must equal; tenmin_archive_release1.py:770-778), written through a temporary file and os.replace
+    (core.fitsio.write_fits; pixels unchanged). A residual without an inherited PRODNAME (members written by the batch refine,
+    production's phase3_sublst_refine.py in place) is left as the engine wrote it. A group name that cannot be built refuses
+    the unit, and the inherited card is removed first, so no file keeps a member subband's name. Returns the name or None."""
+    from astropy.io import fits
+    from exopipe.phase3.core import fitsio
+    from exopipe.phase3.lib.masters import sublst_nonmember as NM
+    with fits.open(path, memmap=False) as hd:
+        h = hd[0].header.copy()
+        data = hd[0].data
+    if 'PRODNAME' not in h:
+        return None
+    inherited = str(h['PRODNAME'])
+    try:
+        stack = wideband_products(root, root, lst, night, G, S, k)[0]      # the group's window stack (x2 not used)
+        members = [x for x in str(fits.getheader(stack, memmap=False).get('WBMEMB', '') or '').split(',') if x]
+        own = [x for x in str(h.get('WBMEMB', '') or '').split(',') if x]
+        if members != own:
+            raise ValueError(f'WBMEMB of the group window stack {members} != the residual\'s {own}')
+        name = NM.window_residual_name(G, S, lst, k, NM.wideband_window_epoch(root, lst, night, members, S, k))
+    except (OSError, KeyError, ValueError) as e:
+        del h['PRODNAME']
+        fitsio.write_fits(path, data, h, overwrite=True)
+        u.refuse(f'the wideband x2 residual {path} cannot be named as {G} ({type(e).__name__}: {e}); the PRODNAME it inherited '
+                 f'from a member subband ({inherited}) was removed - no file keeps a name that is not its own')
+    h['PRODNAME'] = (name, NM.PRODNAME_COMMENT)
+    fitsio.write_fits(path, data, h, overwrite=True)
+    u.meta.setdefault('wideband_names', {})[os.path.basename(path)] = dict(name=name, inherited=inherited)
+    return name
+
+
 def stage_wideband(ctx, lst, nights, per_hour):
     from exopipe.phase3.core.record import NoInput
     from exopipe.phase3.lib.masters import sublst_nonmember as NM
@@ -1175,9 +1215,11 @@ def stage_wideband(ctx, lst, nights, per_hour):
                     nwin += 1
                     n_one += len(built) == 1
                     for St in built:                 # a window built in one Stokes only has that Stokes' products only
-                        for p in wideband_products(root, x2, lst, n, G, St, k):
+                        for i, p in enumerate(wideband_products(root, x2, lst, n, G, St, k)):
                             if not (os.path.exists(p) and mtime(p) >= t0 - 2):
                                 raise RuntimeError(f'wideband reported "{l[:120]}" but did not write {p}')
+                            if i == WB_SET_B:        # the group's own name, never a member subband's (9b)
+                                name_wideband_residual(u, root, lst, n, G, St, k, p)
                             u.add_output(p, 'sublst_wideband')
                 for St, k, _missing, l in o['incomplete']:
                     # S-G9 required members (clv15 582c92e): no wideband from a partial set, 18 MHz the one exception

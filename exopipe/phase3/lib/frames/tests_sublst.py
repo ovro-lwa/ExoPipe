@@ -140,7 +140,8 @@ def wideband_content(path, **ctx):
     Stokes V stack (the weight); the central 64x64 patch = the WBWGTS-weighted mean of the members' patches
     (minimum for _nframes; NaN propagates) within 1e-3 of the patch scale (WBWGTS carry 4 significant digits); baked flux:
     SHSCALE x FLUXCORR = the weighted mean of the members' SHSCALE x FLUXCORR (1e-3), read from their stacks of the first
-    Stokes built (I, else V: as the engine); not excluded under the band rule."""
+    Stokes built (I, else V: as the engine); not excluded under the band rule. A PRODNAME only on the set-B residual, and
+    there the group's own name (sublst_nonmember.window_residual_name, epoch = the earliest member window stack DATE-OBS)."""
     from exopipe.phase3.core import cells
     b = os.path.basename(path)
     m = _STACK_RE.match(b)
@@ -199,6 +200,16 @@ def wideband_content(path, **ctx):
         got = float(h.get('SHSCALE', np.nan)) * float(h.get('FLUXCORR', np.nan))
         if not (np.isfinite(got) and abs(got - beff) <= 1e-3 * abs(beff)):
             msgs.append(f'pixel factor SHSCALE x FLUXCORR {got:.6g} != weighted member mean {beff:.6g}')
+    if 'PRODNAME' in h:      # only the set-B residual may carry a name, and only the group's own (9b; tier_sublst.name_wideband_residual)
+        from exopipe.phase3.lib.masters import sublst_nonmember as NM
+        try:
+            want = NM.window_residual_name(G, S, lst, k, NM.wideband_window_epoch(stack_root, lst, night, memb, S, k))
+        except (OSError, KeyError, ValueError) as e:
+            want = f'(not buildable: {e})'
+        if kind != 'rB':
+            msgs.append(f'PRODNAME {h["PRODNAME"]!r} on a {kind} product (only the x2 residual is named)')
+        elif str(h['PRODNAME']) != want:
+            msgs.append(f'PRODNAME {h["PRODNAME"]!r} is not the group\'s name {want}')
     if _excluded(lst, G, night):
         msgs.append(f'({lst}, {G}, {night}) is excluded under the band rule (data_decisions)')
     return _fail(msgs)
