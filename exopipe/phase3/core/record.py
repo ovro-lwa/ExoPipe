@@ -470,12 +470,14 @@ def injected_runs(path):
     return out
 
 
-def atomic_write_json(path, obj, durable=False):
+def atomic_write_json(path, obj, durable=False, place=False):
     """Write ``obj`` as JSON to ``path`` atomically: a temporary file beside it, renamed over ``path`` (on any exception the
     temporary file is removed and the exception propagates). ``durable`` (the unit and run records): the temporary file is
     flushed and fsynced before the rename and the directory fsynced after it (core/fitsio.fsync_fd / fsync_path), so an
     OSError reports a record that is not on disk - a Lustre eviction discards dirty pages, and an error that reaches only the
-    page cache is reported by fsync (FINDING-20261122-CUTOUT-WRITER-DISCARDED-PAGES-PASS-AS-DONE)."""
+    page cache is reported by fsync (FINDING-20261122-CUTOUT-WRITER-DISCARDED-PAGES-PASS-AS-DONE). ``place`` (products
+    written as JSON, never the unit and run records): the rename is core/placement.replace - the replaced file's group, mode
+    and ACL, else the directory's rule; a refusal (PlacementRefusal) renames nothing."""
     from exopipe.phase3.core.fitsio import fsync_fd, fsync_path
     d = os.path.dirname(path)
     os.makedirs(d, exist_ok=True)
@@ -486,7 +488,11 @@ def atomic_write_json(path, obj, durable=False):
             if durable:
                 f.flush()
                 fsync_fd(f.fileno())
-        os.replace(tmp, path)
+        if place:
+            from exopipe.phase3.core import placement     # here: placement imports this module
+            placement.replace(tmp, path, drop=True)
+        else:
+            os.replace(tmp, path)
     except BaseException:
         try:
             os.unlink(tmp)
