@@ -396,7 +396,7 @@ def atomic_copy(src, dst):
 
 def write_text_atomic(path, text):
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    # the replaced file's group, mode and ACL, else the directory's (core/placement.atomic)
+    # the existing file's group, mode and ACL, or the directory's rule for a new file (core/placement.atomic)
     with placement.atomic(path) as tmp, open(tmp, 'w', newline='') as f:
         f.write(text)
     return path

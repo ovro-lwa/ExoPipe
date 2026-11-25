@@ -502,6 +502,32 @@ def test_publish():
           rc == 0 and bak.startswith(p + '.bak_') and os.path.exists(bak) and open(bak, 'rb').read() == before
           and m.get('backup_sha1') == hashlib.sha1(before).hexdigest() == m.get('replaced_sha1')
           and m.get('published_sha1') == hashlib.sha1(open(p, 'rb').read()).hexdigest(), (rc, m))
+    # a refused placement on a republish (the published file's group cannot be given): the file stands, this attempt's
+    # backup and its temporary file are removed, and the refusal is in the unit's meta (PR 178 fix round)
+    from exopipe.phase3.core import placement as PL
+    foreign = next((g for g in (0, 1, 2, 3, 4, 65534) if g not in os.getgroups() and g != os.getegid()), None)
+    if os.geteuid() != 0 and foreign is not None:
+        rd = os.path.dirname(p)
+        baks0, snap = sorted(n for n in os.listdir(rd) if '.bak_' in n), (open(p, 'rb').read(), os.stat(p).st_ino)
+        real = PL.target_attrs
+        PL.target_attrs = lambda dst, like=None: (dict(real(dst, like), gid=foreign)
+                                                  if os.path.basename(dst) == 'forced_wide_v3.csv' else real(dst, like))
+        try:
+            rc, err = cli(base + ['--fresh'])
+        finally:
+            PL.target_attrs = real
+        r = rec(out, 'W_publish_Run_SNAPFORCED_I10s_gen5')
+        m = r.get('meta') or {}
+        names = os.listdir(rd)
+        gone = m.get('backup_removed') or ''
+        check('cli: a refused placement on a republish leaves the published file (bytes, inode), removes this attempt\'s backup '
+              'and temporary file, and records the refusal in the unit\'s meta',
+              rc == 2 and r.get('status') == 'refused' and (r.get('reason') or '').startswith('placement:')
+              and (open(p, 'rb').read(), os.stat(p).st_ino) == snap and sorted(n for n in names if '.bak_' in n) == baks0
+              and not [n for n in names if n.endswith('.tmp')] and (m.get('placement_refused') or '').startswith('placement:')
+              and gone.startswith(p + '.bak_') and not os.path.exists(gone), (rc, r.get('reason'), m, sorted(names)))
+    else:
+        print('UNTESTED the refused placement on a republish (root, or a member of every candidate group)')
     rc, err = cli(base[:-2] + ['--stages', 'wide_publish', '--dry-run', '--snap-review-root', '/data07/gh/phase3/snapshot_search/review'])
     check('dry run: publishing into the served runs (a production root) is planned as W-ROOT for each of the 4 runs, exit 2',
           rc == 2 and _LAST_OUT[0].count('W-ROOT') >= 4, (rc, _LAST_OUT[0][-500:]))

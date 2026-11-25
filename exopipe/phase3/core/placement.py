@@ -22,9 +22,10 @@ The refusal names the product, its temporary file and the group. Under the parit
 anything changes.
 
 ``atomic(dst)`` is the writers' form: ``with placement.atomic(dst) as tmp:`` yields a unique temporary path beside ``dst``
-(``<dst>.<pid>.<random>.tmp``, not created), the block writes it with the caller's own writer (open + csv, json.dump,
-writeto, ...), and a clean exit places it (``replace(tmp, dst, drop=True)``); ANY exception inside the block removes the
-temporary file and propagates.
+(``<dst>.<pid>.<random>.tmp``, or ``<dst>.<tag>.<pid>.<random>.tmp`` with ``tag``; not created), the block writes it with
+the caller's own writer (open + csv, json.dump, writeto, ...), and a clean exit places it (``replace(tmp, dst, drop=True)``);
+ANY exception inside the block removes the temporary file and propagates. Only a killed process leaves one behind:
+``temp_glob(dst, tag)`` is the glob of those names, for the cleanup of the writer's next run.
 """
 import contextlib
 import errno
@@ -193,14 +194,29 @@ def _remove(path):
         pass
 
 
+_HEX8 = '[0-9a-f]' * 8
+
+
+def temp_glob(dst, tag=None):
+    """The glob of the temporary files ``atomic(dst, tag=tag)`` writes (``<dst>[.<tag>].<pid>.<8 hex digits>.tmp``): what a
+    killed writer leaves, for its next run's cleanup. ``dst`` is a glob itself (glob.escape a literal path; ``<dir>/*`` for
+    every file of a directory). Without ``tag`` it does not match a tagged name whose tag starts with a letter, and a tag's
+    glob matches only that tag's names."""
+    return f'{dst}.{tag + "." if tag else ""}[0-9]*.{_HEX8}.tmp'
+
+
 @contextlib.contextmanager
-def atomic(dst, like=None):
+def atomic(dst, like=None, tag=None):
     """``with atomic(dst) as tmp:`` - write ``tmp`` with the caller's own writer; a clean exit places it at ``dst``
-    (replace(tmp, dst, like, drop=True): the replaced product's group, mode and ACL, else the directory's rule; a refusal
-    removes ``tmp``). ANY exception inside the block removes ``tmp`` and propagates. ``tmp`` is ``<dst>.<pid>.<random>.tmp``
-    in ``dst``'s directory (unique per call, never created here: a writer that refuses an existing file works). A block that
-    leaves no ``tmp`` REFUSES (nothing to place is never a silent success)."""
-    tmp = f'{dst}.{os.getpid()}.{os.urandom(4).hex()}.tmp'
+    (replace(tmp, dst, like, drop=True): the existing file's group, mode and ACL, or the directory's rule for a new file; a
+    refusal removes ``tmp``). ANY exception inside the block removes ``tmp`` and propagates. ``tmp`` is
+    ``<dst>.<pid>.<random>.tmp`` in ``dst``'s directory (unique per call, never created here: a writer that refuses an
+    existing file works); ``tag`` (letters, digits, '_'; first a letter) is put before the pid, for writers that share a
+    directory and clean up only their own temporary files (temp_glob(dst, tag)). A block that leaves no ``tmp`` REFUSES
+    (nothing to place is never a silent success)."""
+    if tag is not None and not (tag[:1].isalpha() and tag.replace('_', '').isalnum()):
+        raise ValueError(f'placement.atomic: tag {tag!r} is not letters, digits and \'_\' starting with a letter')
+    tmp = f'{dst}.{tag + "." if tag else ""}{os.getpid()}.{os.urandom(4).hex()}.tmp'
     try:
         yield tmp
     except BaseException:

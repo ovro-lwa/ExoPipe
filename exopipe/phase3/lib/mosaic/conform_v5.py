@@ -249,7 +249,7 @@ def _write(path, head, rows):
     w.writerow(head)
     for row in rows:
         w.writerow(row)
-    # the replaced file's group, mode and ACL, else the directory's (core/placement.atomic)
+    # the existing file's group, mode and ACL, or the directory's rule for a new file (core/placement.atomic)
     with placement.atomic(path) as tmp, open(tmp, 'w', newline='') as f:
         f.write(buf.getvalue())
 

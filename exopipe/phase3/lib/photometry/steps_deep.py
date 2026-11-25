@@ -114,13 +114,20 @@ def read_rows(path):
 
 def write_rows(path, cols, rows):
     """csv.DictWriter with its default CRLF terminator - the engines' own writer (deep_forced_frames.py:57,
-    run_deep_forced_20260928.sh:24-25); placed with the replaced file's group, mode and ACL, else the directory's
-    (core/placement.atomic)."""
-    with placement.atomic(path) as tmp, open(tmp, 'w', newline='') as f:
+    run_deep_forced_20260928.sh:24-25); placed with the existing file's group, mode and ACL, or the directory's rule for a new
+    file (core/placement.atomic)."""
+    with placement.atomic(path) as tmp:
+        write_rows_into(tmp, cols, rows)
+    return path
+
+
+def write_rows_into(path, cols, rows):
+    """The same CSV written straight into ``path``: for a caller that holds its own temporary file (inside
+    placement.atomic)."""
+    with open(path, 'w', newline='') as f:
         w = csv.DictWriter(f, fieldnames=cols)
         w.writeheader()
         w.writerows(rows)
-    return path
 
 
 def v_noise_bad(rows):
@@ -248,8 +255,8 @@ def stage_frames(run, args):
                     u.add_input(q)
         os.makedirs(out, exist_ok=True)
         u.plan(fl, 'photometry_frame_list')
-        # the engine writes the list to a temporary file beside it, placed with the replaced list's group, mode and ACL,
-        # else the directory's; any exception or refusal removes it (core/placement.atomic)
+        # the engine writes the list to a temporary file beside it, placed with the existing file's group, mode and ACL, or
+        # the directory's rule for a new file; any exception or refusal removes it (core/placement.atomic)
         with placement.atomic(fl) as tmp:
             res, text = K.call(u, 'frames', [tmp] + cells, 'deep', 'deep_frames', run, 'frames.log',
                                env_extra={'DEEP_FORCED_SRC_RUN': src, 'P3_PARENT_DIR': par, 'P3_COADD_ROOT': coadd},
@@ -294,7 +301,7 @@ def stage_frames(run, args):
                 if not keep:
                     raise NoInput('F-NOFRAMES: no frame of epochs %s / Stokes %s in the frame list (%d engine rows)'
                                   % (sorted(eps), args.stokes, n_engine))
-                write_rows(tmp, cols, keep)           # the kept rows replace the engine's list in the temporary file
+                write_rows_into(tmp, cols, keep)      # the kept rows replace the engine's list in the temporary file
         # deep_forced_frames.py refuses a WHOLE cell (parents :34, no PB_deep map :36, no search frames :55: the cell loop
         # continues) or, without the cell's Robust -0.75 PB map, each Stokes I FRAME (:50-51: the frame loop continues, the V
         # rows of the cell stay listed) - FL6 checks the two kinds separately (one line per frame: recorded once per cell)

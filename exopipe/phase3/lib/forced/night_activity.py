@@ -94,8 +94,8 @@ def build(cnt, nights, c=None):
 
 
 def write_table(path, rows, columns):
-    """csv.DictWriter as the script wrote (its header = the first row's keys = ``columns``), tmp + rename (the replaced
-    file's group, mode and ACL, else the directory's: core/placement.atomic)."""
+    """csv.DictWriter as the script wrote (its header = the first row's keys = ``columns``), tmp + rename (the existing
+    file's group, mode and ACL, or the directory's rule for a new file: core/placement.atomic)."""
     with placement.atomic(path) as tmp, open(tmp, 'w', newline='') as f:
         w = csv.DictWriter(f, fieldnames=list(columns))
         w.writeheader()

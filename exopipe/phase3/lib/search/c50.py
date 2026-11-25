@@ -49,7 +49,7 @@ def record(band, sigma_local, cell, n, method, stamp):
     tbl = _load()
     tbl[band] = dict(sigma_local=round(float(sigma_local), 3), cell=cell,
                      n=int(n), method=method, stamp=stamp)
-    # the replaced table's group, mode and ACL, else the directory's (core/placement.atomic)
+    # the existing file's group, mode and ACL, or the directory's rule for a new file (core/placement.atomic)
     with placement.atomic(MEASURED_FILE) as tmp, open(tmp, 'w') as fh:
         json.dump(tbl, fh, indent=2, sort_keys=True)
     return tbl

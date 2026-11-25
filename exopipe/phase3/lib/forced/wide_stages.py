@@ -716,26 +716,35 @@ def stage_publish(c):
             rr = [r for r in rows if r['stokes'] == st and r['tier'] == cad]
             u.plan(final, 'forced_wide_published')
             ctx = dict(results=res[0], jobs=jobs_path, stokes=st, tier=cad)
-            # placed with the replaced table's group, mode and ACL, else the directory's; a refusal (content test, backup or
-            # placement) removes the temporary file (core/placement.atomic)
-            with placement.atomic(final) as part:
-                V3.write_rows_keys(part, rr, keys)
-                bad = [t for t in validate.run('forced_wide_published', part, **ctx) if not t['passed']]
-                if bad:
-                    u.refuse('content test of %s failed: %s' % (part, '; '.join('%s (%s)' % (t['name'], str(t['detail'])[:200])
-                                                                               for t in bad)))
-                prev = _sha1_file(final) if os.path.exists(final) else None
-                backup = None
-                if prev is not None:        # the file replaced is kept beside it, as it was (copy first, then the replace)
-                    stamp = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())
-                    backup = '%s.bak_%s' % (final, stamp)
-                    n_ = 1
-                    while os.path.exists(backup):
-                        backup = '%s.bak_%s_%d' % (final, stamp, n_)
-                        n_ += 1
-                    shutil.copy2(final, backup)
-                    if _sha1_file(backup) != prev:
-                        u.refuse('W-BACKUP the backup %s of %s does not read back (sha1): nothing replaced' % (backup, final))
+            # placed with the existing file's group, mode and ACL, or the directory's rule for a new file; a refusal (content
+            # test, backup or placement) removes the temporary file (core/placement.atomic) and this attempt's backup
+            backup = None
+            try:
+                with placement.atomic(final) as part:
+                    V3.write_rows_keys_into(part, rr, keys)
+                    bad = [t for t in validate.run('forced_wide_published', part, **ctx) if not t['passed']]
+                    if bad:
+                        u.refuse('content test of %s failed: %s'
+                                 % (part, '; '.join('%s (%s)' % (t['name'], str(t['detail'])[:200]) for t in bad)))
+                    prev = _sha1_file(final) if os.path.exists(final) else None
+                    if prev is not None:    # the file replaced is kept beside it, as it was (copy first, then the replace)
+                        stamp = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())
+                        name = '%s.bak_%s' % (final, stamp)
+                        n_ = 1
+                        while os.path.exists(name):
+                            name = '%s.bak_%s_%d' % (final, stamp, n_)
+                            n_ += 1
+                        backup = name           # this attempt's: removed below when nothing is replaced
+                        shutil.copy2(final, backup)
+                        if _sha1_file(backup) != prev:
+                            u.refuse('W-BACKUP the backup %s of %s does not read back (sha1): nothing replaced'
+                                     % (backup, final))
+            except BaseException as e:
+                if backup is not None and os.path.lexists(backup):
+                    os.remove(backup)           # nothing replaced: the published file stands, so no backup of it is kept
+                if isinstance(e, placement.PlacementRefusal):
+                    u.meta.update(placement_refused=str(e), backup_removed=backup)
+                raise
             u.meta.update(n_rows=len(rr), replaced_sha1=prev, backup=backup, backup_sha1=prev, published_sha1=_sha1_file(final))
             u.add_output(final, 'forced_wide_published', **ctx)
             print('%s %s: %d rows -> %s' % (st, cad, len(rr), final), flush=True)

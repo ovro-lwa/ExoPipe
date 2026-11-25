@@ -507,6 +507,73 @@ def test_copy_inputs_from_archive():
         shutil.rmtree(d, ignore_errors=True)
 
 
+def _archive(d):
+    """The archived masters and PB maps of the fake 18h 46 MHz cell (as test_copy_inputs_from_archive builds them)."""
+    am = os.path.join(d, 'masters')
+    a = os.path.join(am, '18h', '46MHz')
+    os.makedirs(a)
+    for rob in ('Robust-0.75', 'Robust+0.0'):
+        for pb in ('', 'pbcorr_'):
+            n = f'46MHz_I_deep_NoTaper_{rob}_shflux_mdewarp_{pb}dewarped_aligned_coadd_LST18h_20250405-20251014_N015.fits'
+            fits.writeto(os.path.join(a, n), np.zeros((64, 64), np.float32) + (1 if pb else 0),
+                         fits.Header({'PRODNAME': n, 'P1RUN': 'r1', 'CALBP': 'bp'}))
+    for p in ('PB_deep_R075_46MHz.fits', 'PB_deep_46MHz.fits'):
+        fits.writeto(os.path.join(a, p), np.ones((64, 64), np.float32), fits.Header({'P1RUN': 'r1'}))
+    return am
+
+
+def test_killed_copy_leaves_only_what_cleanup_finds():
+    """A copy_inputs killed mid-copy (SIGKILL after its temporary file is written) leaves only the name
+    placement.atomic(dst, tag=<weighting>) writes; the stack unit's cleanup of that weighting removes it, a pre-placement
+    <name>.<v>.part and a killed place=True record write (<v>_stack.json.<pid>.<hex>.tmp), and never the other weighting's
+    temporary file in the shared inputs/ directory."""
+    import signal
+    import subprocess
+    from exopipe.phase3.core import placement as PL
+    d = _tmp('kill')
+    old = (CFG.hybrid_stack.COADD_SB, HST.stack_variant)
+    held = []                               # open placement blocks: a collected generator would remove its temporary file
+    try:
+        sb = os.path.join(d, 'coadd_sb')
+        _fake_cell(sb)
+        am = _archive(d)
+        out, work = os.path.join(d, 'out'), os.path.join(d, 'work')
+        os.makedirs(out)
+        wd = os.path.join(out, '18h_46MHz')
+        ind = HC.inputs_dir(wd)
+        code = ('import os, shutil, signal, sys\n'
+                'from exopipe.phase3.lib.hybrid import stack as HST\n'
+                'shutil.copystat = lambda *a, **k: os.kill(os.getpid(), signal.SIGKILL)\n'
+                'HST.copy_inputs(sys.argv[1], sys.argv[2], "18h", "46MHz", "R0", set(), archive_masters=sys.argv[3])\n')
+        rc = subprocess.run([sys.executable, '-c', code, ind, sb, am], env=dict(os.environ, PYTHONPATH=REPO)).returncode
+        left = sorted(os.listdir(ind))
+        assert rc == -signal.SIGKILL and len(left) == 1 and '.R0.' in left[0] and left[0].endswith('.tmp'), (rc, left)
+        killed = os.path.join(ind, left[0])
+        assert HS._input_temps(ind, 'R0') == [killed] and HS._input_temps(ind, 'R075') == [], HS._input_temps(ind, 'R0')
+
+        def temp_of(path, tag=None):
+            held.append(PL.atomic(path, tag=tag))
+            t = held[-1].__enter__()
+            open(t, 'w').close()
+            return t
+        live = temp_of(os.path.join(ind, 'PB_deep_46MHz.fits'), tag='R075')     # the other weighting, still copying
+        legacy = os.path.join(ind, 'PB_deep_46MHz.fits.R0.part')
+        open(legacy, 'w').close()
+        rec_tmp = temp_of(os.path.join(wd, 'R0_stack.json'))                    # a killed place=True record write
+        assert HS._input_temps(ind, 'R0') == sorted([killed, legacy]) and HS._input_temps(ind, 'R075') == [live]
+        CFG.hybrid_stack.COADD_SB = sb
+        HST.stack_variant = _fake_stack(fail=())
+        u = _run_unit(out, work, 'R0')
+        assert u.status == 'done', (u.status, u.reason)
+        gone = [p for p in (killed, legacy, rec_tmp) if os.path.lexists(p)]
+        assert not gone and os.path.exists(live), (gone, sorted(os.listdir(ind)))
+        assert not [n for n in os.listdir(wd) if n.endswith(('.tmp', '.part'))], sorted(os.listdir(wd))
+    finally:
+        CFG.hybrid_stack.COADD_SB, HST.stack_variant = old
+        held.clear()
+        shutil.rmtree(d, ignore_errors=True)
+
+
 if __name__ == '__main__':
     fails = 0
     for name, fn in sorted((k, v) for k, v in dict(globals()).items() if k.startswith('test_') and callable(v)):

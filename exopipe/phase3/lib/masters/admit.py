@@ -384,7 +384,8 @@ def write_reference(cell_dir, scope, ents):
                 raise Refusal(f'{p} exists with other content: the installed master changed since the admission reference '
                               f'was written - admit into the new master from a fresh <cell>/{ADMIT_DIR}/')
         else:
-            with placement.atomic(p) as tmp:        # the directory's group and ACL (core/placement.py)
+            # the existing file's group, mode and ACL, or the directory's rule for a new file (core/placement.atomic)
+            with placement.atomic(p) as tmp:
                 fits.writeto(tmp, e['data'], hh)
         out[e['stokes']] = p
     return out

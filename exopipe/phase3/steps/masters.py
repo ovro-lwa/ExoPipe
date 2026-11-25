@@ -43,7 +43,7 @@ build,pbmaps,vclean,fluxscale,verify - stage-in runs alone, BEFORE the flow step
              verify_master; a Red / Full night held only for its excluded 18 MHz kept under search_detect.MASTER_HELD_18MHZ
              'keep'), its records are not one generation or use
              another stage-2 metric, or the cell has a record and no --fresh (--fresh moves the old record aside to
-             coadd_final/build_stats.superseded_<UTC>.json).
+             coadd_final/build_stats.superseded_<UTC to the microsecond>_<pid>.json).
   admit-prep on demand (D-ADMIT, after build-stats): the nights an installed cell admits (in no record of its build,
              survey image newer than the build's night record, not excluded; --epochs restricts, the only deep stage
              that takes it - given alone (the per-hour form, `--epochs <LST>_<date>`), it selects every cell of the named LSTs

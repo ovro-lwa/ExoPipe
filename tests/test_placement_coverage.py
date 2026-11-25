@@ -3,7 +3,9 @@ placement.atomic, no bare os.replace / os.rename / os.renames / shutil.move rema
 its reason or the placement PR planned for it (/fast/gh/claude_tmp/placement-classify_20261125/PLAN.md: P3 copy2 sources,
 P4 mosaic and hybrid sites and P5 others behind a handler on the path, P6 archive writers and per-file volume, P7 directory
 renames). A new bare rename in these modules fails this test; so does a listed site that is gone (the list must shrink with
-each later placement PR). Data-free: the source is parsed, nothing is imported or run."""
+each later placement PR). In the same modules every record.atomic_write_json call passes ``place=`` explicitly (True for a
+product, False for a unit or run record), so a product never takes the unplaced default by omission. Data-free: the source
+is parsed, nothing is imported or run (``--self-test`` checks that both guards fail on injected sources)."""
 import ast
 import os
 import sys
@@ -53,6 +55,9 @@ EXCEPTIONS = {
     ('lib/frames/tier_snapshot.py', 'stage_stage.unpack', 'os.replace'): (
         1, 'stays bare: unpacks the staged inputs into the stage\'s scratch directory'),
     ('lib/frames/tier_snapshot.py', 'stage_cube', 'os.replace'): (1, 'P6: an archive writer (the snapshot cube, a copyfile)'),
+    ('lib/frames/tier_snapshot.py', 'strip_legacy_header', 'os.replace'): (
+        1, 'stays bare: log - rewrites an engine log without its legacy header line, not a product (a cosmetic rewrite never '
+           'fails a movie unit)'),
     ('lib/frames/tier_snapshot.py', 'flow_movies', 'os.replace'): (1, 'P6: per-file volume (the flow movies)'),
     ('lib/hybrid/warp.py', 'derive_warp_screen', 'os.replace'): (
         2, 'stays bare: the warp-screen cache and its record, node-local (fitsio.scratch_root) and re-derivable, not a product'),
@@ -60,8 +65,8 @@ EXCEPTIONS = {
     ('lib/masters/admit_stages.py', 'move_aside', 'os.replace'): (1, MOVED_ASIDE + ' - earlier admit outputs'),
     ('lib/masters/admit_stages.py', 'move_aside_files', 'os.replace'): (1, MOVED_ASIDE + ' - earlier admit outputs'),
     ('lib/masters/admit_stages.py', 'admit_stage', 'os.replace'): (1, 'P6: per-file volume (the admitted night images)'),
-    ('lib/masters/deep_stages.py', 'build_stats_stage', 'os.replace'): (
-        2, MOVED_ASIDE + ' - the earlier build_stats.json, and moved back under its name when the placement refuses'),
+    ('lib/masters/deep_stages.py', '_place_build_stats', 'os.replace'): (
+        2, MOVED_ASIDE + ' - the earlier build_stats.json, and that same file moved back under its name when nothing is placed'),
     ('lib/masters/deep_stages.py', 'own_note', 'os.replace'): (
         1, 'P5: behind a handler on the path (the caller catches Exception)'),
     ('lib/masters/deep_stages.py', 'striation', 'os.replace'): (
@@ -70,6 +75,8 @@ EXCEPTIONS = {
         1, 'stays bare until production changes with it: the status S-G6 gate requires this module to equal production\'s '
            'exopipe/phase3/membership.py except imports'),
     ('lib/mosaic/steps_worker.py', 'main', 'os.replace'): (1, 'stays bare: the worker\'s result record in the stage\'s scratch'),
+    ('lib/notify/qa.py', 'ionosphere_rank', 'os.replace'): (
+        1, 'stays bare: cache - the ionosphere-rank population cache, derived and re-derivable, not a product'),
     ('lib/mosaic/steps_worker.py', 'task_qa', 'os.replace'): (
         1, 'stays bare: writes into the stage\'s temporary directory; P4 places the table (steps_qa.run_qa)'),
     ('lib/photometry/steps_common.py', 'atomic_copy', 'os.replace'): (
@@ -91,9 +98,41 @@ EXCEPTIONS = {
 CALLS = {'os': ('replace', 'rename', 'renames'), 'shutil': ('move',)}
 
 
-def bare_renames(path):
+def _functions(tree):
+    """[(qualified function name or '<module>', node)] of every node, by a walk that tracks the enclosing def / class."""
+    out = []
+
+    def visit(node, fn):
+        for ch in ast.iter_child_nodes(node):
+            f = fn
+            if isinstance(ch, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                f = f'{fn}.{ch.name}' if fn else ch.name
+            out.append((f or '<module>', ch))
+            visit(ch, f)
+    visit(tree, '')
+    return out
+
+
+def json_calls(path, text=None):
+    """[(function, line, place= passed by name)] of the record.atomic_write_json calls of one module (a ``**kwargs`` call
+    counts as not explicit): through any module alias (record.atomic_write_json, _R.atomic_write_json) or a from-import
+    under any name."""
+    tree = ast.parse(text if text is not None else open(path).read(), path)
+    names = {a.asname or a.name for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) for a in n.names
+             if a.name == 'atomic_write_json'}
+    out = []
+    for fn, n in _functions(tree):
+        if not isinstance(n, ast.Call):
+            continue
+        c = n.func
+        if (isinstance(c, ast.Attribute) and c.attr == 'atomic_write_json') or (isinstance(c, ast.Name) and c.id in names):
+            out.append((fn, n.lineno, 'place' in [k.arg for k in n.keywords]))
+    return out
+
+
+def bare_renames(path, text=None):
     """{(function, 'os.replace' | ...): [line, ...]} of one module, through any alias of os / shutil or a from-import."""
-    tree = ast.parse(open(path).read(), path)
+    tree = ast.parse(text if text is not None else open(path).read(), path)
     mods, names = {}, {}
     for n in ast.walk(tree):
         if isinstance(n, ast.Import):
@@ -126,10 +165,44 @@ def bare_renames(path):
     return out
 
 
+INJECTED = """import os as o
+from exopipe.phase3.core import record as R
+from exopipe.phase3.core.record import atomic_write_json as w
+
+
+def f(p):
+    R.atomic_write_json(p, {})
+    w(p, {}, durable=True)
+    R.atomic_write_json(p, {}, place=False)
+    w(p, {}, place=True)
+    o.replace(p + '.tmp', p)
+"""
+
+
+def self_test():
+    """Both guards must fail on an injected source: two atomic_write_json calls without place= (a module alias and a renamed
+    from-import), two with it, and one bare os.replace through an alias. Returns the problems (empty: the guards work)."""
+    probs = []
+    got = [(fn, line) for fn, line, explicit in json_calls('<injected>', INJECTED) if not explicit]
+    if got != [('f', 7), ('f', 8)]:
+        probs.append(f'the place= guard found {got} in the injected source, not [(\'f\', 7), (\'f\', 8)]')
+    got = bare_renames('<injected>', INJECTED)
+    if got != {('f', 'os.replace'): [11]}:
+        probs.append(f'the rename guard found {got} in the injected source, not one os.replace at line 11')
+    return probs
+
+
 def main():
     fails, n_sites = [], 0
     seen = set()
+    fails += [f'self-test: {p}' for p in self_test()]
+    n_json = 0
     for m in MODULES:
+        for fn, line, explicit in json_calls(os.path.join(REPO, P3 + m)):
+            n_json += 1
+            if not explicit:
+                fails.append(f'{P3}{m}:{line} {fn}: record.atomic_write_json without place= - pass place=True for a '
+                             f'product, place=False for a unit or run record')
         for (fn, call), lines in sorted(bare_renames(os.path.join(REPO, P3 + m)).items()):
             n_sites += len(lines)
             key = (m, fn, call)
@@ -147,7 +220,8 @@ def main():
     if fails:
         sys.exit(1)
     print(f'PASS: {len(MODULES)} modules, {n_sites} bare rename/move sites, all listed with a reason or planned PR '
-          f'({len(EXCEPTIONS)} entries)')
+          f'({len(EXCEPTIONS)} entries); {n_json} record.atomic_write_json calls, each with place= explicit; both guards fail '
+          f'on the injected source')
 
 
 if __name__ == '__main__':

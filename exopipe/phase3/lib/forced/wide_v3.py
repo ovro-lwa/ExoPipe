@@ -1603,9 +1603,16 @@ def write_rows(path, rows):
 
 
 def write_rows_keys(path, rows, keys):
-    """CSV of rows with these columns (csv.DictWriter, newline=''), tmp + rename (the replaced file's group, mode and ACL,
-    else the directory's: core/placement.atomic)."""
-    with placement.atomic(path) as tmp, open(tmp, 'w', newline='') as f:
+    """CSV of rows with these columns (csv.DictWriter, newline=''), tmp + rename (core/placement.atomic: the existing file's
+    group, mode and ACL, or the directory's rule for a new file)."""
+    with placement.atomic(path) as tmp:
+        write_rows_keys_into(tmp, rows, keys)
+
+
+def write_rows_keys_into(path, rows, keys):
+    """The same CSV written straight into ``path``: for a caller that holds its own temporary file (inside
+    placement.atomic)."""
+    with open(path, 'w', newline='') as f:
         w = csv.DictWriter(f, fieldnames=keys)
         w.writeheader()
         w.writerows(rows)

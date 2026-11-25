@@ -268,7 +268,8 @@ def compute(cell_dir, lst, scope, co, cfg, basis):
 
 def write(cell_dir, stats):
     p = os.path.join(cell_dir, 'coadd_final', FILE)
-    with placement.atomic(p) as tmp, open(tmp, 'w') as f:     # the replaced record's group and ACL, else the directory's
+    # the existing file's group, mode and ACL, or the directory's rule for a new file (core/placement.atomic)
+    with placement.atomic(p) as tmp, open(tmp, 'w') as f:
         json.dump(stats, f, indent=1, sort_keys=True)
     return p
 

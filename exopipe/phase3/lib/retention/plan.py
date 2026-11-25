@@ -322,7 +322,7 @@ def make_plan(root, out, now=None, nights=None, subbands=None, checksum=None, ma
 
 def _write_csv(path, columns, rows):
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    # the replaced file's group, mode and ACL, else the directory's (core/placement.atomic)
+    # the existing file's group, mode and ACL, or the directory's rule for a new file (core/placement.atomic)
     with placement.atomic(path) as tmp, open(tmp, 'w', newline='') as f:
         w = csv.DictWriter(f, fieldnames=columns, lineterminator='\n')
         w.writeheader()

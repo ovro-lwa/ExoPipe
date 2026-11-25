@@ -74,7 +74,7 @@ def evaluate(night_aligned, ref, cdelt_deg, night_raw=None):
 def write_record(final_dir, rows, method):
     """rows: {date: evaluate() dict or a dict with verdict/reason}. Written whole (atomic), never appended."""
     p = f'{final_dir}/{GATE_FILE}'
-    # the replaced record's group, mode and ACL, else the directory's (core/placement.atomic)
+    # the existing file's group, mode and ACL, or the directory's rule for a new file (core/placement.atomic)
     with placement.atomic(p) as tmp, open(tmp, 'w', newline='') as f:
         w = csv.DictWriter(f, fieldnames=COLS, extrasaction='ignore'); w.writeheader()
         for d in sorted(rows):

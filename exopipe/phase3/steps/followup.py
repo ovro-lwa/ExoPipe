@@ -622,17 +622,23 @@ def _ep_replay(args, run):
                 u.refuse(f'G1: today\'s content test refuses the stored download: {row["detail"]}')
             out = os.path.join(rdir, f'wxtplan_{tag}.npz')
             os.makedirs(rdir, exist_ok=True)
-            # placed with the replaced plan's group, mode and ACL, else the directory's; a refusal removes the temporary
-            # file (core/placement.atomic). An open file: np.savez_compressed adds '.npz' to a name without it.
-            with placement.atomic(out) as tmp:
-                with open(tmp, 'wb') as f:
-                    np.savez_compressed(f, **m.to_compact(plan))
-                rt = m.roundtrip_ok(plan, tmp)
-                if rt:
-                    row['detail'] = f'round trip: {rt}'
-                    log_row(row)
-                    u.add_output(rlog, 'csv_table', required_columns=cols)
-                    u.refuse(f'G2: {rt}')
+            # placed with the existing file's group, mode and ACL, or the directory's rule for a new file; a refusal removes
+            # the temporary file (core/placement.atomic). An open file: np.savez_compressed adds '.npz' to a name without it.
+            try:
+                with placement.atomic(out) as tmp:
+                    with open(tmp, 'wb') as f:
+                        np.savez_compressed(f, **m.to_compact(plan))
+                    rt = m.roundtrip_ok(plan, tmp)
+                    if rt:
+                        row['detail'] = f'round trip: {rt}'
+                        log_row(row)
+                        u.add_output(rlog, 'csv_table', required_columns=cols)
+                        u.refuse(f'G2: {rt}')
+            except placement.PlacementRefusal as e:       # at the block's exit: nothing placed - a FAIL row, as G1 / G2
+                row['detail'] = str(e)[:480]
+                log_row(row)
+                u.add_output(rlog, 'csv_table', required_columns=cols)
+                raise
             row.update(status='pass', file=os.path.relpath(out, rdir), detail='content test passed; lossless round trip')
             log_row(row)
             u.add_output(out, 'ep_wxt_plan', raw=raw)

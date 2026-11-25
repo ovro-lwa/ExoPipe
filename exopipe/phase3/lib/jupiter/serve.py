@@ -235,7 +235,8 @@ def run(args, run_, roots, stages):
                 rec.update(pid=p.pid, started=K.utc())
             out = os.path.join(roots.out, '_served', f'jupiter_{s["port"]}.json')
             os.makedirs(os.path.dirname(out), exist_ok=True)
-            with placement.atomic(out) as tmp, open(tmp, 'w') as f:     # the directory's group and ACL (core/placement.py)
+            # the existing file's group, mode and ACL, or the directory's rule for a new file (core/placement.atomic)
+            with placement.atomic(out) as tmp, open(tmp, 'w') as f:
                 json.dump(rec, f, indent=1)
             u.add_output(out, 'jupiter_served_page')
         print(f'jupiter serve {which} ({s["port"]}): {u.status}' + (f' ({u.reason})' if u.reason else ''), file=sys.stderr)

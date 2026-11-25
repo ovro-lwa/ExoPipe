@@ -518,7 +518,7 @@ def write_admissions(cd, rows):
     from exopipe.phase3.lib.masters import admit as A
     p = os.path.join(cd, 'coadd_final', A.ADMISSIONS)
     old = list(csv.DictReader(open(p, newline=''))) if os.path.exists(p) else []
-    # the replaced table's group, mode and ACL, else the directory's (core/placement.atomic)
+    # the existing file's group, mode and ACL, or the directory's rule for a new file (core/placement.atomic)
     with placement.atomic(p) as tmp, open(tmp, 'w', newline='') as f:
         w = csv.DictWriter(f, fieldnames=list(ADMISSION_COLS), extrasaction='raise')
         w.writeheader()

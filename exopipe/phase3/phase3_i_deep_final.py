@@ -371,7 +371,7 @@ def main():
             w.writerows(arows)
         print(f'  {s["cand_id"]}: n_det={s["n_det"]} packaged')
 
-    # the replaced table's group, mode and ACL, else the directory's (core/placement.atomic)
+    # the existing file's group, mode and ACL, or the directory's rule for a new file (core/placement.atomic)
     with placement.atomic(OUTCSV) as tmp, open(tmp, 'w', newline='') as fh:
         w = csv.DictWriter(fh, fieldnames=COLS, extrasaction='ignore')
         w.writeheader()

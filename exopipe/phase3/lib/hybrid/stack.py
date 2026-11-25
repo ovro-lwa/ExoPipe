@@ -435,9 +435,11 @@ def copy_inputs(ind, coadd_sb, lst, band, v, read, archive_masters=None):
             raise StackRefusal(f'{arc}: pixels differ from the co-add build file {src} - REFUSING', 'HG5')
         dst = os.path.join(ind, os.path.basename(src))
         if not (os.path.exists(dst) and md5(dst) == want):
-            # placed with the replaced copy's group, mode and ACL, else the work directory's - not the archived file's, which
-            # copystat carries (its times are kept); any exception removes the temporary file (core/placement.atomic)
-            with placement.atomic(dst) as tmp:
+            # placed with the existing copy's group, mode and ACL, or the work directory's rule for a new file - not the
+            # archived file's, which copystat carries (its times are kept); any exception removes the temporary file
+            # (core/placement.atomic). Tagged with the weighting: the cell's two weightings share ind, and a unit's cleanup
+            # removes only its own weighting's leftovers (placement.temp_glob(..., tag=v), steps/hybrid.stack_unit).
+            with placement.atomic(dst, tag=v) as tmp:
                 with open(tmp, 'wb') as f:
                     f.write(raw)
                 shutil.copystat(arc, tmp)

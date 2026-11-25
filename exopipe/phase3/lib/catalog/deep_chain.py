@@ -396,8 +396,9 @@ class DeepRun:
         return d
 
     def write_stage_json(self, d, **kw):
-        record.atomic_write_json(os.path.join(d, 'stage.json'),
-                                 dict(kw, run_dir=self.U, label=self.label, run_id=self.run.run_id, written=utcnow()))
+        record.atomic_write_json(os.path.join(d, 'stage.json'),           # the stage's run record, not a product
+                                 dict(kw, run_dir=self.U, label=self.label, run_id=self.run.run_id, written=utcnow()),
+                                 place=False)
 
     def out(self, u, path, cls=None, cache=False, test=True, **ctx):
         """Record an output: its fingerprint (files only - a directory's mtime moves whenever a later stage renames a

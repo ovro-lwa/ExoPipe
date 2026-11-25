@@ -251,7 +251,7 @@ def _finalize_csv(sel, srcs):
     sel_ids = {s['cand_id']: s['review_dir'] for s in sel.values()}
     for s in srcs:
         s['review_dir'] = sel_ids.get(s['cand_id'], s.get('review_dir', ''))
-    # the replaced table's group, mode and ACL, else the directory's (core/placement.atomic)
+    # the existing file's group, mode and ACL, or the directory's rule for a new file (core/placement.atomic)
     with placement.atomic(CSV) as tmp, open(tmp, 'w', newline='') as fh:
         w = csv.DictWriter(fh, fieldnames=F.COLS, extrasaction='ignore')
         w.writeheader()

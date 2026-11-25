@@ -1104,7 +1104,7 @@ def fit_attempt(attempt, label, out_csv, tier='deep', nproc=None, lon=None):
                 for cid, o, fpx in out:
                     res[cid] = (o, fpx, path)
     os.makedirs(os.path.dirname(out_csv), exist_ok=True)
-    # the replaced table's group, mode and ACL, else the directory's (core/placement.atomic)
+    # the existing file's group, mode and ACL, or the directory's rule for a new file (core/placement.atomic)
     with placement.atomic(out_csv) as tmp, open(tmp, 'w', newline='') as fh:
         w = csv.writer(fh)
         w.writerow(['cand_id'] + list(DET_COLS) + ['frame', 'frame_sha1', 'fit_frac_px'])

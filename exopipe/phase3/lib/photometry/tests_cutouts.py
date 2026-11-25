@@ -89,7 +89,7 @@ def read_manifest(path):
 def write_manifest(path, rows):
     cols = list(_cfg().photometry_cutouts.MANIFEST_COLUMNS)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    # the replaced file's group, mode and ACL, else the directory's (core/placement.atomic)
+    # the existing file's group, mode and ACL, or the directory's rule for a new file (core/placement.atomic)
     with placement.atomic(path) as tmp, open(tmp, 'w', newline='') as f:
         w = csv.DictWriter(f, fieldnames=cols)
         w.writeheader()
