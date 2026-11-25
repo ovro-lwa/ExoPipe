@@ -311,7 +311,7 @@ def page_entry(plan, page, utc, root=None):
         i = a.index('--port')
         del a[i:i + 2]
     pre = tuple(S.TWO_PORT_ENV_PREFIXES)
-    env = {k: v for k, v in sorted(plan.server_env_extra().items()) if k.startswith(pre)}
+    env = {k: v for k, v in sorted(plan.server_env_extra(page).items()) if k.startswith(pre)}
     ct = (S.CUTOUTS_TIER.get((page.tier, page.kind)) if page.family in ('review', 'comb')   # the FITS cutouts button (config;
           else None)                                                                       # comb: the combined view's pages)
     if ct:

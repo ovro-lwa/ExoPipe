@@ -395,27 +395,43 @@ def tess_rows(path, written=None, left_out=None, **ctx):
         bad.append('repeated cand_id')
     if counted and len(rows) != int(written):
         bad.append(f'{len(rows)} rows, the tool wrote {written}')
-    mc = ctx.get('master_catalog') or os.path.join(os.path.dirname(path), 'master_catalog.csv')
+    # the run's detections the rows are held to: master_catalog.csv beside the file, or (ctx served='candidates': a 10-minute /
+    # deep forced run of family T, which has no master_catalog.csv; tess_coverage.py --from-candidates) the served events
+    # candidates/*/*/detections.csv
+    run = os.path.dirname(path)
+    mc = ctx.get('master_catalog') or os.path.join(run, 'master_catalog.csv')
+    src = 'served candidates' if ctx.get('served') == 'candidates' else 'master_catalog.csv'
     detail = ''
-    if counted and not os.path.exists(mc):
+    if counted and src == 'master_catalog.csv' and not os.path.exists(mc):
         bad.append(f'no {mc} to test the rows against')
-    if os.path.exists(mc) and not bad:
+    if (src != 'master_catalog.csv' or os.path.exists(mc)) and not bad:
         want = set(common.CFG().pages_deep.TESS_STOKES.split(','))
-        with open(mc, newline='') as f:
-            exp = {r['cand_id'] for r in csv.DictReader(f) if r.get('stokes') in want}
+        exp = ({r['cand_id'] for r in candidate_rows(run) if r.get('stokes') in want} if src != 'master_catalog.csv' else None)
+        if exp is None:
+            with open(mc, newline='') as f:
+                exp = {r['cand_id'] for r in csv.DictReader(f) if r.get('stokes') in want}
         got = set(ids)
         if counted:
             if got - exp:
-                bad.append(f'{len(got - exp)} cand_ids not in master_catalog.csv ({len(exp)} detections)')
+                bad.append(f'{len(got - exp)} cand_ids not in {src} ({len(exp)} detections)')
             if len(exp - got) != int(left_out):
-                bad.append(f'{len(exp - got)} master_catalog.csv detections without a row, the tool left out {left_out}')
-            detail = f'{len(rows)} rows = master_catalog.csv detections ({len(exp)}) less the {left_out} left out'
+                bad.append(f'{len(exp - got)} {src} detections without a row, the tool left out {left_out}')
+            detail = f'{len(rows)} rows = {src} detections ({len(exp)}) less the {left_out} left out'
         else:
             diff = exp ^ got
             if diff:
-                bad.append(f'{len(diff)} cand_ids differ from master_catalog.csv ({len(exp)} detections)')
-            detail = f'= master_catalog.csv detections ({len(exp)})'
+                bad.append(f'{len(diff)} cand_ids differ from {src} ({len(exp)} detections)')
+            detail = f'= {src} detections ({len(exp)})'
     return not bad, len(rows), '; '.join(map(str, bad[:3])) or detail or f'{len(rows)} rows'
+
+
+def candidate_rows(run):
+    """The served events of a snapshot-chain forced run: every row of <run>/candidates/*/*/detections.csv."""
+    out = []
+    for p in sorted(glob.glob(os.path.join(run, 'candidates', '*', '*', 'detections.csv'))):
+        with open(p, newline='') as f:
+            out += list(csv.DictReader(f))
+    return out
 
 
 # frame_times_tenmin.py:95 (its columns) and :25 (a window: <night>T<window>)
@@ -455,7 +471,14 @@ def tenmin_window_times(path, windows=None, needed=None, **ctx):
     if windows is not None and len(rows) != int(windows):
         bad.append(f'{len(rows)} rows, the tool wrote {windows}')
     mc = ctx.get('master_catalog') or os.path.join(os.path.dirname(path), 'master_catalog.csv')
-    if os.path.exists(mc) and not bad:
+    if ctx.get('served') == 'candidates' and not bad:   # a family T forced run: the tier-10min windows of its served events
+        need = {(r['stokes'], r['lst'], r['band'], r['date']) for r in candidate_rows(os.path.dirname(path))
+                if r.get('tier') == '10min' and _WINDOW_RE.match(r.get('date', ''))}     # frame_times_tenmin.py :42-46
+        if keys - need:
+            bad.append(f'{len(keys - need)} rows name no window of the served candidates')
+        if needed is not None and len(need) != int(needed):
+            bad.append(f'the served candidates name {len(need)} windows, the tool needed {needed}')
+    elif os.path.exists(mc) and not bad:
         with open(mc, newline='') as f:
             need = {(r['stokes'], r['lst'], r['band'], r['date']) for r in csv.DictReader(f) if _WINDOW_RE.match(r.get('date', ''))}
         if keys - need:

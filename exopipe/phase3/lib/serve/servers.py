@@ -300,12 +300,13 @@ def app_probe(plan, page, root=None, unit=None):
     S = _S()
     U = root or page.root
     script = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'app_probe.py')
-    args = [plan.ops, scripts.clv15_root(), U, page.at('catalog', U), page.at('queue', U)]
+    code = os.path.dirname(page.c['code']) if page.c.get('code') else plan.ops    # a pinned page's own page code
+    args = [code, scripts.clv15_root(), U, page.at('catalog', U), page.at('queue', U)]
     if page.c.get('mchain_queue'):           # the page's multiples chain, as its server reads it (plan.argv)
         args += ['--mchain-queue', page.at('mchain_queue', U)]
     if page.c.get('mchain_catalog'):
         args += ['--mchain-catalog-dir', page.at('mchain_catalog', U)]
-    res = legacy.run(script, args, python='default', env=plan.server_env_extra(), cwd=plan.ops,
+    res = legacy.run(script, args, python='default', env=plan.server_env_extra(page), cwd=code,
                      timeout=S.APP_PROBE_TIMEOUT_S, unit=unit, refusal_codes=())
     if res.rc != 0:
         raise Refusal(f'App probe of page {page.key} failed (rc {res.rc}): {scripts.last_line(res.tail)}')

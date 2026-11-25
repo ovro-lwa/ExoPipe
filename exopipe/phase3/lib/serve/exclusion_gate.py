@@ -190,6 +190,37 @@ def scan_snapshot_run(run, ex=None):
     return scan_files(snapshot_run_files(run), keys_snapshot, run, ex=ex or fresh_exclusions('snapshot'))
 
 
+def keys_forced_tier(row):
+    """(lst, night, band) key of a row of a 10-minute / deep forced run (family T, tier_forced_page_20261027.py chain): its
+    cand_id F_<lst>_<date>_<band>_<10min|deep>_..., else its lst, date and band columns - the date cut to the night (a
+    10-minute window 2025-04-10T02 is night 2025-04-10), as family T's own gate T-EXCL keys the events (lib/forced/
+    tier_snapshot.excluded_events). keys_snapshot would key the window name, which no exclusion row names."""
+    cid = (row.get('cand_id') or '').strip()
+    p = cid.split('_')
+    if len(p) >= 5 and p[0] == 'F' and _LST.match(p[1]) and _DATE.match(p[2]):
+        return [(p[1], p[2][:10], p[3])]
+    lst, date, band = (row.get('lst') or '').strip(), (row.get('date') or '').strip(), (row.get('band') or '').strip()
+    if _LST.match(lst) and _DATE.match(date) and band:
+        return [(lst, date[:10], band)]
+    return []
+
+
+def scan_forced_tier_run(run, ex=None):
+    """The serve-time gate of a 10-minute / deep forced run: every CSV a snapshot run's gate reads (snapshot_run_files), keyed
+    per night (keys_forced_tier) against core.exclusions read now with family T's reader (PerNight: a wideband excluded with any
+    excluded member subband, the 18 MHz carve-out kept). Every served event (candidates/*/*/detections.csv) must be keyed: an
+    unkeyed one refuses (a gate that keys nothing passes nothing silently)."""
+    from exopipe.phase3.core.exclusions import PerNight
+    scan = scan_files(snapshot_run_files(run), keys_forced_tier, run, ex=ex or PerNight(fresh=True))
+    for p in sorted(glob.glob(os.path.join(run, 'candidates', '*', '*', 'detections.csv'))):
+        with open(p, newline='') as fh:
+            unkeyed = [r.get('cand_id') or '?' for r in csv.DictReader(fh) if not keys_forced_tier(r)]
+        if unkeyed:
+            raise Refusal(f'G17 serve-time exclusion gate: {os.path.relpath(p, run)}: {len(unkeyed)} served event(s) without '
+                          f'an (LST, night, band) key, e.g. {unkeyed[:2]} - refused')
+    return scan
+
+
 # The review server of every deep and sub-LST page (program 'classify': exopipe_ops/classify_transients.py), mirrored here
 # and drift-tested against its source (tests/test_serve.py test_exclusion_gate_server_mirrors):
 SERVER_BANDS = ('Blue', 'Full', 'Green', 'Red', '82MHz', '78MHz', '73MHz', '69MHz', '64MHz', '59MHz', '55MHz', '50MHz',
