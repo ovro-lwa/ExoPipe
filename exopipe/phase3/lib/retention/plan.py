@@ -6,7 +6,10 @@ the tree); a name that does not fit the layout is reported, never an item.
 DATA ENTRIES of an item (list_item, names and entry types only): a regular file named <YYYYMMDD_HHMMSS>_... (a .ms.tar set, a
 flagmeta.bin), or a directory named so whose name matches retention.MS_DIR_RE (an MS: older nights store each 10-s set as an
 MS directory). The entry's start time is the one in its name.
-STATUS of an item (classify), from the production records and the active holds (lib/retention/table.py), first that applies:
+STATUS of an item (classify), from the do-not-delete cells of data_decisions.csv (lib/retention/protect.py), the production
+records and the active holds (lib/retention/table.py), first that applies:
+  protected     its data overlap a do-not-delete cell's UTC range (of ANY subband: a cell protects every subband, 13 MHz
+                included): never deleted, whatever its expiry or holds (not listed; the note names the cells);
   held          an active hold of its subband overlaps its UT hour: never deleted, whatever its expiry (not listed);
   unprocessed   no production record of its subband overlaps its UT hour (not listed): it never expires;
   unrecognized  its directory holds an entry that is not a data entry (another directory, a link, another name): never
@@ -15,7 +18,8 @@ STATUS of an item (classify), from the production records and the active holds (
   partial       some of its entries start at a time no production record covers: never deleted;
   retained      every entry is covered and the expiry - the latest covering production + RETENTION_DAYS - is still ahead;
   expired       every entry is covered and the expiry has passed.
-Only an item with a production record and no hold is listed (one os.scandir of its directory, names only).
+Only an item with a production record, no hold and no do-not-delete cell is listed (one os.scandir of its directory, names
+only).
 THE DRY RUN (make_plan, write_plan) writes <out>/plans/RETENTION_TABLE_<UTC>.csv (every item: status, entries, production,
 expiry, records, holds) and, when items are expired, <out>/manifests/DRYRUN_RETENTION_<UTC>.csv with its sidecar .json: the
 oldest-expiring retention.MAX_ITEMS_PER_MANIFEST expired items and every path the delete would remove - each file (kind file),
@@ -23,10 +27,13 @@ each link inside an MS (link) and each directory of an MS, the MS itself include
 directory or link), modification time (ns) and inode from os.lstat (an MS is listed directory by directory: os.scandir and
 os.lstat inside that MS only) and, with checksum 'content', the sha256 of each file's bytes; per item the file count, total
 bytes and an identity sha256 over its paths (relative to the item), kinds, sizes, mtimes and inodes. The sidecar holds the
-manifest's sha256, the raw root, the retention days, the checksum kind, the totals, and the records the plan read: the real
-path of its --out and the size and sha256 of the retention table and of the holds file as read (records_digests).
+manifest's sha256, the raw root, the retention days, the checksum kind, the totals, the records the plan read (the real
+path of its --out and the size and sha256 of the retention table and of the holds file as read: records_digests) and the
+do-not-delete cells it honored (data_decisions.csv's path and sha1, each cell's LST, date and UTC range).
 A plan with --dry-run lists and classifies only: no lstat, no checksum, nothing written (make_plan stat=False).
-THE DELETE (preflight, then delete_item per item) refuses before it deletes anything unless the manifest was planned from the
+THE DELETE (preflight, then delete_item per item) refuses before it deletes anything when ANY item of the manifest lies in a
+do-not-delete cell of data_decisions.csv as read at the delete (RT-DO-NOT-DELETE: the whole manifest, naming the items and
+the cells; delete_item re-checks each item right before deleting it), and unless the manifest was planned from the
 records the delete reads (the same --out; RT-MANIFEST), those records only GREW since (the table's and the holds file's first
 bytes still hash to the planned digests: append-only, RT-RECORDS; rows appended since are judged by re-classifying), and
 EVERY item of the manifest still holds exactly the paths listed with the same kind, size, mtime and inode (and content sha256
@@ -47,9 +54,10 @@ import time
 
 from exopipe.phase3.core import placement
 from exopipe.phase3.core.record import Refusal
+from exopipe.phase3.lib.retention import protect as D
 from exopipe.phase3.lib.retention import table as T
 
-STATUSES = ('expired', 'retained', 'partial', 'empty', 'unrecognized', 'held', 'unprocessed')
+STATUSES = ('expired', 'retained', 'partial', 'empty', 'unrecognized', 'protected', 'held', 'unprocessed')
 PLAN_COLUMNS = ('item', 'subband', 'date', 'hour', 'path', 'status', 'n_entries', 'produced_utc', 'expiry_utc', 'record_ids',
                 'hold_ids', 'in_manifest', 'note')
 MANIFEST_COLUMNS = ('kind', 'item', 'path', 'bytes', 'mtime_ns', 'inode', 'content_sha256', 'identity_sha256', 'n_files',
@@ -172,12 +180,17 @@ def _matches(sbset, sb):
     return sbset is None or sb in sbset
 
 
-def classify(item, records, holds, now, days=None):
+def classify(item, records, holds, now, days=None, protect=None):
     """The item's status and what decides it (module docstring): {status, n_entries, entries, produced, expiry, record_ids,
-    hold_ids, note}. Lists the item's directory only when a production record overlaps it and no hold does."""
+    hold_ids, note}. ``protect``: the do-not-delete cells (protect.ranges; None: read them now). Lists the item's directory
+    only when no do-not-delete cell, a production record and no hold overlap it."""
     days = _c().RETENTION_DAYS if days is None else days
     sb, t0, t1 = item['subband'], item['t0'], item['t1']
     out = dict(status=None, n_entries=None, entries=[], produced=None, expiry=None, record_ids=[], hold_ids=[], note='')
+    cells = D.cells_over(t0, t1, D.ranges()[0] if protect is None else protect)
+    if cells:
+        out.update(status='protected', note='do not delete: %s' % D.describe(cells))
+        return out
     hh = [h for h in holds if _matches(h['subbands'], sb) and h['start'] < t1 and h['end'] > t0]
     if hh:
         out.update(status='held', hold_ids=[h['hold_id'] for h in hh])
@@ -266,6 +279,7 @@ class Plan:
     def __init__(self):
         self.items, self.odd, self.batch, self.n_expired = [], [], [], 0
         self.root, self.now, self.days, self.checksum, self.records = None, None, None, None, None
+        self.protect, self.protect_fp = [], None
 
     def counts(self):
         by = {}
@@ -308,10 +322,11 @@ def make_plan(root, out, now=None, nights=None, subbands=None, checksum=None, ma
     pl.root, pl.now, pl.days, pl.checksum = os.path.realpath(root), time.time() if now is None else now, c.RETENTION_DAYS, \
         checksum
     pl.records = records_digests(out)        # before the read: a row appended in between is judged at the delete
+    pl.protect, pl.protect_fp = D.ranges()   # refuses (RT-DO-NOT-DELETE) when data_decisions.csv cannot be read
     records, holds = T.read_records(out), T.read_holds(out)
     items, pl.odd = list_tree(root, nights, subbands)
     for it in items:
-        pl.items.append((it, classify(it, records, holds, pl.now, pl.days)))
+        pl.items.append((it, classify(it, records, holds, pl.now, pl.days, protect=pl.protect)))
     expired = sorted([(cls['expiry'], it['date'], it['hour'], it['subband'], it, cls) for it, cls in pl.items
                       if cls['status'] == 'expired'], key=lambda x: x[:4])
     pl.n_expired = len(expired)
@@ -380,7 +395,10 @@ def write_plan(pl, out, when=None):
                 raw_root=pl.root, retention_days=pl.days, checksum=pl.checksum, evaluated_utc=T.iso(pl.now),
                 written_utc=T.iso(time.time()), n_items=len(items), n_files=nfiles, n_dirs=ndirs, bytes=nbytes,
                 n_expired_in_tree=pl.n_expired, n_expired_not_in_manifest=pl.n_expired - len(items),
-                plan_csv=os.path.basename(plan_csv), records=pl.records, items=items)
+                plan_csv=os.path.basename(plan_csv), records=pl.records, items=items,
+                do_not_delete=dict(data_decisions=pl.protect_fp, cells=[
+                    dict(lst=x['lst'], date=x['date'], start_utc=T.iso(x['start']), end_utc=T.iso(x['end']))
+                    for x in pl.protect]))
     man_json = os.path.splitext(man_csv)[0] + '.json'
     with placement.atomic(man_json) as tmp, open(tmp, 'w') as f:     # as _write_csv (core/placement.atomic)
         json.dump(side, f, indent=1, sort_keys=True)
@@ -431,11 +449,42 @@ def read_manifest(man_csv):
     return side, items
 
 
+def item_times(keys):
+    """[(item, t0, t1)] of the manifest item names <subband>/<YYYY-MM-DD>/<HH> that parse (the rest: RT-MANIFEST in
+    preflight)."""
+    out = []
+    for key in sorted(keys):
+        parts = key.split('/')
+        try:
+            if len(parts) != 3 or not re.match(_c().HOUR_RE, parts[2]) or int(parts[2]) > 23:
+                raise ValueError(key)
+            t0 = T.parse_utc(parts[1]) + int(parts[2]) * HOUR_S
+        except ValueError:
+            continue
+        out.append((key, t0, t0 + HOUR_S))
+    return out
+
+
+def refuse_do_not_delete(items):
+    """RT-DO-NOT-DELETE when any item of a manifest ({item: ...}) lies in a do-not-delete cell of data_decisions.csv as read
+    now (lib/retention/protect.py), or its UT hour cannot be read: the whole delete refuses, nothing deleted. Returns the
+    cells read."""
+    times = item_times(items)
+    unparsed = sorted(set(items) - {k for k, _a, _b in times})
+    if unparsed:                     # an item whose time cannot be read cannot be shown to be outside every cell
+        raise Refusal('%s: manifest items whose UT hour cannot be read (%s) - NOTHING deleted' % (
+            D.CODE, ', '.join(unparsed[:5])))
+    cells = D.ranges()[0]
+    D.refuse(times, cells)
+    return cells
+
+
 def preflight(man_csv, root, out, now=None):
-    """Every check of the delete, before anything is deleted: (sidecar, items) when the manifest still matches the files and
-    every item is still expired and not held; Refusal (RT-MANIFEST, RT-MATCH, RT-NOT-EXPIRED, RT-HELD) otherwise, naming up to
-    ten problems. Reads only."""
+    """Every check of the delete, before anything is deleted: (sidecar, items) when no item lies in a do-not-delete cell and the
+    manifest still matches the files and every item is still expired and not held; Refusal (RT-DO-NOT-DELETE first, the
+    whole manifest; then RT-MANIFEST, RT-MATCH, RT-NOT-EXPIRED, RT-HELD) otherwise, naming up to ten problems. Reads only."""
     side, items = read_manifest(man_csv)
+    cells = refuse_do_not_delete(items)
     root = os.path.realpath(root)
     if os.path.realpath(side.get('raw_root') or '') != root:
         raise Refusal('RT-MANIFEST: the manifest is of the tree %s, this delete is of %s (retention.RAW_ROOT)' % (
@@ -477,7 +526,7 @@ def preflight(man_csv, root, out, now=None):
             probs.append('%s: the directory is gone' % key)
             codes.append('RT-MATCH')
             continue
-        cls = classify(it, records, holds, now)
+        cls = classify(it, records, holds, now, protect=cells)
         if cls['status'] == 'held':
             probs.append('%s: held now (%s) - a held range is never deleted' % (key, ', '.join(cls['hold_ids'])))
             codes.append('RT-HELD')
@@ -542,8 +591,11 @@ def delete_item(e, applied_csv):
     """Remove the paths of one preflighted item: unlink its files and links, each re-checked by lstat right before (same kind,
     size, mtime, inode), then os.rmdir its MS directories deepest first (each still a directory of the same inode; an rmdir
     removes an empty directory only); append every removed path to the applied manifest (fsynced); then remove the emptied
-    hour directory and its date directory when that is empty. Returns (files, bytes, note). A path that changed since the
-    preflight refuses (RT-MATCH): the paths before it are gone and recorded."""
+    hour directory and its date directory when that is empty. Returns (files, bytes, note). An item that lies in a
+    do-not-delete cell of data_decisions.csv as read now refuses first (RT-DO-NOT-DELETE: a row Gregg added during a long
+    delete), deleting nothing of it. A path that changed since the preflight refuses (RT-MATCH): the paths before it are gone
+    and recorded."""
+    D.refuse([(e['it']['item'], e['it']['t0'], e['it']['t1'])], D.ranges()[0], 'the item about to be deleted')
     rows, n, b = [], 0, 0
     leaves = [r for r in e['now'] if r['kind'] != 'dir']
     dirs = sorted((r for r in e['now'] if r['kind'] == 'dir'), key=lambda r: (-r['rel'].count(os.sep), r['rel']))

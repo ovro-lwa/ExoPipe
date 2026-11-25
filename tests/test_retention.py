@@ -2,7 +2,8 @@
 """Two-week retention of the raw night data (`exopipe3 retention`, lib/retention/, config section retention; plan
 CUTOVER_REMAINING_20261124.md row 40, ORCHESTRATION_DESIGN_20261117.md 5.4). Data free: a synthetic raw tree of small files in
 the test's scratch directory (<subband>/<UT date>/<UT hour>/<YYYYMMDD_HHMMSS>_<subband>_averaged.ms.tar, dates relative to
-the clock) and a synthetic fix ledger (CRLF). Every delete in this test is of that scratch tree (asserted before each one).
+the clock), a synthetic fix ledger (CRLF) and a synthetic data_decisions.csv without do-not-delete rows (the do-not-delete
+gate: tests/test_retention_do_not_delete.py). Every delete in this test is of that scratch tree (asserted before each one).
 Asserts:
   - the table: production records and holds append one row each, read back; an empty range, a production before the range or
     in the future, no source, a name that is not a subband refuse (RT-RECORD / RT-HOLD); a damaged row or header refuses
@@ -527,6 +528,11 @@ def main():
     d = tempfile.mkdtemp(prefix='test_retention_', dir=base)
     Pt = Patch()
     try:
+        dd = os.path.join(d, 'data_decisions.csv')      # the plan and the delete read it (lib/retention/protect.py)
+        with open(dd, 'w', newline='') as f:
+            csv.writer(f, lineterminator='\n').writerows([['lst', 'subband', 'date', 'verdict', 'reason'],
+                                                          ['04h', '64MHz', '2025-01-09', 'exclude', 'synthetic row']])
+        Pt.set(CFG.paths, 'DATA_DECISIONS', dd)
         test_table(d)
         W = World(os.path.join(d, 'w'))
         Pt.set(CFG.retention, 'RAW_ROOT', W.root)

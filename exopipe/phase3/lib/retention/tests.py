@@ -2,11 +2,13 @@
 so `exopipe3 verify <class> <file>` runs them alone.
 
   retention_plan       plan_rows           every row's status is one of plan.STATUSES; a row in the manifest is expired; an
-                                           expired or retained row names its production records and expiry; a held row its holds
+                                           expired or retained row names its production records and expiry; a held row its
+                                           holds; a protected row its do-not-delete cells
   retention_manifest   manifest_consistent the sidecar's sha256 is the CSV's; per item, its files' bytes sum to the item's bytes,
                                            its files and links number n_files, every path is inside the item directory and the
                                            identity sha256 over its paths is the item's; the totals are the sidecar's (the
-                                           delete's preflight compares the rows with the tree)
+                                           delete's preflight compares the rows with the tree); no item lies in a do-not-delete
+                                           cell of data_decisions.csv as read now (lib/retention/protect.py; any subband)
   retention_records    records_parse       every production record parses (times, subbands, end after start)
   retention_holds      holds_parse         every hold and release row parses; every release names an earlier hold
   retention_applied    paths_gone          every removed path of the applied manifest is gone from the tree; with ctx item and
@@ -37,6 +39,8 @@ def plan_rows(path, **ctx):
                 bad.append('%s: %s without a production record' % (r['item'], st))
             elif st == 'held' and not r['hold_ids']:
                 bad.append('%s: held without a hold' % r['item'])
+            elif st == 'protected' and not r['note'].startswith('do not delete: '):
+                bad.append('%s: protected without its do-not-delete cells' % r['item'])
     if bad:
         return False, len(bad), '%d of %d rows fail: %s' % (len(bad), n, '; '.join(bad[:4]))
     return True, n, '%d rows' % n
@@ -70,6 +74,10 @@ def manifest_consistent(path, **ctx):
             bad.append('%s: a content manifest without a sha256 per file' % key)
     if nbytes != side.get('bytes'):
         bad.append('the items hold %d bytes, the sidecar says %s' % (nbytes, side.get('bytes')))
+    try:
+        P.refuse_do_not_delete(items)
+    except Refusal as e:
+        bad.append(str(e))
     if bad:
         return False, len(bad), '; '.join(bad[:4])
     return True, side.get('n_files'), '%d items, %d files, %.3f TB' % (len(items), side.get('n_files'), nbytes / 1e12)
