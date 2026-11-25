@@ -24,8 +24,11 @@ A 'path' forwarder runs with its own directory as sys.path[0]: the repository ro
 callers put it on PYTHONPATH).
 
 ``install_legacy_finder()`` resolves the old names in-process without any file at the old path (an import hook over
-LEGACY, returning the new module object itself). Nothing installs it by default; tests/test_refactor_shims.py uses it
-for the old-name check (EXOPIPE_SHIM_CHECK=finder).
+LEGACY, returning the new module object itself). core/env.legacy installs it in every step process;
+tests/test_refactor_shims.py uses it for the old-name check (EXOPIPE_SHIM_CHECK=finder). ``install_legacy_fallback_finder()``
+is the children's form (core/parity_sitecustomize/sitecustomize.py, every core.legacy.run child): last on sys.meta_path, it
+maps an old name only when no file at the old path was found and the new module exists. This file imports nothing from
+exopipe at load and runs on Python 3.6+ (the sitecustomize loads it by path).
 """
 import importlib
 import importlib.abc
@@ -162,4 +165,34 @@ def install_legacy_finder(table=None):
             return f
     f = _LegacyFinder(LEGACY if table is None else table)
     sys.meta_path.insert(0, f)
+    return f
+
+
+class _LegacyFallbackFinder(_LegacyFinder):
+    """The LEGACY hook of a CHILD process (core/parity_sitecustomize/sitecustomize.py loads this file by path in every process
+    that core.legacy.run starts): LAST on sys.meta_path, so it is asked only for an old name that no other finder found, and
+    it maps the name only when the new module can be found. An in-place production module imports old names
+    (exopipe_ops/deep_forced_radio.py: exopipe.phase3.phase3_catalog); its child resolves ``exopipe`` from the first tree on
+    PYTHONPATH. When that is this package (core/runner._child_env puts the step's tree first), the old file does not exist
+    here and the name maps to its new module; when it is the production package, the old file is found first and this
+    finder is never asked (PR 161, found not fixed: sublst_fit_positions.py refused S-G14 under a runner launch)."""
+
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname not in self.table:
+            return None
+        try:
+            if importlib.util.find_spec(self.table[fullname]) is None:
+                return None
+        except (ImportError, ValueError):
+            return None
+        return importlib.util.spec_from_loader(fullname, self)
+
+
+def install_legacy_fallback_finder(table=None):
+    """Put the fallback LEGACY hook LAST on sys.meta_path (idempotent). Returns the finder."""
+    for f in sys.meta_path:
+        if type(f).__name__ == '_LegacyFallbackFinder':     # also a copy loaded by path under another module name
+            return f
+    f = _LegacyFallbackFinder(LEGACY if table is None else table)
+    sys.meta_path.append(f)
     return f
