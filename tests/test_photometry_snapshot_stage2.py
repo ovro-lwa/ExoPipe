@@ -856,6 +856,14 @@ def test_forced_page_context(d):
 def main():
     base = os.environ.get('EXOPIPE3_TEST_SCRATCH') or None
     d = tempfile.mkdtemp(prefix='test_photometry_snapshot_stage2_', dir=base)
+    # a synthetic exclusion list (the content tests and the serve's G17 read one; CI has no production file): one row, a
+    # cell no check uses
+    from exopipe.phase3.core import exclusions
+    dd = os.path.join(d, 'data_decisions.csv')
+    with open(dd, 'w') as f:
+        f.write('lst,subband,date,verdict,reason\n23h,82MHz,2024-01-01,exclude,synthetic\n')
+    CFG.paths.DATA_DECISIONS = dd
+    exclusions._CACHE.clear()
     try:
         test_v2_classes(d)
         test_campaign_refusals(d)
