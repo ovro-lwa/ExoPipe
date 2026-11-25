@@ -33,7 +33,7 @@ rebuild no longer makes is quarantined the same way, without a successor).
 Gates (a unit refuses whole; nothing of it is copied): the tilefill unit done and its record PASS; its admitted nights = the record's;
 no night of the unit now excluded (steps.hybrid.excluded_in_unit, per member for wideband and Full); every source's checksum = the one
 its stage recorded; a product's PRODNAME = its file name and a phase3 name; HG12 / D6 every PB map's header conformant
-(pb_apply.pb_map_header_problems; a diffuse map also pbdiffuse_header_problems); D7 a replacement holds every card key of the file it
+(pb_apply.pb_map_header_problems; a diffuse map also lib/hybrid/common.pbdiffuse_header_problems); D7 a replacement holds every card key of the file it
 replaces except archive_push.HYBRID_RETIRED_KEYS[kind]; at most one installed file per kind; a destination that exists is the
 installed file of its kind; G4 quarantine destinations free; G19 free space; G2 production writes. All copies are verified (.part,
 checksum) before the first move. Content audit after the swap: class hybrid_archive_copy on every file written.
@@ -80,9 +80,10 @@ def header_problems(h, name, kind):
     """Why a file's header may not enter the hybrid archive under name (empty = conformant): a product's PRODNAME is its file name
     and a phase3 name; a PB map: pb_map_header_problems (HG12), a diffuse map also pbdiffuse_header_problems (D6)."""
     from exopipe.phase3.core.products import parse_name
+    from exopipe.phase3.lib.hybrid import common as HC
     from exopipe.phase3.lib.masters import pb_apply as PBA
     if kind == 'pbdiffuse':
-        return PBA.pbdiffuse_header_problems(h)
+        return HC.pbdiffuse_header_problems(h)
     if kind == 'pb':
         return PBA.pb_map_header_problems(h)
     pn = h.get('PRODNAME')

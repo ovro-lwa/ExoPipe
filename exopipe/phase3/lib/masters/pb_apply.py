@@ -216,36 +216,6 @@ def pb_map_header_problems(h):
     return out
 
 
-# THE DIFFUSE PB-MAP HEADER (Gregg 2026-11-18, Q3 of the hybrid port: "just go with your recommendations",
-# R-GREGG-20261118-HYBRID-Q1-Q3-GO-WITH-RECOMMENDATIONS): a diffuse PB map (PBdiffuse_deep_<scope>.fits, hybrid split beam correction)
-# starts from a reconstruction's header and carries none of the master's flux and noise cards either; the 456 archived maps were
-# passed the same way on 2026-11-18 (DONE-20261118-PBDIFFUSE-MASTER-CARDS-HEADER-PASS). The full PB maps (PB_deep*) keep theirs.
-# LSSTKADM (the subband stacks admitted at hybrid scales, Gregg 10-31) is a master card of the same kind (2026-11-19): admission is
-# per weighting, while the diffuse map is one map for both weightings (the same pixels); production's maps took the card from
-# whichever weighting's header seeded them (11 archived maps carry a Robust -0.75 master's value; no rebuilt map carries it).
-PBDIFFUSE_MASTER_CARDS = ('FLUXFIT', 'FLUXBND', 'FLUXABS', 'FLUXCORR', 'FLUXVER', 'FLUXBAKE', 'FLUXREF', 'IMGRMS', 'THERMNOI',
-                          'LSSTKADM')
-PBDIFFUSE_RULING = 'R-GREGG-20261118-HYBRID-Q1-Q3-GO-WITH-RECOMMENDATIONS'
-
-
-def pbdiffuse_header(h):
-    """Header h made a diffuse PB map's header, in place (also returned): pb_map_header, then the master's flux and noise cards
-    removed with a HISTORY line."""
-    pb_map_header(h)
-    gone = [k for k in PBDIFFUSE_MASTER_CARDS if k in h]
-    for k in gone:
-        del h[k]
-    if gone:
-        h['HISTORY'] = (f'removed {" ".join(gone)}: a diffuse primary-beam map carries no master flux or noise card '
-                        f'({PBDIFFUSE_RULING})')
-    return h
-
-
-def pbdiffuse_header_problems(h):
-    """Why a diffuse PB map's header breaks the rulings (empty list = conformant)."""
-    return pb_map_header_problems(h) + [f'{k} present ({PBDIFFUSE_RULING})' for k in PBDIFFUSE_MASTER_CARDS if k in h]
-
-
 def refuse_pb_map_header(path):
     """Raise unless the PB map at path is conformant: called before a PB map is copied into the archive."""
     bad = pb_map_header_problems(fits.getheader(path))

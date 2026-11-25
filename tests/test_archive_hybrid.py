@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """The hybrid route, pull request PR-5b (plan/specs/hybrid.md section 4): `archive push --class hybrid` (lib/archive/hybrid.py, the
-content-test class hybrid_archive_copy of lib/archive/tests.py) and the diffuse PB-map header rule (pb_apply.pbdiffuse_header).
+content-test class hybrid_archive_copy of lib/archive/tests.py) and the diffuse PB-map header rule (lib/hybrid/common.pbdiffuse_header).
 
 Data-free (CI); a synthetic hybrid --out (a done tilefill unit, its products, its reconstruction record, its diffuse PB map) and a
 MIRROR archive root under $TMPDIR, the exclusion read stubbed:
-  1. the config: HYBRID_RETIRED_KEYS = the ruled card lists of pb_apply; pbdiffuse_header leaves no SH* or master card (LSSTKADM
+  1. the config: HYBRID_RETIRED_KEYS = the ruled card lists of pb_apply and lib/hybrid/common; pbdiffuse_header leaves no SH* or master card (LSSTKADM
      included);
   2. an empty archive: every file of a work unit is published (filled master, beam-corrected sibling, CLEAN residual,
      reconstruction and its split, diffuse PB map, full PB map from the masters archive); the copies carry the sources' md5, the
@@ -55,6 +55,7 @@ from exopipe.phase3.core.record import Refusal  # noqa: E402
 from exopipe.phase3.lib.archive import common as K  # noqa: E402
 from exopipe.phase3.lib.archive import hybrid as AH  # noqa: E402
 from exopipe.phase3.lib.archive import tests as AT  # noqa: E402
+from exopipe.phase3.lib.hybrid import common as HC  # noqa: E402
 from exopipe.phase3.lib.masters import pb_apply as PBA  # noqa: E402
 
 TAPER = '46MHz_I_deep_Taper_Robust-0.75_shflux_mdewarp{pb}_dewarped_aligned_coadd_lsrecon{fill}{cr}_LST18h_20250405-20251014_N{n}.fits'
@@ -207,13 +208,13 @@ def _audit(u):
 def test_config():
     R = CFG.archive_push.HYBRID_RETIRED_KEYS
     assert tuple(R['pb']) == PBA.PB_MAP_SH_CARDS, R['pb']
-    assert tuple(R['pbdiffuse']) == PBA.PB_MAP_SH_CARDS + PBA.PBDIFFUSE_MASTER_CARDS, R['pbdiffuse']
+    assert tuple(R['pbdiffuse']) == PBA.PB_MAP_SH_CARDS + HC.PBDIFFUSE_MASTER_CARDS, R['pbdiffuse']
     h = fits.Header()
     for k, v in {**SH, **MASTER, 'BUNIT': 'Jy/beam'}.items():
         h[k] = v
-    assert PBA.pbdiffuse_header_problems(h)
-    PBA.pbdiffuse_header(h)
-    assert not PBA.pbdiffuse_header_problems(h), PBA.pbdiffuse_header_problems(h)
+    assert HC.pbdiffuse_header_problems(h)
+    HC.pbdiffuse_header(h)
+    assert not HC.pbdiffuse_header_problems(h), HC.pbdiffuse_header_problems(h)
     assert CFG.archive_push.CLASSES['hybrid']['enabled'] and CFG.archive_push.CLASSES['hybrid']['existing'] == 'replace-quarantine'
 
 
@@ -357,7 +358,7 @@ def test_write_diffuse_pb():
         json.dump(dict(product=dict(path=p)), open(os.path.join(wd, 'R075_lsrecon.json'), 'w'))
         pbd = M.write_diffuse_pb(d, '18h', '46MHz', 'R075')
         h = fits.getheader(pbd)
-        assert not PBA.pbdiffuse_header_problems(h) and 'PRODNAME' not in h and h['P2RUN'] == 'r', repr(h)
+        assert not HC.pbdiffuse_header_problems(h) and 'PRODNAME' not in h and h['P2RUN'] == 'r', repr(h)
         ino = os.stat(pbd).st_ino
         assert M.write_diffuse_pb(d, '18h', '46MHz', 'R075') == pbd and os.stat(pbd).st_ino == ino      # current: kept
         vals['v'] = 0.6
