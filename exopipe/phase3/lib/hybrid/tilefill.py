@@ -34,6 +34,7 @@ import time
 import numpy as np
 from astropy.io import fits
 
+from exopipe.phase3.core import placement
 from exopipe.phase3.core.products import build_name, parse_name
 from exopipe.phase3.lib.install.steps_common import md5
 
@@ -120,7 +121,8 @@ def fill_correction(t, fmhz):
 def band_increment(js_unfilled, js_filled, out):
     """The band's fill field on the full sphere -> out (float32 HEALPix, SIGNAL, Jy/sr) (MF 211). Refuses unless the donor is the
     unfilled map's nearest LFSS map, s equals the filled map's TPSCALE (5 digits), the footprints agree, and, inside the footprint,
-    unfilled + field reproduces the filled map to float32 storage precision (4 rounding units + 1e-6 of the field's peak)."""
+    unfilled + field reproduces the filled map to float32 storage precision (4 rounding units + 1e-6 of the field's peak). out is the
+    caller's temporary name: steps/hybrid.tilefill_field places it at the field's name (core/placement) once its input is checked."""
     if os.path.exists(out):
         raise TilefillRefusal(f'{out} exists - REFUSING')
     hf = _getheader(js_filled, 1); fmhz = int(hf['TPDONMHZ'])
@@ -327,8 +329,8 @@ def fill_master_unit(plain, pbcorr, pb, pb_how, field, outs, lst, scope, w, tape
                             f'{hi["TPSCALE"]}, l<{L_LO} blend to {L_HI}) x Omega_zen / n' + (' x PBdiffuse' if kind == 'plain' else '')
                             + ' added (Gregg 2026-11-11 "Approved")')
             h['HISTORY'] = f'zero-spacing fill written by exopipe {pcfg.PIPELINE_GITTAG}; the hybrid master was built by {build} (spec D9)'
-            hl.writeto(out + '.part', overwrite=True, output_verify='exception')
-        os.replace(out + '.part', out)
+            with placement.atomic(out) as part:       # a new product: the directory's rule (core/placement)
+                hl.writeto(part, overwrite=True, output_verify='exception')
         hok, herr = _header_ok(out)
         with fits.open(out, memmap=False) as hl:
             wr = np.squeeze(hl[0].data).astype(np.float64)
@@ -379,8 +381,8 @@ def rename_cleanres(src, out, taper_master=None):
         _carry(hl[0].header, add, taper_master)
         hl[0].header['HISTORY'] = (f"renamed {time.strftime('%Y-%m-%d', time.gmtime())}: 'lsfill' token dropped - the CLEAN residual gets no "
                                    'zero-spacing fill (Gregg 2026-11-11 "Approved"); data unchanged')
-        hl.writeto(out + '.part', overwrite=True, output_verify='exception')
-    os.replace(out + '.part', out)
+        with placement.atomic(out) as part:           # a new product: the directory's rule (core/placement)
+            hl.writeto(part, overwrite=True, output_verify='exception')
     with fits.open(out, memmap=False) as hl:
         d1 = _data_md5(hl[0]); pr = hl[0].header.get('PRODNAME')
     hok, herr = _header_ok(out)

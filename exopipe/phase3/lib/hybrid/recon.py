@@ -9,7 +9,8 @@ differences are listed here:
     any computation (production: module constants of the same names and values);
   - a refusal raises ReconRefusal (a RuntimeError, as production raised) - the stage turns it into the unit's refusal;
   - every FITS file is read with memmap=False (production set astropy's default at its entry point, NL 2226);
-  - the unit record is written through a temporary name and a rename (production: json.dump in place);
+  - the unit record is written through a temporary name and placed (core/placement: the replaced record's group, mode and
+    ACL, or the directory's rule for a new one; production: json.dump in place);
   - md5, rd, diag_header, inputs_dir, log come from lib/hybrid/common and lib/install/steps_common; CFP / PBA are the v2 copies
     lib/masters/coadd and lib/masters/pb_apply; build_name / parse_name / write_standard_header are core/products.
 """
@@ -24,6 +25,7 @@ from astropy.wcs import WCS
 from scipy import fft as sfft
 from scipy.ndimage import binary_dilation, zoom
 
+from exopipe.phase3.core import placement
 from exopipe.phase3.core.products import build_name, parse_name, write_standard_header
 from exopipe.phase3.lib.hybrid.common import VARIANT, diag_header, inputs_dir, log, rd
 from exopipe.phase3.lib.install.steps_common import md5
@@ -63,11 +65,10 @@ def bind():
 
 
 def _dump(rec, path):
-    """The unit record (production: json.dump(rec, open(path, 'w'), indent=1, default=str)) through a temporary name."""
-    tmp = f'{path}.part'
-    with open(tmp, 'w') as f:
+    """The unit record (production: json.dump(rec, open(path, 'w'), indent=1, default=str)) through a temporary name, placed
+    (core/placement.atomic: the replaced record's group, mode and ACL, or the directory's rule for a new one)."""
+    with placement.atomic(path) as tmp, open(tmp, 'w') as f:
         json.dump(rec, f, indent=1, default=str)
-    os.replace(tmp, path)
 
 
 # ------------------------------------------------------------------------------------------------------------------------- FFT helpers

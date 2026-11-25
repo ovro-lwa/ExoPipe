@@ -30,7 +30,9 @@ MODULES = ['core/manifest.py', 'lib/calibrate/common.py', 'lib/calibrate/fluxsca
            # P3
            'lib/jupiter/v2.py', 'lib/mosaic/gen_common.py', 'lib/pages/night.py', 'lib/pages/pages_input.py',
            'lib/serve/fp_filters.py', 'lib/serve/hub.py', 'lib/serve/register.py', 'lib/serve/snapshot_view.py',
-           'lib/serve/versions.py', 'lib/serve/views.py', 'lib/status/steps_common.py', 'lib/status/steps_hub.py']
+           'lib/serve/versions.py', 'lib/serve/views.py', 'lib/status/steps_common.py', 'lib/status/steps_hub.py',
+           # P4
+           'lib/hybrid/master.py', 'lib/hybrid/recon.py', 'lib/hybrid/tilefill.py']
 # every entry's reason: 'stays bare[ until ...]: <why>' or the planned PR 'P<n>: <what>' - nothing else (an entry without
 # a reason or a planned PR fails the guard)
 REASON = re.compile(r'^(stays bare( until [^:]+)?|P[1-9][0-9]*): \S.{9,}$', re.S)
@@ -99,9 +101,6 @@ EXCEPTIONS = {
     ('phase3_i_deep_package_deep.py', '_sweep_stale', 'shutil.move'): (1, MOVED_ASIDE + ' - stale review directories'),
     ('steps/followup.py', '_atomic_text', 'os.replace'): (
         1, 'P5: behind a handler on the path (the caller catches Exception)'),
-    ('steps/hybrid.py', 'tilefill_field', 'os.replace'): (
-        1, 'P4: the field FITS, behind except (TilefillRefusal, OSError, KeyError, ValueError), which a refusal escapes'),
-    ('steps/hybrid.py', 'tilefill_unit', 'os.replace'): (1, 'P4: the unit\'s record, behind a handler on the path'),
     # P3
     ('lib/jupiter/v2.py', 'st_prepare', 'os.replace'): (
         1, MOVED_ASIDE + ' - earlier derived roots (directories) moved to _superseded/<tag>'),
@@ -137,6 +136,9 @@ EXCEPTIONS = {
     ('lib/serve/versions.py', '_to_work', 'os.rename'): (1, MOVED_DIR + ' (a legacy run moved to its work directory)'),
     ('lib/serve/versions.py', '_unwork', 'os.rename'): (1, MOVED_DIR + ' (the work directory moved back)'),
     ('lib/serve/versions.py', 'retire', 'os.rename'): (1, MOVED_DIR + ' (a retired version renamed out)'),
+    # P4
+    ('lib/hybrid/tilefill.py', 'band_increment', 'os.replace'): (
+        1, 'stays bare: writes the caller\'s temporary file (steps/hybrid.tilefill_field places it at the field\'s name)'),
 }
 CALLS = {'os': ('replace', 'rename', 'renames'), 'shutil': ('move',)}
 

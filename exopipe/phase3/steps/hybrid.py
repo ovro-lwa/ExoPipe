@@ -818,8 +818,9 @@ def tilefill_field(out_root, scope, w, rows, mosaic_out=None):
     filled mosaic),
     recorded beside it. Made once per --out: a field whose record passed, whose md5 equals
     the record's and whose mosaics still have the recorded md5s is reused (another process or an earlier run made it); otherwise it
-    is made under a name of this process and renamed into place, so no process deletes a field another one reads. A refusal is
-    recorded (result FAIL) and refuses every unit of the scope and weighting."""
+    is made under a name of this process and placed (core/placement.replace: the replaced field's group, mode and ACL, or the
+    directory's rule for a new one), so no process deletes a field another one reads. A refusal - a placement refusal included - is
+    recorded (result FAIL, the refusal's text) and refuses every unit of the scope and weighting."""
     import json
     from exopipe.phase3.config import CFG
     from exopipe.phase3.lib.hybrid import tilefill as TF
@@ -854,9 +855,9 @@ def tilefill_field(out_root, scope, w, rows, mosaic_out=None):
             if rec['unfilled_md5'] != um:
                 _clear([tmp])
                 raise TF.TilefillRefusal(f'HG13: {unfilled} changed while it was read - REFUSING')
-            os.replace(tmp, out)
+            placement.replace(tmp, out, drop=True)          # a refusal removes tmp and is recorded below
             rec['out'] = out
-    except (TF.TilefillRefusal, OSError, KeyError, ValueError) as e:
+    except (TF.TilefillRefusal, placement.PlacementRefusal, OSError, KeyError, ValueError) as e:
         old = None
         rec = dict(scope=scope, weighting=w, result='FAIL', error=f'{type(e).__name__}: {e}')
     if rec is not old:
@@ -1236,9 +1237,8 @@ def tilefill_unit(u, lst, scope, w, out_root, mode='work', mosaic_out=None):
                 own.insert(0, pbd)                                   # own[-1] stays the record
             rec['pbdiffuse_map'] = dict(path=pbd, md5=_md5(pbd))       # ('pbdiffuse' is the fill's PB-source description)
         rp = own[-1]
-        with open(rp + '.part', 'w') as f:
+        with placement.atomic(rp) as part, open(part, 'w') as f:     # a placement refusal: except BaseException below
             json.dump(rec, f, indent=1, default=str)
-        os.replace(rp + '.part', rp)
     except expected as e:
         _clear(own)
         u.refuse(f'{e}' if isinstance(e, (TF.TilefillRefusal, REC.ReconRefusal)) else f'{type(e).__name__}: {e} - REFUSED')

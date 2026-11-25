@@ -18,7 +18,8 @@ Data-free (CI):
   5c. Full's diffuse PB map: the hybrid_full.PBDIFFUSE_WEIGHTING unit's file, or, where that unit refused and
      hybrid_unit.REFUSED_INSTALLED keeps it, the installed map; no keep, an unfinished writer or no installed map refuses;
   5b. the band field is made once per --out and reused while unchanged; a changed filled mosaic remakes it, a changed unfilled
-     mosaic records FAIL (HG13); a record without a compact-source block fails tilefill_compact;
+     mosaic records FAIL (HG13); a record without a compact-source block fails tilefill_compact; a placement refusal of the field
+     (placement P4) records FAIL with the placement message, cached for the scope, the field placed before unchanged;
   6. the plan: the filled names are the masters' product names, the CLEAN residual loses 'lsfill'; pinned re-makes no CLEAN residual.
 Cluster parity (not here): 18h 46 MHz Robust -0.75, band field and fill from the pinned 11-11 sources and from the PR-4 work outputs,
 against the archived filled masters (data md5), run by hand on lwacalim07.
@@ -374,6 +375,57 @@ def test_field_reuse():
         assert sorted(os.listdir(fd)) == ['field_46MHz_R075.fits', 'field_46MHz_R075.json'], os.listdir(fd)
     finally:
         HS.mosaic_pair, TF.band_increment = old
+        HS._FIELDS.clear()
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_field_placement_refusal():
+    """Placement P4, the handler of tilefill_field: a placement refusal of the band field (core/placement: the field file could
+    not be given its group) is RECORDED - the field record says FAIL with the refusal's text ('PlacementRefusal: placement: ...'),
+    is cached for the scope and weighting (every unit of them refuses with it: 'the band field of <scope> <w> refused: ...') - the
+    field placed before is unchanged and no temporary file is left."""
+    from exopipe.phase3.core import placement as PL
+    foreign = next((g for g in (0, 1, 2, 3, 4, 65534) if g not in os.getgroups() and g != os.getegid()), None)
+    if os.geteuid() == 0 or foreign is None:
+        print('  UNTESTED (placement refusal of the band field): running as root or a member of every candidate group')
+        return
+    d = _tmp('tf_fpr_')
+    calls = []
+
+    def fake(unf, fil, out):
+        calls.append(out)
+        _fits(out, data=np.full((4, 4), len(calls), np.float32))
+        return dict(out=out, out_md5=_md5f(out), filled=fil, filled_md5=_md5f(fil), unfilled=unf, unfilled_md5=_md5f(unf), s=1.0,
+                    donor_mhz=50, result='PASS')
+    old = (HS.mosaic_pair, TF.band_increment, PL.target_attrs)
+    try:
+        fil, unf = _fits(os.path.join(d, 'F.fits')), _fits(os.path.join(d, 'U.fits'))
+        rows = {unf: _md5f(unf)}
+        HS.mosaic_pair = lambda scope, w, T: (fil, unf)
+        TF.band_increment = fake
+        out = os.path.join(d, 'w')
+        HS._FIELDS.clear()
+        r1 = HS.tilefill_field(out, '46MHz', 'R075', rows)
+        fd = os.path.join(out, '_tilefill_fields')
+        field = os.path.join(fd, 'field_46MHz_R075.fits')
+        assert r1['result'] == 'PASS' and r1['out'] == field, r1
+        before = _md5f(field)
+        with open(fil, 'ab') as f:                       # the filled mosaic changed: the field is made again ...
+            f.write(b'\0' * 2880)
+        real = PL.target_attrs                           # ... and its placement refused (a group gh is not in)
+        PL.target_attrs = lambda dst, like=None: dict(real(dst, like), gid=foreign) if dst == field else real(dst, like)
+        HS._FIELDS.clear()
+        r2 = HS.tilefill_field(out, '46MHz', 'R075', rows)
+        PL.target_attrs = real
+        assert len(calls) == 2 and r2['result'] == 'FAIL' and r2['error'].startswith('PlacementRefusal: placement:'), r2
+        assert field in r2['error'], r2
+        with open(os.path.join(fd, 'field_46MHz_R075.json')) as f:
+            assert json.load(f) == r2
+        assert HS.tilefill_field(out, '46MHz', 'R075', rows) is r2 and len(calls) == 2      # cached: every unit reads the FAIL
+        assert _md5f(field) == before, 'the field placed before changed'
+        assert sorted(os.listdir(fd)) == ['field_46MHz_R075.fits', 'field_46MHz_R075.json'], os.listdir(fd)
+    finally:
+        HS.mosaic_pair, TF.band_increment, PL.target_attrs = old
         HS._FIELDS.clear()
         shutil.rmtree(d, ignore_errors=True)
 

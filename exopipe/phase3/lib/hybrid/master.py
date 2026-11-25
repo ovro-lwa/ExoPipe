@@ -18,6 +18,7 @@ from astropy.io import fits
 from astropy.wcs import WCS
 from scipy import fft as sfft
 
+from exopipe.phase3.core import placement
 from exopipe.phase3.core.products import build_name, parse_name, write_standard_header
 from exopipe.phase3.lib.hybrid import recon as REC
 from exopipe.phase3.lib.hybrid import common as HC
@@ -480,9 +481,10 @@ def hybrid_full(lst, v, run_dir):
     # the map is weighting-independent (the same subband maps and weights) but its header is the weighting's product's: v2 writes it
     # from one weighting only, hybrid_full.PBDIFFUSE_WEIGHTING (the archive's: R0's header); the other divides by the same float32
     # values (production: both wrote it, last writer kept; a shared .part raced at 01h, 2026-11-09)
-    if v == PBDIFFUSE_WEIGHTING:
-        part = f'{pbdf}.{os.getpid()}.part'
-        fits.writeto(part, pbd.astype(np.float32), hd_, overwrite=True); os.replace(part, pbdf); pbd = rd(pbdf)
+    if v == PBDIFFUSE_WEIGHTING:     # a temporary name of this process, placed (core/placement.atomic)
+        with placement.atomic(pbdf) as part:
+            fits.writeto(part, pbd.astype(np.float32), hd_, overwrite=True)
+        pbd = rd(pbdf)
     else:
         pbd = pbd.astype(np.float32).astype(np.float64)
     TP = rd(tppath); valid = ok & np.isfinite(TP) & np.isfinite(pbf) & (pbf > 0) & np.isfinite(pbd) & (pbd > 0)
@@ -524,7 +526,8 @@ def write_diffuse_pb(run_dir, lst, scope, v):
     step wrote it (NL archive_hybrid_unit 1644-1649): diffuse_pb_map as float32 under the weighting's reconstruction header made a PB
     map's (diag_header: no PRODNAME; pbdiffuse_header: no SH* or master flux / noise card, BUNIT blank - spec D6) with PBMODEL. Called
     by the hybrid_full.PBDIFFUSE_WEIGHTING unit only (the header is that weighting's). An existing map with these values and these
-    cards is kept (a rerun changes no byte), any other is rewritten, through a temporary name of this process. Full's map is the full
+    cards is kept (a rerun changes no byte), any other is rewritten, through a temporary name of this process, and placed
+    (core/placement.atomic: the replaced map's group, mode and ACL, or the directory's rule for a new one). Full's map is the full
     stage's (returned as is). Returns the path."""
     wd = f'{run_dir}/{lst}_{scope}'
     pbd = f'{wd}/PBdiffuse_deep_{scope}.fits'
@@ -544,9 +547,8 @@ def write_diffuse_pb(run_dir, lst, scope, v):
         with fits.open(pbd, memmap=False) as f:
             if np.array_equal(f[0].data, a, equal_nan=True) and cards(f[0].header) == cards(h):
                 return pbd
-    part = f'{pbd}.{os.getpid()}.part'
-    fits.writeto(part, a, h, overwrite=True)
-    os.replace(part, pbd)
+    with placement.atomic(pbd) as part:
+        fits.writeto(part, a, h, overwrite=True)
     return pbd
 
 
