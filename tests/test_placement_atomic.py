@@ -336,9 +336,116 @@ def test_atomic_write_json_place():
     assert seen == [os.path.join(TMP, 'rec.json') + f'.tmp.{os.getpid()}'], seen
 
 
+def test_atomic_many():
+    """placement.atomic_many (PR 179 fix round), the form for products installed together: (1) every product placed, in the
+    order given, an existing one keeping its group, mode and ACL and a new one the directory's rule, no temporary file left;
+    (2) a refusal on the 2nd of 3 (phase 1, the attributes) places NONE of them and leaves no temporary file; a temporary file
+    not written refuses the same way; an exception inside the block removes every temporary file; (3) a rename that fails
+    (phase 2) refuses naming exactly the products already placed, the rest's temporary files removed; (4) the same name twice
+    is one product; two names of one path refuse before anything is written."""
+    _fresh()
+    d = _dir('arch', True)
+    old = _product(d, 'b.csv')
+    before = (_attrs(old), open(old).read())
+    want_new = PL.target_attrs(os.path.join(d, 'new.csv'))
+    names = [os.path.join(d, n) for n in ('c.csv', 'b.csv', 'a.csv')]
+    order, real_replace = [], os.replace
+
+    def recording(src, dst):
+        order.append(dst)
+        return real_replace(src, dst)
+    os.replace = recording
+    try:
+        with PL.atomic_many(names) as tmps:
+            assert list(tmps) == names and all(t.startswith(n + '.') and t.endswith('.tmp') for n, t in tmps.items())
+            for n in names:
+                _write(tmps[n], os.path.basename(n))
+    finally:
+        os.replace = real_replace
+    assert order == names, order
+    assert all(open(n).read() == os.path.basename(n) for n in names) and not _leftovers(d)
+    assert _attrs(old) == before[0], (_attrs(old), before)
+    for n in (names[0], names[2]):
+        assert _attrs(n) == (want_new['gid'], want_new['acl'], want_new['mode']), (n, _attrs(n), want_new)
+    # (2) a refusal on the 2nd of 3: none placed
+    _fresh()
+    d = _dir('arch', True)
+    old = _product(d, 'b.csv')
+    before = (_attrs(old), open(old).read())
+    names = [os.path.join(d, n) for n in ('c.csv', 'b.csv', 'a.csv')]
+    foreign = next((g for g in (0, 1, 2, 3, 4, 65534) if g not in os.getgroups() and g != os.getegid()), None)
+    if os.geteuid() != 0 and foreign is not None:
+        real = PL.target_attrs
+        PL.target_attrs = lambda dst, like=None: dict(real(dst, like), gid=foreign) if dst == names[1] else real(dst, like)
+        try:
+            def write():
+                with PL.atomic_many(names) as tmps:
+                    for n in names:
+                        _write(tmps[n], 'new\n')
+            e = _raises(PL.PlacementRefusal, write)
+        finally:
+            PL.target_attrs = real
+        assert 'none of the 3 products placed' in str(e) and names[1] in str(e), e
+        assert not os.path.exists(names[0]) and not os.path.exists(names[2]) and (_attrs(old), open(old).read()) == before
+        assert not _leftovers(d), _leftovers(d)
+    else:
+        print('  UNTESTED (refusal of the 2nd of 3): running as root or a member of every candidate group')
+
+    def unwritten():
+        with PL.atomic_many(names) as tmps:
+            _write(tmps[names[0]], 'x')
+            _write(tmps[names[2]], 'x')
+    e = _raises(PL.PlacementRefusal, unwritten)
+    assert 'was not written' in str(e) and 'none of the 3 products placed' in str(e), e
+    assert not os.path.exists(names[0]) and (_attrs(old), open(old).read()) == before and not _leftovers(d)
+
+    def failing():
+        with PL.atomic_many(names) as tmps:
+            for n in names:
+                _write(tmps[n], 'x')
+            raise ValueError('writer failed')
+    _raises(ValueError, failing)
+    assert not os.path.exists(names[0]) and (_attrs(old), open(old).read()) == before and not _leftovers(d)
+    # (3) phase 2: the second rename fails
+    calls = []
+
+    def second_fails(src, dst):
+        calls.append(dst)
+        if len(calls) == 2:
+            raise OSError(errno.EIO, 'Input/output error')
+        return real_replace(src, dst)
+    os.replace = second_fails
+    try:
+        def write3():
+            with PL.atomic_many(names) as tmps:
+                for n in names:
+                    _write(tmps[n], 'new\n')
+        e = _raises(PL.PlacementRefusal, write3)
+    finally:
+        os.replace = real_replace
+    m = str(e)
+    assert f'already placed: {[names[0]]}' in m and f'not placed: {names[1:]}' in m and 'errno %d' % errno.EIO in m, m
+    assert open(names[0]).read() == 'new\n' and (_attrs(old), open(old).read()) == before and not os.path.exists(names[2])
+    assert not _leftovers(d), _leftovers(d)
+    # (4) duplicates
+    os.remove(names[0])
+    with PL.atomic_many([names[0], names[2], names[0]]) as tmps:
+        assert list(tmps) == [names[0], names[2]], tmps
+        for t in tmps.values():
+            _write(t, 'dup\n')
+    assert open(names[0]).read() == open(names[2]).read() == 'dup\n' and not _leftovers(d)
+    entered = []
+
+    def same_path():
+        with PL.atomic_many([names[0], os.path.join(d, '.', 'c.csv')]):
+            entered.append(1)
+    e = _raises(PL.PlacementRefusal, same_path)
+    assert not entered and 'same destination' in str(e) and open(names[0]).read() == 'dup\n' and not _leftovers(d), e
+
+
 TESTS = [test_replaced_keeps_attrs, test_new_file_directory_rule, test_writer_exception_removes_tmp,
          test_refusal_removes_tmp_names_group_and_file, test_unique_names, test_refusal_recorded_by_unit,
-         test_tag_and_temp_glob, test_atomic_write_json_place]
+         test_tag_and_temp_glob, test_atomic_write_json_place, test_atomic_many]
 
 
 def main():
