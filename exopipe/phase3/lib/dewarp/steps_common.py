@@ -290,8 +290,9 @@ class Roots:
                 return d
         return None
 
-    def write_roots(self, stages):
-        """The roots this run writes under, by stage (gate G-W)."""
+    def write_roots(self, stages, stamp=False):
+        """The roots this run writes under, by stage (gate G-W). ``stamp``: a not-accepted cell's MDWSTAT card will be written
+        (steps_cell.stamp_mdwstat), on the promoted rebuild, which --out does not re-root."""
         out = [('records', self.records)]
         if 'measure' in stages:
             out.append(('measure dir', self.measure_dir))
@@ -299,8 +300,8 @@ class Roots:
             out.append(('generation root', self.gen))
         if 'record' in stages:
             out.append(('archive record dir', self.record_dir))
-            # the MDWSTAT card on a not-accepted cell's promoted rebuild (steps_cell.stamp_mdwstat)
-            out.append(('promoted rebuild root (MDWSTAT card)', self.rebuild))
+            if stamp:
+                out.append((STAMP_ROOT, self.rebuild))
         return out
 
 
@@ -398,18 +399,22 @@ def pending_cells(roots, lst, routed):
 # window gates
 # ---------------------------------------------------------------------------------------------------------------------
 
-def gate_write_roots(roots, stages, staging=None):
+def gate_write_roots(roots, stages, staging=None, stamp=False):
     """G-W: no derived write root under paths.PRODUCTION_ROOTS while paths.PRODUCTION_WRITES is False (README rule 10).
-    Returns the list of violations (empty = pass)."""
+    ``stamp``: a not-accepted cell will get its MDWSTAT card, so the promoted rebuild root is a write root too (the run checks
+    it when a --measurement shows such a cell; steps_cell.record checks it for every cell it stamps). Returns the list of
+    violations (empty = pass)."""
     CFG = cfg()
     if CFG.paths.PRODUCTION_WRITES:
         return []
-    items = roots.write_roots(stages) + ([('staging root', staging)] if staging else [])
+    items = roots.write_roots(stages, stamp) + ([('staging root', staging)] if staging else [])
     bad = []
     for what, path in items:
         pr = CFG.production_root_of(path)
         if pr is not None:
-            bad.append(f'{what} {path} is under the production root {pr}')
+            bad.append(f'{what} {path} is under the production root {pr}' + (
+                ' (--out does not re-root it: give --set dewarp.REBUILD_ROOT=<a copy outside the production roots>)'
+                if what == STAMP_ROOT else ''))
     if 'measure' in stages and not C().STAGE_INPUTS:
         for what, path in (('working tree', roots.working), ('rebuild root', roots.rebuild)):
             pr = CFG.production_root_of(path)
@@ -694,48 +699,76 @@ def not_accepted_row(lst, scope, row, written_utc):
                 measured_at=r.get('measured_at', ''), written_utc=written_utc)
 
 
+STAMP_ROOT = 'promoted rebuild root (MDWSTAT card of a not-accepted cell)'      # G-W's name of that write root
+
+
 def mdwstat_files(roots, cell):
-    """The files the record stage writes MDWSTAT on: <REBUILD_ROOT>/<cell>/coadd_final/<dewarp.MDWSTAT_FILES>, sorted."""
-    import glob
-    return sorted(glob.glob(os.path.join(roots.rebuild, cell, 'coadd_final', C().MDWSTAT_FILES)))
+    """The files the record stage writes MDWSTAT on, sorted: the cell's masters, i.e. the files of
+    <REBUILD_ROOT>/<cell>/coadd_final (top level) whose names match lib/masters/coadd._MASTER_RE - the set
+    release1_cards.CellCards.masters gives MDWSTAT and the install's sibling card gate compares. Never the PB maps
+    (PB_deep_<s>, PB_deep_R075_<s>: release1_cards writes MDWSTAT on masters only), loo/ or subtracted/."""
+    from exopipe.phase3.lib.masters.coadd import _MASTER_RE
+    d = os.path.join(roots.rebuild, cell, 'coadd_final')
+    try:
+        names = os.listdir(d)
+    except (FileNotFoundError, NotADirectoryError):
+        return []
+    return sorted(os.path.join(d, f) for f in names if f.endswith('.fits') and _MASTER_RE.match(f)
+                  and os.path.isfile(os.path.join(d, f)))
+
+
+def _gain_text(g, threshold):
+    """g to one decimal, as dewarp_lst.sh:126 prints it - with more decimals where one decimal would print a number that is
+    not below ``threshold`` (4.96 prints '4.96', never '5.0 ... < 5'; a written gain of 5.0 that computes as
+    4.999999999999999 prints that number, the comparison the gate made)."""
+    for d in range(1, 18):
+        t = f'{g:.{d}f}'
+        if float(t) < threshold:
+            return t
+    return repr(g)
+
+
+def card_cut(v, n):
+    """The longest prefix of ``v`` that a one-card FITS string value of ``n`` characters holds (a quote is written twice)."""
+    out, k = [], 0
+    for ch in v:
+        k += 2 if ch == "'" else 1
+        if k > n:
+            break
+        out.append(ch)
+    return ''.join(out)
 
 
 def mdwstat_not_accepted(row):
-    """The MDWSTAT card value of a routed cell that is NOT accepted, from its final table row (R-GREGG-20261111-MDWSTAT-CARD,
-    the ruling row: "MDWSTAT = 'applied' | 'refused: <reason>' (e.g. gain 3.6 arcsec < 5, median would worsen) | 'not
-    attempted'"). The forms are those of the deep chat's table that the header repair wrote on every archived master and that
-    the install's sibling card gate checks (exopipe_ops mdewarp_coverage_20261111/mdwstat_for_header_repair.csv, 8ffbd7a,
-    last changed 119b0b2), so a value written here equals the table's for the same measurement:
-      (b') failed - status REFERENCE ONLY, or OK (here: a written gain below the threshold, else the cell was accepted):
-            'refused: held-out gain <g> arcsec < <threshold>', g = anchor_off_med_as - cv_resid_med_as as written, one
-            decimal (dewarp_lst.sh:123-126 writes this form only for status OK - the status a (b') failure never has);
-      (a) failed with a larger VLSSr median - status REFUSED regression, med_after > med_before:
-            'refused: VLSSr median would worsen (<med_before> -> <med_after> arcmin)', the values as written;
-      status NOT ATTEMPTED: <why>  ->  'not attempted: <why>';   no final row  ->  'not attempted: not measured';
-      any other status (or a value that does not parse)  ->  'refused: <status[:58]>' (dewarp_lst.sh:127).
-    Cut to dewarp.MDWSTAT_MAX_CHARS characters (one card)."""
+    """The MDWSTAT card value of a routed cell that is NOT accepted, from its final table row: the strings production's
+    dewarp_lst.sh:119-127 writes (exopipe_ops 6f489ba; R-GREGG-20261111-MDWSTAT-CARD), with the one-card rules of
+    release1_cards.plan_file:
+      status OK and g = anchor_off_med_as - cv_resid_med_as parses (the written values; a not-accepted OK row has g below
+          dewarp.HELDOUT_MIN_GAIN_AS)  ->  'refused: held-out gain <g> arcsec < <threshold>', g as _gain_text prints it;
+      any other row  ->  'refused: ' + its status cut to 58 characters, as the measurement wrote it (its own numbers and
+          wording, e.g. 'refused: REFERENCE ONLY: held-out improvement 4.0 arcsec < 5; not a'); no row: 'refused: not
+          measured' (production's r = {}); a present but empty status: 'refused:'.
+    Then cut to what one card holds (card_cut to dewarp.MDWSTAT_MAX_CHARS: production's [:68] counts a quote once and
+    astropy then writes a CONTINUE card) and trailing blanks removed (FITS ignores them, so the card reads back as
+    written). Raises ValueError for an accepted row, an empty value, or a value that is not printable ASCII."""
     c = C()
+    if accepted(row, c.HELDOUT_MIN_GAIN_AS):
+        raise ValueError('the final row is accepted: its products carry MDWSTAT applied (master_dewarp._apply)')
     r = row or {}
-    st = str(r.get('status') or '').strip()
-
-    def num(k):
-        try:
-            return float(r.get(k))
-        except (TypeError, ValueError):
-            return None
-    a, cv, m0, m1 = num('anchor_off_med_as'), num('cv_resid_med_as'), num('med_before'), num('med_after')
-    if not row:
-        v = 'not attempted: not measured'
-    elif st.startswith('NOT ATTEMPTED'):
-        why = st[len('NOT ATTEMPTED'):].lstrip(' :')
-        v = 'not attempted' + (f': {why}' if why else '')
-    elif (st == 'OK' or st.startswith('REFERENCE ONLY')) and a is not None and cv is not None:
-        v = f'refused: held-out gain {a - cv:.1f} arcsec < {c.HELDOUT_MIN_GAIN_AS:g}'
-    elif st.startswith('REFUSED regression') and m0 is not None and m1 is not None and m1 > m0:
-        v = f"refused: VLSSr median would worsen ({r['med_before']} -> {r['med_after']} arcmin)"
+    try:
+        g = float(r.get('anchor_off_med_as')) - float(r.get('cv_resid_med_as'))
+    except (TypeError, ValueError):
+        g = None
+    if r.get('status') == 'OK' and g is not None:
+        v = f'refused: held-out gain {_gain_text(g, c.HELDOUT_MIN_GAIN_AS)} arcsec < {c.HELDOUT_MIN_GAIN_AS:g}'
     else:
-        v = f'refused: {(st or "not measured")[:58]}'
-    return v[:c.MDWSTAT_MAX_CHARS]
+        v = f"refused: {str(r.get('status', 'not measured'))[:58]}"
+    v = card_cut(v, c.MDWSTAT_MAX_CHARS).rstrip()
+    if not v:
+        raise ValueError('the MDWSTAT value is empty after the one-card cut')
+    if not (v.isascii() and v.isprintable()):
+        raise ValueError(f'the MDWSTAT value {v!r} is not printable ASCII (a FITS card cannot hold it)')
+    return v
 
 
 def jsonable(v):

@@ -11,8 +11,9 @@ Ports dewarp_lst.sh:36-94 for ONE routed cell, after its LST's measurement:
               INSTALL_CONTENT_OK / APPLIED_SCREEN.json land where the install reads them, plus the install's cubic,
               applied-screen and product gates and the tested-pixel count (G-A6..G-A10); pass -> meta.install
               {kind 'mdewarp', gen} (dewarp_lst.sh:66-68 -> install_cell.sh <cell> mdewarp <gen>)
-  record      not accepted: the applied=0 row of the archived screen record through phase3_install._screen_row IN PLACE
-              (dewarp_lst.sh:72-90; G-R1) -> meta.install {kind 'rebuild', gen <REBUILD_ROOT>/<cell>} (dewarp_lst.sh:92)
+  record      not accepted: MDWSTAT on the promoted masters, verified (dewarp_lst.sh:119-131; G-W, G-R3), then the applied=0
+              row of the archived screen record through phase3_install._screen_row IN PLACE (dewarp_lst.sh:72-90; G-R1)
+              -> meta.install {kind 'rebuild', gen <REBUILD_ROOT>/<cell>} (dewarp_lst.sh:92)
 The promoted marker removal (dewarp_lst.sh:94) is replaced by the unit record.
 """
 import os
@@ -222,14 +223,16 @@ def verify(u, run, args, roots, cell, meas, gen):
 
 
 def record(u, roots, cell, row):
-    """G-R1 and G-R3, then the applied=0 row (phase3_install._screen_row in place, flock-guarded), then MDWSTAT on the
-    promoted masters (stamp_mdwstat; dewarp_lst.sh:119-131 writes it after the row too). The record file is install's class
-    'screen_table' (crosscheck 4.2: one class, owned by install); this unit's own row is checked inline ('dewarp.record_row':
-    exactly one row for the cell, applied=0, the status as written)."""
+    """G-R1, G-W of the promoted rebuild and G-R3, then MDWSTAT on the cell's promoted masters, each verified (stamp_mdwstat),
+    then the applied=0 row (phase3_install._screen_row in place, flock-guarded). The row ends the cell's routing (G-D2), so
+    it is written only after every master carries a verified card: a refusal or failure before it leaves the cell routed
+    for a rerun (dewarp_lst.sh:119-131 writes the row first, then the card). The record file is install's class
+    'screen_table' (crosscheck 4.2: one class, owned by install); this unit's own row is checked inline
+    ('dewarp.record_row': exactly one row for the cell, applied=0, the status as written). The stamped masters are outputs
+    of class 'mdwstat_master' with the value and md5 the stamp left, so --resume re-tests them (lib/dewarp/tests.py)."""
     import csv
     from exopipe.phase3.core.record import utcnow
     from exopipe.phase3.lib.install import install as INS
-    c = SC.C()
     lst, scope = cell.split('_', 1)
     if not roots.archive_run:
         u.refuse('G-R1: paths.ARCHIVE_RUN is empty')
@@ -241,9 +244,19 @@ def record(u, roots, cell, row):
         probe = os.path.dirname(probe)
     if not os.access(probe, os.W_OK):
         u.refuse(f'G-R1: the archive record directory {sdir} is not writable ({probe})')
-    if not SC.mdwstat_files(roots, cell):       # G-R3 before any write: the applied=0 row ends the cell's routing
-        u.refuse(f'G-R3: no {c.MDWSTAT_FILES} in {os.path.join(roots.rebuild, cell, "coadd_final")}: the masters the '
-                 f'install takes would carry no MDWSTAT')
+    gw = SC.gate_write_roots(roots, ['record'], stamp=True)     # the run checks it up front only from a --measurement
+    if gw:
+        u.refuse('G-W: ' + '; '.join(gw))
+    files = SC.mdwstat_files(roots, cell)
+    if not files:
+        u.refuse(f'G-R3: no master (coadd._MASTER_RE) in {os.path.join(roots.rebuild, cell, "coadd_final")}: the masters '
+                 f'the install takes would carry no MDWSTAT')
+    try:
+        value = SC.mdwstat_not_accepted(row)
+    except ValueError as e:
+        u.refuse(f'G-R3: {cell}: {e}')
+    done = stamp_mdwstat(u, cell, value, files)
+    u.meta['mdwstat'] = {'value': value, 'files': done}
     # the record file is this stage's OUTPUT (one row replaced, INS._screen_row): it is not fingerprinted as an input (it
     # would make the unit stale the moment it is written); the row it replaces is kept in the record instead
     u.meta['screen_row_replaced'] = SC.routing_row(roots, cell)
@@ -263,45 +276,55 @@ def record(u, roots, cell, row):
             cls='screen_table', path=roots.record_csv)
     u.meta['screen_row'] = SC.jsonable(r)
     print(f'{lst}_{scope}: screen record set applied=0 - {r["status"]}', flush=True)
-    stamp_mdwstat(u, roots, cell, row)
+    for d in done:      # verified inline above (header only) and md5 taken once: the class test runs at --resume / verify
+        u.add_output(d['path'], 'mdwstat_master', test=False, mdwstat=value, md5=d['md5'])
     u.meta['install'] = SC.install_meta_rebuild(roots, cell)
 
 
-def stamp_mdwstat(u, roots, cell, row):
-    """MDWSTAT on the promoted rebuild of a routed cell that is NOT accepted, before the install takes it
-    (R-GREGG-20261111-MDWSTAT-CARD; dewarp_lst.sh:119-131): every <REBUILD_ROOT>/<cell>/coadd_final/<dewarp.MDWSTAT_FILES>
-    gets MDWSTAT = steps_common.mdwstat_not_accepted(final row), comment dewarp.MDWSTAT_COMMENT, set as fits.setval sets it
-    (Header.set: a card already there takes the new value in place, else it is appended). Each file is then validated
-    (standard header, validate=True) and the card read back ('dewarp.mdwstat', refuses on failure). No file to write refuses
-    (G-R3: an install of masters without the card would follow). The files, the value each held before and their md5 after
-    the write are kept in the record (meta.mdwstat). record() checks G-R3 before it writes the applied=0 row."""
+def stamp_mdwstat(u, cell, value, files):
+    """MDWSTAT = ``value`` (steps_common.mdwstat_not_accepted of the final row), comment dewarp.MDWSTAT_COMMENT, on each of
+    ``files`` (steps_common.mdwstat_files: the masters of the promoted rebuild of a routed cell that is NOT accepted), before
+    the install takes them (R-GREGG-20261111-MDWSTAT-CARD; dewarp_lst.sh:119-131). Set as fits.setval sets it (Header.set: a
+    card already there takes the new value in place, else it is appended; the comment cut to what the card holds). Each file
+    is then verified from its header alone (check 'dewarp.mdwstat'): the card reads back as written (one card: a CONTINUE
+    would read back otherwise), the standard header is valid (validate=True; validate_header reads headers only) and the
+    file size is unchanged; then its md5 is taken (one full read). The first failure refuses the unit - record() has
+    written nothing else yet, so the cell stays routed and a rerun stamps every file again. Returns [{path, before (the
+    value the file held), md5}]."""
     import warnings
     from astropy.io import fits
     from exopipe.common.validate_fits_headers import validate_header
     from exopipe.phase3.core.record import fits_primary_cards
     c = SC.C()
-    value = SC.mdwstat_not_accepted(row)
-    files = SC.mdwstat_files(roots, cell)
-    if not files:
-        u.refuse(f'G-R3: no {c.MDWSTAT_FILES} in {os.path.join(roots.rebuild, cell, "coadd_final")}: the masters the '
-                 f'install takes would carry no MDWSTAT')
     done = []
     for p in files:
+        name = os.path.basename(p)
         before = fits_primary_cards(p).get('MDWSTAT')
-        with fits.open(p, mode='update', memmap=False) as hl:
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore', fits.verify.VerifyWarning)
-                hl[0].header.set('MDWSTAT', value, c.MDWSTAT_COMMENT)
-        rep = validate_header(p, level='standard')
+        size = os.path.getsize(p)
+        try:
+            with fits.open(p, mode='update', memmap=False) as hl:
+                with warnings.catch_warnings():
+                    warnings.simplefilter('ignore', fits.verify.VerifyWarning)
+                    hl[0].header.set('MDWSTAT', value, c.MDWSTAT_COMMENT)
+        except Exception as e:
+            u.check('dewarp.mdwstat', False, value=None, detail=f'{name}: write failed ({type(e).__name__}: {e})', path=p)
+            u.refuse(f'dewarp.mdwstat: {cell}: MDWSTAT could not be written on {p} ({type(e).__name__}: {e}); '
+                     f'{len(done)} of {len(files)} master(s) stamped, no applied=0 row written: the cell stays routed')
         back = fits_primary_cards(p).get('MDWSTAT')
-        ok = rep.ok and back == value
+        rep = validate_header(p, level='standard')
+        size2 = os.path.getsize(p)
+        ok = rep.ok and back == value and size2 == size
         u.check('dewarp.mdwstat', ok, value=back,
-                detail=(f'{os.path.basename(p)}: MDWSTAT {value!r}, standard header valid' if ok else
-                        f'{os.path.basename(p)}: MDWSTAT read back {back!r} (wrote {value!r}); header errors '
-                        f'{list(rep.errors)[:3]}'), path=p)
+                detail=(f'{name}: MDWSTAT {value!r}, standard header valid' if ok else
+                        f'{name}: MDWSTAT read back {back!r} (wrote {value!r}); header errors {list(rep.errors)[:3]}; '
+                        f'size {size} -> {size2} bytes'), path=p)
+        if not ok:
+            u.refuse(f'dewarp.mdwstat: {cell}: {p} failed its check after the write (read back {back!r}, wrote {value!r}; '
+                     f'header errors {list(rep.errors)[:2]}; size {size} -> {size2} bytes); no applied=0 row written: '
+                     f'the cell stays routed')
         done.append({'path': p, 'before': before, 'md5': SC.md5(p)})
-    u.meta['mdwstat'] = {'value': value, 'files': done}
-    print(f'{cell}: MDWSTAT = {value!r} on {len(done)} file(s) of the promoted rebuild', flush=True)
+    print(f'{cell}: MDWSTAT = {value!r} on {len(done)} master(s) of the promoted rebuild', flush=True)
+    return done
 
 
 def _resume(run, cell, meas):

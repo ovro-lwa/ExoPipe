@@ -20,6 +20,8 @@ module). Each test checks the file's CONTENT; a test that needs context and has 
                         products           membership.verify_products(gen, '_mdewarp', cell) is empty (install G-PRODUCTS)
                         D4_tested_pixels   every recomputed pbcorr sibling has >= D4_MIN_TESTED_PIXELS tested pixels (pure fix
                                            of pkg-masters-post defect D3: sibling_check passes at 0 tested pixels)
+  mdwstat_master        card               a not-accepted cell's promoted master still carries the MDWSTAT value the record
+                                           stage wrote (header only) and the md5 the stamp left (steps_cell.stamp_mdwstat)
   (the archived screen record mdewarp_screens.csv is install's class 'screen_table' - crosscheck 4.2: one class owned by
    install (rows + install_cell_row in lib/install/tests.py); this step writes its applied=0 rows as that class and checks
    its own cell's row inline, check 'dewarp.record_row')
@@ -291,6 +293,32 @@ def screen_key_rows(path, lst=None, **ctx):
     if problems:
         return False, value, '; '.join(problems[:5])
     return True, value, f'every screen of {lst} keyed by md5 to the master and pbcorr sibling it was measured on'
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# mdwstat_master (a not-accepted cell's promoted master after the record stage's MDWSTAT card, steps_cell.stamp_mdwstat)
+# ---------------------------------------------------------------------------------------------------------------------
+
+@content_test('mdwstat_master', name='card')
+def mdwstat_card(path, mdwstat=None, md5=None, **ctx):
+    """The master still carries the MDWSTAT value the record stage wrote (header only) and is still the bytes the stamp left
+    (md5): a promoted file replaced or changed since (no card, another value, other data) fails, so --resume does not keep the
+    unit. Context: the value and md5 from the unit record (record_ctx without it)."""
+    from exopipe.phase3.core.record import fits_primary_cards
+    if mdwstat is None or md5 is None:
+        rc = record_ctx(path, 'mdwstat_master') or {}
+        mdwstat, md5 = rc.get('mdwstat'), rc.get('md5')
+    if mdwstat is None or md5 is None:
+        return False, None, 'no context: the MDWSTAT value and md5 the record stage wrote'
+    if not os.path.isfile(path):
+        return False, None, f'{path} is missing'
+    got = fits_primary_cards(path).get('MDWSTAT')
+    if got != mdwstat:
+        return False, got, f'MDWSTAT {got!r} != {mdwstat!r} as the record stage wrote it'
+    now = SC.md5(path)
+    if now != md5:
+        return False, now, f'md5 {now} != {md5} the stamp left: the file changed since'
+    return True, got, f'MDWSTAT {got!r}; md5 as stamped'
 
 
 # ---------------------------------------------------------------------------------------------------------------------
