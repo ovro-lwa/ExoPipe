@@ -64,6 +64,8 @@ never is, lies in or contains a production work run or an archive run, and is ne
 """
 import os
 
+from exopipe.phase3.core import placement
+
 SUMMARY = 'hybrid NoTaper route: stacks, large-scale reconstruction, wideband, hybrid masters, Full, per-tile zero-spacing fill'
 TIERS = None
 SELECTORS = ('lsts', 'scopes')
@@ -850,10 +852,9 @@ def tilefill_field(out_root, scope, w, rows, mosaic_out=None):
         old = None
         rec = dict(scope=scope, weighting=w, result='FAIL', error=f'{type(e).__name__}: {e}')
     if rec is not old:
-        part = f'{rj}.{os.getpid()}.part'
-        with open(part, 'w') as f:
+        # the replaced record's group, mode and ACL, else the directory's (core/placement.atomic)
+        with placement.atomic(rj) as part, open(part, 'w') as f:
             json.dump(rec, f, indent=1, default=str)
-        os.replace(part, rj)
     _FIELDS[key] = rec
     return rec
 

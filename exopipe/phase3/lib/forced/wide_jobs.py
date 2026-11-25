@@ -30,6 +30,8 @@ import os
 
 import numpy as np
 
+from exopipe.phase3.core import placement
+
 EVENT_COLUMNS = ('stokes', 'tier', 'identity', 'cand_id', 'band', 'ts', 'snr', 'sigma_frame_jyb')
 
 
@@ -401,12 +403,11 @@ def event_conflicts(runs):
 
 
 def write_events(path, rows):
-    tmp = '%s.tmp.%d' % (path, os.getpid())
-    with open(tmp, 'w', newline='') as f:
+    # the replaced file's group, mode and ACL, else the directory's (core/placement.atomic)
+    with placement.atomic(path) as tmp, open(tmp, 'w', newline='') as f:
         wr = csv.DictWriter(f, fieldnames=list(EVENT_COLUMNS))
         wr.writeheader()
         wr.writerows(rows)
-    os.replace(tmp, path)
 
 
 def load_events(path):

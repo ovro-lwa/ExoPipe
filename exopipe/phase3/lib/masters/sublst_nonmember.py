@@ -1057,7 +1057,7 @@ def list_night(run, lst, night, subbands=None):
         by = prev if prev.get('action') == 'append' else prev.get('appended_by')
         if by and meta['action'] != 'append':
             meta['appended_by'] = {k: v for k, v in by.items() if k != 'appended_by'}
-        record.atomic_write_json(out, meta)
+        record.atomic_write_json(out, meta, place=True)     # a product, not a unit record: placed (core/placement.py)
         u.add_output(out, LIST_CLASS, lst=lst)
         action = meta['action']
         TS.say(f'[sublst {LIST_STAGE} {lst}_{night}] {action}: {reason}')

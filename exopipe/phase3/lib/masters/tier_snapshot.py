@@ -48,7 +48,7 @@ import os
 import re
 import threading
 
-from exopipe.phase3.core import record
+from exopipe.phase3.core import placement, record
 from exopipe.phase3.core.record import NoInput, Refusal
 from exopipe.phase3.lib.masters import tier_sublst as TS
 
@@ -218,12 +218,12 @@ def registry_path(run, slot=None):
 
 def _write_csv(path, cols, rows):
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = f'{path}.tmp.{os.getpid()}.{threading.get_ident()}'
-    with open(tmp, 'w', newline='') as f:
+    # a temporary name unique per call (also across threads); the replaced file's group, mode and ACL, else the
+    # directory's (core/placement.atomic)
+    with placement.atomic(path) as tmp, open(tmp, 'w', newline='') as f:
         w = csv.DictWriter(f, fieldnames=cols)
         w.writeheader()
         w.writerows(rows)
-    os.replace(tmp, path)
 
 
 def _slot_unit(run, opts, slot):

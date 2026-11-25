@@ -30,6 +30,7 @@ from astropy.coordinates import SkyCoord, AltAz
 import astropy.units as u
 from exopipe.phase3 import assemble as live
 from exopipe.phase3.lib.catalog import xcat as fc
+from exopipe.phase3.core import placement
 from exopipe.phase3.core import products as prod
 
 ROOT = live.ROOT
@@ -370,13 +371,13 @@ def main():
             w.writerows(arows)
         print(f'  {s["cand_id"]}: n_det={s["n_det"]} packaged')
 
-    with open(OUTCSV + '.tmp', 'w', newline='') as fh:
+    # the replaced table's group, mode and ACL, else the directory's (core/placement.atomic)
+    with placement.atomic(OUTCSV) as tmp, open(tmp, 'w', newline='') as fh:
         w = csv.DictWriter(fh, fieldnames=COLS, extrasaction='ignore')
         w.writeheader()
         for s in sources:
             s.setdefault('review_dir', '')
             w.writerow(s)
-    os.replace(OUTCSV + '.tmp', OUTCSV)
     print(f'{len(sources)} sources -> {OUTCSV}')
     print(f'review dirs -> {CANDDIR}/')
 

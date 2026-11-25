@@ -19,9 +19,10 @@ Family W. --out = the work root W (default forced_wide.WORK_ROOT); records W/_re
                 forced runs neither hold nor read the file): <review root>/<run>/forced_wide_v3.csv (forced_wide_published),
                 the results of that (Stokes, cadence) with each named source's position (named_radec). The review root:
                 --snap-review-root, else <out>/forced_snapshot.REVIEW_SUBDIR_UNDER_OUT under --out, else
-                paths.SNAPSHOT_REVIEW_ROOT (production). Written as <file>.part, content-tested; the file it replaces is
-                copied beside it first, as <file>.bak_<UTC> (its sha1 and the new file's in the unit's meta: backup,
-                backup_sha1, published_sha1), then the .part is renamed over it (one atomic replace).
+                paths.SNAPSHOT_REVIEW_ROOT (production). Written to a temporary file beside it (core/placement.atomic),
+                content-tested; the file it replaces is copied beside it first, as <file>.bak_<UTC> (its sha1 and the new
+                file's in the unit's meta: backup, backup_sha1, published_sha1), then the temporary file is renamed over it
+                (one atomic replace; the replaced file's group, mode and ACL kept).
   --wide-only S:IDENTITY[,..] (IDENTITY '*' = every job of that Stokes): wide_search searches, wide_test analyzes only those
   (the test's pool stays every job; its results are recorded partial and wide_publish refuses them).
 Family N. --out = night_activity.OUT_ROOT by default (where the figure reads).
@@ -54,6 +55,7 @@ import os
 import shutil
 import time
 
+from exopipe.phase3.core import placement
 from exopipe.phase3.core.record import NoInput, Refusal
 from exopipe.phase3.lib.forced import common as K
 
@@ -713,28 +715,27 @@ def stage_publish(c):
             keys = cols + ['named_radec']
             rr = [r for r in rows if r['stokes'] == st and r['tier'] == cad]
             u.plan(final, 'forced_wide_published')
-            part = final + '.part'
-            V3.write_rows_keys(part, rr, keys)
             ctx = dict(results=res[0], jobs=jobs_path, stokes=st, tier=cad)
-            bad = [t for t in validate.run('forced_wide_published', part, **ctx) if not t['passed']]
-            if bad:
-                os.remove(part)
-                u.refuse('content test of %s failed: %s' % (part, '; '.join('%s (%s)' % (t['name'], str(t['detail'])[:200])
-                                                                           for t in bad)))
-            prev = _sha1_file(final) if os.path.exists(final) else None
-            backup = None
-            if prev is not None:            # the file replaced is kept beside it, as it was (copy first, then the replace)
-                stamp = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())
-                backup = '%s.bak_%s' % (final, stamp)
-                n_ = 1
-                while os.path.exists(backup):
-                    backup = '%s.bak_%s_%d' % (final, stamp, n_)
-                    n_ += 1
-                shutil.copy2(final, backup)
-                if _sha1_file(backup) != prev:
-                    os.remove(part)
-                    u.refuse('W-BACKUP the backup %s of %s does not read back (sha1): nothing replaced' % (backup, final))
-            os.replace(part, final)
+            # placed with the replaced table's group, mode and ACL, else the directory's; a refusal (content test, backup or
+            # placement) removes the temporary file (core/placement.atomic)
+            with placement.atomic(final) as part:
+                V3.write_rows_keys(part, rr, keys)
+                bad = [t for t in validate.run('forced_wide_published', part, **ctx) if not t['passed']]
+                if bad:
+                    u.refuse('content test of %s failed: %s' % (part, '; '.join('%s (%s)' % (t['name'], str(t['detail'])[:200])
+                                                                               for t in bad)))
+                prev = _sha1_file(final) if os.path.exists(final) else None
+                backup = None
+                if prev is not None:        # the file replaced is kept beside it, as it was (copy first, then the replace)
+                    stamp = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())
+                    backup = '%s.bak_%s' % (final, stamp)
+                    n_ = 1
+                    while os.path.exists(backup):
+                        backup = '%s.bak_%s_%d' % (final, stamp, n_)
+                        n_ += 1
+                    shutil.copy2(final, backup)
+                    if _sha1_file(backup) != prev:
+                        u.refuse('W-BACKUP the backup %s of %s does not read back (sha1): nothing replaced' % (backup, final))
             u.meta.update(n_rows=len(rr), replaced_sha1=prev, backup=backup, backup_sha1=prev, published_sha1=_sha1_file(final))
             u.add_output(final, 'forced_wide_published', **ctx)
             print('%s %s: %d rows -> %s' % (st, cad, len(rr), final), flush=True)

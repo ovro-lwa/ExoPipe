@@ -18,6 +18,7 @@ import glob
 import json
 import os
 
+from exopipe.phase3.core import placement
 from exopipe.phase3.lib.notify import sources
 from exopipe.phase3.lib.notify.block import esc, num, table
 from exopipe.phase3.lib.qa import percentiles
@@ -187,10 +188,9 @@ def ionosphere_rank(sci_dir, item, CFG, out_root):
         pop[item] = own
     if pop != old:
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        tmp = f'{path}.tmp{os.getpid()}'
-        with open(tmp, 'w') as f:
+        # the replaced file's group, mode and ACL, else the directory's (core/placement.atomic)
+        with placement.atomic(path) as tmp, open(tmp, 'w') as f:
             json.dump(pop, f, sort_keys=True)
-        os.replace(tmp, path)
     out, limits = {}, []
     for key, label, unit, word in (('rms', 'disturbance', "'", 'RMS'), ('var', 'variability', '', 'mean')):
         v = (own or {}).get(key)

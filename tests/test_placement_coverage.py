@@ -1,6 +1,7 @@
-"""Placement coverage guard (PR 177, placement P1; core/placement.py): in the modules P1 converted to placement.atomic, no
-bare os.replace / os.rename / os.renames / shutil.move remains except the sites listed below, each with its reason or the
-placement PR planned for it (/fast/gh/claude_tmp/placement-classify_20261125/PLAN.md: P3 copy2 sources, P7 directory
+"""Placement coverage guard (PR 177, placement P1; placement P2; core/placement.py): in the modules P1 and P2 converted to
+placement.atomic, no bare os.replace / os.rename / os.renames / shutil.move remains except the sites listed below, each with
+its reason or the placement PR planned for it (/fast/gh/claude_tmp/placement-classify_20261125/PLAN.md: P3 copy2 sources,
+P4 mosaic and hybrid sites and P5 others behind a handler on the path, P6 archive writers and per-file volume, P7 directory
 renames). A new bare rename in these modules fails this test; so does a listed site that is gone (the list must shrink with
 each later placement PR). Data-free: the source is parsed, nothing is imported or run."""
 import ast
@@ -12,7 +13,16 @@ P3 = 'exopipe/phase3/'
 MODULES = ['core/manifest.py', 'lib/calibrate/common.py', 'lib/calibrate/fluxscale.py', 'lib/catalog/conform_check.py',
            'lib/catalog/deep_chain.py', 'lib/catalog/deep_omission.py', 'lib/catalog/deep_ported.py', 'lib/catalog/delta_build.py',
            'lib/catalog/grouping_stage.py', 'lib/catalog/incremental.py', 'lib/catalog/restore_wave.py',
-           'lib/catalog/tier_sublst.py']
+           'lib/catalog/tier_sublst.py',
+           # P2
+           'lib/forced/common.py', 'lib/forced/night_activity.py', 'lib/forced/wide_jobs.py', 'lib/forced/wide_stages.py',
+           'lib/forced/wide_v3.py', 'lib/frames/tier_snapshot.py', 'lib/hybrid/stack.py', 'lib/hybrid/warp.py',
+           'lib/jupiter/serve.py', 'lib/masters/admit.py', 'lib/masters/admit_stages.py', 'lib/masters/build_stats.py',
+           'lib/masters/deep_stages.py', 'lib/masters/membership.py', 'lib/masters/night_image_gate.py',
+           'lib/masters/sublst_nonmember.py', 'lib/masters/tier_snapshot.py', 'lib/mosaic/conform_v5.py',
+           'lib/mosaic/steps_worker.py', 'lib/notify/qa.py', 'lib/photometry/steps_common.py', 'lib/photometry/steps_deep.py',
+           'lib/photometry/tests_cutouts.py', 'lib/retention/plan.py', 'lib/search/c50.py', 'lib/search/deep_step.py',
+           'phase3_i_deep_final.py', 'phase3_i_deep_package_deep.py', 'steps/followup.py', 'steps/hybrid.py']
 MOVED_ASIDE = 'stays bare: moves an existing product aside under a new name (a rename keeps its inode, so its group, mode and ACL)'
 # (module, function, call): (count, reason or planned PR)
 EXCEPTIONS = {
@@ -36,6 +46,47 @@ EXCEPTIONS = {
     ('lib/catalog/tier_sublst.py', 'night_view', 'shutil.move'): (1, MOVED_ASIDE + ' - the earlier night view'),
     ('lib/catalog/tier_sublst.py', 'st_merge', 'shutil.move'): (1, MOVED_ASIDE + ' - earlier collect and state directories'),
     ('lib/catalog/tier_sublst.py', 'st_reftie', 'os.replace'): (1, 'stays bare: a failed tie log kept under a new name'),
+    # P2
+    ('lib/forced/wide_jobs.py', 'write_jobs', 'os.replace'): (1, 'stays bare: the run\'s job state document, not a product'),
+    ('lib/forced/wide_stages.py', 'search_job', 'os.replace'): (
+        1, 'P5: the search child\'s result, behind a handler on the path (the caller catches Exception)'),
+    ('lib/frames/tier_snapshot.py', 'stage_stage.unpack', 'os.replace'): (
+        1, 'stays bare: unpacks the staged inputs into the stage\'s scratch directory'),
+    ('lib/frames/tier_snapshot.py', 'stage_cube', 'os.replace'): (1, 'P6: an archive writer (the snapshot cube, a copyfile)'),
+    ('lib/frames/tier_snapshot.py', 'flow_movies', 'os.replace'): (1, 'P6: per-file volume (the flow movies)'),
+    ('lib/hybrid/warp.py', 'derive_warp_screen', 'os.replace'): (
+        2, 'stays bare: the warp-screen cache and its record, node-local (fitsio.scratch_root) and re-derivable, not a product'),
+    ('lib/masters/admit.py', 'stale_admissions', 'os.replace'): (1, MOVED_ASIDE + ' - a stale admission'),
+    ('lib/masters/admit_stages.py', 'move_aside', 'os.replace'): (1, MOVED_ASIDE + ' - earlier admit outputs'),
+    ('lib/masters/admit_stages.py', 'move_aside_files', 'os.replace'): (1, MOVED_ASIDE + ' - earlier admit outputs'),
+    ('lib/masters/admit_stages.py', 'admit_stage', 'os.replace'): (1, 'P6: per-file volume (the admitted night images)'),
+    ('lib/masters/deep_stages.py', 'build_stats_stage', 'os.replace'): (
+        2, MOVED_ASIDE + ' - the earlier build_stats.json, and moved back under its name when the placement refuses'),
+    ('lib/masters/deep_stages.py', 'own_note', 'os.replace'): (
+        1, 'P5: behind a handler on the path (the caller catches Exception)'),
+    ('lib/masters/deep_stages.py', 'striation', 'os.replace'): (
+        1, 'stays bare: renames existing products to *.FAILED (a rename keeps its inode, so its group, mode and ACL)'),
+    ('lib/masters/membership.py', 'write_verdict', 'os.replace'): (
+        1, 'stays bare until production changes with it: the status S-G6 gate requires this module to equal production\'s '
+           'exopipe/phase3/membership.py except imports'),
+    ('lib/mosaic/steps_worker.py', 'main', 'os.replace'): (1, 'stays bare: the worker\'s result record in the stage\'s scratch'),
+    ('lib/mosaic/steps_worker.py', 'task_qa', 'os.replace'): (
+        1, 'stays bare: writes into the stage\'s temporary directory; P4 places the table (steps_qa.run_qa)'),
+    ('lib/photometry/steps_common.py', 'atomic_copy', 'os.replace'): (
+        1, 'P6: per-file volume; the temporary file is a shutil.copy2 of the work file'),
+    ('lib/search/deep_step.py', 'stage_quarantine', 'os.replace'): (1, 'stays bare: a run record (quarantine plan)'),
+    ('lib/search/deep_step.py', 'run_unit', 'os.replace'): (1, 'stays bare: a run record (the unit\'s test report)'),
+    ('lib/search/deep_step.py', '_copy_into', 'os.replace'): (
+        1, 'P6: per-file volume; the temporary file is a shutil.copy2 of the attempt\'s file'),
+    ('lib/search/deep_step.py', 'stage_publish', 'os.replace'): (
+        1, 'P6: the published attempt (a directory of copies renamed into place)'),
+    ('lib/search/deep_step.py', '_child', 'os.replace'): (1, 'stays bare: the child\'s result record in the run\'s scratch'),
+    ('phase3_i_deep_package_deep.py', '_sweep_stale', 'shutil.move'): (1, MOVED_ASIDE + ' - stale review directories'),
+    ('steps/followup.py', '_atomic_text', 'os.replace'): (
+        1, 'P5: behind a handler on the path (the caller catches Exception)'),
+    ('steps/hybrid.py', 'tilefill_field', 'os.replace'): (
+        1, 'P4: the field FITS, behind except (TilefillRefusal, OSError, KeyError, ValueError), which a refusal escapes'),
+    ('steps/hybrid.py', 'tilefill_unit', 'os.replace'): (1, 'P4: the unit\'s record, behind a handler on the path'),
 }
 CALLS = {'os': ('replace', 'rename', 'renames'), 'shutil': ('move',)}
 

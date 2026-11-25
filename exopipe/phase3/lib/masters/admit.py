@@ -11,6 +11,7 @@ it reads is the cell tree it is given; nothing here writes outside <cell>/admit/
 import csv
 import os
 
+from exopipe.phase3.core import placement
 from exopipe.phase3.core.record import Refusal
 
 ADMIT_DIR = 'admit'                      # <cell>/admit/: reference copies, scaled flow inputs, flows, native products
@@ -383,9 +384,8 @@ def write_reference(cell_dir, scope, ents):
                 raise Refusal(f'{p} exists with other content: the installed master changed since the admission reference '
                               f'was written - admit into the new master from a fresh <cell>/{ADMIT_DIR}/')
         else:
-            tmp = f'{p}.part{os.getpid()}'
-            fits.writeto(tmp, e['data'], hh)
-            os.replace(tmp, p)
+            with placement.atomic(p) as tmp:        # the directory's group and ACL (core/placement.py)
+                fits.writeto(tmp, e['data'], hh)
         out[e['stokes']] = p
     return out
 

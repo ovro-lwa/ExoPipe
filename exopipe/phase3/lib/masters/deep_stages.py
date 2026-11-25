@@ -26,7 +26,7 @@ import shutil
 import sys
 import traceback
 
-from exopipe.phase3.core import record
+from exopipe.phase3.core import placement, record
 from exopipe.phase3.core.record import NoInput, Refusal
 from exopipe.phase3.lib.masters import constituents
 from exopipe.phase3.lib.masters.pb_qa import pb_qa_gate, pb_qa_inputs, pb_qa_missing   # noqa: F401 (B-30; also the dewarp apply)
@@ -1359,17 +1359,24 @@ def build_stats_stage(cell, args, run, out, ran_now):
         for p in _build_stats_inputs(cell_src, cell, mods['coadd']):
             u.add_input(p)
         from exopipe.phase3.core import record as _R, validate
-        tmp = os.path.join(cell_src, 'coadd_final', f'{BS.FILE}.part{os.getpid()}')
-        _R.atomic_write_json(tmp, st)
-        bad = [t for t in validate.run('build_stats', tmp) if not t['passed']]
-        if bad:
-            os.remove(tmp)
-            u.refuse(f'{cell}: the record fails its own content test before it is placed ({bad[0]["detail"][:300]})')
-        if os.path.exists(dest):
-            old = os.path.join(cell_src, 'coadd_final', f'build_stats.superseded_{_R.utcnow().replace(":", "")}.json')
-            os.replace(dest, old)
+        old = (os.path.join(cell_src, 'coadd_final', f'build_stats.superseded_{_R.utcnow().replace(":", "")}.json')
+               if os.path.exists(dest) else None)
+        try:
+            # placed with the earlier record's group, mode and ACL (like=: it is moved aside first), else the directory's; a
+            # failing content test or a refusal removes the temporary file (core/placement.atomic)
+            with placement.atomic(dest, like=old) as tmp:
+                _R.atomic_write_json(tmp, st)
+                bad = [t for t in validate.run('build_stats', tmp) if not t['passed']]
+                if bad:
+                    u.refuse(f'{cell}: the record fails its own content test before it is placed ({bad[0]["detail"][:300]})')
+                if old:
+                    os.replace(dest, old)
+        except BaseException:
+            if old and os.path.exists(old) and not os.path.lexists(dest):
+                os.replace(old, dest)                     # nothing placed: the earlier record back under its own name
+            raise
+        if old:
             u.note(f'--fresh: the earlier record moved aside to {old}')
-        os.replace(tmp, dest)
         p = dest
         bg = st['beam_gate']
         u.note(f'{cell}: stage 2 I n={st["stage2"]["I"]["n"]} V n={st["stage2"]["V"]["n"]}, beam gate n={bg["n"]}, sanity '

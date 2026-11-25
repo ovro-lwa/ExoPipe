@@ -13,6 +13,7 @@ while paths.PRODUCTION_WRITES is False, so until cutover a stage runs on a copy 
 import os
 import sys
 
+from exopipe.phase3.core import placement
 from exopipe.phase3.core.record import NoInput, Refusal
 
 
@@ -517,12 +518,11 @@ def write_admissions(cd, rows):
     from exopipe.phase3.lib.masters import admit as A
     p = os.path.join(cd, 'coadd_final', A.ADMISSIONS)
     old = list(csv.DictReader(open(p, newline=''))) if os.path.exists(p) else []
-    tmp = f'{p}.part{os.getpid()}'
-    with open(tmp, 'w', newline='') as f:
+    # the replaced table's group, mode and ACL, else the directory's (core/placement.atomic)
+    with placement.atomic(p) as tmp, open(tmp, 'w', newline='') as f:
         w = csv.DictWriter(f, fieldnames=list(ADMISSION_COLS), extrasaction='raise')
         w.writeheader()
         w.writerows(old + rows)
-    os.replace(tmp, p)
     return p
 
 

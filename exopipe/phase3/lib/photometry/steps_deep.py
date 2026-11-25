@@ -23,7 +23,7 @@ import subprocess
 from concurrent.futures import ThreadPoolExecutor
 
 from exopipe.phase3.core import cells as C
-from exopipe.phase3.core import record
+from exopipe.phase3.core import placement, record
 from exopipe.phase3.core.record import NoInput, Refusal
 from exopipe.phase3.lib.catalog import deep_records
 from exopipe.phase3.lib.photometry import steps_common as K
@@ -114,13 +114,12 @@ def read_rows(path):
 
 def write_rows(path, cols, rows):
     """csv.DictWriter with its default CRLF terminator - the engines' own writer (deep_forced_frames.py:57,
-    run_deep_forced_20260928.sh:24-25)."""
-    tmp = '%s.tmp.%d' % (path, os.getpid())
-    with open(tmp, 'w', newline='') as f:
+    run_deep_forced_20260928.sh:24-25); placed with the replaced file's group, mode and ACL, else the directory's
+    (core/placement.atomic)."""
+    with placement.atomic(path) as tmp, open(tmp, 'w', newline='') as f:
         w = csv.DictWriter(f, fieldnames=cols)
         w.writeheader()
         w.writerows(rows)
-    os.replace(tmp, path)
     return path
 
 
@@ -249,56 +248,53 @@ def stage_frames(run, args):
                     u.add_input(q)
         os.makedirs(out, exist_ok=True)
         u.plan(fl, 'photometry_frame_list')
-        tmp = os.path.join(out, '.%s.engine.%d' % (f.FRAMES_FILE, os.getpid()))
-        res, text = K.call(u, 'frames', [tmp] + cells, 'deep', 'deep_frames', run, 'frames.log',
-                           env_extra={'DEEP_FORCED_SRC_RUN': src, 'P3_PARENT_DIR': par, 'P3_COADD_ROOT': coadd},
-                           threads=args.threads)
-        refused = [(m.group(1), m.group(2)) for m in (re.match(f.REFUSED_RE, ln) for ln in text.splitlines()) if m]
-        u.meta['refused_cells'] = refused
-        if res.rc != 0:
-            if os.path.exists(tmp):
-                os.remove(tmp)
-            if 'IndexError' in text:
-                # deep_forced_frames.py:57 indexes rows[0]: every selected cell gave no row, and the engine crashed BEFORE
-                # printing its per-cell refusals (:59-61). No input only when no selected cell has a search frame at all;
-                # otherwise the cells were refused by the frame-list gates (F-PARENTS / F-PB) - a refusal, not exit 3.
-                with_frames = [x for x in cells if searched_frames(src, x)]
-                if not with_frames:
-                    raise NoInput('F-NOFRAMES: no search frame of the %d selected cells under %s (deep_forced_frames.py:57 '
-                                  'IndexError)' % (len(cells), src))
-                u.refuse('F-PARENTS/F-PB: every one of the %d selected cells was refused by the frame-list gates although '
-                         '%d have search frames (e.g. %s); deep_forced_frames.py crashed at :57 before listing the reasons - '
-                         'check the parent catalogues (gate_inputs.parents) and PB maps of these cells'
-                         % (len(cells), len(with_frames), with_frames[:3]))
-            if 'DEEP_FORCED_SRC_RUN' in text:
-                u.refuse('F-SRCRUN: deep_forced_frames refused (%s)' % res.reason)
-            raise RuntimeError('deep_forced_frames.py exit %d: %s' % (res.rc, res.tail[-800:]))
-        cols, rows = read_rows(tmp)
-        n_engine = len(rows)
-        keep = rows
-        if eps:
-            bad = v_noise_bad(rows)
-            keep = []
-            for r in rows:
-                if r['date'] not in eps.get(r['lst'], ()):
-                    continue
-                if r['stokes'] == 'V' and r['date'] in bad.get((r['lst'], r['band']), ()):
-                    u.refuse_item(r['path'], 'M-NOISE: Stokes V THERMNOI over %g x the cell median of the full night list '
-                                  '(deep_forced_phot.py:233-234; applied here because the per-hour list holds one night)'
-                                  % c.photometry_measure.NOISE_GATE_X['deep'], gate='M-NOISE')
-                    continue
-                keep.append(r)
-        if args.stokes:
-            ss = {s.strip() for s in args.stokes.split(',')}
-            keep = [r for r in keep if r['stokes'] in ss]
-        if keep is rows:
-            os.replace(tmp, fl)
-        else:
-            os.remove(tmp)
-            if not keep:
-                raise NoInput('F-NOFRAMES: no frame of epochs %s / Stokes %s in the frame list (%d engine rows)'
-                              % (sorted(eps), args.stokes, n_engine))
-            write_rows(fl, cols, keep)
+        # the engine writes the list to a temporary file beside it, placed with the replaced list's group, mode and ACL,
+        # else the directory's; any exception or refusal removes it (core/placement.atomic)
+        with placement.atomic(fl) as tmp:
+            res, text = K.call(u, 'frames', [tmp] + cells, 'deep', 'deep_frames', run, 'frames.log',
+                               env_extra={'DEEP_FORCED_SRC_RUN': src, 'P3_PARENT_DIR': par, 'P3_COADD_ROOT': coadd},
+                               threads=args.threads)
+            refused = [(m.group(1), m.group(2)) for m in (re.match(f.REFUSED_RE, ln) for ln in text.splitlines()) if m]
+            u.meta['refused_cells'] = refused
+            if res.rc != 0:
+                if 'IndexError' in text:
+                    # deep_forced_frames.py:57 indexes rows[0]: every selected cell gave no row, and the engine crashed BEFORE
+                    # printing its per-cell refusals (:59-61). No input only when no selected cell has a search frame at all;
+                    # otherwise the cells were refused by the frame-list gates (F-PARENTS / F-PB) - a refusal, not exit 3.
+                    with_frames = [x for x in cells if searched_frames(src, x)]
+                    if not with_frames:
+                        raise NoInput('F-NOFRAMES: no search frame of the %d selected cells under %s (deep_forced_frames.py:57 '
+                                      'IndexError)' % (len(cells), src))
+                    u.refuse('F-PARENTS/F-PB: every one of the %d selected cells was refused by the frame-list gates '
+                             'although %d have search frames (e.g. %s); deep_forced_frames.py crashed at :57 before listing '
+                             'the reasons - check the parent catalogues (gate_inputs.parents) and PB maps of these cells'
+                             % (len(cells), len(with_frames), with_frames[:3]))
+                if 'DEEP_FORCED_SRC_RUN' in text:
+                    u.refuse('F-SRCRUN: deep_forced_frames refused (%s)' % res.reason)
+                raise RuntimeError('deep_forced_frames.py exit %d: %s' % (res.rc, res.tail[-800:]))
+            cols, rows = read_rows(tmp)
+            n_engine = len(rows)
+            keep = rows
+            if eps:
+                bad = v_noise_bad(rows)
+                keep = []
+                for r in rows:
+                    if r['date'] not in eps.get(r['lst'], ()):
+                        continue
+                    if r['stokes'] == 'V' and r['date'] in bad.get((r['lst'], r['band']), ()):
+                        u.refuse_item(r['path'], 'M-NOISE: Stokes V THERMNOI over %g x the cell median of the full night list '
+                                      '(deep_forced_phot.py:233-234; applied here because the per-hour list holds one night)'
+                                      % c.photometry_measure.NOISE_GATE_X['deep'], gate='M-NOISE')
+                        continue
+                    keep.append(r)
+            if args.stokes:
+                ss = {s.strip() for s in args.stokes.split(',')}
+                keep = [r for r in keep if r['stokes'] in ss]
+            if keep is not rows:
+                if not keep:
+                    raise NoInput('F-NOFRAMES: no frame of epochs %s / Stokes %s in the frame list (%d engine rows)'
+                                  % (sorted(eps), args.stokes, n_engine))
+                write_rows(tmp, cols, keep)           # the kept rows replace the engine's list in the temporary file
         # deep_forced_frames.py refuses a WHOLE cell (parents :34, no PB_deep map :36, no search frames :55: the cell loop
         # continues) or, without the cell's Robust -0.75 PB map, each Stokes I FRAME (:50-51: the frame loop continues, the V
         # rows of the cell stay listed) - FL6 checks the two kinds separately (one line per frame: recorded once per cell)

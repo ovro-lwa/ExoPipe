@@ -67,6 +67,7 @@ import subprocess
 import sys
 import time
 
+from exopipe.phase3.core import placement
 from exopipe.phase3.lib.frames.tier_sublst import (cfg, plan, say, split_list, requested_stages, refuse_production_writes,
                                                    check_overrides, interpreter_key, legacy_script, check_interpreter,
                                                    engine, refusal_line, try_resume, parallel, exclusions, report,
@@ -868,9 +869,8 @@ def strip_legacy_header(log):
     while i < len(lines) and not lines[i].strip():
         i += 1
     if i < len(lines) and lines[i].startswith('===== '):
-        with open(log + '.tmp', 'w') as f:
+        with placement.atomic(log) as tmp, open(tmp, 'w') as f:     # the log's own group, mode and ACL (core/placement.py)
             f.writelines(lines[i + 1:])
-        os.replace(log + '.tmp', log)
 
 
 def movie_skips(cell, lines):

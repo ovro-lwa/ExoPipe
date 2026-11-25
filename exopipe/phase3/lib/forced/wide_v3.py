@@ -52,6 +52,8 @@ import os
 
 import numpy as np
 
+from exopipe.phase3.core import placement
+
 TIERS = ('10s', '1min')
 BANDS = ('18MHz', '23MHz', '27MHz', '32MHz', '36MHz', '41MHz', '46MHz', '50MHz', '55MHz', '59MHz', '64MHz', '69MHz', '73MHz',
          '78MHz', '82MHz')
@@ -1601,13 +1603,12 @@ def write_rows(path, rows):
 
 
 def write_rows_keys(path, rows, keys):
-    """CSV of rows with these columns (csv.DictWriter, newline=''), tmp + rename."""
-    tmp = '%s.tmp.%d' % (path, os.getpid())
-    with open(tmp, 'w', newline='') as f:
+    """CSV of rows with these columns (csv.DictWriter, newline=''), tmp + rename (the replaced file's group, mode and ACL,
+    else the directory's: core/placement.atomic)."""
+    with placement.atomic(path) as tmp, open(tmp, 'w', newline='') as f:
         w = csv.DictWriter(f, fieldnames=keys)
         w.writeheader()
         w.writerows(rows)
-    os.replace(tmp, path)
 
 
 # ---------------------------------------------------------------------------------------------------------------------

@@ -43,6 +43,7 @@ import shutil
 import sys
 import time
 
+from exopipe.phase3.core import placement
 from exopipe.phase3.lib.search import attempts as _ATTS
 
 TIER = 'deep'
@@ -1103,13 +1104,13 @@ def fit_attempt(attempt, label, out_csv, tier='deep', nproc=None, lon=None):
                 for cid, o, fpx in out:
                     res[cid] = (o, fpx, path)
     os.makedirs(os.path.dirname(out_csv), exist_ok=True)
-    with open(out_csv + '.part', 'w', newline='') as fh:
+    # the replaced table's group, mode and ACL, else the directory's (core/placement.atomic)
+    with placement.atomic(out_csv) as tmp, open(tmp, 'w', newline='') as fh:
         w = csv.writer(fh)
         w.writerow(['cand_id'] + list(DET_COLS) + ['frame', 'frame_sha1', 'fit_frac_px'])
         for r in rows:
             o, fpx, p = res[r['cand_id']]
             w.writerow([r['cand_id']] + [o.get(k, '') for k in DET_COLS] + [os.path.relpath(p, attempt), shas[p], fpx])
-    os.replace(out_csv + '.part', out_csv)
     per_frame = []
     for p, rs in sorted(byf.items()):
         npk = sum(1 for r in rs if res[r['cand_id']][0]['pos_kind'] == 'peak')

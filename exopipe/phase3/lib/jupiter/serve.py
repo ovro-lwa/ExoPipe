@@ -16,6 +16,7 @@ import subprocess
 import sys
 import time
 
+from exopipe.phase3.core import placement
 from exopipe.phase3.core.record import Refusal
 from exopipe.phase3.lib.jupiter import common as K
 from exopipe.phase3.lib.jupiter import mirrors
@@ -234,9 +235,8 @@ def run(args, run_, roots, stages):
                 rec.update(pid=p.pid, started=K.utc())
             out = os.path.join(roots.out, '_served', f'jupiter_{s["port"]}.json')
             os.makedirs(os.path.dirname(out), exist_ok=True)
-            with open(out + '.part', 'w') as f:
+            with placement.atomic(out) as tmp, open(tmp, 'w') as f:     # the directory's group and ACL (core/placement.py)
                 json.dump(rec, f, indent=1)
-            os.replace(out + '.part', out)
             u.add_output(out, 'jupiter_served_page')
         print(f'jupiter serve {which} ({s["port"]}): {u.status}' + (f' ({u.reason})' if u.reason else ''), file=sys.stderr)
     return None

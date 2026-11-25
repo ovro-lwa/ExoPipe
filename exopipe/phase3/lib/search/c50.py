@@ -14,6 +14,8 @@ Measured table (JSON), written by phase3_v_c50.py:
 """
 import os, json
 
+from exopipe.phase3.core import placement
+
 MEASURED_FILE = '/data07/gh/phase3/transients/c50_measured.json'
 
 
@@ -47,8 +49,7 @@ def record(band, sigma_local, cell, n, method, stamp):
     tbl = _load()
     tbl[band] = dict(sigma_local=round(float(sigma_local), 3), cell=cell,
                      n=int(n), method=method, stamp=stamp)
-    tmp = MEASURED_FILE + '.tmp'
-    with open(tmp, 'w') as fh:
+    # the replaced table's group, mode and ACL, else the directory's (core/placement.atomic)
+    with placement.atomic(MEASURED_FILE) as tmp, open(tmp, 'w') as fh:
         json.dump(tbl, fh, indent=2, sort_keys=True)
-    os.replace(tmp, MEASURED_FILE)
     return tbl

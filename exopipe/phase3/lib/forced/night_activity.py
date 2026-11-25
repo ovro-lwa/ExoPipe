@@ -15,8 +15,9 @@ bands table's rows of one (LST, band) are in night order (the script's came in s
 value depends on it (medians, sums, counts), so the nights table is the script's byte for byte."""
 import collections
 import csv
-import os
 import statistics
+
+from exopipe.phase3.core import placement
 
 BAND_COLUMNS = ('lst', 'night', 'band', 'n_det', 'median_other', 'ratio')
 NIGHT_COLUMNS = ('lst', 'night', 'n_bands_searched', 'n_det', 'activity', 'rank', 'n_nights')
@@ -93,10 +94,9 @@ def build(cnt, nights, c=None):
 
 
 def write_table(path, rows, columns):
-    """csv.DictWriter as the script wrote (its header = the first row's keys = ``columns``), tmp + rename."""
-    tmp = '%s.tmp.%d' % (path, os.getpid())
-    with open(tmp, 'w', newline='') as f:
+    """csv.DictWriter as the script wrote (its header = the first row's keys = ``columns``), tmp + rename (the replaced
+    file's group, mode and ACL, else the directory's: core/placement.atomic)."""
+    with placement.atomic(path) as tmp, open(tmp, 'w', newline='') as f:
         w = csv.DictWriter(f, fieldnames=list(columns))
         w.writeheader()
         w.writerows(rows)
-    os.replace(tmp, path)
