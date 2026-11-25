@@ -1,11 +1,11 @@
-"""Placement coverage guard (PR 177, placement P1; placement P2; core/placement.py): in the modules P1 and P2 converted to
-placement.atomic, no bare os.replace / os.rename / os.renames / shutil.move remains except the sites listed below, each with
-its reason or the placement PR planned for it (/fast/gh/claude_tmp/placement-classify_20261125/PLAN.md: P3 copy2 sources,
-P4 mosaic and hybrid sites and P5 others behind a handler on the path, P6 archive writers and per-file volume, P7 directory
-renames). A new bare rename in these modules fails this test; so does a listed site that is gone (the list must shrink with
-each later placement PR). In the same modules every record.atomic_write_json call passes ``place=`` explicitly (True for a
-product, False for a unit or run record), so a product never takes the unplaced default by omission. Data-free: the source
-is parsed, nothing is imported or run (``--self-test`` checks that both guards fail on injected sources)."""
+"""Placement coverage guard (PR 177, placement P1; placement P2; placement P3; core/placement.py): in the modules P1, P2 and P3
+converted to placement.atomic, no bare os.replace / os.rename / os.renames / shutil.move remains except the sites listed
+below, each with its reason or the placement PR planned for it (/fast/gh/claude_tmp/placement-classify_20261125/PLAN.md: P3
+copy2 sources, P4 mosaic and hybrid sites and P5 others behind a handler on the path, P6 archive writers and per-file volume,
+P7 directory renames). A new bare rename in these modules fails this test; so does a listed site that is gone (the list must
+shrink with each later placement PR). In the same modules every record.atomic_write_json call passes ``place=`` explicitly
+(True for a product, False for a unit or run record), so a product never takes the unplaced default by omission. Data-free:
+the source is parsed, nothing is imported or run (``--self-test`` checks that both guards fail on injected sources)."""
 import ast
 import os
 import sys
@@ -24,15 +24,18 @@ MODULES = ['core/manifest.py', 'lib/calibrate/common.py', 'lib/calibrate/fluxsca
            'lib/masters/sublst_nonmember.py', 'lib/masters/tier_snapshot.py', 'lib/mosaic/conform_v5.py',
            'lib/mosaic/steps_worker.py', 'lib/notify/qa.py', 'lib/photometry/steps_common.py', 'lib/photometry/steps_deep.py',
            'lib/photometry/tests_cutouts.py', 'lib/retention/plan.py', 'lib/search/c50.py', 'lib/search/deep_step.py',
-           'phase3_i_deep_final.py', 'phase3_i_deep_package_deep.py', 'steps/followup.py', 'steps/hybrid.py']
+           'phase3_i_deep_final.py', 'phase3_i_deep_package_deep.py', 'steps/followup.py', 'steps/hybrid.py',
+           # P3
+           'lib/jupiter/v2.py', 'lib/mosaic/gen_common.py', 'lib/pages/night.py', 'lib/pages/pages_input.py',
+           'lib/serve/fp_filters.py', 'lib/serve/hub.py', 'lib/serve/register.py', 'lib/serve/snapshot_view.py',
+           'lib/serve/versions.py', 'lib/serve/views.py', 'lib/status/steps_common.py', 'lib/status/steps_hub.py']
 MOVED_ASIDE = 'stays bare: moves an existing product aside under a new name (a rename keeps its inode, so its group, mode and ACL)'
+MOVED_DIR = 'stays bare: moves an existing version or run directory (a rename keeps its inode, so its group, mode and ACL)'
 # (module, function, call): (count, reason or planned PR)
 EXCEPTIONS = {
     ('lib/calibrate/common.py', 'fresh_stage_dir', 'shutil.move'): (1, MOVED_ASIDE + ' - the earlier stage directory'),
     ('lib/calibrate/common.py', 'verify', 'shutil.move'): (1, MOVED_ASIDE + ' - the earlier verification directory'),
     ('lib/catalog/deep_chain.py', 'DeepRun.move_aside', 'os.rename'): (1, MOVED_ASIDE + ' - an earlier stage output'),
-    ('lib/catalog/deep_chain.py', 'DeepRun.copy', 'os.replace'): (1, 'P3: the temporary file is a shutil.copy2 of the source'),
-    ('lib/catalog/deep_chain.py', 'DeepRun.ensure_master', 'os.replace'): (1, 'P3: a shutil.copy2 of the stage copy'),
     ('lib/catalog/deep_chain.py', 'DeepRun.st_list', 'os.replace'): (1, 'stays bare: a symlink (placement follows symlinks)'),
     ('lib/catalog/deep_omission.py', 'TenminRecords.write_cache', 'os.replace'): (
         1, 'stays bare: the window-rms cache, re-derivable, not a product'),
@@ -94,6 +97,44 @@ EXCEPTIONS = {
     ('steps/hybrid.py', 'tilefill_field', 'os.replace'): (
         1, 'P4: the field FITS, behind except (TilefillRefusal, OSError, KeyError, ValueError), which a refusal escapes'),
     ('steps/hybrid.py', 'tilefill_unit', 'os.replace'): (1, 'P4: the unit\'s record, behind a handler on the path'),
+    # P3
+    ('lib/jupiter/v2.py', 'st_prepare', 'os.replace'): (
+        1, MOVED_ASIDE + ' - earlier derived roots (directories) moved to _superseded/<tag>'),
+    ('lib/mosaic/gen_common.py', 'pkcorr', 'os.replace'): (
+        1, 'P4: the pkcorr products, moved from the unit\'s temporary subdirectory (not a sibling temporary file)'),
+    ('lib/mosaic/gen_common.py', 'test2_write', 'os.replace'): (1, 'P4: the test-2 record of a mosaic unit'),
+    ('lib/pages/night.py', 'rename', 'os.rename'): (
+        1, 'stays bare: renames the images this run rendered to their full-selection names in the same directory (a rename '
+           'keeps the group, mode and ACL they took when rendered there)'),
+    ('lib/serve/fp_filters.py', 'write_files', 'os.replace'): (
+        2, 'P5: the filter CSV and JSON installed as a pair behind an except BaseException that removes both and re-raises'),
+    ('lib/serve/register.py', 'set_hold', 'os.replace'): (
+        1, 'stays bare: the publish hold, a state marker (not a product, mode 0664 as production); it replaces a dangling link '
+           'at its name, which placement cannot (it stats through links)'),
+    ('lib/serve/register.py', 'lift_hold', 'os.rename'): (1, MOVED_ASIDE + ' - the lifted publish hold'),
+    ('lib/serve/snapshot_view.py', 'build', 'os.rename'): (
+        1, 'P7: the combined view directory renamed from its .part name (a directory rename)'),
+    ('lib/serve/snapshot_view.py', 'child_main', 'os.replace'): (
+        1, 'stays bare: the build child\'s result record (scratch), written by the Python 3.6 child without exopipe'),
+    ('lib/serve/snapshot_view.py', 'move_aside', 'os.rename'): (1, MOVED_ASIDE + ' - an earlier view'),
+    ('lib/serve/versions.py', '_renew_one', 'os.replace'): (
+        1, 'stays bare: the lease renewal of a state record (BUILDING.json, a hold), behind an (OSError, ValueError) '
+           'handler'),
+    ('lib/serve/versions.py', 'place', 'os.rename'): (1, MOVED_DIR + ' (the built run into its version slot)'),
+    ('lib/serve/versions.py', 'unplace', 'os.rename'): (1, MOVED_DIR + ' (a version back to its build directory)'),
+    ('lib/serve/versions.py', '_write_manifest', 'os.replace'): (
+        1, 'P5: the version manifest, behind a handler on the path (a caller catches Exception)'),
+    ('lib/serve/versions.py', '_unadopt', 'os.rename'): (1, MOVED_DIR + ' (an adopted run moved back)'),
+    ('lib/serve/versions.py', '_adopt', 'os.rename'): (1, MOVED_DIR + ' (a served run adopted as a version)'),
+    ('lib/serve/versions.py', 'switch', 'os.replace'): (
+        1, 'stays bare: the served pointer, a symlink (placement follows symlinks)'),
+    ('lib/serve/versions.py', 'discard', 'os.rename'): (1, MOVED_DIR + ' (a version renamed out before its deletion)'),
+    ('lib/serve/versions.py', '_to_work', 'os.rename'): (1, MOVED_DIR + ' (a legacy run moved to its work directory)'),
+    ('lib/serve/versions.py', '_unwork', 'os.rename'): (1, MOVED_DIR + ' (the work directory moved back)'),
+    ('lib/serve/versions.py', 'unshare_mutable', 'os.replace'): (
+        1, 'unclassified (new since the classification at ea843d1): a shutil.copy2 of a hard-linked review-state file '
+           'renamed over itself to give it its own inode'),
+    ('lib/serve/versions.py', 'retire', 'os.rename'): (1, MOVED_DIR + ' (a retired version renamed out)'),
 }
 CALLS = {'os': ('replace', 'rename', 'renames'), 'shutil': ('move',)}
 
