@@ -19,8 +19,8 @@ register(entries, d)   register_page.py 'register --entry' (the TWO_PORT_DIR san
   - the merged registry is checked with the server's own loader (two_port.load_registry, on a temporary file in <d>) BEFORE
     anything is written; then registered_pages.json and registry.json are written - BOTH, as production: the 15-minute re-seed
     (reseed_loop_v5.sh -> registry_merge.py) rebuilds registry.json and keeps the registered entries - each ATOMICALLY (a
-    temporary file in <d> placed by core/placement: the replaced file's group, mode and ACL, or the directory's rule for a new
-    file - production sets mode 0664) and each with its modification time strictly later than before (Lustre keeps whole
+    temporary file in <d> placed by core/placement - the replaced file's group and ACL, or the directory's rule for a new file
+    - then mode 0664, as production) and each with its modification time strictly later than before (Lustre keeps whole
     seconds: a second write within the same second looked unchanged to the server, B6A p9024 2026-10-22).
   THE REGISTRY LOCK (registry_lock, register_page.py since 2026-11-13): an exclusive flock on <d>/serve.TWO_PORT_LOCK held from
   the reads of prepare() to the writes of write() - production's register_page.py and the re-seed (reseed_loop_v5.sh) hold the
@@ -89,6 +89,7 @@ from exopipe.phase3.core.record import Refusal
 from exopipe.phase3.lib.serve import two_port as TP
 
 _OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))      # never through an http_proxy
+REGISTRY_MODE = 0o664          # register_page.py _atomic_write's os.chmod: registry.json and registered_pages.json on every write
 
 
 def _CFG():
@@ -194,13 +195,15 @@ def _load(path):
 
 def atomic_write(path, obj):
     """register_page.py:41-53 (_atomic_write): a temporary file beside it, renamed over ``path``, and the modification time
-    left strictly later than before (whole seconds). The file is placed (core/placement.atomic): it keeps the replaced file's
-    group, mode and ACL, and a new file takes the directory's rule (0664 in a gh directory of mode 0775 without a default
-    ACL) - register_page.py's fixed mode 0664 (os.chmod) is not carried; a refusal writes nothing and leaves no temporary
-    file."""
+    left strictly later than before (whole seconds). The file is placed (core/placement.atomic: the replaced file's group and
+    ACL, or the directory's rule for a new file; a refusal writes nothing and leaves no temporary file), then given mode 0664
+    as register_page.py's os.chmod does on every write: the re-seed and the registrations may run as another member of the
+    group. (The placed file is this process's own new inode, so the chmod cannot be refused; with an ACL, the group bits set
+    its mask.)"""
     old = os.stat(path).st_mtime if os.path.exists(path) else None
     with placement.atomic(path) as tmp, open(tmp, 'w') as f:
         json.dump(obj, f, indent=1)
+    os.chmod(path, REGISTRY_MODE)
     if old is not None and int(os.stat(path).st_mtime) <= int(old):
         t = int(old) + 1
         os.utime(path, (t, t))
