@@ -561,14 +561,20 @@ def rename(run, moves):
 
 
 def _link(a, b):
-    """Hard link, or a copy with the file's times where the two are on different file systems. Returns 'linked' / 'copied'."""
-    try:
-        os.link(a, b)
-        return 'linked'
-    except OSError as e:
-        if e.errno not in (errno.EXDEV, errno.EPERM, errno.EMLINK):
-            raise
-    with placement.atomic(b) as tmp:       # copy2 keeps the times; the copy takes this run's directory rule, not a's attributes
+    """Carry the earlier run's image ``a`` to the new name ``b``. A hard link shares a's inode, so b would carry a's group,
+    mode and ACL: it is made only when a already carries exactly those placement gives b (core/placement.target_attrs(b),
+    this run's directory rule). Otherwise - or where the hard link cannot be made (another file system) - a copy with the
+    file's times, placed (the directory's rule, never a's attributes). Returns 'linked' / 'copied'."""
+    want = placement.target_attrs(b)
+    st = os.stat(a)
+    if (st.st_gid, placement.get_acl(a), st.st_mode & 0o777) == (want['gid'], want['acl'], want['mode']):
+        try:
+            os.link(a, b)
+            return 'linked'
+        except OSError as e:
+            if e.errno not in (errno.EXDEV, errno.EPERM, errno.EMLINK):
+                raise
+    with placement.atomic(b) as tmp:
         shutil.copy2(a, tmp)
     return 'copied'
 
