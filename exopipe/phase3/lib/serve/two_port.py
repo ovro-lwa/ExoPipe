@@ -30,7 +30,9 @@ when the label is written (Store.get current, Store.moved, under the run's journ
 the previous version never writes its page ids into the new version's journal. And a label form is accepted only from the
 version that rendered it: every label form of a page whose labels directory lies in a version carries that version's token
 (PAGE_TOKEN_FIELD, added here to the page's HTML); a label POST whose token is missing or names another version is answered
-409 and nothing is recorded (a form loaded before a switch or a rebuild - its page ids may be the old version's). Lock files
+409 and nothing is recorded (a form loaded before a switch or a rebuild - its page ids may be the old version's) - unless the
+form carries its identity's stable ID and that identity maps onto the new build (lib/serve/label_identity.py mappable: its own
+page, renamed, or merged into another): then run_request resolves it onto that identity's page now. Lock files
 are group-writable (open_lock); one that cannot be opened is answered 503 naming the file and its owner.
 At a registry change every built page is rebuilt, one at a time, in its backend's rebuild thread; until its rebuild is done the
 page built before answers requests (STALE_HEADER says so), and only a GET carrying FRESH_HEADER waits for the rebuilt page. A page
@@ -1076,7 +1078,10 @@ def serve_request(store, inspect, method, path, headers, body=b''):
                 if store.moved(pg):
                     continue
                 want = page_token(pg.labels_real)
-                if label_post and token != want and (want is not None or token is not None):
+                # a form of another version whose stable identity maps onto this build (lib/serve/label_identity.py:
+                # renamed or merged) is resolved by run_request; only an unmappable stale form is refused here
+                if label_post and token != want and (want is not None or token is not None) and \
+                        not label_identity.mappable(pg, body):
                     return 409, [('Content-Type', 'text/plain; charset=utf-8')], (
                         'the page changed since you loaded it; reload and judge again; nothing was recorded').encode()
                 status, hdrs, payload = run_request(pg, method, sub, headers, body)

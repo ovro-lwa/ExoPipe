@@ -22,6 +22,9 @@ leaves (merged) and GTI-0000004 is new. Forms rendered by build 1 are posted to 
             verdict is NOT made its verdict - it is kept with the verdict it conflicts with (merge_conflicts.jsonl), 409 says
             so, and the page opens AMBIGUOUS with both verdicts until a verdict is recorded on it; the same verdict follows the
             merge; a non-label POST follows it; without the merge table the label is refused as before
+  settled   label_identity.conflict_settled: what settles a merge conflict (shared with the journal carry)
+  versions  through serve_request on a versioned run (PR 155): a form of the version before the switch whose identity maps
+            (merged) lands on the survivor; only an unmappable or unstamped form gets the stale-form 409
   banner    the cross-Stokes link banner (lib/serve/stokes_banner.py) through run_request: after <body>, on a source page of a
             build whose entry names its other-Stokes pages; the forms stamped as before
 
@@ -406,6 +409,70 @@ def test_banner():
     check('banner: a build whose entry names no other-Stokes pages has no link banner', 'stokes-link' not in h, h[:300])
 
 
+def test_settled():
+    rec = dict(verdicts=[dict(judge_confidence='FP', judge_fp_reason='leakage', ts='T1'),
+                         dict(judge_confidence='real', judge_fp_reason='', ts='T2')])
+    fp = dict(judge_confidence='FP', judge_fp_reason='leakage')
+    check('settled: unjudged, the listed verdict itself, or a carried copy of a listed verdict (the carry\'s time) settle '
+          'nothing; a verdict judged on the page since, or a carried verdict not listed, settles it',
+          not LI.conflict_settled(rec, []) and not LI.conflict_settled(rec, [dict(fp, ts='T1')])
+          and not LI.conflict_settled(rec, [dict(fp, ts='T9', carried_from_run='R2')])
+          and LI.conflict_settled(rec, [dict(fp, ts='T9')])
+          and LI.conflict_settled(rec, [dict(judge_confidence='uncertain', ts='T9', carried_from_run='R2')]))
+
+
+def test_versions():
+    """PR 155's stale-form 409 (two_port.serve_request, PAGE_TOKEN_FIELD) comes AFTER the identity mapping: a form of the
+    version before the switch whose identity maps onto the served version lands on that identity's page; only an
+    unmappable form gets the 409"""
+    from exopipe.phase3.lib.serve import versions
+    d = os.path.join(TMP, 'versions')
+    U, J = os.path.join(d, 'Run_SLSTB'), 'judgements_I'
+    os.makedirs(d)
+    v1 = versions.begin(U, note='test 1')
+    write_run(v1.run, BUILD1)
+    os.makedirs(os.path.join(v1.run, J))
+    versions.publish(U, v1)
+    code = os.path.join(TMP, 'page.py')
+    if not os.path.exists(code):
+        open(code, 'w').write(PAGE)
+    reg = os.path.join(d, 'registry.json')
+    with open(reg, 'w') as f:
+        json.dump({'pages': [{'id': 'pv', 'kind': 'review', 'code': code, 'legacy_port': 47993,
+                              'argv': ['--run', U, '--labels-dir', os.path.join(U, J)]}]}, f)
+    st = TP.Store(reg)
+
+    def page(sid):
+        r = TP.serve_request(st, False, 'GET', '/p/pv/source/' + urllib.parse.quote(sid), {})
+        return [(a, b.decode()) for a, b in form_bodies(r[2].decode()) if a.endswith("/label")][0]
+    f6, f7 = page('J0600+0600'), page('J0700+0700')
+    check('versions: build 1\'s label forms carry the version token and the identity stamp',
+          TP.PAGE_TOKEN_FIELD in f6[1] and 'group_identity_id=GTI-0000006' in f6[1], f6)
+    v2 = versions.begin(U, note='test 2')
+    write_run(v2.run, BUILD2)
+    os.makedirs(os.path.join(v2.run, J))
+    os.makedirs(os.path.join(v2.run, 'stokes_link'))
+    with open(os.path.join(v2.run, 'stokes_link', 'identity_merges.csv'), 'w') as f:
+        f.write('stokes,identity_id,into_id,run\nI,GTI-0000006,GTI-0000003,R2\n')
+    with versions.journal_locks(U, [J]):
+        versions.switch(U, v2, record=versions.seal(v2))
+
+    def post(body):
+        return TP.serve_request(st, False, 'POST', '/p/pv/label', {'Content-Length': str(len(body))}, body.encode())
+    r6 = post(f6[1])
+    got = journal(os.path.join(U, J))
+    check('versions: a form of the version before the switch whose identity was merged lands on the survivor\'s page in the '
+          'served journal (the mapping runs before the stale-form 409)',
+          r6[0] == 303 and len(got) == 1 and got[0]['source_id'] == 'J0200+0200' and TP.PAGE_TOKEN_FIELD not in got[0]
+          and not journal(os.path.join(v1.run, J)), (r6[:1], r6[2][:200], got))
+    r7 = post(f7[1])
+    r0 = post(re.sub(r'&?group_identity_id=[^&]*', '', f6[1]))
+    check('versions: an unmappable form of that version (its identity on no page of the served one) and one without the '
+          'stamp get the stale-form 409 "reload and judge again", nothing recorded',
+          r7[0] == 409 and b'reload and judge again' in r7[2] and r0[0] == 409 and b'reload and judge again' in r0[2]
+          and len(journal(os.path.join(U, J))) == 1, (r7[:1], r7[2][:200], r0[:1]))
+
+
 def main():
     shutil.rmtree(TMP, ignore_errors=True)
     os.makedirs(TMP)
@@ -415,6 +482,8 @@ def main():
         test_pages()
         test_merged()
         test_banner()
+        test_settled()
+        test_versions()
     finally:
         shutil.rmtree(TMP, ignore_errors=True)
     print(f'{N[0] - len(FAILS)} of {N[0]} checks passed')

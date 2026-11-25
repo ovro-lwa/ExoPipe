@@ -3348,7 +3348,9 @@ def test_production_readonly():
     # same file name, the live tree in the window) and the forced pages (their siblings from the live registry, as the gen5
     # serve's AFTER; the title in the gen5 serve's words, served time from the live title)
     green = register.greenlit(os.path.join(CFG.serve.TWO_PORT_DIR, CFG.serve.TWO_PORT_GREENLIT))
-    n_entries = 0
+    from exopipe.phase3.lib.catalog import grouping_stage as GS
+    from exopipe.phase3.lib.serve import stokes_banner
+    n_entries = n_partner = 0
     for tier, run, extra in (('deep', 'P3S5', {}), ('sublst', None, {}),
                              ('snapshot', None, {'family': 'forced', 'forced_tag': 'gen5'})):
         a = argparse.Namespace(tier=tier, run_label=run, port_offset=0, pages=None, stokes=None, lsts=None, label=None,
@@ -3368,13 +3370,23 @@ def test_production_readonly():
             if tier == 'sublst':
                 assert os.path.basename(live['code']) == os.path.basename(mine['code']), (live['code'], mine['code'])
                 live['code'] = mine['code']
+            # design B's one addition (the cross-Stokes link banner, lib/serve/stokes_banner.py): the other Stokes' review
+            # pages of the same tier, which production's registry does not hold - checked here, then compared without it
+            sp = mine.pop(stokes_banner.ENTRY_KEY, None)
+            if GS.design_b() and tier in ('deep', 'sublst') and pg.family == 'review' and pg.kind in ('single', 'multi'):
+                assert sp and all(x['stokes'] == ('I' if pg.stokes == 'V' else 'V') for x in sp) \
+                    and sp == stokes_banner.partners_of(pg, p.all_pages), (tier, pg.key, sp)
+                n_partner += 1
+            else:
+                assert sp is None, (tier, pg.key, sp)
             assert mine == live, (tier, pg.key, {k: (mine.get(k), live.get(k)) for k in set(mine) | set(live)
                                                  if mine.get(k) != live.get(k)})
             n_entries += 1
     assert n_entries == 12, n_entries
     ok(f'planned registry ENTRIES == the live two-port registry entries on {n_entries} pages (deep, 10-minute, forced: id, '
        f'kind, code, argv without --port, env, legacy and inspection ports, the greenlit layer, title - the forced pages\' '
-       f'in the gen5 words), read only')
+       f'in the gen5 words), read only; under design B {n_partner} deep and 10-minute review pages also name their other-'
+       f'Stokes pages (stokes_partner, the cross-Stokes link banner), the forced pages none')
     hubreg = json.load(open(f'{CFG.serve.HUB_DIR}/registry.json'))
     a = argparse.Namespace(tier='snapshot', run_label=None, port_offset=0, pages=None, stokes=None, lsts=None, label=None,
                            source=None, family='forced', forced_tag='gen5', restart=None, stop=None)
