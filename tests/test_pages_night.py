@@ -687,9 +687,31 @@ def test_review50():
     src = "X = '/lustre/gh/main/exopipe_ops/a'; Y = '" + f'{T}/r50/frozen_tree' + "/exopipe_ops/b'\n"
     check('the wrap\'s path normalization is builder_grouping\'s (a frozen tree\'s root and the live root)',
           PC.normalized_sha1(fz, src) == BG.normalized_sha1(fz, src) and PC.LIVE_ROOT == BG.LIVE_ROOT)
-    tsrc = open(TS.__file__).read()
-    check('place: the reduced selections (source_catalogs/_night/) are excluded from the rsync to the review host',
-          "['--exclude', night.REDUCED_DIR + '/', P + '/', tgt + '/']" in tsrc and NV.REDUCED_DIR == os.path.join('source_catalogs', '_night'))
+    # the place stage puts the page run into a new version of the placed run (tier_sublst.place_version: rsync --exclude of
+    # night.REDUCED_DIR, and its content test leaves that directory out on both sides): run it on a scratch page run holding a
+    # reduced selection and a scratch placed run (the page run's own content tests stood in)
+    PP, UU = f'{T}/r50/place/pages_out/Run_SLST17B', f'{T}/r50/place/transients/Run_SLST17B'
+    put(f'{PP}/candidates/V/x.txt', 'the page run')
+    put(f'{PP}/{NV.REDUCED_DIR}/sel.csv', 'the reduced selection')
+    put(f'{UU}/old.txt', 'the legacy placement')
+    pu = type('U', (), {})()
+    pu.meta, pu.notes, pu.outputs = {}, [], []
+    pu.note = pu.notes.append
+    pu.add_output = lambda path, cls, **kw: pu.outputs.append((path, cls))
+    real_check, err = TS.page_run_check, ''
+    TS.page_run_check = lambda r: (True, f'stand-in page-run test on {r}')
+    try:
+        TS.place_version(pu, PP, UU, 'test_pages_night: the place stage')
+    except Exception as e:                       # noqa: BLE001 - the check below reports it
+        err = f'{type(e).__name__}: {e}'
+    finally:
+        TS.page_run_check = real_check
+    check('place: the reduced selections (source_catalogs/_night/) are left out of the placed version (place_version: the '
+          'rsync excludes them, the content test leaves them out on both sides); the rest of the page run is placed',
+          not err and NV.REDUCED_DIR == os.path.join('source_catalogs', '_night') and os.path.islink(UU)
+          and open(f'{UU}/candidates/V/x.txt').read() == 'the page run' and not os.path.exists(f'{UU}/{NV.REDUCED_DIR}')
+          and os.path.isfile(f'{PP}/{NV.REDUCED_DIR}/sel.csv') and [c for _p, c in pu.outputs] == ['run_version'],
+          err or (pu.meta.get('rsync'), pu.outputs))
 
 
 def test_site_hooks():

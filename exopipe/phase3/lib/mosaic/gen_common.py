@@ -160,8 +160,8 @@ def stamp_products(items, rows, hist, *, scope, stokes, t0, t1, itt, beam, therm
     every product was written (the temporary files are removed on any error). The products are placed together
     (core/placement.atomic_many): each gets the group, mode and ACL of the file it replaces, or the directory's rule for a new
     file - never the source's, which copy2 carries (its times are kept); every product's attributes are applied before the
-    first rename, so a refusal places none of them and removes every temporary file; then they are renamed in the order of
-    items. Two items naming one final path refuse before anything is written, unless they are identical (one product).
+    first rename, so an attribute refusal places none of them and removes every temporary file; then they are renamed in the
+    order of items (a rename that fails after others leaves those placed and refuses naming them and the one that failed). Two items naming one final path refuse before anything is written, unless they are identical (one product).
     Returns [(final path, source, kind)]."""
     import shutil
     from astropy.io import fits
@@ -268,7 +268,9 @@ def held_problems(out, held):
 def pkcorr(u, *, what, scope, variant, tag, t, maps, outp, link, scratch, udir, work, label, co):
     """The PKCORR stage after its gates: MP run_band (lib/mosaic/pkcorr.py) on the co-added Jy/sr and PSF maps (maps['jysr'],
     maps['psf']), mosaic_pkcorr.ROUNDS injection rounds through the engine on the tile tree link(sd) builds, then test_pkcorr. The
-    four outputs (outp: map, curve, recovery, json -> path) are written under a temporary directory in udir and renamed into place;
+    four outputs (outp: map, curve, recovery, json -> path) are written under a temporary directory in udir and placed together
+    (core/placement.replace_many: an attribute refusal places none of the four, a rename that fails after others leaves those placed
+    and names them; a placement refusal is the unit's refusal);
     scratch = the names of the unit's two scratch directories under work (the tile tree, the injections). The engine is bound to the
     coadd record co's globals first and refused unless they match (_engine_as_coadd, label = the job): the injections run with
     the coadd's weights whatever unit ran before in the process."""
@@ -296,8 +298,8 @@ def pkcorr(u, *, what, scope, variant, tag, t, maps, outp, link, scratch, udir, 
             u.refuse(f'{what}: {e} - REFUSED')
             return
         os.makedirs(os.path.dirname(outp['map']), exist_ok=True)
-        for k in ('map', 'curve', 'recovery', 'json'):
-            os.replace(os.path.join(tmp, os.path.basename(outp[k])), outp[k])
+        placement.replace_many([(os.path.join(tmp, os.path.basename(outp[k])), outp[k])
+                                for k in ('map', 'curve', 'recovery', 'json')])
     finally:
         fitsio.cleanup(sd)
         fitsio.cleanup(inj)
@@ -320,7 +322,7 @@ def test2_write(rep, t, path):
     """TEST 2 of the content stage: per domain, the files the test read ('read', removed from the report) against the tile list t
     (each LST's real tile and PB paths): r['provenance'] (each read file with its tile's verified md5) and
     r['provenance_matches_tiles']. Mutates rep in place (test2_check reads the keys added here). The report is written to path
-    (temporary name, renamed into place); returns its md5."""
+    (temporary name, placed: core/placement.atomic); returns its md5."""
     listed = {r['lst']: (os.path.realpath(r['path']), os.path.realpath(r['pb']), r['md5']) for r in t['tiles']}
     for _dom, r in rep.items():
         read = r.pop('read')
@@ -328,10 +330,8 @@ def test2_write(rep, t, path):
         r['provenance_matches_tiles'] = (len(read) == len(listed)
                                          and all(listed.get(x['lst'], ())[:2] == (x['file'], x['pb']) for x in read))
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = f'{path}.tmp.{os.getpid()}'
-    with open(tmp, 'w') as f:
+    with placement.atomic(path) as tmp, open(tmp, 'w') as f:
         json.dump(rep, f, indent=1)
-    os.replace(tmp, path)
     return _md5(path)
 
 

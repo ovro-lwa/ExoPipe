@@ -14,7 +14,10 @@ Differences from production (none changes a value):
 - the tiles come from the stage record (path, weighting map, kind) instead of a staged link tree, and a tile that is not a hybrid
   refuses (production took a ruled Taper-only unit as its plain Taper master; v2 has no ruled Taper-only unit);
 - the test record is returned (the unit records it) instead of being written as caveat_<v>_<scope>_lsfill.json;
-- the content test's failure raises CaveatRefusal; every FITS file is read with memmap=False (HG23).
+- the content test's failure raises CaveatRefusal; every FITS file is read with memmap=False (HG23);
+- the map and the table are installed together (core/placement.atomic_many: the replaced files' group, mode and ACL, or the
+  directory's rule for new ones; an attribute refusal places neither, a failed rename of the table leaves the map placed - the caveat
+  unit then removes both; a placement refusal is the unit's refusal), where production renamed each.
 """
 import csv
 import os
@@ -22,6 +25,8 @@ import os
 import numpy as np
 from astropy.io import fits
 from astropy.wcs import WCS
+
+from exopipe.phase3.core import placement
 
 
 class CaveatRefusal(RuntimeError):
@@ -124,15 +129,14 @@ def caveat_map(tiles, variant, scope, out_dir, pbeff_mosaic, nside=None):
     hdu.header.add_comment('LEVEL = weighted mean over hybrid tiles of large-scale level / LWA1 survey prior in the pixel Dec band')
     hdu.header.add_comment('(4-deg means, Dec bands +40..+90, +10..+40, -10..+10, -20..-10, -30..-20; 18-59 MHz limits 0.5-1.6)')
     hdu.header.add_comment('TAPERONLY = weight fraction of Taper-only tiles (NoTaper stack refused: no large-scale fill)')
-    fits.HDUList([fits.PrimaryHDU(), hdu]).writeto(path + '.part', overwrite=True)
-    os.replace(path + '.part', path)
     keys = list(dict.fromkeys(k for r in rows for k in r))
     tpath = os.path.join(out_dir, tname)
-    with open(tpath + '.part', 'w', newline='') as f:
-        w_ = csv.DictWriter(f, fieldnames=keys)
-        w_.writeheader()
-        w_.writerows(rows)
-    os.replace(tpath + '.part', tpath)
+    with placement.atomic_many([path, tpath]) as tmp:
+        fits.HDUList([fits.PrimaryHDU(), hdu]).writeto(tmp[path], overwrite=True)
+        with open(tmp[tpath], 'w', newline='') as f:
+            w_ = csv.DictWriter(f, fieldnames=keys)
+            w_.writeheader()
+            w_.writerows(rows)
     rec = dict(variant=variant, scope=scope, map=path, table=tpath, n_hybrid=sum(r['kind'] == 'hybrid' for r in rows),
                n_taper_only=sum(r['kind'] == 'Taper-only' for r in rows), taper_only=[r['lst'] for r in rows if r['kind'] == 'Taper-only'])
     rec['test'] = test_caveat_map(path, level, taper, pbeff, lmin, lmax, good, gl, num_t, den, pbeff_mosaic)

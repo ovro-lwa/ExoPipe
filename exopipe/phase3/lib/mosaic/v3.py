@@ -51,11 +51,17 @@ release1_v_mosaics_20261110.sh (the Stokes V maps, TEST 1R).
 The frame is v5's: a stage reads its predecessor's done record (never a glob) and refuses unless it was made from the tile list now in
 stage/tiles.json (its md5); a unit removes its own earlier outputs first and, when it does not end done, everything it placed. A failed
 content test or test_pkcorr removes the unit's outputs (the record keeps the results). The archive push is PR-6e.
+Placement (core/placement): the tile list, the weighting maps, the coadd's four maps, the renders and the PKCORR outputs are placed -
+the replaced file's group, mode and ACL, or the directory's rule for a new one; a unit's files together (replace_many: an attribute
+refusal places none; a rename that fails after others leaves those placed and names them, and the run loop then removes every product
+of the unit, which did not end done). A placement refusal is the unit's refusal (recorded as refused with the placement message), never
+a tile's G5 problem.
 """
 import glob
 import json
 import os
 
+from exopipe.phase3.core import placement
 from exopipe.phase3.lib.mosaic import gen_common as GC                     # shared with v5: one copy of each rule
 from exopipe.phase3.lib.mosaic.gen_common import _clear, _engine_as_coadd, _md5   # one md5 cache per process for v3 and v5
 from exopipe.phase3.lib.mosaic.v5 import LSTS
@@ -355,10 +361,9 @@ def _from_coadd(u, out, scope, job, keys):
 
 def _write_tiles(u, p, scope, job, tiles, **extra):
     os.makedirs(os.path.dirname(p), exist_ok=True)
-    with open(p + '.part', 'w') as f:
+    with placement.atomic(p) as part, open(part, 'w') as f:      # the replaced list's group, mode and ACL, or the directory's rule
         json.dump(dict(scope=scope, job=job.label, product=job.product, variant=job.variant, tag=job.tag, tiles=tiles, **extra), f,
                   indent=1)
-    os.replace(p + '.part', p)
     u.add_output(p, 'mosaic_v3_tiles', scope=scope, job=job.label)
 
 
@@ -422,7 +427,9 @@ def _own_pb_paths(out, scope, job):
 def derive_weight_pb(scope, lst, ref, robust, dest):
     """The weighting PB map of one tile (STG 'PB step 2'): pb_apply.wideband_pb of the scope from the Taper master `ref` of the robust
     weighting (its constituent nights set the subband weights, its beam the bandwidth smearing), written float32 with STG's header
-    (grid cards of ref, PBSCOPE, PBFOR, PBROBUST, PBNDATE, PBCHROM, PBRESID, the never-divide COMMENT). Returns wideband_pb's meta."""
+    (grid cards of ref, PBSCOPE, PBFOR, PBROBUST, PBNDATE, PBCHROM, PBRESID, the never-divide COMMENT), placed (core/placement.atomic:
+    the replaced map's group, mode and ACL, or the directory's rule for a new one; a PlacementRefusal is the stage unit's refusal, not
+    a G5 problem of the tile). Returns wideband_pb's meta."""
     import numpy as np
     from astropy.io import fits
     from exopipe.phase3.lib.masters import pb_apply
@@ -442,8 +449,8 @@ def derive_weight_pb(scope, lst, ref, robust, dest):
     hdr['PBRESID'] = (str(meta.get('residual_pb', '')), 'factor 3: measured residual gain')
     hdr['COMMENT'] = 'Weighting PB for the mosaic; masters are ALREADY pbcorr - never divide by this.'
     os.makedirs(os.path.dirname(dest), exist_ok=True)
-    fits.PrimaryHDU(np.asarray(pb, np.float32), hdr).writeto(dest + '.part', overwrite=True)
-    os.replace(dest + '.part', dest)
+    with placement.atomic(dest) as part:
+        fits.PrimaryHDU(np.asarray(pb, np.float32), hdr).writeto(part, overwrite=True)
     return meta
 
 
@@ -467,6 +474,8 @@ def stage_plain(u, scope, job, out):
         ref = (t.get('pb_ref') or {}).get('master') or m
         try:
             meta = derive_weight_pb(scope, lst, ref, job.robust, P['pb'][lst])
+        except placement.PlacementRefusal:   # the unit's refusal with its own message, not a tile's G5 problem (any other
+            raise                            # record.Refusal, e.g. FallbackRefused, stays that LST's G5 problem)
         except Exception as e:
             probs.append(f'G5 {lst}: no weighting PB ({type(e).__name__}: {str(e)[:160]})')
             continue
@@ -562,6 +571,8 @@ def stage_vclean_own(u, scope, job, out):
             continue
         try:
             meta = derive_weight_pb(scope, lst, g[0], job.robust, P['pb'][lst])
+        except placement.PlacementRefusal:   # the unit's refusal with its own message, not a tile's G5 problem (any other
+            raise                            # record.Refusal, e.g. FallbackRefused, stays that LST's G5 problem)
         except Exception as e:
             probs.append(f'G5 {lst}: no weighting PB from {os.path.basename(g[0])} ({type(e).__name__}: {str(e)[:160]})')
             continue
@@ -633,8 +644,7 @@ def coadd_unit(u, scope, job, out, work):
             if not os.path.exists(os.path.join(tmp, os.path.basename(P[k]))):
                 u.refuse(f'the engine did not write {os.path.basename(P[k])} - REFUSED')
         os.makedirs(os.path.dirname(P['jysr']), exist_ok=True)
-        for k in ('jysr', 'psf', 'jybeam', 'pbeff'):
-            os.replace(os.path.join(tmp, os.path.basename(P[k])), P[k])
+        placement.replace_many([(os.path.join(tmp, os.path.basename(P[k])), P[k]) for k in ('jysr', 'psf', 'jybeam', 'pbeff')])
     finally:
         fitsio.cleanup(sd)
         if os.path.isdir(tmp):
@@ -684,8 +694,7 @@ def render_unit(u, scope, job, out, work):
             if not os.path.exists(os.path.join(tmp, os.path.basename(pp))):
                 u.refuse(f'band_products did not write {os.path.basename(pp)} - REFUSED')
         os.makedirs(os.path.dirname(own[0]), exist_ok=True)
-        for pp in own:
-            os.replace(os.path.join(tmp, os.path.basename(pp)), pp)
+        placement.replace_many([(os.path.join(tmp, os.path.basename(pp)), pp) for pp in own])
     finally:
         fitsio.cleanup(ld)
         shutil.rmtree(tmp, ignore_errors=True)

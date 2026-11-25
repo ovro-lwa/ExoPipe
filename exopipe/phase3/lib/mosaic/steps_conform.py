@@ -9,14 +9,20 @@ changes on a clean run):
 - membership is the coadd record's contributing tiles (census with the engine's guards, checked against the engine's own
   verdicts) instead of a recomputation over the staged links - same tiles, same arithmetic (CP:104-113 = CJ:200-221);
 - every failure refuses the unit (G13; production printed the first 20 failures and exited 0), and nothing half-staged
-  survives: every file is written under a temporary name and renamed only when the whole job succeeded;
+  survives a G13/G14 failure: every file is written under a temporary name and placed only when the whole job succeeded
+  (core/placement: every file of the job - and the QA tables of conform/_tables - gets the replaced file's group, mode and
+  ACL, or the directory's rule for a new one, before the first rename; an attribute refusal places none of them, a rename
+  that fails after others leaves those staged and the refusal names them and the one that failed; either is the unit's
+  refusal, recorded as refused with the placement message);
 - a missing time block refuses (G14) before anything is written (production: write_standard_header raised, the copy stayed);
 - the VLSSr gate G16 refuses only when mosaic_qa.VLSSR_GATE_MAX_MEDIAN_OFFSET_ARCMIN is set (None today).
 """
+import glob
 import os
 import shutil
 import sys
 
+from exopipe.phase3.core import placement
 from exopipe.phase3.lib.mosaic import steps_common as SC
 
 
@@ -66,8 +72,10 @@ def thermnoi_for(src_dir, band, nside):
 
 
 def stage_job(job, coadd_rec, render_rec, out_root):
-    """Stage one job. Returns [(final path, source build product, kind)] after renaming every temporary file into place;
-    raises RuntimeError (G13/G14) with every failure, leaving nothing staged."""
+    """Stage one job. Returns [(final path, source build product, kind)] after placing every temporary file
+    (core/placement.replace_many). Raises RuntimeError (G13/G14) with every failure before anything is placed, leaving nothing
+    staged; or the PlacementRefusal: an attribute refusal places nothing, a rename that fails after others leaves those staged
+    and names them and the one that failed."""
     from astropy.io import fits
     from astropy.time import Time
     from exopipe.phase3.core.products import build_name, write_standard_header, append_provenance_table
@@ -178,10 +186,8 @@ def stage_job(job, coadd_rec, render_rec, out_root):
                 os.remove(tmp)
         raise RuntimeError('G13: staging failed for ' + '; '.join(f'{os.path.basename(str(f))}: {e}'
                                                                   for f, e in failed[:20]))
-    out = []
-    for tmp, dst, src, kind in done:
-        os.replace(tmp, dst)
-        out.append((dst, src, kind))
+    placement.replace_many([(tmp, dst) for tmp, dst, _src, _kind in done])
+    out = [(dst, src, kind) for _tmp, dst, src, kind in done]
     _say(f'OK {stem} {job.scope}: N={n} {d0}-{d1}')
     return out, {'n': n, 'd0': d0, 'd1': d1, 'beam': beam, 'thermnoi': therm, 'inttime_s': itt, 't0': t0, 't1': t1}
 
@@ -286,13 +292,20 @@ def run_tables(args, run):
             if not rec or rec.get('status') != 'done':
                 raise NoInput('no done qa record: run the qa stage first')
             os.makedirs(stg, exist_ok=True)
-            for o in rec.get('outputs', []):
-                src = o['path']
+            srcs = [o['path'] for o in rec.get('outputs', [])]
+            for src in srcs:
                 u.add_input(src)
-                dst = os.path.join(stg, os.path.basename(src))
-                tmp = os.path.join(stg, f'.{os.path.basename(src)}.tmp.{os.getpid()}')
-                shutil.copy2(src, tmp)
-                os.replace(tmp, dst)
+            dsts = [os.path.join(stg, os.path.basename(src)) for src in srcs]
+            for d in dsts:                                 # what a killed run's atomic_many left beside these tables (own only)
+                for q in glob.glob(placement.temp_glob(glob.escape(d))):
+                    os.remove(q)
+            twice = sorted({os.path.basename(d) for d in dsts if dsts.count(d) > 1})
+            if twice:                                      # one staged name for two qa tables: the second would replace the first
+                u.refuse(f'the qa record names two tables staged as {twice} in {stg} - REFUSED (nothing copied)')
+            with placement.atomic_many(dsts) as tmps:      # a placement refusal: the unit records it as refused
+                for src, dst in zip(srcs, dsts):
+                    shutil.copy2(src, tmps[dst])
+            for src, dst in zip(srcs, dsts):
                 u.add_output(dst, 'mosaic_qa_table', kind='anchor' if 'anchor' in os.path.basename(src) else 'vlssr')
         return u.status
     except Exception as e:

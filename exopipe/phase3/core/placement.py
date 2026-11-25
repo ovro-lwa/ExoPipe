@@ -29,7 +29,13 @@ ANY exception inside the block removes the temporary file and propagates. Only a
 
 ``atomic_many(dsts)`` is the form for a set of products installed together: ``with placement.atomic_many(dsts) as tmps:``
 yields {dst: tmp}; a clean exit first gives EVERY temporary file its product's attributes (apply: where a refusal happens),
-and only when all succeeded renames them in the order of ``dsts`` - a refusal places none of them.
+and only when all succeeded renames them in the order of ``dsts``. An attribute refusal places none of them; a rename
+that fails after others succeeded leaves those placed and refuses naming them and the one that failed (renames of several
+files cannot be made atomic together).
+
+``replace_many(pairs)`` installs a set the same way when the writer chose the files' names itself (an engine's output
+directory, a worker's temporary directory, a temporary name of its own) in the products' file system: every file is given
+its product's attributes where it lies, then each is renamed once to its product, in order - with the same two outcomes.
 """
 import contextlib
 import errno
@@ -242,8 +248,9 @@ def atomic_many(dsts):
       1. every temporary file is given its product's attributes (target_attrs + apply, as replace: the existing file's group,
          mode and ACL, or the directory's rule for a new file). A refusal here, or a temporary file not written, removes
          EVERY temporary file and places nothing;
-      2. only when all succeeded, each is renamed into place in the order of ``dsts``. A rename that fails refuses, naming
-         exactly the destinations already placed; the temporary files not yet renamed are removed.
+      2. only when all succeeded, each is renamed into place in the order of ``dsts``. This phase is NOT all-or-none: a
+         rename that fails refuses (PlacementRefusal) naming the destinations already placed - they stay in place, live - and
+         the one that failed; the temporary files not yet renamed are removed.
     ANY exception inside the block removes every temporary file and propagates. ``dsts`` is refused before anything is
     written when two different names in it are the same path (both renamed to one file: the second would silently replace
     the first); the same name given twice is one product. Temporary names are atomic's (temp_glob(dst) matches them)."""
@@ -289,4 +296,55 @@ def atomic_many(dsts):
             if not isinstance(e, OSError):
                 raise
             raise PlacementRefusal(f'placement: renaming {tmps[d]} to {d} failed: {e.strerror} (errno {e.errno}); already '
-                                   f'placed: {order[:i] or "none"}; not placed: {order[i:]}') from e
+                                   f'placed: {order[:i] or "none"} (those stay live); not placed: {order[i:]}') from e
+
+
+def replace_many(pairs):
+    """[(src, dst)]: files the writer made under names of its own (an engine's or a worker's temporary directory, a temporary
+    name beside the product) ON THE PRODUCTS' FILE SYSTEM, installed together with ONE rename each (no other temporary name
+    is made beside a product):
+      1. every ``src`` is given its product's attributes where it lies (target_attrs(dst) + apply with its read-back, as
+         replace: the existing file's group, mode and ACL, or the directory's rule for a new file). A refusal here - an
+         attribute that cannot be set or does not read back, a ``src`` missing, a ``src`` on another file system than its
+         ``dst`` (os.replace cannot move it) - places NONE of them;
+      2. only when all succeeded, each ``src`` is renamed to its ``dst`` (os.replace) in the order of ``pairs``. This phase is
+         NOT all-or-none: a rename that fails refuses (PlacementRefusal) naming the products already placed - they stay in
+         place, live - the one that failed and the ones not placed.
+    Each ``src`` must be the caller's own temporary file (as replace's ``drop``): on ANY failure every ``src`` not placed is
+    removed, so no temporary file is left in the writer's directory or beside a product. A ``dst`` or a ``src`` named twice
+    refuses before anything is changed. Returns the destinations in order."""
+    from exopipe.phase3.core import guard
+    pairs = [(s, d) for s, d in pairs]
+    dsts = [d for _s, d in pairs]
+
+    def drop(rest):
+        for s, _d in rest:
+            _remove(s)
+    try:
+        if (len({os.path.abspath(d) for d in dsts}) != len(dsts)
+                or len({os.path.abspath(s) for s, _d in pairs}) != len(pairs)):
+            raise PlacementRefusal(f'placement: a destination or a source named twice in {pairs} - nothing renamed')
+        for s, d in pairs:                                     # phase 1: every attribute applied, where the file lies
+            if not os.path.lexists(s):
+                raise PlacementRefusal(f'placement: {s} was not written ({d})')
+            if os.stat(s).st_dev != os.stat(os.path.dirname(os.path.abspath(d))).st_dev:
+                raise PlacementRefusal(f'placement: {s} is not on the file system of {d} (a rename cannot move it)')
+            if guard.active():
+                guard.check(s, 'placement (source: group and ACL)')
+                guard.check(d, 'placement (destination)', entry=True)
+            apply(s, target_attrs(d), dst=d)
+    except BaseException as e:
+        drop(pairs)
+        if isinstance(e, PlacementRefusal):
+            raise PlacementRefusal(f'{e} - none of the {len(pairs)} products placed') from e
+        raise
+    for i, (s, d) in enumerate(pairs):                         # phase 2: one rename per product, in order
+        try:
+            os.replace(s, d)
+        except BaseException as e:
+            drop(pairs[i:])
+            if not isinstance(e, OSError):
+                raise
+            raise PlacementRefusal(f'placement: renaming {s} to {d} failed: {e.strerror} (errno {e.errno}); already placed: '
+                                   f'{dsts[:i] or "none"} (those stay live); failed: {d}; not placed: {dsts[i:]}') from e
+    return dsts

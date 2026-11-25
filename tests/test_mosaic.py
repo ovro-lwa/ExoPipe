@@ -17,7 +17,11 @@
   guard      G9: a CORRUPT-FLAT tile skipped and recorded (skip-and-record), census = engine, partial build for the
              coverage test; TILE_GUARD_ACTION refuse refuses
   qa         the qa stage at NSIDE 2048 on a synthetic noise map: the REAL anchor script and VLSSr check in place; tables
-             pass mosaic_qa_table; conform/_tables copies them
+             pass mosaic_qa_table; conform/_tables copies them; a placement refusal of a staged table refuses conform/_tables
+             and of a qa table refuses qa/_all (placement P4), the placed tables unchanged
+  placement  placement P4: a placement refusal of one product of coadd, render and conform (the parent's handlers catch
+             Exception) is the unit's recorded refusal with the placement message - none of the unit's products placed, no
+             temporary file left, exit code 2
   negative   content tests fail on corrupted copies (BUNIT, dec floor, a staged name whose N disagrees, pixels changed)
   real       READ-ONLY: content tests on the production qa table and, when present on this host, a staged weighting PB
              map; MOSAIC_TEST_REAL=1 adds the 200 MB maps, renders and archived files (slow; results in plan/impl/mosaic.md)
@@ -52,6 +56,9 @@ from exopipe.phase3.core import record, validate                   # noqa: E402
 from exopipe.phase3.lib.mosaic import steps_common as SC           # noqa: E402
 
 _SAVED = {}
+# a group this user is not in: core/placement refuses to give a product this group (the placement refusal of P4's tests)
+FOREIGN = next((g for g in (0, 1, 2, 3, 4, 65534) if g not in os.getgroups() and g != os.getegid()), None) \
+    if os.geteuid() != 0 else None
 
 
 def _patch(section, key, value):
@@ -84,6 +91,28 @@ def _main(argv):
 
 def _rec(out, unit):
     return record.load_record(out, 'mosaic', unit)
+
+
+@contextlib.contextmanager
+def _refusing(pred):
+    """core/placement refuses every product whose path pred() names (its group would be FOREIGN, a group this user is not in)."""
+    from exopipe.phase3.core import placement as PL
+    real = PL.target_attrs
+    PL.target_attrs = lambda dst, like=None: dict(real(dst, like), gid=FOREIGN) if pred(dst) else real(dst, like)
+    try:
+        yield
+    finally:
+        PL.target_attrs = real
+
+
+def _files(d):
+    """Every file under d (relative paths), temporary files included."""
+    return sorted(os.path.relpath(os.path.join(r, n), d) for r, _ds, fs in os.walk(d) for n in fs) if os.path.isdir(d) else []
+
+
+def _placement_refused(r, rc):
+    return rc == 2 and r and r['status'] == 'refused' and r['reason'].startswith('placement:') \
+        and 'products placed' in r['reason'] and 'none of the' in r['reason']
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -496,8 +525,93 @@ def test_qa():
     an = [o['path'] for o in q['outputs'] if 'flux_anchor' in o['path']][0]
     rows = open(an).read().splitlines()
     assert rows[0] == 'variant,band,freq_mhz,source,aperture_jy,model_jy,ratio,fwhm_eff_arcmin' and len(rows) == 8, rows
+    # placement P4 fix round: conform/_tables (1) removes what a killed run's placement left beside its own tables
+    # (placement.temp_glob of each staged name) and (2) refuses, before anything is copied, when two qa outputs would be staged
+    # under one name (the second would replace the first): the staged tables stay as they are
+    stg = os.path.join(out, 'archive_staging', 'mosaic', 'tables')
+
+    def stg_state():
+        return {f: (os.stat(os.path.join(stg, f)).st_ino, open(os.path.join(stg, f), 'rb').read()) for f in _files(stg)}
+    s_ok = stg_state()
+    qpath = record.record_path(out, 'mosaic', 'qa/_all')
+    with open(qpath) as f:
+        q_ok = json.load(f)
+    other = os.path.join(out, 'qa_other')
+    os.makedirs(other, exist_ok=True)
+    dup = shutil.copy2(an, os.path.join(other, os.path.basename(an)))
+    record.atomic_write_json(qpath, dict(q_ok, outputs=q_ok['outputs'] + [dict(next(o for o in q_ok['outputs'] if o['path'] == an),
+                                                                               path=dup)]))
+    stale = os.path.join(stg, os.path.basename(an)) + '.4242.0badc0de.tmp'      # a name placement.temp_glob matches
+    with open(stale, 'w') as f:
+        f.write('killed')
+    rc, so, se = _main(['mosaic', '--jobs', 'Blue_Taper_R075', '--domains', 'jysr', '--stages', 'conform', '--out', out,
+                        '--cores', 'none'])
+    t = _rec(out, 'conform/_tables')
+    assert t['status'] == 'refused' and rc == 2 and 'two tables staged as' in t['reason'] and os.path.basename(an) in t['reason'], \
+        (rc, t['status'], t['reason'])
+    assert stg_state() == s_ok and not os.path.exists(stale), _files(stg)
+    record.atomic_write_json(qpath, q_ok)
+    shutil.rmtree(other)
+    # placement P4: a placement refusal of a table is the unit's refusal (run_tables and run_qa catch Exception); the tables
+    # placed by the run above stay as they are (same inode and bytes) and no temporary file is left
+    if FOREIGN is None:
+        print('  qa: UNTESTED (placement refusal): running as root or a member of every candidate group')
+    else:
+        stg = os.path.join(out, 'archive_staging', 'mosaic', 'tables')
+        qa_dir = os.path.dirname(an)
+
+        def state(d):
+            return {f: (os.stat(os.path.join(d, f)).st_ino, open(os.path.join(d, f), 'rb').read()) for f in _files(d)}
+        s0, q0 = state(stg), state(qa_dir)
+        assert len(s0) == 2 and len(q0) == 2, (s0.keys(), q0.keys())
+        with _refusing(lambda p: os.path.dirname(p) == stg and 'vlssr' in os.path.basename(p)):
+            rc, so, se = _main(['mosaic', '--jobs', 'Blue_Taper_R075', '--domains', 'jysr', '--stages', 'conform',
+                                '--out', out, '--cores', 'none'])
+        t = _rec(out, 'conform/_tables')
+        assert _placement_refused(t, rc) and 'none of the 2 products placed' in t['reason'], (rc, t and t['reason'])
+        assert state(stg) == s0, _files(stg)
+        with _refusing(lambda p: os.path.dirname(p) == qa_dir and 'vlssr' in os.path.basename(p)):
+            rc, so, se = _main(['mosaic', '--jobs', 'Blue_Taper_R075', '--domains', 'jysr', '--stages', 'qa',
+                                '--out', out, '--cores', 'none'])
+        q = _rec(out, 'qa/_all')
+        assert _placement_refused(q, rc) and 'none of the 2 products placed' in q['reason'], (rc, q and q['reason'])
+        assert state(qa_dir) == q0, _files(qa_dir)
     os.remove(mp)
     os.remove(pp)
+
+
+def test_placement():
+    """Placement P4: a placement refusal of one product of the coadd (a PSF map), the render (a Jy/beam Mollweide) and the
+    conform (a staged PSF map) is the unit's recorded refusal with the placement message (steps_build and steps_conform catch
+    Exception around the unit; record.Refusal is recorded by the unit first): none of the unit's products placed, no temporary
+    file left, exit code 2; the unit then runs done without the refusal."""
+    if FOREIGN is None:
+        print('  placement: UNTESTED: running as root or a member of every candidate group')
+        return
+    _make_generation()
+    _small_world()
+    try:
+        out = os.path.join(SCRATCH, 'out_place')
+        work = os.path.join(SCRATCH, 'work_place')
+        shutil.rmtree(out, ignore_errors=True)
+        base = ['mosaic', '--jobs', 'Blue_Taper_R075', '--out', out, '--work', work] + SMALL
+        hp_dir, rnd, stg = (os.path.join(out, x) for x in ('healpix', 'renders', os.path.join('archive_staging', 'mosaic')))
+        for unit, stages, pred, where in (
+                ('coadd/Blue_Taper_R075', 'inputs,coadd', lambda p: 'PSF' in os.path.basename(p), hp_dir),
+                ('render/Blue_Taper_R075', 'render', lambda p: os.path.basename(p).endswith('_jybeam_Mollweide.fits'), rnd),
+                ('conform/Blue_Taper_R075', 'conform', lambda p: p.startswith(stg) and 'psfmap' in os.path.basename(p), stg)):
+            with _refusing(pred):
+                rc, so, se = _main(base + ['--stages', stages])
+            r = _rec(out, unit)
+            assert _placement_refused(r, rc), (unit, rc, r and r['status'], r and r['reason'], se[-1500:])
+            assert _files(where) == [], (unit, _files(where))
+            rc, so, se = _main(base + ['--stages', stages])
+            r = _rec(out, unit)
+            assert rc == 0 and r['status'] == 'done' and _files(where) and not [f for f in _files(where) if f.endswith('.tmp')
+                                                                               or '.tmp.' in f], (unit, rc, r['reason'])
+            print(f'  placement: {unit}: refused with the placement message, then done ({len(r["outputs"])} outputs)')
+    finally:
+        _unsmall()
 
 
 def test_negative(out):
@@ -608,7 +722,7 @@ def main(names):
     shutil.rmtree(SCRATCH, ignore_errors=True)
     os.makedirs(SCRATCH)
     try:
-        order = ['config', 'jobs', 'end2end', 'gates', 'guard', 'qa', 'negative', 'real']
+        order = ['config', 'jobs', 'end2end', 'gates', 'guard', 'qa', 'placement', 'negative', 'real']
         out = None
         for n in order:
             if names and n not in names and not (n == 'end2end' and 'negative' in names):
