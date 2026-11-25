@@ -278,8 +278,10 @@ def marked(D):
 
 
 class Harness:
-    """The install's surroundings stubbed: the page's content tests (the judgement journal's injectable), the App probe, the
-    page inputs and the gate on the run (each injectable), the server check (the n-th call injectable), the server's loader
+    """The install's surroundings stubbed: the exclusion list's read (flow.excl_note: data_decisions.csv is not on a data-free
+    runner, where the gate refuses the unit - correctly - before any page is checked), the page's content tests (the judgement
+    journal's injectable), the App probe, the page inputs and the gate on the run (each injectable), the server check (the n-th
+    call injectable), the server's loader
     check in register.prepare and register.write (injectable; real otherwise, in the parity registry <out>/two_port), the
     build wait (refuses: no server here - a registered page's unit ends refused 'BUILD-WAIT'), os.mkdir / os.rename of the
     install's paths and the judgements sync (injectable; rsync otherwise)."""
@@ -291,7 +293,7 @@ class Harness:
         H = self
         self.saved = (forced_tier.page_output, servers.app_probe, forced_tier.page_inputs, forced_tier._gate,
                       forced_tier._sync_judgements, register.check_server, register.prepare, register.write,
-                      register.wait_built, os.mkdir, os.rename)
+                      register.wait_built, os.mkdir, os.rename, flow.excl_note)
         sync0, prep0, write0, mkdir0, rename0 = (forced_tier._sync_judgements, register.prepare, register.write, os.mkdir,
                                                  os.rename)
 
@@ -354,13 +356,15 @@ class Harness:
                 raise OSError(5, 'Input/output error (test)', src)
             return rename0(src, dst, *a, **k)
         (forced_tier.page_output, servers.app_probe, forced_tier.page_inputs, forced_tier._gate, forced_tier._sync_judgements,
-         register.check_server, register.prepare, register.write, register.wait_built, os.mkdir, os.rename) = (
-            page_output, probe, inputs, gate, sync, check_server, prepare, write, wait_built, mkdir, rename)
+         register.check_server, register.prepare, register.write, register.wait_built, os.mkdir, os.rename, flow.excl_note) = (
+            page_output, probe, inputs, gate, sync, check_server, prepare, write, wait_built, mkdir, rename,
+            lambda u, tier=None: u.note('exclusions: stubbed (test)'))
         return self
 
     def __exit__(self, *exc):
         (forced_tier.page_output, servers.app_probe, forced_tier.page_inputs, forced_tier._gate, forced_tier._sync_judgements,
-         register.check_server, register.prepare, register.write, register.wait_built, os.mkdir, os.rename) = self.saved
+         register.check_server, register.prepare, register.write, register.wait_built, os.mkdir, os.rename,
+         flow.excl_note) = self.saved
         return False
 
 
