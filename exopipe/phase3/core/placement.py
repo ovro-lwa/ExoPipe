@@ -37,13 +37,21 @@ files cannot be made atomic together).
 ``replace_many(pairs)`` installs a set the same way when the writer chose the files' names itself (an engine's output
 directory, a worker's temporary directory, a temporary name of its own) in the products' file system: every file is given
 its product's attributes where it lies, then each is renamed once to its product, in order - with the same two outcomes.
+
+``copy(src, dst)`` places a copy of a file that may lie on another file system (node-local scratch, a work tree): the bytes are
+copied to atomic's temporary file beside ``dst``, checked against ``src`` (size and md5: Lustre has made silent short copies,
+2 of 828 shutil copies on 2026-11-09), and only then placed - with the replaced product's or the directory's attributes,
+never the source's (a shutil.copy2 into the archive carried the work file's mode, and with it the ACL mask).
+``copy_verified(src, tmp)`` is that copy and check alone, for the temporary files of an atomic / atomic_many block; a copy
+that is not verified refuses (CopyNotVerified, a PlacementRefusal) with its temporary file removed.
 """
 import contextlib
 import errno
-import glob
 import grp
+import hashlib
 import os
 import re
+import shutil
 import stat
 import struct
 import sys
@@ -59,7 +67,17 @@ _NO_ACL = (errno.ENODATA, errno.ENOTSUP, errno.EOPNOTSUPP)
 
 
 class PlacementRefusal(Refusal):
-    """The file could not be given the product's group or ACL; nothing was renamed."""
+    """The file could not be given the product's group or ACL (or, CopyNotVerified, its copy is not the source's bytes);
+    nothing was renamed."""
+
+
+class CopyNotVerified(PlacementRefusal):
+    """copy_verified: the copy beside the product differs from its source in size or md5; the copy was removed, nothing
+    placed. ``src_md5`` / ``copy_md5``: the two md5s (hex)."""
+
+    def __init__(self, msg, src_md5=None, copy_md5=None):
+        super().__init__(msg)
+        self.src_md5, self.copy_md5 = src_md5, copy_md5
 
 
 def get_acl(path, name=ACL_ACCESS):
@@ -229,18 +247,29 @@ def sweep(dsts, tag=None, older_than_s=STALE_TEMP_S, log=None):
     those not modified for ``older_than_s`` seconds (default STALE_TEMP_S, one hour). A younger one may be a concurrent
     writer's (the V and I searches of one cell write the same generation stamp) and stays; so do ``dst`` itself, another
     product's temporary files and every other name. A writer calls it before it writes (each temporary name is unique, so no
-    later write replaces a leftover). Each removal is reported through ``log`` (default: a line on stderr). Returns the paths
-    removed."""
+    later write replaces a leftover). Each directory is listed once, however many of its products ``dsts`` names (a writer of
+    many files in one directory sweeps them all in one call). Each removal is reported through ``log`` (default: a line on
+    stderr). Returns the paths removed, in the order of ``dsts`` (each product's sorted by name)."""
     log = log or (lambda m: print(m, file=sys.stderr, flush=True))
     if isinstance(dsts, (str, bytes, os.PathLike)):
         dsts = [dsts]
-    now, out = time.time(), []
+    now, out, listed = time.time(), [], {}
+    tail = re.compile((re.escape('.' + tag) if tag else '') + r'\.\d+\.[0-9a-f]{8}\.tmp$')
     for dst in dsts:
         dst = os.fspath(dst)
-        name = re.compile(re.escape(os.path.basename(dst)) + (re.escape('.' + tag) if tag else '') + r'\.\d+\.[0-9a-f]{8}\.tmp')
-        for q in sorted(glob.glob(temp_glob(glob.escape(dst), tag))):
-            if not name.fullmatch(os.path.basename(q)):
-                continue                        # e.g. <dst>.1.<pid>.<hex>.tmp: the temporary file of the product <dst>.1
+        d, b = os.path.split(dst)
+        if d not in listed:                     # {product name: [its temporary names]} of the directory, listed once
+            listed[d] = {}
+            try:
+                names = os.listdir(d or os.curdir)
+            except OSError:                     # no such directory: nothing to sweep
+                names = []
+            for n in names:
+                m = tail.search(n)              # <product>[.<tag>].<pid>.<8 hex digits>.tmp, filed under <product> - so
+                if m:                           # <dst>.1.<pid>.<hex>.tmp is the product <dst>.1's, never <dst>'s
+                    listed[d].setdefault(n[:m.start()], []).append(n)
+        for n in sorted(listed[d].pop(b, [])):  # (pop: a product named twice is swept once)
+            q = os.path.join(d, n)
             try:
                 st = os.lstat(q)
                 if stat.S_ISDIR(st.st_mode) or now - st.st_mtime < older_than_s:
@@ -272,6 +301,53 @@ def atomic(dst, like=None, tag=None):
     if not os.path.lexists(tmp):
         raise PlacementRefusal(f'placement: {tmp} was not written - {dst} not placed')
     replace(tmp, dst, like=like, drop=True)
+
+
+def _md5(path, block=1 << 22):
+    h = hashlib.md5()
+    with open(path, 'rb') as f:
+        for b in iter(lambda: f.read(block), b''):
+            h.update(b)
+    return h.hexdigest()
+
+
+def copy_verified(src, tmp, times=False):
+    """Copy the bytes of ``src`` to ``tmp`` (shutil.copyfile: a new file, which takes what its directory gives any new file -
+    never src's mode, ACL or other extended attributes), then check the copy against ``src``: the same size (src's, taken
+    before the copy) and the same md5 (src read before the copy), else CopyNotVerified (a PlacementRefusal) with ``tmp``
+    removed. A copy that exopipe's safe-copy gate already refused as short (exopipe/_safe_copy.ShortCopyError, the short
+    copy removed) is the same CopyNotVerified. ``times``: after the check ``tmp`` takes src's access and modification times,
+    as shutil.copy2 gives them. Returns the md5 (hex). ``tmp`` is a temporary file of an atomic / atomic_many block: the
+    block places it on a clean exit."""
+    from exopipe import _safe_copy
+    st = os.stat(src)
+    m0 = _md5(src)
+    try:
+        shutil.copyfile(src, tmp)
+    except _safe_copy.ShortCopyError as e:
+        _remove(tmp)
+        raise CopyNotVerified(f'placement: the copy {tmp} of {src} is not verified: {e} (the source {st.st_size} bytes, md5 '
+                              f'{m0}) - nothing placed', src_md5=m0) from e
+    n1, m1 = os.path.getsize(tmp), _md5(tmp)
+    if (n1, m1) != (st.st_size, m0):
+        _remove(tmp)
+        raise CopyNotVerified(f'placement: the copy {tmp} of {src} is not verified: {n1} bytes, md5 {m1}; the source '
+                              f'{st.st_size} bytes, md5 {m0} - the copy removed, nothing placed', src_md5=m0, copy_md5=m1)
+    if times:
+        os.utime(tmp, ns=(st.st_atime_ns, st.st_mtime_ns))
+    return m1
+
+
+def copy(src, dst, times=False):
+    """Place a copy of ``src`` (on any file system) at ``dst``: copy_verified into atomic(dst)'s temporary file beside ``dst``,
+    then replace(tmp, dst, drop=True) - the replaced product's group, mode and ACL, or the directory's rule for a new one,
+    never src's. A copy that is not verified (CopyNotVerified) or cannot be given the attributes (PlacementRefusal) leaves
+    ``dst`` as it was and no temporary file. ``times``: the placed file has src's access and modification times (as
+    shutil.copy2). The caller sweeps its products' leftovers (sweep) before it writes. Returns the md5 (hex) of the bytes
+    placed."""
+    with atomic(dst) as tmp:
+        m = copy_verified(src, tmp, times=times)
+    return m
 
 
 def _temp_name(dst, tag=None):
