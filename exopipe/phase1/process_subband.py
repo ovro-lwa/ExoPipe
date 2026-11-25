@@ -10,6 +10,7 @@ Only final archiving copies results to Lustre.
 MERGED: Old stable base + new improvements (run_casa_task, etc.)
 """
 import argparse
+import csv
 import os
 import sys
 import socket
@@ -18,6 +19,7 @@ import logging
 import glob
 import subprocess
 import pickle
+import json
 import traceback
 import numpy as np
 from datetime import datetime
@@ -32,8 +34,10 @@ from casacore.tables import table
 # --- OPTIONAL HEAVY IMPORTS (guarded) ---
 try:
     from exopipe.phase1 import hot_baseline_worker
-except ImportError:
+    _HOT_IMPORT_ERROR = None
+except ImportError as _e:
     hot_baseline_worker = None
+    _HOT_IMPORT_ERROR = f"{type(_e).__name__}: {_e}"
 
 try:
     from exopipe.phase2.extractor_pb_75 import (
@@ -107,6 +111,85 @@ def load_state(work_dir):
             return pickle.load(f)
     except Exception:
         return None
+
+
+REFUSED_EXIT_CODE = 3
+
+
+class SubbandRefused(RuntimeError):
+    """A gate refused this subband, which is not imaged. Raised after record_subband_refusal has recorded it;
+    run_stage_image then exits with REFUSED_EXIT_CODE (the subband job's status)."""
+
+
+def record_subband_refusal(args, org_args, subband, step, reason, qa_files=()):
+    """Record a refused subband where people and later stages look, and return the SubbandRefused to raise: a CRITICAL
+    line in the subband's log (this process's output, the subband's Slurm log), and REFUSED.json in the work directory
+    and in the subband's archive directory, with the step's QA files (its refusal report) copied beside it in QA/.
+    A record that cannot be written is logged; it never turns the refusal into a pass."""
+    rec = dict(status="REFUSED", step=step, reason=reason, subband=subband, consequence="the subband is not imaged",
+               work_dir=args.work_dir, host=socket.gethostname(),
+               time_utc=datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'))
+    logger.critical(f"SUBBAND REFUSED ({subband}, {step}): {reason}. The subband is not imaged.")
+    targets = [args.work_dir]
+    try:
+        start_time_val = org_args.start_time if org_args else args.start_time
+        obs_date = datetime.strptime(start_time_val.replace('T', ':').split('.')[0],
+                                     '%Y-%m-%d:%H:%M:%S').strftime('%Y-%m-%d')
+        run_label = args.run_label if args.run_label else (org_args.run_label if org_args else "Unknown_Run")
+        lst_label = org_args.lst_label if org_args else args.lst_label
+        targets.append(os.path.join(config.LUSTRE_ARCHIVE_DIR, lst_label, obs_date, run_label, subband))
+    except Exception as e:
+        logger.error(f"refusal record: the subband's archive directory could not be named ({e}); "
+                     "recorded in the work directory only")
+    for d in targets:
+        try:
+            qa = os.path.join(d, "QA")
+            os.makedirs(qa, exist_ok=True)
+            for f in qa_files:
+                if os.path.exists(f) and os.path.abspath(os.path.dirname(f)) != os.path.abspath(qa):
+                    shutil.copy(f, qa)
+            with open(os.path.join(d, "REFUSED.json"), "w") as fh:
+                json.dump(rec, fh, indent=1)
+            logger.critical(f"refusal recorded: {os.path.join(d, 'REFUSED.json')}")
+        except Exception as e:
+            logger.error(f"refusal record not written in {d}: {e}")
+    return SubbandRefused(f"{subband}: {step} refused: {reason}")
+
+
+MNC_REPORT = "mnc_bad_antennas.csv"
+NVME_WORK_ROOT = "/fast/gh/main"     # the setup stage's work directories: <root>/<lst>/<date>/<run label>/<subband>
+
+
+def flag_bad_antennas_mnc(args, work_dir, ms_files, script_dir):
+    """Setup step 2: the MNC bad-antenna lookup and flag for every set (utils.run_antenna_flagging). Writes
+    QA/<MNC_REPORT> in the work directory, one row per set: the requested MJD (the set's start), the matched
+    health-record MJD, their gap in days and the bad correlator numbers; a failed set's row carries its cause. A failed
+    lookup refuses the subband (record_subband_refusal, then SubbandRefused): its bad antennas would otherwise go
+    unflagged without a trace. No threshold applies to the gap; it is recorded. Returns the records."""
+    qa = os.path.join(work_dir, "QA")
+    os.makedirs(qa, exist_ok=True)
+    report = os.path.join(qa, MNC_REPORT)
+    records, failure = [], None
+    for ms in ms_files:
+        try:
+            records.append(utils.run_antenna_flagging(ms, {}, script_dir, logger))
+        except Exception as e:
+            failure = (os.path.basename(os.path.normpath(ms)), f"{type(e).__name__}: {e}")
+            break
+    with open(report, "w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(["ms", "requested_mjd", "matched_health_mjd", "gap_days", "bad_correlator_numbers", "status"])
+        for r in records:
+            w.writerow([r['ms'], f"{r['requested_mjd']:.6f}", f"{r['matched_health_mjd']:.6f}", f"{r['gap_days']:+.6f}",
+                        " ".join(map(str, r['bad_correlator_numbers'])),
+                        "flagged" if r['bad_correlator_numbers'] else "no bad antenna in the record"])
+        if failure:
+            w.writerow([failure[0], "", "", "", "", f"REFUSED: {failure[1]}"])
+    if failure:
+        rargs = argparse.Namespace(**dict(vars(args), work_dir=work_dir))
+        raise record_subband_refusal(rargs, None, args.subband, "MNC bad-antenna lookup", failure[1],
+                                     qa_files=[report])
+    return records
 
 
 def run_subprocess(cmd, description):
@@ -221,7 +304,7 @@ def run_stage_setup(args):
         obs_date_str = "unknown"
 
     # Create work directory on NVMe
-    work_dir = f"/fast/gh/main/{args.lst_label}/{obs_date_str}/{args.run_label}/{args.subband}"
+    work_dir = f"{NVME_WORK_ROOT}/{args.lst_label}/{obs_date_str}/{args.run_label}/{args.subband}"
     if os.path.exists(work_dir):
         shutil.rmtree(work_dir)
     os.makedirs(work_dir, exist_ok=True)
@@ -242,10 +325,14 @@ def run_stage_setup(args):
 
     ms_files = utils.copy_and_prepare_files(archive_files, work_dir, args.subband, logger)
 
-    # 2. Flag bad antennas (via MNC health data in 'development' conda env)
+    # 2. Flag bad antennas (via MNC health data in 'development' conda env). A failed lookup refuses the subband
+    # (exit REFUSED_EXIT_CODE, before calibration; no peel or image job is submitted).
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    for ms in ms_files:
-        utils.run_antenna_flagging(ms, {}, script_dir, logger)
+    try:
+        flag_bad_antennas_mnc(args, work_dir, ms_files, script_dir)
+    except SubbandRefused as e:
+        logger.critical(f"Setup stopped, subband refused: {e}")
+        sys.exit(REFUSED_EXIT_CODE)
 
     # 3. Apply bandpass + XY-phase calibration
     valid_ms_files = []
@@ -555,8 +642,16 @@ def run_stage_image(args):
                     logger.error(f"Jupiter check of flagged integrations not run (flag unaffected): {e}")
 
             # --- 5. HOT BASELINE REMOVAL ---
+            # A refusal of this step stops the subband (SubbandRefused, exit REFUSED_EXIT_CODE): it can refuse when the
+            # data and flags cannot be read, when every cross-correlation visibility is flagged, or when no baseline
+            # longer than the UV cut has cross-hand data; imaging the subband then would be meaningless (its hot
+            # baselines neither found nor flagged).
             run_hot = org_args.hot_baselines if org_args else getattr(args, 'hot_baselines', False)
-            if run_hot and hot_baseline_worker is not None:
+            if run_hot and hot_baseline_worker is None:
+                raise record_subband_refusal(args, org_args, subband_val, "hot-baseline step",
+                                             "hot_baselines is enabled but exopipe.phase1.hot_baseline_worker could "
+                                             f"not be imported ({_HOT_IMPORT_ERROR})")
+            if run_hot:
                 class HotArgs:
                     ms = concat_ms
                     col = "CORRECTED_DATA"
@@ -577,8 +672,11 @@ def run_stage_image(args):
                 try:
                     hot_baseline_worker.run_diagnostics(HotArgs, logger)
                 except Exception as e:
-                    logger.error(f"Hot Baseline Analysis crashed: {e}")
-                    traceback.print_exc()
+                    ms_base = os.path.basename(os.path.normpath(concat_ms))
+                    raise record_subband_refusal(
+                        args, org_args, subband_val, "hot-baseline step", f"{type(e).__name__}: {e}",
+                        qa_files=[os.path.join(qa_dir, f"{ms_base}_hot_component_report.txt"),
+                                  os.path.join(qa_dir, f"{ms_base}_no_data_baselines.csv")]) from e
                 finally:
                     os.chdir(cwd)
 
@@ -961,6 +1059,14 @@ def run_stage_image(args):
         # Archive from science_out_dir (which is the same as work_dir for normal runs)
         archive_source = science_out_dir
 
+        # This attempt ran the gates on the data and passed them: a previous attempt's refusal record
+        # (record_subband_refusal) is not current. A science-only resume ran no gate on the data and keeps any record.
+        for stale in ({os.path.join(args.work_dir, "REFUSED.json"), os.path.join(archive_base, "REFUSED.json")}
+                      if not skip_to_science else ()):
+            if os.path.exists(stale):
+                os.remove(stale)
+                logger.info(f"removed a previous attempt's refusal record: {stale}")
+
         # Structured copy  preserves directory layout for run-local products
         for top_level in ['I', 'V', 'snapshots', 'QA', 'Movies',
                           'Dewarp_Diagnostics', 'samples', 'detections']:
@@ -1092,6 +1198,10 @@ def run_stage_image(args):
 
         logger.info("--- PIPELINE COMPLETE ---")
 
+    except SubbandRefused as e:
+        logger.critical(f"Pipeline stopped, subband refused: {e}")
+        traceback.print_exc()
+        sys.exit(REFUSED_EXIT_CODE)
     except Exception as e:
         logger.critical(f"Pipeline Failed: {e}")
         traceback.print_exc()

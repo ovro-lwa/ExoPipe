@@ -224,39 +224,87 @@ def fix_field_id(ms_path, logger):
 
 
 # --- FLAGGING & QA ---
+class MncLookupFailed(RuntimeError):
+    """The MNC bad-antenna lookup for a set failed: its time could not be read, the helper is missing, exited with an
+    error, or printed no valid record, or the flag write failed. The caller refuses the subband."""
+
+
+MNC_RECORD_KEYS = ('requested_mjd', 'data_timestamp_mjd', 'bad_correlator_numbers')
+
+
+def mjd_from_ms_time(seconds):
+    """A measurement set's TIME and TIME_RANGE values are MJD in seconds (UTC); the MJD in days is seconds / 86400."""
+    return float(seconds) / 86400.0
+
+
 def run_antenna_flagging(ms_path, context, script_dir, logger):
-    import astropy.time
+    """Flag the antennas that the MNC antenna-health record nearest the set's start time marks bad.
+
+    Returns the lookup record: the set, the requested MJD (the set's start, OBSERVATION TIME_RANGE converted from MJD
+    seconds), the matched health-record MJD, their gap in days (matched minus requested), and the bad correlator
+    numbers. Raises MncLookupFailed, naming the cause, when the set's start time cannot be read, when the helper is
+    missing, exits with an error or prints no valid JSON record, or when the flag write fails. An empty bad-antenna list
+    is a success only when it comes from a valid record."""
+    name = os.path.basename(os.path.normpath(ms_path))
     try:
         with pt.table(os.path.join(ms_path, 'OBSERVATION'), ack=False) as t:
             time_range = t.getcol('TIME_RANGE')[0]
-            obs_mjd = astropy.time.Time(time_range[0], format='mjd', scale='utc').mjd
-    except Exception: return False
+        obs_mjd = mjd_from_ms_time(time_range[0])
+    except Exception as e:
+        raise MncLookupFailed(f"{name}: the set's start time (OBSERVATION TIME_RANGE) could not be read: "
+                              f"{type(e).__name__}: {e}") from e
 
     # Repo tools/ location (R-GC9, Gregg 2026-08-13): missing callee = hard
     # refusal, never a silent skip.
     _repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     helper_script = os.path.join(_repo_root, "tools", "get_bad_antennas_mnc.py")
     if not os.path.exists(helper_script):
-        raise RuntimeError(
+        raise MncLookupFailed(
             f"get_bad_antennas_mnc.py not found at {helper_script} — "
             "MNC bad-antenna query REFUSED (R-GC9)")
 
-    cmd = ['conda', 'run', '-n', 'development', 'python', helper_script, str(obs_mjd)]
+    cmd = ['conda', 'run', '-n', 'development', 'python', helper_script, repr(obs_mjd)]
     try:
-        res = subprocess.run(cmd, capture_output=True, text=True, check=True)
-        lines = res.stdout.strip().split('\n')
-        data = None
-        for line in reversed(lines):
-            try: data = json.loads(line); break
-            except Exception: continue
-        if data and data.get('bad_correlator_numbers'):
-            bad_ant_str = ",".join(map(str, data['bad_correlator_numbers']))
-            logger.warning(f"!!! FLAGGING BAD ANTENNAS: {bad_ant_str} !!!")
-            flagdata(vis=ms_path, mode='manual', antenna=bad_ant_str, flagbackup=False)
-        return True
+        res = subprocess.run(cmd, capture_output=True, text=True)
     except Exception as e:
-        logger.error(f"Flagging helper failed: {e}")
-        return False
+        raise MncLookupFailed(f"{name}: the MNC helper could not be run: {type(e).__name__}: {e}") from e
+    if res.returncode != 0:
+        tail = " | ".join((res.stderr or "").strip().splitlines()[-3:])
+        raise MncLookupFailed(f"{name}: the MNC helper exited with status {res.returncode} for MJD {obs_mjd:.6f}: "
+                              f"{tail or 'no error output'}")
+    data = None
+    for line in reversed((res.stdout or "").strip().splitlines()):
+        try:
+            d = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(d, dict):
+            data = d
+            break
+    try:
+        if data is None or any(k not in data for k in MNC_RECORD_KEYS):
+            raise ValueError(f"no JSON record with {', '.join(MNC_RECORD_KEYS)}")
+        matched_mjd = float(data['data_timestamp_mjd'])
+        bad = data['bad_correlator_numbers']
+        if not isinstance(bad, list):
+            raise ValueError(f"bad_correlator_numbers is {type(bad).__name__}, not a list")
+        bad = sorted({int(x) for x in bad})
+    except Exception as e:
+        raise MncLookupFailed(f"{name}: the MNC helper printed no valid record ({e}); its output ended: "
+                              f"{(res.stdout or '').strip()[-300:]!r}") from e
+    rec = dict(ms=name, requested_mjd=obs_mjd, matched_health_mjd=matched_mjd, gap_days=matched_mjd - obs_mjd,
+               bad_correlator_numbers=bad)
+    logger.info(f"MNC antenna health for {name}: requested MJD {obs_mjd:.6f}, matched record MJD {matched_mjd:.6f} "
+                f"(gap {rec['gap_days']:+.4f} d), bad correlators: {bad}")
+    if bad:
+        bad_ant_str = ",".join(map(str, bad))
+        logger.warning(f"!!! FLAGGING BAD ANTENNAS: {bad_ant_str} !!!")
+        try:
+            flagdata(vis=ms_path, mode='manual', antenna=bad_ant_str, flagbackup=False)
+        except Exception as e:
+            raise MncLookupFailed(f"{name}: flagging the bad antennas {bad_ant_str} failed: "
+                                  f"{type(e).__name__}: {e}") from e
+    return rec
 
 
 def analyze_snapshot_quality(image_list, logger):

@@ -65,3 +65,42 @@ def dirty_gated_subbands(lst, subband_dirs, factor=DIRTY_RMS_GATE_FACTOR):
         if rms == rms and rms > factor * b:
             out[sb] = (rms, b)
     return out
+
+
+# ---- 2026-11-25 (PR 157 review): a subband that Phase 1 refused is never used beside its refusal. Phase 1
+# (process_subband.record_subband_refusal) writes REFUSED.json in the subband's archive directory; images there that
+# are older than that record are from an earlier attempt.
+REFUSAL_RECORD = 'REFUSED.json'
+SUBBAND_IMAGE_DIRS = ('I/deep', 'V/deep', 'I/10min', 'V/10min')
+
+
+def phase1_refusal(sb_dir):
+    """Why a Phase 1 subband directory must not be used, or None: it holds REFUSED.json and no image newer than that
+    record (any image there is from an earlier attempt). The reason has no comma (it goes into CSV records)."""
+    import glob, json, os
+    rec_path = os.path.join(sb_dir, REFUSAL_RECORD)
+    if not os.path.exists(rec_path):
+        return None
+    t_rec = os.path.getmtime(rec_path)
+    imgs = [f for d in SUBBAND_IMAGE_DIRS for f in glob.glob(os.path.join(sb_dir, d, '*.fits'))]
+    if any(os.path.getmtime(f) > t_rec for f in imgs):
+        return None
+    try:
+        with open(rec_path) as fh:
+            rec = json.load(fh)
+        what = f"{rec.get('step', 'unknown step')}: {rec.get('reason', 'no reason recorded')}"
+    except Exception as e:
+        what = f"its record is unreadable ({type(e).__name__})"
+    tail = (f"REFUSED.json is newer than all {len(imgs)} of its images (an earlier attempt's)" if imgs
+            else "it has no image")
+    return f"Phase 1 refused it ({what}); {tail}".replace(',', ';')
+
+
+def phase1_refused_subbands(subband_dirs):
+    """{subband: reason} for the subbands in {subband: Phase 1 directory} that phase1_refusal rejects."""
+    out = {}
+    for sb, d in subband_dirs.items():
+        r = phase1_refusal(d)
+        if r:
+            out[sb] = r
+    return out
