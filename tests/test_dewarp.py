@@ -979,7 +979,7 @@ def test_screen_keys(tmp):
     # the key file's content test
     kp = SC.Measurement(src_meas, LST).keys()
     ok, v, d = T.screen_key_rows(kp)
-    check('dewarp_screen_key: the round\'s keys (27 MHz, 36 MHz) pass', ok and v == '2 screen(s) keyed', f'{v}; {d}')
+    check('dewarp_screen_key: the round\'s keys (27, 32 and 36 MHz) pass', ok and v == '3 screen(s) keyed', f'{v}; {d}')
     m2 = SC.Measurement(os.path.join(tmp, 'gak_screen_changed_False', 'meas'), LST)
     ok, v, d = T.screen_key_rows(m2.keys())
     check('dewarp_screen_key: a screen whose md5 differs from its key fails', not ok and 'md5' in d, d)
