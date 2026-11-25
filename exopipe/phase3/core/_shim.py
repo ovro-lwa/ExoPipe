@@ -159,9 +159,11 @@ class _LegacyFinder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
 
 
 def install_legacy_finder(table=None):
-    """Put the LEGACY import hook first on sys.meta_path (idempotent). Returns the finder."""
+    """Put the LEGACY import hook first on sys.meta_path (idempotent). Returns the finder. Only the primary hook itself
+    counts (its exact type, by name as for a copy of this file loaded under another module name): a fallback hook already
+    installed (_LegacyFallbackFinder, a subclass) never stands in for it."""
     for f in sys.meta_path:
-        if isinstance(f, _LegacyFinder):
+        if type(f).__name__ == '_LegacyFinder':
             return f
     f = _LegacyFinder(LEGACY if table is None else table)
     sys.meta_path.insert(0, f)
