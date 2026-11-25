@@ -78,7 +78,7 @@ import shutil
 import threading
 import time
 
-from exopipe.phase3.core import record
+from exopipe.phase3.core import placement, record
 from exopipe.phase3.core.nodemem import cgroup_available_gb, mem_available_gb   # noqa: F401  names of this module too:
 #   the stack stage calls mem_available_gb through this module, where its tests replace it
 from exopipe.phase3.core.record import NoInput, Refusal
@@ -1367,12 +1367,16 @@ def stage_admit(run, opts, sel):
             if not (main or deep):          # production goes on with 0 jobs (nocat:210 'na -ge NJ'): nothing to do, not a refusal
                 raise NoInput(f'G-S03: every (cell, subband) of {key} left out by rule: ' + '; '.join(drop[:10]))
             os.makedirs(os.path.dirname(jf), exist_ok=True)
-            with open(jf + '.part', 'w') as f:
-                f.write("\n".join(main) + "\n")
-            os.replace(jf + '.part', jf)
-            with open(jdf + '.part', 'w') as f:
-                f.write("".join(x + "\n" for x in deep))
-            os.replace(jdf + '.part', jdf)
+            # the two job lists placed together (core/placement.atomic_many: the replaced lists' group, mode and ACL, or the
+            # directory's rule for new ones). An attribute refusal places neither; a failed second rename leaves the first
+            # placed and names it (the refusal text names the list that is live and the one that is not). Either is a
+            # PlacementRefusal (a record.Refusal): this unit's refusal. A killed earlier write's temporary files go first
+            placement.sweep([jf, jdf])
+            with placement.atomic_many([jf, jdf]) as tmps:
+                with open(tmps[jf], 'w') as f:
+                    f.write("\n".join(main) + "\n")
+                with open(tmps[jdf], 'w') as f:
+                    f.write("".join(x + "\n" for x in deep))
             u.meta['plan_sha1'] = {p: hashlib.sha1(open(p, 'rb').read()).hexdigest() for p in (jf, jdf)}
             u.add_output(jf, 'sublst_job_plan', lst=lst)
             u.add_output(jdf, 'sublst_job_plan', lst=lst)

@@ -14,6 +14,7 @@ import csv
 import glob
 import os
 
+from exopipe.phase3.core import placement
 from exopipe.phase3.core.record import Refusal
 
 
@@ -32,8 +33,10 @@ def tier_queue_path(U, K):
 
 
 def section_tier_queue(U, K, tier, lsts_text=''):
-    """Re-section judgements/queue_p3s3_<K>.txt in place. Returns {'multi', 'single', 'marginal'} counts, or None when the
-    tier has no queue (the launchers skip it: p3s3_serve_tier.sh:17 exits for that tier only; sublst_serve.sh:57)."""
+    """Re-section judgements/queue_p3s3_<K>.txt in place: the new text through a temporary file, placed (core/placement.atomic:
+    the replaced queue's group, mode and ACL; a refusal - PlacementRefusal, a record.Refusal - renames nothing, removes the
+    temporary file and leaves the queue as it was). Returns {'multi', 'single', 'marginal'} counts, or None when the tier has
+    no queue (the launchers skip it: p3s3_serve_tier.sh:17 exits for that tier only; sublst_serve.sh:57)."""
     S = _S()
     qp = tier_queue_path(U, K)
     if not os.path.exists(qp):
@@ -58,9 +61,9 @@ def section_tier_queue(U, K, tier, lsts_text=''):
         H = S.QUEUE_HEADERS['sublst_tier']
         text = (f'{H[0].format(lsts=lsts_text, K=K)}\n{H[1]}\n' + '\n'.join(multi) + ('\n' if multi else '')
                 + f'{H[2]}\n' + '\n'.join(single) + ('\n' if single else ''))
-    with open(qp + '.new', 'w') as f:
+    placement.sweep([qp])                       # a killed earlier write's temporary file
+    with placement.atomic(qp) as tmp, open(tmp, 'w') as f:
         f.write(text)
-    os.replace(qp + '.new', qp)
     return {'multi': len(multi), 'single': len(single), 'marginal': len(marg)}
 
 
@@ -76,7 +79,9 @@ def fork_raw_queues(U, ST):
 
 
 def deep_multi_queue(U, ST):
-    """Write judgements/queue_p3s3_<ST>_multi.txt from the fork raw queues. Returns (queue path, keep set of
+    """Write judgements/queue_p3s3_<ST>_multi.txt from the fork raw queues, through a temporary file, placed
+    (core/placement.atomic: the replaced queue's group, mode and ACL, or the directory's rule for a new one; a refusal -
+    PlacementRefusal, a record.Refusal - renames nothing and removes the temporary file). Returns (queue path, keep set of
     (J-name, band), sections [(header, ids)])."""
     S = _S()
     H = S.QUEUE_HEADERS['deep_multi']
@@ -122,9 +127,9 @@ def deep_multi_queue(U, ST):
             base, lst, date, band = i.rsplit('_', 3)
             keep.add((base, band))
     dst = f'{U}/judgements/queue_p3s3_{ST}_multi.txt'
-    with open(dst + '.new', 'w') as f:
+    placement.sweep([dst])                      # a killed earlier write's temporary file
+    with placement.atomic(dst) as tmp, open(tmp, 'w') as f:
         f.write('\n'.join(lines) + '\n')
-    os.replace(dst + '.new', dst)
     return dst, keep, out_secs
 
 

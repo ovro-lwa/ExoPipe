@@ -1,8 +1,8 @@
-"""Placement coverage guard (PR 177, placement P1; placement P2; placement P3; placement P4; core/placement.py): in the modules
-P1-P4 converted to placement.atomic / atomic_many / replace_many, no bare os.replace / os.rename / os.renames / shutil.move
+"""Placement coverage guard (PR 177, placement P1; placement P2; placement P3; placement P4; placement P5; core/placement.py): in
+the modules P1-P5 converted to placement.atomic / atomic_many / replace_many, no bare os.replace / os.rename / os.renames / shutil.move
 remains except the sites listed below, each with its reason or the placement PR planned for it
 (/fast/gh/claude_tmp/placement-classify_20261125/PLAN.md: P3 copy2 sources, P4 mosaic and hybrid sites behind a handler on the
-path, P5 others behind a handler on the path, P6 archive writers and per-file volume, P7 directory renames). A new bare rename in these modules fails this test; so does a listed site that is gone (the list must
+path, P5 others behind a handler on the path, P6 archive writers and per-file volume, P7 directory renames, P8 rewrites of installed products). A new bare rename in these modules fails this test; so does a listed site that is gone (the list must
 shrink with each later placement PR). In the same modules every record.atomic_write_json call passes ``place=`` explicitly
 (True for a product, False for a unit or run record), so a product never takes the unplaced default by omission. Every
 listed entry carries its reason ('stays bare: ...') or planned PR ('P<n>: ...'); an entry without one fails. Data-free: the
@@ -34,7 +34,12 @@ MODULES = ['core/manifest.py', 'lib/calibrate/common.py', 'lib/calibrate/fluxsca
            # P4
            'lib/hybrid/master.py', 'lib/hybrid/recon.py', 'lib/hybrid/tilefill.py', 'lib/mosaic/caveat.py', 'lib/mosaic/fill.py',
            'lib/mosaic/steps_build.py', 'lib/mosaic/steps_conform.py', 'lib/mosaic/steps_qa.py', 'lib/mosaic/v3.py',
-           'lib/mosaic/v5.py']
+           'lib/mosaic/v5.py',
+           # P5 (lib/catalog/night_view.py: classified, its two sites stay bare)
+           'lib/catalog/night_view.py', 'lib/dewarp/steps_common.py', 'lib/flow/steps_common.py', 'lib/masters/coadd.py',
+           'lib/masters/epoch_gate.py', 'lib/masters/release1_cards.py', 'lib/masters/tier_sublst.py',
+           'lib/masters/vclean_masters.py', 'lib/pages/tess_orbits.py', 'lib/photometry/tests.py', 'lib/qa/percentiles.py',
+           'lib/search/deep_search.py', 'lib/search/tier_sublst.py', 'lib/serve/queues.py']
 # every entry's reason: 'stays bare[ until ...]: <why>' or the planned PR 'P<n>: <what>' - nothing else (an entry without
 # a reason or a planned PR fails the guard)
 REASON = re.compile(r'^(stays bare( until [^:]+)?|P[1-9][0-9]*): \S.{9,}$', re.S)
@@ -62,8 +67,6 @@ EXCEPTIONS = {
     ('lib/catalog/tier_sublst.py', 'st_reftie', 'os.replace'): (1, 'stays bare: a failed tie log kept under a new name'),
     # P2
     ('lib/forced/wide_jobs.py', 'write_jobs', 'os.replace'): (1, 'stays bare: the run\'s job state document, not a product'),
-    ('lib/forced/wide_stages.py', 'search_job', 'os.replace'): (
-        1, 'P5: the search child\'s result, behind a handler on the path (the caller catches Exception)'),
     ('lib/frames/tier_snapshot.py', 'stage_stage.unpack', 'os.replace'): (
         1, 'stays bare: unpacks the staged inputs into the stage\'s scratch directory'),
     ('lib/frames/tier_snapshot.py', 'stage_cube', 'os.replace'): (1, 'P6: an archive writer (the snapshot cube, a copyfile)'),
@@ -79,8 +82,6 @@ EXCEPTIONS = {
     ('lib/masters/admit_stages.py', 'admit_stage', 'os.replace'): (1, 'P6: per-file volume (the admitted night images)'),
     ('lib/masters/deep_stages.py', '_place_build_stats', 'os.replace'): (
         2, MOVED_ASIDE + ' - the earlier build_stats.json, and that same file moved back under its name when nothing is placed'),
-    ('lib/masters/deep_stages.py', 'own_note', 'os.replace'): (
-        1, 'P5: behind a handler on the path (the caller catches Exception)'),
     ('lib/masters/deep_stages.py', 'striation', 'os.replace'): (
         1, 'stays bare: renames existing products to *.FAILED (a rename keeps its inode, so its group, mode and ACL)'),
     ('lib/masters/membership.py', 'write_verdict', 'os.replace'): (
@@ -101,16 +102,12 @@ EXCEPTIONS = {
         1, 'P6: the published attempt (a directory of copies renamed into place)'),
     ('lib/search/deep_step.py', '_child', 'os.replace'): (1, 'stays bare: the child\'s result record in the run\'s scratch'),
     ('phase3_i_deep_package_deep.py', '_sweep_stale', 'shutil.move'): (1, MOVED_ASIDE + ' - stale review directories'),
-    ('steps/followup.py', '_atomic_text', 'os.replace'): (
-        1, 'P5: behind a handler on the path (the caller catches Exception)'),
     # P3
     ('lib/jupiter/v2.py', 'st_prepare', 'os.replace'): (
         1, MOVED_ASIDE + ' - earlier derived roots (directories) moved to _superseded/<tag>'),
     ('lib/pages/night.py', 'rename', 'os.rename'): (
         1, 'stays bare: renames the images this run rendered to their full-selection names in the same directory (a rename '
            'keeps the group, mode and ACL they took when rendered there)'),
-    ('lib/serve/fp_filters.py', 'write_files', 'os.replace'): (
-        2, 'P5: the filter CSV and JSON installed as a pair behind an except BaseException that removes both and re-raises'),
     ('lib/serve/register.py', 'set_hold', 'os.replace'): (
         1, 'stays bare: the publish hold, a state marker (not a product, mode 0664 as production); it replaces a dangling link '
            'at its name, which placement cannot (it stats through links)'),
@@ -125,8 +122,6 @@ EXCEPTIONS = {
            'handler'),
     ('lib/serve/versions.py', 'place', 'os.rename'): (1, MOVED_DIR + ' (the built run into its version slot)'),
     ('lib/serve/versions.py', 'unplace', 'os.rename'): (1, MOVED_DIR + ' (a version back to its build directory)'),
-    ('lib/serve/versions.py', '_write_manifest', 'os.replace'): (
-        1, 'P5: the version manifest, behind a handler on the path (a caller catches Exception)'),
     ('lib/serve/versions.py', '_unadopt', 'os.rename'): (1, MOVED_DIR + ' (an adopted run moved back)'),
     ('lib/serve/versions.py', '_adopt', 'os.rename'): (1, MOVED_DIR + ' (a served run adopted as a version)'),
     ('lib/serve/versions.py', 'switch', 'os.replace'): (
@@ -142,6 +137,51 @@ EXCEPTIONS = {
         1, 'stays bare: writes the caller\'s temporary file (v5.fill_unit places the filled pair with replace_many)'),
     ('lib/mosaic/fill.py', 'fill_jybeam_file', 'os.replace'): (
         1, 'stays bare: writes the caller\'s temporary file (v5.fill_unit places the filled pair with replace_many)'),
+    # P5
+    ('lib/catalog/night_view.py', '_cut', 'os.replace'): (
+        1, 'stays bare: a new file in the view directory this build creates (a build refuses an existing view and removes a '
+           'failed one); the module imports the standard library only (tests/test_catalog_night_view.py)'),
+    ('lib/catalog/night_view.py', 'build', 'os.replace'): (
+        1, 'stays bare: the view\'s manifest, a new file in the view directory this build creates; the module imports the '
+           'standard library only (placement P1)'),
+    ('lib/flow/steps_common.py', 'supersede', 'os.rename'): (1, MOVED_ASIDE + ' - earlier flow products'),
+    ('lib/masters/coadd.py', '_ensure_reference_fingerprint', 'shutil.move'): (
+        1, MOVED_ASIDE + ' - the work caches of a changed reference'),
+    ('lib/masters/coadd.py', '_resolve_reference_entry', 'shutil.move'): (
+        1, MOVED_ASIDE + ' - the work caches of a changed reference'),
+    ('lib/masters/coadd.py', '_select_reference', 'shutil.move'): (
+        1, MOVED_ASIDE + ' - the work caches of a changed reference'),
+    ('lib/masters/coadd.py', '_select_reference', 'os.replace'): (
+        2, 'stays bare: the reference master\'s snapshot copies in the cell\'s work directory (prep/, caches of the co-add, '
+           'not products)'),
+    ('lib/masters/tier_sublst.py', 'NodeLedger.commit', 'os.replace'): (
+        1, 'stays bare: the node ledger, a state record of the run (not a product)'),
+    ('lib/masters/tier_sublst.py', 'clear_earlier', 'shutil.move'): (1, MOVED_ASIDE + ' - earlier sub-LST products'),
+    ('lib/masters/tier_sublst.py', 'cpv', 'os.replace'): (
+        1, 'P6: per-file volume; the temporary file is a shutil.copy2 of the prep source (cp -p keeps its mode)'),
+    ('lib/masters/tier_sublst.py', 'stage_prep', 'os.replace'): (
+        1, 'stays bare: roots.csv, the run\'s record of its input roots (a state record, not a product)'),
+    ('lib/masters/vclean_masters.py', '_refresh', 'shutil.move'): (
+        2, 'P8: the refresh rewrites an installed cleaned V master and its primary-beam-corrected copy'),
+    ('lib/masters/vclean_masters.py', '_refresh', 'os.rename'): (
+        1, MOVED_ASIDE + ' - an archived cleaned master moved to the archive quarantine'),
+    ('lib/search/deep_search.py', '_IdentAhead._launch', 'os.replace'): (
+        1, 'stays bare: the identification look-ahead\'s result in the search\'s work directory (scratch, not a product)'),
+    ('lib/search/deep_search.py', '_refusal_columns', 'os.replace'): (
+        1, 'stays bare: the column list of the search\'s refusal records, written once (a run record, not a product)'),
+    ('lib/search/deep_search.py', '_archive_frame_publish', 'os.replace'): (
+        1, 'P6: an archive writer, one per frame; the temporary file is a shutil.copy2 of the work frame'),
+    ('lib/search/deep_search.py', '_write_archive_frame', 'os.replace'): (
+        1, 'P6: per-file volume (each search frame, validated before its rename)'),
+    ('lib/search/tier_sublst.py', 'copy_tree', 'os.replace'): (
+        1, 'P6: per-file volume; the temporary file is a shutil.copy2 of the attempt\'s file'),
+    ('lib/search/tier_sublst.py', 'Lease.try_acquire', 'os.replace'): (
+        1, 'stays bare: the cell\'s lease, a state record (not a product)'),
+    ('lib/search/tier_sublst.py', 'engine_child._w', 'os.replace'): (
+        1, 'stays bare: the engine child\'s result record (scratch)'),
+    ('lib/search/tier_sublst.py', 'detect', 'os.replace'): (1, 'stays bare: the engine child\'s job spec (scratch)'),
+    ('lib/search/tier_sublst.py', 'run_unit', 'os.rename'): (
+        1, MOVED_ASIDE + ' - the earlier published search (--fresh)'),
 }
 CALLS = {'os': ('replace', 'rename', 'renames'), 'shutil': ('move',)}
 

@@ -529,12 +529,16 @@ def write_cards(path, adds, today=None):
 
 
 def _write_text(path, text):
-    tmp = path + '.part'
-    with open(tmp, 'w', newline='') as f:
+    """``text`` at ``path`` through a temporary file beside it (flushed and fsynced), placed (core/placement.atomic: the
+    replaced table's group, mode and ACL, or the directory's rule for a new one; a refusal - PlacementRefusal, a
+    record.Refusal - renames nothing and removes the temporary file). A killed earlier write's temporary file is removed first
+    (placement.sweep)."""
+    from exopipe.phase3.core import placement
+    placement.sweep([path])
+    with placement.atomic(path) as tmp, open(tmp, 'w', newline='') as f:
         f.write(text)
         f.flush()
         os.fsync(f.fileno())
-    os.replace(tmp, path)
 
 
 def write_cell(final_dir, lst, scope, mdw_table=None, files=None, pbmaps=True, provenance=False, name_dir=None, today=None):

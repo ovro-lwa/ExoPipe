@@ -106,29 +106,34 @@ def table(run, tier):
 
 
 def write(run, tier, path=None):
-    """Write the run's table (default <run>/qa_percentiles.csv), whole and atomically. Returns (path, rows written)."""
+    """Write the run's table (default <run>/qa_percentiles.csv), whole, through a temporary file beside it, placed
+    (core/placement.atomic: the replaced table's group, mode and ACL, or the directory's rule for a new one). Any failure -
+    an OSError, or a PlacementRefusal (a record.Refusal) when the temporary file cannot be given those attributes - removes
+    the temporary file, leaves the table before unchanged and is raised. A killed earlier write's temporary file is removed
+    first (placement.sweep). Returns (path, rows written)."""
+    from exopipe.phase3.core import placement
     rows = table(run, tier)
     path = path or os.path.join(run, TABLE)
-    tmp = f'{path}.tmp{os.getpid()}'
-    try:
-        with open(tmp, 'w', newline='') as f:
-            w = csv.DictWriter(f, fieldnames=COLUMNS, lineterminator='\n')
-            w.writeheader()
-            w.writerows(rows)
-        os.replace(tmp, path)
-    finally:
-        if os.path.exists(tmp):                 # a failed write leaves nothing beside the run's products
-            os.remove(tmp)
+    placement.sweep([path])
+    with placement.atomic(path) as tmp, open(tmp, 'w', newline='') as f:
+        w = csv.DictWriter(f, fieldnames=COLUMNS, lineterminator='\n')
+        w.writeheader()
+        w.writerows(rows)
     return path, len(rows)
 
 
 def write_for_chain(run, tier):
     """A catalog chain's call, right after its merge wrote <run>/v_deep_images.csv: write the table beside it and return
     its path. A per-image table the table cannot be made from, or one with no image whose count is recorded, REFUSES the
-    chain's unit (core.record.Refusal, with the reason; the unit is not done and a later merge writes both again)."""
+    chain's unit (core.record.Refusal, with the reason; the unit is not done and a later merge writes both again). So does a
+    table that cannot be placed (core/placement.PlacementRefusal: the table before stays, no temporary file is left) and a
+    write that fails (OSError)."""
+    from exopipe.phase3.core import placement
     from exopipe.phase3.core.record import Refusal
     try:
         path, n = write(run, tier)
+    except placement.PlacementRefusal as e:
+        raise Refusal(f'QA percentile table of {run}: not placed: {e}') from e
     except (OSError, ValueError) as e:
         raise Refusal(f'QA percentile table of {run}: {e}')
     if not n:

@@ -12,12 +12,16 @@ the window). Without the keyword (the search owner's commit, lib/frames/deep_sea
 
 Writes ONE result file (JSON, atomic): {'status': 'ok'|'refused'|'error', 'gate', 'reason', 'return', 'engine_file'} and
 exits 0 (ok), 2 (refused) or 1 (error). The parent maps it (deep_engine.run_child). A 10-minute spec with included nights
-(a per-hour append) is refused before the engine is imported (gate FE-10MIN-APPEND, deep_engine.tenmin_append_refusal).
+(a per-hour append) is refused before the engine is imported (gate FE-10MIN-APPEND, deep_engine.tenmin_append_refusal). Any
+refusal the engine raises (core.record.Refusal) is status 'refused', exit 2: gate 'placement' for a product it could not place
+(core/placement.PlacementRefusal), gate 'engine' for any other.
 """
 import json
 import os
 import sys
 import traceback
+
+from exopipe.phase3.core import placement, record
 
 
 def _jsonable(v):
@@ -69,6 +73,12 @@ def main(argv):
         print(f"FRAMES-ENGINE-START {res['unit']} cadence={spec['cadence']} included={kw['included_dates']}", flush=True)
         ret = ds.run_deep_cell(spec['lst'], spec['scope'], **kw)
         res.update(status='ok', **{'return': _jsonable(ret)})
+    except record.Refusal as e:           # at the process boundary: any refusal is refused, exit 2 (the parent raises Refusal)
+        pl = isinstance(e, placement.PlacementRefusal)
+        msg = str(e)
+        res.update(status='refused', gate='placement' if pl else 'engine',
+                   reason=msg[len('placement: '):] if pl and msg.startswith('placement: ') else msg)   # run_child prefixes the gate
+        rc = 2
     except RuntimeError as e:
         msg = str(e)
         if 'REFUS' in msg:

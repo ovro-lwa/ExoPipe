@@ -271,16 +271,20 @@ def screen_key_rows(meas, measured, keyed_utc):
 
 
 def write_screen_keys(meas, rows):
-    """Write <measure dir>/tables/screen_keys_<LST>.csv once (a key file is never appended to or overwritten). Returns it."""
+    """Write <measure dir>/tables/screen_keys_<LST>.csv once (a key file is never appended to or overwritten), placed
+    (core/placement.atomic: the directory's rule for the new file; a refusal - PlacementRefusal, a record.Refusal: the
+    measurement unit records it as refused - leaves no key file and no temporary file). A killed earlier write's temporary
+    file is removed first (placement.sweep). Returns it."""
+    from exopipe.phase3.core import placement        # here: this module is light at import
     p = meas.keys()
     if os.path.exists(p):
         raise refusal(f'{p} already exists - a measurement keys its screens once')
     os.makedirs(os.path.dirname(p), exist_ok=True)
-    with open(p + '.part', 'w', newline='') as f:
+    placement.sweep([p])
+    with placement.atomic(p) as tmp, open(tmp, 'w', newline='') as f:
         w = csv.DictWriter(f, fieldnames=KEY_COLUMNS)
         w.writeheader()
         w.writerows(rows)
-    os.replace(p + '.part', p)
     return p
 
 

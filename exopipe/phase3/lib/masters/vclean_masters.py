@@ -50,6 +50,7 @@ Usage (batch, mirrors the frozen driver):
     python vclean_masters.py refresh <cell list file> [NPAR] [tmp root]
 """
 from exopipe.phase3.config import coadd_root
+from exopipe.phase3.core import placement
 import os
 import re
 import sys
@@ -122,14 +123,16 @@ def pick_i_master(coadd_final_dir, scope):
     return None
 
 
-def write_vclean_sibling(cf, scope):
+def write_vclean_sibling(cf, scope, master=None, out=None):
     """Write V_deep_Taper_R0_clean_pbcorr_{scope}.fits = the cleaned master / the cell's STORED PB_deep map (PB > floor), with
     the PB provenance of the cell's V_deep_Taper_R0 sibling (same map, same run: PBMODEL/PBCHROM/PBRESID/PBNDATE) and the
-    PBMETHOD/PBWINDOW/BEAMMOD cards phase3_pbcorr_masters.do_cell writes. The cleaning engine is not run."""
+    PBMETHOD/PBWINDOW/BEAMMOD cards phase3_pbcorr_masters.do_cell writes. The cleaning engine is not run. ``master`` / ``out``:
+    the cleaned master read and the sibling file written, when not the cell's own (build_vclean_cell: the staged copy of a new
+    master and the sibling's temporary file, placed together afterwards)."""
     from exopipe.phase3.lib.masters import pb_apply as PB
     from exopipe.phase3.lib.masters.pbcorr_masters import BEAMMOD
-    out_ap = f'{cf}/V_deep_Taper_R0_clean_{scope}.fits'
-    out_pb = f'{cf}/V_deep_Taper_R0_clean_pbcorr_{scope}.fits'
+    out_ap = master or f'{cf}/V_deep_Taper_R0_clean_{scope}.fits'
+    out_pb = out or f'{cf}/V_deep_Taper_R0_clean_pbcorr_{scope}.fits'
     ref = f'{cf}/V_deep_Taper_R0_pbcorr_{scope}.fits'
     meta = None
     if os.path.exists(ref):
@@ -148,12 +151,20 @@ def write_vclean_sibling(cf, scope):
     return why
 
 
+class _CopyNotVerified(Exception):
+    """build_vclean_cell: the copy of the cleaned master beside the product differs from the engine's file (size or md5)."""
+
+
 def build_vclean_cell(coadd_root, cell, tmp_root=None, skip_existing=True):
     """Build V_deep_Taper_R0_clean(+pbcorr) for one cell. Returns (cell, status).
 
     Refuses (status string, no product) when the raw V master, a sane I
     master, or the PB_deep map is missing — the PB map must exist first
-    (phase3_pbcorr_masters / drive_pbcorr).
+    (phase3_pbcorr_masters / drive_pbcorr). A new pair is placed together
+    (core/placement.atomic_many): 'REFUSED ...' when the copy of the cleaned
+    master differs from the engine's file or the pair cannot be placed -
+    neither file placed, except after a failed second rename, whose text
+    names the master as placed ('already placed: [...] (those stay live)').
     """
     from exopipe.phase3.lib.masters import pb_apply as PB
 
@@ -215,9 +226,27 @@ def build_vclean_cell(coadd_root, cell, tmp_root=None, skip_existing=True):
         with fits.open(res[0], mode='update', memmap=False) as h:
             h[0].header[VCSRC] = (md5(vp), 'md5 of the V master this was cleaned from')
             h[0].header[VCISRC] = (md5(ip), 'md5 of the I master (source positions)')
-        shutil.move(res[0], out_ap)
-        write_vclean_sibling(cf, scope)     # one writer for build and repair (2026-10-03)
+        # the cleaned master is in node-local scratch (tmp_root), on another file system than the cell. The master and its PB
+        # sibling are placed together (core/placement.atomic_many: the replaced pair's group, mode and ACL, or the directory's
+        # rule for new ones - never the scratch file's): the master copied to a temporary file beside the product, the copy's
+        # size and md5 checked against the scratch file (a short copy refuses: 2 of 828 shutil copies from Lustre were short,
+        # 2026-11-09), the sibling written from that copy. Any failure before the renames places neither (the temporary files
+        # removed); an attribute refusal places neither; a failed second rename leaves the master placed and the refusal text
+        # says so ('already placed: [...] (those stay live); ... not placed: [...]'). Leftovers of a killed build go first
+        placement.sweep([out_ap, out_pb])
+        n0, m0 = os.path.getsize(res[0]), md5(res[0])
+        with placement.atomic_many([out_ap, out_pb]) as t:
+            shutil.copyfile(res[0], t[out_ap])
+            n1, m1 = os.path.getsize(t[out_ap]), md5(t[out_ap])
+            if (n1, m1) != (n0, m0):
+                raise _CopyNotVerified(f'the copy of the cleaned master is not verified: {t[out_ap]} has {n1} bytes, md5 '
+                                       f'{m1}; the engine\'s {res[0]} {n0} bytes, md5 {m0} - nothing placed')
+            write_vclean_sibling(cf, scope, master=t[out_ap], out=t[out_pb])   # one writer for build and repair (2026-10-03)
         return cell, 'OK'
+    except _CopyNotVerified as e:
+        return cell, f'REFUSED {e}'
+    except placement.PlacementRefusal as e:     # a refusal (status 'REFUSED ...'; the vclean unit refuses on any status but OK)
+        return cell, f'REFUSED {e}'
     except Exception as e:
         return cell, f'ERROR {e}'
     finally:
