@@ -100,7 +100,8 @@ GATES = {
     'SI-G7': 'non-production seeding: the production files did not change while they were copied',
     'SI-G8': 'forced photometry stage 1 of the cell done (INC_FORCED_STATE_DIR/done/<cell>, or done v2 measure records '
              'of every band under the photometry stage-1 root: forced_v2_evidence) and not marked failed (failed/<cell> '
-             'newer than those records), before the chain passes and again before the unit ends (prestage.sh:51-61, :83; '
+             'newer than those records; a forced fleet\'s claims/<cell> refuses before they are read), before the chain '
+             'passes and again before the unit ends (prestage.sh:51-61, :83; '
              'snapshot_cell_prefit.sh:74, :115-121; Gregg 2026-10-04: the stage "won\'t mark a cell done without it")',
     'SI-G9': 'the association / combined-view phase has no ruled per-hour design (always refuses)',
     'SI-G10': 'the store content test snapshot_store_ready.py prints READY for the cell after the prefit loop '
@@ -360,15 +361,16 @@ def forced_v2_evidence(ctx, cell):
     measure records of the cell covering every snapshot band of both kinds (steps_snapshot.done_evidence, records only)
     under the photometry production stage-1 root (photometry.OUT_ROOT['snapshot']/STAGE1_DIR, the root production's fleet
     writes) or, for a non-production --out, <--out>/photometry.STAGE1_DIR (the per-hour chain gives both steps one --out);
-    ``finished`` = the newest done record's end time (UTC ISO)."""
+    ``finished`` = the newest done record's end time (UTC ISO). Each root's records are read once."""
     from exopipe.phase3.lib.photometry import steps_snapshot as SS
     p = ctx.cfg.photometry
     roots = [os.path.join(p.OUT_ROOT['snapshot'], p.STAGE1_DIR)] + ([] if ctx.prod else [os.path.join(ctx.OUT, p.STAGE1_DIR)])
     whys = []
     for st1 in dict.fromkeys(os.path.abspath(r) for r in roots):
-        res = [SS.done_evidence(st1, cell, k, records_only=True) for k in ('sb', 'wb')]
+        recs = SS.measure_records(st1, cell)
+        res = [SS.done_evidence(st1, cell, k, records_only=True, recs=recs) for k in ('sb', 'wb')]
         if all(ok for ok, _ in res):
-            t = max((r.get('finished') or '') for r in SS.measure_records(st1, cell) if r.get('status') == 'done')
+            t = max((r.get('finished') or '') for r in recs if r.get('status') == 'done')
             return True, 'v2 measure records done for every band, finished %s (%s)' % (t, st1), t
         whys.append('%s: %s' % (st1, '; '.join(why for ok, why in res if not ok)))
     return False, '; '.join(whys), None
@@ -378,22 +380,30 @@ def gate_forced(ctx, cell, plan_lines, when='before the chain passes'):
     """SI-G8: forced photometry stage 1 of the cell done and not marked failed (prestage.sh:55-61, :83; prefit.sh:74, :121).
     Production runs snapshot_forced_fleet.sh here when neither marker exists (prestage.sh:56-60) and waits while another
     fleet holds the cell; this stage refuses instead (stage 1 is its own step: `photometry --tier snapshot --epochs`, the
-    step before this one in the per-hour chain) and the item is retried. Evidence of stage 1: production's markers, or the
-    v2 step's done measure records (forced_v2_evidence), which also clear a failed marker older than them."""
+    step before this one in the per-hour chain) and the item is retried. Order: production's done marker settles the gate
+    (no v2 evidence read); a fleet's claim on a cell production has not marked done refuses before any v2 evidence is read
+    (the fleet is measuring the cell now); otherwise the v2 step's done measure records (forced_v2_evidence) are the
+    evidence, and they also clear a failed marker older than them."""
     fst = ctx.c.INC_FORCED_STATE_DIR
     done, failed = os.path.join(fst, 'done', cell), os.path.join(fst, 'failed', cell)
-    held = os.path.isdir(os.path.join(fst, 'claims', cell))
+    claim = os.path.join(fst, 'claims', cell)
+    held = os.path.isdir(claim)
     st = 'marked failed' if os.path.exists(failed) else 'done' if os.path.exists(done) else \
-        'not done (a forced fleet holds it: %s)' % os.path.join(fst, 'claims', cell) if held else 'not done'
-    v2ok, v2how, v2t = forced_v2_evidence(ctx, cell)
-    if v2ok and st != 'done':
-        mt = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(os.path.getmtime(failed))) if st == 'marked failed' else None
-        if mt is None or v2t > mt:
-            st = 'done (%s%s)' % (v2how, '; newer than the failed marker of %s' % mt if mt else '')
+        'not done (a forced fleet holds it: %s)' % claim if held else 'not done'
+    if st == 'done':
+        pass                                  # production's marker settles it
+    elif held:
+        st = '%s (a forced fleet holds it: %s; v2 evidence not read while it runs)' % (st.split(' (')[0], claim)
+    else:
+        v2ok, v2how, v2t = forced_v2_evidence(ctx, cell)
+        if v2ok:
+            mt = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(os.path.getmtime(failed))) if st == 'marked failed' else None
+            if mt is None or v2t > mt:
+                st = 'done (%s%s)' % (v2how, '; newer than the failed marker of %s' % mt if mt else '')
+            else:
+                st = 'marked failed %s, after the v2 measure records (finished %s)' % (mt, v2t)
         else:
-            st = 'marked failed %s, after the v2 measure records (finished %s)' % (mt, v2t)
-    elif st != 'done':
-        st = '%s (v2 records: %s)' % (st, v2how)
+            st = '%s (v2 records: %s)' % (st, v2how)
     plan_lines.append('SI-G8 forced photometry stage 1 %s: %s (%s)' % (when, st, fst))
     detail, st = st, 'done' if st.startswith('done') else 'marked failed' if st.startswith('marked failed') else st
     if st != 'done' and not ctx.dry:

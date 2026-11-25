@@ -545,13 +545,14 @@ def measure_records(stage1, cell):
     return [r for r in recs if r.get('unit') == 'measure.%s' % cell or r.get('unit', '').startswith('measure.%s.' % cell)]
 
 
-def done_evidence(stage1, cell, kind, records_only=False):
+def done_evidence(stage1, cell, kind, records_only=False, recs=None):
     """(ok, how) - the cell's stage 1 is complete for this kind: done measure records of the cell (under the stage-1 root's
     own records) covering the kind's bands; a stage-1 root without any record (the production fleet's) is accepted when
     the cell's manifests pass M1 + M2 (the fleet's completion rule, snapshot_forced_fleet.sh:41-42) - unless
-    ``records_only`` (the catalog's gate SI-G8: the fleet's own evidence there is its done marker, not its manifests)."""
+    ``records_only`` (the catalog's gate SI-G8: the fleet's own evidence there is its done marker, not its manifests).
+    ``recs``: the cell's measure records already loaded (measure_records), so a caller asking for both kinds reads them once."""
     from exopipe.phase3.lib.photometry import tests as T
-    recs = measure_records(stage1, cell)
+    recs = measure_records(stage1, cell) if recs is None else recs
     if recs:
         done = set()
         bad = []
