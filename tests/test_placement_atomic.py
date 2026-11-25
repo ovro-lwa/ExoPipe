@@ -3,7 +3,8 @@ unique temporary file beside the product and places it on a clean exit. Data-fre
 set-group-ID directory of a second group of this user where it has one, a default ACL where the filesystem has POSIX ACLs
 (UNTESTED is printed otherwise). Checks: a replaced file keeps its group, mode and ACL; a new file gets the directory's rule;
 the temporary file goes on a writer exception and on a refusal; the temporary names are unique (per call and per process);
-a refusal names the product and the group and is recorded as a refusal by a unit."""
+a refusal names the product and the group and is recorded as a refusal by a unit; atomic_many and replace_many place a set
+of products all or none."""
 import errno
 import os
 import shutil
@@ -443,9 +444,76 @@ def test_atomic_many():
     assert not entered and 'same destination' in str(e) and open(names[0]).read() == 'dup\n' and not _leftovers(d), e
 
 
+def test_replace_many():
+    """placement.replace_many (placement P4), files a writer made under names of its own (an engine's temporary directory)
+    installed as atomic_many installs them: (1) every product placed in the order given, an existing one keeping its group,
+    mode and ACL and a new one the directory's rule; the writer's files gone, no temporary file beside the products; (2) a
+    refusal on the 2nd of 3 places NONE of them, leaves the existing product unchanged, and removes every writer file and
+    every temporary file; (3) a destination named twice refuses before anything is renamed, the writer's files removed; (4)
+    a writer file that is missing (an OSError moving it) places none, the other writer files removed."""
+    _fresh()
+    d = _dir('arch', True)
+    w = os.path.join(TMP, 'engine_tmp')
+    os.makedirs(w)
+    old = _product(d, 'b.csv')
+    before = (_attrs(old), open(old).read())
+    want_new = PL.target_attrs(os.path.join(d, 'new.csv'))
+    names = [os.path.join(d, n) for n in ('c.csv', 'b.csv', 'a.csv')]
+
+    def engine(text):
+        return [(_write(os.path.join(w, os.path.basename(n)), text + os.path.basename(n)), n) for n in names]
+    order, real_replace = [], os.replace
+
+    def recording(src, dst):
+        order.append(dst)
+        return real_replace(src, dst)
+    os.replace = recording
+    try:
+        got = PL.replace_many(engine('new '))
+    finally:
+        os.replace = real_replace
+    assert got == names, got
+    assert [x for x in order if not x.endswith('.tmp')] == names, order
+    assert all(open(n).read() == 'new ' + os.path.basename(n) for n in names) and not _leftovers(d) and not os.listdir(w)
+    assert _attrs(old) == before[0], (_attrs(old), before)
+    for n in (names[0], names[2]):
+        assert _attrs(n) == (want_new['gid'], want_new['acl'], want_new['mode']), (n, _attrs(n), want_new)
+    # (2) a refusal on the 2nd of 3: none placed, nothing left anywhere
+    _fresh()
+    d = _dir('arch', True)
+    os.makedirs(w)
+    old = _product(d, 'b.csv')
+    before = (_attrs(old), open(old).read())
+    foreign = next((g for g in (0, 1, 2, 3, 4, 65534) if g not in os.getgroups() and g != os.getegid()), None)
+    if os.geteuid() != 0 and foreign is not None:
+        real = PL.target_attrs
+        PL.target_attrs = lambda dst, like=None: dict(real(dst, like), gid=foreign) if dst == names[1] else real(dst, like)
+        try:
+            e = _raises(PL.PlacementRefusal, lambda: PL.replace_many(engine('new ')))
+        finally:
+            PL.target_attrs = real
+        assert 'none of the 3 products placed' in str(e) and names[1] in str(e) and str(e).startswith('placement:'), e
+        assert not os.path.exists(names[0]) and not os.path.exists(names[2]) and (_attrs(old), open(old).read()) == before
+        assert not _leftovers(d) and not os.listdir(w), (_leftovers(d), os.listdir(w))
+    else:
+        print('  UNTESTED (refusal of the 2nd of 3): running as root or a member of every candidate group')
+    # (3) a destination named twice
+    pairs = engine('dup ')
+    pairs[2] = (pairs[2][0], os.path.join(d, '.', 'c.csv'))
+    e = _raises(PL.PlacementRefusal, lambda: PL.replace_many(pairs))
+    assert 'named twice' in str(e) and not os.path.exists(names[0]) and (_attrs(old), open(old).read()) == before, e
+    assert not _leftovers(d) and not os.listdir(w), (_leftovers(d), os.listdir(w))
+    # (4) a writer file missing: an OSError, none placed, the others removed
+    pairs = engine('miss ')
+    os.remove(pairs[1][0])
+    _raises(FileNotFoundError, lambda: PL.replace_many(pairs))
+    assert not os.path.exists(names[0]) and (_attrs(old), open(old).read()) == before
+    assert not _leftovers(d) and not os.listdir(w), (_leftovers(d), os.listdir(w))
+
+
 TESTS = [test_replaced_keeps_attrs, test_new_file_directory_rule, test_writer_exception_removes_tmp,
          test_refusal_removes_tmp_names_group_and_file, test_unique_names, test_refusal_recorded_by_unit,
-         test_tag_and_temp_glob, test_atomic_write_json_place, test_atomic_many]
+         test_tag_and_temp_glob, test_atomic_write_json_place, test_atomic_many, test_replace_many]
 
 
 def main():

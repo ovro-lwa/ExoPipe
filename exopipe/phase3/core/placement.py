@@ -30,6 +30,10 @@ ANY exception inside the block removes the temporary file and propagates. Only a
 ``atomic_many(dsts)`` is the form for a set of products installed together: ``with placement.atomic_many(dsts) as tmps:``
 yields {dst: tmp}; a clean exit first gives EVERY temporary file its product's attributes (apply: where a refusal happens),
 and only when all succeeded renames them in the order of ``dsts`` - a refusal places none of them.
+
+``replace_many(pairs)`` installs a set the same way when the writer chose the files' names itself (an engine's output
+directory, a worker's temporary directory, a temporary name of its own) in the products' file system: each file is moved
+to its atomic_many temporary name beside its product, then atomic_many places them all or none.
 """
 import contextlib
 import errno
@@ -290,3 +294,26 @@ def atomic_many(dsts):
                 raise
             raise PlacementRefusal(f'placement: renaming {tmps[d]} to {d} failed: {e.strerror} (errno {e.errno}); already '
                                    f'placed: {order[:i] or "none"}; not placed: {order[i:]}') from e
+
+
+def replace_many(pairs):
+    """[(src, dst)]: files the writer made under names of its own, in the products' file system (an engine's or a worker's
+    temporary directory, a temporary name beside the product), installed together as atomic_many installs them: each ``src``
+    is renamed to its atomic_many temporary name beside its ``dst``, then every product's attributes are applied before the
+    first rename (a refusal places none of them), then they are renamed in the order of ``pairs``. Each ``src`` must be the
+    caller's own temporary file (as replace's ``drop``): on ANY failure every ``src`` not placed is removed, so no
+    temporary file is left beside a product or in the writer's directory. A ``dst`` named twice refuses before anything is
+    renamed. Returns the destinations in order."""
+    pairs = [(s, d) for s, d in pairs]
+    try:
+        dsts = [d for _s, d in pairs]
+        if len({os.path.abspath(d) for d in dsts}) != len(dsts):
+            raise PlacementRefusal(f'placement: a destination named twice in {dsts} - nothing renamed')
+        with atomic_many(dsts) as tmps:
+            for s, d in pairs:
+                os.replace(s, tmps[d])          # the same file system: the writer's file becomes atomic_many's temporary file
+    except BaseException:
+        for s, _d in pairs:
+            _remove(s)
+        raise
+    return dsts
