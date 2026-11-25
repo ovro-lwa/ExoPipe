@@ -23,8 +23,8 @@ Families and stages
   T  the HWJ / 10 pc / LPT forced-photometry pages of the 10-minute and deep tiers (--tier snapshot --stages tier_eval,tier_site,
      tier_runs; lib/forced/tier_pages.py): tier_eval = the four stage-2 evaluations of the samples (snapshot_forced_eval.py
      --tier in place); tier_forced_page_20261027.py in place - tier_site = its build + verify (the static site),
-     tier_runs = its chain + verify-chain (the review runs Run_SNAPFORCED_{V,I}{10min,deep}_gen5.new, served on p9120-p9123
-     once installed; installing is not ported).
+     tier_runs = its chain + verify-chain (the review runs Run_SNAPFORCED_{V,I}{10min,deep}_gen5.new; installed and served on
+     p9120-p9123 by `exopipe3 serve --tier snapshot --family forced-tier`, lib/serve/forced_tier.py).
   W, N and T are campaign stages, named only (never a default), one family per invocation; their flags are --wide-*,
   --na-detections and --tier-site, --tier-forced-root, --tier-cutout-root (`exopipe3 forced --help`; lib/forced/
   wide_stages.py and tier_pages.py document inputs, outputs and gates W-* / N-* / T-*).

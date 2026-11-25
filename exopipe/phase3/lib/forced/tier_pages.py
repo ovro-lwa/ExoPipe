@@ -41,9 +41,11 @@ that sets a module literal ONLY when the config value differs from it; a product
 The chain's localization is the in-place source_localization, wrapped under the ruled config (core/wrap.py, B-32 (a): the
 inverse-variance estimator with fitted errors), so its localizations differ from production's. A parity build therefore passes
 --parity --config exopipe/phase3/parity/production_20261013.cfg (--parity alone only installs the write guard).
-Not ported: installing the runs (production's `swap`: <run> -> <run>.superseded_*, <run>.new -> <run>), the one-off `runs` /
-`verify-runs` (the no-fit generation of 2026-10-27, superseded the same morning) and `rerender` / `swap-stage` (2026-11-10, the
-Epoch panels: the chain renders them now). Serving them (p9120-p9123) is not part of `serve` either.
+Installing and serving the runs is `exopipe3 serve --tier snapshot --family forced-tier` (lib/serve/forced_tier.py: production's
+`swap-stage` of 2026-11-10 - the page inputs on the staged run, the served run kept as <run>.before_<UTC>, its judgements copied -
+then one registration of p9120-p9123); it reads this stage's T_runs record. Not ported: the one-off `runs` / `verify-runs` (the
+no-fit generation of 2026-10-27, superseded the same morning), `swap` (<run> -> <run>.superseded_*, replaced by `swap-stage`) and
+`rerender` (2026-11-10, the Epoch panels: the chain renders them now).
 Gates (exit 2, named in the record): T-G35 the site directory, its Masters tree, a <run>.new or its Masters tree, an evaluation
 directory exists (a name is used once); T-EVAL an evaluation file missing, or this --out's tier_eval record not done;
 T-EVAL-SAMPLES an evaluation without the thresholds of every SAMPLES (sample, Stokes) of its tier; T-SAMPLES a sample without a

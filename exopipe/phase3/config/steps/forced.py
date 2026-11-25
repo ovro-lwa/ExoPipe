@@ -270,7 +270,8 @@ class forced_tier_pages(_Section):
     # and page section of the script runs over SAMPLES (:41-76, :179-209, :218, :286-300), so LPT is measured and shown by the
     # same chain, panels and statistics as HWJ and 10 pc. A parity build of production's page sets SAMPLES = SCRIPT_SAMPLES
     SCRIPT_SAMPLES = ('HWJ', '10pc')             # MIRROR :31
-    SCRIPT_SAMPLE_LABEL = {'HWJ': 'Hot and warm Jupiters (HWJ)', '10pc': 'Stars within 10 pc'}   # MIRROR :32
+    SCRIPT_SAMPLE_LABEL = {'HWJ': 'Hot and warm Jupiters (HWJ)', '10pc': 'Stars within 10 pc',     # MIRROR :32 (LPT since
+                           'LPT': 'Known long-period transients (LPT)'}                           # exopipe_ops f06a293)
     SAMPLES = ('HWJ', '10pc', 'LPT')
     SAMPLE_LABEL = {'HWJ': 'Hot and warm Jupiters (HWJ)', '10pc': 'Stars within 10 pc',
                     'LPT': 'Known long-period transients (LPT)'}
@@ -282,8 +283,9 @@ class forced_tier_pages(_Section):
     PHOT_PRODUCTION = '/lustre/pipeline/exopipe/phase3/photometry_gen5'    # MIRROR planets_forced_page_20261026.py:54
     TIERS = ('10min', 'deep')                    # MIRROR :33
     RUN_NAME = 'Run_SNAPFORCED_{S}{tier}_gen5'   # MIRROR run_name :394-395
-    NEW_SUFFIX = '.new'                          # MIRROR :945: the chain writes <review root>/<name>.new; installing them
-                                                 # (production's `swap`, :1172-1186, dated keep names) is not ported
+    NEW_SUFFIX = '.new'                          # MIRROR :945: the chain writes <review root>/<name>.new; installed by serve
+                                                 # --family forced-tier (lib/serve/forced_tier.py: production's swap-stage;
+                                                 # keep names serve.FORCED_TIER_KEEP)
     # the fit's node-local work (one plane FITS per event for PyBDSF): a module literal. A production run leaves it; under --out
     # the stage sets it to <--work, else the site scratch root>/tier_forced_fit_work through the in-place driver's --globals
     FIT_WORK_PRODUCTION = '/fast/gh/main/phase3/tier_forced_fit_work'   # MIRROR TIER_FIT_WORK :559
