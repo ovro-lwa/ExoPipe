@@ -3,11 +3,13 @@
 event pages (exopipe3 forced --tier snapshot, family C) and the serve switch (serve --tier snapshot --family forced). Data free:
 synthetic stage-1 directories (empty files named as stage-1 files), a synthetic exclusion list and synthetic unit records.
 Asserts:
-  - V2 (lib/photometry/tests.threshold_classes_check): thresholds.csv holds one row per (sample, Stokes, tier) of the
-    configured samples (photometry.SAMPLES_MEASURED['snapshot'], restricted to the evaluation's --samples when its record names
-    them), never derived from the files present - 12 rows; the former 8 refuse with the four LPT classes named (the engine
-    records no dropped class), pass under --samples HWJ,10pc; a row of another class, a duplicate, a missing column and an
-    unmeasured --samples sample refuse, each named; through the content test a missing column is a recorded failure;
+  - V2 (lib/photometry/tests.threshold_classes_check): thresholds.csv holds one row per (sample, Stokes, tier) of the samples
+    the evaluation's cutout generation measured (serve.FORCED_GENERATIONS: gen5 HWJ + 10pc, 8 rows; gen6 with LPT, 12;
+    restricted to the evaluation's --samples when its record names them), never derived from the files present; the
+    generation comes from what names it (given, the stage-1 root, the evaluation's directory), an unknown or disagreeing one
+    refuses; under gen6 the 8 rows refuse with the four LPT classes named (the engine records no dropped class); a row of
+    another class, a duplicate, a missing column and a --samples sample the generation did not measure refuse, each named;
+    through the content test a missing column is a recorded failure;
   - the evaluation over a campaign's stage 1 (steps_snapshot._measure_refusals, refused_for, done_evidence): per band kind, a
     cell without the kind's cutouts (SM-NOBAND), not run for a gap (SM-HELD outcome 'gap') or whose measurement refused
     (SM-DONE) is listed refused for that kind only; a cell held for its cutouts (SM-HELD 'held') or stopped by the campaign
@@ -95,34 +97,62 @@ def th_rows(samples, stokes=('I', 'V'), tiers=('10s', '1min')):
 def test_v2_classes(d):
     check('config: the snapshot samples measured are HWJ, 10pc and LPT (photometry.SAMPLES_MEASURED)',
           tuple(CFG.photometry.SAMPLES_MEASURED['snapshot']) == ('HWJ', '10pc', 'LPT'), CFG.photometry.SAMPLES_MEASURED)
+    G = CFG.serve.FORCED_GENERATIONS
+    check('config: each generation\'s samples (serve.FORCED_GENERATIONS): gen5 HWJ and 10pc, gen6 HWJ, 10pc and LPT; each a '
+          'measured sample and each named in its title text',
+          T.generation_samples('gen5') == ('HWJ', '10pc') and T.generation_samples('gen6') == ('HWJ', '10pc', 'LPT')
+          and T.generation_samples('gen7') is None
+          and all(set(e[2]) <= set(CFG.photometry.SAMPLES_MEASURED['snapshot'])
+                  and e[0].replace(' ', '').split('+') == list(e[2]) for e in G.values()), G)
     cols = ['sample', 'stokes', 'tier', 'thr_survey_gauss']
-    want = T.threshold_classes()
-    check('V2 classes: the configured samples x 2 Stokes x 2 tiers (12), from the configuration alone',
+    want = T.threshold_classes('gen6')
+    check('V2 classes of gen6: its samples x 2 Stokes x 2 tiers (12), from the configuration alone',
           len(want) == 12 and {k[0] for k in want} == {'HWJ', '10pc', 'LPT'}, sorted(want))
-    check('V2 classes restricted to the evaluation\'s --samples (HWJ, 10pc): 8',
-          T.threshold_classes(('HWJ', '10pc')) == {k for k in want if k[0] != 'LPT'})
-    ok, n, det = T.threshold_classes_check(th_rows(('HWJ', '10pc', 'LPT')), cols)
-    check('V2: 12 rows, one per class, pass', ok and n == 12, det)
-    ok, n, det = T.threshold_classes_check(th_rows(('HWJ', '10pc')), cols)
-    check('V2: the former 8 rows refuse - the four LPT classes named (the engine records no dropped class)',
-          not ok and det.count('no row of LPT/') == 4 and 'LPT/I/10s' in det, det)
-    ok, n, det = T.threshold_classes_check(th_rows(('HWJ', '10pc')), cols, samples=('HWJ', '10pc'))
-    check('V2: 8 rows pass when the evaluation\'s record names --samples HWJ,10pc', ok and n == 8, det)
-    ok, n, det = T.threshold_classes_check(th_rows(('HWJ', '10pc', 'LPT')), cols, samples=('HWJ', '10pc'))
+    check('V2 classes of gen5: 8 (no LPT); restricted to --samples HWJ,10pc, gen6 has the same 8; an unknown generation none',
+          T.threshold_classes('gen5') == {k for k in want if k[0] != 'LPT'} == T.threshold_classes('gen6', ('HWJ', '10pc'))
+          and T.threshold_classes('gen7') == set())
+    ok, n, det = T.threshold_classes_check(th_rows(('HWJ', '10pc', 'LPT')), cols, 'gen6')
+    check('V2 gen6: 12 rows, one per class, pass', ok and n == 12 and 'generation gen6' in det, det)
+    ok, n, det = T.threshold_classes_check(th_rows(('HWJ', '10pc')), cols, 'gen5')
+    check('V2 gen5: 8 rows, one per class of HWJ and 10pc, pass (generation 5 never measured LPT)', ok and n == 8, det)
+    ok, n, det = T.threshold_classes_check(th_rows(('HWJ', '10pc')), cols, 'gen6')
+    check('V2 gen6: 8 rows refuse - the four LPT classes named (the engine records no dropped class)',
+          not ok and det.count('no row of LPT/') == 4 and det.count('no row of') == 4, det)
+    ok, n, det = T.threshold_classes_check(th_rows(('HWJ', '10pc', 'LPT')), cols, 'gen5')
+    check('V2 gen5: an LPT row refuses, named (not a class of generation 5)',
+          not ok and 'a row of LPT/I/10s, not a configured class' in det, det)
+    ok, n, det = T.threshold_classes_check(th_rows(('HWJ', '10pc')), cols, 'gen7')
+    check('V2: an unknown generation refuses, named', not ok and 'unknown generation gen7' in det, det)
+    ok, n, det = T.threshold_classes_check(th_rows(('HWJ', '10pc')), cols, 'gen6', samples=('HWJ', '10pc'))
+    check('V2 gen6: 8 rows pass when the evaluation\'s record names --samples HWJ,10pc', ok and n == 8, det)
+    ok, n, det = T.threshold_classes_check(th_rows(('HWJ', '10pc', 'LPT')), cols, 'gen6', samples=('HWJ', '10pc'))
     check('V2: a row of a sample outside the evaluation\'s --samples refuses, named',
           not ok and 'a row of LPT/I/10s, not a configured class' in det, det)
-    ok, n, det = T.threshold_classes_check(th_rows(('HWJ', '10pc', 'LPT', 'SolarSystem')), cols)
+    ok, n, det = T.threshold_classes_check(th_rows(('HWJ', '10pc', 'LPT', 'SolarSystem')), cols, 'gen6')
     check('V2: a row of a sample not configured refuses, named', not ok and 'a row of SolarSystem/I/10s' in det, det)
-    ok, n, det = T.threshold_classes_check(th_rows(('HWJ', '10pc', 'LPT')) + th_rows(('HWJ',), ('V',), ('1min',)), cols)
+    ok, n, det = T.threshold_classes_check(th_rows(('HWJ', '10pc', 'LPT')) + th_rows(('HWJ',), ('V',), ('1min',)), cols,
+                                           'gen6')
     check('V2: a duplicated class refuses', not ok and '2 rows of HWJ/V/1min' in det, det)
-    ok, n, det = T.threshold_classes_check(th_rows(('HWJ', '10pc', 'LPT'))[1:], cols)
+    ok, n, det = T.threshold_classes_check(th_rows(('HWJ', '10pc', 'LPT'))[1:], cols, 'gen6')
     check('V2: one missing class refuses, named', not ok and 'no row of HWJ/I/10s' in det, det)
-    ok, n, det = T.threshold_classes_check([], cols)
+    ok, n, det = T.threshold_classes_check([], cols, 'gen6')
     check('V2: an empty thresholds.csv refuses, all 12 classes missing', not ok and det.count('no row of') == 5, det)
-    ok, n, det = T.threshold_classes_check(th_rows(('HWJ', '10pc')), cols, samples=('HWJ', 'Foo'))
-    check('V2: --samples naming a sample not measured refuses', not ok and 'Foo' in det, det)
-    ok, n, det = T.threshold_classes_check([dict(sample=s, stokes=st) for s, st, _ in want], ['sample', 'stokes'])
+    ok, n, det = T.threshold_classes_check(th_rows(('HWJ', '10pc')), cols, 'gen5', samples=('HWJ', 'LPT'))
+    check('V2: --samples naming a sample the generation did not measure refuses', not ok and 'LPT' in det, det)
+    ok, n, det = T.threshold_classes_check([dict(sample=s, stokes=st) for s, st, _ in want], ['sample', 'stokes'], 'gen6')
     check('V2: a thresholds.csv without its tier column refuses, named', not ok and 'no tier column' in det, det)
+    # the generation of an evaluation: from what names it, never from the files present
+    g = T.eval_generation
+    check('generation: from the stage-1 root the evaluate unit records (stage1_gen6), from the directory (eval_wb_gen5, '
+          'eval_gen6), or given',
+          g('/x/eval_20261125', dict(stage1='/x/stage1_gen6'))[0] == 'gen6' and g('/x/eval_wb_gen5', {})[0] == 'gen5'
+          and g('/x/eval_gen6/', {})[0] == 'gen6' and g('/x/eval_T1', dict(generation='gen5'))[0] == 'gen5',
+          [g('/x/eval_20261125', dict(stage1='/x/stage1_gen6')), g('/x/eval_wb_gen5', {})])
+    r = [g('/x/eval_wb_20261007', dict(stage1='/x/stage1')), g('/x/eval_gen5', dict(stage1='/x/stage1_gen6')),
+         g('/x/eval_gen5', dict(generation='gen7')), g('/x/eval_gen5_planets_SUN', {})]
+    check('generation: none named (a date tag, stage1), named twice differently, an unknown one given, or a planet '
+          'evaluation refuse', r[0][0] is None and 'unknown generation' in r[0][1] and r[1][0] is None
+          and 'disagree' in r[1][1] and r[2][0] is None and 'unknown generation gen7' in r[2][1] and r[3][0] is None, r)
     ev = os.path.join(d, 'eval_nocol')          # through the content test: a recorded failure, not an exception
     os.makedirs(ev, exist_ok=True)
     with open(os.path.join(ev, 'thresholds_grid.csv'), 'w') as f:
@@ -132,14 +162,14 @@ def test_v2_classes(d):
     with open(os.path.join(ev, 'cells.csv'), 'w') as f:
         f.write('cell\n10h_2025-01-07\n')
     try:
-        ok, n, det = T.ev3(ev, stage1=os.path.join(d, 'stage1_none'))
+        ok, n, det = T.ev3(ev, stage1=os.path.join(d, 'stage1_gen6'))
         r = (ok, det)
     except Exception as x:      # noqa: BLE001
         r = (None, repr(x))
     check('V2 content test (E3_exceedance_or_V2_rows): a missing column is a recorded failure, not an exception',
           r[0] is False and 'no tier column' in r[1], r)
     try:
-        ok, n, det = T.ev5(ev, stage1=os.path.join(d, 'stage1_none'))
+        ok, n, det = T.ev5(ev, stage1=os.path.join(d, 'stage1_gen6'))
         r = (ok, det)
     except Exception as x:      # noqa: BLE001
         r = (None, repr(x))

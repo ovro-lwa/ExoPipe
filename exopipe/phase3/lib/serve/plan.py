@@ -249,7 +249,7 @@ class Plan:
 
 def forced_generation(page, run_name):
     """(samples text, cutout generation text) of a forced page serving ``run_name`` = Run_SNAPFORCED_<S><T>_<tag>
-    (serve.FORCED_RUN_NAME): serve.FORCED_GENERATIONS[tag]. G26 refuses a run of another name or a tag without an entry -
+    (serve.FORCED_RUN_NAME): the first two fields of serve.FORCED_GENERATIONS[tag]. G26 refuses a run of another name or a tag without an entry -
     the title and the hub button name the samples and the generation the page shows (generation 6 adds LPT)."""
     S = _CFG().serve
     pre = S.FORCED_RUN_NAME.format(S=page.stokes, T=page.kind, tag='')
@@ -258,7 +258,7 @@ def forced_generation(page, run_name):
         raise Refusal(f'G26 forced page {page.key}: run {run_name!r} - no serve.FORCED_GENERATIONS entry for its tag {tag!r} '
                       f'(the samples and cutout generation its title and hub button name; known: '
                       f'{", ".join(sorted(S.FORCED_GENERATIONS))})')
-    return S.FORCED_GENERATIONS[tag]
+    return tuple(S.FORCED_GENERATIONS[tag][:2])
 
 
 def _strip_run(label):

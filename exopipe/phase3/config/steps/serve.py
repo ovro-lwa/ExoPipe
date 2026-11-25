@@ -30,6 +30,7 @@ class serve(_Section):
     PROTECTED_KEYS = ('RUN_ROOT_KEY', 'HUB_DIR', 'LISTS_DIR', 'INSPECTION_GREENLIT', 'EXCLUSION_GATE_TIERS',
                       'OTHER_SERVED_PORTS', 'JUPITER_ROOTS', 'HUB_TIERS', 'HUB_LINKS', 'TWO_PORT_DIR', 'TWO_PORT_REGISTRY',
                       'TWO_PORT_REGISTERED', 'TWO_PORT_GREENLIT', 'TWO_PORT_LOCK',
+                      'FORCED_GENERATIONS',          # the samples each cutout generation measured: V2 of its evaluations
                       'SNAPVIEW_TIERS', 'SNAPVIEW_STOKES', 'SNAPVIEW_PAGE_SUFFIX',   # the combined view's layout: what the page code
                                                                                     # reads (mirrors of snapshot_combined_view.py)
                       'SNAPVIEW_FLOOD_FACTOR', 'SNAPVIEW_FLOOD_MIN', 'SNAPVIEW_ALIGN_FAILED', 'SNAPVIEW_ALIGN_HELD',
@@ -646,10 +647,13 @@ class serve(_Section):
                                             # bright_source_filter and snapshot_forced_page_context (the sidecars)
     FORCED_ADLEO_CHECK = ('test_snapshot_forced_reserve.py', ('adleo', '--absent-ok'))   # ops script + args, site PYTHON 'py36' (:68;
                                             # Gregg 2026-10-08 "don't label AD Leo unless you have a metric defined and measured")
-    FORCED_GENERATIONS = {                   # forced run tag -> (the samples, the cutout generation) the title and hub name;
-                                            # a tag without an entry is refused (G26): the text names what the page shows
-        'gen5': ('HWJ + 10 pc', 'generation-5 cutouts from the current cubes'),     # snapshot_forced_gen5_serve_20261026.sh:57, :72
-        'gen6': ('HWJ + 10 pc + LPT', 'generation-6 cutouts from the rescaled cubes (Master flux scale)'),
+    FORCED_GENERATIONS = {                   # forced run tag = cutout generation -> (the samples text, the generation text) the
+                                            # title and hub name, and the samples that generation measured: V2 of its snapshot
+                                            # evaluations expects those samples x Stokes x tier (lib/photometry/tests.
+                                            # threshold_classes). A tag without an entry is refused (G26; V2: unknown generation)
+        'gen5': ('HWJ + 10 pc', 'generation-5 cutouts from the current cubes', ('HWJ', '10pc')),
+                                            # snapshot_forced_gen5_serve_20261026.sh:57, :72; generation 5 never measured LPT
+        'gen6': ('HWJ + 10 pc + LPT', 'generation-6 cutouts from the rescaled cubes (Master flux scale)', ('HWJ', '10pc', 'LPT')),
                                             # gen6_20261117/gen6_forced_serve_SWITCH_DRAFT.sh:55, :71; LPT measured since 2026-11-18
                                             # (Gregg "Approve gen6 with the LPTs included"; photometry.SAMPLES_MEASURED)
     }

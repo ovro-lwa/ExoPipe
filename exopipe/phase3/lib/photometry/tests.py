@@ -1224,27 +1224,83 @@ def stage1_cell(task):
     return bad, nband, nfile, nnocut
 
 
-def threshold_classes(samples=None):
-    """{(sample, Stokes, tier)} - the classes thresholds.csv of a snapshot evaluation must hold, as configured and never derived
-    from the files present: every sample of photometry.SAMPLES_MEASURED['snapshot'] (restricted to ``samples``, the evaluation's
-    own --samples when its record names them) times the Stokes and the tiers of photometry_evaluate.THRESHOLD_CLASSES."""
+def generation_samples(gen):
+    """The samples cutout generation ``gen`` measured, as configured (serve.FORCED_GENERATIONS[gen], its third field: gen5 HWJ
+    and 10 pc, gen6 HWJ, 10 pc and LPT); None for a generation without an entry."""
+    e = _cfg().serve.FORCED_GENERATIONS.get(gen)
+    return tuple(e[2]) if e else None
+
+
+def _named(fmt, key, name):
+    """The value of ``{key}`` in ``name`` when ``name`` has the form of the str.format pattern ``fmt``, else None."""
+    a, b = fmt.split('{%s}' % key)
+    if name.startswith(a) and name.endswith(b) and len(name) > len(a) + len(b):
+        return name[len(a):len(name) - len(b)]
+    return None
+
+
+def eval_generation(ev, ctx):
+    """(generation, how) of the snapshot evaluation ``ev``, from what names it, never from the files present: ctx 'generation'
+    (given explicitly), the stage-1 root it was evaluated from (ctx 'stage1', which the evaluate unit records; named
+    photometry_campaign.STAGE1_DIR_FMT, e.g. stage1_gen6) and its own directory (photometry_evaluate.EVAL_DIR, e.g.
+    eval_wb_gen5). A name counts when it names a generation of serve.FORCED_GENERATIONS (a date tag such as
+    eval_wb_20261007 names none); an explicit one must have an entry. (None, why) when they disagree or none names one."""
+    c = _cfg()
+    gens = c.serve.FORCED_GENERATIONS
+    known = ', '.join(sorted(gens))
+    claims = []
+    if ctx.get('generation'):
+        if ctx['generation'] not in gens:
+            return None, 'unknown generation %s (serve.FORCED_GENERATIONS: %s)' % (ctx['generation'], known)
+        claims.append((ctx['generation'], 'given'))
+    if ctx.get('stage1'):
+        g = _named(c.photometry_campaign.STAGE1_DIR_FMT, 'generation', os.path.basename(os.path.normpath(ctx['stage1'])))
+        if g in gens:
+            claims.append((g, 'its stage 1 %s' % ctx['stage1']))
+    name = os.path.basename(os.path.normpath(ev))
+    for fmt in c.photometry_evaluate.EVAL_DIR.values():
+        g = _named(fmt, 'tag', name)
+        if g in gens:
+            claims.append((g, 'its directory %s' % name))
+    found = sorted({g for g, _ in claims})
+    if len(found) > 1:
+        return None, 'generations disagree: %s' % '; '.join('%s (%s)' % x for x in claims)
+    if not found:
+        return None, ('unknown generation: neither its directory %s nor its stage 1 %s names one of serve.FORCED_GENERATIONS '
+                      '(%s)' % (name, ctx.get('stage1') or '(not recorded)', known))
+    return found[0], ', '.join(w for _, w in claims)
+
+
+def threshold_classes(generation, samples=None):
+    """{(sample, Stokes, tier)} - the classes thresholds.csv of a snapshot evaluation of cutout generation ``generation`` must
+    hold, as configured and never derived from the files present: the samples that generation measured (generation_samples;
+    restricted to ``samples``, the evaluation's own --samples when its record names them) times the Stokes and the tiers of
+    photometry_evaluate.THRESHOLD_CLASSES. Empty for an unknown generation."""
     stokes, tiers = _cfg().photometry_evaluate.THRESHOLD_CLASSES['snapshot']
-    smps = [s for s in _samples_measured('snapshot') if not samples or s in set(samples)]
+    smps = [s for s in (generation_samples(generation) or ()) if not samples or s in set(samples)]
     return {(s, st, t) for s in smps for st in stokes for t in tiers}
 
 
-def threshold_classes_check(th, cols, samples=None):
-    """V2: thresholds.csv (``cols`` its header, ``th`` its rows) holds exactly one row per class of threshold_classes(samples).
-    A missing class refuses: snapshot_forced_eval.py keeps no record of a class it drops (drops.csv counts drops per reason
-    only), so no missing class can be shown to be a recorded drop. A row of another class, a duplicated class, a missing
-    column and a --samples sample that is not measured each refuse, named."""
+def threshold_classes_check(th, cols, generation, samples=None):
+    """V2: thresholds.csv (``cols`` its header, ``th`` its rows) of an evaluation of cutout generation ``generation`` holds
+    exactly one row per class of threshold_classes(generation, samples). A missing class refuses: snapshot_forced_eval.py
+    keeps no record of a class it drops (drops.csv counts drops per reason only), so no missing class can be shown to be a
+    recorded drop. An unknown generation, a generation sample the snapshot tier does not measure, a row of another class, a
+    duplicated class, a missing column and a --samples sample the generation did not measure each refuse, named."""
     meas = list(_samples_measured('snapshot'))
-    want = threshold_classes(samples)
+    gs = generation_samples(generation)
     bad = ['thresholds.csv has no %s column' % c for c in ('sample', 'stokes', 'tier') if c not in (cols or ())]
-    bad += ['--samples names %s, not a sample of photometry.SAMPLES_MEASURED[snapshot] %s' % (s, meas)
-            for s in sorted(set(samples or ()) - set(meas))]
+    if gs is None:
+        bad.append('unknown generation %s (serve.FORCED_GENERATIONS: %s)' % (generation,
+                                                                             ', '.join(sorted(_cfg().serve.FORCED_GENERATIONS))))
+    else:
+        bad += ['generation %s names %s, not a sample of photometry.SAMPLES_MEASURED[snapshot] %s' % (generation, s, meas)
+                for s in gs if s not in meas]
+        bad += ['--samples names %s, not a sample generation %s measured %s' % (s, generation, list(gs))
+                for s in sorted(set(samples or ()) - set(gs))]
     if bad:
         return False, len(th), _fmt(bad)
+    want = threshold_classes(generation, samples)
     got = {}
     for r in th:
         k = tuple(r.get(c) or '' for c in ('sample', 'stokes', 'tier'))
@@ -1253,9 +1309,9 @@ def threshold_classes_check(th, cols, samples=None):
           ['a row of %s, not a configured class' % '/'.join(k) for k in sorted(set(got) - want)] + \
           ['%d rows of %s' % (got[k], '/'.join(k)) for k in sorted(got) if got[k] > 1]
     smps = sorted({k[0] for k in want})
-    return (not bad, len(th), _fmt(bad) if bad else 'thresholds.csv rows %d = one per (sample, Stokes, tier) of the configured '
-            'samples (%s%s) x %d' % (len(th), ', '.join(smps), ', the evaluation\'s --samples' if samples else '',
-                                     len(want) // max(1, len(smps))))
+    return (not bad, len(th), _fmt(bad) if bad else 'generation %s: thresholds.csv rows %d = one per (sample, Stokes, tier) '
+            'of its samples (%s%s) x %d' % (generation, len(th), ', '.join(smps),
+                                            ', the evaluation\'s --samples' if samples else '', len(want) // max(1, len(smps))))
 
 
 def _snapshot_eval(ev, ctx):
@@ -1271,9 +1327,13 @@ def _snapshot_eval(ev, ctx):
         res['G'] = (False, None, 'grid files unreadable: %s' % x)
     tp = os.path.join(ev, 'thresholds.csv')
     try:
-        if os.path.exists(tp):
+        gen, how = eval_generation(ev, ctx)
+        if gen is None:
+            res['V2'] = (False, None, how)
+        elif os.path.exists(tp):
             tcols, th = read_csv(tp)
-            res['V2'] = threshold_classes_check(th, tcols, samples=ctx.get('samples'))
+            ok, n, det = threshold_classes_check(th, tcols, gen, samples=ctx.get('samples'))
+            res['V2'] = (ok, n, '%s (%s)' % (det, how) if ok else det)
         else:
             res['V2'] = (False, 0, 'no thresholds.csv')
     except Exception as x:      # noqa: BLE001
@@ -1348,7 +1408,8 @@ def _eval(path, ctx):
     if tier == 'deep':
         return 'deep', _cached('deep_eval', os.path.join(path, 'thresholds.csv'), lambda: _deep_eval(path))
     if tier == 'snapshot':
-        key = 'snap_eval:%s:%s:%s' % (ctx.get('max_cells'), ctx.get('stage1'), ','.join(ctx.get('samples') or ()))
+        key = 'snap_eval:%s:%s:%s:%s' % (ctx.get('max_cells'), ctx.get('stage1'), ','.join(ctx.get('samples') or ()),
+                                         ctx.get('generation'))
         return 'snapshot', _cached(key, os.path.join(path, 'thresholds.csv'), lambda: _snapshot_eval(path, ctx))
     return None, {}
 

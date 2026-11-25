@@ -363,9 +363,10 @@ class photometry_evaluate(_Section):
     THRESHOLD_ROWS = {'deep': 4, 'snapshot': 8}            # rows of thresholds.csv: sample x Stokes (x tier for snapshot);
                                                            # deep_forced_eval.py:93-94; snapshot_forced_reserve_20261007.sh:161
     THRESHOLD_CLASSES = {'snapshot': (('V', 'I'), ('10s', '1min'))}   # thresholds.csv of a snapshot evaluation: one row per
-                                                           # (sample, Stokes, tier) of the configured samples
-                                                           # (photometry.SAMPLES_MEASURED['snapshot'], restricted to the evaluation's
-                                                           # own --samples when its record names them) x these Stokes x tiers; a
+                                                           # (sample, Stokes, tier) of the samples the evaluation's cutout
+                                                           # generation measured (serve.FORCED_GENERATIONS; an unknown generation
+                                                           # refuses), restricted to the evaluation's own --samples when its record
+                                                           # names them, x these Stokes x tiers; a
                                                            # missing class refuses (the engine records no dropped class). It
                                                            # replaces the fixed 8 rows (THRESHOLD_ROWS['snapshot'], HWJ + 10 pc)
                                                            # since LPT is measured (2026-11-18): 12 rows

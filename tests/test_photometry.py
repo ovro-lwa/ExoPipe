@@ -159,14 +159,15 @@ def patched(obj, **kw):
 
 def syn_samples():
     """The configuration the synthetic snapshot cell is measured and evaluated under: photometry.SAMPLES_MEASURED['snapshot']
-    = HWJ and 10 pc, the samples of its cutout templates (the served generation 5 holds no LPT cutout, pick_templates). Under
-    the configured HWJ, 10 pc and LPT its evaluation refuses V2 (test_snapshot_e2e checks it)."""
+    = HWJ and 10 pc, the samples of its cutout templates (the served generation 5 holds no LPT cutout, pick_templates). V2
+    expects the samples of the evaluation's generation (its stage 1 stage1_gen5: HWJ and 10 pc); as gen6 it refuses, naming
+    the four LPT classes (test_snapshot_e2e checks both)."""
     return patched(CFG.photometry, SAMPLES_MEASURED=dict(CFG.photometry.SAMPLES_MEASURED, snapshot=('HWJ', '10pc')))
 
 
 def v2_lpt_only(detail):
-    """V2's detail names exactly the four LPT classes as missing and nothing else (an evaluation of before 2026-11-18, or
-    of cells without LPT stage 1: the engine records no dropped class)."""
+    """V2's detail names exactly the four LPT classes as missing and nothing else (an evaluation without LPT read as
+    generation 6: the engine records no dropped class)."""
     d = str(detail)
     return d.count('no row of ') == 4 and d.count('no row of LPT/') == 4 and ' rows of ' not in d and 'a row of' not in d
 
@@ -1027,9 +1028,11 @@ def test_snapshot_e2e():
     tp = os.path.join(SNAP_OUT, 'eval_T1', 'thresholds.csv')
     if os.path.exists(tp):
         cols, th = T.read_csv(tp)
-        ok, n, det = T.threshold_classes_check(th, cols)
-        check('V2 under the configured samples (HWJ, 10 pc, LPT): the synthetic evaluation (no LPT stage 1) refuses, naming '
-              'exactly the four LPT classes (the engine records no dropped class)', not ok and v2_lpt_only(det), det)
+        ok5, n5, det5 = T.threshold_classes_check(th, cols, 'gen5')
+        ok, n, det = T.threshold_classes_check(th, cols, 'gen6')
+        check('V2: the synthetic evaluation (stage1_gen5, no LPT) passes as generation 5 (8 rows: HWJ and 10 pc) and, read '
+              'as generation 6, refuses naming exactly the four LPT classes (the engine records no dropped class)',
+              ok5 and n5 == 8 and not ok and v2_lpt_only(det), (det5, det))
 
 
 def snapshot_e2e():
@@ -1502,14 +1505,14 @@ def test_real():
     res = run_tests('photometry_eval', ev, max_cells=3, procs=1)
     v2 = res['E3_exceedance_or_V2_rows']
     tcols, th = T.read_csv(os.path.join(ev, 'thresholds.csv'))
-    ok8 = T.threshold_classes_check(th, tcols, samples=('HWJ', '10pc'))
-    check('real eval_wb_20261007: grid G1-G6 and stage 1 of 3 evaluated cells pass; V2 refuses, naming exactly the four LPT '
-          'classes (an evaluation of before LPT was measured, 2026-11-18: the configured samples are HWJ, 10 pc and LPT and '
-          'the engine records no dropped class); its 8 rows are one per class of HWJ and 10 pc (V1 / Z1 reported: the '
-          'exclusions and the gen-4 Master catalogues changed since 2026-10-07)',
+    rows8 = sorted((r['sample'], r['stokes'], r['tier']) for r in th)
+    check('real eval_wb_20261007: grid G1-G6 and stage 1 of 3 evaluated cells pass; V2 refuses it as an unknown generation '
+          '(generation 4: neither its directory nor a recorded stage 1 names a generation of serve.FORCED_GENERATIONS); its '
+          '8 rows are one per class of HWJ and 10 pc (V1 / Z1 reported: the exclusions and the gen-4 Master catalogues '
+          'changed since 2026-10-07)',
           all(res[k]['passed'] for k in ('E1_thresholds_or_G_grid', 'S_stage1')) and not v2['passed']
-          and v2_lpt_only(v2['detail']) and ok8[0] and ok8[1] == 8,
-          ({k: (r['passed'], str(r['detail'])[:300]) for k, r in res.items()}, ok8))
+          and 'unknown generation' in str(v2['detail']) and rows8 == sorted(T.threshold_classes('gen5')),
+          ({k: (r['passed'], str(r['detail'])[:300]) for k, r in res.items()}, rows8))
     print('      (report) V1: %s | Z1: %s' % (str(res['E2_lists_or_V1_kind_exclusions']['detail'])[:160],
                                              str(res['Z1_zones']['detail'])[:160]))
     prod = os.path.dirname(REAL_STAGE1)
@@ -1540,12 +1543,12 @@ def test_real():
         late = sorted(k for k in cb if ex_now.is_excluded(k[0].split('_', 1)[0], k[1], k[0].split('_', 1)[1]))
         early = sorted(k for k in cb if ex_then.is_excluded(k[0].split('_', 1)[0], k[1], k[0].split('_', 1)[1]))
         v1, v2 = res['E2_lists_or_V1_kind_exclusions'], res['E3_exceedance_or_V2_rows']
-        check('real %s (served): G1-G6, Z1 and S (stage 1 = %s) pass on 3 cells; V2 refuses, naming exactly the four LPT '
-              'classes (generation 5 measured HWJ and 10 pc only; the engine records no dropped class); V1 names only the %d '
-              '(cell, band) excluded after the evaluation was written (%s; data_decisions.csv at %s excluded none of them)'
+        check('real %s (served): G1-G6, V2, Z1 and S (stage 1 = %s) pass on 3 cells - V2 as generation 5, whose samples '
+              'are HWJ and 10 pc (serve.FORCED_GENERATIONS; it never measured LPT): 8 rows; V1 names only the %d (cell, band) '
+              'excluded after the evaluation was written (%s; data_decisions.csv at %s excluded none of them)'
               % (ev, S1, len(late), built, rev[:10]),
-              all(r['passed'] for k, r in res.items() if k not in ('E2_lists_or_V1_kind_exclusions', 'E3_exceedance_or_V2_rows'))
-              and not v2['passed'] and v2_lpt_only(v2['detail'])
+              all(r['passed'] for k, r in res.items() if k != 'E2_lists_or_V1_kind_exclusions')
+              and 'generation gen5' in str(v2['detail']) and v2['value'] == 8
               and 'stage-1 files' in str(res['S_stage1']['detail'])
               and rev and not early and (v1['passed'] if not late else v1['value'] == len(late)),
               {'early': early, 'late': late, 'tests': {k: (r['passed'], str(r['detail'])[:300]) for k, r in res.items()}})
