@@ -592,9 +592,14 @@ def test_end_to_end(tmp):
         check('measure: node-local staging removed', not glob.glob(os.path.join(work, 'dewarp_stage_*')))
         k = [o for o in ra['outputs'] if o['class'] == 'dewarp_screen_key']
         kt = [t for t in ra['tests'] if t['name'] == 'dewarp_screen_key.rows']
+        krows = SC.read_table(k[0]['path']) if len(k) == 1 else []
         check('measure: the screen keys are written beside the table and pass their content test (no screen saved here: '
-              'a header-only key file)', len(k) == 1 and k[0]['path'].endswith(f'/tables/screen_keys_{LST}.csv')
-              and len(SC.read_table(k[0]['path'])) == 0 and len(kt) == 1 and kt[0]['passed'], str(kt)[:200])
+              'one row per measured scope, screen empty, keyed by the md5 of its measured master and pbcorr sibling - '
+              'the identity G-R4 needs)', len(k) == 1 and k[0]['path'].endswith(f'/tables/screen_keys_{LST}.csv')
+              and len(krows) == 5 and len(kt) == 1 and kt[0]['passed']
+              and sorted(r['scope'] for r in krows) == sorted(ra['meta'].get('screen_keys', {}))
+              and all(not r['screen'] and not r['screen_md5'] and r['master_md5'] == SC.md5(r['master'])
+                      and r['pbcorr_md5'] == SC.md5(r['pbcorr']) for r in krows), str(kt)[:200] + str(krows)[:200])
     # unstamped copies of the not-accepted cell's promoted coadd_final (top level) for the direct record() cases below
     from exopipe.phase3.core import record as _record, validate as _validate
     from exopipe.phase3.lib.dewarp import steps_cell as SCL
@@ -1041,6 +1046,69 @@ def test_screen_keys(tmp):
     check('dry run: without the apply stage no G-A12 line', 'G-A12' not in txt, f'rc {rc}; ' + txt[-300:])
 
 
+def test_screenless_keys(tmp):
+    """PR 173 follow-up (2026-11-25): the measure stage keys EVERY measured scope, not only those with a saved screen, so the
+    record stage's gate G-R4 has the measured master's md5 for every cell it stamps. On the synthetic round (screens for 27,
+    32 and 36 MHz; 41 and 46 MHz measured without one): screen_key_rows gives five rows, the two screenless ones with empty
+    screen columns and the md5 of their measured master and pbcorr sibling; the key file's content test passes and counts
+    them; G-R4 (measured_master_identity) then returns the identity of a screenless scope, and refuses a master that is other
+    bytes than the measured one; G-A12 never applies a screenless row; a screenless row for a scope that has a screen, or one
+    without an md5, fails the content test."""
+    promoted = os.path.join(tmp, 'promoted')
+    src = os.path.join(tmp, 'meas')
+    if not os.path.isdir(src):
+        check('screenless keys: synthetic round present', False)
+        return
+    mdir = os.path.join(tmp, 'gsk', 'meas')
+    shutil.copytree(src, mdir)
+    meas = SC.Measurement(mdir, LST)
+    os.remove(meas.keys())
+    scopes = ('27MHz', '32MHz', '36MHz', '41MHz', '46MHz')
+    measured = {s: tuple((f, SC.md5(f)) for f in SC.measured_files(os.path.join(promoted, f'{LST}_{s}', 'coadd_final'), s))
+                for s in scopes}
+    rows = SC.screen_key_rows(meas, measured, '2026-11-25T00:00:00Z')
+    by = {r['scope']: r for r in rows}
+    bare = sorted(s for s, r in by.items() if not r['screen'])
+    check('screen_key_rows: one row per measured scope; 41 and 46 MHz (no screen saved) keyed by the md5 of their measured '
+          'master and pbcorr sibling, screen columns empty', sorted(by) == sorted(scopes) and bare == ['41MHz', '46MHz']
+          and all(by[s]['master_md5'] == measured[s][0][1] and by[s]['pbcorr_md5'] == measured[s][1][1]
+                  and not by[s]['screen_md5'] and not by[s]['n_anchors'] for s in bare)
+          and all(by[s]['screen_md5'] == SC.md5(meas.screen(s)) for s in ('27MHz', '32MHz', '36MHz')), str(rows)[:300])
+    kp = SC.write_screen_keys(meas, rows)
+    ok, v, d = T.screen_key_rows(kp)
+    check('dewarp_screen_key: the five-row key file passes and counts the screenless scopes',
+          ok and v == '3 screen(s) keyed, 2 measured scope(s) without a screen', f'{v}; {d}')
+    roots = types.SimpleNamespace(rebuild=promoted)
+    ident, probs = SC.measured_master_identity(meas, roots, f'{LST}_41MHz')
+    check('G-R4: a measured scope without a saved screen now has an identity: the promoted master and pbcorr sibling are the '
+          'measured bytes', ident is not None and not probs and ident['master']['md5'] == measured['41MHz'][0][1]
+          and ident['pbcorr sibling']['md5'] == measured['41MHz'][1][1], f'{ident} {probs}')
+    other = os.path.join(tmp, 'gsk', 'promoted')
+    shutil.copytree(os.path.join(promoted, f'{LST}_41MHz'), os.path.join(other, f'{LST}_41MHz'))
+    plain = SC.measured_files(os.path.join(other, f'{LST}_41MHz', 'coadd_final'), '41MHz')[0]
+    with fits.open(plain, mode='update', memmap=False) as hl:      # another master: one pixel differs
+        hl[0].data[(0,) * (hl[0].data.ndim - 2) + (N // 2, N // 2)] += 1.0
+    ident2, probs2 = SC.measured_master_identity(meas, types.SimpleNamespace(rebuild=other), f'{LST}_41MHz')
+    check('G-R4: on a screenless scope, a promoted master other than the measured one is a problem naming both md5',
+          len(probs2) == 1 and measured['41MHz'][0][1] in probs2[0] and SC.md5(plain) in probs2[0], str(probs2)[:300])
+    p41 = SC.measured_files(os.path.join(promoted, f'{LST}_41MHz', 'coadd_final'), '41MHz')
+    g = SC.screen_key_problems(meas.screen_key('41MHz'), meas.screen('41MHz'), *p41)
+    check('G-A12: a screenless key row is never applied (no keyed screen)', len(g) == 1 and 'saved no screen' in g[0], g)
+    for name, edit, want in (('unsaved', lambda r: r.update(screen='', screen_md5='', n_anchors='') if r['scope'] == '27MHz'
+                              else None, 'screens keyed as unsaved'),
+                             ('nomd5', lambda r: r.update(master_md5='') if r['scope'] == '46MHz' else None, 'is not an md5')):
+        m2 = os.path.join(tmp, 'gsk', f'meas_{name}')
+        shutil.copytree(mdir, m2)
+        mm = SC.Measurement(m2, LST)
+        rr = SC.read_table(mm.keys())
+        for r in rr:
+            edit(r)
+        os.remove(mm.keys())
+        SC.write_screen_keys(mm, rr)
+        ok, v, d = T.screen_key_rows(mm.keys())
+        check(f'dewarp_screen_key: {want} fails', not ok and want in d, d)
+
+
 def test_pb_weights(tmp):
     """B-30 (review 2026-10-14 m3): the apply checks the PB weights it installs - the cards of the source generation's
     siblings, which the recomputed siblings keep - before --fresh removes the previous generation: a wideband missing the
@@ -1190,6 +1258,7 @@ def main():
         test_end_to_end(SCRATCH)
         test_stale_measurement(SCRATCH)
         test_screen_keys(SCRATCH)
+        test_screenless_keys(SCRATCH)
         test_pb_weights(SCRATCH)
         test_real_products()
         test_mdwstat_table()
