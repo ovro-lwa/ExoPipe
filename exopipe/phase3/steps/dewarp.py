@@ -43,7 +43,7 @@ Stages (--stages, pipeline order; default all):
            --prior-gen-root) + the install's cubic, applied-screen and product gates; pass = the cell record's
            meta.install {kind mdewarp, gen}
   record   routed cell NOT accepted: MDWSTAT = 'refused: <reason>' (steps_common.mdwstat_not_accepted of the final row:
-           dewarp_lst.sh:119-127's strings) on the cell's masters in <REBUILD_ROOT>/<cell>/coadd_final (coadd._MASTER_RE;
+           install.MDWSTAT_TABLE's forms) on the cell's masters in <REBUILD_ROOT>/<cell>/coadd_final (coadd._MASTER_RE;
            not the PB maps), each then verified from its header (card read back, standard header valid); then the
            applied=0 row in mdewarp_screens.csv (written last: it ends the cell's routing); meta.install {kind rebuild,
            gen <promoted>}. An accepted cell's products carry MDWSTAT 'applied' from the apply (phase3_master_dewarp._apply)

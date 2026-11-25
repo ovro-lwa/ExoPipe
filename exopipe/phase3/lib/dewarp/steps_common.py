@@ -718,9 +718,9 @@ def mdwstat_files(roots, cell):
 
 
 def _gain_text(g, threshold):
-    """g to one decimal, as dewarp_lst.sh:126 prints it - with more decimals where one decimal would print a number that is
+    """g to one decimal, as the table form prints it - with more decimals where one decimal would print a number that is
     not below ``threshold`` (4.96 prints '4.96', never '5.0 ... < 5'; a written gain of 5.0 that computes as
-    4.999999999999999 prints that number, the comparison the gate made)."""
+    4.999999999999999 prints that number, the comparison the gate made on the written values)."""
     for d in range(1, 18):
         t = f'{g:.{d}f}'
         if float(t) < threshold:
@@ -740,29 +740,56 @@ def card_cut(v, n):
 
 
 def mdwstat_not_accepted(row):
-    """The MDWSTAT card value of a routed cell that is NOT accepted, from its final table row: the strings production's
-    dewarp_lst.sh:119-127 writes (exopipe_ops 6f489ba; R-GREGG-20261111-MDWSTAT-CARD), with the one-card rules of
-    release1_cards.plan_file:
-      status OK and g = anchor_off_med_as - cv_resid_med_as parses (the written values; a not-accepted OK row has g below
-          dewarp.HELDOUT_MIN_GAIN_AS)  ->  'refused: held-out gain <g> arcsec < <threshold>', g as _gain_text prints it;
-      any other row  ->  'refused: ' + its status cut to 58 characters, as the measurement wrote it (its own numbers and
-          wording, e.g. 'refused: REFERENCE ONLY: held-out improvement 4.0 arcsec < 5; not a'); no row: 'refused: not
-          measured' (production's r = {}); a present but empty status: 'refused:'.
-    Then cut to what one card holds (card_cut to dewarp.MDWSTAT_MAX_CHARS: production's [:68] counts a quote once and
-    astropy then writes a CONTINUE card) and trailing blanks removed (FITS ignores them, so the card reads back as
-    written). Raises ValueError for an accepted row, an empty value, or a value that is not printable ASCII."""
+    """The MDWSTAT card value of a routed cell that is NOT accepted, from its final table row (R-GREGG-20261111-MDWSTAT-CARD:
+    "MDWSTAT = 'applied' | 'refused: <reason>' (e.g. gain 3.6 arcsec < 5, median would worsen) | 'not attempted'"). The
+    forms are those of install.MDWSTAT_TABLE (the deep chat's mdwstat_for_header_repair.csv), which the header repair wrote
+    on every archived master and the install's sibling card gate compares (release1_cards.value_problems); the coordinator's
+    decision of 2026-11-25 on PR 173 (the table's form over dewarp_lst.sh:121-127's status text). The numbers are the row's
+    WRITTEN values:
+      status OK (a written gain below the threshold, else the row is accepted) or REFERENCE ONLY (the held-out test (b')
+          failed), with g = anchor_off_med_as - cv_resid_med_as parsable  ->  'refused: held-out gain <g> arcsec < <thr>',
+          g to one decimal. Never a rounded number that contradicts the comparison: for OK (the gate compared the written
+          values) g as _gain_text prints it; for REFERENCE ONLY (the measurement compared unrounded medians and found the
+          gain below the threshold) a one-decimal g that is not below it reads 'refused: held-out gain <g> arcsec, below
+          <thr> before rounding';
+      status REFUSED regression (the VLSSr test (a) failed), med_before / med_after parsable  ->  'refused: VLSSr median
+          would worsen (<med_before> -> <med_after> arcmin)', the values as written; written values that do not show the
+          increase read 'refused: VLSSr median worse before rounding (<med_before> -> <med_after> arcmin)';
+      status NOT ATTEMPTED: <why>  ->  'not attempted: <why>'; no row  ->  'not attempted: not measured';
+      any other status, or values that do not parse  ->  'refused: ' + the status cut to 58 characters (dewarp_lst.sh:127).
+    Then cut to what one card holds (card_cut to dewarp.MDWSTAT_MAX_CHARS, a quote counting twice: no CONTINUE card) and
+    trailing blanks removed (FITS ignores them, so the card reads back as written). Raises ValueError for an accepted row,
+    an empty value, or a value that is not printable ASCII."""
     c = C()
-    if accepted(row, c.HELDOUT_MIN_GAIN_AS):
+    thr = c.HELDOUT_MIN_GAIN_AS
+    if accepted(row, thr):
         raise ValueError('the final row is accepted: its products carry MDWSTAT applied (master_dewarp._apply)')
     r = row or {}
-    try:
-        g = float(r.get('anchor_off_med_as')) - float(r.get('cv_resid_med_as'))
-    except (TypeError, ValueError):
-        g = None
-    if r.get('status') == 'OK' and g is not None:
-        v = f'refused: held-out gain {_gain_text(g, c.HELDOUT_MIN_GAIN_AS)} arcsec < {c.HELDOUT_MIN_GAIN_AS:g}'
+    st = str(r.get('status') or '').strip()
+
+    def num(k):
+        try:
+            return float(r.get(k))
+        except (TypeError, ValueError):
+            return None
+    a, cv, m0, m1 = num('anchor_off_med_as'), num('cv_resid_med_as'), num('med_before'), num('med_after')
+    if not row:
+        v = 'not attempted: not measured'
+    elif st.startswith('NOT ATTEMPTED'):
+        why = st[len('NOT ATTEMPTED'):].lstrip(' :')
+        v = 'not attempted' + (f': {why}' if why else '')
+    elif st == 'OK' and a is not None and cv is not None:
+        v = f'refused: held-out gain {_gain_text(a - cv, thr)} arcsec < {thr:g}'
+    elif st.startswith('REFERENCE ONLY') and a is not None and cv is not None:
+        g = f'{a - cv:.1f}'
+        v = (f'refused: held-out gain {g} arcsec < {thr:g}' if float(g) < thr
+             else f'refused: held-out gain {g} arcsec, below {thr:g} before rounding')
+    elif st.startswith('REFUSED regression') and m0 is not None and m1 is not None:
+        b, e = str(r['med_before']).strip(), str(r['med_after']).strip()
+        v = (f'refused: VLSSr median would worsen ({b} -> {e} arcmin)' if m1 > m0
+             else f'refused: VLSSr median worse before rounding ({b} -> {e} arcmin)')
     else:
-        v = f"refused: {str(r.get('status', 'not measured'))[:58]}"
+        v = f'refused: {(st or "not measured")[:58]}'
     v = card_cut(v, c.MDWSTAT_MAX_CHARS).rstrip()
     if not v:
         raise ValueError('the MDWSTAT value is empty after the one-card cut')

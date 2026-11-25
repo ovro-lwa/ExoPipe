@@ -13,13 +13,14 @@ it, the apply/verify/record run with --parity):
     never used when no anchor master exists (the real load is NOT covered here)
   - `exopipe3 dewarp --stages apply,verify,record --measurement M --parity` on five synthetic cells: accepted (cubic apply in
     place, D1-D6 by check_mdewarp_gen.py through core.legacy.run, the child's code checked), not accepted (applied=0 row,
-    install's class screen_table + inline row check, MDWSTAT on its promoted masters and PB maps), accepted-but-apply-refused
+    install's class screen_table + inline row check, MDWSTAT on its promoted masters, not the PB maps), accepted-but-apply-refused
     (G-R2), not routed (G-D2), input carries MDWARP (G-D7). The not-accepted cell's MDWSTAT card is also tested on its own
     `--stages record` run (no verify stage, so no content-test child and no G-D0b)
   - `exopipe3 verify dewarped_master <gen>` takes its context from the run record (scratch mode: the generation's sidecars are
     untouched); a corrupted product fails D3; G-A3 refuses a second apply; --fresh removes and records the old generation
 Read-only part (production products, never written): dewarp_table on two production measurement tables, dewarp_screen on a
-production screen, the light dewarped_master tests on the installed 12h_Red generation (skipped when absent).
+production screen, the light dewarped_master tests on the installed 12h_Red generation (skipped when absent); the MDWSTAT
+value against install.MDWSTAT_TABLE on every refused cell (test_mdwstat_table).
 
 Run standalone:  python tests/test_dewarp.py      (py38_orca_nkosogor; EXOPIPE3_SITE set)
 """
@@ -238,50 +239,42 @@ def test_acceptance_and_stages():
     long = SC.render_not_accepted({'status': 'REFUSED regression: ' + 'x' * 200, 'anchor_off_med_as': '1',
                                    'cv_resid_med_as': '2'})
     check('applied=0 status cut to 120 characters', len(long) == 120)
-    # MDWSTAT of a not-accepted cell (R-GREGG-20261111-MDWSTAT-CARD): the strings of production's dewarp_lst.sh:119-127, from
-    # the final rows of 04h (2026-11-08), of 00h 64MHz and 01h Red (the deep chat's table rows) and synthetic ones
+    # MDWSTAT of a not-accepted cell (R-GREGG-20261111-MDWSTAT-CARD): the forms of install.MDWSTAT_TABLE (the coordinator's
+    # decision of 2026-11-25 on PR 173), from the final rows of 04h (2026-11-08), of 00h 64MHz (the deep chat's table row)
+    # and synthetic ones; the agreement with every refused row of the real table is test_mdwstat_table
     M = SC.mdwstat_not_accepted
     for row, want in (
             ({'status': 'REFERENCE ONLY: held-out improvement 4.7 arcsec < 5; not applied', 'anchor_off_med_as': '17.0',
-              'cv_resid_med_as': '12.3'}, 'refused: REFERENCE ONLY: held-out improvement 4.7 arcsec < 5; not a'),
+              'cv_resid_med_as': '12.3'}, 'refused: held-out gain 4.7 arcsec < 5'),
             ({'status': 'REFERENCE ONLY: held-out improvement 4.0 arcsec < 5; not applied', 'anchor_off_med_as': '16.4',
-              'cv_resid_med_as': '12.3'}, 'refused: REFERENCE ONLY: held-out improvement 4.0 arcsec < 5; not a'),
+              'cv_resid_med_as': '12.3'}, 'refused: held-out gain 4.1 arcsec < 5'),
+            ({'status': 'REFERENCE ONLY: held-out improvement -2.5 arcsec < 5; not applied', 'anchor_off_med_as': '10.0',
+              'cv_resid_med_as': '12.5'}, 'refused: held-out gain -2.5 arcsec < 5'),
             ({'status': 'REFUSED regression: median VLSSr sep 1.33 -> 1.48 arcmin (N 46 -> 46); cell left unwarped',
               'med_before': '1.329', 'med_after': '1.476'},
-             'refused: REFUSED regression: median VLSSr sep 1.33 -> 1.48 arcmin ('),
+             'refused: VLSSr median would worsen (1.329 -> 1.476 arcmin)'),
             ({'status': 'OK', 'anchor_off_med_as': '17.9', 'cv_resid_med_as': '13.0'}, 'refused: held-out gain 4.9 arcsec < 5'),
             ({'status': 'NOT ATTEMPTED: arm halted after 3 consecutive refusals'},
-             'refused: NOT ATTEMPTED: arm halted after 3 consecutive refusals'),
-            (None, 'refused: not measured'),
-            ({'status': ''}, 'refused:'),
+             'not attempted: arm halted after 3 consecutive refusals'),
+            ({'status': 'NOT ATTEMPTED'}, 'not attempted'),
+            (None, 'not attempted: not measured'),
+            ({'status': ''}, 'refused: not measured'),
             ({'status': 'REFUSED no generation root'}, 'refused: REFUSED no generation root'),
+            ({'status': 'REFUSED regression: median VLSSr sep ? -> ?', 'med_before': '', 'med_after': '1.0'},
+             'refused: REFUSED regression: median VLSSr sep ? -> ?'),
             ({'status': 'OK', 'anchor_off_med_as': '', 'cv_resid_med_as': '1'}, 'refused: OK')):
         got = M(row)
         check(f'MDWSTAT of a not-accepted row: {want!r}', got == want, got)
-    # parity with the shell's own forms: its lines 121-127 run on every row above whose value needs no change for the card
-    shell = '/lustre/gh/main/exopipe_ops/membership_rebuild_20261007/dewarp_lst.sh'
-    snippet = """try:
-    g = float(r.get('anchor_off_med_as')) - float(r.get('cv_resid_med_as'))
-except (TypeError, ValueError):
-    g = None
-why = (f"refused: held-out gain {g:.1f} arcsec < 5" if (r.get('status') == 'OK' and g is not None)
-       else f"refused: {str(r.get('status', 'not measured'))[:58]}")[:68]
-"""
-    if os.path.isfile(shell):
-        check("parity: the shell's MDWSTAT lines are the ones this test runs", snippet in open(shell).read())
-    rows = [{'status': x} for x in ('REFERENCE ONLY: held-out improvement 4.7 arcsec < 5; not applied',
-                                    'REFUSED regression: median VLSSr sep 1.24 -> 1.27 arcmin (N 52 -> 50); cell left unwarped',
-                                    'NOT ATTEMPTED: every anchor candidate 73MHz,64MHz refused', 'REFUSED no generation root',
-                                    'OK')] + [{'status': 'OK', 'anchor_off_med_as': '17.9', 'cv_resid_med_as': '13.0'}, {}]
-    diff = []
-    for x in rows:
-        env = {'r': x}
-        exec(snippet, env)
-        if M(x or None) != env['why']:
-            diff.append((M(x or None), env['why']))
-    check("parity: the value equals the shell's on 7 rows (REFERENCE ONLY, REFUSED regression, NOT ATTEMPTED, other, OK)",
-          not diff, str(diff)[:200])
-    # where the shell's value would not hold: a rounded gain contradicting '< 5', a trailing blank, a quote, non-ASCII
+    # never a rounded number that contradicts its comparison (the table itself prints 'held-out gain 5.0 arcsec < 5' on two
+    # REFERENCE ONLY cells: test_mdwstat_table names them)
+    got = M({'status': 'REFERENCE ONLY: held-out improvement 5.0 arcsec < 5; not applied', 'anchor_off_med_as': '15.5',
+             'cv_resid_med_as': '10.5'})
+    check("MDWSTAT: a REFERENCE ONLY gain of 5.0 as written says the comparison was before rounding (never '5.0 ... < 5')",
+          got == 'refused: held-out gain 5.0 arcsec, below 5 before rounding', got)
+    got = M({'status': 'REFUSED regression: median VLSSr sep 1.27 -> 1.27 arcmin', 'med_before': '1.274', 'med_after': '1.274'})
+    check('MDWSTAT: a regression whose written medians are equal says the comparison was before rounding',
+          got == 'refused: VLSSr median worse before rounding (1.274 -> 1.274 arcmin)', got)
+    # an OK row (the gate compared the written values), a trailing blank, a quote, non-ASCII
     got = M({'status': 'OK', 'anchor_off_med_as': '8.2', 'cv_resid_med_as': '3.2'})     # 8.2 - 3.2 = 4.999999999999999
     check("MDWSTAT: a gain the gate found below 5 never prints as 5.0 (the shell writes 'held-out gain 5.0 arcsec < 5')",
           got == 'refused: held-out gain 4.999999999999999 arcsec < 5', got)
@@ -303,9 +296,11 @@ why = (f"refused: held-out gain {g:.1f} arcsec < 5" if (r.get('status') == 'OK' 
             check(f'MDWSTAT refused: {why} ({bad["status"]!r})', False)
         except ValueError as e:
             check(f'MDWSTAT refused: {why} ({bad["status"]!r})', why in str(e), str(e))
-    got = M({'status': 'NOT ATTEMPTED: ' + 'x' * 200})
-    check('MDWSTAT: at most dewarp.MDWSTAT_MAX_CHARS (68) characters (the shell\'s 9 + 58)',
+    got = M({'status': 'REFUSED ' + 'x' * 200})
+    check("MDWSTAT: an other status is cut to 58 characters (dewarp_lst.sh:127), within MDWSTAT_MAX_CHARS (68)",
           len(got) == 67 and CFG.dewarp.MDWSTAT_MAX_CHARS == 68, got)
+    got = M({'status': 'NOT ATTEMPTED: ' + 'x' * 200})
+    check('MDWSTAT: at most dewarp.MDWSTAT_MAX_CHARS (68) characters on one card', len(got) == 68, got)
 
 
 def test_config():
@@ -599,7 +594,7 @@ def test_end_to_end(tmp):
         for f in glob.glob(os.path.join(cf32, '*.fits')):
             shutil.copy(f, dst)
     # --- R: the not-accepted cell alone, record stage only (parity guard on): MDWSTAT (R-GREGG-20261111-MDWSTAT-CARD) on its
-    #     promoted masters; the final row is REFERENCE ONLY (anchor offset 12.0 - held-out 9.0 arcsec): the shell's string
+    #     promoted masters; the final row is REFERENCE ONLY (anchor offset 12.0 - held-out 9.0 arcsec): the table's form
     outR = os.path.join(tmp, 'outR')
     seed_record(outR, ('27MHz', '32MHz', '36MHz', '46MHz'))
     rc, txt, s = cli('dewarp', '--cells', f'{LST}_32MHz', '--stages', 'record', '--measurement', r['meas'], '--out', outR,
@@ -607,7 +602,7 @@ def test_end_to_end(tmp):
     c32 = rec(outR, f'{LST}_32MHz')
     check('record stage alone: the not-accepted cell is done, install kind rebuild', rc == 0 and c32 and c32['status'] == 'done'
           and (c32['meta'].get('install') or {}).get('kind') == 'rebuild', f'rc {rc}; ' + (c32['reason'] if c32 else txt[-300:]))
-    want = 'refused: REFERENCE ONLY: held-out improvement 3.0 arcsec < 5; not a'
+    want = 'refused: held-out gain 3.0 arcsec < 5'
     masters = sorted(p for p in glob.glob(os.path.join(cf32, '[IV]_deep_*.fits')))
     pbs = sorted(glob.glob(os.path.join(cf32, 'PB_deep_*.fits')))
     with_card = {os.path.basename(p): fits.getheader(p).get('MDWSTAT') for p in masters}
@@ -1080,6 +1075,45 @@ def test_real_products():
             check(f'real (read-only): dewarped_master.{fn.__name__} 12h_Red', ok, str(d)[:120])
 
 
+
+def test_mdwstat_table():
+    """Read only: the value the record stage writes equals install.MDWSTAT_TABLE's mdwstat (the table the header repair wrote
+    on every archived master and the install's sibling card gate compares) on every refused cell of the table, computed from
+    the cell's final measurement row as the deep chat's mdewarp_coverage_per_cell.csv records it (gate_status and the written
+    gate values). The table's 'applied' rows are the accepted path and its 'not attempted' rows have no measurement of the
+    current master; the record stage writes neither. Skipped when the tables are absent."""
+    tab_p = CFG.install.MDWSTAT_TABLE
+    pc_p = os.path.join(os.path.dirname(tab_p), 'mdewarp_coverage_per_cell.csv')
+    if not (os.path.isfile(tab_p) and os.path.isfile(pc_p)):
+        print(f'SKIP  real (read-only): MDWSTAT against {tab_p} (absent)', flush=True)
+        return
+    with open(tab_p, newline='') as f:
+        tab = {r['cell']: r['mdwstat'] for r in csv.DictReader(f)}
+    with open(pc_p, newline='') as f:
+        pc = {r['cell']: r for r in csv.DictReader(f)}
+    from exopipe.phase3.core import cells as CELLS
+    universe = [f'{l} {s}' for l in CELLS.LSTS for s in CELLS.scopes()]
+    check('real (read-only): every cell has an install.MDWSTAT_TABLE row', all(c in tab for c in universe),
+          [c for c in universe if c not in tab][:5])
+    diff, n = [], 0
+    for cell, want in sorted(tab.items()):
+        if not want.startswith('refused'):
+            continue
+        n += 1
+        g = pc.get(cell) or {}
+        row = dict(status=g.get('gate_status'), anchor_off_med_as=g.get('gate_anchor_off_med_as'),
+                   cv_resid_med_as=g.get('gate_heldout_resid_med_as'), med_before=g.get('gate_med_before_arcmin'),
+                   med_after=g.get('gate_med_after_arcmin'))
+        try:
+            got = SC.mdwstat_not_accepted(row)
+        except ValueError as e:
+            got = f'(refused: {e})'
+        if got != want:
+            diff.append((cell, want, got))
+    check(f'real (read-only): the value equals install.MDWSTAT_TABLE on every refused cell ({n - len(diff)} of {n})',
+          n > 0 and not diff, '; '.join(f'{c}: table {w!r}, v2 {g!r}' for c, w, g in diff)[:600])
+
+
 def main():
     t0 = time.time()
     os.makedirs(SCRATCH)
@@ -1093,6 +1127,7 @@ def main():
         test_screen_keys(SCRATCH)
         test_pb_weights(SCRATCH)
         test_real_products()
+        test_mdwstat_table()
     finally:
         shutil.rmtree(SCRATCH, ignore_errors=True)
         try:
