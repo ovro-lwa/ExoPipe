@@ -139,6 +139,11 @@ class exclusions(_Section):
     # tiers whose readers read the snapshot scopes per night (core/exclusions.for_tier: 'snapshot-gpu' on a GPU-frame cell,
     # 'snapshot' on every other night); the deep tier reads the default
     SNAPSHOT_SCOPE_TIERS = ('snapshot', 'sublst', '10s', '1min', '10min')
+    # reason text of a do-not-delete row (Gregg's rows "ionospheric vortex event; do not delete (Gregg 2026-06-28)": 255 rows,
+    # 17 LST-hour cells on 2026-11-25): its cell's raw visibilities are never deleted (core/exclusions.do_not_delete_cells;
+    # lib/retention/protect.py). data_decisions.csv has no structured column or bracket tag for it, so the reason is matched
+    # as free text: case-insensitive, with hyphens, underscores and runs of white space read as one space, any verdict
+    DO_NOT_DELETE_TEXT = 'do not delete'
 
 
 class astrometry(_Section):

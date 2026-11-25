@@ -172,3 +172,47 @@ def expand_epochs(spec):
 def epoch_lsts(spec):
     """The LSTs the epochs of an --epochs value name (a cell of another LST is not selected by it)."""
     return {parse_epoch(e)[0] for e in expand_epochs(spec)}
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# The UTC time range of an epoch (one LST hour of one night)
+# ---------------------------------------------------------------------------------------------------------------------
+def _phase1_scheduler():
+    """Phase 1's LSTScheduler (exopipe/phase1/pipeline_controller.py), imported without letting that module's import-time
+    logging.basicConfig (its own command line's log format) take over this process's root logger."""
+    import importlib
+    import logging
+    import sys
+    name = 'exopipe.phase1.pipeline_controller'
+    if name not in sys.modules:
+        root = logging.getLogger()
+        handlers, level = list(root.handlers), root.level
+        try:
+            importlib.import_module(name)
+        finally:
+            root.handlers[:] = handlers
+            root.setLevel(level)
+    return sys.modules[name].LSTScheduler()
+
+
+_EPOCH_UTC = {}
+
+
+def epoch_utc(lst, date):
+    """(start, end), seconds since 1970 UTC, of the LST hour ``lst`` ('19h') of the epoch dated ``date`` (YYYY-MM-DD): Phase 1's
+    own conversion, the UTC range a Phase 1 run with --range <h>h-<h+1>h --date <date> processes
+    (exopipe/phase1/pipeline_controller.LSTScheduler.parse_range): from the first time at or after 00:00 UTC of ``date`` when
+    the mean local sidereal time at the observatory (common/pipeline_config.OVRO_LOC) is h hours, for one sidereal hour
+    (3590.17 s). Example: 19h of 2025-05-04 is 12:02:37-13:02:27 UTC on 2025-05-04. ValueError on an LST that is not
+    00h..23h, a date that is not YYYY-MM-DD, or a range Phase 1 cannot compute."""
+    parse_lst(lst)
+    parse_date(date)
+    key = (lst, date)
+    if key not in _EPOCH_UTC:
+        h = int(lst[:2])
+        try:
+            t0, t1 = _phase1_scheduler().parse_range('%dh-%dh' % (h, h + 1), date)
+        except SystemExit:               # parse_range logs and exits on what it cannot parse (a command line's behavior)
+            raise ValueError(f'Phase 1 cannot convert LST {lst} on {date} to UTC')
+        _EPOCH_UTC[key] = (float(t0.unix), float(t1.unix))
+    return _EPOCH_UTC[key]
