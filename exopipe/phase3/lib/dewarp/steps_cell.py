@@ -11,8 +11,9 @@ Ports dewarp_lst.sh:36-94 for ONE routed cell, after its LST's measurement:
               INSTALL_CONTENT_OK / APPLIED_SCREEN.json land where the install reads them, plus the install's cubic,
               applied-screen and product gates and the tested-pixel count (G-A6..G-A10); pass -> meta.install
               {kind 'mdewarp', gen} (dewarp_lst.sh:66-68 -> install_cell.sh <cell> mdewarp <gen>)
-  record      not accepted: MDWSTAT on the promoted masters, verified (dewarp_lst.sh:119-131; G-W, G-R3), then the applied=0
-              row of the archived screen record through phase3_install._screen_row IN PLACE (dewarp_lst.sh:72-90; G-R1)
+  record      not accepted: G-R4 (measured on these masters), MDWSTAT on the promoted masters, verified (dewarp_lst.sh:
+              119-131; G-W, G-R3), then the applied=0 row of the archived screen record through
+              phase3_install._screen_row IN PLACE (dewarp_lst.sh:72-90; G-R1)
               -> meta.install {kind 'rebuild', gen <REBUILD_ROOT>/<cell>} (dewarp_lst.sh:92)
 The promoted marker removal (dewarp_lst.sh:94) is replaced by the unit record.
 """
@@ -222,8 +223,9 @@ def verify(u, run, args, roots, cell, meas, gen):
         print(f'{cell}: dewarp content test FAILED: ' + '; '.join(t['name'] for t in u.failed_tests()[:4]), flush=True)
 
 
-def record(u, roots, cell, row):
-    """G-R1, G-W of the promoted rebuild and G-R3, then MDWSTAT on the cell's promoted masters, each verified (stamp_mdwstat),
+def record(u, roots, cell, row, meas=None):
+    """G-R1, G-W of the promoted rebuild, G-R3 and G-R4 (the final row was measured on these masters: steps_common.
+    measured_master_identity), then MDWSTAT on the cell's promoted masters, each verified (stamp_mdwstat),
     then the applied=0 row (phase3_install._screen_row in place, flock-guarded). The row ends the cell's routing (G-D2), so
     it is written only after every master carries a verified card: a refusal or failure before it leaves the cell routed
     for a rerun (dewarp_lst.sh:119-131 writes the row first, then the card). The record file is install's class
@@ -255,6 +257,19 @@ def record(u, roots, cell, row):
         value = SC.mdwstat_not_accepted(row)
     except ValueError as e:
         u.refuse(f'G-R3: {cell}: {e}')
+    ident, probs = SC.measured_master_identity(meas, roots, cell)
+    if probs:
+        u.check('dewarp.measured_master', False, value=None, detail='; '.join(probs))
+        u.refuse(f'G-R4: {cell}: the final row was measured on another master ({"; ".join(probs)}): a gap that needs a '
+                 f're-measure; no MDWSTAT written, no applied=0 row')
+    if ident is None:
+        u.note(f'G-R4: {cell}: the measurement {getattr(meas, "dir", None)} records no identity of the master it measured '
+               f'(no screen key for {scope}): the value rests on G-A11\'s time check alone')
+    else:
+        u.check('dewarp.measured_master', True, value=ident['master']['md5'],
+                detail='; '.join(f'{k} {os.path.basename(v["path"])} = the measured bytes ({v["matched_by"]})'
+                                 for k, v in ident.items()))
+    u.meta['measured_master'] = ident
     done = stamp_mdwstat(u, cell, value, files)
     u.meta['mdwstat'] = {'value': value, 'files': done}
     # the record file is this stage's OUTPUT (one row replaced, INS._screen_row): it is not fingerprinted as an input (it
@@ -405,7 +420,7 @@ def run_cell(run, args, roots, lst, cell, meas, stages, route_src=None, resume_o
                 u.meta['install'] = None
                 u.note('generation written but NOT content-tested (--stages without verify): not installable')
         elif 'record' in stages:
-            record(u, roots, cell, row)
+            record(u, roots, cell, row, meas)
         else:
             raise R.NoInput(f'{cell}: not accepted ({verdict}); the record stage was not selected')
     return u

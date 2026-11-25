@@ -100,6 +100,10 @@ Failure modes (exit 2 = refused, with the gate named; 3 = no routed promoted cel
   G-R1  archive record directory not writable or paths.ARCHIVE_RUN empty    G-R3 a not-accepted cell's promoted coadd_final
         holds no master to carry MDWSTAT, or the value is not a one-card printable-ASCII string; a failed write or check
         refuses 'dewarp.mdwstat'. Both refuse before the applied=0 row (the cell stays routed for a rerun).
+  G-R4  the measurement's screen key names the md5 of the two files the not-accepted cell was measured on, and the promoted
+        master or its pbcorr sibling is other bytes (an own earlier MDWSTAT card removed before comparing): the status was
+        measured on another master - refused before any write, naming both files and md5; the cell needs a re-measure. A
+        measurement with no key for the scope records no identity: the value is stamped on G-A11 alone, with a note.
         A refusal of the LST unit refuses its cells ('measurement unit <LST> not done').
   G-W   (also) the promoted rebuild root, when a not-accepted cell will be stamped: up front when a --measurement shows
         one, else in that cell's record stage (the message names --set dewarp.REBUILD_ROOT).

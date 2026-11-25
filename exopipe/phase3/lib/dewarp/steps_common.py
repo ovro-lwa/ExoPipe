@@ -175,6 +175,39 @@ def md5(path):
     return h.hexdigest()
 
 
+def md5_without_card(path, keyword):
+    """md5 of the file as it was before the card ``keyword`` was appended to its primary header within the header's padding
+    (the record stage's own MDWSTAT stamp: Header.set appends a new card, and stamp_mdwstat refuses a write that changes
+    the file size): the primary header blocks are read with ordinary reads (no memory map), the card removed, the header
+    re-serialized to the same length, and the rest of the file streamed after it. None when the card is absent, the
+    header has no END card, or the header without the card has another length."""
+    import warnings
+    from astropy.io import fits
+    end = b'END' + b' ' * 77
+    with open(path, 'rb') as f:
+        raw = b''
+        while True:
+            blk = f.read(2880)
+            if len(blk) < 2880:
+                return None
+            raw += blk
+            if any(blk[i:i + 80] == end for i in range(0, 2880, 80)):
+                break
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            hdr = fits.Header.fromstring(raw.decode('ascii', 'replace'))
+            if keyword not in hdr:
+                return None
+            del hdr[keyword]
+            bare = hdr.tostring().encode('ascii')
+        if len(bare) != len(raw):
+            return None
+        h = hashlib.md5(bare)
+        for b in iter(lambda: f.read(1 << 22), b''):
+            h.update(b)
+    return h.hexdigest()
+
+
 def sha1(path):
     h = hashlib.sha1()
     with open(path, 'rb') as f:
@@ -239,6 +272,40 @@ def screen_key_problems(key, screen, plain, pbcorr):
         if got != want:
             out.append(f'{what} {path} md5 {got} != the key {want} (measured: {was})')
     return out
+
+
+def measured_master_identity(meas, roots, cell):
+    """G-R4 (the record stage's own gate; the coordinator's decision of 2026-11-25 on PR 173): a not-accepted cell's masters
+    are stamped only with a status measured on THOSE masters. The measurement's screen key (SCREEN_KEYS) names the md5 of
+    the two files the scope was measured on (dewarp.MEASURE_FILES); the same two files of the promoted rebuild must have
+    that md5 - or, when they carry an MDWSTAT card (this stage's own earlier stamp, on a rerun), that md5 with the card
+    removed (md5_without_card). Nothing is matched by name or time. Returns (identity, problems):
+      identity None - the measurement records no identity of the master it measured for the scope (no key file: made
+          before the keys existed, or by production; or no key row: no screen was saved for the scope); then only G-A11's
+          time check applies (a follow-up: the measure stage records the measured master's md5 for every scope);
+      problems [] - both files are the measured bytes; else one line per file naming the measured file and md5 and the
+          promoted file and md5."""
+    scope = cell.split('_', 1)[1]
+    key = meas.screen_key(scope) if meas is not None else None
+    if not key:
+        return None, []
+    plain, pbc = measured_files(os.path.join(roots.rebuild, cell, 'coadd_final'), scope)
+    ident, probs = {}, []
+    for what, path, want, was in (('master', plain, key.get('master_md5'), key.get('master')),
+                                  ('pbcorr sibling', pbc, key.get('pbcorr_md5'), key.get('pbcorr'))):
+        if not os.path.isfile(path):
+            probs.append(f'the measured {what} {was} (md5 {want}) has no promoted copy: {path} missing')
+            continue
+        got, how = md5(path), 'md5'
+        if got != want:
+            bare = md5_without_card(path, 'MDWSTAT')
+            if bare != want:
+                probs.append(f'the measured {what} {was} has md5 {want}, the promoted {path} md5 {got}'
+                             + (f' ({bare} with its MDWSTAT card removed)' if bare else ''))
+                continue
+            how = 'md5 with its MDWSTAT card removed'
+        ident[what] = {'path': path, 'md5': want, 'matched_by': how, 'measured': was}
+    return ident, probs
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -717,15 +784,16 @@ def mdwstat_files(roots, cell):
                   and os.path.isfile(os.path.join(d, f)))
 
 
-def _gain_text(g, threshold):
-    """g to one decimal, as the table form prints it - with more decimals where one decimal would print a number that is
-    not below ``threshold`` (4.96 prints '4.96', never '5.0 ... < 5'; a written gain of 5.0 that computes as
-    4.999999999999999 prints that number, the comparison the gate made on the written values)."""
-    for d in range(1, 18):
+def _gain_text(g, threshold, most=3):
+    """g with as many decimals as it needs, from one up to ``most``, to print a number below ``threshold`` (the table's one
+    decimal where that suffices; 4.96 prints '4.96', never '5.0 ... < 5'); None when no such number exists (a written gain
+    of exactly 5.0 that the measurement found below 5 unrounded, or 8.2 - 3.2 = 4.999999999999999): the value then states
+    the comparison without a number, never a rounded number that contradicts it."""
+    for d in range(1, most + 1):
         t = f'{g:.{d}f}'
         if float(t) < threshold:
             return t
-    return repr(g)
+    return None
 
 
 def card_cut(v, n):
@@ -744,19 +812,17 @@ def mdwstat_not_accepted(row):
     "MDWSTAT = 'applied' | 'refused: <reason>' (e.g. gain 3.6 arcsec < 5, median would worsen) | 'not attempted'"). The
     forms are those of install.MDWSTAT_TABLE (the deep chat's mdwstat_for_header_repair.csv), which the header repair wrote
     on every archived master and the install's sibling card gate compares (release1_cards.value_problems); the coordinator's
-    decision of 2026-11-25 on PR 173 (the table's form over dewarp_lst.sh:121-127's status text). The numbers are the row's
-    WRITTEN values:
+    decisions of 2026-11-25 on PR 173 (the table's form over dewarp_lst.sh:121-127's status text; no rounded number that
+    contradicts its comparison). The numbers are the row's WRITTEN values:
       status OK (a written gain below the threshold, else the row is accepted) or REFERENCE ONLY (the held-out test (b')
           failed), with g = anchor_off_med_as - cv_resid_med_as parsable  ->  'refused: held-out gain <g> arcsec < <thr>',
-          g to one decimal. Never a rounded number that contradicts the comparison: for OK (the gate compared the written
-          values) g as _gain_text prints it; for REFERENCE ONLY (the measurement compared unrounded medians and found the
-          gain below the threshold) a one-decimal g that is not below it reads 'refused: held-out gain <g> arcsec, below
-          <thr> before rounding';
-      status REFUSED regression (the VLSSr test (a) failed), med_before / med_after parsable  ->  'refused: VLSSr median
-          would worsen (<med_before> -> <med_after> arcmin)', the values as written; written values that do not show the
-          increase read 'refused: VLSSr median worse before rounding (<med_before> -> <med_after> arcmin)';
+          g as _gain_text prints it (one decimal, or up to three where one would not print a number below the threshold);
+          when no such number exists  ->  'refused: held-out gain < <thr> arcsec';
+      status REFUSED regression with a written med_after above med_before (the VLSSr test (a) failed: the median would
+          worsen)  ->  'refused: VLSSr median would worsen (<med_before> -> <med_after> arcmin)', the values as written;
       status NOT ATTEMPTED: <why>  ->  'not attempted: <why>'; no row  ->  'not attempted: not measured';
-      any other status, or values that do not parse  ->  'refused: ' + the status cut to 58 characters (dewarp_lst.sh:127).
+      any other status, or values that do not parse or do not show the increase  ->  'refused: ' + the status cut to 58
+          characters (dewarp_lst.sh:127).
     Then cut to what one card holds (card_cut to dewarp.MDWSTAT_MAX_CHARS, a quote counting twice: no CONTINUE card) and
     trailing blanks removed (FITS ignores them, so the card reads back as written). Raises ValueError for an accepted row,
     an empty value, or a value that is not printable ASCII."""
@@ -778,16 +844,12 @@ def mdwstat_not_accepted(row):
     elif st.startswith('NOT ATTEMPTED'):
         why = st[len('NOT ATTEMPTED'):].lstrip(' :')
         v = 'not attempted' + (f': {why}' if why else '')
-    elif st == 'OK' and a is not None and cv is not None:
-        v = f'refused: held-out gain {_gain_text(a - cv, thr)} arcsec < {thr:g}'
-    elif st.startswith('REFERENCE ONLY') and a is not None and cv is not None:
-        g = f'{a - cv:.1f}'
-        v = (f'refused: held-out gain {g} arcsec < {thr:g}' if float(g) < thr
-             else f'refused: held-out gain {g} arcsec, below {thr:g} before rounding')
-    elif st.startswith('REFUSED regression') and m0 is not None and m1 is not None:
-        b, e = str(r['med_before']).strip(), str(r['med_after']).strip()
-        v = (f'refused: VLSSr median would worsen ({b} -> {e} arcmin)' if m1 > m0
-             else f'refused: VLSSr median worse before rounding ({b} -> {e} arcmin)')
+    elif (st == 'OK' or st.startswith('REFERENCE ONLY')) and a is not None and cv is not None:
+        g = _gain_text(a - cv, thr)
+        v = (f'refused: held-out gain {g} arcsec < {thr:g}' if g is not None
+             else f'refused: held-out gain < {thr:g} arcsec')
+    elif st.startswith('REFUSED regression') and m0 is not None and m1 is not None and m1 > m0:
+        v = f"refused: VLSSr median would worsen ({str(r['med_before']).strip()} -> {str(r['med_after']).strip()} arcmin)"
     else:
         v = f'refused: {(st or "not measured")[:58]}'
     v = card_cut(v, c.MDWSTAT_MAX_CHARS).rstrip()
