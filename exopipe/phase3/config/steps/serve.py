@@ -30,6 +30,7 @@ class serve(_Section):
     PROTECTED_KEYS = ('RUN_ROOT_KEY', 'HUB_DIR', 'LISTS_DIR', 'INSPECTION_GREENLIT', 'EXCLUSION_GATE_TIERS',
                       'OTHER_SERVED_PORTS', 'JUPITER_ROOTS', 'HUB_TIERS', 'HUB_LINKS', 'TWO_PORT_DIR', 'TWO_PORT_REGISTRY',
                       'TWO_PORT_REGISTERED', 'TWO_PORT_GREENLIT', 'TWO_PORT_LOCK',
+                      'FORCED_GENERATIONS',          # the samples each cutout generation measured: V2 of its evaluations
                       'SNAPVIEW_TIERS', 'SNAPVIEW_STOKES', 'SNAPVIEW_PAGE_SUFFIX',   # the combined view's layout: what the page code
                                                                                     # reads (mirrors of snapshot_combined_view.py)
                       'SNAPVIEW_FLOOD_FACTOR', 'SNAPVIEW_FLOOD_MIN', 'SNAPVIEW_ALIGN_FAILED', 'SNAPVIEW_ALIGN_HELD',
@@ -620,15 +621,47 @@ class serve(_Section):
     FORCED_RUN_NAME = 'Run_SNAPFORCED_{S}{T}_{tag}'          # T = 10s | 1min; snapshot_forced_serve_20261007.sh:30
     FORCED_READY_LOG = 'snapshot_forced_pages_run_{name}.log'   # under paths.OPS_ROOT; its LAST line must hold FORCED_READY_MARK (:63-65)
     FORCED_READY_MARK = 'FT-READY'
+    FORCED_READY_RECORD = 'C_verify_{name}'  # a run built by exopipe3 forced --tier snapshot (family C) is ready by this unit's
+                                            # record (step forced, under forced_snapshot.WORK_ROOT): done, servable, not partial,
+                                            # naming the review copy served; a run without it by its FORCED_READY_LOG
     FORCED_REQUIRED = ('queue_{S}.txt', 'source_catalogs_{S}', 'source_catalogs/localization_offsets.csv',
                        'forced_assoc_identity.csv')          # :66-67
+    # THE PAGE INPUTS of the forced pages (lib/serve/forced.page_context): before a page is registered, on the run it will serve,
+    # the four steps production's page runner takes before FT-READY (snapshot_forced_pages_run_20261007.sh, exopipe_ops bd07263;
+    # by hand on the generation-5 runs 2026-11-12..20), in its order, each refusing: scintillation_index.py RUN --tier
+    # SNAPSHOT_FILTER_TIER; bright_source_filter_precompute.py RUN --tier FORCED_BRIGHT_TIER --workers FORCED_BRIGHT_WORKERS;
+    # page_context_snapshot.py RUN --served-from VIEW --workers FORCED_PAGE_CONTEXT_WORKERS; tess/tess_coverage.py --run RUN
+    # --from-candidates (lib/serve/tess.coverage: site PYTHON[pages_deep.TESS_PYTHON], the shared reader arguments); all from
+    # SNAPSHOT_STEP_CWD, as the runner (cd /tmp)
+    FORCED_BRIGHT_TIER = 'forced'           # bright_source_filter_precompute.py --tier (bd07263; the tool's forced tier)
+    FORCED_BRIGHT_WORKERS = 6               # its --workers (bd07263; at most 6 Lustre readers)
+    FORCED_PAGE_CONTEXT_WORKERS = 4         # page_context_snapshot.py --workers on a forced run (bd07263)
+    FORCED_PAGE_CONTEXT_VIEW_IDS = ('p8986', 'p8987', 'p8988', 'p8989')   # the production registry entries (read only, a parity
+                                            # serve too) of the snapshot transient-search pages, 10 s and 1 min (snapshot_serve.sh
+                                            # SNAP_REGISTER=1): their --run is the view the forced pages are paired with (its
+                                            # member rows are the panels' 'served detections' and the n_i_epoch / n_v_epoch
+                                            # sliders' counts); all four must name ONE run, else the page is refused
+    FORCED_PAGE_CONTEXT_REQUIRED = ('scintillation_index.csv', 'scintillation_index.json', 'bright_source_filter.npz',
+                                    'frame_counts.json', 'tess_coverage.csv')   # after the four steps; their content by the
+                                            # classes tess_coverage (lib/serve/tess.coverage), scintillation_index,
+                                            # bright_source_filter and snapshot_forced_page_context (the sidecars)
     FORCED_ADLEO_CHECK = ('test_snapshot_forced_reserve.py', ('adleo', '--absent-ok'))   # ops script + args, site PYTHON 'py36' (:68;
                                             # Gregg 2026-10-08 "don't label AD Leo unless you have a metric defined and measured")
-    FORCED_TITLE = ('Snapshot FORCED photometry (HWJ + 10 pc), Stokes {S}, {what} - pixel-distance screen, fitted, reference-tied, '
-                    'localized, associated (target / background source / ambiguous) - generation-5 cutouts from the current cubes '
+    FORCED_GENERATIONS = {                   # forced run tag = cutout generation -> (the samples text, the generation text) the
+                                            # title and hub name, and the samples that generation measured: V2 of its snapshot
+                                            # evaluations expects those samples x Stokes x tier (lib/photometry/tests.
+                                            # threshold_classes). A tag without an entry is refused (G26; V2: unknown generation)
+        'gen5': ('HWJ + 10 pc', 'generation-5 cutouts from the current cubes', ('HWJ', '10pc')),
+                                            # snapshot_forced_gen5_serve_20261026.sh:57, :72; generation 5 never measured LPT
+        'gen6': ('HWJ + 10 pc + LPT', 'generation-6 cutouts from the rescaled cubes (Master flux scale)', ('HWJ', '10pc', 'LPT')),
+                                            # gen6_20261117/gen6_forced_serve_SWITCH_DRAFT.sh:55, :71; LPT measured since 2026-11-18
+                                            # (Gregg "Approve gen6 with the LPTs included"; photometry.SAMPLES_MEASURED)
+    }
+    FORCED_TITLE = ('Snapshot FORCED photometry ({samples}), Stokes {S}, {what} - pixel-distance screen, fitted, reference-tied, '
+                    'localized, associated (target / background source / ambiguous) - {generation} '
                     '({run_name}) - served {utc}')   # snapshot_forced_gen5_serve_20261026.sh:57 (the live entries p8775/p8776/p8785/p8786)
     FORCED_SIBLING_LABEL = 'forced Stokes {S} {T} page'      # T = 10-s | 1-min; :34
-    FORCED_HUB_GENERATION = ('forced photometry at HWJ + 10 pc targets, generation-5 cutouts from the current cubes, Stokes {S} '
+    FORCED_HUB_GENERATION = ('forced photometry at {samples} targets, {generation}, Stokes {S} '
                              '{kind} events: pixel-distance screen, fitted, reference-tied, localized, associated')   # kind = 10s |
                                             # 1min; snapshot_forced_gen5_serve_20261026.sh:72-74 (the live hub entries)
 

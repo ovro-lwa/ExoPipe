@@ -130,3 +130,5 @@ jobs:
         run: python tests/test_catalog_snapshot_incremental.py
       - name: versioned page publishing (run versions, the atomic pointer, the coalescing builder, the sub-LST switch)
         run: python tests/test_publish_pointer.py
+      - name: snapshot forced stage 2 to served pages per generation (V2 with LPT, campaign stage 1, generation, serve text, readiness, per-panel QA block)
+        run: python tests/test_photometry_snapshot_stage2.py

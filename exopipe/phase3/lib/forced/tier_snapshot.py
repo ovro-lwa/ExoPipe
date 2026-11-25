@@ -11,6 +11,12 @@ REVIEW HOST = the host holding paths.COADD_SB_ROOT (the deep masters and co-add 
 read; lwacalim07 today); the other stages run on any node that can read the inputs, the work run staying on the node that
 built it when it is node-local.
 
+Generation (--snap-generation GEN): the two evaluations, the zone flags, stage 1 and the cutouts of one cutout generation,
+named as the photometry step writes them (generation_roots; default the forced_snapshot keys, generation 5). G-GEN: the build
+refuses evaluations made from another stage 1 than the one the panels read (their evaluate record, else their sibling
+stage1_<tag>), and an evaluation with neither (unknown provenance). Generation 6 measures LPT besides HWJ and 10 pc (photometry.SAMPLES_MEASURED): its events are built and
+rendered like the others, and the served catalogue lists them under the sample 'FORCED TARGET LPT'.
+
 The run name is used once (G35): a stage that fails is re-run on the same RUN (--stages <stage> ...); a new build needs a new
 --snap-name. Per hour (--epochs E): one run per (Stokes, cadence) of the selection (default I and V, 10s and 1min), named
 forced_snapshot.EPOCH_NAME, built from restricted copies of the two evaluations (that hour's rows); a combination without an
@@ -43,6 +49,12 @@ def add_arguments(p):
     g.add_argument('--snap-zone-flags', metavar='FILE',
                    help='independent zone recomputation (test_snapshot_forced_reserve.py zones --write) read by the '
                         'served-zones test Z2 at render (default forced_snapshot.ZONE_FLAGS)')
+    g.add_argument('--snap-generation', metavar='GEN',
+                   help='the cutout generation the run is built from (gen5, gen6, ...): its two evaluations, zone flags, '
+                        'stage 1 and cutouts (generation_roots: photometry_evaluate.EVAL_DIR and ZONE_FLAGS_FILE with tag GEN '
+                        'under photometry.OUT_ROOT[snapshot], photometry_campaign.STAGE1_DIR_FMT and CUTOUT_ROOT_FMT); '
+                        'default the forced_snapshot keys (the served generation). Not with --snap-eval-sb/-wb, '
+                        '--snap-zone-flags or a --set of those keys')
     g.add_argument('--snap-review-root', metavar='DIR',
                    help='review root under a non-production --out (default <out>/review); production: '
                         'paths.SNAPSHOT_REVIEW_ROOT')
@@ -63,6 +75,89 @@ def roots_env(s=None):
     (snapshot_forced_pages_run_20261007.sh:25-26, local and on the review host's ssh line)."""
     s = s or K.cfg().forced_snapshot
     return {var: getattr(s, key) for var, key in ROOT_SWITCHES}
+
+
+GENERATION_KEYS = ('EVAL_SB', 'EVAL_WB', 'ZONE_FLAGS', 'STAGE1_ROOT', 'PHOT_ROOT')
+
+
+def generation_roots(gen):
+    """{forced_snapshot key: path} of cutout generation ``gen``, named as the photometry step writes them: the evaluations
+    <photometry.OUT_ROOT[snapshot]>/<photometry_evaluate.EVAL_DIR[sb|wb] with tag gen>, the zone flags <...>/<ZONE_FLAGS_FILE>,
+    stage 1 <...>/<photometry_campaign.STAGE1_DIR_FMT> and the cutouts photometry_campaign.CUTOUT_ROOT_FMT. Generation 5 gives
+    the forced_snapshot keys as configured (tests/test_forced.py checks it)."""
+    c = K.cfg()
+    ev, cc = c.photometry_evaluate, c.photometry_campaign
+    if not gen or not all(ch.isalnum() or ch in '-.' for ch in gen):
+        raise Refusal('--snap-generation %r: a generation tag (letters, digits, - or .), e.g. gen6' % gen)
+    root = c.photometry.OUT_ROOT['snapshot']
+    return {'EVAL_SB': os.path.join(root, ev.EVAL_DIR['sb'].format(tag=gen)),
+            'EVAL_WB': os.path.join(root, ev.EVAL_DIR['wb'].format(tag=gen)),
+            'ZONE_FLAGS': os.path.join(root, ev.ZONE_FLAGS_FILE.format(tag=gen)),
+            'STAGE1_ROOT': os.path.join(root, cc.STAGE1_DIR_FMT.format(generation=gen)),
+            'PHOT_ROOT': cc.CUTOUT_ROOT_FMT.format(generation=gen)}
+
+
+def apply_generation(args):
+    """--snap-generation: set the five forced_snapshot keys of the generation (recorded as overrides with that source, so
+    every record of the run names them). Refuses a mix with the per-path flags or a --set/--config of those keys."""
+    gen = getattr(args, 'snap_generation', None)
+    if not gen:
+        return None
+    c = K.cfg()
+    flags = [f for f, v in (('--snap-eval-sb', args.snap_eval_sb), ('--snap-eval-wb', args.snap_eval_wb),
+                            ('--snap-zone-flags', args.snap_zone_flags)) if v]
+    sets = sorted({o[0] for o in c.overrides if o[0].split('[', 1)[0] in {'forced_snapshot.' + k for k in GENERATION_KEYS}
+                   and o[3] != '--snap-generation'})
+    if flags or sets:
+        raise Refusal('--snap-generation %s names the evaluations, zone flags, stage 1 and cutouts together; not with %s'
+                      % (gen, ', '.join(flags + sets)))
+    roots = generation_roots(gen)
+    for k in GENERATION_KEYS:
+        if getattr(c.forced_snapshot, k) != roots[k]:
+            c.set('forced_snapshot.%s' % k, roots[k], source='--snap-generation')
+    return roots
+
+
+def evaluation_stage1(ev):
+    """(stage-1 root, how) an evaluation was made from: its photometry evaluate record (<dir of ev>/_records/photometry/
+    evaluate.<kind>.<tag>.json, meta stage1) when it has one, else its sibling stage1_<tag> of an eval_<tag> / eval_wb_<tag>
+    directory (the production layout), else (None, why)."""
+    import json
+    import re
+    ev = os.path.abspath(ev.rstrip('/'))
+    base, d = os.path.basename(ev), os.path.dirname(ev)
+    m = re.match(r'^eval(_wb)?_(.+)$', base)
+    if m:
+        p = os.path.join(d, '_records', 'photometry', 'evaluate.%s.%s.json' % ('wb' if m.group(1) else 'sb', m.group(2)))
+        try:
+            with open(p) as f:
+                st = ((json.load(f).get('meta') or {}).get('stage1'))
+            if st:
+                return st, 'its record %s' % p
+        except (OSError, ValueError):
+            pass
+        sib = os.path.join(d, 'stage1_%s' % m.group(2))
+        if os.path.isdir(sib):
+            return sib, 'its sibling %s' % sib
+    return None, 'no evaluate record and no sibling stage1_<tag> of %s' % ev
+
+
+def generation_mismatch(c):
+    """[text] for each evaluation of the run whose stage 1 (evaluation_stage1) is not the stage 1 the panels read
+    (forced_snapshot.STAGE1_ROOT, P3_FORCED_STAGE1): a run built from one generation's events and another's measurements.
+    An evaluation of unknown stage-1 provenance (no evaluate record, no sibling stage1_<tag>) is named too: nothing shows it
+    is the panels' generation."""
+    want = os.path.realpath(c.cfg.forced_snapshot.STAGE1_ROOT)
+    out = []
+    for ev in (c.ev_sb, c.ev_wb):
+        st, how = evaluation_stage1(ev)
+        if not st:
+            out.append('%s: stage 1 unknown (%s), the panels read %s (forced_snapshot.STAGE1_ROOT)'
+                       % (ev, how, c.cfg.forced_snapshot.STAGE1_ROOT))
+        elif os.path.realpath(st) != want:
+            out.append('%s was made from stage 1 %s (%s), the panels read %s (forced_snapshot.STAGE1_ROOT)'
+                       % (ev, st, how, c.cfg.forced_snapshot.STAGE1_ROOT))
+    return out
 
 
 def combos(args):
@@ -165,6 +260,9 @@ class Ctx:
 
 def run(args, run):
     stages = K.selected_stages(args, 'snapshot')
+    gen = apply_generation(args)
+    if gen:
+        K.plan('generation %s: %s' % (args.snap_generation, ' '.join('%s=%s' % (k, gen[k]) for k in GENERATION_KEYS)))
     for S, cad, name in combos(args):
         c = Ctx(args, run, S, cad, name)
         K.plan('tier snapshot, Stokes %s, cadence %s, run %s: stages %s; work %s, review %s (review host %s); evaluations '
@@ -272,6 +370,8 @@ def stage_build(c):
         K.plan('[build]   gate G35: work run %s %s; review copy %s%s %s' % (
             c.RUN, 'EXISTS - refused' if os.path.lexists(c.RUN) else 'new', K.remote(c.d_host), c.D,
             'EXISTS - refused' if K.path_exists_on(c.D, c.d_host) else 'new'))
+        for t in generation_mismatch(c):
+            K.plan('[build]   G-GEN REFUSES: %s' % t)
         K.plan('[build]   %d Stokes %s %s events selected by the evaluations%s' % (
             len(selected_events((c.ev_sb, c.ev_wb), c.S, c.cad, keep=(lambda r: _keep(c, r)) if c.items else None)),
             c.S, c.cad, ' (restricted)' if c.items else ''))
@@ -289,6 +389,9 @@ def stage_build(c):
             for fn in ('thresholds.csv', 'targets_ge4.csv'):
                 if os.path.exists(os.path.join(ev, fn)):
                     u.add_input(os.path.join(ev, fn))
+        mix = generation_mismatch(c)
+        if mix:
+            u.refuse('G-GEN one generation per run: %s' % '; '.join(mix))
         if s.EXCLUDED_EVENTS not in ('refuse', 'build'):
             u.refuse(f'forced_snapshot.EXCLUDED_EVENTS {s.EXCLUDED_EVENTS!r}: refuse or build')
         if s.EXCLUDED_EVENTS == 'refuse':        # Gregg 2026-10-14: exclusions enforced downstream

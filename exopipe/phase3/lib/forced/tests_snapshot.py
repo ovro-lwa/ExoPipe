@@ -51,7 +51,9 @@ def sep_arcmin(ra1, dec1, ra2, dec2):
     return math.degrees(math.acos(max(-1.0, min(1.0, c)))) * 60.0
 
 
-_QHEAD = re.compile(r'^# forced photometry \(HWJ \+ 10 pc\), Stokes ([IV]), (10s|1min) tier only, .*; eval (\S+) \+ (\S+)\s*$')
+# the samples text in parentheses: 'HWJ + 10 pc' (generation 5's served runs) or the build's _SAMPLE_TEXT, the measured
+# samples joined (snapshot_forced_panels.py:475, 'HWJ + 10pc + LPT' since exopipe_ops bab41f3, 2026-11-18)
+_QHEAD = re.compile(r'^# forced photometry \([^()]+\), Stokes ([IV]), (10s|1min) tier only, .*; eval (\S+) \+ (\S+)\s*$')
 
 
 def queue_header(run):

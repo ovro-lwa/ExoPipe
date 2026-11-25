@@ -1088,7 +1088,7 @@ def test_mchain():
         want = ['--mchain-queue', f'{B}/judgements/queue_p3s3_{pg.stokes}_multi.txt'] if pg.kind == 'single' else []
         assert a[a.index('--title') + 2:] == want + ['--lists-dir', p2.lists_dir], (pg.key, a[-6:])
     others = [planmod.make(_ns(tier='snapshot', run_label='Run_SNAPTEST', source='/nowhere', label='t'), f'{T}/mchain_s'),
-              planmod.make(_ns(tier='snapshot', family='forced', forced_tag='20261007'), f'{T}/mchain_f')]
+              planmod.make(_ns(tier='snapshot', family='forced', forced_tag='gen5'), f'{T}/mchain_f')]
     assert not [x for p_ in others for pg in p_.pages for x in p_.argv(pg, 'UTC') if x.startswith('--mchain')]
     tree = ast.parse(open(f'{OPS}/classify_transients.py').read())
     opts = {n.args[0].value for n in ast.walk(tree) if isinstance(n, ast.Call) and getattr(n.func, 'attr', '') == 'add_argument'
@@ -2344,13 +2344,38 @@ def test_inplace_gate_agrees():
     ok(f'falsifier: scanning cell_load_review.csv as v2 did before 2026-11-18, the readers disagree ({detail_f})')
 
 
+def test_forced_page_inputs_production():
+    """The forced pages' page inputs (lib/serve/forced.page_context) are production's page-runner steps before FT-READY
+    (snapshot_forced_pages_run_20261007.sh, exopipe_ops bd07263), read in place: the four tools in its order with v2's
+    arguments (serve.SNAPSHOT_FILTER_TIER, FORCED_BRIGHT_TIER / _WORKERS, FORCED_PAGE_CONTEXT_WORKERS, --from-candidates), from
+    /tmp (serve.SNAPSHOT_STEP_CWD), the view refused without frame_counts.json first, and its view entry p8986 among
+    serve.FORCED_PAGE_CONTEXT_VIEW_IDS. The order and arguments v2 passes: tests/test_photometry_snapshot_stage2.py."""
+    S = CFG.serve
+    src = open(f'{OPS}/snapshot_forced_pages_run_20261007.sh').read()
+    code = [l_ for l_ in src.splitlines() if l_.strip() and not l_.lstrip().startswith('#')]
+    frag = [f'scintillation_index.py $D --tier {S.SNAPSHOT_FILTER_TIER} ',
+            f'bright_source_filter_precompute.py $D --tier {S.FORCED_BRIGHT_TIER} --workers {S.FORCED_BRIGHT_WORKERS} ',
+            f'page_context_snapshot.py $D --served-from $VIEW --workers {S.FORCED_PAGE_CONTEXT_WORKERS} ',
+            'tess/tess_coverage.py --run $D --from-candidates ', 'say "FT-READY']
+    at = [next((i for i, l_ in enumerate(code) if f in l_), -1) for f in frag]
+    view = next((i for i, l_ in enumerate(code) if 'test -s $VIEW/frame_counts.json' in l_), -1)
+    rhp = next((l_ for l_ in code if l_.startswith('RHP=')), '')
+    assert all(i >= 0 for i in at) and at == sorted(at) and 0 <= view < at[0], (dict(zip(frag, at)), view)
+    assert 'cd /tmp' in rhp and S.SNAPSHOT_STEP_CWD == '/tmp' and "'p8986'" in src and 'p8986' in S.FORCED_PAGE_CONTEXT_VIEW_IDS, rhp
+    assert 'cd /tmp && /fast/gh/main/envs/tess/bin/python $OPS/tess/tess_coverage.py' in src, 'the TESS interpreter moved'
+    ok('forced page inputs: production\'s page runner (bd07263) runs scintillation_index.py --tier snapshot, '
+       'bright_source_filter_precompute.py --tier forced --workers 6, page_context_snapshot.py --served-from VIEW --workers 4, '
+       'tess/tess_coverage.py --from-candidates, in that order from /tmp before FT-READY, after refusing a view without '
+       'frame_counts.json - v2\'s arguments and order')
+
+
 def test_forced_probe_before_stop():
     """forced switch: the App probe runs before anything is registered - a failed probe refuses that page and, no other page
     passing, nothing is registered (the page keeps the run its entry serves; snapshot_forced_gen5_serve_20261026.sh: 'A page
     that fails a check before the registry call keeps its old run')."""
     from exopipe.phase3.core.record import Run
     from exopipe.phase3.lib.serve import exclusion_gate as eg, flow, forced
-    a = _ns(tier='snapshot', family='forced', forced_tag='TEST', pages='forced-V-10s')
+    a = _ns(tier='snapshot', family='forced', forced_tag='gen6', pages='forced-V-10s')   # a tag with title text (G26 first)
     out = f'{T}/forced_out'
     plan = planmod.make(a, out)
     pg = plan.pages[0]
@@ -2362,10 +2387,12 @@ def test_forced_probe_before_stop():
     def probe_fails(*x, **k):
         raise Refusal('App probe of page forced-V-10s failed (rc 1): test')
     saved = (forced.ready, forced.missing_files, forced._parity_copy, scripts.run, eg.scan_snapshot_run, servers.app_probe,
-             register.write, register.check_server)
-    forced.ready = lambda name: (True, 'FT-READY')
+             register.write, register.check_server, forced.paired_view, forced.page_context)
+    forced.ready = lambda name, review=None: (True, 'FT-READY')
     forced.missing_files = lambda pg_, D: []
     forced._parity_copy = lambda pg_: None
+    forced.paired_view = lambda d=None: '/view'              # the per-panel QA block passes (its own test:
+    forced.page_context = lambda *x, **k: []                 # tests/test_photometry_snapshot_stage2.py)
     scripts.run = lambda *x, **k: Res()
     eg.scan_snapshot_run = lambda D, ex=None: eg.Scan()
     servers.app_probe = probe_fails
@@ -2376,9 +2403,9 @@ def test_forced_probe_before_stop():
         forced.switch(run, plan, flow.new_state(), 'UTC')
     finally:
         (forced.ready, forced.missing_files, forced._parity_copy, scripts.run, eg.scan_snapshot_run, servers.app_probe,
-         register.write, register.check_server) = saved
+         register.write, register.check_server, forced.paired_view, forced.page_context) = saved
     u = {x.name: x for x in run.units}
-    pu, ru = u[pg.unit], u['snapshot_forced_TEST_register']
+    pu, ru = u[pg.unit], u['snapshot_forced_gen6_register']
     assert pu.status == 'refused' and 'App probe' in pu.reason and not written, (pu.status, pu.reason, written)
     assert ru.status == 'no-input' and any('REFUSED' in n and 'App probe' in n for n in ru.notes), (ru.status, ru.notes)
     ok('forced switch: a failed App probe refuses the page before anything is registered (no registration: the page keeps '
@@ -3408,6 +3435,7 @@ def main():
         test_serve_hold()
         test_card2_rejudge_go()
         test_inplace_gate_agrees()
+        test_forced_page_inputs_production()
         test_forced_probe_before_stop()
         test_register_matches_production()
         test_registry_lock()

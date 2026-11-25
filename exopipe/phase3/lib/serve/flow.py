@@ -429,7 +429,12 @@ def hub_stage(run, plan, state, remove=(), utc=None):
         entries, tunnel = [], []
         for pg in plan.pages:
             if pg.key in state['served'] or _served_record_done(run, pg) or _hub_entry_unserved(run, plan, pg, state):
-                e = plan.hub_entry(pg, utc)
+                try:
+                    e = plan.hub_entry(pg, utc)
+                except Refusal as x:     # G26 (a forced page): this page's button refused, its old one stays; the others go on
+                    u.refuse_item(pg.record_path(), f'page {pg.key}: hub entry: {x}', gate='G26')
+                    u.note(f'page {pg.key}: hub entry REFUSED: {x}')
+                    continue
                 if e is None:
                     tunnel.append(pg.port)
                 else:

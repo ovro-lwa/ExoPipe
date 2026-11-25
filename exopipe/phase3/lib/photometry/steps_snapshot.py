@@ -12,7 +12,9 @@ node-local work dir :15, :33-34; 'no HWJ/10pc cutouts' is not a failure :36-37, 
 glob; manifest merge in band order :38-40; completion rule :41-42; copy to the product root :43 -> atomic per-file writes;
 done/failed markers -> run records; failed work kept) and from snapshot_forced_reserve_20261007.sh /
 snapshot_forced_run_20260928.sh (per-kind refused-cell lists :138-147; the cells to evaluate = measured minus refused; two
-evaluations :151-162 with OMP_NUM_THREADS=1; the 8-row check :161; the grid, zone and stage-1 content tests :164, :169-173).
+evaluations :151-162 with OMP_NUM_THREADS=1; the 8-row check :161, now one row per (sample, Stokes, tier) of the samples
+measured (V2); the grid, zone and stage-1 content tests :164, :169-173). A campaign's stage 1 (lib/photometry/campaign.py) is
+evaluated per band kind: a cell without the kind's cutouts or held by a gap is listed refused, a held one refuses SE-DONE.
 
 Units (records <out>/_records/photometry/): cutouts.<cell>.<band>[.<tags>] (steps_cutouts), measure.<cell>
 (measure.<cell>.<band+band> for a band subset), evaluate.<kind>.<tag>, evaluate.zones.<tag>. --out is the snapshot forced root (production /lustre/gh/main/phase3/snapshot_forced).
@@ -484,10 +486,10 @@ def pin_lifted(stage1, cells, pending=(), planned_root=None):
 
 def refused_for(kind, given, stage1, cells, lifted=None):
     """(OrderedDict cell -> reason, path of a given list or None) of the cells refused before the evaluation of ``kind``.
-    Default: the pinned file's rows for the kind in file order (reserve :140-141), then the cells whose measure unit was
-    refused (:142-144). A given list (--refused-cells) is read as written and must hold every pinned cell of the kind (the
-    pinned cells are never re-admitted, DECISION-FORCED-CORRUPT-CUTOUT-CELLS-REFUSED); the measure refusals are added after
-    its rows.
+    Default: the pinned file's rows for the kind in file order (reserve :140-141), then the cells whose stage-1 records refuse
+    them (:142-144; a campaign's units of the kind as _measure_refusals lists them). A given list (--refused-cells) is read
+    as written and must hold every pinned cell of the kind (the pinned cells are never re-admitted,
+    DECISION-FORCED-CORRUPT-CUTOUT-CELLS-REFUSED); the measure refusals are added after its rows.
     The pinned file names corrupt GENERATION-4 archive cutouts (written 2026-09-18..22 under the retired root). Generation 5
     re-cut every cutout from the cubes, and production's generation-5 evaluation (snapshot_forced_gen5_stages_20261026.sh)
     reads no pinned file: it evaluated 04h 2025-01-06, 09h 2025-01-01 and 08h 2025-01-09. So a pinned cell whose own
@@ -519,7 +521,7 @@ def refused_for(kind, given, stage1, cells, lifted=None):
     else:
         for cl, why in pinned:
             ref.setdefault(cl, why)
-    for cl, why in _measure_refusals(stage1, cells).items():
+    for cl, why in _measure_refusals(stage1, cells, kind).items():
         ref.setdefault(cl, why)
     return ref, (path if path and len(ref) == len(rows) else None)
 
@@ -695,15 +697,42 @@ def stage_evaluate(run, args):
     return units
 
 
-def _measure_refusals(stage1, cells):
-    """{cell: reason} of cells whose measure record (under the stage-1 root's own records) is refused (reserve :142-144)."""
+CAMPAIGN_REFUSED = ('SM-DONE',)      # a campaign's measure refusals that list the cell refused (its stage 1 failed); any other
+                                     # refusal (SM-HELD 'held', CP-PIN, CP-SPACE, SM-SUBSET, SM-STALE) leaves it incomplete
+
+
+def _measure_refusals(stage1, cells, kind=None):
+    """{cell: reason} of the cells refused before the evaluation of ``kind`` by their stage-1 records (under the stage-1 root's
+    own records). A refused measure.<cell> unit refuses both kinds (reserve :142-144). A campaign's unit of the kind
+    (campaign.stage1_cell: measure.<cell>.<the kind's bands>) refuses its kind when it ended without a cutout of the kind
+    (SM-NOBAND, outcome 'no subband' / 'no wideband'; generation 5 listed such cells 'no cutouts to measure'), not run for a
+    gap (SM-HELD with outcome 'gap': a gate refused the inputs of its cutouts units; gen6_forced_stages_DRAFT.sh:115 lists
+    them 'held: input gate refused'), or its measurement refused (CAMPAIGN_REFUSED: 'stage 1 failed', :116-117). Any other
+    state of the campaign unit - held for its cutouts, stopped, an error - is not listed: done_evidence then refuses SE-DONE
+    (an incomplete campaign is never evaluated)."""
     out = {}
+    rdir = os.path.join(_records_root(stage1), '_records', 'photometry')
     for cl in cells:
-        p = os.path.join(_records_root(stage1), '_records', 'photometry', 'measure.%s.json' % cl)
+        p = os.path.join(rdir, 'measure.%s.json' % cl)
         if os.path.exists(p):
             r = json.load(open(p))
             if r.get('status') == 'refused':
                 out[cl] = 'stage 1 refused in this run (%s)' % (r.get('reason') or '')[:160]
+                continue
+        if kind is None:
+            continue
+        p = os.path.join(rdir, '%s.json' % unit_name(cl, kind_bands(kind)))
+        if not os.path.exists(p):
+            continue
+        r = json.load(open(p))
+        st, why, outcome = r.get('status'), (r.get('reason') or '').strip(), (r.get('meta') or {}).get('outcome')
+        code = why.split(':', 1)[0].strip()
+        if st == 'no-input' and code == 'SM-NOBAND':
+            out[cl] = 'no cutouts to measure: %s in the campaign (%s)' % (outcome or 'no %s cutout' % kind, why[:160])
+        elif st == 'refused' and code == 'SM-HELD' and outcome == 'gap':
+            out[cl] = 'held: input gate refused (stage 1 not run for a gap: %s)' % why[:200]
+        elif st == 'refused' and code in CAMPAIGN_REFUSED:
+            out[cl] = 'stage 1 failed in the campaign (%s)' % why[:160]
     return out
 
 
