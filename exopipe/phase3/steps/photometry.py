@@ -144,7 +144,10 @@ def add_arguments(p):
     d = p.add_argument_group('deep tier')
     d.add_argument('--src-run', metavar='DIR', help='the SEARCHED deep run directory (required unless --run LABEL)')
     d.add_argument('--parent-dir', metavar='DIR', help='the Robust -0.75 parent catalogue directory the deep table pass used '
-                                                       '(frames stage; required)')
+                                                       '(frames stage; required); the value `pass` '
+                                                       '(catalog.PARENT_FROM_PASS) resolves the snapshot of the --run '
+                                                       'deep run\'s latest finished table pass (gate P-PASS refuses '
+                                                       'otherwise; the per-hour chain passes it)')
     d.add_argument('--frames', metavar='FILE', help='measure/evaluate from this frame list instead of the frames/stage '
                                                      'record (e.g. a list built by the deep chat; its sha1 is recorded)')
     d.add_argument('--shards', type=int, help='measure: shards (default photometry_measure.SHARDS[deep] = 32; another value '

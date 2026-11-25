@@ -40,7 +40,9 @@ def add_arguments(p):
     g.add_argument('--deep-parent-dir', metavar='DIR',
                    help='P3_PARENT_DIR of the pass: the parent-catalogue snapshot the catalog stage used (production: '
                         'fork_serve_p3s5_20261008.sh:15, /fast/gh/main/phase3/p3s5_parents_union_<UTC>); required by build '
-                        '(the astrometry figures read it) unless pages_deep.PARENT_DIR is set')
+                        '(the astrometry figures read it) unless pages_deep.PARENT_DIR is set; the value `pass` '
+                        '(catalog.PARENT_FROM_PASS) resolves the snapshot of the run\'s latest finished table pass '
+                        '(gate P-PASS)')
     g.add_argument('--deep-roots-map', metavar='CSV',
                    help='masters map the builder reads (P3S2_ROOTS_CSV; default pages.MASTER_ROOTS_MAP); a parity mirror '
                         'passes its own')
@@ -85,7 +87,10 @@ def context(args, run):
     if args.only_pages:
         with open(args.only_pages) as f:
             c.only = set(f.read().split())
-    c.parent = args.deep_parent_dir or D.PARENT_DIR
+    # --deep-parent-dir pass (catalog.PARENT_FROM_PASS; the per-hour chain): the snapshot of the latest finished table pass
+    # of the run the pages read (lib/catalog/deep_records.pass_parent_dir; parent_why = the P-PASS reason build refuses with)
+    from exopipe.phase3.lib.catalog import deep_records
+    c.parent, c.parent_how, c.parent_why = deep_records.resolve_parent_arg(args.deep_parent_dir or D.PARENT_DIR, c.U, label)
     c.roots_map = args.deep_roots_map or C.MASTER_ROOTS_MAP
     c.coadd_root = args.deep_coadd_root
     c.from_run = args.from_run
@@ -399,6 +404,10 @@ def stage_build(c, run, done, K):
         if miss:
             raise common.Refusal(f'P4: localization tables missing {miss} - catalog --stages localize writes them before '
                                  f'any page (p3s3_pass.sh:132-134)')
+        if c.parent_why:
+            raise common.Refusal(c.parent_why)
+        if c.parent_how:
+            u.meta['parent_dir_from'] = c.parent_how
         if not c.parent:
             raise common.Refusal('P3_PARENT_DIR unknown: pass --deep-parent-dir (the parent snapshot of the catalog stage; '
                                  'unset, gate_inputs.py:19 reads the retired Run_P3S4 parents)')
@@ -703,10 +712,11 @@ def dry_run(c, args, run_):
             say(f'    gate P4 localization tables (catalog --stages localize): ' + ('present' if not miss else f'MISSING {miss}'))
             if miss:
                 refuse.append(f'build: P4 missing {miss}')
-            say(f'    P3_PARENT_DIR {c.parent or "NOT GIVEN (--deep-parent-dir)"}' +
-                ('' if (c.parent and os.path.isdir(c.parent)) else '  -> WOULD REFUSE'))
+            say(f'    P3_PARENT_DIR {c.parent or c.parent_why or "NOT GIVEN (--deep-parent-dir)"}'
+                + (f' (from {c.parent_how})' if c.parent_how else '')
+                + ('' if (c.parent and os.path.isdir(c.parent)) else '  -> WOULD REFUSE'))
             if not (c.parent and os.path.isdir(c.parent)):
-                refuse.append('build: no --deep-parent-dir directory')
+                refuse.append('build: ' + (c.parent_why or 'no --deep-parent-dir directory'))
             say(f'    roots map {c.roots_map}; env {build_env(c, "V_wb")}')
             lines.extend(mirror.plan_lines(c.roots, TIER, 'build'))
             for K in c.sets:

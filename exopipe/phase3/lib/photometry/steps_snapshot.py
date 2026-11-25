@@ -536,14 +536,23 @@ def _records_root(stage1):
     return os.path.dirname(os.path.abspath(stage1.rstrip('/')))
 
 
-def done_evidence(stage1, cell, kind):
+def measure_records(stage1, cell):
+    """The measure records of the night cell under the stage-1 root's own records (every band subset of the cell)."""
+    recs = []
+    for p in glob.glob(os.path.join(_records_root(stage1), '_records', 'photometry', 'measure.%s*.json' % cell)):
+        with open(p) as fh:
+            recs.append(json.load(fh))
+    return [r for r in recs if r.get('unit') == 'measure.%s' % cell or r.get('unit', '').startswith('measure.%s.' % cell)]
+
+
+def done_evidence(stage1, cell, kind, records_only=False, recs=None):
     """(ok, how) - the cell's stage 1 is complete for this kind: done measure records of the cell (under the stage-1 root's
     own records) covering the kind's bands; a stage-1 root without any record (the production fleet's) is accepted when
-    the cell's manifests pass M1 + M2 (the fleet's completion rule, snapshot_forced_fleet.sh:41-42)."""
+    the cell's manifests pass M1 + M2 (the fleet's completion rule, snapshot_forced_fleet.sh:41-42) - unless
+    ``records_only`` (the catalog's gate SI-G8: the fleet's own evidence there is its done marker, not its manifests).
+    ``recs``: the cell's measure records already loaded (measure_records), so a caller asking for both kinds reads them once."""
     from exopipe.phase3.lib.photometry import tests as T
-    recs = glob.glob(os.path.join(_records_root(stage1), '_records', 'photometry', 'measure.%s*.json' % cell))
-    recs = [json.load(open(p)) for p in recs]
-    recs = [r for r in recs if r.get('unit') == 'measure.%s' % cell or r.get('unit', '').startswith('measure.%s.' % cell)]
+    recs = measure_records(stage1, cell) if recs is None else recs
     if recs:
         done = set()
         bad = []
@@ -557,6 +566,8 @@ def done_evidence(stage1, cell, kind):
             return True, 'measure record(s) done for every %s band' % kind
         return False, 'measure records cover %s of the %s bands%s' % (sorted(done & need), kind,
                                                                       '; not done: %s' % bad if bad else '')
+    if records_only:
+        return False, 'no measure record of %s under %s' % (cell, _records_root(stage1))
     mans = glob.glob(os.path.join(stage1, cell, 'forced_manifest*.csv'))
     if not mans:
         return False, 'no measure record and no stage-1 manifest'

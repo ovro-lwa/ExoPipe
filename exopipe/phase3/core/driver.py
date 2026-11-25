@@ -363,6 +363,24 @@ def run_stage(job, item, k):
     rec.update(status='running', host=entry['host'], chain=j.get('chain'), steps=steps, step=k,
                log=os.path.join(r.job_dir(job), 'logs', f'{r._safe(item)}.log'), driver=True)
     rec['attempts'] = int(rec.get('attempts', 0)) + 1
+    try:                                           # gate R-ROOTS on the node the stage runs on (a disk not mounted here)
+        miss = r.missing_roots(j.get('chain_roots') or [])
+    except Exception as e:                         # the check could not run: an error, retried by the driver's rule
+        entry.update(status='error', rc=None, finished=_now(), reason=f'R-ROOTS check raised {type(e).__name__}: {e}')
+        rec.update(status='error', rc=None, finished=_now())
+        _write_item(job, item, rec)
+        print(f'===== {_now()} {tag}: not run - {entry["reason"]}', flush=True)
+        return 1
+    if miss:
+        why = (f'R-ROOTS: this host ({_host()}) cannot read root(s) the chain {j.get("chain")} reads: '
+               + '; '.join(f'{ref} = {p}: {w}' for ref, p, w in miss))
+        entry.update(status='refused', rc=2, finished=_now(), reason=why)
+        rec['refusal'] = why
+        close_record(j, rec, 'refused')
+        rec.update(rc=2, finished=_now())
+        _write_item(job, item, rec)
+        print(f'===== {_now()} {tag}: REFUSED before the step - {why}', flush=True)
+        return 2
     cores, why = stage_cores()
     if cores is None:
         entry.update(status='error', rc=None, finished=_now(), reason=f'placement: {why}')
@@ -967,8 +985,14 @@ def book(ps, hours, h):
     nodes = [pin] if pin else ps.nodes()
     if not nodes:
         return None, None, 'no nodes: give --nodes or set driver.NODE_POOL'
+    r = _runner()
+    roots = [] if pin else r.chain_roots(cfg.driver.CHAIN, ps.step_forward)
     best, why = None, []
     for host in nodes:
+        miss = r.missing_roots(roots, host)
+        if miss:                                   # gate R-ROOTS: a node that cannot read a root the chain's steps read
+            why.append(f'{host}: cannot read ' + ', '.join(f'{ref} = {p} ({w})' for ref, p, w in miss))
+            continue
         state = ps.node_state(host)
         if state and not slurm.node_usable(state):
             why.append(f'{host}: Slurm reports it {state}')

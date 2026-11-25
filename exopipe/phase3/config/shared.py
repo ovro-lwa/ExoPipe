@@ -402,10 +402,21 @@ class runner(_Section):
     )
     CHAINS = {
         # per hour: one LST hour of one night, every tier, against the installed masters (item kind: epoch 04h_2025-10-14)
-        # deep frames are made by the deep search engine (frames_residuals.DEEP_PRODUCER 'search'): no frames step here
-        'epoch': ['search --tier deep --epochs {item}',
-                  'photometry --tier deep --epochs {item}',
-                  'catalog --tier deep --incremental --run {deep_run} --epochs {item}',
+        # deep frames are made by the deep search engine (frames_residuals.DEEP_PRODUCER 'search'): no frames step here.
+        # First the admission of a night that is not a member of a cell's Master (R-GREGG-20261112-PER-HOUR-STEPS-SIX-RULINGS
+        # (3), "Approved"; DECISION-20261114-PR21-ADMIT-STEPS-NOT-IN-EPOCH-CHAIN-YET): the per-night prep, its flow and
+        # the admission into each cell of the LST that has to admit it. A member night (no cell has to admit it) ends these
+        # three steps no-input; a cell that cannot admit it (no coadd_final/build_stats.json before the cutover backfill,
+        # an excluded build night, ...) is a cell refusal and the hour goes on for the other cells.
+        # The deep photometry, the incremental deep catalog and the deep pages read the parent catalogues of the deep run's
+        # latest finished table pass ('pass' = catalog.PARENT_FROM_PASS, gate P-PASS; production exports that pass's
+        # snapshot as P3_PARENT_DIR, ops/fork_serve_p3s5_20261008.sh:15, 33) - never a default (B-59).
+        'epoch': ['masters --tier deep --stages admit-prep --epochs {item}',
+                  'flow --tier deep --stages admit --epochs {item}',
+                  'masters --tier deep --stages admit --epochs {item}',
+                  'search --tier deep --epochs {item}',
+                  'photometry --tier deep --run {deep_run} --parent-dir pass --epochs {item}',
+                  'catalog --tier deep --incremental --run {deep_run} --inc-parents pass --epochs {item}',
                   'forced --tier deep --run {deep_run} --epochs {item}',
                   # 10-second tier first: its frames, their flow, then the night's 10-second cubes (and movies), which
                   # the 10-minute stack reads (masters_sublst gate G-S02; PHASE3_ARCHITECTURE R-02). Gregg 2026-11-13.
@@ -427,14 +438,16 @@ class runner(_Section):
                   'frames --tier sublst --stages wideband,tree-nonmember --epochs {item}',
                   'search --tier sublst --epochs {item}',
                   'catalog --tier sublst --incremental --resume --epochs {item}',
-                  # the rest of the 10-second tier. Its catalog step refuses every night until the tier has an incremental
-                  # path (plan/PER_HOUR_GAP_DESIGNS_20261111.md 2.2); without --incremental it was a usage error (exit 1, a
-                  # failed item, not a refusal): steps/catalog.py takes --epochs only with it
+                  # the rest of the 10-second tier: the search (it writes the 10-s cutouts), the light curves, the night's
+                  # forced photometry stage 1 (the production fleet's snapshot_forced_fleet.sh; the catalog step's gate SI-G8
+                  # reads its done measure records), then the incremental catalog: its per-cell stage runs, its
+                  # association phase refuses every cell (SI-G9: no ruled per-hour design), so the hour ends cells-refused
                   'search --tier snapshot --epochs {item}',
                   'curves --tier snapshot --epochs {item}',
+                  'photometry --tier snapshot --epochs {item}',
                   'catalog --tier snapshot --incremental --epochs {item}',
                   'forced --tier snapshot --epochs {item}',
-                  'pages --run {deep_run} --epochs {item}',
+                  'pages --run {deep_run} --deep-parent-dir pass --epochs {item}',
                   'serve --run {deep_run} --epochs {item}',
                   # the 10-minute pages of the night (every hour its catalog pass viewed; no-input when that pass ended
                   # no-input) and the cumulative Run_SLSTB re-served from the placed hour runs with its reuses (design 2.3a
@@ -468,6 +481,12 @@ class runner(_Section):
     # of the hour (Gregg 2026-11-12: "one email at the end of Phase 3 that is close to identical to the current one in
     # what is included, just with the transient and forced photometry highlights added").
     CHAIN_FINALLY = {'epoch': ['notify --epochs {item} --chain-record {record}']}
+    # Roots a chain's steps read that must be directories on the node running an item (core/runner.py gate R-ROOTS: refused
+    # before the first step, naming each root, instead of a step crashing on the missing path; a root the site file's
+    # NODE_LOCAL_ROOTS give to another host refuses too). Config names ('section.KEY'), resolved at submit; hosts come only
+    # from the site file. The per-hour chain: the deep masters (admission, search, photometry), the deep runs (photometry
+    # source, incremental catalog, forced, pages, serve) and the served snapshot runs (forced, serve, notify).
+    CHAIN_REQUIRED_ROOTS = {'epoch': ('paths.COADD_SB_ROOT', 'paths.TRANSIENTS_ROOT', 'paths.SNAPSHOT_REVIEW_ROOT')}
     # Chains whose items hold many cells, where one cell's refusal does not stop the others (core/runner.py; the per-hour chain:
     # prerequisite (2) of the refactor chat's decision of 2026-11-14 to put the admission steps into it,
     # DECISION-20261114-PR21-ADMIT-STEPS-NOT-IN-EPOCH-CHAIN-YET). A step's exit 2 whose refused units all name their cell, with

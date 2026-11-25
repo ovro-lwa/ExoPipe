@@ -357,6 +357,30 @@ def cell_lock(W):
     return f
 
 
+def install_lease(cd, say):
+    """The deep install lock (catalog.INSTALL_LOCK, exclusive, waited for) while the admit stage writes a PRODUCTION cell
+    tree (its coadd_final/admissions.csv and subtracted/ products), as production's installs take it (ops/
+    membership_rebuild_20261007/install_cell.sh:20) and a deep table pass holds it from its parent snapshot to the fork I
+    content test (fork_serve_p3s5_20261008.sh:18-19, 38-39; lib/catalog/deep_chain.take_lock): nothing lands in a cell
+    while a pass reads its parents and master. Not taken for a tree outside the production roots (a copy of the cell before
+    cutover). Returns the open descriptor (os.close releases it) or None."""
+    import fcntl
+    from exopipe.phase3.lib.masters import deep_inplace as IP
+    if not IP.is_production_path(cd):
+        return None
+    c = _cfg()
+    p = c.catalog.INSTALL_LOCK.format(ops_root=c.paths.OPS_ROOT)
+    fd = os.open(p, os.O_RDWR | os.O_CREAT, 0o664)
+    try:
+        say(f'waiting for the install lock {p} (no admission while a deep table pass reads the parents)')
+        fcntl.flock(fd, fcntl.LOCK_EX)
+    except BaseException:
+        os.close(fd)
+        raise
+    say(f'install lock {p} held')
+    return fd
+
+
 class ErrorWatch:
     """An admission never rests on an error (seventh to tenth reviews): its row is final (never admitted twice), and
     production's code on a night's path turns some exceptions into a value - a skipped source, a fallback fit, NaN, False,
@@ -537,7 +561,9 @@ def admit_stage(cell, args, run, out, ran_now):
         for d_ in (W, os.path.join(cd, 'subtracted'), os.path.join(cd, 'coadd_final')):
             IP.refuse_production_write(d_, 'admit')
         lock = cell_lock(W)
+        lease = None
         try:
+            lease = install_lease(cd, u.note)
             mods, _ = DS.inplace(out)
             co = mods['coadd']
             why_pop = population_problem(cd, cell, co)
@@ -762,6 +788,8 @@ def admit_stage(cell, args, run, out, ran_now):
             u.note(f'{cell}: {n_adm} night(s) admitted, {n_ref} refused by their checks (admissions.csv); guard median {med} '
                    f'({med_src})')
         finally:
+            if lease is not None:
+                os.close(lease)
             lock.close()
 
 
@@ -845,6 +873,10 @@ def plan_admit(cell, args, out, planned):
     r = IP.is_production_path(os.path.join(cd, A.ADMIT_DIR))
     if r and not _cfg().paths.PRODUCTION_WRITES:
         gates.append(f'{cd} is under the production root {r} (run on a copy of the cell: --deep-installed-root)')
+    if r:
+        c = _cfg()
+        lines.append(f'install lock {c.catalog.INSTALL_LOCK.format(ops_root=c.paths.OPS_ROOT)} taken before the nights '
+                     f'(waits while a deep table pass holds it)')
     co = DS.inplace(out)[0]['coadd']
     why_pop = population_problem(cd, cell, co)
     if why_pop:

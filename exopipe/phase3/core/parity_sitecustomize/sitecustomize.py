@@ -179,6 +179,23 @@ class _PatchImportGuard(object):
 
 sys.meta_path.insert(0, _PatchImportGuard())
 
+# OLD MODULE NAMES in a child (refactor window, core/_shim.py LEGACY): an in-place production module that imports a moved
+# module by its old name (exopipe_ops/deep_forced_radio.py: exopipe.phase3.phase3_catalog) fails in a child whose `exopipe` is
+# this package (core/runner._child_env puts the step's tree first on PYTHONPATH; PR 161: sublst_fit_positions.py refused
+# S-G14 under a runner launch). The step process maps the names with core/env.legacy; here core/_shim.py, loaded by path,
+# appends its fallback finder LAST on sys.meta_path: asked only for an old name no file was found for, and mapping it only
+# when the new module exists (a child whose `exopipe` is the production package finds the old file first). A failure here is
+# reported on stderr; the old name then fails to import as before.
+try:
+    import importlib.util as _ilu_shim
+    _shim_spec = _ilu_shim.spec_from_file_location('exopipe3_shim', os.path.join(os.path.dirname(_HERE), '_shim.py'))
+    _shim = _ilu_shim.module_from_spec(_shim_spec)
+    _shim_spec.loader.exec_module(_shim)
+    _shim.install_legacy_fallback_finder()
+    del _ilu_shim, _shim_spec, _shim
+except Exception as _shim_exc:                                   # noqa: BLE001 - reported; the blocks below must still run
+    sys.stderr.write(f'LEGACY-NAMES: old module names not mapped in this process: {_shim_exc!r}\n')
+
 # B-30 FALLBACK STATE of a legacy child (core.legacy.run, core/fallback.py): with EXOPIPE3_FALLBACK_OUT set, write at exit
 # the counts and refusals of the fallback sites the child reached - only when it imported core/fallback (a branch module;
 # production modules never do), so the parent's unit records them.

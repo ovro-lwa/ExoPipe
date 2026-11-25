@@ -20,6 +20,7 @@ import glob
 import hashlib
 import json
 import os
+import re
 
 from exopipe.phase3.core import record
 
@@ -183,3 +184,136 @@ class Chain:
 
     def meta(self, unit, key, default=None):
         return ((self.recs.get(unit) or {}).get('meta') or {}).get(key, default)
+
+
+# ---- the parent snapshot of a deep run's latest table pass (the per-hour steps; B-59) ------------------------------------
+_PASS_START = re.compile(r'^\[(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ)\] pass start \(parents (\S+)\)\s*$')
+_PASS_END = re.compile(r'^\[(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ)\] (FORK SERVE DONE|PASS FAILED|REFUSED)')
+
+
+def _log_pass(path):
+    """(started, parent dir, end) of the last pass in production's pass log (catalog.DEEP_PASS_LOG): end is
+    'FORK SERVE DONE' (finished), 'PASS FAILED ...' / 'REFUSED ...' (the first line that ended it) or None (no end line:
+    running or killed); None when the log names no pass."""
+    if not os.path.exists(path):
+        return None
+    last = None
+    with open(path, errors='replace') as f:
+        for line in f:
+            m = _PASS_START.match(line)
+            if m:
+                last = [m.group(1), m.group(2), None]
+                continue
+            m = _PASS_END.match(line)
+            if m and last is not None and last[2] is None:
+                last[2] = line.strip()[len(m.group(1)) + 3:][:300]
+    return tuple(last) if last else None
+
+
+_PASS_OK = ('done', 'no-input')
+
+
+def _v2_pass(run_dir, label, stages):
+    """(started, parent dir, end, attempt id) of the LATEST attempt of the v2 deep chain (lib/catalog/deep_chain.py) in
+    ``run_dir``, from its unit records ``<label>.<stage>[.<key>]`` (stages: catalog.DEEP_STAGES; dry-run records are no
+    attempt). An attempt is one run of the step (its records' run_id): a whole pass, a rerun from a later stage, or one
+    that stopped; it started at its earliest record's start. end = 'done' only when every record of that attempt ended done
+    (or no-input), the attempt reached the last stage, every stage's current record (of any attempt) ended done, and the
+    preflight record names the parent snapshot; else end says why not. None when the run holds no record of the chain."""
+    rdir = os.path.join(run_dir, '_records', 'catalog')
+    recs = []
+    for n in sorted(os.listdir(rdir)) if os.path.isdir(rdir) else ():
+        if not (n.startswith(label + '.') and n.endswith('.json')):
+            continue
+        unit = n[:-len('.json')]
+        stage = unit[len(label) + 1:].split('.', 1)[0]
+        if stage not in stages:
+            continue
+        with open(os.path.join(rdir, n)) as f:
+            r = json.load(f)
+        if r.get('dry_run') or r.get('unit') != unit:
+            continue
+        recs.append((stage, unit, r))
+    if not recs:
+        return None
+    att = {}
+    for x in recs:
+        att.setdefault(x[2].get('run_id') or '?', []).append(x)
+    start = {k: min(r.get('started') or '' for _, _, r in v) for k, v in att.items()}
+    rid = max(att, key=lambda k: (start[k], k))
+    mine = att[rid]
+    why = []
+    bad = sorted(f"{u} {r.get('status')}" for _, u, r in mine if r.get('status') not in _PASS_OK)
+    if bad:
+        why.append('its records not done: ' + ', '.join(bad[:6]) + (f' (+{len(bad) - 6})' if len(bad) > 6 else ''))
+    elif not any(st == stages[-1] for st, _, _ in mine):
+        first = min((stages.index(st) for st, _, _ in mine))
+        why.append(f'it ran from stage {stages[first]} and has no record of the last stage {stages[-1]} (running, killed '
+                   f'or stopped)')
+    else:
+        stale = sorted(f"{u} {r.get('status')} (attempt {r.get('run_id')})" for _, u, r in recs
+                       if r.get('status') not in _PASS_OK)
+        if stale:
+            why.append('stage records an earlier attempt left not done: ' + ', '.join(stale[:6]))
+    pre = next((r for st, u, r in recs if u == f'{label}.preflight'), None)
+    par = ((pre or {}).get('meta') or {}).get('parent_dir')
+    if not why and (not pre or pre.get('status') != 'done' or not par):
+        why.append(f'the {label}.preflight record ' + (f"is {pre.get('status')}" if pre else 'is missing')
+                   + ('' if par else ' and names no parent snapshot'))
+    return start[rid], par, 'done' if not why else '; '.join(why), rid
+
+
+def pass_parent_dir(run_dir, label, cfg=None):
+    """(parent dir, how) of the deep run ``run_dir``'s LATEST table pass - the snapshot its tables were built against
+    (B-59: a per-hour step reads the parent catalogues of the pass whose tables it extends, never a fixed union).
+    Two records name pass attempts: the v2 deep chain's unit records (_v2_pass: the latest attempt by start, a rerun from
+    a later stage included) and production's pass log (catalog.DEEP_PASS_LOG, ops/fork_serve_p3s5_20261008.sh: it exports
+    P3_PARENT_DIR = that pass's snapshot to every stage; its last "pass start"). The attempt that started last decides; it
+    never falls back to an older finished pass. Gate P-PASS refuses (ValueError naming why) when no record names a pass,
+    when the latest attempt did not finish (failed, refused, running or killed, a preflight that refused included: the
+    run's tables may be mid-pass) or when its snapshot is not a directory on this host. ``how`` names the record."""
+    if cfg is None:
+        from exopipe.phase3.config import CFG as cfg
+    c = cfg.catalog
+    run_dir = os.path.abspath(run_dir)
+    log = os.path.join(run_dir, c.DEEP_PASS_LOG)
+    cands = []
+    v2 = _v2_pass(run_dir, label, tuple(c.DEEP_STAGES))
+    if v2:
+        cands.append(v2[:3] + (f'the v2 deep chain records {os.path.join(run_dir, "_records", "catalog")} (attempt '
+                               f'{v2[3]})', 'done'))
+    prod = _log_pass(log)
+    if prod:
+        cands.append(prod + (f'the production pass log {log}', 'FORK SERVE DONE'))
+    if not cands:
+        raise ValueError(f'P-PASS: no table pass of deep run {run_dir} is recorded (no v2 {label}.<stage> record, no '
+                         f'"pass start (parents DIR)" line in {log}) - run the deep table pass first')
+    t0, par, end, how, ok = max(cands, key=lambda x: x[0])
+    if end != ok:
+        raise ValueError(f'P-PASS: the latest table pass attempt of deep run {run_dir} (started {t0}, parents {par}; {how}) '
+                         f'did not finish: {end or "no end line (running or killed)"} - its tables may be mid-pass; '
+                         f'finish or re-run the pass first')
+    if not os.path.isdir(par):
+        raise ValueError(f'P-PASS: the parent snapshot {par} of the latest table pass of deep run {run_dir} (started {t0}; '
+                         f'{how}) is not a directory on this host')
+    return par, f'{how}: pass started {t0}'
+
+
+def resolve_parent_arg(value, run_dir, label, cfg=None):
+    """(parent dir, how, refusal) of a parent-directory argument: the keyword catalog.PARENT_FROM_PASS resolves to the deep
+    run's latest finished table pass (pass_parent_dir; ``refusal`` = the P-PASS reason when it does not resolve, dir None);
+    any other value is returned as given (how None; the caller's own gate judges it)."""
+    if cfg is None:
+        from exopipe.phase3.config import CFG as cfg
+    if value != cfg.catalog.PARENT_FROM_PASS:
+        return value, None, None
+    if not run_dir:
+        return None, None, f'P-PASS: --parent-dir {value} needs the deep run (--run LABEL or --src-run DIR)'
+    if not label:
+        b = os.path.basename(os.path.abspath(run_dir))
+        label = b[4:] if b.startswith('Run_') else b
+    try:
+        par, how = pass_parent_dir(run_dir, label, cfg)
+    except ValueError as e:
+        return None, None, str(e)
+    return par, how, None

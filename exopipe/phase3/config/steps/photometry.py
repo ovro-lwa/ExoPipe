@@ -46,8 +46,9 @@ class photometry(_Section):
     # (production ran it as dated drivers, never per hour). The per-hour 10-s cutouts are the search's: `search --tier snapshot`
     # writes them into CUTOUT_ROOT (search_snapshot.CUTOUTS_ON; tier_snapshot.cutout_root reads this key - one source of
     # truth, review F1 2026-11-03), and the night's stage 1 is `photometry --tier snapshot --epochs <LST>_<date>` (EPOCH_STAGES),
-    # a campaign in production (snapshot_forced_fleet.sh) that the runner's per-hour chain (runner.CHAINS['epoch']) does not
-    # run yet. sub-LST: no default - its only stages regenerate products, so they are named (--stages; review F4)
+    # a campaign in production (snapshot_forced_fleet.sh) that the runner's per-hour chain (runner.CHAINS['epoch']) runs
+    # after the 10-second light curves and before `catalog --tier snapshot --incremental`, whose gate SI-G8 reads its done
+    # measure records. sub-LST: no default - its only stages regenerate products, so they are named (--stages; review F4)
     DEFAULT_STAGES = {'deep': ('frames', 'stage', 'measure', 'evaluate'), 'snapshot': ('measure', 'evaluate'),
                       'sublst': ()}
     EPOCH_STAGES = {'deep': ('frames', 'stage', 'measure'), 'snapshot': ('measure',), 'sublst': ()}   # sub-LST: no per-hour
