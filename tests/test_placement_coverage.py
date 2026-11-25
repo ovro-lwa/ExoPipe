@@ -4,10 +4,12 @@ below, each with its reason or the placement PR planned for it (/fast/gh/claude_
 copy2 sources, P4 mosaic and hybrid sites and P5 others behind a handler on the path, P6 archive writers and per-file volume,
 P7 directory renames). A new bare rename in these modules fails this test; so does a listed site that is gone (the list must
 shrink with each later placement PR). In the same modules every record.atomic_write_json call passes ``place=`` explicitly
-(True for a product, False for a unit or run record), so a product never takes the unplaced default by omission. Data-free:
-the source is parsed, nothing is imported or run (``--self-test`` checks that both guards fail on injected sources)."""
+(True for a product, False for a unit or run record), so a product never takes the unplaced default by omission. Every
+listed entry carries its reason ('stays bare: ...') or planned PR ('P<n>: ...'); an entry without one fails. Data-free: the
+source is parsed, nothing is imported or run (self_test checks that the guards fail on injected input)."""
 import ast
 import os
+import re
 import sys
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -29,6 +31,9 @@ MODULES = ['core/manifest.py', 'lib/calibrate/common.py', 'lib/calibrate/fluxsca
            'lib/jupiter/v2.py', 'lib/mosaic/gen_common.py', 'lib/pages/night.py', 'lib/pages/pages_input.py',
            'lib/serve/fp_filters.py', 'lib/serve/hub.py', 'lib/serve/register.py', 'lib/serve/snapshot_view.py',
            'lib/serve/versions.py', 'lib/serve/views.py', 'lib/status/steps_common.py', 'lib/status/steps_hub.py']
+# every entry's reason: 'stays bare[ until ...]: <why>' or the planned PR 'P<n>: <what>' - nothing else (an entry without
+# a reason or a planned PR fails the guard)
+REASON = re.compile(r'^(stays bare( until [^:]+)?|P[1-9][0-9]*): \S.{9,}$', re.S)
 MOVED_ASIDE = 'stays bare: moves an existing product aside under a new name (a rename keeps its inode, so its group, mode and ACL)'
 MOVED_DIR = 'stays bare: moves an existing version or run directory (a rename keeps its inode, so its group, mode and ACL)'
 # (module, function, call): (count, reason or planned PR)
@@ -131,9 +136,6 @@ EXCEPTIONS = {
     ('lib/serve/versions.py', 'discard', 'os.rename'): (1, MOVED_DIR + ' (a version renamed out before its deletion)'),
     ('lib/serve/versions.py', '_to_work', 'os.rename'): (1, MOVED_DIR + ' (a legacy run moved to its work directory)'),
     ('lib/serve/versions.py', '_unwork', 'os.rename'): (1, MOVED_DIR + ' (the work directory moved back)'),
-    ('lib/serve/versions.py', 'unshare_mutable', 'os.replace'): (
-        1, 'unclassified (new since the classification at ea843d1): a shutil.copy2 of a hard-linked review-state file '
-           'renamed over itself to give it its own inode'),
     ('lib/serve/versions.py', 'retire', 'os.rename'): (1, MOVED_DIR + ' (a retired version renamed out)'),
 }
 CALLS = {'os': ('replace', 'rename', 'renames'), 'shutil': ('move',)}
@@ -220,10 +222,25 @@ def f(p):
 """
 
 
+def bad_entries(exceptions):
+    """The EXCEPTIONS entries without a count of at least 1 or without a reason or planned PR (REASON)."""
+    return sorted(k for k, v in exceptions.items()
+                  if not (isinstance(v, tuple) and len(v) == 2 and isinstance(v[0], int) and v[0] >= 1
+                          and isinstance(v[1], str) and REASON.match(v[1])))
+
+
 def self_test():
-    """Both guards must fail on an injected source: two atomic_write_json calls without place= (a module alias and a renamed
-    from-import), two with it, and one bare os.replace through an alias. Returns the problems (empty: the guards work)."""
+    """The guards must fail on injected input: two atomic_write_json calls without place= (a module alias and a renamed
+    from-import), two with it, and one bare os.replace through an alias; list entries without a reason or planned PR.
+    Returns the problems (empty: the guards work)."""
     probs = []
+    injected = {('m', 'a', 'os.replace'): (1, 'unclassified: a copy renamed over itself'), ('m', 'b', 'os.replace'): (1, ''),
+                ('m', 'c', 'os.replace'): (0, 'P4: the products of c'), ('m', 'd', 'os.replace'): (1, 'P4: the products of d'),
+                ('m', 'e', 'os.rename'): (1, MOVED_DIR), ('m', 'f', 'os.replace'): (1, 'stays bare until production changes: '
+                                                                                     'the gate compares the module')}
+    got = bad_entries(injected)
+    if got != [('m', 'a', 'os.replace'), ('m', 'b', 'os.replace'), ('m', 'c', 'os.replace')]:
+        probs.append(f'the reason guard found {got} in the injected entries, not a, b and c')
     got = [(fn, line) for fn, line, explicit in json_calls('<injected>', INJECTED) if not explicit]
     if got != [('f', 7), ('f', 8)]:
         probs.append(f'the place= guard found {got} in the injected source, not [(\'f\', 7), (\'f\', 8)]')
@@ -254,6 +271,9 @@ def main():
             elif EXCEPTIONS[key][0] != len(lines):
                 fails.append(f'{P3}{m} {fn}: {len(lines)} bare {call} (lines {lines}), the list says {EXCEPTIONS[key][0]} - '
                              f'update the list')
+    for key in bad_entries(EXCEPTIONS):
+        fails.append(f'{P3}{key[0]} {key[1]}: listed bare {key[2]} without a reason or planned PR ({EXCEPTIONS[key]!r}) - '
+                     f'give "stays bare: <why>" or "P<n>: <what>"')
     for key in sorted(set(EXCEPTIONS) - seen):
         fails.append(f'{P3}{key[0]} {key[1]}: listed bare {key[2]} is gone - remove it from EXCEPTIONS')
     for f in fails:
@@ -261,8 +281,8 @@ def main():
     if fails:
         sys.exit(1)
     print(f'PASS: {len(MODULES)} modules, {n_sites} bare rename/move sites, all listed with a reason or planned PR '
-          f'({len(EXCEPTIONS)} entries); {n_json} record.atomic_write_json calls, each with place= explicit; both guards fail '
-          f'on the injected source')
+          f'({len(EXCEPTIONS)} entries); {n_json} record.atomic_write_json calls, each with place= explicit; every entry with a reason '
+          f'or planned PR; the three guards fail on injected input')
 
 
 if __name__ == '__main__':

@@ -113,6 +113,7 @@ import subprocess
 import threading
 import time
 
+from exopipe.phase3.core import placement
 from exopipe.phase3.core.record import Refusal
 
 FORMAT = 2                         # 2: MANIFEST.tsv carries each file's sha256 and VERSION.json its hash_rules (CONTENT)
@@ -1335,7 +1336,9 @@ def _unwork(U, R, real):
 def unshare_mutable(run):
     """Give every file of ``run`` matching serve.RUN_VERSIONS_MUTABLE (the review state appended in place while a version is
     served) its own inode when it is hard-linked (a placement's --link-dest): an append to it then never reaches another
-    version. Returns the relative paths copied."""
+    version. Each copy is placed (core/placement.atomic, tag 'unshare'): it ends with the product's own group, mode and ACL
+    (those of the file it replaces), never what copy2 or the writer's group would give it; a refusal leaves the shared file in
+    place and no temporary file. Returns the relative paths copied."""
     pats, out = tuple(_S().RUN_VERSIONS_MUTABLE), []
     for dp, _dn, fns in os.walk(run):
         for fn in fns:
@@ -1343,9 +1346,8 @@ def unshare_mutable(run):
             rel = os.path.relpath(p, run)
             if not any(fnmatch.fnmatchcase(rel, m) for m in pats) or os.path.islink(p) or os.lstat(p).st_nlink < 2:
                 continue
-            tmp = f'{p}.unshare.{os.getpid()}'
-            shutil.copy2(p, tmp)
-            os.replace(tmp, p)
+            with placement.atomic(p, tag='unshare') as tmp:
+                shutil.copy2(p, tmp)
             out.append(rel)
     return sorted(out)
 
