@@ -640,6 +640,27 @@ def test_carry():
     except GS.StageRefusal as e:
         got = str(e)
     check('carry: refuses to write over a non-empty journal (it only seeds)', 'only seeds' in got, got)
+    # the next build: the unsettled conflict is carried, both verdicts listed again (never dropped by a rebuild)
+    members2 = {'J0520+3000a': [det['I_05h_A1'], det['I_05h_A2']], 'J0536+3400a': [det['I_05h_E1'], det['I_05h_E2']]}
+    cnt2 = GS.carry_judgements(f'{d}/new/judgements.jsonl', members2, f'{d}/grouping_I/detections.csv', f'{d}/new2',
+                               'Run_TEST2', carried_from_run='Run_TEST')
+    mc2 = [json.loads(ln) for ln in open(f'{d}/new2/{GS.MERGE_CONFLICTS}')]
+    new2 = {json.loads(ln)['source_id'] for ln in open(f'{d}/new2/judgements.jsonl')}
+    check('carry: an UNSETTLED merge conflict is carried to the next build with both verdicts, the page still unjudged',
+          len(mc2) == 1 and mc2[0]['source_id'] == 'J0536+3400a' and mc2[0].get('carried_conflict_from') == 'J0536+3400a'
+          and sorted((v['source'], v['judge_confidence']) for v in mc2[0]['verdicts']) == [('OLD_E1', 'FP'), ('OLD_E2', 'REAL')]
+          and 'J0536+3400a' not in new2 and cnt2['conflicts_carried'] == 1, (mc2, cnt2))
+    # a reviewer judges the page: the conflict is settled and not carried again
+    with open(f'{d}/new2/judgements.jsonl', 'a') as f:
+        f.write(json.dumps(dict(action='classify', scope='source', source_id='J0536+3400a', judge_confidence='REAL',
+                                judge_fp_reason='', judge_fp_reason_2='', ts='2030-02-01T00:00:00Z')) + '\n')
+    cnt3 = GS.carry_judgements(f'{d}/new2/judgements.jsonl', members2, f'{d}/grouping_I/detections.csv', f'{d}/new3',
+                               'Run_TEST3', carried_from_run='Run_TEST2')
+    mc3 = [json.loads(ln) for ln in open(f'{d}/new3/{GS.MERGE_CONFLICTS}') if ln.strip()]
+    new3 = {json.loads(ln)['source_id']: json.loads(ln) for ln in open(f'{d}/new3/judgements.jsonl')}
+    check('carry: a conflict settled by a verdict judged on the page is not carried; that verdict is',
+          not mc3 and new3.get('J0536+3400a', {}).get('judge_confidence') == 'REAL' and cnt3['conflicts_carried'] == 0,
+          (mc3, cnt3))
     try:
         GS.carry_judgements(f'{d}/old/judgements.jsonl', {'OLD_A1': ['I_05h_A1']}, f'{d}/grouping_I/detections.csv',
                             f'{d}/new_ids_only', 'Run_TEST')

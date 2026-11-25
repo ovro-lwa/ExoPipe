@@ -150,11 +150,31 @@ def _vtext(v):
     return t
 
 
+def conflict_settled(rec, held):
+    """True when a merge-conflict record ``rec`` is settled by the verdicts ``held`` now for its page (source-scope journal
+    records): a verdict made on the page itself whose (verdict, time) the record does not list (a reviewer judged it since),
+    or a CARRIED verdict (carried_from_run) whose verdict the record does not list. A carried verdict the record lists is the
+    conflict itself carried to a rebuilt page (its time is the carry's), so it settles nothing. Shared by the page banner
+    (ambiguous_html) and the journal carry, which carries an unsettled record to the next build (lib/catalog/grouping_stage.py
+    carry_judgements)."""
+    def vk(v):
+        return tuple(v.get(k) or '' for k in VERDICT)
+    listed = {vk(v) + (str(v.get('ts', '')),) for v in rec.get('verdicts', [])}
+    kinds = {vk(v) for v in rec.get('verdicts', [])}
+    for v in held:
+        if v.get('carried_from_run'):
+            if vk(v) not in kinds:
+                return True
+        elif vk(v) + (str(v.get('ts', '')),) not in listed:
+            return True
+    return False
+
+
 def ambiguous_html(page, sid, gids):
     """The AMBIGUOUS banner of page id sid: the newest merge-conflict record of the identity (merge_conflicts.jsonl: written by
-    resolve for a stale form, by grouping_stage.carry_judgements for merged pages with conflicting verdicts) while the page
-    holds no verdict but the ones the record lists (a verdict recorded on the page since - a reviewer's, or a later carry's -
-    settles it); '' otherwise."""
+    resolve for a stale form, by grouping_stage.carry_judgements for merged pages with conflicting verdicts, and carried by it
+    to every later build while unsettled) while it is not settled (conflict_settled: a verdict judged on the page since, or a
+    carried verdict the record does not list); '' otherwise."""
     p = conflicts_path(page)
     if not p or not os.path.exists(p):
         return ''
@@ -165,12 +185,7 @@ def ambiguous_html(page, sid, gids):
                 r = json.loads(line)
                 if r.get('source_id') == sid or r.get('group_identity_id') in gids:
                     last = r
-    if last is None:
-        return ''
-    def key(v):
-        return tuple(v.get(k) or '' for k in VERDICT) + (str(v.get('ts', '')),)
-    listed = {key(v) for v in last.get('verdicts', [])}
-    if any(key(v) not in listed for v in held_verdicts(page, sid)):
+    if last is None or conflict_settled(last, held_verdicts(page, sid)):
         return ''
     items = ''.join(f'<li><b>{html.escape(_vtext(v))}</b>, made on {html.escape(str(v.get("source", "")))} '
                     f'({html.escape(str(v.get("identity", "")))}) at {html.escape(str(v.get("ts", "")))}'
@@ -230,6 +245,27 @@ def ambiguous_response(sid, g, target, live, posted, held):
 def _rewrite(text, to):
     pairs = [(k, to if k == 'source_id' else v) for k, v in urllib.parse.parse_qsl(text, keep_blank_values=True)]
     return urllib.parse.urlencode(pairs).encode('utf-8')
+
+
+def mappable(page, body):
+    """True when a POST body carries the stamp (FIELD) and the stamped identity has exactly one page in the page's build:
+    its own, the one it was renamed to, or the survivor it was merged into (merge_map). The two-port server asks this BEFORE
+    its stale-form check (two_port.serve_request, PAGE_TOKEN_FIELD; PR 155): a form shown by an earlier version whose
+    identity maps is resolved here (resolve), and only an unmappable form gets the stale-form 409."""
+    by_sid, by_gid, _pages = page_maps(page)
+    if not by_gid:
+        return False
+    try:
+        form = urllib.parse.parse_qs((body or b'').decode('utf-8'), keep_blank_values=True)
+    except UnicodeDecodeError:
+        return False
+    g = (form.get(FIELD, [''])[0] or '').strip()
+    if not g:
+        return False
+    if by_sid.get(form.get('source_id', [''])[0]) == g or len(by_gid.get(g, [])) == 1:
+        return True
+    live = merge_map(page).get(g) if not by_gid.get(g) else None
+    return bool(live) and len(by_gid.get(live, [])) == 1
 
 
 def resolve(path, body, maps, merges=None, held=None, record=None):

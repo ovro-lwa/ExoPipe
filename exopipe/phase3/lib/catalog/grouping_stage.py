@@ -922,6 +922,35 @@ def _verdict(r):
     return (r.get('judge_confidence'), r.get('judge_fp_reason', ''), r.get('judge_fp_reason_2', ''))
 
 
+def _vnorm(r):
+    return tuple(r.get(k) or '' for k in _VERDICT_KEYS)
+
+
+def _conflict_key(rec):
+    """a merge-conflict record's identity: its page, stable ID and the verdicts it lists (time aside)"""
+    return (rec.get('source_id'), rec.get('group_identity_id'),
+            frozenset(_vnorm(v) + (v.get('source', ''), v.get('identity', ''), str(v.get('ts', '')))
+                      for v in rec.get('verdicts', [])))
+
+
+def _open_conflicts(journal, J):
+    """{old page id: its newest merge-conflict record} of the labels directory of ``journal`` (merge_conflicts.jsonl, written
+    by the carry and by the two-port server; lib/serve/label_identity.py) that the page's final verdict J does not settle
+    (label_identity.conflict_settled); {} without the file"""
+    p = os.path.join(os.path.dirname(journal), MERGE_CONFLICTS) if journal else None
+    if not p or not os.path.exists(p):
+        return {}
+    from exopipe.phase3.lib.serve.label_identity import conflict_settled
+    last = {}
+    with open(p) as f:
+        for line in f:
+            if line.strip():
+                r = json.loads(line)
+                if r.get('source_id'):
+                    last[r['source_id']] = r
+    return {s0: r for s0, r in last.items() if not conflict_settled(r, [J[s0]] if s0 in J else [])}
+
+
 def _latest_state(path):
     """{source_id: its latest source-scope record} of a journal file (classify sets, retract clears; any writer, carried or not)
     - the state the review server shows"""
@@ -954,7 +983,11 @@ def carry_judgements(journal, old_members, new, out_dir, run_id, queue_name='', 
     out_dir/merge_conflicts.jsonl, which the served page shows at its top marked AMBIGUOUS (lib/serve/label_identity.py
     ambiguous_html; R-GREGG-20261124-CROSS-STOKES-LINK-TEST-APPROVED: "When the merged identities carry conflicting verdicts,
     show both and mark the source ambiguous; never pick one"); an old judgement whose detections reach no new detection is
-    reported. Writes out_dir/judgements.jsonl and out_dir/carry_report.csv (production's columns + new_identity_id).
+    reported. An UNSETTLED merge conflict of the old labels directory (<dirname(journal)>/merge_conflicts.jsonl, the newest
+    record of an old page; label_identity.conflict_settled against that page's final verdict) is carried like a judgement:
+    its verdicts join those of the old pages reaching the same new identity, so the new identity is a CONFLICT again, its
+    record listing every verdict - the ambiguity lasts until a reviewer judges the page, never dropped by a rebuild.
+    Writes out_dir/judgements.jsonl and out_dir/carry_report.csv (production's columns + new_identity_id).
     append=False: the SEED carry - it REFUSES a non-empty journal (the carry only seeds).
     append=True (review 2026-11-04, F1): ``lines`` is the FULL old journal and ``since`` the number of its lines the seed carry
     read. Every new identity an old page of the lines after ``since`` reaches is RE-DERIVED from the whole journal - the final
@@ -967,6 +1000,7 @@ def carry_judgements(journal, old_members, new, out_dir, run_id, queue_name='', 
     match = _Matcher(newdets)
     raw = lines if lines is not None else open(journal).read().splitlines()
     J = read_journal(None, lines=raw)
+    old_conf = _open_conflicts(journal, J)               # old page -> its unsettled merge-conflict record
     touched_pages = set()
     if append:
         for ln in raw[since:]:
@@ -974,22 +1008,23 @@ def carry_judgements(journal, old_members, new, out_dir, run_id, queue_name='', 
                 sid = json.loads(ln).get('source_id')
                 if sid:
                     touched_pages.add(sid)
+        touched_pages |= set(old_conf)                   # re-derived each time (an identical record is not written twice)
     reach = {}                                           # old page -> {(name, id): shared detections}
-    for s0 in sorted(set(J) | touched_pages):
+    for s0 in sorted(set(J) | touched_pages | set(old_conf)):
         cnt = collections.Counter()
         for d in old_members.get(s0, []):
             for n in {(x['name'], x['id']) for x in match(d)}:
                 cnt[n] += 1
         reach[s0] = cnt
     owner = collections.defaultdict(set)                 # new identity -> the judged old pages (final state) reaching it
-    for s0 in sorted(J):
+    for s0 in sorted(set(J) | set(old_conf)):
         for n in reach[s0]:
             owner[n].add(s0)
     ndet = collections.Counter((d['name'], d['id']) for d in newdets)
     now = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
 
     def carried_record(name, iid, olds, share, shared):
-        s0 = max(sorted(olds), key=lambda s: share[s])
+        s0 = max(sorted(o for o in olds if o in J), key=lambda s: share[s])
         r = dict(J[s0])
         # presentation p1, as production's carry tools write it (deep_carry_judgements.py:106, snapshot_carry_judgements.py:158):
         # the review server keys a page's state by (source_id, presentation_id), and the new queue presents a carried identity
@@ -1028,11 +1063,18 @@ def carry_judgements(journal, old_members, new, out_dir, run_id, queue_name='', 
             with open(rp, newline='') as f:
                 done = {r['old_sources'] for r in csv.DictReader(f) if r['outcome'].startswith('old judgement')}
         unmatched = [s0 for s0 in sorted(touched_pages) if s0 in J and not reach[s0] and s0 not in done]
+    lost_conf = [s0 for s0 in sorted(old_conf) if not reach[s0]]
+    have_conf = set()
+    if append and os.path.exists(os.path.join(out_dir, MERGE_CONFLICTS)):
+        with open(os.path.join(out_dir, MERGE_CONFLICTS)) as f:
+            have_conf = {_conflict_key(json.loads(x)) for x in f if x.strip()}
     for (name, iid) in targets:
         olds = owner.get((name, iid), set())
         share = {s0: reach[s0][(name, iid)] for s0 in olds}
         shared = ';'.join('%s:%d/%d' % (s0, k, len(old_members.get(s0, []))) for s0, k in sorted(share.items()))
-        verdicts = {_verdict(J[s]) for s in olds}
+        verdicts = {_verdict(J[s]) for s in olds if s in J}
+        prior = [v for s in sorted(olds) if s in old_conf for v in old_conf[s].get('verdicts', [])]
+        kinds = {_vnorm(J[s]) for s in olds if s in J} | {_vnorm(v) for v in prior}
         base = dict(new_source=name, new_identity_id=iid, n_detections=ndet[(name, iid)], old_sources=shared)
         now_rec = cur.get(name)
         if now_rec is not None and 'carried_from_run' not in now_rec:     # judged on the new page: never overridden
@@ -1040,14 +1082,25 @@ def carry_judgements(journal, old_members, new, out_dir, run_id, queue_name='', 
                 str(x) for x in _verdict(now_rec))))
             cnt['own'] += 1
             continue
-        if len(verdicts) > 1:
+        if len(verdicts) > 1 or (prior and len(kinds) > 1):
             rows.append(dict(base, outcome='CONFLICT - not carried',
-                             verdicts='|'.join('/'.join(str(x) for x in v) for v in sorted(verdicts, key=str))))
-            conflicts.append(dict(ts=now, origin='carry', source_id=name, group_identity_id=iid, run_id=run_id,
-                                  carried_from_run=carried_from_run,
-                                  verdicts=[dict({k: J[s0].get(k, '') or '' for k in _VERDICT_KEYS + ('judge_note',)},
-                                                 source=s0, identity=J[s0].get('group_identity_id', ''), ts=J[s0].get('ts', ''))
-                                            for s0 in sorted(olds)]))
+                             verdicts='|'.join('/'.join(str(x) for x in v) for v in sorted(kinds if prior else verdicts,
+                                                                                               key=str))))
+            vs, seen = [], set()
+            for v in [dict({k: J[s0].get(k, '') or '' for k in _VERDICT_KEYS + ('judge_note',)}, source=s0,
+                           identity=J[s0].get('group_identity_id', ''), ts=J[s0].get('ts', '')) for s0 in sorted(olds)
+                      if s0 in J] + [dict(v) for v in prior]:
+                k = _vnorm(v) + (v.get('source', ''), v.get('identity', ''), str(v.get('ts', '')))
+                if k not in seen:
+                    seen.add(k)
+                    vs.append(v)
+            rec = dict(ts=now, origin='carry', source_id=name, group_identity_id=iid, run_id=run_id,
+                       carried_from_run=carried_from_run, verdicts=vs)
+            if prior:
+                rec['carried_conflict_from'] = ';'.join(sorted(s0 for s0 in olds if s0 in old_conf))
+            if _conflict_key(rec) not in have_conf:
+                conflicts.append(rec)
+                have_conf.add(_conflict_key(rec))
             if now_rec is not None:                     # a carried judgement the old pages no longer agree on
                 recs.append(retract_record(name, iid, 'CONFLICT: the old pages reaching this identity now disagree'))
                 cnt['retracted'] += 1
@@ -1074,6 +1127,10 @@ def carry_judgements(journal, old_members, new, out_dir, run_id, queue_name='', 
     for s0 in unmatched:
         rows.append(dict(new_source='', new_identity_id='', n_detections=0, old_sources=s0,
                          outcome='old judgement reached no new detection', verdicts=J[s0].get('judge_confidence', '')))
+    for s0 in lost_conf:
+        rows.append(dict(new_source='', new_identity_id='', n_detections=0, old_sources=s0,
+                         outcome='old merge conflict reached no new detection',
+                         verdicts='|'.join('/'.join(_vnorm(v)) for v in old_conf[s0].get('verdicts', []))))
     with open(jp, 'a' if append else 'w') as f:
         for r in recs:
             f.write(json.dumps(r) + '\n')
@@ -1089,7 +1146,8 @@ def carry_judgements(journal, old_members, new, out_dir, run_id, queue_name='', 
     return dict(judged_old=len(J), carried=cnt['carried'], conflicts=cnt['conflicts'], unmatched=len(unmatched),
                 new_identities_touched=len(targets), retracted=cnt['retracted'], unchanged=cnt['unchanged'],
                 judged_on_new_page=cnt['own'], lines=len(raw), between_lines=(len(raw) - since) if append else 0,
-                ambiguous_kept=len(conflicts),
+                ambiguous_kept=len(conflicts), conflicts_carried=sum(1 for r in conflicts if r.get('carried_conflict_from')),
+                conflicts_lost=len(lost_conf),
                 carried_on_page=(sum(1 for r in recs if r.get('action') != 'retract' and r['source_id'] in on_page)
                                  if on_page is not None else None))
 

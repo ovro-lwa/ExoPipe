@@ -455,9 +455,10 @@ LIST_COLS = ('stokes_link_id', 'stokes_link_name', 'stokes_link_ambiguous', 'sto
 def add_link_columns(table, out, links_path):
     """The link columns (LIST_COLS) appended to a table with columns `stokes` and `identity_id` (the display name; else
     source_id) - the transient list: the link id and name of the row's identity (its component's, or its own stable ID and
-    name when it is linked to nothing), the ambiguous flag and the other Stokes' names it is linked to. Rewritten in place
-    (temporary file, replaced). A row whose (Stokes, name) is no identity of the grouping under out REFUSES. Returns
-    (rows, rows linked)."""
+    name when it is linked to nothing), the ambiguous flag and the other Stokes' names it is linked to. The table's leading
+    '#' comment lines (the transient list's header: run, per-tier counts, limits, columns) are kept, one line naming the link
+    columns added after them. Rewritten in place (temporary file, replaced). A row whose (Stokes, name) is no identity of the
+    grouping under out REFUSES. Returns (rows, rows linked)."""
     from exopipe.phase3.lib.catalog import grouping_stage as GS
     with open(links_path, newline='') as f:
         links = {(r['stokes'], r['identity_name']): r for r in csv.DictReader(f)}
@@ -466,9 +467,14 @@ def add_link_columns(table, out, links_path):
         with open(os.path.join(GS.group_dir(out, S), GS.IDENTITIES), newline='') as f:
             ids.update({(S, r['identity_name']): r['identity_id'] for r in csv.DictReader(f)})
     with open(table, newline='') as f:
-        rd = csv.DictReader(f)
-        head = list(rd.fieldnames or [])
-        rows = list(rd)
+        text = f.read().splitlines(True)
+    k = 0
+    while k < len(text) and text[k].startswith('#'):
+        k += 1
+    comments = text[:k]
+    rd = csv.DictReader(text[k:])
+    head = list(rd.fieldnames or [])
+    rows = list(rd)
     if any(c in head for c in LIST_COLS):
         raise LinkRefused(f'{table} already holds link columns - REFUSING')
     n, bad = 0, []
@@ -490,6 +496,12 @@ def add_link_columns(table, out, links_path):
                           f'e.g. {bad[:3]} - REFUSING')
     tmp = f'{table}.tmp.{os.getpid()}'
     with open(tmp, 'w', newline='') as f:
+        if comments:
+            f.write(''.join(comments))
+            f.write('# Cross-Stokes link (lib/catalog/stokes_link.py): stokes_link_id / stokes_link_name = the I/V component the '
+                    'row\'s identity belongs to (its best-localized member; its own stable ID when linked to nothing), '
+                    'stokes_link_ambiguous = 1 for a one-to-many component, stokes_linked_names = the other Stokes\' '
+                    'identities it is linked to.\n')
         w = csv.DictWriter(f, fieldnames=head + list(LIST_COLS))
         w.writeheader()
         w.writerows(rows)

@@ -265,7 +265,15 @@ def test_readers(out, dest):
     wcsv(tl, ('source_id', 'stokes', 'identity_id'), [dict(source_id='J0520+3000', stokes='I', identity_id='J0520+3000'),
                                                      dict(source_id='J0528+3200a', stokes='V', identity_id='J0528+3200a'),
                                                      dict(source_id='J0536+3500', stokes='V', identity_id='J0536+3500')])
+    body = open(tl).read()
+    open(tl, 'w').write('# DEEP TRANSIENT LIST - test\n# Rows per tier (one row per tier, Stokes and source): I_wb 1\n' + body)
     n, nl = SL.add_link_columns(tl, out, lp)
+    lines = open(tl).read().splitlines()
+    check('readers: add_link_columns keeps the list\'s comment header and names the link columns after it',
+          lines[0] == '# DEEP TRANSIENT LIST - test' and lines[1].startswith('# Rows per tier') and
+          lines[2].startswith('# Cross-Stokes link') and lines[3].startswith('source_id,stokes,identity_id,stokes_link_id'),
+          lines[:4])
+    open(tl, 'w').write('\n'.join(ln for ln in lines if not ln.startswith('#')) + '\n')
     r = rcsv(tl)
     check('readers: add_link_columns - the link id, name, ambiguous flag and the other Stokes\' names; an unlinked identity '
           'is its own link',
