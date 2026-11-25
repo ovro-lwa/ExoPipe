@@ -74,10 +74,11 @@ def _own_summary(pattern, res, out):
     return hits[-1] if hits else None
 
 
-def coverage(u, run_dir, args, log, cwd=None, after='', parity=False):
+def coverage(u, run_dir, args, log, cwd=None, after='', parity=False, **ctx):
     """tess_coverage.py --run run_dir + args (+ reader_args) under the site PYTHON[pages_deep.TESS_PYTHON]; its output appended to
     ``log``. A failure, or no summary line for run_dir/tess_coverage.csv in the call's own output, refuses the unit (``after``
-    says what that leaves untouched). Records it [tess_coverage] with written / left_out; returns (written, left_out)."""
+    says what that leaves untouched). Records it [tess_coverage] with written / left_out (and ``ctx``: served='candidates' for
+    a family T forced run, whose rows are held to its served events); returns (written, left_out)."""
     from exopipe.phase3.lib.pages import tess_orbits
     argv = ['--run', run_dir] + [str(a) for a in args] + reader_args(u, parity=parity)
     res = scripts.run('tess_coverage', argv, python=_CFG().pages_deep.TESS_PYTHON, log=log, unit=u, cwd=cwd)
@@ -92,19 +93,20 @@ def coverage(u, run_dir, args, log, cwd=None, after='', parity=False):
     written, left_out = counts
     u.note(f'TESS coverage: written {written}, left out {left_out} (the page says "not computed" for those)')
     u.meta['tess_coverage'] = dict(written=written, left_out=left_out)
-    u.add_output(out, 'tess_coverage', written=written, left_out=left_out)
+    u.add_output(out, 'tess_coverage', written=written, left_out=left_out, **ctx)
     return written, left_out
 
 
-def tenmin_frame_times(u, run_dir, image_root, reuse, log, after=''):
+def tenmin_frame_times(u, run_dir, image_root, reuse, log, after='', cwd=None, **ctx):
     """frame_times_tenmin.py --run run_dir --image-root image_root [--reuse reuse, when that file is not empty: production's
     `[ -s $U/frame_times.csv ]`] under the site PYTHON 'default'; its output appended to ``log``. A failure, or no summary line
     for run_dir/frame_times.csv in the call's own output, refuses; so does a failed content test of the file, before the
-    coverage runs. Records <run_dir>/frame_times.csv [tenmin_frame_times] with windows / needed."""
+    coverage runs. Records <run_dir>/frame_times.csv [tenmin_frame_times] with windows / needed (and ``ctx``: served=
+    'candidates' for a family T forced run, whose windows are its served events')."""
     argv = ['--run', run_dir, '--image-root', image_root]
     if reuse and os.path.isfile(reuse) and os.path.getsize(reuse) > 0:
         argv += ['--reuse', reuse]
-    res = scripts.run('frame_times_tenmin', argv, log=log, unit=u)
+    res = scripts.run('frame_times_tenmin', argv, log=log, unit=u, cwd=cwd)
     script = scripts.SCRIPTS['frame_times_tenmin'][0]
     if not res.ok:
         u.refuse(f'TESS coverage: {script} failed on {run_dir} ({res.reason or scripts.last_line(res.tail)}) - {after} (see {log})')
@@ -116,7 +118,7 @@ def tenmin_frame_times(u, run_dir, image_root, reuse, log, after=''):
     windows, needed = int(m['windows']), int(m['needed'])
     u.note(f'window times: {windows} of {needed} windows' + (' (the served run\'s file reused)' if '--reuse' in argv else ''))
     u.meta['frame_times'] = dict(windows=windows, needed=needed, reused='--reuse' in argv)
-    out = u.add_output(path, 'tenmin_frame_times', windows=windows, needed=needed)
+    out = u.add_output(path, 'tenmin_frame_times', windows=windows, needed=needed, **ctx)
     bad = [t for t in u.failed_tests() if t.get('path') == out['path']]
     if bad:      # production's `&&`: the coverage never runs on window times that failed (here: their content test)
         u.refuse(f'TESS coverage: the window times {out["path"]} failed their content test ('

@@ -605,9 +605,11 @@ def test_exclusion_gate():
     assert scan.per_key() == {('04h', '2025-01-01', 'Blue'): 1}, scan.summary()    # 64 MHz excludes Blue; 18 MHz not Red
     ok('exclusion gate: verdicts from core.exclusions (a 64 MHz exclusion excludes Blue; the 18 MHz carve-out keeps Red)')
     ruled = CFG.serve.EXCLUSION_GATE_TIERS
-    assert set(ruled) == {'snapshot', 'snapshot-forced', 'deep', 'sublst', 'deep-strat', 'deep-deep-forced'}, ruled
+    assert set(ruled) == {'snapshot', 'snapshot-forced', 'deep', 'sublst', 'deep-strat', 'deep-deep-forced',
+                          'snapshot-forced-tier', 'deep-pinned', 'sublst-pinned'}, ruled
     assert all(exclusion_gate.refuses(*k) for k in (('snapshot',), ('snapshot', 'forced'), ('deep',), ('sublst',),
-                                                     ('deep', 'strat'), ('deep', 'deep-forced')))
+                                                     ('deep', 'strat'), ('deep', 'deep-forced'), ('snapshot', 'forced-tier'),
+                                                     ('deep', 'pinned'), ('sublst', 'pinned')))
     assert not exclusion_gate.refuses('jupiter')
     CFG.serve.EXCLUSION_GATE_TIERS = ('snapshot',)                  # production (the parity file)
     try:
@@ -3351,8 +3353,11 @@ def test_production_readonly():
     from exopipe.phase3.lib.catalog import grouping_stage as GS
     from exopipe.phase3.lib.serve import stokes_banner
     n_entries = n_partner = 0
+    n_family = {}
     for tier, run, extra in (('deep', 'P3S5', {}), ('sublst', None, {}),
-                             ('snapshot', None, {'family': 'forced', 'forced_tag': 'gen5'})):
+                             ('snapshot', None, {'family': 'forced', 'forced_tag': 'gen5'}),
+                             ('snapshot', None, {'family': 'forced-tier'}), ('deep', None, {'family': 'pinned'}),
+                             ('sublst', None, {'family': 'pinned'})):
         a = argparse.Namespace(tier=tier, run_label=run, port_offset=0, pages=None, stokes=None, lsts=None, label=None,
                                source=None, family=extra.get('family'), forced_tag=extra.get('forced_tag'), restart=None,
                                stop=None)
@@ -3363,11 +3368,12 @@ def test_production_readonly():
                 continue
             t = procs.argv_value(e['argv'], '--title') or ''
             m = re.search(r'served (\d{4}-\d\d-\d\d \d\d:\d\d UT)', t)
-            if tier == 'sublst':
+            if tier == 'sublst' and pg.family == 'review':
                 p.lsts_text = re.search(r'LSTs ([0-9h ]+?) - ', t).group(1)
             mine = register.greenlit_apply({'pages': [register.page_entry(p, pg, m.group(1) if m else '')]}, green)['pages'][0]
             live = dict(e)
-            if tier == 'sublst':
+            n_family[pg.family] = n_family.get(pg.family, 0) + 1
+            if tier == 'sublst' and pg.family == 'review':
                 assert os.path.basename(live['code']) == os.path.basename(mine['code']), (live['code'], mine['code'])
                 live['code'] = mine['code']
             # design B's one addition (the cross-Stokes link banner, lib/serve/stokes_banner.py): the other Stokes' review
@@ -3382,11 +3388,13 @@ def test_production_readonly():
             assert mine == live, (tier, pg.key, {k: (mine.get(k), live.get(k)) for k in set(mine) | set(live)
                                                  if mine.get(k) != live.get(k)})
             n_entries += 1
-    assert n_entries == 12, n_entries
-    ok(f'planned registry ENTRIES == the live two-port registry entries on {n_entries} pages (deep, 10-minute, forced: id, '
-       f'kind, code, argv without --port, env, legacy and inspection ports, the greenlit layer, title - the forced pages\' '
-       f'in the gen5 words), read only; under design B {n_partner} deep and 10-minute review pages also name their other-'
-       f'Stokes pages (stokes_partner, the cross-Stokes link banner), the forced pages none')
+    assert n_entries == 22 and n_family.get('forced-tier') == 4 and n_family.get('pinned') == 6, (n_entries, n_family)
+    ok(f'planned registry ENTRIES == the live two-port registry entries on {n_entries} pages (deep, 10-minute, forced, the '
+       f'10-minute / deep forced pages p9120-p9123 and the pinned pages p9411-p9414 / p9300 / p9301: id, kind, code, argv '
+       f'without --port, env, legacy and inspection ports, the greenlit layer, title - the forced pages\' in the gen5 words, '
+       f'the 10-minute / deep forced pages\' from their runs\' queue headers), read only; under design B {n_partner} deep and '
+       f'10-minute review pages also name their other-Stokes pages (stokes_partner, the cross-Stokes link banner), the '
+       f'forced and pinned pages none')
     hubreg = json.load(open(f'{CFG.serve.HUB_DIR}/registry.json'))
     a = argparse.Namespace(tier='snapshot', run_label=None, port_offset=0, pages=None, stokes=None, lsts=None, label=None,
                            source=None, family='forced', forced_tag='gen5', restart=None, stop=None)
@@ -3395,7 +3403,14 @@ def test_production_readonly():
         S_, tier_, kvs = p.hub_entry(pg, 'UTC')
         e = hubreg[S_][tier_]
         assert dict(kv.split('=', 1) for kv in kvs)['generation'] == e['generation'], (pg.key, e['generation'])
-    ok('forced hub entries: the planned generation text == the live hub registry\'s (gen5 words), read only')
+    a.family, a.forced_tag = 'forced-tier', None
+    p = planmod.make(a, CFG.paths.SNAPSHOT_REVIEW_ROOT)
+    for pg in p.pages:
+        S_, tier_, kvs = p.hub_entry(pg, 'UTC')
+        e, kv = hubreg[S_][tier_], dict(x.split('=', 1) for x in kvs)
+        assert (kv['generation'], kv['run'], kv['port']) == (e['generation'], e['run'], str(e['port'])), (pg.key, kv, e)
+    ok('forced hub entries: the planned generation text == the live hub registry\'s (gen5 words; the 10-minute / deep forced '
+       'buttons p9120-p9123 with their run and port too), read only')
     env = dict(os.environ, PYTHONPATH=ROOT)
     p = subprocess.run([PY, '-m', 'exopipe.phase3', 'serve', '--tier', 'deep', '--run', 'P3S5', '--dry-run', '--cores', 'none'],
                        env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=300)

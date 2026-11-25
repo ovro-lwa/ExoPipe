@@ -165,7 +165,15 @@ class forced_snapshot(_Section):
     LIGHTCURVE_TICK_STEP = {'10s': 30, '1min': 5}   # points between tick labels (:138)
     FIG_THREADS = 6                              # astrometry-figure threads (:1098)
     FIG_TIMEOUT_S = 900                          # s per figure (:1095)
-    NPROC = {'fit': 24, 'tie': 12, 'render': 12}  # processes, module defaults (:1423,1426,1429); --workers overrides
+    # processes of fit / tie / render (--workers overrides). Production's module defaults are 24, 12 and 12 (:1520, :1523,
+    # :1517); each reads Lustre (fit: the event planes; tie: the reference frames, one CASA worker per shard; render: the
+    # Masters and cutouts), and the site rule is at most 6 Lustre-heavy workers. The products do not depend on it: the fit
+    # writes its rows in completion order whatever the count (imap_unordered, :905), the tie's shards run the same fits on
+    # the same files (phase3_snapshot_refastro.run_worker), the render draws each panel alone
+    NPROC = {'fit': 6, 'tie': 6, 'render': 6}
+    # the most --workers (or NPROC) may ask for: C-WORKERS refuses above it before any unit (the site rule, as
+    # forced_tier_pages.MAX_WORKERS and forced_wide_search.MAX_WORKERS)
+    MAX_WORKERS = 6
     VERIFY_PANEL_MIN_HEIGHT_PX = 1300            # px; a panel shorter has no light-curve strip (:1360)
     VERIFY_SNR_SAMPLE = (5, 1)                   # 5 events, random seed 1 (:1363)
     VERIFY_SNR_TOL = 0.01                        # |S/N| stage 1 vs evaluation (:1365)
@@ -262,7 +270,8 @@ class forced_tier_pages(_Section):
     # and page section of the script runs over SAMPLES (:41-76, :179-209, :218, :286-300), so LPT is measured and shown by the
     # same chain, panels and statistics as HWJ and 10 pc. A parity build of production's page sets SAMPLES = SCRIPT_SAMPLES
     SCRIPT_SAMPLES = ('HWJ', '10pc')             # MIRROR :31
-    SCRIPT_SAMPLE_LABEL = {'HWJ': 'Hot and warm Jupiters (HWJ)', '10pc': 'Stars within 10 pc'}   # MIRROR :32
+    SCRIPT_SAMPLE_LABEL = {'HWJ': 'Hot and warm Jupiters (HWJ)', '10pc': 'Stars within 10 pc',     # MIRROR :32 (LPT since
+                           'LPT': 'Known long-period transients (LPT)'}                           # exopipe_ops f06a293)
     SAMPLES = ('HWJ', '10pc', 'LPT')
     SAMPLE_LABEL = {'HWJ': 'Hot and warm Jupiters (HWJ)', '10pc': 'Stars within 10 pc',
                     'LPT': 'Known long-period transients (LPT)'}
@@ -274,8 +283,9 @@ class forced_tier_pages(_Section):
     PHOT_PRODUCTION = '/lustre/pipeline/exopipe/phase3/photometry_gen5'    # MIRROR planets_forced_page_20261026.py:54
     TIERS = ('10min', 'deep')                    # MIRROR :33
     RUN_NAME = 'Run_SNAPFORCED_{S}{tier}_gen5'   # MIRROR run_name :394-395
-    NEW_SUFFIX = '.new'                          # MIRROR :945: the chain writes <review root>/<name>.new; installing them
-                                                 # (production's `swap`, :1172-1186, dated keep names) is not ported
+    NEW_SUFFIX = '.new'                          # MIRROR :945: the chain writes <review root>/<name>.new; installed by serve
+                                                 # --family forced-tier (lib/serve/forced_tier.py: production's swap-stage;
+                                                 # keep names serve.FORCED_TIER_KEEP)
     # the fit's node-local work (one plane FITS per event for PyBDSF): a module literal. A production run leaves it; under --out
     # the stage sets it to <--work, else the site scratch root>/tier_forced_fit_work through the in-place driver's --globals
     FIT_WORK_PRODUCTION = '/fast/gh/main/phase3/tier_forced_fit_work'   # MIRROR TIER_FIT_WORK :559

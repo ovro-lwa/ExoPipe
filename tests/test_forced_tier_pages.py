@@ -770,7 +770,8 @@ def test_cli_lpt():
           'files and cutouts in the environment (the build replaced; T-BUILD then refuses)',
           st_s == 'refused' and 'T-BUILD' in why_s and builds and builds[0][0][0] == 'build'
           and gl.get(t.EVAL_ROOT_GLOBAL) == links and gl.get('SAMPLES') == list(SAMPLES)
-          and gl.get('SAMPLE_LABEL', {}).get('LPT') == t.SAMPLE_LABEL['LPT']
+          and (gl.get('SAMPLE_LABEL') or t.SCRIPT_SAMPLE_LABEL).get('LPT') == t.SAMPLE_LABEL['LPT']   # rebound, or the script's
+                                                                                                       # own (f06a293)
           and builds[0][2] == {'P3_FORCED_TIERS': ft, 'P3_PHOT_ROOT': cut}, '%s %s %s' % (st_s, why_s, builds[:1]))
     # review F2 / F3: the resume identities. T_eval: the exclusion list an input, the admitted (tier, LST, band, night) set
     # recorded and compared; T_site: the evaluations, samples and roots compared

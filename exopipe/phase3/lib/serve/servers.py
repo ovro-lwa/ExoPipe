@@ -292,20 +292,35 @@ def stop_port(port, out, notes, offset=0):
 
 
 # ---- the App probe (expected sources of a classify page) -------------------------------------------------------------
+def probe_setup(plan, page):
+    """(code directory, cwd, environment) of the App probe of ``page`` - exactly what its registry entry starts its server
+    with (one source for both): the directory of its server code, plan.code (Page.cwd), and the two-port server's environment
+    (serve.TWO_PORT_SERVER_ENV, run_two_port.sh) with the entry's own over it (plan.entry_env, two_port.page_env)."""
+    code = plan.code(page)
+    if os.path.basename(code) != 'classify_transients.py':
+        raise Refusal(f'App probe of page {page.key}: its server code {code} is not classify_transients.py (app_probe.py loads '
+                      f'that file from the code directory)')
+    env = dict(_S().TWO_PORT_SERVER_ENV)
+    env.update(plan.entry_env(page))
+    return os.path.dirname(code), page.cwd(), env
+
+
 def app_probe(plan, page, root=None, unit=None):
-    """Run lib/serve/app_probe.py through core.legacy.run with the page's environment: the server's own load_sources +
-    read_queue + App on the files the server will read (its child code fingerprint - classify_transients.py,
-    review_filters.py, ... - goes into the unit record). Returns {'n', 'kind', 'dropped', 'unexplained', ...}."""
+    """Run lib/serve/app_probe.py through core.legacy.run with the page's code directory, cwd and environment (probe_setup:
+    those its registry entry starts its server with): the server's own load_sources + read_queue + App on the files the server
+    will read (its child code fingerprint - classify_transients.py, review_filters.py, ... - goes into the unit record).
+    Returns {'n', 'kind', 'dropped', 'unexplained', ...}."""
     from exopipe.phase3.core import legacy
     S = _S()
     U = root or page.root
     script = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'app_probe.py')
-    args = [plan.ops, scripts.clv15_root(), U, page.at('catalog', U), page.at('queue', U)]
+    code, cwd, env = probe_setup(plan, page)
+    args = [code, scripts.clv15_root(), U, page.at('catalog', U), page.at('queue', U)]
     if page.c.get('mchain_queue'):           # the page's multiples chain, as its server reads it (plan.argv)
         args += ['--mchain-queue', page.at('mchain_queue', U)]
     if page.c.get('mchain_catalog'):
         args += ['--mchain-catalog-dir', page.at('mchain_catalog', U)]
-    res = legacy.run(script, args, python='default', env=plan.server_env_extra(), cwd=plan.ops,
+    res = legacy.run(script, args, python='default', env=env, cwd=cwd,
                      timeout=S.APP_PROBE_TIMEOUT_S, unit=unit, refusal_codes=())
     if res.rc != 0:
         raise Refusal(f'App probe of page {page.key} failed (rc {res.rc}): {scripts.last_line(res.tail)}')

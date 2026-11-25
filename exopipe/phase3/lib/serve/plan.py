@@ -43,13 +43,44 @@ HUB_KV_ORDER = {('deep', 'review'): ('run', 'generation', 'served', 'live', 'por
                 ('sublst', 'review'): ('run', 'generation', 'served', 'live', 'port'),        # sublst_serve.sh:142
                 ('snapshot', 'review'): ('port', 'run', 'generation', 'served', 'live'),      # snapshot_serve.sh:101
                 ('snapshot', 'comb'): ('port', 'run', 'generation', 'served', 'live'),        # the same (SNAP_HUB_SUFFIX=comb)
-                ('snapshot', 'forced'): ('port', 'run', 'generation', 'served', 'live', 'note')}   # snapshot_forced_serve:96-98
+                ('snapshot', 'forced'): ('port', 'run', 'generation', 'served', 'live', 'note'),   # snapshot_forced_serve:96-98
+                ('snapshot', 'forced-tier'): ('run', 'generation', 'served', 'live', 'port')}   # the live hub entries
+                                                                                                 # <S> 10-min-forced / 1-hour-forced
 FAMILY_DEFAULT = {'deep': 'review', 'sublst': 'review', 'snapshot': 'review', 'jupiter': 'jupiter'}
+# THE FAMILY MODULES: (tier, family) -> the module of lib/serve that serves the family (steps/serve.py runs it) and holds its
+# PLAN_HOOK - the family's server code, environment, title, siblings, argv and hub words, which Plan calls (family_hook). A
+# family without an entry, or a module without PLAN_HOOK, refuses (G26): no family takes another family's words or its tier's.
+FAMILY_MODULES = {('deep', 'review'): 'deep', ('deep', 'strat'): 'deep', ('deep', 'deep-forced'): 'deep',
+                  ('deep', 'pinned'): 'pinned', ('sublst', 'review'): 'sublst_build', ('sublst', 'pinned'): 'pinned',
+                  ('snapshot', 'review'): 'snapshot_copy', ('snapshot', 'comb'): 'snapshot_copy',
+                  ('snapshot', 'forced'): 'forced', ('snapshot', 'forced-tier'): 'forced_tier',
+                  ('jupiter', 'jupiter'): 'jupiter'}
 
 
 def _CFG():
     from exopipe.phase3.config import CFG
     return CFG
+
+
+def family_module(tier, family):
+    """The module of lib/serve that serves ``family`` of ``tier`` (FAMILY_MODULES); Refusal for a family without one."""
+    import importlib
+    name = FAMILY_MODULES.get((tier, family))
+    if name is None:
+        raise Refusal(f'G26 serve family {family!r} of tier {tier}: no module (plan.FAMILY_MODULES)')
+    return importlib.import_module(f'exopipe.phase3.lib.serve.{name}')
+
+
+def family_hook(tier, family):
+    """The PLAN_HOOK of ``family`` (its module, family_module): code(plan, page), env(plan, page), title(plan, page, utc, root),
+    siblings(plan, page, root), argv(plan, page, utc, root), hub_words(plan, page, root) -> (run name, generation text).
+    Refusal (G26) for a family whose module has none - never another family's or the tier's words."""
+    mod = family_module(tier, family)
+    hook = getattr(mod, 'PLAN_HOOK', None)
+    if hook is None:
+        raise Refusal(f'G26 serve family {family!r} of tier {tier}: {mod.__name__} has no PLAN_HOOK (its title, argv, hub '
+                      f'words, siblings and server environment are its own; there is no fallback to the tier\'s)')
+    return hook
 
 
 def run_root(tier):
@@ -82,6 +113,17 @@ class Page:
             self.run_name = S.FORCED_RUN_NAME.format(S=self.stokes, T=self.kind, tag=plan.forced_tag or '<TAG>')
             self.root_src = os.path.join(run_root('snapshot'), self.run_name)
             self.root = os.path.join(plan.out, 'snapshot', self.run_name) if plan.parity else self.root_src
+        elif self.family == 'forced-tier':      # family T's run Run_SNAPFORCED_<S><10min|deep>_gen<N> (installed from <run>.new)
+            C = _CFG()
+            self.run_name = C.forced_tier_pages.RUN_NAME.format(S=self.stokes, tier=self.kind)
+            self.root_src = os.path.join(run_root('snapshot'), self.run_name)
+            # a parity serve installs where family T writes under the same --out: <out>/forced_snapshot.REVIEW_SUBDIR_UNDER_OUT
+            self.root = (os.path.join(plan.out, C.forced_snapshot.REVIEW_SUBDIR_UNDER_OUT, self.run_name) if plan.parity
+                         else self.root_src)
+        elif self.family == 'pinned':           # a page registered once by hand: its run under the tier's run root
+            self.run_name = c['run']
+            self.root_src = os.path.join(run_root(self.tier), self.run_name)
+            self.root = os.path.join(plan.out, self.tier, self.run_name) if plan.parity else self.root_src
         elif self.program in ('jupiter', 'http'):
             self.run_name = key
             self.root = self.root_src = _CFG().serve.JUPITER_ROOTS[c['root']]
@@ -104,9 +146,15 @@ class Page:
         return self.at('log', root)
 
     def cwd(self):
-        # http: the site's parent (8801's standing command, 2026-11-14: --directory names the site, so a site swap by rename
-        # leaves the process no stale working directory)
-        return os.path.dirname(os.path.normpath(self.root)) if self.program == 'http' else self.plan.ops
+        """The directory the page's server runs from: http - the site's parent (8801's standing command, 2026-11-14:
+        --directory names the site, so a site swap by rename leaves the process no stale working directory); a review page
+        (program classify) - the directory of its server code (plan.code: its registry entry's 'code', which the two-port
+        server puts first on the page's import path; the App probe runs there, servers.app_probe); else the ops root."""
+        if self.program == 'http':
+            return os.path.dirname(os.path.normpath(self.root))
+        if self.program == 'classify':
+            return os.path.dirname(self.plan.code(self))
+        return self.plan.ops
 
     def record_path(self, port=None):
         return os.path.join(self.plan.out, '_records', 'serve', 'pages', f'{self.tier}_{port or self.port}.json')
@@ -116,7 +164,9 @@ class Plan:
     def __init__(self):
         self.gates = []          # [(gate, message)] refusals found while planning (raised by the caller unless dry-run)
         self.notes = []
-        self.forced_after = {}   # forced page key -> the run this serve registers for it (forced_siblings)
+        self.forced_after = {}   # forced page key -> the run this serve registers for it (the forced families' siblings)
+        self.title_from = {}     # page key -> the run directory its title and hub words are read from when that is not the
+                                 # directory it is served from: a staged build before its swap (lib/serve/forced_tier)
         self.forced_view = None  # the transient-search view the forced pages are paired with (forced.paired_view; the switch)
 
     def refuse_later(self, gate, msg):
@@ -127,34 +177,48 @@ class Plan:
         family's 'served' run (the carry source 'served', journals.resolve_carry_from)."""
         return next(pg for pg in self.all_pages if pg.family == self.family)
 
-    # ---- environment and argv of the servers -----------------------------------------------------------------------
-    def env_key(self):
-        """serve.SERVER_ENV key of this plan's servers: '<tier>-<family>' when config has one (the snapshot forced pages,
-        whose launcher is not snapshot_serve.sh), else the tier."""
-        k = f'{self.tier}-{self.family}'
-        return k if k in _CFG().serve.SERVER_ENV else self.tier
+    # ---- environment and argv of the servers: the page family's PLAN_HOOK (family_hook) -----------------------------------
+    def hook(self, page=None):
+        """The PLAN_HOOK of ``page``'s family (default: this plan's family)."""
+        return family_hook(self.tier, page.family if page is not None else self.family)
 
-    def server_env_extra(self):
+    def page_python(self, page):
+        """The interpreter of ``page``'s server: its site PYTHON key ('python'), else the plan's."""
+        return scripts.interpreter(page.c['python']) if page.c.get('python') else self.python
+
+    def code(self, page):
+        """The absolute path of ``page``'s server code - its registry entry's 'code' (register.page_entry) and the directory its
+        server and App probe run from (Page.cwd): the family's code (hook.code), under the ops root when relative."""
+        c = self.hook(page).code(self, page)
+        return c if os.path.isabs(c) else os.path.join(self.ops, c)
+
+    def server_env_extra(self, page=None):
+        """The page servers' extra environment: the family's (hook.env: serve.SERVER_ENV, a pinned page's own 'env'), its
+        cross-tier values filled in."""
         S = _CFG().serve
         fmt = dict(deep_xtier=S.DEEP_XTIER.format(label=self.label or ''), other_deep_xtier=S.OTHER_TIERS_DEEP_XTIER,
                    tenmin_xtier=S.TENMIN_XTIER)
-        return {k: str(v).format(**fmt) for k, v in S.SERVER_ENV[self.env_key()].items()}
+        return {k: str(v).format(**fmt) for k, v in self.hook(page).env(self, page).items()}
+
+    def entry_env(self, page):
+        """The environment ``page``'s registry entry gives its server (register.page_entry 'env'; the two-port server runs the
+        page with it over its own, two_port.page_env): the serve.TWO_PORT_ENV_PREFIXES variables of server_env_extra(page),
+        plus the FITS cutouts button's on a review / comb page (serve.CUTOUTS_TIER). The App probe runs with the same
+        (servers.app_probe)."""
+        S = _CFG().serve
+        pre = tuple(S.TWO_PORT_ENV_PREFIXES)
+        env = {k: v for k, v in sorted(self.server_env_extra(page).items()) if k.startswith(pre)}
+        ct = (S.CUTOUTS_TIER.get((page.tier, page.kind)) if page.family in ('review', 'comb')   # the FITS cutouts button (config;
+              else None)                                                                       # comb: the combined view's pages)
+        if ct:
+            env.update(P3_CUTOUTS_TIER=ct, P3_PAGE_ID=f'p{page.port}')
+        return env
 
     def server_env(self):
         return scripts.server_env(self.server_env_extra())
 
     def title(self, page, utc, root=None):
-        S = _CFG().serve
-        if page.family == 'forced':
-            run_name = os.path.basename(os.path.normpath(root)) if root else page.run_name
-            samples, gen = forced_generation(page, run_name)
-            return S.FORCED_TITLE.format(S=page.stokes, what=S.SNAPSHOT_WHAT.get(page.kind, ''), run_name=run_name, utc=utc,
-                                         samples=samples, generation=gen)
-        t = S.TITLE.get((self.tier, page.title_kind()))
-        if t is None:
-            return None
-        return t.format(tier_text=S.DEEP_TIER_TEXT, S=page.stokes, label=self.label or '', utc=utc, lsts=self.lsts_text,
-                        what=S.SNAPSHOT_WHAT.get(page.kind, ''))
+        return self.hook(page).title(self, page, utc, root)
 
     def registered_run(self, page):
         """The --run of the page's entry p<port> in this plan's two-port registry (register.registry_dir), or None."""
@@ -164,101 +228,100 @@ class Plan:
         i = a.index('--run') + 1 if '--run' in a else len(a)
         return a[i] if i < len(a) else None
 
-    def forced_siblings(self, page):
-        """--sibling args of a forced page: each OTHER forced page's catalogue view as served AFTER this serve - the run this
-        serve registers for it (self.forced_after) or else the run its registry entry serves now - in the forced pages'
-        order (snapshot_forced_gen5_serve_20261026.sh:47-56, '<port>:<run>/source_catalogs_<S>:<label>'); a page with
-        neither gives no link."""
-        S = _CFG().serve
-        out = []
-        for o in self.all_pages:
-            if o.family != 'forced' or o.key == page.key:
-                continue
-            run = self.forced_after.get(o.key) or self.registered_run(o)
-            if run:
-                T = '10-s' if o.kind == '10s' else '1-min'
-                out += ['--sibling', f'{o.port}:{o.at("catalog", run)}:{S.FORCED_SIBLING_LABEL.format(S=o.stokes, T=T)}']
-        return out
+    def siblings(self, page, root=None):
+        """The --sibling arguments of ``page`` (its family's: hook.siblings)."""
+        return self.hook(page).siblings(self, page, root)
 
     def argv(self, page, utc, root=None):
-        """The server command line of ``page`` (a review page served from ``root``, default the page's run directory)."""
+        """The server command line of ``page`` (a review page served from ``root``, default the page's run directory): its
+        family's (hook.argv)."""
+        return self.hook(page).argv(self, page, utc, root)
+
+    def hub_entry(self, page, utc, root=None):
+        """(Stokes, hub tier, [key=value ...]) of build_review_hub.py --set for ``page``, in the launcher's order
+        (HUB_KV_ORDER); None for a page without a button (tunnel only). The run name and generation text are the family's
+        (hook.hub_words: a forced page's from ``root``, else the run its registry entry serves, else the plan's name)."""
+        if page.hub is None:
+            return None
+        keys = HUB_KV_ORDER.get((self.tier, page.family))
+        if keys is None:
+            raise Refusal(f'page {page.key}: family {page.family!r} of tier {self.tier} has a hub button but no key order '
+                          f'(plan.HUB_KV_ORDER)')
+        run_name, gen = self.hook(page).hub_words(self, page, root)
+        vals = {'run': run_name, 'generation': gen, 'served': utc, 'live': '1', 'port': str(page.port), 'note': ''}
+        return page.hub[0], page.hub[1], [f'{k}={vals[k]}' for k in keys]
+
+
+class ReviewHook:
+    """PLAN_HOOK of the REVIEW family - the deep, sub-LST and snapshot review pages, the combined view's pages (family comb)
+    and the restart-only deep pages (families strat, deep-forced); deep.py, sublst_build.py and snapshot_copy.py declare it:
+    the tier's launcher (the module docstring), code serve.SERVER_ARGV0[tier], environment serve.SERVER_ENV[tier], title
+    serve.TITLE[(tier, single | multi)], hub words serve.HUB_GENERATION[tier]; a snapshot page's siblings the other pages of its
+    family. lib/serve/pinned.PinnedHook builds on it."""
+
+    def code(self, plan, page):
+        return _CFG().serve.SERVER_ARGV0[plan.tier].format(ops=plan.ops)
+
+    def env(self, plan, page):
+        return _CFG().serve.SERVER_ENV[plan.tier]
+
+    def title(self, plan, page, utc, root=None):
         S = _CFG().serve
-        py = scripts.interpreter(page.c['python']) if page.c.get('python') else self.python
-        if page.program == 'jupiter':
-            return [py, 'jupiter_server.py', page.root, str(page.port)]
-        if page.program == 'http':
-            return [py, '-m', 'http.server', str(page.port), '--bind', '127.0.0.1', '--directory', page.root]
+        t = S.TITLE.get((plan.tier, page.title_kind()))
+        if t is None:
+            return None
+        return t.format(tier_text=S.DEEP_TIER_TEXT, S=page.stokes, label=plan.label or '', utc=utc, lsts=plan.lsts_text,
+                        what=S.SNAPSHOT_WHAT.get(page.kind, ''))
+
+    def siblings(self, plan, page, root=None):
+        """Snapshot: the other pages of the page's own family (review: 8779-8782; comb: 8986-8989), their views in ``root``."""
+        if plan.tier != 'snapshot':
+            return []
+        S = _CFG().serve
         U = root or page.root
-        a0 = S.SERVER_ARGV0[self.tier].format(ops=self.ops)
-        if page.family == 'forced':
-            argv = [py, a0, '--run', U, '--queue', page.at('queue', U), '--catalog-dir', page.at('catalog', U),
-                    '--port', str(page.port), '--loc-offsets', '--default-fp-reason', S.DEFAULT_FP_REASON['snapshot']]
-            argv += self.forced_siblings(page) + ['--title', self.title(page, utc, U)]
-            if self.parity:
-                argv += ['--lists-dir', self.lists_dir]
-            return argv
-        argv = [py, a0, '--run', U, '--queue', page.at('queue', U)]
-        if self.tier in ('deep', 'sublst'):
+        out = []
+        for o in plan.all_pages:
+            if o.key == page.key or o.family != page.family:
+                continue
+            lab = S.SNAPSHOT_SIBLING_LABEL.format(S=o.stokes, T='10-s' if o.kind == '10s' else '1-min')
+            out += ['--sibling', f'{o.port}:{o.at("catalog", U)}:{lab}']
+        return out
+
+    def extra(self, plan, page):
+        """Trailing arguments after the multiples chain (none; a pinned page's own: PinnedHook)."""
+        return []
+
+    def argv(self, plan, page, utc, root=None):
+        S = _CFG().serve
+        U = root or page.root
+        argv = [plan.page_python(page), self.code(plan, page), '--run', U, '--queue', page.at('queue', U)]
+        if plan.tier in ('deep', 'sublst'):
             argv += ['--labels-dir', page.at('labels', U)]
         argv += ['--catalog-dir', page.at('catalog', U), '--port', str(page.port)]
-        fp = S.DEFAULT_FP_REASON.get(self.tier, SERVER_DEFAULT_FP_REASON)
+        fp = S.DEFAULT_FP_REASON.get(plan.tier, SERVER_DEFAULT_FP_REASON)
         if fp != SERVER_DEFAULT_FP_REASON:
             argv += ['--default-fp-reason', fp]
         if page.c.get('loc_dir'):
             argv += ['--loc-dir', page.at('loc_dir', U)]
         if page.loc_offsets:
             argv += ['--loc-offsets']
-        t = self.title(page, utc)
+        t = self.title(plan, page, utc)
         if t is not None:
             argv += ['--title', t]
-        if self.tier == 'snapshot':
-            for o in self.all_pages:            # the other pages of the page's own family (review: 8779-8782; comb: 8986-8989)
-                if o.key == page.key or o.family != page.family:
-                    continue
-                lab = S.SNAPSHOT_SIBLING_LABEL.format(S=o.stokes, T='10-s' if o.kind == '10s' else '1-min')
-                argv += ['--sibling', f'{o.port}:{o.at("catalog", U)}:{lab}']
+        argv += self.siblings(plan, page, U)
         # the page's MULTIPLES CHAIN (Gregg 2026-10-27; exopipe_ops 4c42f91): after the title, as the two-port registry
         # entries of the deep and 10-minute singles pages carry them (p8766/p8768 both, p8787/p8788 the queue)
         if page.c.get('mchain_queue'):
             argv += ['--mchain-queue', page.at('mchain_queue', U)]
         if page.c.get('mchain_catalog'):
             argv += ['--mchain-catalog-dir', page.at('mchain_catalog', U)]
-        if self.parity:
-            argv += ['--lists-dir', self.lists_dir]
+        argv += self.extra(plan, page)
+        if plan.parity:
+            argv += ['--lists-dir', plan.lists_dir]
         return argv
 
-    def hub_entry(self, page, utc, root=None):
-        """(Stokes, hub tier, [key=value ...]) of build_review_hub.py --set for ``page``, in the launcher's order; None for a
-        page without a button (tunnel only). A forced page's run name, as title(): from ``root``, else from the run its entry
-        in this plan's registry serves (registered_run: what the button points at after a switch or a sibling refresh), else
-        the plan's name; G26 refuses a name whose tag has no serve.FORCED_GENERATIONS text."""
-        if page.hub is None:
-            return None
-        S = _CFG().serve
-        run_name = page.run_name
-        if page.family == 'forced':
-            root = root or self.registered_run(page)
-            run_name = os.path.basename(os.path.normpath(root)) if root else page.run_name
-            samples, g = forced_generation(page, run_name)
-            gen = S.FORCED_HUB_GENERATION.format(S=page.stokes, kind=page.kind, samples=samples, generation=g)
-        else:
-            gen = S.HUB_GENERATION[self.tier].format(lsts=self.lsts_text, label=self.label or '')
-        vals = {'run': run_name, 'generation': gen, 'served': utc, 'live': '1', 'port': str(page.port), 'note': ''}
-        return page.hub[0], page.hub[1], [f'{k}={vals[k]}' for k in HUB_KV_ORDER[(self.tier, page.family)]]
-
-
-def forced_generation(page, run_name):
-    """(samples text, cutout generation text) of a forced page serving ``run_name`` = Run_SNAPFORCED_<S><T>_<tag>
-    (serve.FORCED_RUN_NAME): the first two fields of serve.FORCED_GENERATIONS[tag]. G26 refuses a run of another name or a tag without an entry -
-    the title and the hub button name the samples and the generation the page shows (generation 6 adds LPT)."""
-    S = _CFG().serve
-    pre = S.FORCED_RUN_NAME.format(S=page.stokes, T=page.kind, tag='')
-    tag = run_name[len(pre):] if run_name.startswith(pre) else None
-    if tag not in S.FORCED_GENERATIONS:
-        raise Refusal(f'G26 forced page {page.key}: run {run_name!r} - no serve.FORCED_GENERATIONS entry for its tag {tag!r} '
-                      f'(the samples and cutout generation its title and hub button name; known: '
-                      f'{", ".join(sorted(S.FORCED_GENERATIONS))})')
-    return tuple(S.FORCED_GENERATIONS[tag][:2])
+    def hub_words(self, plan, page, root=None):
+        return page.run_name, _CFG().serve.HUB_GENERATION[plan.tier].format(lsts=plan.lsts_text, label=plan.label or '')
 
 
 def _strip_run(label):
@@ -349,7 +412,7 @@ def make(args, out):
     if p.family == 'forced' and not p.forced_tag and not restart_like and not getattr(args, 'forced_refresh_siblings', False):
         raise Refusal('G26 label required: --forced-tag TAG (the forced runs are Run_SNAPFORCED_<S><T>_<TAG>, '
                       'snapshot_forced_serve_20261007.sh:30)')
-    rr = run_root(p.tier) if p.family in ('review', 'comb') else None    # forced pages: one run per page (Page.root)
+    rr = run_root(p.tier) if p.family in ('review', 'comb') else None    # forced / pinned pages: one run per page (Page.root)
     # the combined view's member batch runs (G27's restore-only go reads them): production's, beside the view under the snapshot
     # review root - also for a parity view under --out, whose members are the production batch runs it was built from
     p.member_root = run_root(p.tier) if p.family == 'comb' else None

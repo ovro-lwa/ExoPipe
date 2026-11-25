@@ -132,8 +132,9 @@ def _check(scan, ex, rel, rid, keys):
             scan.hits.append((rel, rid, k[0], k[1], k[2]))
 
 
-def scan_files(paths, keyer, base, ex=None, scan=None):
-    """Key every row of the CSV files ``paths`` with ``keyer``; verdicts from core.exclusions (fresh)."""
+def scan_files(paths, keyer, base, ex=None, scan=None, row_hook=None):
+    """Key every row of the CSV files ``paths`` with ``keyer``; verdicts from core.exclusions (fresh). ``row_hook(rel, row,
+    keys)``, when given, sees every row with its keys in the same pass (one read of each file)."""
     ex = ex or fresh_exclusions()
     scan = scan or Scan()
     for p in paths:
@@ -146,8 +147,11 @@ def scan_files(paths, keyer, base, ex=None, scan=None):
                 scan.n_files += 1
                 for row in rd:
                     scan.n_rows += 1
+                    keys = keyer(row)
                     _check(scan, ex, rel, row.get('cand_id') or row.get('best_cand_id') or row.get('source_id') or
-                           row.get('cell') or '', keyer(row))
+                           row.get('cell') or '', keys)
+                    if row_hook is not None:
+                        row_hook(rel, row, keys)
         except (OSError, csv.Error, UnicodeDecodeError) as e:
             raise Refusal(f'G17 serve-time exclusion gate: {rel} could not be read ({e}) - refused')
     return scan
@@ -188,6 +192,41 @@ def snapshot_run_files(run):
 
 def scan_snapshot_run(run, ex=None):
     return scan_files(snapshot_run_files(run), keys_snapshot, run, ex=ex or fresh_exclusions('snapshot'))
+
+
+def keys_forced_tier(row):
+    """(lst, night, band) key of a row of a 10-minute / deep forced run (family T, tier_forced_page_20261027.py chain): its
+    cand_id F_<lst>_<date>_<band>_<10min|deep>_..., else its lst, date and band columns - the date cut to the night (a
+    10-minute window 2025-04-10T02 is night 2025-04-10), as family T's own gate T-EXCL keys the events (lib/forced/
+    tier_snapshot.excluded_events). keys_snapshot would key the window name, which no exclusion row names."""
+    cid = (row.get('cand_id') or '').strip()
+    p = cid.split('_')
+    if len(p) >= 5 and p[0] == 'F' and _LST.match(p[1]) and _DATE.match(p[2]):
+        return [(p[1], p[2][:10], p[3])]
+    lst, date, band = (row.get('lst') or '').strip(), (row.get('date') or '').strip(), (row.get('band') or '').strip()
+    if _LST.match(lst) and _DATE.match(date) and band:
+        return [(lst, date[:10], band)]
+    return []
+
+
+def scan_forced_tier_run(run, ex=None):
+    """The serve-time gate of a 10-minute / deep forced run: every CSV a snapshot run's gate reads (snapshot_run_files), keyed
+    per night (keys_forced_tier) against core.exclusions read now with family T's reader (PerNight: a wideband excluded with any
+    excluded member subband, the 18 MHz carve-out kept). Every served event (candidates/<S>/<event>/detections.csv, read in the
+    same pass) must be keyed: an unkeyed one refuses (a gate that keys nothing passes nothing silently)."""
+    from exopipe.phase3.core.exclusions import PerNight
+    unkeyed = {}
+
+    def served(rel, row, keys):
+        parts = rel.split(os.sep)
+        if not keys and len(parts) == 4 and parts[0] == 'candidates' and parts[3] == 'detections.csv':
+            unkeyed.setdefault(rel, []).append(row.get('cand_id') or '?')
+    scan = scan_files(snapshot_run_files(run), keys_forced_tier, run, ex=ex or PerNight(fresh=True), row_hook=served)
+    for rel in sorted(unkeyed):
+        ids = unkeyed[rel]
+        raise Refusal(f'G17 serve-time exclusion gate: {rel}: {len(ids)} served event(s) without an (LST, night, band) key, '
+                      f'e.g. {ids[:2]} - refused')
+    return scan
 
 
 # The review server of every deep and sub-LST page (program 'classify': exopipe_ops/classify_transients.py), mirrored here

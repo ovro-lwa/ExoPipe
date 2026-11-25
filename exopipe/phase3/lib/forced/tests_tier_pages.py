@@ -169,7 +169,9 @@ def tier_site(path, evals=None, samples=None, **ctx):
                              'page) and one yellow file per card' % (len(cards), len(evs), '/'.join(samples), t.PANEL_MIN_BYTES)
 
 
-_QH = re.compile(r'^# queue_name: forced photometry \(HWJ \+ 10 pc\), Stokes ([IV]), (\S+) tier\s*$')
+# the run queue's header (tier_forced_page_20261027.py:1110): the samples text is samples_short() of the run's SAMPLES (exopipe_ops
+# f06a293: 'HWJ + 10 pc', 'HWJ + 10 pc + LPT', ...)
+_QH = re.compile(r'^# queue_name: forced photometry \([^)]+\), Stokes ([IV]), (\S+) tier\s*$')
 
 
 @content_test('forced_tier_run')

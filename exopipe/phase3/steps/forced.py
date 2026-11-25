@@ -23,8 +23,8 @@ Families and stages
   T  the HWJ / 10 pc / LPT forced-photometry pages of the 10-minute and deep tiers (--tier snapshot --stages tier_eval,tier_site,
      tier_runs; lib/forced/tier_pages.py): tier_eval = the four stage-2 evaluations of the samples (snapshot_forced_eval.py
      --tier in place); tier_forced_page_20261027.py in place - tier_site = its build + verify (the static site),
-     tier_runs = its chain + verify-chain (the review runs Run_SNAPFORCED_{V,I}{10min,deep}_gen5.new, served on p9120-p9123
-     once installed; installing is not ported).
+     tier_runs = its chain + verify-chain (the review runs Run_SNAPFORCED_{V,I}{10min,deep}_gen5.new; installed and served on
+     p9120-p9123 by `exopipe3 serve --tier snapshot --family forced-tier`, lib/serve/forced_tier.py).
   W, N and T are campaign stages, named only (never a default), one family per invocation; their flags are --wide-*,
   --na-detections and --tier-site, --tier-forced-root, --tier-cutout-root (`exopipe3 forced --help`; lib/forced/
   wide_stages.py and tier_pages.py document inputs, outputs and gates W-* / N-* / T-*).
@@ -78,7 +78,9 @@ Failure modes (exit 2 = refused, the gate named in the record; exit 3 = nothing 
   missing, panels missing); G35 a snapshot run name used twice; G36 render-host tests Y (yellow numbers) and Z2 (served
   zones); G37 an override of a value the in-place code carries as a literal (forced_*, fitting.*, astrometry.*); a stage on
   the wrong host (catflux and panels: the host holding the run's node-local data; loc and verify: the review host); a stage
-  whose previous stage has no done record; a review copy under a production root while paths.PRODUCTION_WRITES is False.
+  whose previous stage has no done record; a review copy under a production root while paths.PRODUCTION_WRITES is False;
+  C-WORKERS a family C fit, tie or render with more processes than forced_snapshot.MAX_WORKERS (--workers, else
+  forced_snapshot.NPROC; each pool reads Lustre), refused before any unit.
   W / N: W-FAMILY, W-ENV, W-HOST, W-CATDIR, W-TARGETS, W-EVENTS, W-RECORD, W-WORKERS, W-CUTROOT, W-NOCUT, W-FILE, W-POOL,
   W-PARTIAL, W-NAMED, W-RUNDIR, W-ROOT, N-INPUT (lib/forced/wide_stages.py). T: T-G35, T-EVAL, T-EXCL, T-HOST, T-SITE,
   T-BUILD, T-VERIFY, T-CHAIN, T-VERIFY-CHAIN (lib/forced/tier_pages.py).

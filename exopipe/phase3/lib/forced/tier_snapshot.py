@@ -258,8 +258,23 @@ class Ctx:
                           % (self.D, self.d_host, self.review_host))
 
 
+def workers_refusal(args, stages, s=None):
+    """C-WORKERS: the text of the refusal when a selected stage among fit / tie / render would run more processes than
+    forced_snapshot.MAX_WORKERS (--workers, else forced_snapshot.NPROC of the stage: each pool reads Lustre), else None."""
+    s = s or K.cfg().forced_snapshot
+    over = ['%s %d' % (st, args.workers or s.NPROC[st]) for st in ('fit', 'tie', 'render')
+            if st in stages and (args.workers or s.NPROC[st]) > s.MAX_WORKERS]
+    if over:
+        return ('C-WORKERS %s processes > forced_snapshot.MAX_WORKERS %d (each pool reads Lustre: at most 6 Lustre-heavy '
+                'workers)' % (', '.join(over), s.MAX_WORKERS))
+    return None
+
+
 def run(args, run):
     stages = K.selected_stages(args, 'snapshot')
+    why = workers_refusal(args, stages)
+    if why:                                  # before any unit, a dry run too: no process count above the site rule
+        raise Refusal(why)
     gen = apply_generation(args)
     if gen:
         K.plan('generation %s: %s' % (args.snap_generation, ' '.join('%s=%s' % (k, gen[k]) for k in GENERATION_KEYS)))

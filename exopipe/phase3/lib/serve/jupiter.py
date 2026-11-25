@@ -11,9 +11,46 @@ hub    the ports in the registry's tunnel_extra (build_review_hub.py --tunnel-ex
 verify the served_page tests now.
 Parity: the offset ports serve the production directories read-only.
 """
+from exopipe.phase3.core.record import Refusal
 from exopipe.phase3.lib.serve import common, flow, servers
 
 STAGES = ('start', 'hub', 'verify')
+
+
+def _CFG():
+    from exopipe.phase3.config import CFG
+    return CFG
+
+
+class JupiterHook:
+    """PLAN_HOOK of the Jupiter program's pages: the live servers' argv (serve.PAGES; module docstring), environment
+    serve.SERVER_ENV['jupiter'], no title, no siblings, no hub button."""
+
+    def code(self, plan, page):
+        if page.program != 'jupiter':
+            raise Refusal(f'page {page.key}: python -m http.server has no code file of its own')
+        return 'jupiter_server.py'                   # run from the ops root (Page.cwd)
+
+    def env(self, plan, page):
+        return _CFG().serve.SERVER_ENV['jupiter']
+
+    def title(self, plan, page, utc, root=None):
+        return None
+
+    def siblings(self, plan, page, root=None):
+        return []
+
+    def argv(self, plan, page, utc, root=None):
+        py = plan.page_python(page)
+        if page.program == 'jupiter':
+            return [py, 'jupiter_server.py', page.root, str(page.port)]
+        return [py, '-m', 'http.server', str(page.port), '--bind', '127.0.0.1', '--directory', page.root]
+
+    def hub_words(self, plan, page, root=None):
+        raise Refusal(f'page {page.key}: the Jupiter pages have no hub button (registry tunnel_extra)')
+
+
+PLAN_HOOK = JupiterHook()
 
 
 def start_stage(run, plan, state, utc):

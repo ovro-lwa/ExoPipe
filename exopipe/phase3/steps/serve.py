@@ -7,6 +7,8 @@ review page (its port is its identity: entry p<port>) and the hub (8765-8801 exc
     exopipe3 serve --tier sublst [--lsts 00h,01h,...] --stages build,views,test          (plan a generation, nothing served)
     exopipe3 serve --tier snapshot --run Run_SNAPB2R_20261007 --source lwacalim05:/fast/... --label '...'
     exopipe3 serve --tier snapshot --family forced --forced-tag gen6 [--pages forced-V-10s]
+    exopipe3 serve --tier snapshot --family forced-tier [--pages forced-tier-V-10min]   (install family T's <run>.new)
+    exopipe3 serve --tier deep --family pinned --stages register                       (the fixed pages 9411-9414, 9300/9301)
     exopipe3 serve --tier jupiter                                                         (8800, 8801)
     exopipe3 serve --restart 8800,8801        exopipe3 serve --stop 8801     (servers of their own: the Jupiter pages)
 
@@ -17,7 +19,10 @@ build, copy, carry, register, hub, verify ...). Pages (config serve.PAGES; famil
             Run_P3S5 table-flip samples since 2026-10-17) are restart-only (no production launcher defines their argv)
   sublst    review V 8787, I 8788, V-multi 8789, I-multi 8790 (the cumulative Run_SLSTB)
   snapshot  review V-10s 8779, I-10s 8780, V-1min 8781, I-1min 8782; forced pages 8786, 8785, 8775, 8776 (--family forced);
-            the combined view's pages V-10s 8986, I-10s 8987, V-1min 8988, I-1min 8989 (--family comb)
+            the combined view's pages V-10s 8986, I-10s 8987, V-1min 8988, I-1min 8989 (--family comb); the 10-minute and
+            deep forced pages 9120 (V 10-min), 9121 (I 10-min), 9122 (V deep), 9123 (I deep) (--family forced-tier)
+  pinned    (--family pinned) deep fp-sample-V/I 9411/9412 (Run_P3S5); sublst fp-sample-V/I 9413/9414 (Run_SLSTB, frozen page
+            code), groupB-preview-I/V 9300/9301 (Run_SLSTB_GRPB_PREVIEW_20261026, its own page code): fixed entries
   jupiter   p1 8800 (jupiter_server.py), v2-site 8801 (http.server)
 Stages (--stages/--from/--until; default all, in order):
   deep      views, test, carry (only with --carry-from), start, hub, verify; convert (only when named, once: the run becomes
@@ -39,6 +44,9 @@ Stages (--stages/--from/--until; default all, in order):
             the go first, then the view's false-positive filters fp_filters.csv / .json (lib/serve/fp_filters.py), then the
             snapshot serve's stages on the view as its own review copy, registering p8986-p8989
   forced    switch, hub, verify            jupiter   start, hub, verify
+  forced-tier  install, hub, verify (lib/serve/forced_tier.py: family T's <run>.new staged, its page inputs, installed with
+            the judgements kept, the four pages registered once)
+  pinned    register, verify (lib/serve/pinned.py; production only)
 
 Inputs (read, never rewritten unless listed under Outputs):
   deep      Run_<label>/ under paths.TRANSIENTS_ROOT: the tier catalogues source_catalogs_<S>_{wb,sb,fwb,fsb}/, the union
@@ -51,6 +59,9 @@ Inputs (read, never rewritten unless listed under Outputs):
             record C_verify_<run> under forced_snapshot.WORK_ROOT, else its FT-READY log under paths.OPS_ROOT; the title and
             hub text of <TAG> (serve.FORCED_GENERATIONS: gen5, gen6 with LPT); the paired transient-search view, the --run of
             the production registry's entries serve.FORCED_PAGE_CONTEXT_VIEW_IDS (one run, else refused)
+  forced-tier  <run>.new beside Run_SNAPFORCED_<S><10min|deep>_gen<N> under paths.SNAPSHOT_REVIEW_ROOT and family T's record
+            T_runs (exopipe3 forced --stages tier_runs) naming it; the page inputs' parents (serve.FORCED_TIER_PARENTS), window
+            images (serve.FORCED_TIER_TENMIN_TREE) and deep frame times (serve.FORCED_TIER_DEEP_FRAME_TIMES)
   all       data_decisions.csv (read now, the serve-time exclusion gate), inspection_greenlit.csv, the hub registry
 Outputs (product classes; content tests run on every write and by `exopipe3 verify <class>`):
   served_queue   sectioned tier queues, queue_p3s3_<S>.txt, queue_p3s3_<S>_multi.txt
@@ -154,7 +165,7 @@ CONFIG = ('serve', 'pages', 'catalog_omission', 'catalog_sublst', 'catalog_snaps
 WRITES = True
 SPACE_GATE = False  # no space gate (cli.space_gate_of): pages and their indexes are small and the team reviews through them
                     # when room is low; a snapshot copy to the review disk keeps its own gate (G20, serve.SNAPSHOT_COPY_*)
-FAMILIES = ('review', 'forced', 'strat', 'deep-forced', 'jupiter', 'comb')
+FAMILIES = ('review', 'forced', 'strat', 'deep-forced', 'jupiter', 'comb', 'forced-tier', 'pinned')
 
 
 def add_arguments(p):
@@ -164,7 +175,9 @@ def add_arguments(p):
                         "photometry pages; strat / deep-forced = restart-only deep pages (deep-forced: the table-flip "
                         "samples on 8798/8799); comb = the COMBINED SNAPSHOT VIEW, the snapshot tier's cumulative step "
                         "(lib/serve/snapshot_view.py: build stages omit, build, filtercat, localize, ready; serve stages hides "
-                        "... verify on its pages 8986-8989)")
+                        "... verify on its pages 8986-8989); forced-tier = the 10-minute and deep forced photometry pages "
+                        "9120-9123 (install family T's new build, lib/serve/forced_tier.py); pinned = the fixed deep / sub-LST "
+                        "pages 9411-9414, 9300, 9301 (lib/serve/pinned.py)")
     g.add_argument('--view-runs', metavar='RUN,RUN|@FILE',
                    help='--family comb: the served batch runs of the view, in order (directories, a comma list or @FILE; bare '
                         'names under paths.SNAPSHOT_REVIEW_ROOT)')
@@ -204,10 +217,9 @@ def default_out(args):
 
 
 def _module(plan):
-    from exopipe.phase3.lib.serve import deep, forced, jupiter, snapshot_copy, sublst_build
-    if plan.family == 'forced':
-        return forced
-    return {'deep': deep, 'sublst': sublst_build, 'snapshot': snapshot_copy, 'jupiter': jupiter}[plan.tier]
+    """The module that serves the plan's family (lib/serve/plan.FAMILY_MODULES: the same module holds the family's PLAN_HOOK)."""
+    from exopipe.phase3.lib.serve import plan as planmod
+    return planmod.family_module(plan.tier, plan.family)
 
 
 def select_stages(all_stages, args, default_off=()):

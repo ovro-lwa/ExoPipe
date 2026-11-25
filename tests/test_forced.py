@@ -230,15 +230,19 @@ def test_inplace_truth():
                       ('shape[0] < %d' % s.VERIFY_PANEL_MIN_HEIGHT_PX, True),
                       ('random.Random(%d).sample(rows, min(%d' % (s.VERIFY_SNR_SAMPLE[1], s.VERIFY_SNR_SAMPLE[0]), True),
                       ('float(r["snr"])) > %g' % s.VERIFY_SNR_TOL, True),
-                      ('ft.add_argument("--nproc", type=int, default=%d)' % s.NPROC['fit'], True),
-                      ('te.add_argument("--nproc", type=int, default=%d)' % s.NPROC['tie'], True),
-                      ('r.add_argument("--nproc", type=int, default=%d)' % s.NPROC['render'], True),
+                      # production's module defaults (24, 12, 12), which the step never uses: it passes --nproc
+                      # forced_snapshot.NPROC, at most MAX_WORKERS (C-WORKERS; the site's 6 Lustre-heavy workers)
+                      ('ft.add_argument("--nproc", type=int, default=24)', True),
+                      ('te.add_argument("--nproc", type=int, default=12)', True),
+                      ('r.add_argument("--nproc", type=int, default=12)', True),
                       ('s_(d["ts"])) <= %d' % s.TIE_FRAME_WINDOW_S, True),
                       ('> %g or abs(dy' % s.TIE_RECON_TOL_ARCMIN, True),
                       ('os.environ.setdefault("P3_SNAP_FLOW", "%s")' % s.FLOW_ENV['P3_SNAP_FLOW'], True),
                       ('"/lustre/gh/main/exopipe_ops/snapshot_forced_state/done"', s.HOURS_SEARCHED_DIR ==
                        '/lustre/gh/main/exopipe_ops/snapshot_forced_state/done')):
         check('truth snapshot_forced_panels contains %r' % txt, (txt in PS) == want)
+    check('forced_snapshot.NPROC (fit, tie, render) within MAX_WORKERS %d (the site rule)' % s.MAX_WORKERS,
+          s.MAX_WORKERS == 6 and all(s.NPROC[k] <= s.MAX_WORKERS for k in ('fit', 'tie', 'render')), repr(s.NPROC))
     for line, key in ((s.OK_LINES['build'], 'build'), (s.OK_LINES['fit'], 'fit'), (s.OK_LINES['tie'].strip(), 'tie'),
                       (s.OK_LINES['loc'].strip(), 'loc'), (s.OK_LINES['render'], 'render'), (s.OK_LINES['verify'], 'verify')):
         check('truth success line %s printed by snapshot_forced_panels' % key, line in PS)
@@ -810,6 +814,23 @@ def test_snapshot_cli(W, ev_sb, ev_wb):
           'refused (exit 2) before any in-place call',
           rc == 2 and rec.get('status') == 'refused' and 'G-GEN' in rec.get('reason', '') and 'stage 1 unknown' in
           rec.get('reason', '') and not rec['meta'].get('legacy_calls'), '%s %s' % (rc, rec.get('reason')))
+    # C-WORKERS: a fit, tie or render with more processes than forced_snapshot.MAX_WORKERS is refused before any unit (the
+    # pools read Lustre: at most 6 Lustre-heavy workers), a dry run too; a stage without a pool is not concerned
+    for st in ('fit', 'tie', 'render'):
+        rc, err = cli(base + ['--stokes', 'V', '--snap-cadence', '10s', '--snap-name', 'Run_SNAPFORCED_V10s_W' + st,
+                              '--stages', st, '--workers', '7'])
+        check('C-WORKERS: --stages %s --workers 7 refused (exit 2) before any unit' % st,
+              rc == 2 and 'C-WORKERS' in err and record.load_record(W, 'forced', 'C_%s_Run_SNAPFORCED_V10s_W%s' % (st, st))
+              is None, '%s %s' % (rc, err[-300:]))
+    rc, err = cli(base + ['--stokes', 'V', '--snap-cadence', '10s', '--snap-name', 'Run_SNAPFORCED_V10s_WD', '--dry-run',
+                          '--workers', '7'])
+    check('C-WORKERS named by a dry run of the default stages (exit 2)', rc == 2 and 'C-WORKERS' in err, err[-300:])
+    from exopipe.phase3.lib.forced.tier_snapshot import workers_refusal
+    import argparse as _ap
+    check('C-WORKERS: --workers 7 on build / loc / assoc / verify only (no pool) passes; the defaults pass',
+          workers_refusal(_ap.Namespace(workers=7), ['build', 'loc', 'assoc', 'verify']) is None
+          and workers_refusal(_ap.Namespace(workers=None), ['build', 'fit', 'tie', 'render']) is None
+          and 'fit 7, tie 7, render 7' in (workers_refusal(_ap.Namespace(workers=7), ['fit', 'tie', 'render']) or ''))
     rc, err = cli(base + ['--epochs', '06h_2025-01-03'])
     recs = [record.load_record(W, 'forced', 'C_build_Run_SNAPFORCED_%s_E06h_2025-01-03' % x) or {}
             for x in ('I10s', 'I1min', 'V10s', 'V1min')]

@@ -60,9 +60,11 @@ import subprocess
 
 from exopipe.phase3.core.record import NoInput
 from exopipe.phase3.lib.serve import exclusion_gate, flow, journals, scripts, tess
+from exopipe.phase3.lib.serve.plan import ReviewHook
 
 STAGES = ('gate', 'copy', 'localize', 'gate-copy', 'carry', 'scintillation', 'page-context', 'tess', 'bright-filter', 'page-index',
           'test', 'start', 'hub', 'verify')
+PLAN_HOOK = ReviewHook()   # the snapshot review pages' and the combined view's pages' words (plan.FAMILY_MODULES)
 
 
 def _S():

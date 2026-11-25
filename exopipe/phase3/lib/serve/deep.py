@@ -63,9 +63,11 @@ import sys
 
 from exopipe.phase3.core.record import NoInput, Refusal
 from exopipe.phase3.lib.serve import common, exclusion_gate, flow, journals, mirror, queues, register, scripts, versions, views
+from exopipe.phase3.lib.serve.plan import ReviewHook
 
 STAGES = ('convert', 'views', 'test', 'carry', 'page-index', 'start', 'hub', 'verify', 'retire')
 DEFAULT_OFF = ('convert', 'retire')      # run only when named (steps/serve.py select_stages)
+PLAN_HOOK = ReviewHook()             # the deep review pages' words (and the restart-only deep pages': plan.FAMILY_MODULES)
 PUBLISH = ('views', 'test', 'start')     # a versioned run: on one snapshot, together (carry with them when given)
 
 

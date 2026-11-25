@@ -187,6 +187,13 @@ class serve(_Section):
     #   loaded from it, the page's rows win for the others) - exopipe_ops 4c42f91; production passes them on the deep and
     #   10-minute singles pages (two-port registry p8766/p8768: both, p8787/p8788: the queue;
     #   IMPL-MULTIPLES-CHAIN-SAMPLE-20261027)
+    #   (family pinned only) run, code, env, title, extra: see the pinned pages below
+    # the grouping design B preview pages p9300 / p9301 (PAGES family pinned): their page code and title, as registered
+    GROUPB_PREVIEW_CODE = '/lustre/gh/main/phase3/refactor_analysis/grouping_20261026/preview/page_code/classify_transients.py'
+    GROUPB_PREVIEW_TITLE = ("PREVIEW, no production change - 10-minute MULTIPLES under grouping design B, Stokes {S}: one row per "
+                            "identity (P >= 0.97), multiples level P >= 0.85, a multiple = detections in two or more distinct "
+                            "10-minute windows; second segment: today's multiples that grouping B counts as single-window. Built "
+                            "2026-10-26 from Run_SLSTB (the 2026-10-25 21:21 UTC build, 24 LSTs); compare today's p{compare}")
     PAGES = {
         ('deep', 'V'): dict(port=8766, family='review', program='classify', start='stages', stokes='V', kind='single',
                             queue='judgements/queue_p3s3_V.txt', catalog='source_catalogs_V', labels='judgements_V',
@@ -291,6 +298,75 @@ class serve(_Section):
         ('snapshot', 'forced-I-1min'): dict(port=8776, family='forced', program='classify', start='stages', stokes='I',
                                             kind='1min', queue='queue_I.txt', catalog='source_catalogs_I', labels='judgements',
                                             loc_offsets=True, hub=('I', '1-min-forced'), twin=None, log='classify_8776.log'),
+        # the 10-MINUTE AND DEEP FORCED-PHOTOMETRY pages (`serve --tier snapshot --family forced-tier`, lib/serve/forced_tier.py):
+        # the four review runs forced_tier_pages.RUN_NAME of exopipe3 forced family T (tier_forced_page_20261027.py chain, run
+        # in place), registered 2026-10-27 08:04:50 UTC in one call (HWJ10PC-FORCED-10MIN-DEEP-FULL-CHAIN-FITS-LOC-ASSOC-
+        # REREGISTERED-20261027, ledger 3080) with the argv of the snapshot forced pages (--loc-offsets, --default-fp-reason,
+        # --sibling to the other three in this order). Checked against the live registry 2026-11-25 (p9120-p9123)
+        ('snapshot', 'forced-tier-V-10min'): dict(port=9120, family='forced-tier', program='classify', start='stages', stokes='V',
+                                                  kind='10min', queue='queue_V.txt', catalog='source_catalogs_V',
+                                                  labels='judgements', loc_offsets=True, hub=('V', '10-min-forced'), twin=None,
+                                                  log='classify_9120.log'),
+        ('snapshot', 'forced-tier-I-10min'): dict(port=9121, family='forced-tier', program='classify', start='stages', stokes='I',
+                                                  kind='10min', queue='queue_I.txt', catalog='source_catalogs_I',
+                                                  labels='judgements', loc_offsets=True, hub=('I', '10-min-forced'), twin=None,
+                                                  log='classify_9121.log'),
+        ('snapshot', 'forced-tier-V-deep'): dict(port=9122, family='forced-tier', program='classify', start='stages', stokes='V',
+                                                 kind='deep', queue='queue_V.txt', catalog='source_catalogs_V',
+                                                 labels='judgements', loc_offsets=True, hub=('V', '1-hour-forced'), twin=None,
+                                                 log='classify_9122.log'),
+        ('snapshot', 'forced-tier-I-deep'): dict(port=9123, family='forced-tier', program='classify', start='stages', stokes='I',
+                                                 kind='deep', queue='queue_I.txt', catalog='source_catalogs_I',
+                                                 labels='judgements', loc_offsets=True, hub=('I', '1-hour-forced'), twin=None,
+                                                 log='classify_9123.log'),
+        # PINNED pages (`serve --tier deep|sublst --family pinned --stages register`): registered once by hand, no launcher - their
+        # entry is this configuration, fixed: the run (under the tier's run root), queue, labels, catalogue, the server code
+        # ('code': an absolute path; absent = SERVER_ARGV0 of the tier), the environment ('env': a dict; absent = the tier's
+        # SERVER_ENV), the title and any trailing arguments ('extra'). Checked against the live registry 2026-11-25.
+        # The FALSE-POSITIVE GROUND-TRUTH SAMPLES (Gregg's overnight task 2026-10-22, REFACTOR-FP-GROUNDTRUTH-SAMPLE-20261022,
+        # ledger 2782: blind, stratified samples of identities on their own queue and labels, same code as their parents
+        # p8766 p8768 p8787 p8788 then); p9411 / p9412 re-registered with --filter-defaults off (R-GREGG-20261023-DEEP-TRACKING-
+        # ON-BY-DEFAULT, ledger 2853); p9413 / p9414 serve the frozen tree their parent Run_SLSTB was published from
+        ('deep', 'fp-sample-V'): dict(port=9411, family='pinned', program='classify', start='stages', stokes='V', kind='single',
+                                      run='Run_P3S5', queue='judgements/queue_fpsample_V_20261022.txt',
+                                      labels='judgements_fpsample_V_20261022', catalog='source_catalogs_V', env={},
+                                      title='FP ground-truth sample 1 of 4: deep (1-hour) Stokes V, 60 sources (blind: please '
+                                            'leave the filters panel closed)',
+                                      extra=('--filter-defaults', 'off'), hub=None, twin=None),
+        ('deep', 'fp-sample-I'): dict(port=9412, family='pinned', program='classify', start='stages', stokes='I', kind='single',
+                                      run='Run_P3S5', queue='judgements/queue_fpsample_I_20261022.txt',
+                                      labels='judgements_fpsample_I_20261022', catalog='source_catalogs_I', env={},
+                                      title='FP ground-truth sample 2 of 4: deep (1-hour) Stokes I, 82 sources (blind: please '
+                                            'leave the filters panel closed)',
+                                      extra=('--filter-defaults', 'off'), hub=None, twin=None),
+        ('sublst', 'fp-sample-V'): dict(port=9413, family='pinned', program='classify', start='stages', stokes='V', kind='single',
+                                        run='Run_SLSTB', queue='judgements/queue_fpsample_V_20261022.txt',
+                                        labels='judgements_fpsample_V_20261022', catalog='source_catalogs_V', loc_offsets=True,
+                                        code='/lustre/gh/main/phase3/sublst/code_frozen/SLSTB_20261022T072542Z/exopipe_ops/'
+                                             'classify_transients.py',
+                                        title='FP ground-truth sample 3 of 4: 10-minute Stokes V, 60 sources (blind: please '
+                                              'leave the filters panel closed)', hub=None, twin=None),
+        ('sublst', 'fp-sample-I'): dict(port=9414, family='pinned', program='classify', start='stages', stokes='I', kind='single',
+                                        run='Run_SLSTB', queue='judgements/queue_fpsample_I_20261022.txt',
+                                        labels='judgements_fpsample_I_20261022', catalog='source_catalogs_I', loc_offsets=True,
+                                        code='/lustre/gh/main/phase3/sublst/code_frozen/SLSTB_20261022T072542Z/exopipe_ops/'
+                                             'classify_transients.py',
+                                        title='FP ground-truth sample 4 of 4: 10-minute Stokes I, 81 sources (blind: please '
+                                              'leave the filters panel closed)', hub=None, twin=None),
+        # the GROUPING DESIGN B PREVIEW of the 10-minute multiples (2026-10-26, grouping_20261026/preview; greenlit by Gregg
+        # 2026-10-27 "grouping-B preview"): its own run and page code
+        ('sublst', 'groupB-preview-I'): dict(port=9300, family='pinned', program='classify', start='stages', stokes='I',
+                                             kind='multi', run='Run_SLSTB_GRPB_PREVIEW_20261026',
+                                             queue='judgements/queue_groupB_I.txt', labels='judgements_I_groupB',
+                                             catalog='source_catalogs_I', loc_dir='source_catalogs_I', loc_offsets=True,
+                                             code=GROUPB_PREVIEW_CODE, title=GROUPB_PREVIEW_TITLE.format(S='I', compare=8790),
+                                             hub=None, twin=None),
+        ('sublst', 'groupB-preview-V'): dict(port=9301, family='pinned', program='classify', start='stages', stokes='V',
+                                             kind='multi', run='Run_SLSTB_GRPB_PREVIEW_20261026',
+                                             queue='judgements/queue_groupB_V.txt', labels='judgements_V_groupB',
+                                             catalog='source_catalogs_V', loc_dir='source_catalogs_V', loc_offsets=True,
+                                             code=GROUPB_PREVIEW_CODE, title=GROUPB_PREVIEW_TITLE.format(S='V', compare=8789),
+                                             hub=None, twin=None),
         # the Jupiter program's pages (live on 2026-10-13: 8800 = `jupiter_server.py /lustre/gh/main/phase3/jupiter/products
         # 8800` in cwd ops; 8801 = `python -m http.server 8801 --bind 127.0.0.1 --directory <v2 site>`; jupiter_server.py:303;
         # neither has a launcher in ops). Registry: tunnel_extra (no button). 8801's STANDING COMMAND (Jovian chat 2026-11-14,
@@ -400,6 +476,11 @@ class serve(_Section):
         'snapshot-forced': {'P3_DEEP_XTIER': '{other_deep_xtier}', 'P3_TENMIN_XTIER': '{tenmin_xtier}',
                             'P3_XTIER_FRAME': 'dewarped', 'P3_XTIER_SUBBAND_STACK_PREFIXES': 'Run_SLST,Run_SNAP',
                             'NUMPY_MADVISE_HUGEPAGE': '0'},
+        # the 10-minute and deep forced pages p9120-p9123: the snapshot forced pages' five (their live entries carry the same
+        # four P3_* values)
+        'snapshot-forced-tier': {'P3_DEEP_XTIER': '{other_deep_xtier}', 'P3_TENMIN_XTIER': '{tenmin_xtier}',
+                                 'P3_XTIER_FRAME': 'dewarped', 'P3_XTIER_SUBBAND_STACK_PREFIXES': 'Run_SLST,Run_SNAP',
+                                 'NUMPY_MADVISE_HUGEPAGE': '0'},
         'jupiter': {},                      # the live 8800 / 8801 servers carry no P3_* variable
     }
     STOP_TIMEOUT_S = 10.0                   # s, exact-pid SIGTERM then wait; restart_inspection_twin.sh:53-56 (40 x 0.25 s);
@@ -520,7 +601,11 @@ class serve(_Section):
     # when restarted (servers.restart_port). PROTECTED (and RULED): no --set / --config changes it outside a --parity replay
     # into a non-production --out (review 2026-10-14 m6: --ruling-for accepts any ledger ID, so RULED alone was weaker); so the
     # parity file, which sets it, applies only in a --parity run (exopipe3 config --config refuses it, as any protected key).
-    EXCLUSION_GATE_TIERS = ('snapshot', 'snapshot-forced', 'deep', 'sublst', 'deep-strat', 'deep-deep-forced')
+    # The 10-minute and deep forced pages ('snapshot-forced-tier', the installed run's every CSV keyed per night: lib/serve/
+    # exclusion_gate.scan_forced_tier_run) and the pinned deep / sub-LST pages ('deep-pinned', 'sublst-pinned': per page, as
+    # the review pages) are forced and deep / sub-LST pages under the same 2026-10-14 approval (no production gate either).
+    EXCLUSION_GATE_TIERS = ('snapshot', 'snapshot-forced', 'deep', 'sublst', 'deep-strat', 'deep-deep-forced',
+                            'snapshot-forced-tier', 'deep-pinned', 'sublst-pinned')
     HOLD_FP_VERDICTS = ('FP', 'probably-FP', 'lean-FP')   # snapshot_rechain_batch.sh:379 (R-SNAPSHOT-SERVE-HOLD-ONLY-ON-NON-FP-MISSED-JUDGEMENTS, ledger 1698)
     HOLD_NOTE_CHARS = 200                   # carry_missed.csv judge_note cut; snapshot_rechain_batch.sh:397
     # how the HOLD check reads the OLD journal: 'driver' = the batch driver's heredoc, production today
@@ -698,6 +783,47 @@ class serve(_Section):
     FORCED_HUB_GENERATION = ('forced photometry at {samples} targets, {generation}, Stokes {S} '
                              '{kind} events: pixel-distance screen, fitted, reference-tied, localized, associated')   # kind = 10s |
                                             # 1min; snapshot_forced_gen5_serve_20261026.sh:72-74 (the live hub entries)
+    # THE 10-MINUTE AND DEEP FORCED PAGES (family forced-tier, lib/serve/forced_tier.py; p9120-p9123): the four review runs
+    # forced_tier_pages.RUN_NAME, made by exopipe3 forced family T as <run>.new (tier_runs). Their words, as the live entries
+    # (registered 2026-10-27 08:04:50 UTC by hand, ledger 3080) and the live hub buttons (07:07 UTC) give them: the samples text
+    # is the run's own (its queue header, FORCED_TIER_QUEUE_HEADER: tier_forced_page_20261027.py samples_short(), :1110), the
+    # generation the run name's _gen<N>
+    FORCED_TIER_TITLE = ('Snapshot-chain FORCED photometry ({samples}), Stokes {S}, {what} - each event fitted in its own image '
+                         '(Gaussian >= 7 sigma, template below), localized, associated (target / background source / '
+                         'ambiguous); no reference tie at this tier ({run_name}) - served {utc}')
+    FORCED_TIER_WHAT = {'10min': '10-minute windows', 'deep': '1-hour (deep) nightly epochs'}  # planets_forced_page_20261026.py:69
+    FORCED_TIER_SIBLING_T = {'10min': '10-minute', 'deep': 'deep (1-hour)'}   # T of FORCED_SIBLING_LABEL (the live --sibling)
+    FORCED_TIER_HUB_GENERATION = ('forced photometry at the {samples} targets, {kind} tier, generation-{gen} tier cutouts, '
+                                  'Stokes {S} events')
+    FORCED_TIER_QUEUE_HEADER = (r'^# queue_name: forced photometry \((?P<samples>[^)]+)\), Stokes (?P<S>[IV]), '
+                                r'(?P<tier>10min|deep) tier$')
+    FORCED_TIER_REQUIRED = ('queue_{S}.txt', 'source_catalogs_{S}', 'source_catalogs_{S}_loc', 'forced_fits.csv',
+                            'forced_assoc.csv', 'forced_assoc_identity.csv', 'cards/lines.json')   # what the chain writes and
+                                            # the page reads (tier_forced_page_20261027.py cmd_chain; verify-chain reads cards/)
+    # THE INSTALL of <run>.new (production's `swap` :1192-1206 and `swap-stage` :1256-1277): the new tree is renamed to
+    # <root>/FORCED_TIER_STAGE/<run> (the tools below recognize a forced run by its own name, scintillation_index.forced_run),
+    # gets its page inputs there, then the live run's judgements/ are copied into it (rsync -a --update), the live run is
+    # renamed FORCED_TIER_KEEP, the staged run takes its place, and the kept run's judgements/ are copied again (a label
+    # written in between). The kept run stays (production kept every one: .superseded_nofit_20261027, .before_epoch_20261110)
+    FORCED_TIER_STAGE = '{run}.install'
+    FORCED_TIER_KEEP = '{run}.before_{utc}'      # utc = %Y%m%dT%H%M%SZ of the install
+    # the INSTALL RECORD beside the run, from the swap until the registration is written: when the run was installed, the
+    # kept run's name, the step not yet done (lib/serve/forced_tier.POST_SWAP_STEPS) and the failure that stopped it; removed
+    # once the page is registered. The next serve resumes from that step without a <run>.new.
+    FORCED_TIER_INSTALL_RECORD = '{run}.install_record.json'
+    # the page inputs of a tier run (production's interim pushes, ledger PUSH-20261112-FORCED-PAGES-FILTER-FILES and
+    # PREAMBLE-20261115-TESS-COVERAGE-INTERIM-SERVED-RUNS; no page_context sidecars on these runs), in this order from
+    # SNAPSHOT_STEP_CWD: scintillation_index.py RUN --tier FORCED_TIER_SCINT_TIER[kind]; bright_source_filter_precompute.py RUN
+    # --tier FORCED_BRIGHT_TIER --parents <paths.TRANSIENTS_ROOT>/FORCED_TIER_PARENTS[kind] --workers FORCED_BRIGHT_WORKERS (the
+    # search run whose Masters the event planes subtracted: the tool refuses another); 10 min: tess/frame_times_tenmin.py
+    # --run RUN --image-root <paths.SUBLST_ROOT>/FORCED_TIER_TENMIN_TREE; tess/tess_coverage.py --run RUN --from-candidates
+    # (deep: --frame-times <paths.TRANSIENTS_ROOT>/FORCED_TIER_DEEP_FRAME_TIMES)
+    FORCED_TIER_SCINT_TIER = {'10min': 'tenmin', 'deep': 'deep'}     # scintillation_index.FORCED_TIER
+    FORCED_TIER_PARENTS = {'10min': 'Run_SLSTB', 'deep': 'Run_P3S5'}
+    FORCED_TIER_TENMIN_TREE = 'tenmin_root_x2'
+    FORCED_TIER_DEEP_FRAME_TIMES = 'Run_P3S5/frame_times.csv'
+    FORCED_TIER_INPUTS_REQUIRED = ('scintillation_index.csv', 'scintillation_index.json', 'bright_source_filter.npz',
+                                   'tess_coverage.csv')   # + frame_times.csv at 10 min
 
     # ---- in-place calls ---------------------------------------------------------------------------------------------
     LEGACY_TIMEOUT_S = 7200                 # s, any in-place script (sublst_publish_lst.sh:44 ran the cumulative under 7200 s)

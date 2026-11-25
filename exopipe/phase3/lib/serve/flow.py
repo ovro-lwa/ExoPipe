@@ -306,7 +306,25 @@ def start_stage(run, plan, state, root=None, utc=None):
                                           page_index=plan.tier in PAGE_INDEX_TIERS))
 
 
-def register_pages(run, plan, prepare, unit_name, stage='start', inc_log=True, page_index=False):
+class InstalledNotRegistered(RuntimeError):
+    """A page whose new run IS installed (the served run replaced in place, lib/serve/forced_tier) but not registered: a step
+    after the swap failed. Never reported as a refusal (a refusal leaves the served run as it was): its unit ends 'error' with
+    the reason INSTALLED_NOT_REGISTERED + the step, and the family's install record lets the next serve resume from it."""
+
+
+INSTALLED_NOT_REGISTERED = 'installed, not registered: '
+
+
+def _unit_error(run, name, reason, **meta):
+    """A unit that ends 'error' with ``reason`` (InstalledNotRegistered), recorded; the caller goes on."""
+    try:
+        with run.unit(name, **meta):
+            raise InstalledNotRegistered(reason)
+    except InstalledNotRegistered:
+        pass
+
+
+def register_pages(run, plan, prepare, unit_name, stage='start', inc_log=True, page_index=False, install=None, holds='lift'):
     """THE ONE REGISTRATION of a serve (lib/serve/register.py) and each registered page's build.
     Unit ``unit_name`` (class page_registration): the two-port server first (register.check_server, G16 / G13: it answers,
     reports the build state, reads this registry, runs with the configured publish-hold option) - before ``prepare(u)`` ->
@@ -321,46 +339,95 @@ def register_pages(run, plan, prepare, unit_name, stage='start', inc_log=True, p
     With page_index (the deep and sub-LST start): before the registry lock, each registered run's page index is built (kept when
     current) with its publish marker still standing (build_page_index publisher: every write into the run is done by now; the
     marker is lifted inside the lock as always); a failed index refuses the unit, so nothing is registered and the marker
-    stands - the pages never rebuild against a run without a current index."""
+    stands - the pages never rebuild against a run without a current index.
+    ``holds``: 'lift' (the family owns the publish markers of its runs: removed right before the write, as above) or 'refuse'
+    (it owns none - the pinned pages, whose runs Run_P3S5 / Run_SLSTB the deep and sub-LST publishers mark: a marker standing
+    inside the lock refuses the registration, 'publish in progress on <run>, retry after'; nothing written, no marker touched).
+    ``install`` (a family that INSTALLS a run in place of the served one: lib/serve/forced_tier.Install): inside the registry
+    lock, after the registration's own checks passed (the loader check of register.prepare, the server check, the markers) -
+    nothing is swapped before them - install.swap(u, items) -> (items, refused) swaps the staged runs and runs the steps after
+    each swap; a page it drops is taken out of the registration (register.prepare again). On ANY failure from prepare(u) on,
+    install.failed(u, exc) puts every staged run back and returns {page key: reason} of the pages installed and not
+    registered: they and this unit end InstalledNotRegistered (status error, never refused); install.registered(u, keys) after
+    the write; install.pending(page) names a page an earlier serve installed and did not register (when nothing was prepared)."""
     from exopipe.phase3.lib.serve import register
+    if holds not in ('lift', 'refuse'):
+        raise ValueError(f'register_pages holds={holds!r}: lift or refuse')
     d, ports = register.registry_dir(plan), register.listeners(plan)
-    got = {'items': [], 'refused': {}, 'res': None, 'inspection': [], 'prepared': False}
-    with run.unit(unit_name, stage=stage, tier=plan.tier, family=plan.family, registry=d, listeners=list(ports),
-                  parity=plan.parity) as u:
-        register.check_server(ports, d)                 # before anything changes (a carry, a marker, the registry)
-        items, refused = prepare(u)
-        got['items'], got['refused'], got['prepared'] = items, refused, True
-        if not items:
-            raise recmod.NoInput('no page passed its checks - nothing registered (the registry is unchanged)')
-        if page_index:
-            for r in dict.fromkeys(it[1] for it in items):
-                build_page_index(u, r, publisher=True)
-        with register.registry_lock(d):                 # from the registry's read to its write: no other writer between
-            prep = register.prepare([it[2] for it in items], d)
-            st = register.check_server(ports, d)        # again, right before the write: and what it has built now
-            got['inspection'] = register.built_inspection(st)
-            holds = []
-            for r in dict.fromkeys(it[1] for it in items):
-                lifted = register.lift_hold(r)
-                holds.append({'run': r, 'lifted': lifted})
-                if lifted:
-                    u.note(f'publish marker of {r} removed right before the registration ({lifted})')
-            res = register.write(prep)
-        res['record'] = register.registration_record(plan.out, unit_name, res, holds)
-        got['res'] = res
-        u.add_output(res['record'], 'page_registration')
-        u.note(f'ONE registration of {len(items)} page(s) in {res["registry"]}: {", ".join(e["id"] for e in res["entries"])} '
-               f'(registry state {res["previous_state"]} -> {res["state"]})')
+    got = {'items': [], 'refused': {}, 'res': None, 'inspection': [], 'prepared': False, 'installed': {}}
+    try:
+        with run.unit(unit_name, stage=stage, tier=plan.tier, family=plan.family, registry=d, listeners=list(ports),
+                      parity=plan.parity) as u:
+            register.check_server(ports, d)                 # before anything changes (a carry, a marker, the registry)
+            try:
+                items, refused = prepare(u)
+                got['items'], got['refused'], got['prepared'] = items, refused, True
+                if not items:
+                    raise recmod.NoInput('no page passed its checks - nothing registered (the registry is unchanged)')
+                if page_index:
+                    for r in dict.fromkeys(it[1] for it in items):
+                        build_page_index(u, r, publisher=True)
+                with register.registry_lock(d):             # from the registry's read to its write: no other writer between
+                    entries = [it[2] for it in items]
+                    prep = register.prepare(entries, d)
+                    st = register.check_server(ports, d)    # again, right before the write: and what it has built now
+                    got['inspection'] = register.built_inspection(st)
+                    if holds == 'refuse':
+                        for r in dict.fromkeys(it[1] for it in items):
+                            if os.path.lexists(register.hold_file(r)):
+                                raise Refusal(f'publish in progress on {r}, retry after (its publish marker '
+                                              f'{register.hold_file(r)} stands; this family never removes it) - nothing '
+                                              f'registered')
+                    if install is not None:
+                        items, more = install.swap(u, items)
+                        got['items'] = items
+                        got['refused'].update(more)
+                        if not items:
+                            raise recmod.NoInput('no page left to register after the install - nothing registered')
+                        if [it[2] for it in items] != entries:
+                            prep = register.prepare([it[2] for it in items], d)
+                    holds_ = []
+                    for r in dict.fromkeys(it[1] for it in items):
+                        lifted = register.lift_hold(r) if holds == 'lift' else None
+                        holds_.append({'run': r, 'lifted': lifted})
+                        if lifted:
+                            u.note(f'publish marker of {r} removed right before the registration ({lifted})')
+                    res = register.write(prep)
+            except BaseException as e:
+                if install is not None:
+                    got['installed'] = install.failed(u, e) or {}
+                    if got['installed']:
+                        raise InstalledNotRegistered(INSTALLED_NOT_REGISTERED + '; '.join(
+                            f'page {k}: {v[len(INSTALLED_NOT_REGISTERED):]}' for k, v in sorted(got['installed'].items()))
+                            + f' (after {type(e).__name__}: {str(e)[:300]})') from e
+                raise
+            if install is not None:
+                install.registered(u, [it[0].key for it in items])
+            res['record'] = register.registration_record(plan.out, unit_name, res, holds_)
+            got['res'] = res
+            u.add_output(res['record'], 'page_registration')
+            u.note(f'ONE registration of {len(items)} page(s) in {res["registry"]}: '
+                   f'{", ".join(e["id"] for e in res["entries"])} (registry state {res["previous_state"]} -> {res["state"]})')
+    except InstalledNotRegistered:
+        pass                                            # recorded: the unit ended error with it
     why = None if u.status == 'done' else f'not registered: {u.name} ended {u.status} ({(u.reason or "")[:300]})'
     served = {}
     for pg in plan.pages:
+        meta = dict(stage=stage, tier=plan.tier, page=pg.key, port=pg.port, parity=plan.parity)
+        w = str(got['refused'].get(pg.key, ''))
+        pending = got['installed'].get(pg.key) or (w if w.startswith(INSTALLED_NOT_REGISTERED) else None)
+        if pending is None and install is not None and not got['prepared']:
+            p = install.pending(pg)                      # an earlier serve's install, not resumed: the server check refused
+            pending = p and f'{p} - not resumed ({why})'
+        if pending is not None:                          # installed, not registered: never a refusal
+            _unit_error(run, pg.unit, pending, **meta)
+            continue
         if not got['prepared']:                          # refused before the pages were checked (the server check)
-            with run.unit(pg.unit, stage=stage, tier=plan.tier, page=pg.key, port=pg.port, parity=plan.parity) as pu:
+            with run.unit(pg.unit, **meta) as pu:
                 pu.refuse(why or 'not registered')
             continue
         if pg.key in got['refused']:
-            w = str(got['refused'][pg.key])
-            with run.unit(pg.unit, stage=stage, tier=plan.tier, page=pg.key, port=pg.port, parity=plan.parity) as pu:
+            with run.unit(pg.unit, **meta) as pu:
                 if w.startswith('NO-INPUT: '):          # e.g. no multi-integration source: the page is not served
                     raise recmod.NoInput(w[len('NO-INPUT: '):])     # (sublst_cumulative.sh:80, 'continue', not a refusal)
                 pu.refuse(w)

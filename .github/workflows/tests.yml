@@ -116,6 +116,8 @@ jobs:
         run: python tests/test_frames_tenmin_append_gate.py
       - name: combined snapshot view pages p8986-p8989 (serve plan, entries, hub, stages) and the false-positive filter step (flood and alignment hides, refusals, content test)
         run: python tests/test_snapview_pages.py
+      - name: 10-minute and deep forced pages p9120-p9123 (install of family T's <run>.new, readiness, page inputs, the exclusion gate's keyer, plan, entries, hub words) and the pinned pages p9411-p9414, p9300, p9301
+        run: python tests/test_forced_tier_serve.py
       - name: per-hour driver (fake Slurm; catch-up windows, failed-parent resubmission, space booking, requeue resume, periodic jobs)
         run: python tests/test_drive.py
       - name: space gate of every writer step (Lustre quota headroom and free space, statvfs elsewhere; codes, bookings, sticky gate, cli wiring)

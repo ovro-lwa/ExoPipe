@@ -57,9 +57,10 @@ def main():
             own.add((row.get('source_id', sid), b_))
     vkeys = set()
     for p in glob.glob(os.path.join(cat, '*_sources_survivors.csv')):
-        with open(p, newline='') as f:
+        fband = os.path.basename(p)[:-len('_sources_survivors.csv')]   # a view without a band column (the 10-minute and
+        with open(p, newline='') as f:                                  # deep forced runs: 'subband') is keyed by its file
             for r in csv.DictReader(f):
-                vkeys.add((r['source_id'], r['band']))
+                vkeys.add((r['source_id'], r.get('band') or fband))
     drop = [d[0] for d in app.dropped]
 
     def key(i):
