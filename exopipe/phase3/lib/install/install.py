@@ -73,7 +73,9 @@ FREEZE_MARKER = '/lustre/gh/main/exopipe_ops/mdewarp_rbf_20261004/SNAPSHOT_FREEZ
 # cards itself"; production repairs the archived cell after this install, membership_rebuild_20261007/install_cell.sh:35-54,
 # DECISION-20261113-DEEP-REBUILD-CHAIN-WRITES-REPAIR-CARDS): the MDWSTAT table path - b writes the Release 1 header-repair cards on
 # the cell's co-adds and its provenance_nights.csv (lib/masters/release1_cards.write_cell) before c publishes them; None = this
-# text's production behaviour (no cards). exopipe3 install sets it from install.RELEASE1_CARDS / install.MDWSTAT_TABLE for the call.
+# text's production behaviour (no cards). exopipe3 install sets it from install.RELEASE1_CARDS / install.MDWSTAT_TABLE for the call,
+# or to the cell's MDWSTAT source (lib/install/mdwstat.Source: the value from the cell's dewarp record, checked current on the
+# staged masters by _mdw_record_check before b's trial copy).
 RELEASE1_MDW_TABLE = None
 # b's Release 1 writes are first made on a trial copy of the staged generation BEFORE THE FIRST RENAME (_release1_trial), so a
 # card or provenance failure refuses with the working tree untouched; <cell>/<RELEASE1_TRIAL_DIRNAME> is removed afterwards
@@ -364,9 +366,10 @@ def install(cell, gen, kind, rebuild_root=None, root=ROOT, omit_vclean=False):
         C._refuse_excluded_constituents(f'{stg}/coadd_final', lst, scope)
     except Exception:
         shutil.rmtree(stg); raise
-    # b (v2) on a trial copy, before the first move (a failure refuses with the cell untouched)
+    # b (v2) on a trial copy, before the first move (a failure refuses with the cell untouched); first the MDWSTAT source
     if RELEASE1_MDW_TABLE:
         try:
+            _mdw_record_check(cell, gen, staged, omit_vclean)
             tlines = _release1_trial(cell, cdir, stg, wfin, rebuild_root or cdir, lst, scope, run)
         except Exception:
             shutil.rmtree(stg); raise
@@ -397,6 +400,22 @@ def install(cell, gen, kind, rebuild_root=None, root=ROOT, omit_vclean=False):
             if os.path.isdir(f'{rebuild_root}/{d}'):
                 shutil.copytree(f'{rebuild_root}/{d}', f'{cdir}/{d}'); rec(cell, 'cell-dir', f'{rebuild_root}/{d}', f'{cdir}/{d}')
     return _finish(cell, gen, cdir, stg, staged, tgt, erows, efail, lst, scope, run, smeta)
+
+
+def _mdw_record_check(cell, gen, staged, omit_vclean):
+    """v2 gate MDW-REC on the STAGED masters, before b's trial copy and before any move: when RELEASE1_MDW_TABLE is the
+    install's MDWSTAT source (lib/install/mdwstat.Source) and the cell's value comes from its dewarp record, every master
+    staged from the generation must be one the record stamped, with the record's md5 (the md5 taken at staging, before b's
+    stamp), and every master the record stamped must be staged (unless --omit-vclean left it out). A table path: nothing
+    to check."""
+    chk = getattr(RELEASE1_MDW_TABLE, 'staged_problems', None)
+    if chk is None:
+        return
+    src = {os.path.relpath(s_, gen): m0 for _d, m0, s_ in staged.values() if s_.startswith(gen.rstrip('/') + '/')}
+    probs = chk(cell, src, omit_vclean)
+    if probs:
+        raise RuntimeError(f'{cell}: the MDWSTAT dewarp record is not current for the staged masters ({"; ".join(probs[:4])}'
+                           f'{" ..." if len(probs) > 4 else ""}) - REFUSING (cell untouched)')
 
 
 def _release1_trial(cell, cdir, stg, weights_dir, flow_root, lst, scope, run):
@@ -564,6 +583,7 @@ def resume(cell, gen, kind, root=ROOT, omit_vclean=False, execute=False):
                   f'archive quarantine, publish, audit, screen', flush=True)
             return None
         if RELEASE1_MDW_TABLE:                   # b (v2) on a trial copy before the first rename, as install()
+            _mdw_record_check(cell, gen, staged, omit_vclean)
             tlines = _release1_trial(cell, cdir, stg, f'{cdir}/coadd_final', cdir, lst, scope, run)
             rec(cell, 'release1-cards-trial', stg, '', '', '', ' | '.join(tlines)[:3000])
         return _finish(cell, gen, cdir, stg, staged, tgt, erows, efail, lst, scope, run, smeta)

@@ -11,6 +11,9 @@ The install transaction is production's phase3_install.install called IN PLACE (
   - RB: the rebuild record names its own root; its verdict line (T1-T8 passed, or Gregg's waiver) is recorded.
   - RB-FILES / CELL: the files PI reads or copies after staging exist (else PI would stop mid-way or leave the staging).
   - G0-GEN: the exclusion-conformance gate on the generation itself (read-only; PI repeats it on the staging).
+  - MDW-REC (install.RELEASE1_CARDS): the source of the cell's MDWSTAT card (lib/install/mdwstat): its dewarp record when
+    one exists, only if current for the generation's masters (md5; PI checks the staged copies again before b), else the
+    table; a stale record refuses. Stages vclean and cards use the same source.
   - the plan (every destination, existed = no) is written to the attempt manifest before staging; a refusal before the
     first move removes the staging (a refusal leaves nothing behind).
 """
@@ -93,6 +96,7 @@ class CellPlan:
         self.dests = []
         self.rb_text = ''
         self.smeta = None
+        self.mdw = None             # the cell's MDWSTAT source (lib/install/mdwstat.Source), set by gate MDW-REC
         self.content_record = os.path.join(os.path.dirname(self.gen), _cfg().install.CONTENT_RECORD)
         self.screen_json = os.path.join(os.path.dirname(self.gen), _cfg().install.SCREEN_RECORD_JSON)
 
@@ -337,6 +341,9 @@ def plan_cell(u, plan, run_obj, gates, call_pi_gates, round_req, echo):
             gates.check('G0-GEN', True, buf.getvalue().strip()[:300] or 'no excluded constituent')
         except RuntimeError as e:
             gates.check('G0-GEN', False, str(e))
+    # MDW-REC: the source of the cell's MDWSTAT card (install.RELEASE1_CARDS; lib/install/mdwstat)
+    if C.RELEASE1_CARDS:
+        mdw_gate(u, plan, gates)
     # G-DEST + the round
     if os.path.isdir(plan.cdir):
         rnd, dests, taken = plan.choose_round(round_req)
@@ -360,6 +367,80 @@ def plan_cell(u, plan, run_obj, gates, call_pi_gates, round_req, echo):
                     f'two moves share a destination: {dupd[0]}')
         plan.round, plan.dests = rnd, dests
         u.meta['round'] = rnd
+
+
+def mdw_gate(u, plan, gates):
+    """Gate MDW-REC (install.RELEASE1_CARDS): where the cell's MDWSTAT card value comes from (lib/install/mdwstat) - the
+    cell's dewarp record when one exists, and then only if it is CURRENT: the generation's masters (coadd_final top level,
+    coadd._MASTER_RE) have the md5 the record stamped, read now (phase3_install checks the staged copies again before b's
+    trial copy); a stale record refuses, never falling back to the table. Without a dewarp record (or with an accepted
+    cell's apply record, which carries no MDWSTAT value): install.MDWSTAT_TABLE. A record value that differs from the
+    table wins and is noted with the cell and both values. Sets plan.mdw (the source step b, the cleaned-V refresh and the
+    cards stage read) and the unit's meta mdwstat_source (what later invocations compare with)."""
+    from exopipe.phase3.lib.install import mdwstat as MW
+    table = SC.release1_mdw_table()
+    root = MW.record_root(plan.roots)
+    try:
+        ch, src = MW.source_for(plan.cell, table, plan.roots)
+    except Refusal as e:
+        gates.check('MDW-REC', False, str(e))
+        return
+    for n in ch.notes:
+        u.note(n)
+    tv = 'no row' if ch.table_value is None else repr(ch.table_value)
+    omitted, probs = [], []
+    if ch.source == MW.RECORD:
+        u.add_input(ch.record)
+        rels = MW.master_names(plan.new)
+        sums = SC.md5_many([os.path.join(plan.gen, r) for r in rels])
+        taken = {os.path.basename(r): sums[os.path.join(plan.gen, r)] for r in rels}
+        omitted = MW.omitted_masters(ch.files) if plan.omit_vclean else []
+        probs = MW.problems(ch, taken, omitted)
+        detail = ((f'MDWSTAT from the dewarp record {ch.record}: {ch.value!r}, current for the {len(taken)} masters of '
+                   f'{plan.gen}/coadd_final (md5 = the record\'s)' + (f', {len(omitted)} left out by --omit-vclean'
+                                                                     if omitted else ''))
+                  if not probs else
+                  (f'the dewarp record {ch.record} is STALE for {plan.gen}: ' + '; '.join(probs[:4])
+                   + (' ...' if len(probs) > 4 else '') + ' - refused (the table is not used in its place): rerun the '
+                   f'dewarp record stage on the generation being installed'))
+        if ch.table_value != ch.value:
+            detail += f'; {plan.cell}: record {ch.value!r} != table {tv} ({table}): the record wins'
+    else:
+        detail = ch.notes[-1].split(': ', 2)[-1]
+    u.meta['mdwstat_source'] = dict(ch.summary(), omitted=omitted, record_root=root)
+    if gates.check('MDW-REC', not probs, detail):
+        plan.mdw = src
+
+
+def installed_mdw_source(u, cell, roots, gates):
+    """The MDWSTAT source of an INSTALLED cell for stages vclean and cards when this invocation did not install it (gate
+    MDW-REC): chosen again (lib/install/mdwstat), and a dewarp record must be current for the masters the cell's newest
+    done install or recover record installed (their md5 as installed, before b's stamp) and the source must be the one
+    that install recorded. Returns the Source, or None after a failed check (dry run: collected)."""
+    from exopipe.phase3.core import record
+    from exopipe.phase3.lib.install import mdwstat as MW
+    try:
+        table = SC.release1_mdw_table()
+        ch, src = MW.source_for(cell, table, roots)
+    except Refusal as e:
+        gates.check('MDW-REC', False, str(e))
+        return None
+    for n in ch.notes:
+        u.note(n)
+    recs = [(n, record.load_record(roots.out, 'install', n)) for n in (cell, f'{cell}.recover')]
+    recs = [(n, r) for n, r in recs if r and r.get('status') == 'done']
+    name, rec = max(recs, key=lambda x: (x[1].get('finished') or '', x[1].get('started') or ''), default=(None, None))
+    probs = MW.installed_problems(ch, rec)
+    tv = 'no row' if ch.table_value is None else repr(ch.table_value)
+    if probs:
+        detail = (f'{cell}: MDWSTAT {ch.source} {ch.value!r} ({ch.record or table}) against the install record '
+                  f'{name or "(none)"} under {roots.records}: ' + '; '.join(probs[:4]) + (' ...' if len(probs) > 4 else ''))
+    elif ch.source == MW.RECORD:
+        detail = (f'MDWSTAT from the dewarp record {ch.record}: {ch.value!r}, current for the masters the install record '
+                  f'{name} installed' + (f'; record != table {tv}: the record wins' if ch.table_value != ch.value else ''))
+    else:
+        detail = f'MDWSTAT from the table {table} ({tv}); install record {name or "(none)"}'
+    return src if gates.check('MDW-REC', not probs, detail) else None
 
 
 def print_plan(plan, echo):
@@ -445,7 +526,7 @@ def install_cell(u, plan, gates, echo):
         if plock:
             u.note(f'holding the production install lock {plock} (install_cell.sh:18-20)')
         off = SC.log_offset(roots.record_csv)
-        with SC.pi_context(PI, roots, plan.round, cards=True) as settings:
+        with SC.pi_context(PI, roots, plan.round, cards=True, mdw=plan.mdw) as settings:
             u.note(f'lane {lane}; in-place phase3_install.install(cell={cell}, gen={plan.gen}, kind={plan.kind}, '
                    f'rebuild_root={plan.rebuild_root}, root={roots.working}, omit_vclean={plan.omit_vclean}) with '
                    f'{json.dumps(settings, sort_keys=True)}')
@@ -662,7 +743,7 @@ def vclean_round(cell, roots, rnd):
     raise Refusal(f'VCLEAN: {cell}: rounds {rnd}{sfx} .. {rnd}{sfx}{VCLEAN_ROUNDS_MAX} all hold a quarantine of the cell')
 
 
-def vclean_cell(u, cell, roots, run_obj, gates, echo, rnd):
+def vclean_cell(u, cell, roots, run_obj, gates, echo, rnd, source=None):
     """Stage vclean: the installed cell's cleaned Stokes V pair refreshed from its installed V master and checked CURRENT
     (install_cell.sh:28-34, exopipe_ops 532ea6b; FIX-20261113-DEEP-REBUILD-CLEANS-V-BEFORE-FLUX-APPLY: the rebuild cleans V before
     the flux apply rescales the cell, so an installed rebuild's pair names the pre-flux V master and is STALE).
@@ -674,7 +755,9 @@ def vclean_cell(u, cell, roots, run_obj, gates, echo, rnd):
     check_only - which never runs sv2 - only when the first call reported OK; gate VCLEAN refuses unless the pair is CURRENT
     (production calls the refresh twice, install_cell.sh:32-34; a refused first call is not repeated here, so a refused
     attempt never re-runs the two-hour sv2 job in the same invocation). Its sv2 scratch is removed afterwards
-    (install_cell.sh:33). Dry run: the pair's state and the pre-check are reported, nothing runs."""
+    (install_cell.sh:33). Dry run: the pair's state and the pre-check are reported, nothing runs. ``source``: the cell's
+    MDWSTAT source (the install's plan.mdw, or installed_mdw_source; None = chosen here), read by the pre-check and the
+    refresh, so the new pair takes the value the install chose."""
     from exopipe.phase3.core import cells
     from exopipe.phase3.lib.masters import vclean_masters as VM
     C = _cfg().install
@@ -685,6 +768,10 @@ def vclean_cell(u, cell, roots, run_obj, gates, echo, rnd):
     vround = vclean_round(cell, roots, rnd)
     u.meta.update(vclean_round=vround)
     mdw = SC.release1_mdw_table()                 # None with install.RELEASE1_CARDS False: production's pair, no cards
+    if mdw:
+        mdw = source if source is not None else installed_mdw_source(u, cell, roots, gates)
+        if mdw is None:                           # MDW-REC refused (dry run: collected)
+            return
     if mdw:
         cok, cdetail, _ = cards_check(cell, roots, mdw, skip=tuple(n.format(scope=scope) for n in VCLEAN_PAIR))
         gok, glines = card_gate(cell, roots, mdw, exclude=(VCLEAN_ARCHIVE_GLOB.format(scope=scope),))
@@ -705,7 +792,7 @@ def vclean_cell(u, cell, roots, run_obj, gates, echo, rnd):
     first = second = None
     try:
         with SC.pi_context(SC.pi_module(), roots, vround) as settings:
-            u.note(f'vclean: refresh_vclean_cell, tmp {tmp}, Release 1 cards table {mdw}, with '
+            u.note(f'vclean: refresh_vclean_cell, tmp {tmp}, Release 1 cards MDWSTAT source {mdw}, with '
                    f'{json.dumps(settings, sort_keys=True)}')
             with SC.captured_stdout() as buf:
                 first = VM.refresh_vclean_cell(cell, root=roots.working, tmp_root=tmp, mdw_table=mdw)[1]
@@ -803,12 +890,14 @@ def card_gate(cell, roots, mdw, exclude=()):
                                 exclude=exclude)
 
 
-def cards_cell(u, cell, roots, run_obj, gates, echo):
+def cards_cell(u, cell, roots, run_obj, gates, echo, source=None):
     """Stage cards: the Release 1 header-repair cards of the installed cell (install_cell.sh:35-54, exopipe_ops 2421f36;
     DECISION-20261113-DEEP-REBUILD-CHAIN-WRITES-REPAIR-CARDS, IMPL-20261113-DEEP-INSTALL-CELL-HEADER-REPAIR-STEP-AND-SIBLING-
     CARD-GATE). Production runs the repair's dry run on the installed cell, applies the partial manifest and then the sibling
     gate; in v2 the producing steps write the cards, so this stage only checks, read only: CARDS = cards_check, CARD-GATE =
-    card_gate. With install.RELEASE1_CARDS False (one switch) the stage refuses: the cards are not that configuration's."""
+    card_gate. With install.RELEASE1_CARDS False (one switch) the stage refuses: the cards are not that configuration's.
+    ``source``: the cell's MDWSTAT source (the install's plan.mdw, or installed_mdw_source; None = chosen here): CARDS and
+    the sibling gate compare MDWSTAT with the value the install chose."""
     C = _cfg().install
     if not C.RELEASE1_CARDS:
         gates.check('CARDS', False, 'install.RELEASE1_CARDS is False (the parity configuration of 2026-10-13): the Release 1 '
@@ -817,6 +906,9 @@ def cards_cell(u, cell, roots, run_obj, gates, echo):
     mdw = C.MDWSTAT_TABLE
     if not mdw or not os.path.isfile(mdw):
         gates.check('CARDS', False, f'install.MDWSTAT_TABLE {mdw!r} is not a readable file')
+        return
+    mdw = source if source is not None else installed_mdw_source(u, cell, roots, gates)
+    if mdw is None:                               # MDW-REC refused (dry run: collected)
         return
     ok, detail, value = cards_check(cell, roots, mdw)
     echo(f'  cards: {detail[:600]}')
@@ -849,8 +941,16 @@ def recover_cell(u, cell, args, roots, run_obj, echo):
     rnd = _round_for_recover(cell, args, roots, run_obj)
     execute = bool(args.execute) and not run_obj.dry_run
     u.meta.update(kind=kind, gen=gen, round=rnd, execute=execute)
+    mdw = None
+    if _cfg().install.RELEASE1_CARDS:             # the MDWSTAT source b reads; PI checks a dewarp record on the staging
+        from exopipe.phase3.lib.install import mdwstat as MW
+        ch, mdw = MW.source_for(cell, SC.release1_mdw_table(), roots)
+        u.meta['mdwstat_source'] = dict(ch.summary(), omitted=MW.omitted_masters(ch.files) if args.omit_vclean else [],
+                                        record_root=MW.record_root(roots))
+        for n in ch.notes:
+            u.note(n)
     off = SC.log_offset(roots.record_csv)
-    with SC.pi_context(PI, roots, rnd, cards=True) as settings:
+    with SC.pi_context(PI, roots, rnd, cards=True, mdw=mdw) as settings:
         u.note(f'in-place phase3_install.resume(execute={execute}) with {json.dumps(settings, sort_keys=True)}')
         buf = None
         try:
@@ -1097,10 +1197,12 @@ def _main_unit(u, cell, args, roots, run_obj, stages, echo):
         if dry and 'install' not in stages:
             if os.path.isdir(cdir):
                 verify_cell(u, cdir, gates, echo)
-                if 'vclean' in stages:
-                    vclean_cell(u, cell, roots, run_obj, gates, echo, install_round(cell, args, roots))
-                if 'cards' in stages:
-                    cards_cell(u, cell, roots, run_obj, gates, echo)
+                src = post_install_source(u, cell, roots, gates, None, stages)
+                if src is not False:
+                    if 'vclean' in stages:
+                        vclean_cell(u, cell, roots, run_obj, gates, echo, install_round(cell, args, roots), src)
+                    if 'cards' in stages:
+                        cards_cell(u, cell, roots, run_obj, gates, echo, src)
                 gates.finish()
             else:
                 gates.check('CELL', False, f'installed cell {cdir} absent')
@@ -1112,13 +1214,31 @@ def _main_unit(u, cell, args, roots, run_obj, stages, echo):
             u.add_input(os.path.join(cdir, 'coadd_final', 'weights.csv'))
             u.set_admitted(SC.admitted_in_master(os.path.join(cdir, 'coadd_final', 'weights.csv'), lst, scope))
         verify_cell(u, cdir, gates, echo)
-    # vclean, cards (install_cell.sh:28-54: after the verify, before the parent catalogue and the re-search)
-    if 'vclean' in stages:
-        vclean_cell(u, cell, roots, run_obj, gates, echo, plan.round if 'install' in stages else install_round(cell, args, roots))
-    if 'cards' in stages:
-        cards_cell(u, cell, roots, run_obj, gates, echo)
+    # vclean, cards (install_cell.sh:28-54: after the verify, before the parent catalogue and the re-search), both with the
+    # MDWSTAT source the install chose
+    src = post_install_source(u, cell, roots, gates, plan if 'install' in stages else None, stages)
+    if src is not False:
+        if 'vclean' in stages:
+            vclean_cell(u, cell, roots, run_obj, gates, echo,
+                        plan.round if 'install' in stages else install_round(cell, args, roots), src)
+        if 'cards' in stages:
+            cards_cell(u, cell, roots, run_obj, gates, echo, src)
     if 'install' in stages or 'verify' in stages:
         add_installed_cell_output(u, cdir)
+
+
+def post_install_source(u, cell, roots, gates, plan, stages):
+    """The MDWSTAT source stages vclean and cards share: the install's (plan.mdw) when this invocation installed the cell,
+    else installed_mdw_source; None when neither stage runs or install.RELEASE1_CARDS is False (each stage then reports
+    its own refusal); False after a failed MDW-REC check (dry run: collected, and neither stage runs on it)."""
+    if not ('vclean' in stages or 'cards' in stages) or not _cfg().install.RELEASE1_CARDS:
+        return None
+    if plan is not None:
+        return plan.mdw
+    if not os.path.isfile(_cfg().install.MDWSTAT_TABLE or ''):
+        return None                               # vclean / cards refuse on the table themselves
+    src = installed_mdw_source(u, cell, roots, gates)
+    return False if src is None else src
 
 
 def _dry_rc(run_obj):
