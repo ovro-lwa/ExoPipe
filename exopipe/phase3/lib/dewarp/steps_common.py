@@ -299,6 +299,8 @@ class Roots:
             out.append(('generation root', self.gen))
         if 'record' in stages:
             out.append(('archive record dir', self.record_dir))
+            # the MDWSTAT card on a not-accepted cell's promoted rebuild (steps_cell.stamp_mdwstat)
+            out.append(('promoted rebuild root (MDWSTAT card)', self.rebuild))
         return out
 
 
@@ -690,6 +692,44 @@ def not_accepted_row(lst, scope, row, written_utc):
                 heldout_resid_med_arcsec=r.get('cv_resid_med_as', ''), anchor_off_med_arcsec=r.get('anchor_off_med_as', ''),
                 screen_p50_arcsec='', screen_p95_arcsec='', screen_file='', screen_md5='',
                 measured_at=r.get('measured_at', ''), written_utc=written_utc)
+
+
+def mdwstat_not_accepted(row):
+    """The MDWSTAT card value of a routed cell that is NOT accepted, from its final table row (R-GREGG-20261111-MDWSTAT-CARD,
+    the ruling row: "MDWSTAT = 'applied' | 'refused: <reason>' (e.g. gain 3.6 arcsec < 5, median would worsen) | 'not
+    attempted'"). The forms are those of the deep chat's table that the header repair wrote on every archived master and that
+    the install's sibling card gate checks (exopipe_ops mdewarp_coverage_20261111/mdwstat_for_header_repair.csv, 8ffbd7a,
+    last changed 119b0b2), so a value written here equals the table's for the same measurement:
+      (b') failed - status REFERENCE ONLY, or OK (here: a written gain below the threshold, else the cell was accepted):
+            'refused: held-out gain <g> arcsec < <threshold>', g = anchor_off_med_as - cv_resid_med_as as written, one
+            decimal (dewarp_lst.sh:123-126 writes this form only for status OK - the status a (b') failure never has);
+      (a) failed with a larger VLSSr median - status REFUSED regression, med_after > med_before:
+            'refused: VLSSr median would worsen (<med_before> -> <med_after> arcmin)', the values as written;
+      status NOT ATTEMPTED: <why>  ->  'not attempted: <why>';   no final row  ->  'not attempted: not measured';
+      any other status (or a value that does not parse)  ->  'refused: <status[:58]>' (dewarp_lst.sh:127).
+    Cut to dewarp.MDWSTAT_MAX_CHARS characters (one card)."""
+    c = C()
+    r = row or {}
+    st = str(r.get('status') or '').strip()
+
+    def num(k):
+        try:
+            return float(r.get(k))
+        except (TypeError, ValueError):
+            return None
+    a, cv, m0, m1 = num('anchor_off_med_as'), num('cv_resid_med_as'), num('med_before'), num('med_after')
+    if not row:
+        v = 'not attempted: not measured'
+    elif st.startswith('NOT ATTEMPTED'):
+        why = st[len('NOT ATTEMPTED'):].lstrip(' :')
+        v = 'not attempted' + (f': {why}' if why else '')
+    elif (st == 'OK' or st.startswith('REFERENCE ONLY')) and a is not None and cv is not None:
+        v = f'refused: held-out gain {a - cv:.1f} arcsec < {c.HELDOUT_MIN_GAIN_AS:g}'
+    elif st.startswith('REFUSED regression') and m0 is not None and m1 is not None and m1 > m0:
+        v = f"refused: VLSSr median would worsen ({r['med_before']} -> {r['med_after']} arcmin)"
+    else:
+        v = f'refused: {(st or "not measured")[:58]}'
+    return v[:c.MDWSTAT_MAX_CHARS]
 
 
 def jsonable(v):

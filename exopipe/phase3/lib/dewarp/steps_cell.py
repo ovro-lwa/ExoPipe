@@ -258,8 +258,47 @@ def record(u, roots, cell, row):
                     f'{cell}: rows {[(x["applied"], x["status"][:40]) for x in mine]} != applied=0 {r["status"][:40]!r}'),
             cls='screen_table', path=roots.record_csv)
     u.meta['screen_row'] = SC.jsonable(r)
-    u.meta['install'] = SC.install_meta_rebuild(roots, cell)
     print(f'{lst}_{scope}: screen record set applied=0 - {r["status"]}', flush=True)
+    stamp_mdwstat(u, roots, cell, row)
+    u.meta['install'] = SC.install_meta_rebuild(roots, cell)
+
+
+def stamp_mdwstat(u, roots, cell, row):
+    """MDWSTAT on the promoted rebuild of a routed cell that is NOT accepted, before the install takes it
+    (R-GREGG-20261111-MDWSTAT-CARD; dewarp_lst.sh:119-131): every <REBUILD_ROOT>/<cell>/coadd_final/<dewarp.MDWSTAT_FILES>
+    gets MDWSTAT = steps_common.mdwstat_not_accepted(final row), comment dewarp.MDWSTAT_COMMENT, set as fits.setval sets it
+    (Header.set: a card already there takes the new value in place, else it is appended). Each file is then validated
+    (standard header, validate=True) and the card read back ('dewarp.mdwstat', refuses on failure). No file to write refuses
+    (G-R3: an install of masters without the card would follow). The files, the value each held before and their md5 after
+    the write are kept in the record (meta.mdwstat)."""
+    import glob
+    import warnings
+    from astropy.io import fits
+    from exopipe.common.validate_fits_headers import validate_header
+    from exopipe.phase3.core.record import fits_primary_cards
+    c = SC.C()
+    value = SC.mdwstat_not_accepted(row)
+    final = os.path.join(roots.rebuild, cell, 'coadd_final')
+    files = sorted(glob.glob(os.path.join(final, c.MDWSTAT_FILES)))
+    if not files:
+        u.refuse(f'G-R3: no {c.MDWSTAT_FILES} in {final}: the masters the install takes would carry no MDWSTAT')
+    done = []
+    for p in files:
+        before = fits_primary_cards(p).get('MDWSTAT')
+        with fits.open(p, mode='update', memmap=False) as hl:
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore', fits.verify.VerifyWarning)
+                hl[0].header.set('MDWSTAT', value, c.MDWSTAT_COMMENT)
+        rep = validate_header(p, level='standard')
+        back = fits_primary_cards(p).get('MDWSTAT')
+        ok = rep.ok and back == value
+        u.check('dewarp.mdwstat', ok, value=back,
+                detail=(f'{os.path.basename(p)}: MDWSTAT {value!r}, standard header valid' if ok else
+                        f'{os.path.basename(p)}: MDWSTAT read back {back!r} (wrote {value!r}); header errors '
+                        f'{list(rep.errors)[:3]}'), path=p)
+        done.append({'path': p, 'before': before, 'md5': SC.md5(p)})
+    u.meta['mdwstat'] = {'value': value, 'files': done}
+    print(f'{cell}: MDWSTAT = {value!r} on {len(done)} file(s) of the promoted rebuild', flush=True)
 
 
 def _resume(run, cell, meas):
