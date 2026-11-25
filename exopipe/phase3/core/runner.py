@@ -29,7 +29,9 @@ process names or pids.
 Chains (``run submit --chain NAME``; ``CFG.runner.CHAINS``): one worker runs every step of an item in order on its
 node; a step that ends no-input (exit 3: nothing to do for this item) is recorded and the chain goes on; the item stops
 at its first refused (2) or error exit, and its status is that step's. An item where every step had no input ends
-no-input. A retried chain item skips the steps that ended done and runs the others again; in a chain of
+no-input. Gate R-ROOTS: a node that cannot read a root of ``CFG.runner.CHAIN_REQUIRED_ROOTS[NAME]`` (not a directory
+there, or node-local to another host in the site file's NODE_LOCAL_ROOTS) refuses the item before its first step. A
+retried chain item skips the steps that ended done and runs the others again; in a chain of
 CELL_REFUSAL_CHAINS (below) it resumes at its first step that ended neither done nor no-input (a 'running' step of a
 dead worker included), and every step after it runs again (a later entry stays in the record until replaced). Closing
 steps (``CFG.runner.CHAIN_FINALLY[NAME]``, e.g. the hour's
@@ -272,6 +274,41 @@ def chain_finally(name):
     return steps
 
 
+def chain_roots(name):
+    """[[config name, path]] of the roots the steps of the chain ``name`` read that must be directories on the node running
+    an item (runner.CHAIN_REQUIRED_ROOTS: 'section.KEY' or 'section.KEY.dict_key' config names, resolved once at submit,
+    as the steps are). An unknown name refuses the submit."""
+    cfg = _cfg()
+    out = []
+    for ref in (getattr(cfg.runner, 'CHAIN_REQUIRED_ROOTS', None) or {}).get(name) or ():
+        sec, key, *sub = ref.split('.')
+        try:
+            v = getattr(getattr(cfg, sec), key)
+            for k in sub:
+                v = v[k]
+        except (AttributeError, KeyError, TypeError):
+            raise SystemExit(f'refused: runner.CHAIN_REQUIRED_ROOTS[{name!r}] names {ref!r}, which is not a config value')
+        if not isinstance(v, str) or not os.path.isabs(v):
+            raise SystemExit(f'refused: runner.CHAIN_REQUIRED_ROOTS[{name!r}] {ref!r} = {v!r} is not an absolute path')
+        out.append([ref, v])
+    return out
+
+
+def missing_roots(roots):
+    """Gate R-ROOTS: [(config name, path, why)] of the required roots (chain_roots) that this host cannot read - a root the
+    site file's NODE_LOCAL_ROOTS give to another host (the same path here is another disk, or absent), or a path that is not
+    a directory here (a disk not mounted). Hosts come from the site file only."""
+    from exopipe.phase3.core import env as E
+    me, bad = E.host(), []
+    for ref, p in roots:
+        h = E.node_local_holder(p)
+        if h is not None and h != me:
+            bad.append((ref, p, f'node-local to {h} (site NODE_LOCAL_ROOTS)'))
+        elif not os.path.isdir(p):
+            bad.append((ref, p, 'not a directory on this host (not mounted)' + (f'; the site file gives it to {h}' if h else '')))
+    return bad
+
+
 def _overrides_of(forward):
     out = {'set': [], 'config': None, 'ruling_for': [], 'parity': False, 'injected': False}
     i = 0
@@ -337,6 +374,7 @@ def submit(name, step_argv, item_list, nodes, after=None, retry=0, gpu=False, py
          'site_file': os.environ.get('EXOPIPE3_SITE', ''), 'n_items': len(item_list), 'jobs_root': jobs_root(),
          'forward_argv': forward, 'overrides': _overrides_of(forward),
          'chain': chain, 'chain_steps': steps, 'chain_finally': chain_finally(chain) if chain else None,
+         'chain_roots': chain_roots(chain) if chain else None,        # gate R-ROOTS on the node of each item
          # fixed at submit, as the steps are: a step's refusal of some cells is recorded per cell and the chain goes on
          'cell_refusals': bool(chain) and chain in (getattr(cfg.runner, 'CELL_REFUSAL_CHAINS', None) or ()),
          'code_commit': code_commit, 'code_root': code_root, 'code_repo': code_repo() if code else None}
@@ -727,8 +765,19 @@ def _run_item(j, job, it, st, host, lane):
     status, rc = 'done', 0
     n_noinput = 0
     ran_to = -1
+    # gate R-ROOTS (runner.CHAIN_REQUIRED_ROOTS): a node that cannot read a root the chain's steps read refuses the item
+    # before its first step, naming each root, instead of a step crashing on the missing path
+    miss = missing_roots(j.get('chain_roots') or []) if chain else []
+    if miss:
+        rec['refusal'] = ('R-ROOTS: this host (%s) cannot read root(s) the chain %s reads: ' % (host, j['chain'])
+                          + '; '.join(f'{ref} = {p}: {why}' for ref, p, why in miss) + ' - run the item on a node that has them')
     with open(log, 'a') as lf:
+        if miss:
+            lf.write(f'\n===== {_now()} {host} lane {lane} attempt {attempts}: REFUSED before the first step - {rec["refusal"]}\n')
+            status, rc = 'refused', 2
         for k, argv in enumerate(argvs):
+            if miss:
+                break
             if chain and k < len(steps) and k < resume_at and steps[k].get('status') == 'done':
                 continue                      # done in an earlier attempt (cell-refusal chains: before the resume step)
             ran_to = k
@@ -808,6 +857,8 @@ def _run_item(j, job, it, st, host, lane):
     if chain:
         rec.update(refused_cells=refused, refused_by_cell=refused_by_cell(refused),
                    summary=chain_outcome(status, steps_now, len(argvs), carried if cellwise else ()))
+        if miss:
+            rec['summary'] = f'REFUSED before step 1 ({rec["refusal"]})'
     if chain and j.get('chain_finally') and status != 'queued':
         # closing steps (runner.CHAIN_FINALLY): whatever the chain's outcome; they read it from the record ({record})
         fin = []

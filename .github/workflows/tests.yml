@@ -110,6 +110,8 @@ jobs:
         run: python tests/test_tess_orbits.py
       - name: per-cell refusals in a runner chain (the per-hour chain goes on past a refused cell; complete with N refused cells)
         run: python tests/test_runner_cell_refusal.py
+      - name: the per-hour chain end to end (parent snapshot of the latest finished table pass, old module names in a step's child, gate R-ROOTS, SI-G8 on the v2 stage-1 records, admission and snapshot photometry steps, every step template parses)
+        run: python tests/test_chain_cutover_fixes.py
       - name: the frames-only engine refuses a 10-minute append (gate FE-10MIN-APPEND)
         run: python tests/test_frames_tenmin_append_gate.py
       - name: combined snapshot view pages p8986-p8989 (serve plan, entries, hub, stages) and the false-positive filter step (flood and alignment hides, refusals, content test)

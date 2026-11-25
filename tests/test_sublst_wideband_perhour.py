@@ -888,7 +888,7 @@ def test_the_per_hour_chain_makes_the_night_cubes_before_the_ten_minute_tier():
     after = [a for i, a in snap if i > ten[-1]]
     assert before == [['frames', '--tier', 'snapshot'], ['flow', '--tier', 'snapshot'],
                       ['frames', '--tier', 'snapshot', '--stages', 'cube,movies']], before
-    assert [a[0] for a in after] == ['search', 'curves', 'catalog', 'forced'], after
+    assert [a[0] for a in after] == ['search', 'curves', 'photometry', 'catalog', 'forced'], after
     assert all(i < ten[0] for i, a in enumerate(steps) if tier(a) == 'deep')
     assert [a[0] for a in steps[snap[-1][0] + 1:]] == ['pages', 'serve', 'pages', 'serve', 'archive'], steps[snap[-1][0] + 1:]
     T = CFG.frames_snapshot
