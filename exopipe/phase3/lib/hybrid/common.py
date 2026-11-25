@@ -54,22 +54,26 @@ def diag_header(mh, what):
 
 
 # THE DIFFUSE PB-MAP HEADER (Gregg 2026-11-18, Q3 of the hybrid port: "just go with your recommendations",
-# R-GREGG-20261118-HYBRID-Q1-Q3-GO-WITH-RECOMMENDATIONS): a diffuse PB map (PBdiffuse_deep_<scope>.fits, hybrid split beam correction)
-# starts from a reconstruction's header and carries none of the master's flux and noise cards either; the 456 archived maps were
-# passed the same way on 2026-11-18 (DONE-20261118-PBDIFFUSE-MASTER-CARDS-HEADER-PASS). The full PB maps (PB_deep*) keep theirs.
-# LSSTKADM (the subband stacks admitted at hybrid scales, Gregg 10-31) is a master card of the same kind (2026-11-19): admission is
-# per weighting, while the diffuse map is one map for both weightings (the same pixels); production's maps took the card from
-# whichever weighting's header seeded them (11 archived maps carry a Robust -0.75 master's value; no rebuilt map carries it).
-# These live here, not in lib/masters/pb_apply.py: pb_apply is production's pb_apply.py byte for byte (dewarp gate G-D0b, apart
-# from the lines lib/dewarp/steps_common.CHILD_PERMITTED_LINE_DIFFS and the B-30 sites permit), and production has no diffuse-map rule.
+# R-GREGG-20261118-HYBRID-Q1-Q3-GO-WITH-RECOMMENDATIONS): a diffuse PB map (PBdiffuse_deep_<scope>.fits, hybrid split
+# beam correction) starts from a reconstruction's header and carries none of the master's flux and noise cards either;
+# the 456 archived maps were passed the same way on 2026-11-18 (DONE-20261118-PBDIFFUSE-MASTER-CARDS-HEADER-PASS). The
+# full PB maps (PB_deep*) keep theirs. LSSTKADM (the subband stacks admitted at hybrid scales, Gregg 10-31) is a master
+# card of the same kind (2026-11-19): admission is per weighting, while the diffuse map is one map for both weightings
+# (the same pixels); production's maps took the card from whichever weighting's header seeded them (11 archived maps
+# carry a Robust -0.75 master's value; no rebuilt map carries it).
+# These live here, not in lib/masters/pb_apply.py, because pb_apply must stay production's pb_apply.py byte for byte
+# (dewarp gate G-D0b; only the lines lib/dewarp/steps_common.CHILD_PERMITTED_LINE_DIFFS and the B-30 sites permit
+# differ). Production's pb_apply.py has one diffuse-map rule, the PRODNAME one
+# (R-GREGG-20261117-PB-PRODNAME-AND-PBDIFFUSE-SH-CARDS-GO, pb_apply.py:164-167: a map without PRODNAME, the PBdiffuse
+# maps, keeps none); it has no diffuse-map MASTER-card rule (the FLUXFIT ... LSSTKADM cards below).
 PBDIFFUSE_MASTER_CARDS = ('FLUXFIT', 'FLUXBND', 'FLUXABS', 'FLUXCORR', 'FLUXVER', 'FLUXBAKE', 'FLUXREF', 'IMGRMS', 'THERMNOI',
                           'LSSTKADM')
 PBDIFFUSE_RULING = 'R-GREGG-20261118-HYBRID-Q1-Q3-GO-WITH-RECOMMENDATIONS'
 
 
 def pbdiffuse_header(h):
-    """Header h made a diffuse PB map's header, in place (also returned): pb_apply.pb_map_header, then the master's flux and noise
-    cards removed with a HISTORY line."""
+    """Header h made a diffuse PB map's header, in place (also returned): pb_apply.pb_map_header, then the master's
+    flux and noise cards removed with a HISTORY line."""
     from exopipe.phase3.lib.masters import pb_apply as PBA
     PBA.pb_map_header(h)
     gone = [k for k in PBDIFFUSE_MASTER_CARDS if k in h]

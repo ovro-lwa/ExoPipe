@@ -248,14 +248,13 @@ class archive_push(_Section):
     README_TEMPLATES = {'hybrid': _README_UPDATE, 'mosaic_v5': _README_UPDATE, 'mosaic_v3': _README_UPDATE}
     # D7 at the push: a replacement holds every card key of the file it replaces (commentary cards aside) except the keys a ruling
     # retired from that kind of file (spec hybrid.md, design corrections: D7 against D6). Every other missing key refuses.
-    HYBRID_RETIRED_KEYS = {
-        # R-GREGG-20261116-PB-MAPS-SH-CARDS-REMOVE-BUNIT-BLANK-GO (= pb_apply.PB_MAP_SH_CARDS)
-        'pb': ('SHSCALE', 'SHERR', 'SHNSRC', 'SHSRCS', 'SHMETHOD', 'SHFREQ', 'SHFRQSRC', 'SHDATE'),
-        # the same + R-GREGG-20261118-HYBRID-Q1-Q3-GO-WITH-RECOMMENDATIONS, Q3 (= lib/hybrid/common.PBDIFFUSE_MASTER_CARDS)
-        'pbdiffuse': ('SHSCALE', 'SHERR', 'SHNSRC', 'SHSRCS', 'SHMETHOD', 'SHFREQ', 'SHFRQSRC', 'SHDATE',
-                      'FLUXFIT', 'FLUXBND', 'FLUXABS', 'FLUXCORR', 'FLUXVER', 'FLUXBAKE', 'FLUXREF', 'IMGRMS', 'THERMNOI',
-                      'LSSTKADM'),
-    }
+    # 'pb': R-GREGG-20261116-PB-MAPS-SH-CARDS-REMOVE-BUNIT-BLANK-GO, a copy of pb_apply.PB_MAP_SH_CARDS (pb_apply imports
+    # reproject, so config does not import it; tests/test_archive_hybrid.py pins the two equal). 'pbdiffuse': the same + the
+    # diffuse-map master cards of R-GREGG-20261118-HYBRID-Q1-Q3-GO-WITH-RECOMMENDATIONS, Q3, imported, not copied
+    # (lib/hybrid/common imports only os, time and numpy).
+    from exopipe.phase3.lib.hybrid.common import PBDIFFUSE_MASTER_CARDS as _pbdiffuse_master
+    _pb_sh = ('SHSCALE', 'SHERR', 'SHNSRC', 'SHSRCS', 'SHMETHOD', 'SHFREQ', 'SHFRQSRC', 'SHDATE')
+    HYBRID_RETIRED_KEYS = {'pb': _pb_sh, 'pbdiffuse': _pb_sh + tuple(_pbdiffuse_master)}
     # Product class of an archived per-epoch file, by name tokens, first match wins: (token that must be present, second
     # token or None, class). The archived copy is content-tested with the producing step's class test. A search frame and
     # its pbcorr sibling are ONE class, search_frame (lib/frames/tests.py: pbcorr_matches_plain tests the sibling); every

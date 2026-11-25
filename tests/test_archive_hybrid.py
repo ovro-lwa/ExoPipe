@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """The hybrid route, pull request PR-5b (plan/specs/hybrid.md section 4): `archive push --class hybrid` (lib/archive/hybrid.py, the
-content-test class hybrid_archive_copy of lib/archive/tests.py) and the diffuse PB-map header rule (lib/hybrid/common.pbdiffuse_header).
+content-test class hybrid_archive_copy of lib/archive/tests.py) and the diffuse PB-map header rule
+(lib/hybrid/common.pbdiffuse_header).
 
 Data-free (CI); a synthetic hybrid --out (a done tilefill unit, its products, its reconstruction record, its diffuse PB map) and a
 MIRROR archive root under $TMPDIR, the exclusion read stubbed:
-  1. the config: HYBRID_RETIRED_KEYS = the ruled card lists of pb_apply and lib/hybrid/common; pbdiffuse_header leaves no SH* or master card (LSSTKADM
-     included);
+  1. the config: HYBRID_RETIRED_KEYS = the ruled card lists of pb_apply and lib/hybrid/common; pbdiffuse_header leaves no
+     SH* or master card (LSSTKADM included);
   2. an empty archive: every file of a work unit is published (filled master, beam-corrected sibling, CLEAN residual,
      reconstruction and its split, diffuse PB map, full PB map from the masters archive); the copies carry the sources' md5, the
      applied manifest lists them, the content audit passes; a second plan keeps all;

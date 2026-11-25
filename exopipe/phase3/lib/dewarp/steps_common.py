@@ -42,6 +42,21 @@ CHILD_PERMITTED_LINE_DIFFS = {'exopipe/phase3/lib/dewarp/master_dewarp.py':
                               'exopipe/phase3/lib/masters/pb_apply.py':
                               (('    from exopipe.phase3.core.products import build_name, parse_name',
                                 '    from exopipe.common.phase3_products import build_name, parse_name'),)}
+# module functions a B-30 site's test may call (core.fallback.site_lines): pb_apply's path helper
+CHILD_PURE_CALLS = ('_deep_path',)
+# THE CI PIN of each branch module above: the sha256 of its production-equivalent text (child_production_text: the permitted
+# lines rewritten, the B-30 site lines removed - the text G-D0b compares with production). tests/test_dewarp_child_pins.py
+# (CI, data-free) refuses a branch file whose text no longer hashes to its pin; tests/test_dewarp.py (node) checks that each pin
+# is the sha256 of production's module. A change to one of these files re-runs G-D0b against production on a node and updates
+# its pin in the same pull request.
+# measured 2026-11-25 on lwacalim07: each equals the sha256 of production's module at exopipe 4c7098c (G-D0b passes)
+CHILD_PINS = {
+    'exopipe/phase3/lib/dewarp/master_dewarp.py': 'fe1f0f989633b9ef95000c641de0331c3c6bee7c1071f155ce60f872134d4e6a',
+    'exopipe/phase3/lib/masters/pb_apply.py': '8a056352a4e199fd3875a0a26b4a5386e6d7a8fb7bf39560774f2c801e89676d',
+    'exopipe/phase2/cascade_dewarp.py': 'c213471afd2f62c0dccd5e0568555d31ea0357b1b027f14230494d4e1b68a0bd',
+    'exopipe/phase2/extractor_pb_75.py': '50a0f0cb61cabb3c91bef8e6e163b0df80dc252d83c492bbbe03f5bcbb16c156',
+    'exopipe/common/phase2_config.py': '97995cf23641bf7c421953aa4ce6f6e381e15f564dd0a99c1f9ba5876e4a7c58',
+    'exopipe/common/pipeline_config.py': '97799ba3449c11e03f8238c08852886b46211337a200ba385566475e0866f39a'}
 CELL_STAGES = ('apply', 'verify', 'record')
 THREAD_VARS = ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS')
 CONTENT_OK = 'INSTALL_CONTENT_OK'        # sidecars written by check_mdewarp_gen beside the generation (CMG:166, :177)
@@ -571,11 +586,28 @@ def child_repo(script=None):
     return m.group(1) if m else None
 
 
+def child_production_text(br_rel, text):
+    """The production-equivalent text of the branch module ``br_rel`` (a CHILD_MODULES branch path) whose text is ``text``:
+    its CHILD_PERMITTED_LINE_DIFFS lines rewritten to production's, then its B-30 site lines removed
+    (core.fallback.strip_site_lines). Gate G-D0b requires production's module to be exactly this text; the CI pin
+    (CHILD_PINS) is its sha256 (child_text_sha256)."""
+    for have, want in CHILD_PERMITTED_LINE_DIFFS.get(br_rel, ()):
+        text = text.replace(have + '\n', want + '\n', 1)
+    from exopipe.phase3.core import fallback
+    return fallback.strip_site_lines(text, pure_calls=CHILD_PURE_CALLS)
+
+
+def child_text_sha256(text):
+    """The sha256 (hex) of a module text as G-D0b reads it (text mode), UTF-8 encoded: the CHILD_PINS value."""
+    return hashlib.sha256(text.encode('utf-8')).hexdigest()
+
+
 def gate_child_modules(script=None):
     """G-D0b: the production modules the content-test child imports are the code the step measures and applies with in
-    process (byte-equal; master_dewarp.py may differ only by its rewritten pb_apply import, and a branch module by its B-30
-    fallback-site statements - core.fallback.same_code_modulo_sites: the production code once they are removed). Returns (violations,
-    {production path: sha1[:12]}) - the sha1s are compared with the child's own fingerprint after it ran."""
+    process: each production module's text equals child_production_text of its branch module (byte-equal once the
+    CHILD_PERMITTED_LINE_DIFFS lines are rewritten and the B-30 fallback-site statements removed; a comment-only edit
+    still differs). Returns (violations, {production path: sha1[:12]}) - the sha1s are compared with the child's own
+    fingerprint after it ran."""
     repo = child_repo(script)
     if not repo:
         return ['G-D0b: check_mdewarp_gen.py inserts no repository at sys.path[0] - cannot tell which code its child runs'], {}
@@ -586,16 +618,12 @@ def gate_child_modules(script=None):
         if not (os.path.isfile(pp) and os.path.isfile(bp)):
             bad.append(f'G-D0b: {pp if not os.path.isfile(pp) else bp} missing')
             continue
-        pt, bt = open(pp).read(), open(bp).read()
-        for have, want in CHILD_PERMITTED_LINE_DIFFS.get(br_rel, ()):
-            bt = bt.replace(have + '\n', want + '\n', 1)
-        from exopipe.phase3.core import fallback
-        if pt != bt and not fallback.same_code_modulo_sites(pt, bt, pure_calls=('_deep_path',)):   # B-30 sites: pure insertions (no-op under
-            #                                                              'fallback'; under 'refuse' the step refuses)
+        pt, bt = open(pp).read(), child_production_text(br_rel, open(bp).read())
+        if pt != bt:   # B-30 sites are pure insertions (no-op under 'fallback'; under 'refuse' the step refuses)
             pl, bl = pt.splitlines(), bt.splitlines()
             first = next((i for i, (a, b) in enumerate(zip(pl, bl)) if a != b), min(len(pl), len(bl)))
             bad.append(f'G-D0b: the content-test child would run {pp}, which differs from the branch {bp} at line '
-                       f'{first + 1} - the step applies with one and D3 re-samples with the other')
+                       f'{first + 1} of the production text - the step applies with one and D3 re-samples with the other')
         sums[os.path.abspath(pp)] = hashlib.sha1(open(pp, 'rb').read()).hexdigest()[:12]
     return bad, sums
 
