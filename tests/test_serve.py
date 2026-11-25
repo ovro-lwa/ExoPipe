@@ -2557,7 +2557,8 @@ def test_register_matches_production():
     """register.register = production's register_page.py 'register --entry' (/lustre/gh/main/phase3/serve/register_page.py, read
     at run time and run on a sandbox - TWO_PORT_DIR, no bytecode written - with greenlit_overlay.py copied beside it), byte for
     byte: two registrations in a row (a page replacing its seeded entry, a new page, a page of Gregg's greenlit list with its
-    own inspection title, one without) leave the same registry.json AND registered_pages.json, both mode 0664, each write with
+    own inspection title, one without) leave the same registry.json AND registered_pages.json, both mode 0664 (0644 before the
+    first write: production's os.chmod 0664 after placement's group and ACL), each write with
     its modification time strictly later in whole seconds (two writes within one second); an entry the server's loader refuses
     (argv with --port) changes neither file in either; the production registry is refused (G23) before anything is read."""
     prod = '/lustre/gh/main/phase3/serve'
@@ -2577,6 +2578,7 @@ def test_register_matches_production():
                           ('greenlit_pages.json', green)):
             with open(f'{D}/{name}', 'w') as f:
                 json.dump(obj, f, indent=1)
+            os.chmod(f'{D}/{name}', 0o644)          # a 0644 registry: every write leaves it 0664, as production's chmod
     shutil.copy2(f'{prod}/greenlit_overlay.py', f'{A}/greenlit_overlay.py')     # register_page.py imports it from TWO_PORT_DIR
     env = dict(os.environ, TWO_PORT_DIR=A, PYTHONDONTWRITEBYTECODE='1')
     rounds = [[rev(9001, 'new A', extra=('--loc-offsets',)), rev(9003, 'new C')], [rev(9004, 'new D', run='/data99/r/Run_D')]]
@@ -2627,7 +2629,8 @@ def test_register_matches_production():
     except Refusal as e:
         assert 'G23' in str(e)
     ok('registration = production\'s register_page.py register --entry, byte for byte (registry.json AND '
-       'registered_pages.json, two registrations, the greenlit layer, mode 0664, the time strictly later on each write); a '
+       'registered_pages.json, two registrations, the greenlit layer, mode 0664 after each write of a 0644 file, the time '
+       'strictly later on each write); a '
        'refused entry writes neither file; the production registry and a production run\'s hold are refused (G23)')
 
 

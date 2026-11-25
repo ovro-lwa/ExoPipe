@@ -26,6 +26,10 @@ anything changes.
 the caller's own writer (open + csv, json.dump, writeto, ...), and a clean exit places it (``replace(tmp, dst, drop=True)``);
 ANY exception inside the block removes the temporary file and propagates. Only a killed process leaves one behind:
 ``temp_glob(dst, tag)`` is the glob of those names, for the cleanup of the writer's next run.
+
+``atomic_many(dsts)`` is the form for a set of products installed together: ``with placement.atomic_many(dsts) as tmps:``
+yields {dst: tmp}; a clean exit first gives EVERY temporary file its product's attributes (apply: where a refusal happens),
+and only when all succeeded renames them in the order of ``dsts`` - a refusal places none of them.
 """
 import contextlib
 import errno
@@ -214,9 +218,7 @@ def atomic(dst, like=None, tag=None):
     existing file works); ``tag`` (letters, digits, '_'; first a letter) is put before the pid, for writers that share a
     directory and clean up only their own temporary files (temp_glob(dst, tag)). A block that leaves no ``tmp`` REFUSES
     (nothing to place is never a silent success)."""
-    if tag is not None and not (tag[:1].isalpha() and tag.replace('_', '').isalnum()):
-        raise ValueError(f'placement.atomic: tag {tag!r} is not letters, digits and \'_\' starting with a letter')
-    tmp = f'{dst}.{tag + "." if tag else ""}{os.getpid()}.{os.urandom(4).hex()}.tmp'
+    tmp = _temp_name(dst, tag)                  # (a ValueError for a malformed tag, before anything is yielded)
     try:
         yield tmp
     except BaseException:
@@ -225,3 +227,66 @@ def atomic(dst, like=None, tag=None):
     if not os.path.lexists(tmp):
         raise PlacementRefusal(f'placement: {tmp} was not written - {dst} not placed')
     replace(tmp, dst, like=like, drop=True)
+
+
+def _temp_name(dst, tag=None):
+    if tag is not None and not (tag[:1].isalpha() and tag.replace('_', '').isalnum()):
+        raise ValueError(f'placement.atomic: tag {tag!r} is not letters, digits and \'_\' starting with a letter')
+    return f'{dst}.{tag + "." if tag else ""}{os.getpid()}.{os.urandom(4).hex()}.tmp'
+
+
+@contextlib.contextmanager
+def atomic_many(dsts):
+    """``with atomic_many(dsts) as tmps:`` - {dst: tmp} for products installed together; the block writes every ``tmp`` with
+    the caller's own writer. A clean exit works in two phases:
+      1. every temporary file is given its product's attributes (target_attrs + apply, as replace: the existing file's group,
+         mode and ACL, or the directory's rule for a new file). A refusal here, or a temporary file not written, removes
+         EVERY temporary file and places nothing;
+      2. only when all succeeded, each is renamed into place in the order of ``dsts``. A rename that fails refuses, naming
+         exactly the destinations already placed; the temporary files not yet renamed are removed.
+    ANY exception inside the block removes every temporary file and propagates. ``dsts`` is refused before anything is
+    written when two different names in it are the same path (both renamed to one file: the second would silently replace
+    the first); the same name given twice is one product. Temporary names are atomic's (temp_glob(dst) matches them)."""
+    order, seen = [], {}
+    for d in dsts:
+        k = os.path.abspath(d)
+        if k in seen:
+            if seen[k] != d:
+                raise PlacementRefusal(f'placement: {seen[k]} and {d} are the same destination - nothing written')
+            continue
+        seen[k] = d
+        order.append(d)
+    tmps = {d: _temp_name(d) for d in order}
+
+    def drop_all(names):
+        for d in names:
+            _remove(tmps[d])
+    try:
+        yield dict(tmps)
+    except BaseException:
+        drop_all(order)
+        raise
+    from exopipe.phase3.core import guard
+    try:
+        for d in order:                                        # phase 1: every attribute applied before any rename
+            t = tmps[d]
+            if not os.path.lexists(t):
+                raise PlacementRefusal(f'placement: {t} was not written ({d})')
+            if guard.active():
+                guard.check(t, 'placement (source: group and ACL)')
+                guard.check(d, 'placement (destination)', entry=True)
+            apply(t, target_attrs(d), dst=d)
+    except BaseException as e:
+        drop_all(order)
+        if isinstance(e, PlacementRefusal):
+            raise PlacementRefusal(f'{e} - none of the {len(order)} products placed') from e
+        raise
+    for i, d in enumerate(order):                              # phase 2: the renames, in order
+        try:
+            os.replace(tmps[d], d)
+        except BaseException as e:
+            drop_all(order[i:])
+            if not isinstance(e, OSError):
+                raise
+            raise PlacementRefusal(f'placement: renaming {tmps[d]} to {d} failed: {e.strerror} (errno {e.errno}); already '
+                                   f'placed: {order[:i] or "none"}; not placed: {order[i:]}') from e

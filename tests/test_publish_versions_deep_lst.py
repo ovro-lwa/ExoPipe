@@ -466,13 +466,21 @@ def test_pins():
     write(f'{a}/judgements/judgements.jsonl', '{"x": 1}\n')
     write(f'{a}/data.csv', 'd\n')
     os.makedirs(f'{b}/judgements')
+    g2 = next((g for g in os.getgroups() if g != os.getegid()), os.getegid())       # the product's group: not the writer's
+    os.chown(f'{a}/judgements/judgements.jsonl', -1, g2)
+    os.chmod(f'{a}/judgements/judgements.jsonl', 0o660)
     os.link(f'{a}/judgements/judgements.jsonl', f'{b}/judgements/judgements.jsonl')
     os.link(f'{a}/data.csv', f'{b}/data.csv')
     got = versions.unshare_mutable(b)
+    sj = os.stat(f'{b}/judgements/judgements.jsonl')
     write(f'{b}/judgements/judgements.jsonl', '{"y": 2}\n', mode='a')
     check('unshare_mutable: the hard-linked journal gets its own inode (an append stays in its run), other files stay linked',
           got == ['judgements/judgements.jsonl'] and read(f'{a}/judgements/judgements.jsonl') == '{"x": 1}\n'
           and os.stat(f'{a}/data.csv').st_ino == os.stat(f'{b}/data.csv').st_ino, got)
+    check('unshare_mutable: the copy is placed - it keeps the journal\'s own group and mode (core/placement), not the '
+          'writer\'s group; no temporary file is left',
+          (sj.st_gid, sj.st_mode & 0o777, sj.st_nlink) == (g2, 0o660, 1)
+          and sorted(os.listdir(f'{b}/judgements')) == ['judgements.jsonl'], (sj.st_gid, oct(sj.st_mode), os.listdir(f'{b}/judgements')))
 
 
 # ---- 6. the per-LST placement as a version ----------------------------------------------------------------------------------

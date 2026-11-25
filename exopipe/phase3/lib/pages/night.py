@@ -46,6 +46,8 @@ import os
 import re
 import shutil
 
+from exopipe.phase3.core import placement
+
 RECORD = 'page_blocks.json'                    # in a page run: what its blocks were rendered from (written once test() passed)
 VERSION = 1
 ROW_KEY = ('cand_id', 'member_cand_id')        # (page id, member detection) of a selection row
@@ -324,10 +326,10 @@ def read_record(run):
 
 def write_record(run, rec):
     p = os.path.join(run, RECORD)
-    with open(p + '.tmp', 'w') as f:
+    # the existing record's group, mode and ACL, or the directory's rule for a new one (core/placement.atomic)
+    with placement.atomic(p) as tmp, open(tmp, 'w') as f:
         json.dump(rec, f, indent=1, sort_keys=True)
         f.write('\n')
-    os.replace(p + '.tmp', p)
     _RECORDS.pop(p, None)
     return p
 
@@ -529,9 +531,8 @@ def reduced(pl, run):
     idx = sorted(final)
     path = os.path.join(run, REDUCED_DIR, os.path.basename(pl['selection']))
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path + '.tmp', 'w', newline='') as f:
+    with placement.atomic(path) as tmp, open(tmp, 'w', newline='') as f:     # placed (core/placement.atomic)
         f.write('\n'.join([pl['head']] + [pl['lines'][i] for i in idx]) + '\n')
-    os.replace(path + '.tmp', path)
     _h, _l, rrows = read_selection(path)
     rr = ranked(rrows)
     if len(rr) != len(idx) or rrows != [pl['rows'][i] for i in idx]:
@@ -560,15 +561,21 @@ def rename(run, moves):
 
 
 def _link(a, b):
-    """Hard link, or a copy with the file's times where the two are on different file systems. Returns 'linked' / 'copied'."""
-    try:
-        os.link(a, b)
-        return 'linked'
-    except OSError as e:
-        if e.errno not in (errno.EXDEV, errno.EPERM, errno.EMLINK):
-            raise
-    shutil.copy2(a, b + '.tmp')
-    os.replace(b + '.tmp', b)
+    """Carry the earlier run's image ``a`` to the new name ``b``. A hard link shares a's inode, so b would carry a's group,
+    mode and ACL: it is made only when a already carries exactly those placement gives b (core/placement.target_attrs(b),
+    this run's directory rule). Otherwise - or where the hard link cannot be made (another file system) - a copy with the
+    file's times, placed (the directory's rule, never a's attributes). Returns 'linked' / 'copied'."""
+    want = placement.target_attrs(b)
+    st = os.stat(a)
+    if (st.st_gid, placement.get_acl(a), st.st_mode & 0o777) == (want['gid'], want['acl'], want['mode']):
+        try:
+            os.link(a, b)
+            return 'linked'
+        except OSError as e:
+            if e.errno not in (errno.EXDEV, errno.EPERM, errno.EMLINK):
+                raise
+    with placement.atomic(b) as tmp:
+        shutil.copy2(a, tmp)
     return 'copied'
 
 

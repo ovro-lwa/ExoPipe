@@ -38,6 +38,7 @@ import json
 import os
 import re
 
+from exopipe.phase3.core import placement
 from exopipe.phase3.core.record import Refusal
 from exopipe.phase3.lib.serve import common, scripts
 
@@ -74,10 +75,11 @@ def remove_tiers(reg, tiers):
 
 
 def _dump(reg, path):
+    """The registry written through a temporary file placed at ``path`` (core/placement.atomic: the existing registry's group,
+    mode and ACL, or the directory's rule for a new one)."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path + '.part', 'w') as f:
+    with placement.atomic(path) as tmp, open(tmp, 'w') as f:
         json.dump(reg, f, indent=1)
-    os.replace(path + '.part', path)
 
 
 # ---- the page (port of build_review_hub.py:43-90, exopipe_ops 4c42f91) ------------------------------------------------
@@ -164,10 +166,10 @@ def first_difference(a, b):
 
 
 def _write_page(path, text):
-    """The page as build_review_hub.py:91 writes it (a .part file renamed over the page)."""
-    with open(path + '.part', 'w') as f:
+    """The page as build_review_hub.py:91 writes it (a temporary file renamed over the page), placed (core/placement.atomic:
+    the existing page's group, mode and ACL, or the directory's rule for a new page)."""
+    with placement.atomic(path) as tmp, open(tmp, 'w') as f:
         f.write(text)
-    os.replace(path + '.part', path)
 
 
 @contextlib.contextmanager

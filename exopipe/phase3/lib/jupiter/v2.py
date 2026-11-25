@@ -38,6 +38,7 @@ import shutil
 import sys
 import time
 
+from exopipe.phase3.core import placement
 from exopipe.phase3.core.record import NoInput, Refusal
 from exopipe.phase3.lib.jupiter import common as K
 from exopipe.phase3.lib.jupiter import mirrors
@@ -327,10 +328,11 @@ def st_refcheck(u, c, t0):
             u.refuse(f'{dst} exists and differs from the fresh {name}: the reference-tie inputs are never overwritten '
                      f'(move it aside by hand with a manifest)')
         os.makedirs(os.path.dirname(dst), exist_ok=True)
-        shutil.copyfile(src, dst + '.part')
-        if K.sha256(dst + '.part') != K.sha256(src):
-            raise RuntimeError(f'copy of {src} differs')
-        os.replace(dst + '.part', dst)
+        # the directory's group, mode and ACL for the new file (core/placement.atomic; any exception removes the temporary file)
+        with placement.atomic(dst) as tmp:
+            shutil.copyfile(src, tmp)
+            if K.sha256(tmp) != K.sha256(src):
+                raise RuntimeError(f'copy of {src} differs')
     u.add_output(os.path.join(c.R, rel_ref), 'jupiter_refcheck')
 
 

@@ -1459,10 +1459,12 @@ def card2_union(V, runs):
             if ln not in seen:
                 seen.add(ln)
                 out.append(ln)
-    with open(V + '/card2_filter.csv.part', 'w') as fh:
+    # placed (core/placement.atomic: the existing file's group, mode and ACL, or the view directory's rule for a new file);
+    # imported here: this module also runs as the Python 3.6 build child (child_main), without the exopipe package
+    from exopipe.phase3.core import placement
+    with placement.atomic(V + '/card2_filter.csv') as tmp, open(tmp, 'w') as fh:
         fh.write('\n'.join(first + ["# combined view %s: the union of its %d member batches' card2_filter.csv"
                                     % (os.path.basename(V), len(runs)), hdr] + out) + '\n')
-    os.replace(V + '/card2_filter.csv.part', V + '/card2_filter.csv')
     return len(out), len(runs)
 
 

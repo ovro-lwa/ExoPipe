@@ -11,6 +11,8 @@ A unit is named in refusals by `what`: '<scope> <weighting>' (v5) or '<scope> <j
 import json
 import os
 
+from exopipe.phase3.core import placement
+
 _MD5 = {}
 
 
@@ -40,9 +42,11 @@ def _seed(p, m):
 
 
 def _clear(paths_):
+    """Remove a unit's own earlier outputs and their temporaries <path>.part, <path>.tmp.* and core/placement's
+    <path>.<pid>.<8 hex digits>.tmp (placement.temp_glob: what a killed stamp_products leaves) - as steps/hybrid._clear."""
     import glob
     for p in paths_:
-        for q in [p, f'{p}.part'] + glob.glob(f'{glob.escape(p)}.tmp.*'):
+        for q in [p, f'{p}.part'] + glob.glob(f'{glob.escape(p)}.tmp.*') + glob.glob(placement.temp_glob(glob.escape(p))):
             if os.path.lexists(q):
                 os.remove(q)
 
@@ -153,19 +157,29 @@ def stamp_products(items, rows, hist, *, scope, stokes, t0, t1, itt, beam, therm
     extra cards incl. PRODNAME)] in order. Each source is copied to a temporary name beside its final path; a HEALPix map gets PRODNAME
     in HDU 1 and a Jy/beam map PSFMAP = psf_name (bug B14); then the standard header (validate=True; a HEALPix map
     mosaic_conform.HEADER_VALIDATE, True by decision C-08, checked on its HDU 1 table), the PROVENANCE table of rows and the HISTORY lines hist. Nothing is renamed into place unless
-    every product was written (the temporary files are removed on any error). Returns [(final path, source, kind)]."""
+    every product was written (the temporary files are removed on any error). The products are placed together
+    (core/placement.atomic_many): each gets the group, mode and ACL of the file it replaces, or the directory's rule for a new
+    file - never the source's, which copy2 carries (its times are kept); every product's attributes are applied before the
+    first rename, so a refusal places none of them and removes every temporary file; then they are renamed in the order of
+    items. Two items naming one final path refuse before anything is written, unless they are identical (one product).
+    Returns [(final path, source, kind)]."""
     import shutil
     from astropy.io import fits
     from astropy.time import Time
     from exopipe.phase3.core.products import append_provenance_table, write_standard_header
+    from exopipe.phase3.core.record import Refusal
     K = _cfg().mosaic_conform
-    pid = os.getpid()
-    done = []
-    try:
+    by_dst = {}
+    for it in items:
+        if by_dst.setdefault(it[3], it) != it:
+            raise Refusal(f'conform: two different products for {it[3]} ({by_dst[it[3]][:2]} and {it[:2]}) - nothing written')
+    items = list({it[3]: it for it in items}.values())         # identical duplicates: one product, at its first place
+    out = []
+    with placement.atomic_many([it[3] for it in items]) as tmps:
         for kind, src, sub, dst, pbc, ex in items:
             os.makedirs(os.path.dirname(dst), exist_ok=True)
-            tmp = os.path.join(os.path.dirname(dst), f'.{os.path.basename(dst)}.tmp.{pid}')
-            done.append((tmp, dst, src, kind))
+            tmp = tmps[dst]
+            out.append((dst, src, kind))
             shutil.copy2(src, tmp)
             if sub in HEALPIX_SUBS:
                 with fits.open(tmp, mode='update', memmap=False) as h:
@@ -179,15 +193,6 @@ def stamp_products(items, rows, hist, *, scope, stokes, t0, t1, itt, beam, therm
             with fits.open(tmp, mode='update', memmap=False) as h:
                 for ln in hist:
                     h[0].header.add_history(ln)
-    except BaseException:
-        for tmp, _d, _s, _k in done:
-            if os.path.exists(tmp):
-                os.remove(tmp)
-        raise
-    out = []
-    for tmp, dst, src, kind in done:
-        os.replace(tmp, dst)
-        out.append((dst, src, kind))
     return out
 
 

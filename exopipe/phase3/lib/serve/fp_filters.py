@@ -50,6 +50,8 @@ import os
 import statistics
 from concurrent.futures import ThreadPoolExecutor
 
+from exopipe.phase3.core import placement
+
 FP_FILE, FP_META = 'fp_filters.csv', 'fp_filters.json'     # review_filters.py:92
 DET_FIELDS = ('cand_id', 'lst', 'date', 'band', 'ra', 'dec', 'snr', 'stokes', 'tier')   # parallel_collect.py F
 DETS_HEADER = ['page', 'source', 'default_listed', 'stokes', 'tier', 'lst', 'night', 'band', 'cand_id', 'ra', 'dec', 'snr']
@@ -123,14 +125,14 @@ def collect(view, page, readers=None):
 
 
 def write_dets(path, dets):
-    """newview_hides.collect's flood_dets_<page>.csv format (the cross-tier pair builder's snapshot input)."""
-    with open(path + '.part', 'w', newline='') as f:
+    """newview_hides.collect's flood_dets_<page>.csv format (the cross-tier pair builder's snapshot input). Placed (core/
+    placement.atomic: the existing file's group, mode and ACL, or the directory's rule for a new file)."""
+    with placement.atomic(path) as tmp, open(tmp, 'w', newline='') as f:
         w = csv.writer(f)
         w.writerow(DETS_HEADER)
         for d in dets:
             w.writerow([d['page'], d['source'], 1, d['stokes'], d['tier'], d['lst'], d['night'], d['band'], d['cand_id'], d['ra'],
                         d['dec'], d['snr']])
-    os.replace(path + '.part', path)
 
 
 def det_key(d):
@@ -175,12 +177,11 @@ def write_flood_list(path, fl, load, base, factor=None):
     other nights, at least 1). Ties in the ratio follow the key (Stokes, tier, LST, night, band): production's tie order was its
     process's set order (string hashing is seeded per process), not reproducible - the same rows, ties ordered."""
     factor = _S().SNAPVIEW_FLOOD_FACTOR if factor is None else factor
-    with open(path + '.part', 'w', newline='') as f:
+    with placement.atomic(path) as tmp, open(tmp, 'w', newline='') as f:      # placed, as write_dets
         w = csv.writer(f)
         w.writerow(FLOOD_HEADER)
         for k in sorted(fl, key=lambda k: (-load[k] / max(base.get(k, 0), 1), k)):
             w.writerow(['snapshot', k[0], k[1], k[2], k[3], k[4], load[k], base.get(k, 0), round(load[k] / max(base.get(k, 0), 1), 1)])
-    os.replace(path + '.part', path)
 
 
 def excluded_hits(uniq, ex=None):

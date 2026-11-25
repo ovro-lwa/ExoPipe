@@ -1437,6 +1437,45 @@ def test_classic_missing_skips_quarantine_runs():
         shutil.rmtree(d, ignore_errors=True)
 
 
+def test_stamp_products_killed_and_duplicates():
+    """stamp_products (lib/mosaic/gen_common): (1) a stamp KILLED mid-write leaves its temporary file (core/placement's
+    <dst>.<pid>.<8 hex digits>.tmp) and the rerun's _clear removes it - and not another product's temporary file; (2) two
+    items naming one final path: identical, one product; different, refused before anything is written."""
+    import glob
+    import subprocess
+    from exopipe.phase3.core import placement, products
+    from exopipe.phase3.lib.mosaic import gen_common as G
+    d = _tmp('stamp')
+    try:
+        src, src2 = _img(os.path.join(d, 'src', 'a.fits')), _img(os.path.join(d, 'src', 'b.fits'), np.zeros((4, 4), np.float32))
+        dst = os.path.join(d, 'out', 'mollweide', 'a.fits')
+        os.makedirs(os.path.dirname(dst))
+        other = os.path.join(d, 'out', 'mollweide', 'b.fits.123.0123abcd.tmp')       # another product's temporary file
+        open(other, 'w').close()
+        kw = dict(scope='deep', stokes='I', t0=60000.0, t1=60001.0, itt=0, beam=None, thermnoi=None, psf_name='p')
+        child = (f'import os, sys\nsys.path.insert(0, {REPO!r})\n'
+                 'from exopipe.phase3.core import products\nfrom exopipe.phase3.lib.mosaic import gen_common as G\n'
+                 'products.write_standard_header = lambda *a, **k: os._exit(9)\n'
+                 f'G.stamp_products([("jybeam", {src!r}, "mollweide", {dst!r}, False, {{"PRODNAME": "x"}})], [], [], **{kw!r})\n')
+        p = subprocess.run([sys.executable, '-c', child], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        left = glob.glob(placement.temp_glob(glob.escape(dst)))
+        assert p.returncode == 9 and len(left) == 1 and not os.path.exists(dst), (p.returncode, p.stdout[-400:], left)
+        G._clear([dst])
+        assert not glob.glob(placement.temp_glob(glob.escape(dst))) and os.path.exists(other), os.listdir(os.path.dirname(dst))
+        it = ('jybeam', src, 'mollweide', dst, False, {'PRODNAME': 'x'})
+        it2 = ('jybeam', src2, 'mollweide', dst, False, {'PRODNAME': 'x'})
+        noop = lambda *a, **k: None       # noqa: E731 - the header writers are not under test here
+        with _patched((products, 'write_standard_header', noop), (products, 'append_provenance_table', noop)):
+            out = G.stamp_products([it, it], [], [], **kw)
+            assert out == [(dst, src, 'jybeam')] and _md5f(dst) != _md5f(src2), out
+            assert sorted(os.listdir(os.path.dirname(dst))) == ['a.fits', os.path.basename(other)]
+            m0 = _md5f(dst)
+            _raises(Refusal, G.stamp_products, [it, it2], [], [], **kw)
+            assert _md5f(dst) == m0 and sorted(os.listdir(os.path.dirname(dst))) == ['a.fits', os.path.basename(other)]
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 if __name__ == '__main__':
     n = 0
     for k, f in sorted(globals().items()):

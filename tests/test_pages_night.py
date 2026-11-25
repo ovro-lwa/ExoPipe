@@ -413,6 +413,27 @@ def test_files(ident, B, P):
         os.link = real
     check('link_blocks: another file system - copies with the file\'s times', got == dict(linked=0, copied=len(pl['link']))
           and all(os.stat(os.path.join(V, pl['blocks'][p][2])).st_mtime_ns == os.stat(os.path.join(P, b)).st_mtime_ns for p, b in pl['link']))
+    from exopipe.phase3.core import placement
+    LA = f'{T}/link_attrs'
+    shutil.rmtree(LA, ignore_errors=True)
+    put(f'{LA}/old/x/img.png', 'img')
+    os.makedirs(f'{LA}/new/x')
+    a0, b0 = f'{LA}/old/x/img.png', f'{LA}/new/x/img.png'
+    want = placement.target_attrs(b0)
+    os.chmod(a0, want['mode'])                    # the earlier image carries exactly what placement gives the new name
+    r1, same = NV._link(a0, b0), os.stat(a0).st_ino == os.stat(b0).st_ino
+    os.remove(b0)
+    os.chmod(a0, 0o600)                           # an earlier image of another mode: a link would carry it to the new run
+    r2, sb = NV._link(a0, b0), os.stat(b0)
+    check('_link: a hard link only when the earlier image already carries the group, mode and ACL placement gives the new '
+          'name; otherwise a copy placed by the directory\'s rule (the earlier image keeps its own), with its times, no '
+          'temporary file left',
+          r1 == 'linked' and same and r2 == 'copied' and sb.st_ino != os.stat(a0).st_ino
+          and (sb.st_gid, placement.get_acl(b0), sb.st_mode & 0o777) == (want['gid'], want['acl'], want['mode'])
+          and os.stat(a0).st_mode & 0o777 == 0o600 and sb.st_mtime_ns == os.stat(a0).st_mtime_ns
+          and open(b0).read() == 'img' and os.listdir(f'{LA}/new/x') == ['img.png'],
+          (r1, same, r2, oct(sb.st_mode), want))
+    shutil.rmtree(LA)
     ok, detail, counts = NV.test(V, [K], fr)
     check('content test: rows without image are counted, not failed', ok and counts[K]['without_image'] == 8 - len(pl['link']), detail)
     put(f'{V}/candidates/V/A/rank00099_17h_{N1}_bin0_41MHz.png', 'stale rank')

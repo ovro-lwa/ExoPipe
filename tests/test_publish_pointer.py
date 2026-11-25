@@ -104,7 +104,7 @@ def placer_gone(v):
     """v's building process is gone: it no longer renews its lease (renew_stop first, so the renewal of this process never
     rewrites the record after it), and its record names a process start that is not this process's."""
     versions.renew_stop(v.path('BUILDING.json'))
-    versions._atomic_json(v.path('BUILDING.json'), dict(v.builder(), start=-1))
+    versions._atomic_json(v.path('BUILDING.json'), dict(v.builder(), start=-1), place=False)
 
 
 def new_version(U, tag, files=('a.txt', 'sub/b.txt')):
@@ -299,7 +299,7 @@ def test_retention():
     held = vs[0]
     os.makedirs(held.path('holds'))
     hold_file = held.path('holds/x.json')
-    versions._atomic_json(hold_file, versions.me('a build reading it'))
+    versions._atomic_json(hold_file, versions.me('a build reading it'), place=False)
     other = f'{d}/Run_X_old_link'
     os.symlink(os.path.relpath(old_served.run, d), other)          # another link naming a version
     rows = {v.vid: (act, why) for v, act, why in versions.retention(U, keep=2)}
@@ -317,7 +317,7 @@ def test_retention():
     check('retire_plan content test (dry run)', r[0], r)
     check('a plan for another keep refuses', 'not for' in (refuses(versions.retire, U, keep=3, plan=res['plan']) or ''))
     os.makedirs(vs[2].path('holds'))
-    versions._atomic_json(vs[2].path('holds/late.json'), versions.me('a build that started after the dry run'))
+    versions._atomic_json(vs[2].path('holds/late.json'), versions.me('a build that started after the dry run'), place=False)
     why = refuses(versions.retire, U, keep=2, plan=res['plan'])
     check('a plan that went stale (a planned version is now held) refuses with nothing deleted', why and 'no longer' in why
           and all(os.path.isdir(v.dir) for v in vs + [dead]), why)
@@ -789,7 +789,7 @@ def test_review_findings():
     fake = versions.Version(versions.root_of(K), '20991231T000000Z-adopted', 'Run_KEEP')
     write(f'{fake.run}/x.txt', 'legacy')
     versions._atomic_json(fake.path('VERSION.json'), {'format': versions.FORMAT, 'name': 'Run_KEEP', 'version': fake.vid,
-                                                      'state': 'adopted', 'manifest': None})
+                                                      'state': 'adopted', 'manifest': None}, place=True)
     rows = {x.vid: (act, why) for x, act, why in versions.retention(K, keep=2)}
     check('retention (keep 2): an adopted version without a manifest is kept but not counted, so the two newest sealed '
           'versions are kept', rows[k1.vid][0] == 'keep' and 'newest' in rows[k1.vid][1] and rows[fake.vid][0] == 'keep'
@@ -1167,10 +1167,10 @@ def test_review_round2():
           and not any(n.startswith('.Run_L.pointer') for n in os.listdir(os.path.dirname(L))), why)
     real_aj = versions._atomic_json
 
-    def failing_aj(path, obj):
+    def failing_aj(path, obj, **kw):
         if obj.get('state') == 'adopted':
             raise OSError(28, 'stand-in: no space for the adoption record')
-        return real_aj(path, obj)
+        return real_aj(path, obj, **kw)
     versions._atomic_json = failing_aj
     try:
         why = refuses(versions.switch, L, vl, record=recl)
@@ -1406,7 +1406,7 @@ def test_content_hashes():
           and not os.path.exists(x.path('MANIFEST.tsv')), why)
     rec_old = dict(rec)
     rec_old.pop('hash_rules')
-    versions._atomic_json(v.path('VERSION.json'), rec_old)
+    versions._atomic_json(v.path('VERSION.json'), rec_old, place=True)
     ok, detail = versions.verify(v)
     check('a record without hash rules: the content cannot be tested - fails', not ok and 'hash_rules' in detail, detail)
 

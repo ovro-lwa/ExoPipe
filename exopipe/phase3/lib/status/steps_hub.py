@@ -24,6 +24,7 @@ register     ops/build_ratified_register.py AUDIT_CSV ...: REG = <out>/clv15/RAT
 import os
 import shutil
 
+from exopipe.phase3.core import placement
 from exopipe.phase3.lib.status import steps_common as K
 
 HISTORY_COLUMNS = ('checked_utc', 'cells', 'pass', 'fail', 'fail_not_in_rebuild_list')   # conformance_check.py:47-48
@@ -275,10 +276,12 @@ def run_data_page(out, unit, log, allowed):
            for r in validate.run(cls, os.path.join(site, n)) if not r['passed']]
     if bad:
         return rc, text, {}, site, bad
-    for d in dests:
-        shutil.copyfile(os.path.join(site, os.path.basename(d)), d + '.part')
-    for d in dests:
-        os.replace(d + '.part', d)
+    # installed as production does (every file copied first, then each renamed into place), placed together
+    # (core/placement.atomic_many: the installed file's group, mode and ACL, or the hub directory's rule for a new file; every
+    # file's attributes applied before the first rename, so a refusal installs none of them and leaves no temporary file)
+    with placement.atomic_many(list(dests)) as tmps:
+        for d in dests:
+            shutil.copyfile(os.path.join(site, os.path.basename(d)), tmps[d])
     return rc, text, dests, site, []
 
 
