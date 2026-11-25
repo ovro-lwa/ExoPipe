@@ -12,12 +12,23 @@ ACL and, with them, the permission bits:
   - else of the existing ``dst`` (a replacement keeps the product's group and ACL);
   - else what the destination directory gives a new file: its group when the directory has the set-group-ID bit (otherwise
     the process's effective group), and its default ACL masked by the creation mode 0o666, as the kernel derives it
-    (posix_acl_create); without a default ACL the permission bits are left as written.
+    (posix_acl_create); without a default ACL the permission bits of directory_mode (owner read and write; group read,
+    and group write only when the directory grants it; other read only when the directory grants it - never the
+    source's own mode).
 It REFUSES (PlacementRefusal, a record.Refusal; nothing renamed, ``src`` left where it is) when the group cannot be set (the
-process is not a member of the target group: chown EPERM), the ACL cannot be set or removed (not the owner, or a filesystem
-without ACLs), or the attributes read back differ. Under the parity guard both paths are checked before anything changes.
+process is not a member of the target group: chown EPERM - e.g. a rerun by a user that is not in the group of the product it
+replaces), the ACL cannot be set or removed (not the owner, or a filesystem without ACLs), or the attributes read back differ.
+The refusal names the product, its temporary file and the group. Under the parity guard both paths are checked before
+anything changes.
+
+``atomic(dst)`` is the writers' form: ``with placement.atomic(dst) as tmp:`` yields a unique temporary path beside ``dst``
+(``<dst>.<pid>.<random>.tmp``, not created), the block writes it with the caller's own writer (open + csv, json.dump,
+writeto, ...), and a clean exit places it (``replace(tmp, dst, drop=True)``); ANY exception inside the block removes the
+temporary file and propagates.
 """
+import contextlib
 import errno
+import grp
 import os
 import stat
 import struct
@@ -108,33 +119,48 @@ def _attrs(path):
     return st.st_gid, get_acl(path), stat.S_IMODE(st.st_mode) & 0o777
 
 
-def apply(src, want):
-    """Give ``src`` the group, ACL and permission bits of ``want`` (target_attrs); PlacementRefusal when it cannot."""
+def _group(gid):
+    try:
+        return f'{grp.getgrgid(gid).gr_name} ({gid})'
+    except KeyError:
+        return str(gid)
+
+
+def apply(src, want, dst=None):
+    """Give ``src`` the group, ACL and permission bits of ``want`` (target_attrs); PlacementRefusal when it cannot (the
+    message names ``dst``, the product, when given)."""
     gid, acl, mode = _attrs(src)
     if want['source'] == 'directory' and want['acl'] is None and mode & 0o100:
         want = dict(want, mode=want['mode'] | ((want['mode'] & 0o444) >> 2))   # an executable stays executable (r -> rx)
+    changed = False                             # FAST PATH: nothing set -> the values read above are the read-back
     try:
         if gid != want['gid']:                  # equal (a temporary file made in a set-group-ID directory): no chown
             os.chown(src, -1, want['gid'])
+            changed = True
         if want['acl'] is not None:
             if acl != want['acl']:
                 os.setxattr(src, ACL_ACCESS, want['acl'])
+                changed = True
         else:
             if acl is not None:
                 os.removexattr(src, ACL_ACCESS)
-            if want['mode'] is not None and (_attrs(src)[2] != want['mode']):
+                changed = True
+                mode = _attrs(src)[2]           # the mode bits removing the ACL left
+            if want['mode'] is not None and mode != want['mode']:
                 os.chmod(src, (os.stat(src).st_mode & ~0o777 & 0o7777) | want['mode'])
+                changed = True
     except OSError as e:
-        raise PlacementRefusal(f'placement: {src} cannot be given the group {want["gid"]} / ACL of the product '
-                               f'({want["source"]}): {e.strerror} (errno {e.errno}) - nothing renamed') from e
-    got = _attrs(src)
+        raise PlacementRefusal(f'placement: {dst or src} cannot be given the group {_group(want["gid"])} / ACL of the '
+                               f'{"replaced product" if want["source"] == "existing" else "product"} ({want["source"]}): '
+                               f'{e.strerror} (errno {e.errno}) - nothing renamed (temporary file {src})') from e
+    got = _attrs(src) if changed else (gid, acl, mode)     # read again only after a change (never cached across calls)
     exp = (want['gid'], want['acl'], want['mode'] if want['mode'] is not None else got[2])
     if want['acl'] is not None:
         exp = (exp[0], exp[1], acl_mode(want['acl']))
     if got != exp:
-        raise PlacementRefusal(f'placement: {src} reads back group {got[0]} mode {got[2]:o} ACL '
-                               f'{"set" if got[1] else "none"} after setting group {exp[0]} mode {exp[2]:o} ACL '
-                               f'{"set" if exp[1] else "none"} ({want["source"]}) - nothing renamed')
+        raise PlacementRefusal(f'placement: {dst or src} reads back group {got[0]} mode {got[2]:o} ACL '
+                               f'{"set" if got[1] else "none"} after setting group {_group(exp[0])} mode {exp[2]:o} ACL '
+                               f'{"set" if exp[1] else "none"} ({want["source"]}) - nothing renamed (temporary file {src})')
     return want
 
 
@@ -148,7 +174,7 @@ def replace(src, dst, like=None, drop=False):
     try:
         if guard.active():
             guard.check(dst, 'placement (destination)', entry=True)
-        want = apply(src, target_attrs(dst, like))
+        want = apply(src, target_attrs(dst, like), dst=dst)
         os.replace(src, dst)
     except BaseException:
         if drop and os.path.lexists(src):       # any failure before the rename, wherever dst is: the temporary file goes
@@ -158,3 +184,28 @@ def replace(src, dst, like=None, drop=False):
                 pass                            # the original failure is the one raised
         raise
     return want
+
+
+def _remove(path):
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        pass
+
+
+@contextlib.contextmanager
+def atomic(dst, like=None):
+    """``with atomic(dst) as tmp:`` - write ``tmp`` with the caller's own writer; a clean exit places it at ``dst``
+    (replace(tmp, dst, like, drop=True): the replaced product's group, mode and ACL, else the directory's rule; a refusal
+    removes ``tmp``). ANY exception inside the block removes ``tmp`` and propagates. ``tmp`` is ``<dst>.<pid>.<random>.tmp``
+    in ``dst``'s directory (unique per call, never created here: a writer that refuses an existing file works). A block that
+    leaves no ``tmp`` REFUSES (nothing to place is never a silent success)."""
+    tmp = f'{dst}.{os.getpid()}.{os.urandom(4).hex()}.tmp'
+    try:
+        yield tmp
+    except BaseException:
+        _remove(tmp)
+        raise
+    if not os.path.lexists(tmp):
+        raise PlacementRefusal(f'placement: {tmp} was not written - {dst} not placed')
+    replace(tmp, dst, like=like, drop=True)
