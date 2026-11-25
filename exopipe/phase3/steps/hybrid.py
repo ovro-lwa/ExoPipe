@@ -834,7 +834,7 @@ def tilefill_field(out_root, scope, w, rows, mosaic_out=None):
     out = os.path.join(fd, f'field_{scope}_{w}{sfx}.fits')
     rj = out[:-5] + '.json'
     TF.bind()
-    old = None
+    old = tmp = None
     try:
         if mosaic_out:
             filled, unfilled, _fm, um = v5_mosaic_pair(mosaic_out, scope, w, out_root, rows)
@@ -853,13 +853,15 @@ def tilefill_field(out_root, scope, w, rows, mosaic_out=None):
             _clear([tmp])
             rec = TF.band_increment(unfilled, filled, tmp)
             if rec['unfilled_md5'] != um:
-                _clear([tmp])
                 raise TF.TilefillRefusal(f'HG13: {unfilled} changed while it was read - REFUSING')
             placement.replace(tmp, out, drop=True)          # a refusal removes tmp and is recorded below
             rec['out'] = out
     except (TF.TilefillRefusal, placement.PlacementRefusal, OSError, KeyError, ValueError) as e:
         old = None
         rec = dict(scope=scope, weighting=w, result='FAIL', error=f'{type(e).__name__}: {e}')
+    finally:
+        if tmp is not None:                                 # every failure path (a placed tmp is gone already): no stale
+            _clear([tmp])                                   # temporary field file beside the field, before FAIL is recorded
     if rec is not old:
         # the existing file's group, mode and ACL, or the directory's rule for a new file (core/placement.atomic)
         with placement.atomic(rj) as part, open(part, 'w') as f:

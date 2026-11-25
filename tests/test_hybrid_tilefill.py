@@ -430,6 +430,44 @@ def test_field_placement_refusal():
         shutil.rmtree(d, ignore_errors=True)
 
 
+def test_field_failure_removes_temporary():
+    """Placement P4 fix round, tilefill_field: a band_increment that fails after it began writing the field's temporary file
+    (here a KeyError) leaves no temporary file beside the field; the field record says FAIL with the error and is cached. The
+    same for an HG13 refusal (the unfilled mosaic changed while it was read)."""
+    d = _tmp('tf_ffr_')
+
+    def partial(exc):
+        def band_increment(unf, fil, out):
+            _fits(out, data=np.zeros((4, 4), np.float32))           # the temporary field file exists ...
+            raise exc                                                # ... when the writer fails
+        return band_increment
+
+    def changed(unf, fil, out):
+        _fits(out)                                                   # written, then the unfilled md5 does not match: HG13
+        return dict(unfilled_md5='0' * 32)
+    old = (HS.mosaic_pair, TF.band_increment)
+    try:
+        fil, unf = _fits(os.path.join(d, 'F.fits')), _fits(os.path.join(d, 'U.fits'))
+        rows = {unf: _md5f(unf)}
+        HS.mosaic_pair = lambda scope, w, T: (fil, unf)
+        for i, (fn, want) in enumerate(((partial(KeyError('BMAJ')), "KeyError: 'BMAJ'"),
+                                        (changed, 'HG13'))):
+            TF.band_increment = fn
+            out = os.path.join(d, f'w{i}')
+            HS._FIELDS.clear()
+            r = HS.tilefill_field(out, '46MHz', 'R075', rows)
+            fd = os.path.join(out, '_tilefill_fields')
+            assert r['result'] == 'FAIL' and want in r['error'], r
+            assert sorted(os.listdir(fd)) == ['field_46MHz_R075.json'], os.listdir(fd)    # no '.field_*' temporary, no field
+            with open(os.path.join(fd, 'field_46MHz_R075.json')) as f:
+                assert json.load(f) == r
+            assert HS.tilefill_field(out, '46MHz', 'R075', rows) is r                    # cached
+    finally:
+        HS.mosaic_pair, TF.band_increment = old
+        HS._FIELDS.clear()
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def test_excluded_in_unit():
     """Exclusion of a hybrid unit: a subband unit by its nights; a wideband or Full unit per member, from the member stack records
     (a night excluded in one member is absent from that member only); a member without a stack record refuses."""

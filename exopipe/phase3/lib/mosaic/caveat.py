@@ -16,7 +16,8 @@ Differences from production (none changes a value):
 - the test record is returned (the unit records it) instead of being written as caveat_<v>_<scope>_lsfill.json;
 - the content test's failure raises CaveatRefusal; every FITS file is read with memmap=False (HG23);
 - the map and the table are installed together (core/placement.atomic_many: the replaced files' group, mode and ACL, or the
-  directory's rule for new ones; a placement refusal places neither and is the unit's refusal), where production renamed each.
+  directory's rule for new ones; an attribute refusal places neither, a failed rename of the table leaves the map placed - the caveat
+  unit then removes both; a placement refusal is the unit's refusal), where production renamed each.
 """
 import csv
 import os

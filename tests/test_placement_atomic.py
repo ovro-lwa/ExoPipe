@@ -445,12 +445,15 @@ def test_atomic_many():
 
 
 def test_replace_many():
-    """placement.replace_many (placement P4), files a writer made under names of its own (an engine's temporary directory)
-    installed as atomic_many installs them: (1) every product placed in the order given, an existing one keeping its group,
-    mode and ACL and a new one the directory's rule; the writer's files gone, no temporary file beside the products; (2) a
-    refusal on the 2nd of 3 places NONE of them, leaves the existing product unchanged, and removes every writer file and
-    every temporary file; (3) a destination named twice refuses before anything is renamed, the writer's files removed; (4)
-    a writer file that is missing (an OSError moving it) places none, the other writer files removed."""
+    """placement.replace_many (placement P4), files a writer made under names of its own (an engine's temporary directory):
+    (1) every product placed in the order given with ONE rename each (no other temporary name), an existing one keeping its
+    group, mode and ACL and a new one the directory's rule; the writer's files gone, nothing left beside the products; (2) an
+    attribute refusal on the 2nd of 3 places NONE of them, leaves the existing product unchanged, and removes every writer
+    file; (3) a destination named twice refuses before anything is renamed, the writer's files removed; (4) a writer file
+    that is missing refuses ('was not written'), none placed, the other writer files removed; (5) a rename that fails on the
+    3rd of 4 refuses naming the two products already placed (they stay, with their attributes) and the one that failed; the
+    3rd and 4th writer files are removed and the existing 3rd product is unchanged; (6) a writer file on another file system
+    than its product refuses before any rename (when /dev/shm is another file system)."""
     _fresh()
     d = _dir('arch', True)
     w = os.path.join(TMP, 'engine_tmp')
@@ -473,7 +476,7 @@ def test_replace_many():
     finally:
         os.replace = real_replace
     assert got == names, got
-    assert [x for x in order if not x.endswith('.tmp')] == names, order
+    assert order == names, order                         # one rename per product, straight from the writer's file
     assert all(open(n).read() == 'new ' + os.path.basename(n) for n in names) and not _leftovers(d) and not os.listdir(w)
     assert _attrs(old) == before[0], (_attrs(old), before)
     for n in (names[0], names[2]):
@@ -503,12 +506,55 @@ def test_replace_many():
     e = _raises(PL.PlacementRefusal, lambda: PL.replace_many(pairs))
     assert 'named twice' in str(e) and not os.path.exists(names[0]) and (_attrs(old), open(old).read()) == before, e
     assert not _leftovers(d) and not os.listdir(w), (_leftovers(d), os.listdir(w))
-    # (4) a writer file missing: an OSError, none placed, the others removed
+    # (4) a writer file missing: a refusal, none placed, the others removed
     pairs = engine('miss ')
     os.remove(pairs[1][0])
-    _raises(FileNotFoundError, lambda: PL.replace_many(pairs))
+    e = _raises(PL.PlacementRefusal, lambda: PL.replace_many(pairs))
+    assert 'was not written' in str(e) and 'none of the 3 products placed' in str(e), e
     assert not os.path.exists(names[0]) and (_attrs(old), open(old).read()) == before
     assert not _leftovers(d) and not os.listdir(w), (_leftovers(d), os.listdir(w))
+    # (5) phase 2 is not all-or-none: the rename of the 3rd of 4 fails
+    names4 = [os.path.join(d, n) for n in ('c.csv', 'a.csv', 'b.csv', 'e.csv')]      # b.csv (existing) is the 3rd
+    pairs = [(_write(os.path.join(w, os.path.basename(n)), 'four ' + os.path.basename(n)), n) for n in names4]
+    calls = []
+
+    def third_fails(src, dst):
+        calls.append(dst)
+        if len(calls) == 3:
+            raise OSError(errno.EIO, 'Input/output error')
+        return real_replace(src, dst)
+    os.replace = third_fails
+    try:
+        e = _raises(PL.PlacementRefusal, lambda: PL.replace_many(pairs))
+    finally:
+        os.replace = real_replace
+    m = str(e)
+    assert calls == names4[:3], calls
+    assert (f'already placed: {names4[:2]} (those stay live)' in m and f'failed: {names4[2]}' in m
+            and f'not placed: {names4[2:]}' in m and 'errno %d' % errno.EIO in m), m
+    assert [open(n).read() for n in names4[:2]] == ['four c.csv', 'four a.csv'], 'the placed two'
+    want4 = PL.target_attrs(os.path.join(d, 'new.csv'))
+    for n in names4[:2]:
+        assert _attrs(n) == (want4['gid'], want4['acl'], want4['mode']), (n, _attrs(n), want4)
+    assert (_attrs(old), open(old).read()) == before and not os.path.exists(names4[3]), 'the 3rd unchanged, the 4th absent'
+    assert not _leftovers(d) and not os.listdir(w), (_leftovers(d), os.listdir(w))
+    # (6) a writer file on another file system: refused before any rename
+    shm = '/dev/shm'
+    if os.path.isdir(shm) and os.access(shm, os.W_OK) and os.stat(shm).st_dev != os.stat(d).st_dev:
+        for n in names4[:2]:
+            os.remove(n)
+        x = _write(os.path.join(shm, f'replace_many_test_{os.getpid()}.csv'), 'x')
+        pairs = [(_write(os.path.join(w, 'c.csv'), 'y'), names4[0]), (x, names4[1])]
+        try:
+            e = _raises(PL.PlacementRefusal, lambda: PL.replace_many(pairs))
+        finally:
+            _x = os.path.lexists(x)
+            if _x:
+                os.remove(x)
+        assert 'not on the file system' in str(e) and 'none of the 2 products placed' in str(e) and not _x, e
+        assert not os.path.exists(names4[0]) and not os.path.exists(names4[1]) and not os.listdir(w), os.listdir(w)
+    else:
+        print('  UNTESTED (a writer file on another file system): /dev/shm is not another writable file system')
 
 
 TESTS = [test_replaced_keeps_attrs, test_new_file_directory_rule, test_writer_exception_removes_tmp,

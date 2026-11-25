@@ -12,8 +12,9 @@ coadd    per job and domain: coadd_jysr in place on the stage; the engine's prin
 render   per job in mosaic_render.SCOPES and domain: band_products.build in place on links to the coadd record's map and
          psfmap; Mollweide + RA/Dec renders placed together into <out>/renders/. Output class mosaic_render.
 Placed (core/placement.replace_many): every product of the unit gets the replaced file's group, mode and ACL, or the directory's
-rule for a new one, before the first rename - a placement refusal places none of them and is the unit's refusal (record.Refusal:
-the unit records it as refused with the placement message; the job's state is 'refused').
+rule for a new one, before the first rename - an attribute refusal places none of them; a rename that fails after others leaves
+those placed and the refusal names them and the one that failed. Either is the unit's refusal (record.Refusal: the unit records
+it as refused with the placement message; the job's state is 'refused').
 """
 import os
 import shutil

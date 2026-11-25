@@ -6,8 +6,9 @@
 
 Inputs: the jysr map and psfmap of every selected job whose coadd record is done (read from the record, never a glob of the
 build tree). Outputs (class mosaic_qa_table): <out>/qa/flux_anchor_measured_<yyyymmdd>.csv, <out>/qa/vlssr_astrometry_<yyyymmdd>.csv,
-placed together (core/placement.replace_many: the replaced tables' group, mode and ACL, or the directory's rule for new ones; a
-placement refusal places neither and is the unit's refusal, recorded as refused with the placement message).
+placed together (core/placement.replace_many: the replaced tables' group, mode and ACL, or the directory's rule for new ones; an
+attribute refusal places neither, a failed rename of the second leaves the first placed and names it; a placement refusal is the
+unit's refusal, recorded as refused with the placement message).
 """
 import os
 import shutil

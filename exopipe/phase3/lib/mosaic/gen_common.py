@@ -160,8 +160,8 @@ def stamp_products(items, rows, hist, *, scope, stokes, t0, t1, itt, beam, therm
     every product was written (the temporary files are removed on any error). The products are placed together
     (core/placement.atomic_many): each gets the group, mode and ACL of the file it replaces, or the directory's rule for a new
     file - never the source's, which copy2 carries (its times are kept); every product's attributes are applied before the
-    first rename, so a refusal places none of them and removes every temporary file; then they are renamed in the order of
-    items. Two items naming one final path refuse before anything is written, unless they are identical (one product).
+    first rename, so an attribute refusal places none of them and removes every temporary file; then they are renamed in the
+    order of items (a rename that fails after others leaves those placed and refuses naming them and the one that failed). Two items naming one final path refuse before anything is written, unless they are identical (one product).
     Returns [(final path, source, kind)]."""
     import shutil
     from astropy.io import fits
@@ -269,7 +269,8 @@ def pkcorr(u, *, what, scope, variant, tag, t, maps, outp, link, scratch, udir, 
     """The PKCORR stage after its gates: MP run_band (lib/mosaic/pkcorr.py) on the co-added Jy/sr and PSF maps (maps['jysr'],
     maps['psf']), mosaic_pkcorr.ROUNDS injection rounds through the engine on the tile tree link(sd) builds, then test_pkcorr. The
     four outputs (outp: map, curve, recovery, json -> path) are written under a temporary directory in udir and placed together
-    (core/placement.replace_many: all four or none; a placement refusal is the unit's refusal);
+    (core/placement.replace_many: an attribute refusal places none of the four, a rename that fails after others leaves those placed
+    and names them; a placement refusal is the unit's refusal);
     scratch = the names of the unit's two scratch directories under work (the tile tree, the injections). The engine is bound to the
     coadd record co's globals first and refused unless they match (_engine_as_coadd, label = the job): the injections run with
     the coadd's weights whatever unit ran before in the process."""

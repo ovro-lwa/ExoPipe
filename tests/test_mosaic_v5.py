@@ -532,6 +532,63 @@ def test_caveat_and_render_units():
         shutil.rmtree(d, ignore_errors=True)
 
 
+def test_caveat_placement_refusal():
+    """Placement P4 fix round, the handler of caveat_unit: a placement refusal of the caveat TABLE is the unit's refusal with the
+    placement message and neither product stays - (1) its attributes refused (atomic_many places neither); (2) its rename fails
+    after the map was renamed into place (atomic_many's phase 2 is not all-or-none): the unit itself removes the placed map
+    before the refusal is recorded. No temporary file is left either way."""
+    from exopipe.phase3.core import placement as PL
+    from exopipe.phase3.lib.mosaic import caveat as CV
+    import errno
+    d = _tmp('cpr_')
+    try:
+        out = _coadded(d)
+        P = v5.paths(out, 'Blue', 'R075')
+        cdir = os.path.dirname(P['caveat_map'])
+
+        def cav(tiles, variant, scope, out_dir, pbeff_mosaic, nside=None):      # the stand-in writes as caveat_map does
+            mp, tp = (os.path.join(out_dir, x) for x in CV.names(variant, scope, 128))
+            with PL.atomic_many([mp, tp]) as tmp:
+                _hpx(tmp[mp], np.zeros(12))
+                with open(tmp[tp], 'w') as f:
+                    f.write('lst,kind\n')
+            return dict(map=mp, table=tp, n_hybrid=len(tiles), n_taper_only=0, taper_only=[], test={'verdict': 'pass'})
+        foreign = next((g for g in (0, 1, 2, 3, 4, 65534) if g not in os.getgroups() and g != os.getegid()), None)
+        real_ta, real_replace = PL.target_attrs, os.replace
+        cases = []
+        if os.geteuid() != 0 and foreign is not None:
+            cases.append(('attributes', (PL, 'target_attrs', lambda dst, like=None: dict(real_ta(dst, like), gid=foreign)
+                                         if dst == P['caveat_table'] else real_ta(dst, like))))
+        else:
+            print('  UNTESTED (attribute refusal of the caveat table): running as root or a member of every candidate group')
+
+        seen = []
+
+        def table_rename_fails(src, dst):            # the map is renamed into place before the table's rename fails
+            seen.append((dst, os.path.exists(P['caveat_map'])))
+            if dst == P['caveat_table']:
+                raise OSError(errno.EIO, 'Input/output error')
+            return real_replace(src, dst)
+        cases.append(('rename', (os, 'replace', table_rename_fails)))
+        for what, patch in cases:
+            seen.clear()
+            with _patched((CV, 'caveat_map', cav), patch), _no_content_tests(), \
+                    _fake_module('exopipe.phase3.lib.mosaic.coadd_jysr', _fake_engine([])):
+                u = _unit(out, 'caveat', v5.caveat_unit)
+            assert os.replace is real_replace and PL.target_attrs is real_ta
+            assert u.status == 'refused' and u.reason.startswith('placement:') and P['caveat_table'] in u.reason, (what, u.status, u.reason)
+            if what == 'rename':
+                mine = [x for x in seen if x[0] in (P['caveat_map'], P['caveat_table'])]      # (the unit record is placed too)
+                assert mine == [(P['caveat_map'], False), (P['caveat_table'], True)], seen     # the map WAS placed
+                assert f"already placed: {[P['caveat_map']]}" in u.reason, u.reason
+            else:
+                assert 'none of the 2 products placed' in u.reason, u.reason
+            assert not os.path.exists(P['caveat_map']) and not os.path.exists(P['caveat_table']), (what, os.listdir(cdir))
+            assert os.listdir(cdir) == [], (what, os.listdir(cdir))
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def test_caveat_rows_and_domain_cards():
     d = _tmp('cv_')
     try:

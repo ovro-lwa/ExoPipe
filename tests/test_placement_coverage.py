@@ -142,7 +142,6 @@ EXCEPTIONS = {
         1, 'stays bare: writes the caller\'s temporary file (v5.fill_unit places the filled pair with replace_many)'),
     ('lib/mosaic/fill.py', 'fill_jybeam_file', 'os.replace'): (
         1, 'stays bare: writes the caller\'s temporary file (v5.fill_unit places the filled pair with replace_many)'),
-    ('lib/mosaic/v3.py', '_write_tiles', 'os.replace'): (1, 'P6: the stage\'s tile list (a per-file gh writer)'),
 }
 CALLS = {'os': ('replace', 'rename', 'renames'), 'shutil': ('move',)}
 

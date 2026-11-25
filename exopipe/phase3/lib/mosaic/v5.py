@@ -50,7 +50,9 @@ outputs it placed, and its record keeps the reason. The stages that read the til
 mosaic_coadd globals and refuse unless they equal the coadd record's. The push class (mosaic_v5) is PR-7d.
 Placement (core/placement): the tile list, the coadd's four maps, the caveat map and table, the two filled maps, the renders and the
 PKCORR outputs are placed - the replaced file's group, mode and ACL, or the directory's rule for a new one; a unit's files together
-(replace_many / atomic_many: all or none). A placement refusal is the unit's refusal, recorded as refused with the placement message.
+(replace_many / atomic_many: an attribute refusal places none; a rename that fails after others leaves those placed and names them, and
+the run loop - for the caveat unit the unit itself too - then removes every product of the unit, which did not end done). A placement
+refusal is the unit's refusal, recorded as refused with the placement message.
 """
 import json
 import os
@@ -340,6 +342,9 @@ def caveat_unit(u, scope, w, out):
     except CV.CaveatRefusal as e:
         _clear([P['caveat_map'], P['caveat_table']])
         u.refuse(f'{e}')
+    except placement.PlacementRefusal:
+        _clear([P['caveat_map'], P['caveat_table']])      # a failed rename of the table leaves the map placed: neither stays
+        raise                                             # the unit records it as refused with the placement message
     u.meta['caveat'] = {k: rec[k] for k in ('n_hybrid', 'n_taper_only', 'taper_only')}
     u.meta['md5'] = {'map': _md5(P['caveat_map']), 'table': _md5(P['caveat_table'])}
     u.check('test_caveat_map', rec['test'].get('verdict') == 'pass', value=rec['test'], path=P['caveat_map'],
@@ -385,7 +390,7 @@ def fill_unit(u, scope, w, out):
                 path=P['filled_jybeam'], cls='mosaic_filled_map', detail='identity to float32; K median and 5-95 spread (mosaic_fill)')
         if rb['result'] != 'PASS':
             u.refuse(f'HG19: the Jy/beam fill test failed {rb} - REFUSED')
-        placement.replace_many([(tj, P['filled_jysr']), (tb, P['filled_jybeam'])])     # both or neither
+        placement.replace_many([(tj, P['filled_jysr']), (tb, P['filled_jybeam'])])     # an attribute refusal: neither placed
         _seed(P['filled_jysr'], rj['out_md5'])
         _seed(P['filled_jybeam'], rb['out_md5'])
     finally:

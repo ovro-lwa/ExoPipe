@@ -525,6 +525,33 @@ def test_qa():
     an = [o['path'] for o in q['outputs'] if 'flux_anchor' in o['path']][0]
     rows = open(an).read().splitlines()
     assert rows[0] == 'variant,band,freq_mhz,source,aperture_jy,model_jy,ratio,fwhm_eff_arcmin' and len(rows) == 8, rows
+    # placement P4 fix round: conform/_tables (1) removes what a killed run's placement left beside its own tables
+    # (placement.temp_glob of each staged name) and (2) refuses, before anything is copied, when two qa outputs would be staged
+    # under one name (the second would replace the first): the staged tables stay as they are
+    stg = os.path.join(out, 'archive_staging', 'mosaic', 'tables')
+
+    def stg_state():
+        return {f: (os.stat(os.path.join(stg, f)).st_ino, open(os.path.join(stg, f), 'rb').read()) for f in _files(stg)}
+    s_ok = stg_state()
+    qpath = record.record_path(out, 'mosaic', 'qa/_all')
+    with open(qpath) as f:
+        q_ok = json.load(f)
+    other = os.path.join(out, 'qa_other')
+    os.makedirs(other, exist_ok=True)
+    dup = shutil.copy2(an, os.path.join(other, os.path.basename(an)))
+    record.atomic_write_json(qpath, dict(q_ok, outputs=q_ok['outputs'] + [dict(next(o for o in q_ok['outputs'] if o['path'] == an),
+                                                                               path=dup)]))
+    stale = os.path.join(stg, os.path.basename(an)) + '.4242.0badc0de.tmp'      # a name placement.temp_glob matches
+    with open(stale, 'w') as f:
+        f.write('killed')
+    rc, so, se = _main(['mosaic', '--jobs', 'Blue_Taper_R075', '--domains', 'jysr', '--stages', 'conform', '--out', out,
+                        '--cores', 'none'])
+    t = _rec(out, 'conform/_tables')
+    assert t['status'] == 'refused' and rc == 2 and 'two tables staged as' in t['reason'] and os.path.basename(an) in t['reason'], \
+        (rc, t['status'], t['reason'])
+    assert stg_state() == s_ok and not os.path.exists(stale), _files(stg)
+    record.atomic_write_json(qpath, q_ok)
+    shutil.rmtree(other)
     # placement P4: a placement refusal of a table is the unit's refusal (run_tables and run_qa catch Exception); the tables
     # placed by the run above stay as they are (same inode and bytes) and no temporary file is left
     if FOREIGN is None:

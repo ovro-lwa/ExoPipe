@@ -604,6 +604,42 @@ def test_stage_placement_refusal():
         shutil.rmtree(d, ignore_errors=True)
 
 
+def test_stage_other_refusal_stays_per_lst():
+    """Placement P4 fix round: the stage handlers re-raise only a PLACEMENT refusal. Any other record.Refusal from the weighting
+    map's derivation - a B-30 fallback site under policy 'refuse' (core/fallback.FallbackRefused) - stays that LST's G5 problem as
+    before: every other LST's map is still derived, and the unit refuses listing 'G5 07h: no weighting PB (FallbackRefused: ...)'."""
+    from exopipe.phase3.core.fallback import FallbackRefused
+
+    def at_07h(fake):
+        def wideband_pb(scope, lst, master_path, **k):
+            r = fake(scope, lst, master_path, **k)
+            if lst == '07h':
+                raise FallbackRefused('B-30 fallback site test.site: no library map - REFUSED')
+            return r
+        return wideband_pb
+    d = _tmp('sor_')
+    try:
+        out = os.path.join(d, 'out')
+        _archive(d, 'vclean', LSTS)
+        for job in (J_R075, J_V):
+            P = v3.paths(out, 'Blue', job)
+            calls = []
+            if job is J_R075:
+                ms = _masters(d, job)
+                with _patched((v3, 'plan_plain', lambda scope, j: _plan(ms)), (pb_apply, 'wideband_pb', at_07h(_fake_pb(calls)))):
+                    u = _unit(out, 'stage', v3.stage_unit, 'Blue', job, {})
+            else:
+                with _patched((CFG.mosaic, 'INPUT_COADD_RUN', os.path.join(d, 'A')), (exclusions, 'load', lambda *a, **k: _Ex()),
+                              (pb_apply, 'wideband_pb', at_07h(_fake_pb_own(calls)))):
+                    u = _unit(out, 'stage', v3.stage_unit, 'Blue', job, {})
+            assert u.status == 'refused' and 'G5 07h: no weighting PB' in u.reason and 'FallbackRefused' in u.reason, (job.label, u.reason)
+            assert [c[1] for c in calls] == LSTS, (job.label, [c[1] for c in calls])          # every other LST still derived
+            assert all(os.path.exists(P['pb'][lst]) for lst in LSTS if lst != '07h'), job.label
+            assert not os.path.exists(P['pb']['07h']) and not os.path.exists(P['tiles']), job.label
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 # ---- 6. coadd and render ----------------------------------------------------------------------------------------------------------
 
 def _fake_engine(calls, skip=(), missing=()):
