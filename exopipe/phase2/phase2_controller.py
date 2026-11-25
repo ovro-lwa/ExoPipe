@@ -1421,10 +1421,15 @@ def main():
     # NOT formed (Full is not formed when any band is not formed). Recorded in
     # {work_dir}/excluded_subbands.csv. Phase-1-incomplete gaps keep the wait/refuse
     # logic below; exclusion gaps do not need --allow_incomplete.
-    from exopipe.common.exclusions import excluded_subbands_for_night, dirty_gated_subbands
+    # A subband Phase 1 refused (REFUSED.json newer than its images) is excluded the same way, with its reason: an
+    # earlier attempt's images are never used beside a refusal (PR 157 review).
+    from exopipe.common.exclusions import excluded_subbands_for_night, dirty_gated_subbands, phase1_refused_subbands
+    _excl_refused = phase1_refused_subbands(subband_map)
     _excl_dd = excluded_subbands_for_night(args.lst, args.date, list(subband_map))
-    _excl_dirty = dirty_gated_subbands(args.lst, subband_map)
+    _excl_dirty = dirty_gated_subbands(args.lst, {sb: d for sb, d in subband_map.items() if sb not in _excl_refused})
     _excluded = {sb: 'data_decisions exclude' for sb in _excl_dd}
+    for sb, why in _excl_refused.items():
+        _excluded.setdefault(sb, why)
     for sb, (rms, b) in _excl_dirty.items():
         _excluded.setdefault(sb, f'dirty-rms gate: {rms:.0f} mJy > 5 x baseline {b:.0f} mJy')
     if _excluded:
@@ -1510,6 +1515,16 @@ def main():
             args._skip_wideband_incomplete = _skip
             logger.warning(f"Wideband bands to SKIP (incomplete): "
                            f"{sorted(_skip)}; complete bands still form.")
+
+    # A subband Phase 1 refused while this run waited (discovered again above) is not excluded by STEP 1a: refuse the
+    # run, naming it; a re-run excludes it with its record (PR 157 review).
+    _late = {sb: why for sb, why in phase1_refused_subbands(subband_map).items()
+             if sb not in getattr(args, '_excluded_subbands', set())}
+    if _late:
+        for sb, why in sorted(_late.items()):
+            logger.error(f"REFUSED: subband {sb}: {why}; it was refused after the exclusions were set. Re-run Phase 2 "
+                         "to exclude it with its record.")
+        sys.exit(1)
 
     # If anchor-only, restrict to the (first available) fallback anchor subband
     if args.dewarp_anchor_only:

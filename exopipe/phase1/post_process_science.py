@@ -452,11 +452,24 @@ def run_wideband_stacking(run_dir, catalog_path):
         return
 
     logger.info(f"Measuring noise across {len(sb_dirs)} sub-bands...")
+    from exopipe.common.exclusions import phase1_refusal
+    refused = []
+    if os.path.exists(os.path.join(wb_dir, "refused_subbands.csv")):     # a previous run's record is not this run's
+        os.remove(os.path.join(wb_dir, "refused_subbands.csv"))
     for sb_dir in sb_dirs:
         try:
             freq_str = os.path.basename(sb_dir).replace('MHz', '')
             freq = float(freq_str)
         except (ValueError, IndexError):
+            continue
+
+        # A subband Phase 1 refused is never stacked: images older than its REFUSED.json are an earlier attempt's.
+        why = phase1_refusal(sb_dir)
+        if why:
+            logger.warning(f"  {freq_str}MHz: excluded from stacking: {why}")
+            refused.append((os.path.basename(sb_dir), why))
+            with open(os.path.join(wb_dir, "refused_subbands.csv"), "w") as fh:
+                fh.write("subband,reason\n" + "".join(f"{sb},{w}\n" for sb, w in refused))
             continue
 
         # Try to find a V deep image in priority order

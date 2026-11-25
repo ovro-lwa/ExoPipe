@@ -15,18 +15,33 @@ live antenna's baselines look hot, so nearly every antenna was marked bad.
   no_data         an all-flagged baseline between live antennas, holding zeros (would read cold) or junk (would read
                   hot), is NaN in every statistic (never 0), is not listed, and the report names it as no data.
   partial         flagged channels of a row and a row flagged in one correlation only leave that correlation's mean.
-  refusals        every visibility flagged, no cross-hand (XY and YX) data longer than the UV cut, a FLAG column that
-                  cannot be read or has the wrong shape, or any other failure of the step (a plot, a flag write): the
-                  step refuses (HotBaselineRefusal) naming the cause, writes a refusal report in place of the previous
-                  run's outputs, and writes no flag.
+  refusals        every visibility flagged, no cross-hand (XY and YX) data longer than the UV cut, a FLAG column or
+                  ANTENNA table that cannot be read, a FLAG column of the wrong shape, a failed FLAG write, or any other
+                  failure before the plots: the step refuses (HotBaselineRefusal) naming the cause and the flag state,
+                  and writes a refusal report in place of the previous run's outputs.
+  flag_write      the FLAG of every row to be written is backed up first; a write that fails part way is restored and
+                  the refusal says how many rows were written and restored; a failed restore is said too (never "no
+                  flag was written"), and the next attempt restores the kept backup first; a failure after the write
+                  restores it.
+  lists           the listed baselines (antennas, statistics, FLAG rows written), the bad antennas and the FLAG rows
+                  per baseline, as CSV beside the report, written after flagging with the flag state.
+  plots           plots run after flagging; a failed plot is recorded in the report and does not refuse.
   cross_hand      a baseline without cross-hand data is no data for the heat-map detector: counted, named (capped)
                   and listed in full in the CSV; the report's two sections agree.
-  same_numbers    the channel average (sum of unflagged amplitudes over their count) equals numpy's nanmean with the
-                  flagged values set to NaN, bit for bit.
+  same_numbers    the channel average (sum of usable amplitudes over their count; usable = unflagged and finite) equals
+                  numpy's nanmean with flagged and non-finite values set to NaN, bit for bit.
   process_subband the production caller (process_subband.run_stage_image): a refusal stops the subband before imaging,
                   records REFUSED.json (work and archive directories) and exits with status 3.
-  casacore_ms     the FLAG read on a real (tiny) casacore measurement set (skipped, and said so, where python-casacore is
-                  not installed, as in the CI image).
+  mnc_lookup      the MNC bad-antenna lookup (pipeline_utils.run_antenna_flagging) converts the set's start (MJD
+                  seconds; a real TIME_RANGE value) to MJD days; a helper that exits with an error or prints no valid
+                  record, an unreadable start time or a failed flag write refuses; an empty list from a valid record
+                  passes. process_subband.run_stage_setup refuses the subband on a failed lookup (exit 3, before
+                  calibration) and writes the per-set record (requested and matched MJD, gap in days, bad antennas).
+  refused_used    a subband whose REFUSED.json is newer than its images is excluded by the Phase 2 collector (with its
+                  reason in excluded_subbands.csv; a refusal during the wait refuses the run) and skipped by the Phase 1
+                  wideband stacker; one re-imaged after its refusal is used.
+  casacore_ms     the FLAG read, write and restore on a real (tiny) casacore measurement set (skipped, and said so,
+                  where python-casacore is not installed, as in the CI image).
 
 Run standalone:  python tests/test_hot_baseline_flags.py [test_name ...]
 """
@@ -139,6 +154,8 @@ class FakeTable:
         return cols
 
     def getcol(self, col, startrow=0, nrow=-1):
+        if self.sub == 'ANTENNA' and col == 'NAME' and getattr(self.ms, 'antenna_unreadable', False):
+            raise RuntimeError('Table: cannot read column NAME of ANTENNA (test)')
         cols = self._cols()
         if col not in cols:
             raise RuntimeError(f'Table DataManager error: column {col} does not exist')
@@ -147,8 +164,11 @@ class FakeTable:
 
     def putcol(self, col, value, startrow=0, nrow=-1):
         assert not self.readonly, 'putcol on a table opened read only'
-        if getattr(self.ms, 'putcol_fails', False):
-            raise RuntimeError('Table: cannot write column FLAG (test)')
+        self.ms.n_putcol = getattr(self.ms, 'n_putcol', 0) + 1
+        fail = getattr(self.ms, 'putcol_fails', None)   # True: every call; ('at', n): only call n; ('from', n): n on
+        if fail is True or (fail and ((fail[0] == 'at' and self.ms.n_putcol == fail[1])
+                                      or (fail[0] == 'from' and self.ms.n_putcol >= fail[1]))):
+            raise RuntimeError(f'Table: cannot write column FLAG (test, call {self.ms.n_putcol})')
         old = self.ms.flag[startrow:startrow + len(value)]
         self.ms.putcols.append((col, int((value.any(axis=(1, 2)) & ~old.any(axis=(1, 2))).sum())))
         self.ms.flag[startrow:startrow + len(value)] = value
@@ -170,9 +190,9 @@ class _Args:
     apply_antenna_flags = True; apply_baseline_flags = True
 
 
-def run_step(ms_obj, workdir, label, patch=None):
+def run_step(ms_obj, workdir, label, patch=None, args_over=None):
     """run_diagnostics end to end on a synthetic set (plots off); returns what it listed and the report text.
-    patch: extra worker attributes to replace for this run (e.g. a plot that fails)."""
+    patch: extra worker attributes to replace for this run (e.g. a plot that fails); args_over: step arguments."""
     path = os.path.join(workdir, label + '.ms')
     REGISTRY[path] = ms_obj
     cap = {}
@@ -198,6 +218,8 @@ def run_step(ms_obj, workdir, label, patch=None):
     for k, v in patch.items():
         setattr(HB, k, v)
     args = _Args(); args.ms = path
+    for k, v in (args_over or {}).items():
+        setattr(args, k, v)
     cwd = os.getcwd(); os.chdir(workdir)
     try:
         try:
@@ -372,6 +394,22 @@ def test_casacore_ms_flag_read():
             assert 2.5 < m[HOT] < 3.5, (p, m[HOT])
         lines, dom = HB.summarize_no_data(mean, n, src.pos, 0.0)
         assert dom['n_cross_hand'] > 0 and any(f'{len(DEAD)}: {list(DEAD)}' in ln for ln in lines), lines
+        # the FLAG write and its backup on a real table: written per baseline, then restored exactly
+        saved_chunk = HB.FLAG_CHUNK_ROWS
+        HB.FLAG_CHUNK_ROWS = 2000
+        try:
+            bk = HB.flag_backup_dir(path)
+            counts = HB.apply_flags_to_ms(path, {5}, [HOT], bk)
+            assert counts[HOT] == NTIME and sum(counts.values()) == NTIME * (N_ANT + 1), counts   # 5: 49 + auto; HOT
+            with ct.table(path, ack=False) as t:
+                f = t.getcol('FLAG')
+            sel = (src.a1 == 5) | (src.a2 == 5) | ((src.a1 == HOT[0]) & (src.a2 == HOT[1]))
+            assert f[sel].all() and np.array_equal(f[~sel], src.flag[~sel]), 'wrong rows flagged'
+            assert HB.restore_flags(path, bk) == NTIME * (N_ANT + 1) and not os.path.exists(bk)
+            with ct.table(path, ack=False) as t:
+                assert np.array_equal(t.getcol('FLAG'), src.flag), 'FLAG not restored'
+        finally:
+            HB.FLAG_CHUNK_ROWS = saved_chunk
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
@@ -492,17 +530,120 @@ def test_previous_outputs_removed_on_refusal_and_on_success():
         shutil.rmtree(d, ignore_errors=True)
 
 
-def test_any_failure_of_the_step_refuses_with_its_cause():
+def test_plot_failure_is_recorded_and_does_not_refuse():
+    """plots run after flagging; a failed plot is recorded in the report, and the lists and flags stand"""
     d = _tmp()
     try:
         def boom(*a, **k):
             raise ValueError('plot failed (test)')
-        cap = run_step(SyntheticMS(), d, 'plotfail', patch={'plot_heatmap': boom})
-        assert cap['refused'] and 'the step failed: ValueError: plot failed (test)' in cap['refused'], cap['refused']
-        assert 'REFUSED: the step failed' in cap['report'], cap['report']
-        ms = SyntheticMS(); ms.putcol_fails = True
+        ms = SyntheticMS()
+        cap = run_step(ms, d, 'plotfail', patch={'plot_heatmap': boom})
+        assert cap['refused'] is None, cap['refused']
+        assert '[PLOTS] These plots were not made' in cap['report'] and 'raw mean XX: ValueError: plot failed (test)' \
+            in cap['report'], cap['report']
+        assert cap['hm_bad'] | cap['uv_bad'] == {HOT}, (cap['hm_bad'], cap['uv_bad'])
+        assert ms.flag[(ms.a1 == HOT[0]) & (ms.a2 == HOT[1])].all(), 'the hot baseline was not flagged'
+        for fn in HB.list_names('plotfail.ms'):
+            assert os.path.exists(os.path.join(d, fn)), fn
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_lists_written_after_flagging_with_the_flag_state():
+    """the report's lists as CSV beside it: listed baselines (antennas, statistic, FLAG rows written), bad antennas and
+    FLAG rows per baseline, written after the flags, with the flag state"""
+    d = _tmp()
+    try:
+        ms = SyntheticMS()
+        cap = run_step(ms, d, 'lists')
+        assert cap['refused'] is None, cap['refused']
+        hot = pd.read_csv(os.path.join(d, 'lists.ms_hot_baselines.csv'))
+        assert list(zip(hot.ms_index_1, hot.ms_index_2)) == [HOT], hot
+        r = hot.iloc[0]
+        assert r.name_1 == 'LWA001' and r.name_2 == 'LWA002' and r.flag_rows_written == NTIME, r
+        assert abs(r.cross_hand_mean - 3.0) < 0.1 and r.length_m > 0, r
+        if r.listed_by == 'uv':                      # listed first by amplitude against length: the heat map never tested it
+            assert np.isnan(r.heatmap_robust_z) and r.uv_excess_sigma > 7 and r.uv_excess_correlation in HB.POLS, r
+        else:
+            assert r.heatmap_robust_z > 5, r
+        assert r.flag_state.startswith(f'written: {NTIME} rows'), r.flag_state
+        assert len(pd.read_csv(os.path.join(d, 'lists.ms_bad_antennas.csv'))) == 0
+        rows = pd.read_csv(os.path.join(d, 'lists.ms_flag_rows_written.csv'))
+        assert list(zip(rows.ms_index_1, rows.ms_index_2, rows.flag_rows_written)) == [HOT + (NTIME,)], rows
+        assert f'FLAG: written: {NTIME} rows' in cap['report'] and 'lists.ms_hot_baselines.csv (1 baselines)' \
+            in cap['report'], cap['report']
+        assert not os.path.exists(HB.flag_backup_dir(os.path.join(d, 'lists.ms'))), 'backup left after success'
+        # flagging disabled: the lists say so and nothing is written
+        ms2 = SyntheticMS()
+        cap = run_step(ms2, d, 'noflags', args_over=dict(apply_antenna_flags=False, apply_baseline_flags=False))
+        assert 'FLAG: flagging is disabled' in cap['report'], cap['report']
+        hot = pd.read_csv(os.path.join(d, 'noflags.ms_hot_baselines.csv'))
+        assert hot.flag_rows_written.tolist() == [0] and 'no flag was written' in hot.flag_state.iloc[0], hot
+        assert ms2.putcols == [], ms2.putcols
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_flag_write_failure_restores_and_says_what_was_written():
+    """a FLAG write that fails part way: the rows written so far are restored from the backup taken before writing,
+    and the refusal says exactly what was written and restored; when the restore fails too, it says so (never 'no flag
+    was written')"""
+    d = _tmp()
+    saved_chunk = HB.FLAG_CHUNK_ROWS
+    try:
+        HB.FLAG_CHUNK_ROWS = 2000                     # 4 chunks of the 7,650 rows: each holds rows of the hot baseline
+        ms = SyntheticMS(); before = ms.flag.copy()
+        ms.putcol_fails = ('at', 2)                   # the first chunk is written, the second write fails
+        cap = run_step(ms, d, 'partial')
+        assert cap['refused'] and 'the FLAG write failed' in cap['refused'], cap['refused']
+        assert 'after 2 rows had been written' in cap['refused'] and 'were restored from the backup, so FLAG is as ' \
+            'before the step' in cap['refused'], cap['refused']
+        assert np.array_equal(ms.flag, before), 'FLAG not restored'
+        assert 'FLAG: the FLAG write failed' in cap['report'] and 'no flag was written' not in cap['report'], cap['report']
+        assert not [fn for fn in HB.list_names('partial.ms') if os.path.exists(os.path.join(d, fn))], 'lists left'
+        ms = SyntheticMS(); ms.putcol_fails = True    # the first write fails, and so does its restore
         cap = run_step(ms, d, 'writefail')
-        assert cap['refused'] and 'cannot write column FLAG' in cap['refused'], cap['refused']
+        assert 'after 0 rows had been written; restoring them from the backup failed' in cap['refused'], cap['refused']
+        ms = SyntheticMS()
+        ms.putcol_fails = ('from', 2)                 # the restore fails too
+        cap = run_step(ms, d, 'norestore')
+        assert 'restoring them from the backup failed' in cap['refused'] and 'the backup is kept at' in cap['refused'] \
+            and 'no flag was written' not in cap['report'], cap['refused']
+        assert os.path.isdir(HB.flag_backup_dir(os.path.join(d, 'norestore.ms')))
+        # the next attempt on the same set restores the kept backup before it runs, and says so
+        ms.putcol_fails = None; ms.n_putcol = 0
+        partial = ms.flag.copy()
+        cap = run_step(ms, d, 'norestore')
+        assert cap['refused'] is None and "A previous attempt's FLAG write did not finish" in cap['report'], cap
+        assert not np.array_equal(partial, before)
+    finally:
+        HB.FLAG_CHUNK_ROWS = saved_chunk
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_failure_after_the_flag_write_restores_the_flags():
+    d = _tmp()
+    try:
+        def boom(*a, **k):
+            raise OSError('disk full (test)')
+        ms = SyntheticMS(); before = ms.flag.copy()
+        cap = run_step(ms, d, 'late', patch={'write_lists': boom})
+        assert cap['refused'] and 'the step failed: OSError: disk full (test)' in cap['refused'], cap['refused']
+        assert f'{NTIME} rows were written for this step' in cap['refused'] and 'all 6 were restored from the backup' \
+            in cap['refused'], cap['refused']
+        assert np.array_equal(ms.flag, before), 'FLAG not restored'
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_unreadable_antenna_table_refuses():
+    d = _tmp()
+    try:
+        ms = SyntheticMS(); ms.antenna_unreadable = True
+        cap = run_step(ms, d, 'noant')
+        assert cap['refused'] and 'its data and flags could not be read' in cap['refused'] \
+            and 'cannot read column NAME of ANTENNA' in cap['refused'], cap['refused']
+        assert ms.putcols == []
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
@@ -514,6 +655,10 @@ def test_channel_average_equals_nanmean_bit_for_bit():
         ms = SyntheticMS(zero_bl=((5, 6),), junk_bl=((7, 8),))
         rng = np.random.default_rng(7)
         ms.flag |= rng.random(ms.flag.shape) < 0.3            # 30% of the visibilities flagged at random
+        bad = rng.random(ms.flag.shape) < 0.02                 # 2% non-finite, flagged or not: no data
+        ms.data[bad] = np.where(rng.random(int(bad.sum())) < 0.5, np.nan, np.inf).astype(np.complex64)
+        r = (ms.a1 == 9) & (ms.a2 == 10)
+        ms.data[r, :, 1] = np.nan; ms.flag[r, :, 1] = False   # unflagged but non-finite in every channel of XY
         path = os.path.join(d, 'same.ms'); REGISTRY[path] = ms
         saved = HB.table; HB.table = FakeTable
         try:
@@ -523,7 +668,7 @@ def test_channel_average_equals_nanmean_bit_for_bit():
         # the reference: the previous form (nanmean over NaN-masked amplitudes) with the same accumulation
         x = ms.a1 != ms.a2
         a1, a2, amp = ms.a1[x], ms.a2[x], np.abs(ms.data[x])
-        amp[ms.flag[x]] = np.nan
+        amp[ms.flag[x] | ~np.isfinite(amp)] = np.nan
         import warnings
         with warnings.catch_warnings():
             warnings.simplefilter('ignore', RuntimeWarning)
@@ -540,6 +685,7 @@ def test_channel_average_equals_nanmean_bit_for_bit():
             m[iu[1], iu[0]] = m[iu]; sd[iu[1], iu[0]] = sd[iu]
             assert np.array_equal(mean[p], m, equal_nan=True), p
             assert np.array_equal(std[p], sd, equal_nan=True), p
+        assert np.isnan(mean['XY'][9, 10]) and np.isfinite(mean['XX'][9, 10]), 'non-finite XY is not no data'
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
@@ -639,6 +785,354 @@ def test_process_subband_refusal_stops_the_subband_before_imaging():
     finally:
         if dirs:
             shutil.rmtree(dirs['root'], ignore_errors=True)
+
+
+# A real start time: OBSERVATION TIME_RANGE[0] of /lustre/gh/2019-11-22/concat/07_2019-11-22T073509-080450.ms (MJD
+# seconds), whose name and first main-table TIME (5081124915.737229 s, the first integration's center) agree.
+REAL_TIME_RANGE = (5081124909.237225, 5081124922.237234)
+REAL_START_MJD = 5081124909.237225 / 86400.0        # 58809.316079... d = 2019-11-22T07:35:09.237 UTC
+
+
+class _ObsTable:
+    def __init__(self, path, ack=False, **_k):
+        self.path = path
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        pass
+
+    def getcol(self, col):
+        if 'unreadable' in self.path:
+            raise RuntimeError('Table OBSERVATION does not exist (test)')
+        return np.array([REAL_TIME_RANGE])
+
+
+def _mnc_env(U, result=None, flagdata_fails=False):
+    """Replace the MNC lookup's externals: the OBSERVATION read, the helper run (result: (status, stdout, stderr)) and
+    flagdata. Returns (calls, restore)."""
+    calls = {'cmd': [], 'flagdata': []}
+    saved = {k: getattr(U, k) for k in ('pt', 'subprocess', 'flagdata')}
+
+    def run(cmd, **k):
+        calls['cmd'].append(cmd)
+        st, out, err = result
+        return types.SimpleNamespace(returncode=st, stdout=out, stderr=err)
+
+    def flagdata(**k):
+        calls['flagdata'].append(k)
+        if flagdata_fails:
+            raise RuntimeError('flagdata: table is locked (test)')
+    U.pt = types.SimpleNamespace(table=_ObsTable)
+    U.subprocess = types.SimpleNamespace(run=run)
+    U.flagdata = flagdata
+
+    def restore():
+        for k, v in saved.items():
+            setattr(U, k, v)
+    return calls, restore
+
+
+ETCD_FAIL = (1, '', 'Traceback (most recent call last):\n  ...\netcd3.exceptions.ConnectionFailedError')
+
+
+def test_mnc_lookup_uses_mjd_days_and_refuses_on_any_failure():
+    """the set's start (MJD seconds) is converted to MJD days for the MNC helper; a failed helper, an exit status other
+    than 0, or no valid JSON record raises MncLookupFailed with its cause; an empty bad-antenna list is a success only
+    when it comes from a valid record; the record carries the requested and matched MJDs and their gap"""
+    from astropy.time import Time
+    from exopipe.phase2 import pipeline_utils as U
+    import json
+    import logging as _lg
+    lg = _lg.getLogger('mnc_test')
+    m = U.mjd_from_ms_time(REAL_TIME_RANGE[0])
+    assert abs(m - 58809.3160791) < 1e-6, m
+    assert Time(m, format='mjd', scale='utc').isot == '2019-11-22T07:35:09.237', Time(m, format='mjd').isot
+    good = json.dumps(dict(requested_mjd=m, data_timestamp_mjd=m - 0.25, bad_correlator_numbers=[7, 3, 7]))
+    cases = [
+        ('helper exits 1', ETCD_FAIL, 'exited with status 1 for MJD 58809.316079: Traceback'),
+        ('no JSON', (0, 'connecting...\ndone\n', ''), 'printed no valid record'),
+        ('JSON without the keys', (0, json.dumps({'bad_correlator_numbers': []}), ''), 'printed no valid record'),
+        ('list is not a list', (0, json.dumps(dict(requested_mjd=m, data_timestamp_mjd=m, bad_correlator_numbers=None)),
+                                ''), 'printed no valid record'),
+    ]
+    for label, result, want in cases:
+        calls, restore = _mnc_env(U, result)
+        try:
+            try:
+                U.run_antenna_flagging('/x/a.ms', {}, '', lg)
+                raise AssertionError(f'{label}: not refused')
+            except U.MncLookupFailed as e:
+                assert want in str(e) and str(e).startswith('a.ms: '), (label, str(e))
+            assert calls['flagdata'] == [], label
+            assert float(calls['cmd'][0][-1]) == m, calls['cmd']        # MJD in days, full precision
+        finally:
+            restore()
+    calls, restore = _mnc_env(U, (0, 'log line\n' + good + '\n', ''))
+    try:
+        rec = U.run_antenna_flagging('/x/a.ms', {}, '', lg)
+        assert rec['bad_correlator_numbers'] == [3, 7] and rec['requested_mjd'] == m, rec
+        assert abs(rec['matched_health_mjd'] - (m - 0.25)) < 1e-9 and abs(rec['gap_days'] + 0.25) < 1e-9, rec
+        assert calls['flagdata'] == [dict(vis='/x/a.ms', mode='manual', antenna='3,7', flagbackup=False)], calls
+    finally:
+        restore()
+    empty = json.dumps(dict(requested_mjd=m, data_timestamp_mjd=m, bad_correlator_numbers=[]))
+    calls, restore = _mnc_env(U, (0, empty, ''))
+    try:
+        rec = U.run_antenna_flagging('/x/a.ms', {}, '', lg)
+        assert rec['bad_correlator_numbers'] == [] and rec['gap_days'] == 0.0 and calls['flagdata'] == [], rec
+    finally:
+        restore()
+    calls, restore = _mnc_env(U, (0, good, ''), flagdata_fails=True)
+    try:
+        try:
+            U.run_antenna_flagging('/x/a.ms', {}, '', lg)
+            raise AssertionError('flagdata failure not refused')
+        except U.MncLookupFailed as e:
+            assert 'flagging the bad antennas 3,7 failed' in str(e), str(e)
+    finally:
+        restore()
+    calls, restore = _mnc_env(U, (0, good, ''))
+    try:
+        try:
+            U.run_antenna_flagging('/x/unreadable.ms', {}, '', lg)
+            raise AssertionError('unreadable start time not refused')
+        except U.MncLookupFailed as e:
+            assert 'start time (OBSERVATION TIME_RANGE) could not be read' in str(e) and calls['cmd'] == [], str(e)
+    finally:
+        restore()
+
+
+def _run_stage_setup(result):
+    """process_subband.run_stage_setup with two sets and the MNC helper's result replaced; stopped at calibration.
+    Returns (exit status or 'calibration', log text, dirs)."""
+    import io
+    import logging as _lg
+    from exopipe.phase1 import process_subband as PS
+    d = _tmp()
+    archive = os.path.join(d, 'archive')
+    args = types.SimpleNamespace(mode='setup', subband='46MHz', run_label='Run_test', lst_label='07h',
+                                 start_time='2019-11-22T07:35:09', end_time='2019-11-22T08:04:50', input_dir=None,
+                                 bp_table='bp', xy_table='xy')
+    saved_u = {k: getattr(PS.utils, k) for k in ('redirect_casa_log', 'find_archive_files_for_subband',
+                                                 'copy_and_prepare_files', 'apply_calibration')}
+    saved = (PS.NVME_WORK_ROOT, PS.config.LUSTRE_ARCHIVE_DIR)
+
+    def copy(files, work_dir, sb, lg):
+        return [os.path.join(work_dir, f'{k}.ms') for k in ('20191122_073509_46MHz', '20191122_073519_46MHz')]
+
+    def cal(*a, **k):
+        raise _StopAtImaging('calibration')
+    buf = io.StringIO(); h = _lg.StreamHandler(buf); PS.logger.addHandler(h)
+    calls, restore = _mnc_env(PS.utils, result)
+    cwd = os.getcwd()
+    try:
+        PS.NVME_WORK_ROOT = os.path.join(d, 'fast'); PS.config.LUSTRE_ARCHIVE_DIR = archive
+        PS.utils.redirect_casa_log = lambda *a, **k: None
+        PS.utils.find_archive_files_for_subband = lambda *a, **k: ['raw.ms']
+        PS.utils.copy_and_prepare_files = copy; PS.utils.apply_calibration = cal
+        try:
+            PS.run_stage_setup(args)
+            status = 0
+        except SystemExit as e:
+            status = e.code
+        except _StopAtImaging:
+            status = 'calibration'
+    finally:
+        os.chdir(cwd)
+        restore()
+        PS.logger.removeHandler(h)
+        for k, v in saved_u.items():
+            setattr(PS.utils, k, v)
+        PS.NVME_WORK_ROOT, PS.config.LUSTRE_ARCHIVE_DIR = saved
+    return status, buf.getvalue(), dict(root=d, work=os.path.join(d, 'fast', '07h', '2019-11-22', 'Run_test', '46MHz'),
+                                        archive=os.path.join(archive, '07h', '2019-11-22', 'Run_test', '46MHz'))
+
+
+def test_setup_refuses_a_subband_whose_mnc_lookup_fails():
+    """the production caller (process_subband.run_stage_setup): a failed MNC lookup refuses the subband before
+    calibration (exit 3, REFUSED.json in the work and archive directories, the per-set record in QA); a valid record,
+    empty or not, continues to calibration with the record written"""
+    import json
+    dirs = None
+    try:
+        status, log, dirs = _run_stage_setup(ETCD_FAIL)
+        assert status == 3, (status, log)
+        assert 'SUBBAND REFUSED (46MHz, MNC bad-antenna lookup)' in log and 'exited with status 1' in log, log
+        for where in ('work', 'archive'):
+            rec = json.load(open(os.path.join(dirs[where], 'REFUSED.json')))
+            assert rec['step'] == 'MNC bad-antenna lookup' and 'ConnectionFailedError' in rec['reason'], (where, rec)
+            rows = pd.read_csv(os.path.join(dirs[where], 'QA', 'mnc_bad_antennas.csv'))
+            assert len(rows) == 1 and rows.status[0].startswith('REFUSED: MncLookupFailed'), rows
+        shutil.rmtree(dirs['root'], ignore_errors=True)
+        good = json.dumps(dict(requested_mjd=REAL_START_MJD, data_timestamp_mjd=REAL_START_MJD + 0.0125,
+                               bad_correlator_numbers=[]))
+        status, log, dirs = _run_stage_setup((0, good, ''))
+        assert status == 'calibration', (status, log)
+        assert not os.path.exists(os.path.join(dirs['work'], 'REFUSED.json'))
+        rows = pd.read_csv(os.path.join(dirs['work'], 'QA', 'mnc_bad_antennas.csv'))
+        assert len(rows) == 2 and (rows.status == 'no bad antenna in the record').all(), rows
+        assert np.allclose(rows.requested_mjd, 58809.316079) and np.allclose(rows.gap_days, 0.0125), rows
+    finally:
+        if dirs:
+            shutil.rmtree(dirs['root'], ignore_errors=True)
+
+
+def test_phase2_excludes_a_refused_subband_with_stale_images():
+    """a subband whose REFUSED.json is newer than its images (an earlier attempt's) is excluded with its reason; one
+    re-imaged after the refusal, or never refused, is used"""
+    import json
+    from exopipe.common import exclusions as EX
+    d = _tmp()
+    try:
+        dirs = {}
+        for sb in ('41MHz', '46MHz', '50MHz', '55MHz'):
+            dirs[sb] = os.path.join(d, sb); os.makedirs(os.path.join(dirs[sb], 'I', 'deep'))
+        def img(sb, t):
+            f = os.path.join(dirs[sb], 'I', 'deep', f'{sb}-I-Deep-Taper-Robust-0.75-image.fits')
+            open(f, 'w').close(); os.utime(f, (t, t))
+        def refused(sb, t):
+            f = os.path.join(dirs[sb], 'REFUSED.json')
+            json.dump(dict(status='REFUSED', step='hot-baseline step', reason='HotBaselineRefusal: a, b'), open(f, 'w'))
+            os.utime(f, (t, t))
+        img('41MHz', 1000); refused('41MHz', 2000)         # stale image beside a newer refusal: excluded
+        refused('46MHz', 2000)                             # refused, no image: excluded
+        refused('50MHz', 1000); img('50MHz', 2000)         # re-imaged after the refusal: used
+        img('55MHz', 1000)                                 # never refused: used
+        out = EX.phase1_refused_subbands(dirs)
+        assert set(out) == {'41MHz', '46MHz'}, out
+        assert 'hot-baseline step: HotBaselineRefusal: a; b' in out['41MHz'] and 'newer than all 1 of its images' \
+            in out['41MHz'] and ',' not in out['41MHz'], out
+        assert 'it has no image' in out['46MHz'], out
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def _run_phase2_discovery(make, late=None):
+    """phase2_controller.main on a synthetic Phase 1 tree up to its copy step (stopped there). make(sb, sb_dir) builds
+    each subband directory; late: (subband, builder) that appears only after Phase 2 starts waiting. Returns (exit
+    status or the subband map handed to the copy, log text, work directory)."""
+    import io
+    import logging as _lg
+    from exopipe.phase2 import phase2_controller as PC
+    from exopipe.common import exclusions as EX
+    d = _tmp()
+    root = os.path.join(d, 'phase1'); runs = os.path.join(root, '05h', '2025-11-01', 'Run_20251101_120000')
+    sbs = [sb for sb in PC.cfg.ALL_SUBBANDS if sb not in PC.cfg.SKIP_SUBBANDS]
+    for sb in sbs:
+        if not late or sb != late[0]:
+            make(sb, os.path.join(runs, sb))
+    saved_cfg = (PC.cfg.CELERY_IMAGE_ROOT, PC.cfg.PHASE2_WORKING_DIR)
+    saved = {k: getattr(PC, k) for k in ('copy_to_nvme', 'validate_subband', 'discover_subbands')}
+    saved_ex = {k: getattr(EX, k) for k in ('excluded_subbands_for_night', 'dirty_gated_subbands')}
+    saved_argv = sys.argv
+    got = {}
+
+    def copy(sm, wd):
+        got['map'] = dict(sm)
+        raise _StopAtImaging('copy')
+    n_disc = [0]
+
+    def disc(*a, **k):
+        n_disc[0] += 1
+        if late and n_disc[0] == 2:
+            late[1](late[0], os.path.join(runs, late[0]))
+        return saved['discover_subbands'](*a, **k)
+    buf = io.StringIO(); h = _lg.StreamHandler(buf); PC.logger.addHandler(h)
+    try:
+        PC.cfg.CELERY_IMAGE_ROOT = root; PC.cfg.PHASE2_WORKING_DIR = os.path.join(d, 'phase2')
+        PC.copy_to_nvme = copy; PC.validate_subband = lambda *a, **k: []; PC.discover_subbands = disc
+        EX.excluded_subbands_for_night = lambda *a, **k: []; EX.dirty_gated_subbands = lambda *a, **k: {}
+        sys.argv = ['phase2_controller', '--lst', '05h', '--date', '2025-11-01', '--run_label', 'Science_test',
+                    '--phase1_wait_max', '5' if late else '0', '--phase1_poll', '0']
+        try:
+            PC.main()
+            status = 0
+        except SystemExit as e:
+            status = e.code
+        except _StopAtImaging:
+            status = got['map']
+    finally:
+        PC.logger.removeHandler(h)
+        for hh in list(PC.logger.handlers):
+            if isinstance(hh, _lg.FileHandler) and hh.baseFilename.startswith(d):
+                PC.logger.removeHandler(hh); hh.close()
+        sys.argv = saved_argv
+        PC.cfg.CELERY_IMAGE_ROOT, PC.cfg.PHASE2_WORKING_DIR = saved_cfg
+        for k, v in saved.items():
+            setattr(PC, k, v)
+        for k, v in saved_ex.items():
+            setattr(EX, k, v)
+    return status, buf.getvalue(), os.path.join(d, 'phase2', '05h', '2025-11-01', 'Science_test'), d
+
+
+def _sb_dir(sb, path, image_t=None, refused_t=None):
+    import json
+    os.makedirs(os.path.join(path, 'I', 'deep'))
+    if image_t is not None:
+        f = os.path.join(path, 'I', 'deep', f'{sb}-I-Deep-Taper-Robust-0.75-image.fits')
+        open(f, 'w').close(); os.utime(f, (image_t, image_t))
+    if refused_t is not None:
+        f = os.path.join(path, 'REFUSED.json')
+        json.dump(dict(status='REFUSED', step='hot-baseline step', reason='HotBaselineRefusal: test'), open(f, 'w'))
+        os.utime(f, (refused_t, refused_t))
+
+
+def test_phase2_controller_never_uses_a_refused_subband():
+    """the Phase 2 collector (phase2_controller.main): a subband whose REFUSED.json is newer than its images is
+    excluded with its reason (excluded_subbands.csv; never copied, and its band and Full are not formed); one refused
+    while Phase 2 waits for Phase 1 refuses the run, naming it"""
+    d = None
+    try:
+        def make(sb, p):
+            _sb_dir(sb, p, image_t=1000, refused_t=2000 if sb == '46MHz' else None)
+        status, log, work, d = _run_phase2_discovery(make)
+        assert isinstance(status, dict) and '46MHz' not in status and '41MHz' in status, (status, log)
+        csv_ = pd.read_csv(os.path.join(work, 'excluded_subbands.csv'))
+        assert csv_.subband.tolist() == ['46MHz'] and 'Phase 1 refused it (hot-baseline step' in csv_.reason[0], csv_
+        assert "Wideband bands NOT FORMED (excluded constituent): ['Full', 'Green']" in log, log
+        shutil.rmtree(d, ignore_errors=True)
+        # control: re-imaged after the refusal, so it is used
+        def make2(sb, p):
+            _sb_dir(sb, p, image_t=2000, refused_t=1000 if sb == '46MHz' else None)
+        status, log, work, d = _run_phase2_discovery(make2)
+        assert isinstance(status, dict) and '46MHz' in status and not os.path.exists(
+            os.path.join(work, 'excluded_subbands.csv')), (status, log)
+        shutil.rmtree(d, ignore_errors=True)
+        # refused while Phase 2 waited for it
+        status, log, work, d = _run_phase2_discovery(lambda sb, p: _sb_dir(sb, p, image_t=1000),
+                                                     late=('50MHz', lambda sb, p: _sb_dir(sb, p, refused_t=2000)))
+        assert status == 1 and 'REFUSED: subband 50MHz: Phase 1 refused it' in log, (status, log)
+    finally:
+        if d:
+            shutil.rmtree(d, ignore_errors=True)
+
+
+def test_phase1_stacker_skips_a_refused_subband_with_stale_images():
+    """the Phase 1 wideband stacker (post_process_science.run_wideband_stacking) never reads a refused subband's
+    earlier-attempt images; it records the subband in Wideband/refused_subbands.csv (as it already skips a subband
+    without a V image)"""
+    from exopipe.phase1 import post_process_science as PPS
+    d = _tmp()
+    saved = PPS.get_inner_rms
+    try:
+        for sb, ref in (('46MHz', 2000), ('50MHz', None)):
+            p = os.path.join(d, sb)
+            os.makedirs(os.path.join(p, 'V', 'deep'))
+            f = os.path.join(p, 'V', 'deep', f'{sb}-V-Taper-Robust-0.75-image.fits')
+            open(f, 'w').close(); os.utime(f, (1000, 1000))
+            if ref:
+                _sb_dir(sb, p, refused_t=ref)
+        read = []
+        PPS.get_inner_rms = lambda f: read.append(os.path.basename(f)) or float('nan')
+        PPS.run_wideband_stacking(d, None)
+        assert read == ['50MHz-V-Taper-Robust-0.75-image.fits'], read
+        rows = pd.read_csv(os.path.join(d, 'Wideband', 'refused_subbands.csv'))
+        assert rows.subband.tolist() == ['46MHz'] and 'Phase 1 refused it' in rows.reason[0], rows
+    finally:
+        PPS.get_inner_rms = saved
+        shutil.rmtree(d, ignore_errors=True)
 
 
 def _all_tests():

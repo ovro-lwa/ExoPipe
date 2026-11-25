@@ -140,5 +140,5 @@ jobs:
         run: python tests/test_catalog_stokes_link.py
       - name: the deep and per-LST publishes on the versioned pointer (work directory, snapshot, conversion, placement, G30)
         run: python tests/test_publish_versions_deep_lst.py
-      - name: Phase 1 hot-baseline step excludes flagged visibilities (dead antennas, no-data baselines, cross-hand domain; a refusal stops the subband before imaging)
+      - name: Phase 1 hot-baseline step excludes flagged visibilities, backs up and restores FLAG, writes its lists; a failed MNC lookup or a refusal stops the subband; a refused subband is never stacked
         run: python tests/test_hot_baseline_flags.py

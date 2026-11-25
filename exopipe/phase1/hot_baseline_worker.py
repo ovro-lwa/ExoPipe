@@ -1,8 +1,9 @@
 import argparse
+import csv
 import sys
 import re
 import os
-import warnings
+import shutil
 import numpy as np
 import matplotlib
 matplotlib.use('Agg')
@@ -27,18 +28,18 @@ def extract_ant_number(name):
     return None
 
 def get_ms_id_map(ms_name):
-    try:
-        t = table(ms_name + "::ANTENNA", ack=False, readonly=True)
+    """{antenna number: MS antenna index}. A read error propagates (the step refuses, naming it)."""
+    with table(ms_name + "::ANTENNA", ack=False, readonly=True) as t:
         names = t.getcol("NAME")
-        t.close()
-        id_map = {}
-        for row_idx, name in enumerate(names):
-            ant_num = extract_ant_number(name)
-            if ant_num is not None: id_map[ant_num] = row_idx
-        return id_map
-    except Exception as e:
-        logging.error(f"Failed to load antenna table: {e}")
-        return {}
+    id_map = {}
+    for row_idx, name in enumerate(names):
+        ant_num = extract_ant_number(name)
+        if ant_num is not None: id_map[ant_num] = row_idx
+    return id_map
+
+def get_antenna_names(ms_name):
+    with table(ms_name + "::ANTENNA", ack=False, readonly=True) as t:
+        return [str(x) for x in t.getcol("NAME")]
 
 def build_complete_map(ms_id_map):
     """
@@ -107,10 +108,11 @@ def get_data_matrix(ms_name, data_col="CORRECTED_DATA"):
     correlation (XX, XY, YX, YY); returns (mean matrices, std matrices, number of antennas), indexed by MS antenna index.
 
     Flagged visibilities are excluded from every statistic (Gregg 2026-11-11: ignoring the FLAG column "is a bug"). The
-    FLAG column is read with the data; a row's channel average is the sum of its unflagged amplitudes over their count:
-      - a row's channel average uses its unflagged channels only;
-      - a row whose channels are all flagged in one correlation enters neither that correlation's sums nor its counts;
-      - a baseline with no unflagged visibility in a correlation is NaN there (no data: neither hot nor cold), never 0.
+    FLAG column is read with the data. A visibility is usable when it is unflagged and its amplitude is finite; a row's
+    channel average is the sum of its usable amplitudes over their count:
+      - a row's channel average uses its usable channels only;
+      - a row with no usable channel in one correlation enters neither that correlation's sums nor its counts;
+      - a baseline with no usable visibility in a correlation is NaN there (no data: neither hot nor cold), never 0.
     Before this, antennas that were already flagged but still held junk amplitudes made about 26% of every live
     antenna's baselines look hot, above the 25% bad-antenna threshold. Any read error (a FLAG column that cannot be read,
     or whose shape differs from the data's) propagates with its traceback; the caller refuses and names the cause.
@@ -139,11 +141,13 @@ def get_data_matrix(ms_name, data_col="CORRECTED_DATA"):
             flag = t.getcol("FLAG", startrow=start, nrow=end-start)
             if flag.shape != data.shape:
                 raise ValueError(f"FLAG shape {flag.shape} differs from the data shape {data.shape} (rows {start}-{end})")
-            a1 = a1[mask]; a2 = a2[mask]; data = data[mask]; flag = flag[mask]
-            amp = np.abs(data)
-            count = (~flag).sum(axis=1)             # unflagged channels per row and correlation
-            with np.errstate(invalid='ignore', divide='ignore'):   # a row flagged in every channel: 0/0 = NaN
-                amp_avg = (np.where(flag, 0, amp).sum(axis=1) / count).astype(amp.dtype, copy=False)
+            a1 = a1[mask]; a2 = a2[mask]; flag = flag[mask]
+            amp = np.abs(data[mask]); del data
+            flag |= ~np.isfinite(amp)               # a non-finite amplitude is no data, like a flagged one
+            amp[flag] = 0                           # in place: no further full-size array
+            count = flag.shape[1] - flag.sum(axis=1)    # usable channels per row and correlation
+            with np.errstate(invalid='ignore', divide='ignore'):   # a row with no usable channel: 0/0 = NaN
+                amp_avg = (amp.sum(axis=1) / count).astype(amp.dtype, copy=False)
 
             for p_idx, pol_name in enumerate(POLS):
                 vals = amp_avg[:, p_idx]
@@ -219,12 +223,25 @@ def summarize_no_data(raw_mean, n_ant, pos, cut_meters, csv_path=None):
 
 def output_names(ms_basename):
     """Every file run_diagnostics writes in its working (QA) directory."""
-    names = [f"{ms_basename}_hot_component_report.txt", f"{ms_basename}_no_data_baselines.csv",
-             f"{ms_basename}_diagnosis_amp_vs_uv.png", f"{ms_basename}_diagnosis_heatmap.png"]
+    names = [f"{ms_basename}_hot_component_report.txt", f"{ms_basename}_no_data_baselines.csv"] + \
+        list(list_names(ms_basename)) + \
+        [f"{ms_basename}_diagnosis_amp_vs_uv.png", f"{ms_basename}_diagnosis_heatmap.png"]
     for pol in POLS:
         names += [f"{ms_basename}_heatmap_raw_mean_{pol}.png", f"{ms_basename}_heatmap_raw_std_{pol}.png",
                   f"{ms_basename}_heatmap_arx_{pol}.png"]
     return names
+
+
+def list_names(ms_basename):
+    """The step's product beside its report, written after flagging: the listed baselines, the bad antennas, and the
+    FLAG rows written per baseline."""
+    return (f"{ms_basename}_hot_baselines.csv", f"{ms_basename}_bad_antennas.csv",
+            f"{ms_basename}_flag_rows_written.csv")
+
+
+def flag_backup_dir(ms):
+    """Where apply_flags_to_ms saves the FLAG of the rows it writes, beside the measurement set (not in QA/)."""
+    return os.path.normpath(os.path.abspath(ms)) + "_hot_flag_backup"
 
 
 def write_report(ms_basename, lines):
@@ -233,17 +250,17 @@ def write_report(ms_basename, lines):
         f.write("\n".join(lines) + "\n")
 
 
-def refuse(ms, ms_basename, reason, extra_lines=()):
+def refuse(ms, ms_basename, reason, extra_lines=(), flag_state="no flag was written"):
     """Write the refusal report and raise HotBaselineRefusal. The previous run's outputs were removed at the start;
-    plots this run made before a later failure are removed too, so a refusal leaves only its report (and the no-data
-    CSV when it was written)."""
+    plots and lists this run made before a later failure are removed too, so a refusal leaves only its report (and the
+    no-data CSV when it was written). flag_state says exactly what the step wrote to FLAG and what it restored."""
     for fn in output_names(ms_basename):
-        if fn.endswith(".png") and os.path.exists(fn):
+        if (fn.endswith(".png") or fn in list_names(ms_basename)) and os.path.exists(fn):
             os.remove(fn)
-    write_report(ms_basename, ["", "[HOT BASELINE REPORT]", f"  REFUSED: {reason}",
-                               "  Nothing listed, nothing flagged. The subband must not be imaged: its hot baselines "
+    write_report(ms_basename, ["", "[HOT BASELINE REPORT]", f"  REFUSED: {reason}", f"  FLAG: {flag_state}.",
+                               "  No list is a product of this run. The subband must not be imaged: its hot baselines "
                                "would be neither found nor flagged."] + list(extra_lines))
-    raise HotBaselineRefusal(f"hot-baseline step refused on {ms}: {reason}; nothing listed, nothing flagged")
+    raise HotBaselineRefusal(f"hot-baseline step refused on {ms}: {reason}; FLAG: {flag_state}")
 
 def apply_uv_cut(matrix, pos_array, uv_cut_m):
     if uv_cut_m <= 0: return matrix
@@ -251,7 +268,12 @@ def apply_uv_cut(matrix, pos_array, uv_cut_m):
     matrix[dist_mat < uv_cut_m] = np.nan
     return matrix
 
-def analyze_amp_vs_uv(raw_mean, pos_array, n_ant, mean_freq=None, sigma_cut=5.0, plot_prefix="amp_vs_uv", window_size=100):
+def analyze_amp_vs_uv(raw_mean, pos_array, n_ant, mean_freq=None, sigma_cut=5.0, plot_prefix="amp_vs_uv", window_size=100,
+                      stats_out=None, plot=True):
+    """Baselines whose mean amplitude lies above the rolling median + sigma_cut x 1.4826 x rolling MAD of amplitude
+    against baseline length, in any correlation. stats_out (a dict), when given, receives for each listed baseline
+    (i, j) its largest excess over the rolling median in units of 1.4826 x rolling MAD and the correlation of it; it
+    changes nothing in the detection. plot=False skips the figure (run_diagnostics plots after flagging)."""
     uv_dist_mat = np.linalg.norm(pos_array[:, None, :] - pos_array[None, :, :], axis=2)
     mask = np.triu(np.ones((n_ant, n_ant), dtype=bool), k=1)
     min_dist_m = 0.0
@@ -270,11 +292,12 @@ def analyze_amp_vs_uv(raw_mean, pos_array, n_ant, mean_freq=None, sigma_cut=5.0,
 
     uv_dists = uv_dist_mat[mask]; rows, cols = np.where(mask)
     local_bad_baselines = set()
-    fig, axes = plt.subplots(2, 2, figsize=(18, 12)); axes = axes.flatten()
+    if plot:
+        fig, axes = plt.subplots(2, 2, figsize=(18, 12)); axes = axes.flatten()
     pols = ['XX', 'XY', 'YX', 'YY']
     
     for i, pol in enumerate(pols):
-        ax = axes[i]; amps = raw_mean[pol][mask]
+        ax = axes[i] if plot else None; amps = raw_mean[pol][mask]
         valid_mask = np.isfinite(amps)
         curr_dists = uv_dists[valid_mask]; curr_amps = amps[valid_mask]
         curr_rows = rows[valid_mask]; curr_cols = cols[valid_mask]
@@ -289,7 +312,8 @@ def analyze_amp_vs_uv(raw_mean, pos_array, n_ant, mean_freq=None, sigma_cut=5.0,
         ignored_dists = curr_dists[is_ignored]; ignored_amps = curr_amps[is_ignored]
 
         if len(fit_amps) < window_size:
-            ax.text(0.5, 0.5, "Insufficient Data", ha='center'); continue
+            if plot: ax.text(0.5, 0.5, "Insufficient Data", ha='center')
+            continue
 
         sort_idx = np.argsort(fit_dists)
         s_dists = fit_dists[sort_idx]; s_amps = fit_amps[sort_idx]
@@ -308,7 +332,17 @@ def analyze_amp_vs_uv(raw_mean, pos_array, n_ant, mean_freq=None, sigma_cut=5.0,
         
         bad_u = curr_rows[bad_indices_full]; bad_v = curr_cols[bad_indices_full]
         for u, v in zip(bad_u, bad_v): local_bad_baselines.add(tuple(sorted((u, v))))
+        if stats_out is not None and len(bad_fit_indices_sorted):
+            k = bad_fit_indices_sorted
+            with np.errstate(invalid='ignore', divide='ignore'):
+                excess = (s_amps[k] - roll_med.values[k]) / (1.4826 * roll_mad.values[k])
+            for u, v, x in zip(bad_u, bad_v, excess):
+                key = tuple(sorted((int(u), int(v))))
+                if key not in stats_out or x > stats_out[key][0]:
+                    stats_out[key] = (float(x), pol)
 
+        if not plot:
+            continue
         if len(ignored_dists) > 0:
             plot_idx_w = np.arange(len(ignored_dists))
             if len(plot_idx_w) > 20000: plot_idx_w = np.random.choice(plot_idx_w, 20000, replace=False)
@@ -322,10 +356,16 @@ def analyze_amp_vs_uv(raw_mean, pos_array, n_ant, mean_freq=None, sigma_cut=5.0,
             ax.scatter(curr_dists[bad_indices_full], curr_amps[bad_indices_full], c='red', s=10, marker='x')
         ax.set_title(f"Pol {pol}"); ax.set_xlabel("Baseline Length (m)"); ax.set_ylabel("Amplitude")
 
-    plt.tight_layout(); plt.savefig(f"{plot_prefix}.png", dpi=150); plt.close()
+    if plot:
+        plt.tight_layout(); plt.savefig(f"{plot_prefix}.png", dpi=150); plt.close(fig)
     return list(local_bad_baselines)
 
-def identify_bad_components(combined_matrix, df_map, n_ant, extra_bad_baselines=None, sigma_cut=5.0, threshold_percent=0.10):
+def identify_bad_components(combined_matrix, df_map, n_ant, extra_bad_baselines=None, sigma_cut=5.0, threshold_percent=0.10,
+                            stats_out=None):
+    """The heat-map detector (baselines above median + sigma_cut x 1.4826 x MAD of the cross-hand mean) and the
+    bad-antenna count (more than threshold_percent of n_ant - 1 listed baselines). stats_out (a dict), when given,
+    receives the median, the scale, the threshold, the bad-antenna count threshold and the listed count per antenna;
+    it changes nothing in the detection."""
     detect_mat = combined_matrix.copy()
     mask_tri = np.triu(np.ones_like(detect_mat, dtype=bool), k=1)
     valid_data = detect_mat[mask_tri & np.isfinite(detect_mat)]
@@ -350,36 +390,116 @@ def identify_bad_components(combined_matrix, df_map, n_ant, extra_bad_baselines=
     threshold_count = (n_ant - 1) * threshold_percent
     for ant, count in ant_counts.items():
         if count > threshold_count: bad_antennas.add(ant)
+    if stats_out is not None:
+        stats_out.update(median=float(med), scale=float(1.4826 * mad), threshold=float(threshold),
+                         threshold_count=float(threshold_count), ant_counts=dict(ant_counts))
 
     lines = [f"\n[HOT BASELINE REPORT]", f"  Total: {len(all_bad_baselines)}"]
     return heatmap_bad_baselines, bad_antennas, lines
 
-def apply_flags_to_ms(ms_name, bad_antennas, bad_baselines):
-    """Write FLAG for the bad antennas and listed baselines. A write error propagates (run_diagnostics refuses)."""
-    print(f"--> Applying Flags to {ms_name}...")
-    t = table(ms_name, readonly=False); nrows = t.nrows()
+FLAG_CHUNK_ROWS = 1000000     # rows per FLAG read and write
+
+
+class FlagWriteFailed(RuntimeError):
+    """A FLAG write failed; the message says what was written before the failure and what was restored."""
+
+
+def _pair_code(a1, a2):
+    return np.minimum(a1, a2).astype(np.int64) * 100000 + np.maximum(a1, a2)   # up to 100k antennas
+
+
+def _restore_chunks(t, backup_dir, starts):
+    """Put back the saved FLAG of the rows backed up for the given chunk starts. Returns the number of rows restored."""
+    n = 0
+    for start in starts:
+        b = np.load(os.path.join(backup_dir, f"rows_{start:012d}.npz"))
+        rows, saved, nrow = b["rows"], b["flag"], int(b["nrow"])
+        flags = t.getcol("FLAG", startrow=start, nrow=nrow)
+        flags[rows] = saved
+        t.putcol("FLAG", flags, startrow=start, nrow=nrow)
+        n += len(rows)
+    return n
+
+
+def _backup_starts(backup_dir):
+    return sorted(int(f[5:17]) for f in os.listdir(backup_dir) if f.startswith("rows_") and f.endswith(".npz"))
+
+
+def restore_flags(ms_name, backup_dir):
+    """Restore every row saved in backup_dir (apply_flags_to_ms's backup) and remove the backup. Returns the number of
+    rows restored. An error propagates and the backup is kept."""
+    t = table(ms_name, ack=False, readonly=False)
     try:
-        bad_pair_set = {tuple(sorted((u, v))) for u, v in bad_baselines if u not in bad_antennas and v not in bad_antennas}
-        chunk_size = 1000000 
-        for start in range(0, nrows, chunk_size):
-            end = min(start + chunk_size, nrows)
-            c_a1 = t.getcol("ANTENNA1", startrow=start, nrow=end-start)
-            c_a2 = t.getcol("ANTENNA2", startrow=start, nrow=end-start)
-            c_mask = np.zeros(end-start, dtype=bool)
-            if bad_antennas:
-                c_mask |= (np.isin(c_a1, list(bad_antennas)) | np.isin(c_a2, list(bad_antennas)))
-            if bad_pair_set:
-                N = 100000  # supports up to 100k antennas (was 10000)
-                bad_encoded = {u*N + v for u, v in bad_pair_set}
-                c_min = np.minimum(c_a1, c_a2); c_max = np.maximum(c_a1, c_a2)
-                encoded_chunk = c_min * N + c_max
-                c_mask |= np.isin(encoded_chunk, list(bad_encoded))
-            if c_mask.any():
-                flags = t.getcol("FLAG", startrow=start, nrow=end-start)
-                flags[c_mask, :, :] = True
-                t.putcol("FLAG", flags, startrow=start, nrow=end-start)
+        n = _restore_chunks(t, backup_dir, _backup_starts(backup_dir))
     finally:
         t.close()
+    shutil.rmtree(backup_dir)
+    return n
+
+
+def apply_flags_to_ms(ms_name, bad_antennas, bad_baselines, backup_dir):
+    """Write FLAG (every channel and correlation) for the rows of the bad antennas and of the listed baselines.
+
+    Before any write, the FLAG of every row to be written is saved in backup_dir (one .npz per chunk: the chunk's row
+    numbers and their FLAG). If a write fails, every chunk written so far, and the failed one, is restored from that
+    backup, and FlagWriteFailed says what was written and what was restored (or what could not be restored; the backup
+    is then kept). On success the backup stays until the caller removes it (run_diagnostics, at the end of the step).
+    Returns {(ms_index_1, ms_index_2): rows written}."""
+    print(f"--> Applying Flags to {ms_name}...")
+    bad_ants = sorted({int(a) for a in bad_antennas})
+    bad_pair_set = {tuple(sorted((int(u), int(v)))) for u, v in bad_baselines
+                    if u not in bad_antennas and v not in bad_antennas}
+    bad_codes = np.array(sorted(u * 100000 + v for u, v in bad_pair_set), dtype=np.int64)
+    if os.path.isdir(backup_dir):
+        shutil.rmtree(backup_dir)
+    os.makedirs(backup_dir)
+    t = table(ms_name, ack=False, readonly=False)
+    try:
+        nrows = t.nrows()
+        plan = []                                   # (start, nrow, rows in the chunk, their pair codes)
+        for start in range(0, nrows, FLAG_CHUNK_ROWS):
+            nrow = min(FLAG_CHUNK_ROWS, nrows - start)
+            c_a1 = t.getcol("ANTENNA1", startrow=start, nrow=nrow)
+            c_a2 = t.getcol("ANTENNA2", startrow=start, nrow=nrow)
+            code = _pair_code(c_a1, c_a2)
+            c_mask = np.zeros(nrow, dtype=bool)
+            if bad_ants:
+                c_mask |= np.isin(c_a1, bad_ants) | np.isin(c_a2, bad_ants)
+            if len(bad_codes):
+                c_mask |= np.isin(code, bad_codes)
+            if c_mask.any():
+                rows = np.nonzero(c_mask)[0]
+                flags = t.getcol("FLAG", startrow=start, nrow=nrow)
+                np.savez_compressed(os.path.join(backup_dir, f"rows_{start:012d}.npz"), rows=rows, flag=flags[rows],
+                                    nrow=nrow)
+                plan.append((start, nrow, rows, code[rows]))
+        done, counts = [], {}
+        for start, nrow, rows, codes in plan:
+            try:
+                flags = t.getcol("FLAG", startrow=start, nrow=nrow)
+                flags[rows, :, :] = True
+                t.putcol("FLAG", flags, startrow=start, nrow=nrow)
+            except Exception as e:
+                n_done = sum(len(r) for _, _, r, _ in done)
+                try:
+                    n_back = _restore_chunks(t, backup_dir, [d[0] for d in done] + [start])
+                    shutil.rmtree(backup_dir)
+                    after = (f"all {n_back} rows of the written chunks and of the failed one were restored from the "
+                             "backup, so FLAG is as before the step")
+                except Exception as e2:
+                    after = (f"restoring them from the backup failed ({type(e2).__name__}: {e2}), so FLAG may still "
+                             f"hold this step's flags on up to {n_done + len(rows)} rows; the backup is kept at "
+                             f"{backup_dir}")
+                raise FlagWriteFailed(f"the FLAG write failed at rows {start}-{start + nrow - 1} ({type(e).__name__}: "
+                                      f"{e}) after {n_done} rows had been written; {after}") from e
+            done.append((start, nrow, rows, codes))
+            u, c = np.unique(codes, return_counts=True)
+            for k, n in zip(u.tolist(), c.tolist()):
+                key = (k // 100000, k % 100000)
+                counts[key] = counts.get(key, 0) + n
+    finally:
+        t.close()
+    return counts
 
 def plot_heatmap(matrix, title, filename, vmin=None, vmax=None, grid_lines=None, axis_ticks=None, axis_labels=None):
     plt.figure(figsize=(14, 12)) 
@@ -431,36 +551,107 @@ def plot_diagnosis_figure(matrix, bad_antennas, bad_baselines, filename, uv_base
     plt.tight_layout(); plt.savefig(filename, dpi=150); plt.close()
 
 def run_diagnostics(args_obj, logger):
-    """The hot-baseline step on one measurement set, writing its report and plots in the working directory (the
-    subband's QA directory). Refuses (HotBaselineRefusal, after writing a refusal report) when the data and flags cannot
-    be read, when every cross-correlation visibility is flagged, or when no baseline longer than the UV cut has
-    cross-hand data; the previous run's outputs are removed first in every case."""
+    """The hot-baseline step on one measurement set, writing its report, its lists and its plots in the working
+    directory (the subband's QA directory). Order: read, detect, flag, write the report and the lists (with the flag
+    state), then plot. Refuses (HotBaselineRefusal, after writing a refusal report) when the data and flags cannot be
+    read, when every cross-correlation visibility is flagged, when no baseline longer than the UV cut has cross-hand
+    data, when the FLAG write fails, or on any other failure before the plots; the previous run's outputs are removed
+    first in every case. A refusal leaves FLAG as before the step, or says exactly what it could not restore. A plot
+    failure is recorded in the report and is not a refusal: the lists and flags are the product."""
     logger.info("Starting Hot Baseline Analysis...")
     ms_basename = os.path.basename(os.path.normpath(args_obj.ms))
     for fn in output_names(ms_basename):            # a previous run's results can never pass for this run's
         if os.path.exists(fn):
             os.remove(fn)
+    state = dict(backup=flag_backup_dir(args_obj.ms), written=None, notes=[])
     try:
-        _diagnose(args_obj, logger, ms_basename)
+        if os.path.isdir(state['backup']):          # a previous attempt stopped inside its FLAG write
+            n = restore_flags(args_obj.ms, state['backup'])
+            state['notes'].append(f"  A previous attempt's FLAG write did not finish; the {n} rows it had backed up "
+                                  "were restored before this run.")
+            logger.warning(state['notes'][-1].strip())
+        _diagnose(args_obj, logger, ms_basename, state)
     except HotBaselineRefusal:
         raise
     except Exception as e:                          # any other failure is a refusal too, with its report
         logger.exception(f"hot-baseline step on {args_obj.ms} failed")
-        refuse(args_obj.ms, ms_basename, f"the step failed: {type(e).__name__}: {e}")
+        refuse(args_obj.ms, ms_basename, f"the step failed: {type(e).__name__}: {e}",
+               extra_lines=state['notes'], flag_state=_undo_flags(args_obj.ms, state))
 
 
-def _diagnose(args_obj, logger, ms_basename):
+def _undo_flags(ms, state):
+    """After a failure that follows a successful FLAG write: restore the written rows. Returns the flag state."""
+    if state.get('kept'):
+        return (f"{state['kept']} rows were written for this step's lists and are kept (the write and the report had "
+                "completed before the failure)")
+    if not state['written']:
+        return "no flag was written"
+    n = sum(state['written'].values())
+    try:
+        back = restore_flags(ms, state['backup'])
+        return (f"{n} rows were written for this step's lists, and all {back} were restored from the backup, so FLAG "
+                "is as before the step")
+    except Exception as e:
+        return (f"{n} rows were written for this step's lists and restoring them failed ({type(e).__name__}: {e}); "
+                f"they remain flagged, and the backup is kept at {state['backup']}")
+
+
+def write_lists(ms_basename, names, pos, uv_bad, hm_bad, bad_ants, cross, tested, uv_stats, hm_stats, rows_written,
+                flag_state):
+    """The step's product, beside its report: the listed baselines with their statistics and the FLAG rows written for
+    each, the bad antennas, and every baseline whose FLAG rows were written. Written after flagging.
+    cross: every baseline's cross-hand (XY, YX) mean amplitude; tested: the heat-map detector's input (NaN where it did
+    not test the baseline: listed first by the amplitude-against-length detector, or shorter than the UV cut). The
+    heat-map robust z is given only where that detector tested the baseline."""
+    hot_csv, ant_csv, rows_csv = list_names(ms_basename)
+    uv_set = {tuple(sorted((int(u), int(v)))) for u, v in uv_bad}
+    hm_set = {tuple(sorted((int(u), int(v)))) for u, v in hm_bad}
+    written = rows_written or {}
+    med, scale = hm_stats.get('median', np.nan), hm_stats.get('scale', np.nan)
+    with open(hot_csv, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["ms_index_1", "ms_index_2", "name_1", "name_2", "length_m", "listed_by", "cross_hand_mean",
+                    "heatmap_robust_z", "heatmap_threshold", "uv_excess_sigma", "uv_excess_correlation",
+                    "flag_rows_written", "flag_state"])
+        for i, j in sorted(uv_set | hm_set):
+            by = "+".join(x for x, s_ in (("heatmap", hm_set), ("uv", uv_set)) if (i, j) in s_)
+            x = float(cross[i, j])
+            with np.errstate(invalid='ignore', divide='ignore'):
+                z = (float(tested[i, j]) - med) / scale
+            ue, up = uv_stats.get((i, j), (np.nan, ""))
+            w.writerow([i, j, names[i], names[j], f"{np.linalg.norm(pos[i] - pos[j]):.1f}", by, f"{x:.6g}",
+                        f"{z:.3f}", f"{hm_stats.get('threshold', np.nan):.6g}", f"{ue:.3f}", up,
+                        written.get((i, j), 0), flag_state])
+    counts = hm_stats.get('ant_counts', {})
+    with open(ant_csv, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["ms_index", "name", "listed_baselines", "threshold_baselines", "flag_rows_written", "flag_state"])
+        for k in sorted(int(a) for a in bad_ants):
+            w.writerow([k, names[k], counts.get(k, 0), f"{hm_stats.get('threshold_count', np.nan):.2f}",
+                        sum(n for (i, j), n in written.items() if k in (i, j)), flag_state])
+    with open(rows_csv, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["ms_index_1", "ms_index_2", "name_1", "name_2", "flag_rows_written", "reason"])
+        for (i, j), n in sorted(written.items()):
+            why = [names[k] + " bad antenna" for k in (i, j) if k in bad_ants] or ["listed baseline"]
+            w.writerow([i, j, names[i], names[j], n, "; ".join(why)])
+    return [f"  Lists (written after flagging): {hot_csv} ({len(uv_set | hm_set)} baselines), {ant_csv} "
+            f"({len(bad_ants)} antennas), {rows_csv} ({len(written)} baselines, {sum(written.values())} FLAG rows)"]
+
+
+def _diagnose(args_obj, logger, ms_basename, state):
     try:
         ms_id_map = get_ms_id_map(args_obj.ms)
-        df_map = build_complete_map(ms_id_map)
+        names = get_antenna_names(args_obj.ms)
         pos = get_antenna_positions(args_obj.ms)
         mean_freq = get_mean_frequency(args_obj.ms)
         raw_mean, raw_std, n_ant = get_data_matrix(args_obj.ms, args_obj.col)
     except Exception as e:
         logger.exception(f"hot-baseline step: reading the data and flags of {args_obj.ms} failed")
-        refuse(args_obj.ms, ms_basename, f"its data and flags could not be read: {type(e).__name__}: {e}")
+        refuse(args_obj.ms, ms_basename, f"its data and flags could not be read: {type(e).__name__}: {e}",
+               extra_lines=state['notes'])
     if n_ant == 0:
-        refuse(args_obj.ms, ms_basename, "its ANTENNA table has no rows")
+        refuse(args_obj.ms, ms_basename, "its ANTENNA table has no rows", extra_lines=state['notes'])
 
     cut_meters = args_obj.uv_cut
     if args_obj.uv_cut_lambda > 0 and mean_freq:
@@ -474,55 +665,96 @@ def _diagnose(args_obj, logger, ms_basename):
         else:
             reason = (f"no baseline longer than the UV cut ({cut_meters:.1f} m) has unflagged cross-hand (XY and YX) "
                       "data, the data the heat-map detector uses")
-        refuse(args_obj.ms, ms_basename, reason, no_data_lines)
+        refuse(args_obj.ms, ms_basename, reason, state['notes'] + no_data_lines)
 
-    uv_bad = []
+    # DETECTION
+    cross = (raw_mean['XY'] + raw_mean['YX']) / 2.0          # every baseline's cross-hand mean, for the lists
+    uv_bad, uv_stats, hm_stats = [], {}, {}
+    uv_window = getattr(args_obj, 'uv_window_size', 100)
     if args_obj.run_uv:
-        uv_window = getattr(args_obj, 'uv_window_size', 100)
         uv_bad = analyze_amp_vs_uv(raw_mean, pos, n_ant, mean_freq, args_obj.uv_sigma,
                                     f"{ms_basename}_diagnosis_amp_vs_uv",
-                                    window_size=uv_window)
-        for u, v in uv_bad:
-            for pol in raw_mean: raw_mean[pol][u, v] = np.nan; raw_mean[pol][v, u] = np.nan
+                                    window_size=uv_window, stats_out=uv_stats, plot=False)
+    plot_mean = {pol: m.copy() for pol, m in raw_mean.items()}  # the amp-vs-uv figure's input, before the exclusions
+    for u, v in uv_bad:
+        for pol in raw_mean: raw_mean[pol][u, v] = np.nan; raw_mean[pol][v, u] = np.nan
 
     if cut_meters > 0:
         for pol in raw_mean: raw_mean[pol] = apply_uv_cut(raw_mean[pol], pos, cut_meters)
 
     diag_matrix = (raw_mean['XY'] + raw_mean['YX']) / 2.0
-    hm_bad, bad_ants, report = identify_bad_components(diag_matrix, df_map, n_ant, uv_bad, args_obj.sigma, args_obj.threshold)
+    hm_bad, bad_ants, report = identify_bad_components(diag_matrix, None, n_ant, uv_bad, args_obj.sigma,
+                                                       args_obj.threshold, stats_out=hm_stats)
     n_hm = int(np.isfinite(diag_matrix[np.triu_indices(n_ant, k=1)]).sum())
     report = report + [f"  Heat-map detector: {domain['n_cross_hand']} baselines longer than the UV cut have cross-hand "
                        f"data; {domain['n_cross_hand'] - n_hm} of them already listed by the amplitude-against-length "
                        f"detector, {n_hm} tested; {domain['n_no_cross_hand']} without cross-hand data are no data "
                        "(see [NO DATA])"]
 
-    write_report(ms_basename, report + no_data_lines)
-    
-    # GENERATE ALL PLOTS
-    plot_diagnosis_figure(diag_matrix, bad_ants, hm_bad, f"{ms_basename}_diagnosis_heatmap.png", uv_baselines=uv_bad)
-    for pol in ['XX', 'XY', 'YX', 'YY']:
-        plot_heatmap(raw_mean[pol], f"Raw Mean {pol}", f"{ms_basename}_heatmap_raw_mean_{pol}.png")
-        plot_heatmap(raw_std[pol],  f"Raw Std {pol}",  f"{ms_basename}_heatmap_raw_std_{pol}.png")
-        
-    # ARX Ordered Plots
+    # FLAGGING (before the report, the lists and the plots; a failed write refuses, saying what was written/restored)
+    if args_obj.apply_antenna_flags or args_obj.apply_baseline_flags:
+        ants_to_flag = bad_ants if args_obj.apply_antenna_flags else set()
+        base_to_flag = list(set(hm_bad + uv_bad)) if args_obj.apply_baseline_flags else []
+        if ants_to_flag or base_to_flag:
+            try:
+                state['written'] = apply_flags_to_ms(args_obj.ms, ants_to_flag, base_to_flag, state['backup'])
+            except FlagWriteFailed as e:
+                refuse(args_obj.ms, ms_basename, "the FLAG write failed", state['notes'], flag_state=str(e))
+            flag_state = (f"written: {sum(state['written'].values())} rows (every channel and correlation) on "
+                          f"{len(state['written'])} baselines, for {len(ants_to_flag)} bad antennas and "
+                          f"{len(base_to_flag)} listed baselines")
+        else:
+            flag_state = "nothing listed, so no flag was written"
+    else:
+        flag_state = "flagging is disabled (apply_flags off), so no flag was written"
+
+    # REPORT AND LISTS (after flagging, with the flag state)
+    lines = report + [f"  FLAG: {flag_state}."]
+    lines += write_lists(ms_basename, names, pos, uv_bad, hm_bad, bad_ants, cross, diag_matrix, uv_stats, hm_stats,
+                         state['written'], flag_state)
+    lines += state['notes'] + no_data_lines
+    write_report(ms_basename, lines)
+    if state['written'] is not None:                 # the write is final: its backup is no longer needed
+        state['kept'] = sum(state['written'].values())
+        shutil.rmtree(state['backup'], ignore_errors=True)
+
+    # PLOTS (a failure is recorded in the report, not a refusal: the lists and flags above are the product)
+    failed = []
+
+    def plot(label, fn, *a, **k):
+        try:
+            fn(*a, **k)
+        except Exception as e:
+            logger.exception(f"hot-baseline plot {label} failed")
+            failed.append(f"  {label}: {type(e).__name__}: {e}")
+            plt.close('all')
+
+    if args_obj.run_uv:
+        plot("amplitude against baseline length", analyze_amp_vs_uv, plot_mean, pos, n_ant, mean_freq,
+             args_obj.uv_sigma, f"{ms_basename}_diagnosis_amp_vs_uv", window_size=uv_window)
+    plot("diagnosis heat map", plot_diagnosis_figure, diag_matrix, bad_ants, hm_bad,
+         f"{ms_basename}_diagnosis_heatmap.png", uv_baselines=uv_bad)
+    for pol in POLS:
+        plot(f"raw mean {pol}", plot_heatmap, raw_mean[pol], f"Raw Mean {pol}", f"{ms_basename}_heatmap_raw_mean_{pol}.png")
+        plot(f"raw std {pol}", plot_heatmap, raw_std[pol], f"Raw Std {pol}", f"{ms_basename}_heatmap_raw_std_{pol}.png")
+    plot("ARX-ordered heat maps", _plot_arx, ms_id_map, n_ant, raw_mean, ms_basename)
+    if failed:
+        write_report(ms_basename, lines + ["", "[PLOTS] These plots were not made (the lists and flags above stand):"]
+                     + failed)
+
+
+def _plot_arx(ms_id_map, n_ant, raw_mean, ms_basename):
+    df_map = build_complete_map(ms_id_map)
     valid_indices = [i for i in range(n_ant) if i in df_map.index]
     df_sub = df_map.loc[valid_indices].sort_values(by=['arx_id', 'arx_chan'])
     arx_order = df_sub.index.values
     arx_ids = df_sub['arx_id'].values
     arx_bounds = []
-    curr = 0
     for i in range(len(arx_ids)-1):
         if arx_ids[i] != arx_ids[i+1]: arx_bounds.append(i + 0.5)
-            
-    for pol in ['XX', 'XY', 'YX', 'YY']:
+    for pol in POLS:
         mat = raw_mean[pol]; mat_re = mat[np.ix_(arx_order, arx_order)]
         plot_heatmap(mat_re, f"ARX Ordered {pol}", f"{ms_basename}_heatmap_arx_{pol}.png", grid_lines=arx_bounds)
-
-    if args_obj.apply_antenna_flags or args_obj.apply_baseline_flags:
-        ants_to_flag = bad_ants if args_obj.apply_antenna_flags else set()
-        base_to_flag = list(set(hm_bad + uv_bad)) if args_obj.apply_baseline_flags else []
-        if ants_to_flag or base_to_flag:
-            apply_flags_to_ms(args_obj.ms, ants_to_flag, base_to_flag)
 
 
 if __name__ == "__main__":

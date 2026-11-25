@@ -10,6 +10,7 @@ Only final archiving copies results to Lustre.
 MERGED: Old stable base + new improvements (run_casa_task, etc.)
 """
 import argparse
+import csv
 import os
 import sys
 import socket
@@ -155,6 +156,42 @@ def record_subband_refusal(args, org_args, subband, step, reason, qa_files=()):
     return SubbandRefused(f"{subband}: {step} refused: {reason}")
 
 
+MNC_REPORT = "mnc_bad_antennas.csv"
+NVME_WORK_ROOT = "/fast/gh/main"     # the setup stage's work directories: <root>/<lst>/<date>/<run label>/<subband>
+
+
+def flag_bad_antennas_mnc(args, work_dir, ms_files, script_dir):
+    """Setup step 2: the MNC bad-antenna lookup and flag for every set (utils.run_antenna_flagging). Writes
+    QA/<MNC_REPORT> in the work directory, one row per set: the requested MJD (the set's start), the matched
+    health-record MJD, their gap in days and the bad correlator numbers; a failed set's row carries its cause. A failed
+    lookup refuses the subband (record_subband_refusal, then SubbandRefused): its bad antennas would otherwise go
+    unflagged without a trace. No threshold applies to the gap; it is recorded. Returns the records."""
+    qa = os.path.join(work_dir, "QA")
+    os.makedirs(qa, exist_ok=True)
+    report = os.path.join(qa, MNC_REPORT)
+    records, failure = [], None
+    for ms in ms_files:
+        try:
+            records.append(utils.run_antenna_flagging(ms, {}, script_dir, logger))
+        except Exception as e:
+            failure = (os.path.basename(os.path.normpath(ms)), f"{type(e).__name__}: {e}")
+            break
+    with open(report, "w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(["ms", "requested_mjd", "matched_health_mjd", "gap_days", "bad_correlator_numbers", "status"])
+        for r in records:
+            w.writerow([r['ms'], f"{r['requested_mjd']:.6f}", f"{r['matched_health_mjd']:.6f}", f"{r['gap_days']:+.6f}",
+                        " ".join(map(str, r['bad_correlator_numbers'])),
+                        "flagged" if r['bad_correlator_numbers'] else "no bad antenna in the record"])
+        if failure:
+            w.writerow([failure[0], "", "", "", "", f"REFUSED: {failure[1]}"])
+    if failure:
+        rargs = argparse.Namespace(**dict(vars(args), work_dir=work_dir))
+        raise record_subband_refusal(rargs, None, args.subband, "MNC bad-antenna lookup", failure[1],
+                                     qa_files=[report])
+    return records
+
+
 def run_subprocess(cmd, description):
     """Wrapper that logs and raises on failure."""
     logger.info(f"START: {description}")
@@ -267,7 +304,7 @@ def run_stage_setup(args):
         obs_date_str = "unknown"
 
     # Create work directory on NVMe
-    work_dir = f"/fast/gh/main/{args.lst_label}/{obs_date_str}/{args.run_label}/{args.subband}"
+    work_dir = f"{NVME_WORK_ROOT}/{args.lst_label}/{obs_date_str}/{args.run_label}/{args.subband}"
     if os.path.exists(work_dir):
         shutil.rmtree(work_dir)
     os.makedirs(work_dir, exist_ok=True)
@@ -288,10 +325,14 @@ def run_stage_setup(args):
 
     ms_files = utils.copy_and_prepare_files(archive_files, work_dir, args.subband, logger)
 
-    # 2. Flag bad antennas (via MNC health data in 'development' conda env)
+    # 2. Flag bad antennas (via MNC health data in 'development' conda env). A failed lookup refuses the subband
+    # (exit REFUSED_EXIT_CODE, before calibration; no peel or image job is submitted).
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    for ms in ms_files:
-        utils.run_antenna_flagging(ms, {}, script_dir, logger)
+    try:
+        flag_bad_antennas_mnc(args, work_dir, ms_files, script_dir)
+    except SubbandRefused as e:
+        logger.critical(f"Setup stopped, subband refused: {e}")
+        sys.exit(REFUSED_EXIT_CODE)
 
     # 3. Apply bandpass + XY-phase calibration
     valid_ms_files = []
