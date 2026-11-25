@@ -11,6 +11,8 @@ A unit is named in refusals by `what`: '<scope> <weighting>' (v5) or '<scope> <j
 import json
 import os
 
+from exopipe.phase3.core import placement
+
 _MD5 = {}
 
 
@@ -153,19 +155,26 @@ def stamp_products(items, rows, hist, *, scope, stokes, t0, t1, itt, beam, therm
     extra cards incl. PRODNAME)] in order. Each source is copied to a temporary name beside its final path; a HEALPix map gets PRODNAME
     in HDU 1 and a Jy/beam map PSFMAP = psf_name (bug B14); then the standard header (validate=True; a HEALPix map
     mosaic_conform.HEADER_VALIDATE, True by decision C-08, checked on its HDU 1 table), the PROVENANCE table of rows and the HISTORY lines hist. Nothing is renamed into place unless
-    every product was written (the temporary files are removed on any error). Returns [(final path, source, kind)]."""
+    every product was written (the temporary files are removed on any error). Each product is placed with core/placement: the
+    group, mode and ACL of the file it replaces, or the directory's rule for a new file - never the source's, which copy2
+    carries (its times are kept). One placement.atomic per product, entered in reverse so that they are placed in the order of
+    items; a refusal of one places nothing after it and removes every temporary file not yet placed (the unit's cleanup
+    removes the products placed before it). Returns [(final path, source, kind)]."""
+    import contextlib
     import shutil
     from astropy.io import fits
     from astropy.time import Time
     from exopipe.phase3.core.products import append_provenance_table, write_standard_header
     K = _cfg().mosaic_conform
-    pid = os.getpid()
-    done = []
-    try:
+    out = []
+    with contextlib.ExitStack() as stack:
+        tmps = {}
+        for _kind, _src, _sub, dst, _pbc, _ex in reversed(items):
+            tmps[dst] = stack.enter_context(placement.atomic(dst))
         for kind, src, sub, dst, pbc, ex in items:
             os.makedirs(os.path.dirname(dst), exist_ok=True)
-            tmp = os.path.join(os.path.dirname(dst), f'.{os.path.basename(dst)}.tmp.{pid}')
-            done.append((tmp, dst, src, kind))
+            tmp = tmps[dst]
+            out.append((dst, src, kind))
             shutil.copy2(src, tmp)
             if sub in HEALPIX_SUBS:
                 with fits.open(tmp, mode='update', memmap=False) as h:
@@ -179,15 +188,6 @@ def stamp_products(items, rows, hist, *, scope, stokes, t0, t1, itt, beam, therm
             with fits.open(tmp, mode='update', memmap=False) as h:
                 for ln in hist:
                     h[0].header.add_history(ln)
-    except BaseException:
-        for tmp, _d, _s, _k in done:
-            if os.path.exists(tmp):
-                os.remove(tmp)
-        raise
-    out = []
-    for tmp, dst, src, kind in done:
-        os.replace(tmp, dst)
-        out.append((dst, src, kind))
     return out
 
 

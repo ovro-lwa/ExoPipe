@@ -21,9 +21,11 @@ pages        nights: ops/build_qa_pages.py (HUB = <out>/review_hub, LEDGER, DD, 
 register     ops/build_ratified_register.py AUDIT_CSV ...: REG = <out>/clv15/RATIFIED_STEPS_REGISTER.csv, PAGE =
              <out>/review_hub/ratified_steps.html.
 """
+import contextlib
 import os
 import shutil
 
+from exopipe.phase3.core import placement
 from exopipe.phase3.lib.status import steps_common as K
 
 HISTORY_COLUMNS = ('checked_utc', 'cells', 'pass', 'fail', 'fail_not_in_rebuild_list')   # conformance_check.py:47-48
@@ -275,10 +277,14 @@ def run_data_page(out, unit, log, allowed):
            for r in validate.run(cls, os.path.join(site, n)) if not r['passed']]
     if bad:
         return rc, text, {}, site, bad
-    for d in dests:
-        shutil.copyfile(os.path.join(site, os.path.basename(d)), d + '.part')
-    for d in dests:
-        os.replace(d + '.part', d)
+    # installed as production does (every file copied first, then each renamed into place), each placed (core/placement:
+    # the installed file's group, mode and ACL, or the hub directory's rule for a new file). One placement.atomic per file,
+    # entered in reverse so that they are placed in the order of dests; any exception, a refusal included, removes every
+    # temporary file not yet placed
+    with contextlib.ExitStack() as stack:
+        tmps = {d: stack.enter_context(placement.atomic(d)) for d in reversed(list(dests))}
+        for d in dests:
+            shutil.copyfile(os.path.join(site, os.path.basename(d)), tmps[d])
     return rc, text, dests, site, []
 
 
