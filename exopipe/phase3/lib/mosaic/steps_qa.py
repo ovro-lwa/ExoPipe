@@ -5,12 +5,15 @@
 - VLSSr astrometry of every listed Jy/sr map (lib/mosaic/verify_mosaic.astrometry_check in place; a NEW measure-only table).
 
 Inputs: the jysr map and psfmap of every selected job whose coadd record is done (read from the record, never a glob of the
-build tree). Outputs (class mosaic_qa_table): <out>/qa/flux_anchor_measured_<yyyymmdd>.csv, <out>/qa/vlssr_astrometry_<yyyymmdd>.csv.
+build tree). Outputs (class mosaic_qa_table): <out>/qa/flux_anchor_measured_<yyyymmdd>.csv, <out>/qa/vlssr_astrometry_<yyyymmdd>.csv,
+placed together (core/placement.replace_many: the replaced tables' group, mode and ACL, or the directory's rule for new ones; a
+placement refusal places neither and is the unit's refusal, recorded as refused with the placement message).
 """
 import os
 import shutil
 import sys
 
+from exopipe.phase3.core import placement
 from exopipe.phase3.lib.mosaic import steps_common as SC
 
 
@@ -94,8 +97,7 @@ def run_qa(args, run, jobs, ctx):
                 u.refuse(f'qa: {r.get("message")}')
             if r.get('status') != 'ok':
                 raise RuntimeError(f'qa task failed: {r.get("message")}')
-            os.replace(task['anchor_out'], anchor)
-            os.replace(task['vlssr_out'], vlssr)
+            placement.replace_many([(task['anchor_out'], anchor), (task['vlssr_out'], vlssr)])
             maps = [{'variant': j.variant, 'band': j.scope, 'jysr': m} for j, m, _ in have]
             u.add_output(anchor, 'mosaic_qa_table', kind='anchor', maps=maps)
             u.add_output(vlssr, 'mosaic_qa_table', kind='vlssr', maps=maps)

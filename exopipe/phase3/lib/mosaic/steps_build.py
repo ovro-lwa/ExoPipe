@@ -7,15 +7,19 @@ inputs   per job: the plan's gates (G1 exclusions, G3 one master per tile, G4 ti
          arithmetic (G9 verdicts; TILE_GUARD_ACTION). Outputs: the staged weighting PB maps (class mosaic_weight_pb; node-
          local scratch, removed at the end of the run - an inputs unit is never resumed, it runs again with its coadd).
 coadd    per job and domain: coadd_jysr in place on the stage; the engine's printed tile verdicts must equal the census
-         (G9); 'NO TILES CONTRIBUTED' refuses (G10); the maps are placed atomically into <out>/healpix/ only when every
+         (G9); 'NO TILES CONTRIBUTED' refuses (G10); the maps are placed together into <out>/healpix/ only when every
          domain of the job succeeded. Outputs: mosaic_map, mosaic_psfmap (jysr), mosaic_pbeff (jybeam).
 render   per job in mosaic_render.SCOPES and domain: band_products.build in place on links to the coadd record's map and
-         psfmap; Mollweide + RA/Dec renders placed atomically into <out>/renders/. Output class mosaic_render.
+         psfmap; Mollweide + RA/Dec renders placed together into <out>/renders/. Output class mosaic_render.
+Placed (core/placement.replace_many): every product of the unit gets the replaced file's group, mode and ACL, or the directory's
+rule for a new one, before the first rename - a placement refusal places none of them and is the unit's refusal (record.Refusal:
+the unit records it as refused with the placement message; the job's state is 'refused').
 """
 import os
 import shutil
 import sys
 
+from exopipe.phase3.core import placement
 from exopipe.phase3.lib.mosaic import steps_common as SC
 
 
@@ -289,8 +293,8 @@ def run_coadd(args, run, jobs, plans, ctx, state):
                     src = os.path.join(tmps[(job.name, dom)], name)
                     if not os.path.exists(src):
                         u.refuse(f'{dom}: the engine did not write {name}')
-                for dom, name, cls in planned:
-                    os.replace(os.path.join(tmps[(job.name, dom)], name), os.path.join(hp_dir, name))
+                placement.replace_many([(os.path.join(tmps[(job.name, dom)], name), os.path.join(hp_dir, name))
+                                        for dom, name, cls in planned])
                 # review 2026-10-13: a map with fewer CONTRIBUTING tiles than REQUIRE_N_LSTS (a waived --lsts subset, or
                 # tiles the engine guard skipped under TILE_GUARD_ACTION 'skip-and-record' = today's behaviour) is a
                 # partial build for the coverage content test - else the test turned skip-and-record into a refusal
@@ -432,8 +436,8 @@ def run_render(args, run, jobs, ctx):
                 for d, fname, kind in planned:
                     if not os.path.exists(os.path.join(tmps[(job.name, d)], fname)):
                         u.refuse(f'{d}: band_products did not write {fname}')
-                for d, fname, kind in planned:
-                    os.replace(os.path.join(tmps[(job.name, d)], fname), os.path.join(rnd_dir, fname))
+                placement.replace_many([(os.path.join(tmps[(job.name, d)], fname), os.path.join(rnd_dir, fname))
+                                        for d, fname, kind in planned])
                 psf_used = psf if os.path.exists(psf) else None
                 if psf_used is None:
                     u.note(f'render beam: the July fallback table (no PSF map {os.path.basename(psf)}; B-45)')

@@ -48,10 +48,14 @@ in stage/tiles.json (its md5 in the coadd and fill records). A unit removes its 
 into place only when its inline test passed; a unit that does not end done (a refusal, an error, a failed content test) removes the
 outputs it placed, and its record keeps the reason. The stages that read the tiles (coadd, pkcorr, caveat, content) bind the
 mosaic_coadd globals and refuse unless they equal the coadd record's. The push class (mosaic_v5) is PR-7d.
+Placement (core/placement): the tile list, the coadd's four maps, the caveat map and table, the two filled maps, the renders and the
+PKCORR outputs are placed - the replaced file's group, mode and ACL, or the directory's rule for a new one; a unit's files together
+(replace_many / atomic_many: all or none). A placement refusal is the unit's refusal, recorded as refused with the placement message.
 """
 import json
 import os
 
+from exopipe.phase3.core import placement
 from exopipe.phase3.lib.mosaic import gen_common as GC     # shared with v3: one copy of each rule
 from exopipe.phase3.lib.mosaic.gen_common import (_MD5, _bind_engine, _clear, _engine_as_coadd,  # noqa: F401  (one md5 cache
                                                   _key, _md5, _seed)                  # per process for v3 and v5)
@@ -263,9 +267,8 @@ def stage_unit(u, scope, w, out, hybrid_out):
     u.set_admitted(nights)
     u.meta['sources'] = {k: sum(t['source'] == k for t in tiles) for k in ('work', 'pinned')}
     os.makedirs(os.path.dirname(p), exist_ok=True)
-    with open(p + '.part', 'w') as f:
+    with placement.atomic(p) as part, open(part, 'w') as f:
         json.dump(dict(scope=scope, weighting=w, variant=variant_of(w), hybrid_out=hybrid_out, tiles=tiles), f, indent=1)
-    os.replace(p + '.part', p)
     u.add_output(p, 'mosaic_v5_tiles', scope=scope, weighting=w)
 
 
@@ -296,8 +299,7 @@ def coadd_unit(u, scope, w, out, work):
             if not os.path.exists(os.path.join(tmp, names[k])):
                 u.refuse(f'the engine did not write {names[k]} - REFUSED')
         os.makedirs(os.path.dirname(P['unfilled_jysr']), exist_ok=True)
-        for k in ('jysr', 'psf', 'jybeam', 'pbeff'):
-            os.replace(os.path.join(tmp, names[k]), P[f'unfilled_{k}'])
+        placement.replace_many([(os.path.join(tmp, names[k]), P[f'unfilled_{k}']) for k in ('jysr', 'psf', 'jybeam', 'pbeff')])
     finally:
         fitsio.cleanup(sd)
         if os.path.isdir(tmp):
@@ -383,9 +385,8 @@ def fill_unit(u, scope, w, out):
                 path=P['filled_jybeam'], cls='mosaic_filled_map', detail='identity to float32; K median and 5-95 spread (mosaic_fill)')
         if rb['result'] != 'PASS':
             u.refuse(f'HG19: the Jy/beam fill test failed {rb} - REFUSED')
-        os.replace(tj, P['filled_jysr'])
+        placement.replace_many([(tj, P['filled_jysr']), (tb, P['filled_jybeam'])])     # both or neither
         _seed(P['filled_jysr'], rj['out_md5'])
-        os.replace(tb, P['filled_jybeam'])
         _seed(P['filled_jybeam'], rb['out_md5'])
     finally:
         _clear([tj, tb])
@@ -442,8 +443,7 @@ def render_unit(u, scope, w, out, work):
             if not os.path.exists(os.path.join(tmp, os.path.basename(pp))):
                 u.refuse(f'band_products did not write {os.path.basename(pp)} - REFUSED')
         os.makedirs(os.path.dirname(own[0]), exist_ok=True)
-        for pp in own:
-            os.replace(os.path.join(tmp, os.path.basename(pp)), pp)
+        placement.replace_many([(os.path.join(tmp, os.path.basename(pp)), pp) for pp in own])
     finally:
         fitsio.cleanup(ld)
         shutil.rmtree(tmp, ignore_errors=True)

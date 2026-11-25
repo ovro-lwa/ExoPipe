@@ -1,8 +1,8 @@
-"""Placement coverage guard (PR 177, placement P1; placement P2; placement P3; core/placement.py): in the modules P1, P2 and P3
-converted to placement.atomic, no bare os.replace / os.rename / os.renames / shutil.move remains except the sites listed
-below, each with its reason or the placement PR planned for it (/fast/gh/claude_tmp/placement-classify_20261125/PLAN.md: P3
-copy2 sources, P4 mosaic and hybrid sites and P5 others behind a handler on the path, P6 archive writers and per-file volume,
-P7 directory renames). A new bare rename in these modules fails this test; so does a listed site that is gone (the list must
+"""Placement coverage guard (PR 177, placement P1; placement P2; placement P3; placement P4; core/placement.py): in the modules
+P1-P4 converted to placement.atomic / atomic_many / replace_many, no bare os.replace / os.rename / os.renames / shutil.move
+remains except the sites listed below, each with its reason or the placement PR planned for it
+(/fast/gh/claude_tmp/placement-classify_20261125/PLAN.md: P3 copy2 sources, P4 mosaic and hybrid sites behind a handler on the
+path, P5 others behind a handler on the path, P6 archive writers and per-file volume, P7 directory renames). A new bare rename in these modules fails this test; so does a listed site that is gone (the list must
 shrink with each later placement PR). In the same modules every record.atomic_write_json call passes ``place=`` explicitly
 (True for a product, False for a unit or run record), so a product never takes the unplaced default by omission. Every
 listed entry carries its reason ('stays bare: ...') or planned PR ('P<n>: ...'); an entry without one fails. Data-free: the
@@ -32,7 +32,9 @@ MODULES = ['core/manifest.py', 'lib/calibrate/common.py', 'lib/calibrate/fluxsca
            'lib/serve/fp_filters.py', 'lib/serve/hub.py', 'lib/serve/register.py', 'lib/serve/snapshot_view.py',
            'lib/serve/versions.py', 'lib/serve/views.py', 'lib/status/steps_common.py', 'lib/status/steps_hub.py',
            # P4
-           'lib/hybrid/master.py', 'lib/hybrid/recon.py', 'lib/hybrid/tilefill.py']
+           'lib/hybrid/master.py', 'lib/hybrid/recon.py', 'lib/hybrid/tilefill.py', 'lib/mosaic/caveat.py', 'lib/mosaic/fill.py',
+           'lib/mosaic/steps_build.py', 'lib/mosaic/steps_conform.py', 'lib/mosaic/steps_qa.py', 'lib/mosaic/v3.py',
+           'lib/mosaic/v5.py']
 # every entry's reason: 'stays bare[ until ...]: <why>' or the planned PR 'P<n>: <what>' - nothing else (an entry without
 # a reason or a planned PR fails the guard)
 REASON = re.compile(r'^(stays bare( until [^:]+)?|P[1-9][0-9]*): \S.{9,}$', re.S)
@@ -88,7 +90,7 @@ EXCEPTIONS = {
     ('lib/notify/qa.py', 'ionosphere_rank', 'os.replace'): (
         1, 'stays bare: cache - the ionosphere-rank population cache, derived and re-derivable, not a product'),
     ('lib/mosaic/steps_worker.py', 'task_qa', 'os.replace'): (
-        1, 'stays bare: writes into the stage\'s temporary directory; P4 places the table (steps_qa.run_qa)'),
+        1, 'stays bare: writes into the stage\'s temporary directory; steps_qa.run_qa places the table (replace_many)'),
     ('lib/photometry/steps_common.py', 'atomic_copy', 'os.replace'): (
         1, 'P6: per-file volume; the temporary file is a shutil.copy2 of the work file'),
     ('lib/search/deep_step.py', 'stage_quarantine', 'os.replace'): (1, 'stays bare: a run record (quarantine plan)'),
@@ -104,9 +106,6 @@ EXCEPTIONS = {
     # P3
     ('lib/jupiter/v2.py', 'st_prepare', 'os.replace'): (
         1, MOVED_ASIDE + ' - earlier derived roots (directories) moved to _superseded/<tag>'),
-    ('lib/mosaic/gen_common.py', 'pkcorr', 'os.replace'): (
-        1, 'P4: the pkcorr products, moved from the unit\'s temporary subdirectory (not a sibling temporary file)'),
-    ('lib/mosaic/gen_common.py', 'test2_write', 'os.replace'): (1, 'P4: the test-2 record of a mosaic unit'),
     ('lib/pages/night.py', 'rename', 'os.rename'): (
         1, 'stays bare: renames the images this run rendered to their full-selection names in the same directory (a rename '
            'keeps the group, mode and ACL they took when rendered there)'),
@@ -139,6 +138,11 @@ EXCEPTIONS = {
     # P4
     ('lib/hybrid/tilefill.py', 'band_increment', 'os.replace'): (
         1, 'stays bare: writes the caller\'s temporary file (steps/hybrid.tilefill_field places it at the field\'s name)'),
+    ('lib/mosaic/fill.py', 'fill_file', 'os.replace'): (
+        1, 'stays bare: writes the caller\'s temporary file (v5.fill_unit places the filled pair with replace_many)'),
+    ('lib/mosaic/fill.py', 'fill_jybeam_file', 'os.replace'): (
+        1, 'stays bare: writes the caller\'s temporary file (v5.fill_unit places the filled pair with replace_many)'),
+    ('lib/mosaic/v3.py', '_write_tiles', 'os.replace'): (1, 'P6: the stage\'s tile list (a per-file gh writer)'),
 }
 CALLS = {'os': ('replace', 'rename', 'renames'), 'shutil': ('move',)}
 

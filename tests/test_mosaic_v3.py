@@ -566,6 +566,44 @@ def test_vclean_own_weighting():
         shutil.rmtree(d, ignore_errors=True)
 
 
+def test_stage_placement_refusal():
+    """Placement P4, the handlers of stage_plain and stage_vclean_own: a placement refusal of a weighting map (core/placement:
+    the map could not be given its group) is the stage unit's refusal with the placement message - not a tile's 'G5 ... no
+    weighting PB' problem, and no later LST's map is derived; no temporary file is left and no tile list is written."""
+    from exopipe.phase3.core import placement as PL
+    foreign = next((g for g in (0, 1, 2, 3, 4, 65534) if g not in os.getgroups() and g != os.getegid()), None)
+    if os.geteuid() == 0 or foreign is None:
+        print('  UNTESTED (placement refusal of a weighting map): running as root or a member of every candidate group')
+        return
+    d = _tmp('spr_')
+    try:
+        out = os.path.join(d, 'out')
+        upto = LSTS[:LSTS.index('07h') + 1]
+        vv = _archive(d, 'vclean', LSTS)
+        for job in (J_R075, J_V):
+            P = v3.paths(out, 'Blue', job)
+            bad = P['pb']['07h']
+            real = PL.target_attrs
+            refuse = lambda dst, like=None: dict(real(dst, like), gid=foreign) if dst == bad else real(dst, like)  # noqa: E731
+            calls = []
+            if job is J_R075:
+                ms = _masters(d, job)
+                with _patched((v3, 'plan_plain', lambda scope, j: _plan(ms)), (pb_apply, 'wideband_pb', _fake_pb(calls)),
+                              (PL, 'target_attrs', refuse)):
+                    u = _unit(out, 'stage', v3.stage_unit, 'Blue', job, {})
+            else:
+                with _patched((CFG.mosaic, 'INPUT_COADD_RUN', os.path.join(d, 'A')), (exclusions, 'load', lambda *a, **k: _Ex()),
+                              (pb_apply, 'wideband_pb', _fake_pb_own(calls)), (PL, 'target_attrs', refuse)):
+                    u = _unit(out, 'stage', v3.stage_unit, 'Blue', job, {})
+            assert u.status == 'refused' and u.reason.startswith('placement:') and bad in u.reason, (job.label, u.status, u.reason)
+            assert 'G5' not in u.reason and [c[1] for c in calls] == upto, (job.label, u.reason, [c[1] for c in calls])
+            assert sorted(os.listdir(os.path.dirname(bad))) == [], (job.label, os.listdir(os.path.dirname(bad)))
+            assert not os.path.exists(P['tiles']), job.label
+        assert len(vv) == 24
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 # ---- 6. coadd and render ----------------------------------------------------------------------------------------------------------
 
 def _fake_engine(calls, skip=(), missing=()):
