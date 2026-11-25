@@ -8,7 +8,8 @@ so `exopipe3 verify <class> <file>` runs them alone.
                                            its files and links number n_files, every path is inside the item directory and the
                                            identity sha256 over its paths is the item's; the totals are the sidecar's (the
                                            delete's preflight compares the rows with the tree); no item lies in a do-not-delete
-                                           cell of data_decisions.csv as read now (lib/retention/protect.py; any subband)
+                                           cell its own sidecar records (the cells the plan honored; any subband - the
+                                           delete's gate reads data_decisions.csv as it is then: lib/retention/protect.py)
   retention_records    records_parse       every production record parses (times, subbands, end after start)
   retention_holds      holds_parse         every hold and release row parses; every release names an earlier hold
   retention_applied    paths_gone          every removed path of the applied manifest is gone from the tree; with ctx item and
@@ -75,7 +76,7 @@ def manifest_consistent(path, **ctx):
     if nbytes != side.get('bytes'):
         bad.append('the items hold %d bytes, the sidecar says %s' % (nbytes, side.get('bytes')))
     try:
-        P.refuse_do_not_delete(items)
+        P.refuse_do_not_delete(items, P.sidecar_cells(side), 'the manifest (against the cells its sidecar records)')
     except Refusal as e:
         bad.append(str(e))
     if bad:

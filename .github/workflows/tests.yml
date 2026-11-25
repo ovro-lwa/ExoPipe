@@ -130,7 +130,7 @@ jobs:
         run: python tests/test_space_gate.py
       - name: two-week retention of the raw night data (retention table, holds, dry-run manifest, the ruled delete and its refusals)
         run: python tests/test_retention.py
-      - name: retention do-not-delete gate (data_decisions do-not-delete cells never planned or deleted, every subband incl. 13 MHz; fail closed)
+      - name: retention do-not-delete gate (do-not-delete cells never planned or deleted in any subband incl. 13 MHz; LST hour ranges vs Phase 1; fail closed)
         run: python tests/test_retention_do_not_delete.py
       - name: Release 1 header-repair cards, the sibling card-key gate, the cleaned Stokes V source check and refresh (install wiring)
         run: python tests/test_install_release1_cards.py

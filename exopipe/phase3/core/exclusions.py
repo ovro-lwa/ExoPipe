@@ -27,10 +27,14 @@ an exclusion change makes every cached or adopted result older than it stale (de
 DO NOT DELETE. A row whose reason carries ``CFG.exclusions.DO_NOT_DELETE_TEXT`` ("do not delete"; matched as free text by
 ``is_do_not_delete``: data_decisions.csv has no structured column for it) marks its CELL - the LST hour on that date - as
 raw data that is never deleted, whatever the row's verdict, scope tag or subband. ``do_not_delete_cells`` is the read of
-those cells (the raw-data retention reads it: lib/retention/protect.py); it reads the file now and REFUSES (fail closed)
-on a do-not-delete row it cannot read - an LST that is not 00h..23h, a date that is not a YYYY-MM-DD date, a subband that
-is not a subband or band label (``CFG.instrument.SUBBAND_FREQ_HZ``, Red, Green, Blue, Full), more fields than the header,
-or the text in another column than the reason. Such a row never refuses the exclusion read itself (the co-adds).
+those cells (the raw-data retention reads it: lib/retention/protect.py); it reads the file now. It REFUSES (fail closed)
+on a do-not-delete row whose LST is not 00h..23h, whose date is not a YYYY-MM-DD date or whose subband is not a subband
+or band label (``CFG.instrument.SUBBAND_FREQ_HZ``, Red, Green, Blue, Full), and on a row with a field that matches
+``CFG.exclusions.DO_NOT_DELETE_SUSPECT_RE`` (delet, keep raw, retain, preserv, don't) but no field with the canonical
+text: wording the gate does not read may mean to protect data. A do-not-delete row whose LST, date and subband read but
+that has more fields than the header (an unquoted comma) or the text in another column than the reason PROTECTS its cell
+and is reported with the cell ('irregular'). None of this refuses the exclusion read itself (the co-adds). Lines are the
+file's physical lines where the row starts (blank lines and multi-line quoted fields counted).
 """
 import csv
 import datetime
@@ -56,6 +60,21 @@ def _do_not_delete_needle():
     from exopipe.phase3.config import CFG
     needle = _squash(CFG.exclusions.DO_NOT_DELETE_TEXT).strip()
     return needle, max(needle.split(), key=len)
+
+
+# a row is examined for the do-not-delete read only when its text holds one of these (lower case): a superset of
+# DO_NOT_DELETE_TEXT's longest word and of what DO_NOT_DELETE_SUSPECT_RE can match ('keep raw' needs 'keep', "don't" 'don')
+_DND_PREFILTER = re.compile(r'delet|keep|retain|preserv|don')
+
+
+def _physical_lines(text):
+    """The file line (1-based; a line ends at \\r\\n, \\n or \\r) where each element of ``text.splitlines()`` starts."""
+    out, n = [], 1
+    for piece in text.splitlines(True):
+        out.append(n)
+        if piece.endswith(('\n', '\r')):
+            n += 1
+    return out
 
 
 def is_do_not_delete(reason, needle=None):
@@ -109,35 +128,37 @@ class Exclusions:
                                    # whatever its tag and this read's scope: the processing ledger's dd_excl_subbands
                                    # (production _build_ledger.py:8-11, pandas groupby + nunique); same in every scope
         self.reasons = {}
-        self.do_not_delete = {}    # {(lst, date): {'subbands', 'reasons', 'lines'}} of EVERY do-not-delete row (any verdict,
-                                   # tag or scope of this read; module docstring)
-        self.do_not_delete_problems = []   # [(line, why)] of do-not-delete rows that cannot be read (do_not_delete_cells
-                                           # refuses on any)
-        known = {_norm_scope(s) for s in CFG.instrument.SUBBAND_FREQ_HZ} | set(self.band_members)
-        needle = _do_not_delete_needle()
+        self.do_not_delete = {}    # {(lst, date): {'subbands', 'reasons', 'lines', 'irregular'}} of EVERY do-not-delete row
+                                   # (any verdict, tag or scope of this read; module docstring)
+        self.do_not_delete_problems = []   # [(line, why)] of rows that refuse the do-not-delete read (do_not_delete_cells)
+        dnd = (_do_not_delete_needle(), re.compile(CFG.exclusions.DO_NOT_DELETE_SUSPECT_RE),
+               {_norm_scope(s) for s in CFG.instrument.SUBBAND_FREQ_HZ} | set(self.band_members))
         with open(self.path, 'rb') as f:
             raw = f.read()
         self._sha1 = hashlib.sha1(raw).hexdigest()
         try:
-            rd = csv.DictReader(raw.decode('utf-8').splitlines())
-            miss = [c for c in ('lst', 'subband', 'date', 'verdict') if c not in (rd.fieldnames or ())]
+            text = raw.decode('utf-8')
+            phys = _physical_lines(text)
+            rd = csv.reader(text.splitlines())      # csv.DictReader's rows, built below so that each keeps its file line
+            header = next(rd, None)
+            miss = [c for c in ('lst', 'subband', 'date', 'verdict') if c not in (header or ())]
             if miss:                    # without a verdict column every row would read as not excluded: an empty set
-                raise Refusal(f'header lacks {miss} (header {rd.fieldnames})')
-            for line, r in enumerate(rd, start=2):
-                vals = [x for k, v in r.items() for x in (v if k is None else [v])]   # k None: fields past the header
-                if needle[1] in ' '.join(x or '' for x in vals).lower() and any(is_do_not_delete(v, needle)
-                                                                                 for v in vals):
-                    why = ('more fields than the header (an unquoted comma?)' if r.get(None) is not None else
-                           'the do-not-delete text is outside the reason column'
-                           if not is_do_not_delete(r.get('reason'), needle) else _do_not_delete_problem(r, known))
-                    if why:
-                        self.do_not_delete_problems.append((line, why))
-                    else:
-                        c = self.do_not_delete.setdefault((r['lst'].strip(), r['date'].strip()),
-                                                          {'subbands': set(), 'reasons': set(), 'lines': []})
-                        c['subbands'].add(r['subband'].strip())
-                        c['reasons'].add(r['reason'].strip())
-                        c['lines'].append(line)
+                raise Refusal(f'header lacks {miss} (header {header})')
+            nf = len(header)
+            while True:
+                first = rd.line_num             # lines consumed before this row: its first line is element ``first``
+                row = next(rd, None)
+                if row is None:
+                    break
+                if not row:                     # a blank line (csv.DictReader skips it)
+                    continue
+                r = dict(zip(header, row))
+                if len(row) > nf:
+                    r[None] = row[nf:]          # fields past the header (csv.DictReader's restkey None)
+                elif len(row) < nf:
+                    r.update(dict.fromkeys(header[len(row):]))    # missing fields: None (csv.DictReader's restval)
+                if _DND_PREFILTER.search(' '.join(row).lower()):
+                    self._read_do_not_delete(r, row, phys[first] if first < len(phys) else first + 1, dnd)
                 key = (r['lst'].strip(), _norm_scope(r['subband']), r['date'].strip())
                 self.keys_any.add(key)
                 if (r.get('verdict') or '').strip() != 'exclude':
@@ -153,6 +174,34 @@ class Exclusions:
                     self.perband.add(key)
         except Exception as e:
             raise Refusal(f'exclusion list {self.path} unreadable ({e}) - refusing (ruling C-09)')
+
+    def _read_do_not_delete(self, r, vals, line, dnd):
+        """One row for the do-not-delete read (module docstring): a cell, an irregular row or a problem. ``dnd``: (needle,
+        suspect pattern, known subband and band labels)."""
+        needle, suspect, known = dnd
+        whole = _squash(' '.join(vals))      # holds whatever any one field holds (a readmission row's 'keep' stops here)
+        if needle[0] not in whole and not suspect.search(whole):
+            return
+        hits = [v.strip() for v in vals if is_do_not_delete(v, needle)]
+        if not hits:
+            odd = [v.strip() for v in vals if suspect.search(_squash(v))]
+            if odd:
+                self.do_not_delete_problems.append((line, 'wording about deleting or keeping data (%r) without the text '
+                                                    '"%s" - the gate reads only that text' % (odd[0][:80], needle[0])))
+            return
+        why = _do_not_delete_problem(r, known)
+        if why:
+            self.do_not_delete_problems.append((line, why))
+            return
+        c = self.do_not_delete.setdefault((r['lst'].strip(), r['date'].strip()),
+                                          {'subbands': set(), 'reasons': set(), 'lines': [], 'irregular': []})
+        c['subbands'].add(r['subband'].strip())
+        c['reasons'].update(hits)
+        c['lines'].append(line)
+        if r.get(None) is not None:
+            c['irregular'].append((line, 'more fields than the header (an unquoted comma?)'))
+        if not is_do_not_delete(r.get('reason'), needle):
+            c['irregular'].append((line, 'the do-not-delete text is outside the reason column'))
 
     # ---- the rule -----------------------------------------------------------------------------------------------
     def is_excluded(self, lst, scope, date):
@@ -205,15 +254,18 @@ def load(path=None, scope=None):
 
 def do_not_delete_cells(path=None):
     """(cells, fingerprint) of the do-not-delete rows (module docstring), read from the file NOW (never the process cache):
-    cells {(LST, date): {'subbands': {as written}, 'reasons': {as written}, 'lines': [file line numbers]}}, fingerprint
-    ``Exclusions.fingerprint()`` plus n_do_not_delete_cells. REFUSES (fail closed) when the file is missing or unreadable
-    (ruling C-09) and when any do-not-delete row cannot be read, naming each such line."""
+    cells {(LST, date): {'subbands': {as written}, 'reasons': {the fields with the text}, 'lines': [file lines],
+    'irregular': [(file line, why)]}}, fingerprint ``Exclusions.fingerprint()`` plus n_do_not_delete_cells and
+    n_do_not_delete_irregular_rows. REFUSES (fail closed) when the file is missing or unreadable (ruling C-09) and on any row
+    the read refuses (module docstring), naming each such line."""
     ex = Exclusions(path)
     if ex.do_not_delete_problems:
         raise Refusal('REFUSING: %d do-not-delete row(s) of %s cannot be read - never read as fewer protected cells: %s' % (
             len(ex.do_not_delete_problems), ex.path,
             '; '.join('line %d: %s' % p for p in ex.do_not_delete_problems[:10])))
-    return ex.do_not_delete, dict(ex.fingerprint(), n_do_not_delete_cells=len(ex.do_not_delete))
+    return ex.do_not_delete, dict(ex.fingerprint(), n_do_not_delete_cells=len(ex.do_not_delete),
+                                  n_do_not_delete_irregular_rows=len({n for c in ex.do_not_delete.values()
+                                                                      for n, _w in c['irregular']}))
 
 
 def gpu_frame_cells(path=None):

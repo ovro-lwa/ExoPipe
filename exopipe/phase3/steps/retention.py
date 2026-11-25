@@ -16,9 +16,12 @@ Actions and units (records <out>/_records/retention/<unit>.json):
   plan     unit plan_<UTC>. Lists the raw tree by name (subband, UT date and UT hour directories; never a walk of the tree) and
            classifies each (subband, date, hour) item from the do-not-delete cells of data_decisions.csv, the production
            records and the active holds (lib/retention/plan.py: protected, held, unprocessed, unrecognized, empty, partial,
-           retained, expired). PROTECTED (lib/retention/protect.py): the item's data overlap the UTC range of a cell (LST hour
-           + date) that a data_decisions.csv row marks "do not delete" - in ANY subband, 13 MHz included, since a cell is a
-           time range on the sky; never listed, never in a manifest. Writes <out>/plans/RETENTION_TABLE_<UTC>.csv
+           retained, expired). PROTECTED (lib/retention/protect.py): the item's data overlap a UTC range of a cell (LST hour
+           + date: every range of that date in the LST hour, core/sidereal.py, widened by retention.DO_NOT_DELETE_PAD_S on
+           both sides) that a data_decisions.csv row marks "do not delete" - in ANY subband, 13 MHz included, since a cell is
+           a time range on the sky; never listed, never in a manifest. A do-not-delete row read with an irregularity (more
+           fields than the header, the text outside the reason column) protects its cell and is named in the plan's note.
+           Writes <out>/plans/RETENTION_TABLE_<UTC>.csv
            (every item; class retention_plan) and, when items are expired, <out>/manifests/DRYRUN_RETENTION_<UTC>.csv + .json
            (class retention_manifest): the oldest-expiring retention.MAX_ITEMS_PER_MANIFEST expired items and every path a
            delete would remove - each file, and each file and directory of an MS directory (listed inside that MS only) - with
@@ -33,9 +36,10 @@ Actions and units (records <out>/_records/retention/<unit>.json):
   hold     unit hold_<UTC>: appends a hold of [--start, --end) on --scopes to <out>/retention.HOLDS_NAME (retention_holds).
   release  unit release_<UTC>: appends the release of --hold-id.
   delete   one unit per item, delete_<subband>_<date>_<hour>. REFUSES, deleting nothing, when any item of --manifest lies in a
-           do-not-delete cell of data_decisions.csv as read at the delete (RT-DO-NOT-DELETE, checked before the ruling and
-           again in the preflight; the reason names the items and the cells; Gregg's go for the manifest does not lift it:
-           the cell's row does), and re-checks each item right before deleting it. REFUSES unless: --out is retention.ROOT, so
+           do-not-delete cell of data_decisions.csv as read at the delete (RT-DO-NOT-DELETE, the first check of the
+           preflight; the reason names the items and the cells; Gregg's go for the manifest does not lift it: the cell's row
+           does), and re-checks each item right before deleting it (re-reading the cells only when the file's sha1 changed).
+           REFUSES unless: --out is retention.ROOT, so
            the records and holds are the production ones (RT-ROOT); --manifest is a dry-run manifest of this tree whose sidecar
            sha256 still matches, planned from the records of this --out (RT-MANIFEST); --ruling-for retention.DELETE=<ledger ID>
            names a row of paths.FIX_LEDGER whose fix_id starts with retention.RULING_PREFIX (R-GREGG-), whose authorized_by
@@ -59,8 +63,9 @@ Failure modes (exit 2 = refused): RT-ROOT the raw root is not a directory, or a 
          RT-TABLE a table or holds row that cannot be read;
          RT-RECORD / RT-HOLD an invalid record, hold or release; RT-CHECKSUM an unknown checksum kind; RT-MANIFEST, RT-RULING,
          RT-RECORDS, RT-MATCH, RT-NOT-EXPIRED, RT-HELD (delete, above); RT-DO-NOT-DELETE (plan and delete) a manifest item in
-         a do-not-delete cell, or - fail closed - data_decisions.csv missing or unreadable, a do-not-delete row that cannot be
-         read (LST, date, subband) or a cell whose UTC range cannot be computed. No space gate (SPACE_GATE below). Exit 3:
+         a do-not-delete cell, or - fail closed - data_decisions.csv missing or unreadable, a do-not-delete row whose LST,
+         date or subband cannot be read, a row with deletion wording (delet, keep raw, retain, preserv, don't) but not
+         "do not delete", or a cell whose UTC ranges cannot be computed. No space gate (SPACE_GATE below). Exit 3:
          the tree holds no item in the selection.
 Selectors: --nights (UT dates of the tree) and --scopes (subbands) restrict plan; record and hold take --scopes as the
          subbands they cover.
@@ -141,6 +146,7 @@ def run(args, run):
     from exopipe.phase3.core import ledger, record
     from exopipe.phase3.core.record import Refusal
     from exopipe.phase3.lib.retention import plan as P
+    from exopipe.phase3.lib.retention import protect as D
     from exopipe.phase3.lib.retention import table as T
     c = CFG.retention
     out = run.out_root
@@ -155,6 +161,9 @@ def run(args, run):
         pl = P.make_plan(c.RAW_ROOT, out, now=now, nights=_nights(args), subbands=_set(args.scopes),
                          checksum=args.checksum, max_items=args.max_items, stat=not run.dry_run)
         by = pl.counts()
+        irr = D.irregular_note(pl.protect)   # do-not-delete rows that protect their cells but want fixing
+        if irr:
+            print('retention plan: %s' % irr, file=sys.stderr)
         if run.dry_run:                  # names and statuses only: no lstat, no checksum, nothing written
             print('retention plan (dry run: listed and classified only - no stat, no checksum, nothing written): %d items '
                   '(%s); %d expired, %d would be in the manifest%s' % (
@@ -183,6 +192,8 @@ def run(args, run):
             else:
                 u.note('no expired item: no manifest written')
             u.note(line)
+            if irr:
+                u.note(irr)
         print('retention plan: %s; table %s%s' % (line, plan_csv, '; manifest %s' % man_csv if man_csv else ''),
               file=sys.stderr)
         return run.exit_code()
@@ -230,12 +241,11 @@ def run(args, run):
     if os.path.realpath(out) != os.path.realpath(c.ROOT):
         raise Refusal('RT-ROOT: a delete reads the production records and holds: --out must be retention.ROOT (%s), not %s'
                       % (c.ROOT, out))
-    side, items = P.read_manifest(man)
-    P.refuse_do_not_delete(items)        # before the ruling: Gregg's go for a manifest never lifts a do-not-delete row
     lid = _delete_ruling(args, CFG)
     if not lid:
         raise Refusal('RT-RULING: a delete of raw data needs Gregg\'s go: --ruling-for %s=<ledger ID of his ruling naming '
                       'this manifest>' % c.DELETE_RULING_KEY)
+    side, items = P.read_manifest(man)
     rows = ledger.rows(lid, CFG.paths.FIX_LEDGER)
     if not lid.startswith(c.RULING_PREFIX):
         raise Refusal('RT-RULING: %s is not one of Gregg\'s rulings (fix_id %s*)' % (lid, c.RULING_PREFIX))

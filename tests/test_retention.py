@@ -230,14 +230,15 @@ def test_classify(W):
                     path=os.path.join(W.root, '73MHz', W.OLD2, '05'), t0=W.t_old + DAY + 5 * 3600)
     empty_it['t1'] = empty_it['t0'] + 3600
     rec = [dict(record_id='P-x', start=W.t_old, end=W.t_old + 3 * DAY, subbands=None, produced=W.t_old + DAY, source='s')]
-    check('empty: an hour directory without files (recorded)', P.classify(empty_it, rec, [], time.time())['status'] == 'empty')
+    check('empty: an hour directory without files (recorded)',
+          P.classify(empty_it, rec, [], time.time(), protect=[])['status'] == 'empty')
     first = dict((it['item'], it) for it, c in pl.items)[W.item('73MHz', W.OLD, 2)]
     c3 = P.classify(first, T.read_records(W.out) + [dict(record_id='P-z', start=W.t_old, end=W.t_old + 3 * 3600,
                                                           subbands=None, produced=time.time() - 60, source='s')],
-                    [], time.time())
+                    [], time.time(), protect=[])
     check('... an expired hour re-processed now is retained again', c3['status'] == 'retained', c3)
     c4 = P.classify(first, T.read_records(W.out), [dict(hold_id='H-x', start=0, end=2e9, subbands={'78MHz'}, reason='r')],
-                    time.time())
+                    time.time(), protect=[])
     check('a hold of another subband does not hold it', c4['status'] == 'expired', c4)
     pl1 = P.make_plan(W.root, W.out, max_items=1)
     check('the batch limit: the oldest-expiring expired item first (73MHz before 78MHz at the same expiry)',
