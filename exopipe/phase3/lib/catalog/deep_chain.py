@@ -691,7 +691,8 @@ class DeepRun:
                     w.writerow(dict(cell=a['cell'], stokes=a['stokes'], node=a['node'], att=a['att'], dir=a['dir'],
                                     harvested='1' if a['harvested'] else '0', label=self.label,
                                     patched='1' if src is not None else '0', patched_from=src or ''))
-            os.replace(man + '.tmp', man)
+            from exopipe.phase3.core import placement
+            placement.replace(man + '.tmp', man, drop=True)     # the directory's group and ACL, or the replaced file's
             u.meta['state_dir'] = state
             u.meta['harvest_manifest'] = man
             u.meta['patched_attempts'] = n_patched
@@ -886,7 +887,8 @@ class DeepRun:
             w = csv.DictWriter(f, fieldnames=cols)
             w.writeheader()
             w.writerows(keep)
-        os.replace(out + '.tmp', out)
+        from exopipe.phase3.core import placement
+        placement.replace(out + '.tmp', out, drop=True)     # the directory's group and ACL, or the replaced file's
         u.meta['merged_attempts'] = {'n': len(keep), 'stale_left_out': sorted(map(list, stale))}
         return out
 

@@ -172,7 +172,8 @@ def _write(path, cols, rows):
         w = csv.DictWriter(fh, fieldnames=cols, extrasaction='ignore')
         w.writeheader()
         w.writerows(rows)
-    os.replace(path + '.part', path)
+    from exopipe.phase3.core import placement
+    placement.replace(path + '.part', path, drop=True)    # the directory's group and ACL, or the replaced file's
 
 
 def _veto(r):

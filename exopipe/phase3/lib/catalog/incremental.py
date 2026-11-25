@@ -169,7 +169,8 @@ def _write_csv(path, header, rows):
         w = csv.writer(f)
         w.writerow(header)
         w.writerows(rows)
-    os.replace(tmp, path)
+    from exopipe.phase3.core import placement
+    placement.replace(tmp, path, drop=True)        # the directory's group and ACL, or the replaced file's (core/placement.py)
 
 
 def _write_json(path, obj):
@@ -177,7 +178,8 @@ def _write_json(path, obj):
     tmp = f'{path}.tmp.{os.getpid()}'
     with open(tmp, 'w') as f:
         json.dump(obj, f, indent=1, sort_keys=True, default=str)
-    os.replace(tmp, path)
+    from exopipe.phase3.core import placement
+    placement.replace(tmp, path, drop=True)
 
 
 def _load_module_from(path, name):

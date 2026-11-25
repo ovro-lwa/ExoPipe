@@ -77,7 +77,8 @@ def _atomic(path, write):
     tmp = os.path.join(d, f'.{os.path.basename(path)}.tmp.{os.getpid()}')
     with open(tmp, 'w', newline='') as f:
         write(f)
-    os.replace(tmp, path)
+    from exopipe.phase3.core import placement
+    placement.replace(tmp, path, drop=True)        # the directory's group and ACL, or the replaced file's (core/placement.py)
     return path
 
 

@@ -282,7 +282,8 @@ def _loo_arith(V, T, NV, norm):
         w.writerow(['subband', 'factor'])
         for b, v in k2.items():
             w.writerow([b, f'{v:.6f}'])
-    os.replace(tmp, NV)
+    from exopipe.phase3.core import placement
+    placement.replace(tmp, NV, drop=True)          # the directory's group and ACL, or the replaced file's (core/placement.py)
     worst = max(abs(v) for v in m.values())
     return worst, m
 
@@ -383,13 +384,14 @@ def fc_table(ctx):
             w.writerow(TABLE_COLS)
             for r in rows:
                 w.writerow([r[c] for c in TABLE_COLS])
-        os.replace(out + '.tmp', out)
+        from exopipe.phase3.core import placement
+        placement.replace(out + '.tmp', out, drop=True)    # the directory's group and ACL, or the replaced file's
         shp = out.replace('.csv', '_shcells.csv')
         with open(shp + '.tmp', 'w', newline='') as f:
             w = csv.writer(f)
             w.writerow(['lst', 'scope', 'sh_over_k', 'err'])
             w.writerows(sh)
-        os.replace(shp + '.tmp', shp)
+        placement.replace(shp + '.tmp', shp, drop=True)
         K.write_json(provenance_path(out), {'class': 'fluxcorr_table', 'stagea': files, 'band_vector': vec, 'scale_table': scale,
                                             'shcells': shp, 'version': ver, 'yyyymmdd': ymd, 'fit': fit})
         u.note(f"g {fit['g']:.6f} +- {fit['g_err']:.6f} over {fit['n']} cells (reduced chi {fit['chi']:.3f}; ivw {fit['g_ivw']:.6f})")

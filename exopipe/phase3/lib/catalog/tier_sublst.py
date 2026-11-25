@@ -1014,7 +1014,8 @@ def _read_catalog(U):
 
 
 def _write_rule(U, hdr, keep, gone, extra_col, removed_name):
-    """The heredocs' writes: csv.DictWriter, master_catalog.csv.new + os.replace."""
+    """The heredocs' writes: csv.DictWriter, master_catalog.csv.new + os.replace (through core/placement: the replaced
+    table's group and ACL)."""
     with open(f'{U}/master_catalog.csv.new', 'w', newline='') as f:
         w = csv.DictWriter(f, fieldnames=hdr)
         w.writeheader()
@@ -1023,7 +1024,8 @@ def _write_rule(U, hdr, keep, gone, extra_col, removed_name):
         w = csv.DictWriter(f, fieldnames=hdr + [extra_col])
         w.writeheader()
         w.writerows(gone)
-    os.replace(f'{U}/master_catalog.csv.new', f'{U}/master_catalog.csv')
+    from exopipe.phase3.core import placement
+    placement.replace(f'{U}/master_catalog.csv.new', f'{U}/master_catalog.csv', drop=True)   # the replaced file's group, ACL
 
 
 def _imp(root, name):

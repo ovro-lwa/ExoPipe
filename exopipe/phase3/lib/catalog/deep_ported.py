@@ -20,7 +20,8 @@ def _atomic_dictwriter_rows(path, fieldnames, rows, extrasaction='raise'):
         w = csv.DictWriter(f, fieldnames=fieldnames, extrasaction=extrasaction)
         w.writeheader()
         w.writerows(rows)
-    os.replace(tmp, path)
+    from exopipe.phase3.core import placement
+    placement.replace(tmp, path, drop=True)        # the directory's group and ACL, or the replaced file's (core/placement.py)
 
 
 def split_selection(run_dir, stokes=('V', 'I'), tiers=('wb', 'sb')):

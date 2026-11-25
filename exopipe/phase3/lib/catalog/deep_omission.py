@@ -1219,7 +1219,8 @@ def write_decisions(path, rows, tier):
             w = csv.DictWriter(fh, fieldnames=list(rows[0]))
             w.writeheader()
             w.writerows(rows)
-    os.replace(path + '.tmp', path)
+    from exopipe.phase3.core import placement
+    placement.replace(path + '.tmp', path, drop=True)     # the directory's group and ACL, or the replaced file's
 
 
 # =====================================================================================================================
@@ -1599,7 +1600,8 @@ def write_served(path, served):
         w.writerow(SERVED_COLS)
         for k in sorted(served):
             w.writerow(list(k) + [served[k]])
-    os.replace(path + '.tmp', path)
+    from exopipe.phase3.core import placement
+    placement.replace(path + '.tmp', path, drop=True)     # the directory's group and ACL, or the replaced file's
 
 
 def read_served(path):
@@ -1874,7 +1876,8 @@ def write_record(path, rows, cols):
         w.writeheader()
         for r in rows:
             w.writerow({k: r.get(k, '') for k in cols})
-    os.replace(path + '.tmp', path)
+    from exopipe.phase3.core import placement
+    placement.replace(path + '.tmp', path, drop=True)     # the directory's group and ACL, or the replaced file's
 
 
 def page_line(n):
@@ -2111,7 +2114,8 @@ def write_rejudged(path, rows):
         w = csv.DictWriter(fh, fieldnames=list(rows[0].keys()) if rows else ['batch'], extrasaction='ignore')
         w.writeheader()
         w.writerows(rows)
-    os.replace(path + '.tmp', path)
+    from exopipe.phase3.core import placement
+    placement.replace(path + '.tmp', path, drop=True)     # the directory's group and ACL, or the replaced file's
 
 
 def tenmin_table(lsts, out_csv, rdir=None, cache_dir=None, seed_dir=None, reader=None, frame_rms=None):
@@ -2203,12 +2207,15 @@ def _record_gate(rdir):
 
 
 def _write_summary(out, summ, n_om, line2):
+    from exopipe.phase3.core import placement      # each file: the directory's group and ACL, or the replaced file's
     with open(os.path.join(out, 'deep_omission_summary.txt.tmp'), 'w') as fh:
         fh.write(page_line(n_om) + '\n' + line2 + '\n')
-    os.replace(os.path.join(out, 'deep_omission_summary.txt.tmp'), os.path.join(out, 'deep_omission_summary.txt'))
+    placement.replace(os.path.join(out, 'deep_omission_summary.txt.tmp'), os.path.join(out, 'deep_omission_summary.txt'),
+                      drop=True)
     with open(os.path.join(out, 'deep_omission_summary.json.tmp'), 'w') as fh:
         json.dump(summ, fh, indent=1, default=str)
-    os.replace(os.path.join(out, 'deep_omission_summary.json.tmp'), os.path.join(out, 'deep_omission_summary.json'))
+    placement.replace(os.path.join(out, 'deep_omission_summary.json.tmp'), os.path.join(out, 'deep_omission_summary.json'),
+                      drop=True)
 
 
 # =====================================================================================================================

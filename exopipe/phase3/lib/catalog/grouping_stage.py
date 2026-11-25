@@ -172,7 +172,8 @@ def _write_csv(path, cols, rows):
         w = csv.DictWriter(f, fieldnames=list(cols))
         w.writeheader()
         w.writerows(rows)
-    os.replace(tmp, path)
+    from exopipe.phase3.core import placement
+    placement.replace(tmp, path, drop=True)        # the directory's group and ACL, or the replaced file's (core/placement.py)
     return path
 
 
@@ -252,7 +253,8 @@ def write_products(det, res, tier, stokes, out_dir, inputs, mode_, d=None):
     p = os.path.join(d, SUMMARY)
     with open(p + '.tmp', 'w') as f:
         json.dump(summ, f, indent=1, sort_keys=True, default=str)
-    os.replace(p + '.tmp', p)
+    from exopipe.phase3.core import placement
+    placement.replace(p + '.tmp', p, drop=True)
     paths['summary'] = p
     return paths, summ
 

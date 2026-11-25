@@ -484,7 +484,8 @@ def diff(old, new, out=None, remade_roots=None, records_roots=None):
         w = csv.DictWriter(f, fieldnames=COLS)
         w.writeheader()
         w.writerows(rows)
-    os.replace(os.path.join(out, CSV_NAME + ".part"), os.path.join(out, CSV_NAME))
+    from exopipe.phase3.core import placement
+    placement.replace(os.path.join(out, CSV_NAME + ".part"), os.path.join(out, CSV_NAME), drop=True)   # group, ACL
     counts = collections.OrderedDict(
         prev_served=len(prev), **{c: cnt[c] for c in CAUSES}, restored=len(restored), restored_served=len(rs_served),
         gained=sum(gained.values()), gained_restored=gained["restored"], gained_other=gained["other"], new_record_rows=n_rows,

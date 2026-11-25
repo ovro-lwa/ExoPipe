@@ -56,7 +56,8 @@ def write_manifest(dirpath, out_path):
     tmp = f'{out_path}.part'
     with open(tmp, 'wb') as f:
         f.write(data)
-    os.replace(tmp, out_path)
+    from exopipe.phase3.core import placement
+    placement.replace(tmp, out_path, drop=True)    # the directory's group and ACL, or the replaced file's (core/placement.py)
     return len(names), hashlib.md5(data).hexdigest()
 
 

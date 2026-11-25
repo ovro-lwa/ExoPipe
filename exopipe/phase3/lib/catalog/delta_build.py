@@ -492,7 +492,8 @@ def _put(path, text):
     os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
     with open(path + '.part', 'w', newline='') as f:
         f.write(text)
-    os.replace(path + '.part', path)
+    from exopipe.phase3.core import placement
+    placement.replace(path + '.part', path, drop=True)    # the directory's group and ACL, or the replaced file's
 
 
 def _det_col(head, path):
@@ -1012,7 +1013,8 @@ def view_tie(root, tie, frozen_from, keys):
     dst = os.path.join(root, TIE)
     with open(dst + '.part', 'wb') as f:
         f.write(data)
-    os.replace(dst + '.part', dst)
+    from exopipe.phase3.core import placement
+    placement.replace(dst + '.part', dst, drop=True)      # the directory's group and ACL, or the replaced file's
     return dict(source=tie, sha256=hashlib.sha256(data).hexdigest(), rows=len(rows))
 
 
