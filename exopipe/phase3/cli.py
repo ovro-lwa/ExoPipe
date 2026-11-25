@@ -411,6 +411,18 @@ def main(argv=None):
         for _k, _v, _src in (_step_set(args) if _step_set else ()):
             CFG.set(_k, _v, source=_src)
         out = args.out or mod.default_out(args)
+        # a VERSIONED RUN (lib/serve/versions.py) is written through its work directory, never through the version its pointer
+        # names: resolved here, before every guard below (check_out, the injected-run guard, the flag checks, _guard_out), so
+        # each checks the directory the step writes; its writer lock is taken after them (below)
+        versioned_out = getattr(mod, 'WRITES', True) and name != 'run'
+        if versioned_out:
+            from exopipe.phase3.lib.serve import versions as _versions
+            out_given = out
+            try:
+                out = _versions.writer_out(out, lock=False)
+            except _versions.Refusal as e:
+                print(f'REFUSED: {e}', file=sys.stderr)
+                return record.EXIT_REFUSED
         CFG.check_out(out)
         from exopipe.phase3.core import fallback as _fb, wrap as _wr
         from exopipe.phase3.lib.catalog import deep_omission as _do
@@ -436,8 +448,9 @@ def main(argv=None):
                 default = mod.default_out(args)
             except Exception:                  # noqa: BLE001 - the --out given is still checked against every refused root
                 default = None
+            lockf = _versions.writer_lock_of(out) if versioned_out and not args.dry_run else None
             roots = _inj.begin(inj, out, explicit_out=bool(args.out), work=args.work, default_out=default,
-                               writes=getattr(mod, 'WRITES', True))
+                               writes=getattr(mod, 'WRITES', True), locks=[lockf] if lockf else [])
             print(f'{_inj.LABEL} ({inj}): writes allowed only under {", ".join(roots)}', file=sys.stderr)
         if name != 'run':                      # destination flags (injected) / an injected --out and sources (ordinary)
             _inj.check_flags(name, args, out, writes=getattr(mod, 'WRITES', True))
@@ -449,15 +462,17 @@ def main(argv=None):
         if why:
             print(f'REFUSED: {why}', file=sys.stderr)
             return record.EXIT_REFUSED
-    if getattr(mod, 'WRITES', True) and name != 'run':
-        # a VERSIONED RUN (lib/serve/versions.py) is written through its work directory, never through the version its
-        # pointer names; the writer lock is kept until this process ends, so a serve's snapshot never clones a half-written
-        # run (a run placed whole by its builder - the sub-LST runs - has no work directory: refused)
-        from exopipe.phase3.lib.serve import versions as _versions
+    if versioned_out and not args.dry_run:
+        # the writer lock (shared), kept until this process ends: a serve's snapshot or a conversion never reads a half-written
+        # run; the output resolved again under it must be the one the guards checked (a conversion in between: refused)
         try:
-            out = _versions.writer_out(out, lock=not args.dry_run)
+            locked = _versions.writer_out(out_given, lock=True)
         except _versions.Refusal as e:
             print(f'REFUSED: {e}', file=sys.stderr)
+            return record.EXIT_REFUSED
+        if locked != out:
+            print(f'REFUSED: --out {out_given} resolved to {out} for the guards and to {locked} under its writer lock (the run '
+                  f'was converted meanwhile) - nothing written; run the step again', file=sys.stderr)
             return record.EXIT_REFUSED
     if args.parity and name != 'run' and not inj:   # `run submit --parity` forwards it to every step command instead;
         if not args.out:                            # an injected run's guard (above) already confines every write

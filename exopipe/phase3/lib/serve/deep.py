@@ -29,20 +29,28 @@ THE VERSIONED DEEP RUN (lib/serve/versions.py, the pointer of the sub-LST runs; 
 production rewrites the served deep run in place while its pages read it (the publish marker says so). Once converted, U is
 a pointer to a sealed version, R/work/<name> (R = versions.root_of(U)) is the WORK DIRECTORY every writer step of the run
 writes (catalog, forced catflux, pages: cli.main and the steps resolve U through versions.writable, holding its writer lock
-while they run), and a serve publishes a NEW VERSION:
-convert (unit deep_<run>_convert; only when named, once)  the legacy run cloned as a version (versions.snapshot: a
-       copy-on-write clone under the writer lock, tested against the run in content), its page index, sealed, then - under
-       the journal locks - U switched to it with the legacy directory moved to the work directory (versions.switch
-       to_work) and the journal lines written on it since the clone appended. Every later serve publishes as below.
+SHARED while they run - also before the conversion, for a run in the deep served-run root: versions.convertible), and a
+serve publishes a NEW VERSION:
+convert (unit deep_<run>_convert; only when named, once)  under the run's writer lock held EXCLUSIVE from the clone to the
+       switch (versions.writer_lock: it waits for every writer step, G31 after serve.WRITER_LOCK_WAIT_S; a writer step that
+       starts meanwhile resolves U after it, so it writes the work directory): the legacy run cloned as a version
+       (versions.snapshot: its manifest read once, then a copy-on-write clone), its page index, sealed (the clone tested
+       against that manifest, nothing may differ; G32: no file names the work directory), then - under the journal locks,
+       the journal directories listed again until none is new - U switched to it with the legacy directory moved to the
+       work directory (versions.switch to_work) and the journal lines written on it since the clone appended; a journal
+       begun on it across the switch is caught up under its own lock. Every later serve publishes as below.
 snapshot (unit deep_<run>_snapshot)  the owed catch-up first (sublst_build.catchup_stage); the work directory cloned as a
-       new unsealed version (versions.snapshot, under the writer lock: no writer step writes it meanwhile); the served
+       new unsealed version (versions.snapshot: under the writer lock, exclusive - no writer step writes it meanwhile - its
+       manifest read ONCE and the clone made; a file or link naming the work directory names U in the version); the served
        version's judgement journals (versions.journal_dirs) copied into it under the journal locks.
 views, test, carry  as above on the snapshot (no publish marker: nobody reads it yet).
 switch (unit deep_<run>_switch)  the snapshot's page index, the seal (every page's queue and view present, the index
-       current, the manifest), then under the journal locks U switched to it (refused when U names another version than
-       the one whose journals were copied) and the lines journalled on the old version since the copy appended
-       (journals.append_between; a failure is OWED: versions.owe_catchup). A refusal before the switch discards the
-       snapshot; U unchanged.
+       current, the clone its source wherever the publish did not write, G32: no file or link names the work directory, the
+       manifest), then under the journal locks - the served version's journal directories listed again under them until
+       none is new, a new one copied in first - U switched to it (refused when U names another version than the one whose
+       journals were copied) and the lines journalled on the old version since the copy appended (journals.append_between);
+       a journal begun on the old version across the switch caught up under its own lock; a failure is OWED:
+       versions.owe_catchup. A refusal before the switch discards the snapshot; U unchanged.
 start, hub, verify  as above, on U (the new version).
 These run together (views, test, start; carry with --carry-from) through U's coalescing slot (lib/serve/coalesce.py):
 one publish at a time, a request during one gets one follow-up. retire (only when named): the retention of U's versions
@@ -189,45 +197,139 @@ def convert_stage(run, plan):
             u.refuse(f'convert: no run directory {U}')
         versions._guard(U, 'the conversion of')
         legacy = os.path.realpath(U)
-        R = versions.root_of(U)
-        os.makedirs(R, exist_ok=True)
-        versions.hold_writer(R)          # until this serve ends: no writer step writes the run while it is converted
-        v, info = versions.snapshot(U, legacy, note=_note(u))
-        u.meta.update(version=v.vid, clone=info['clone'], content=info['stats'])
-        u.note(f'cloned {legacy} as version {v.vid} ({info["clone"]}); content test: {info["content"][:300]}')
-        J = versions.journal_dirs(legacy)
-        switched = False
-        try:
-            flow.build_page_index(u, v.run)
-            rec = versions.seal(v, checks=[('page_index_current', SB.index_check)], note=_note(u))
-            with versions.journal_locks(U, J):
-                sw = versions.switch(U, v, note=_note(u), record=rec, to_work=True)
-                switched = True
+        state = {'switched': False}
+        # the writer lock EXCLUSIVE from before the clone to after the switch: the conversion waits for every writer step of the
+        # run (G31 after serve.WRITER_LOCK_WAIT_S), and a writer step that starts meanwhile resolves U after it: the work directory
+        with versions.writer_lock(U, what=f'the conversion of {U}'):
+            v, info = versions.snapshot(U, legacy, note=_note(u))
+            u.meta.update(version=v.vid, clone=info['clone'], source=info['source'], lock_s=info['lock_s'])
+            u.note(f'cloned {legacy} as version {v.vid} ({info["clone"]}); its manifest read once: '
+                   f'{info["source"]["n_hashed"]} files, {info["source"]["hashed_bytes"]} bytes hashed')
+            try:
+                flow.build_page_index(u, v.run)
+                rec = versions.seal(v, checks=[('page_index_current', SB.index_check)], note=_note(u),
+                                    forbid=[versions.work_path(U)], source_strict=True)
+
+                def switch():
+                    sw = versions.switch(U, v, note=_note(u), record=rec, to_work=True)
+                    state['switched'] = True
+                    return sw
+
+                def after(sw, J):
+                    try:
+                        return journals.append_between(sw['converted'], U, J)
+                    except Exception as e:
+                        raise Refusal(SB._owe(plan, v, None, sw['converted'], False, {}, e, journal_dirs=J)) from e
+                sw, J, app = _switch_journalled(U, v, versions.journal_dirs(legacy), lambda: legacy, switch, after)
                 W = sw['converted']
-                try:
-                    app = journals.append_between(W, U, J)
-                except Exception as e:
-                    raise Refusal(SB._owe(plan, v, None, W, False, {}, e, journal_dirs=J)) from e
-        except Exception as e:
-            if not switched and os.path.isdir(v.dir):
-                _discard(v, e, _note(u))
-            raise
-        u.meta.update(work=W, journals=J, caught_up=app)
-        u.note(f'CONVERTED: {U} -> version {v.vid} (sealed: {rec["n_files"]} files, {rec["n_bytes"]} bytes); the legacy '
-               f'directory {legacy} is the work directory {W} (every writer step writes it); journal lines written on it '
-               f'since the clone, appended: {app}')
+                late = _late_journals(plan, v, None, U, [W, legacy], J)
+            except Exception as e:
+                if not state['switched'] and os.path.isdir(v.dir):
+                    _discard(v, e, _note(u))
+                raise
+        u.meta.update(work=W, journals=J, caught_up=app, late_journals=late, source_check=rec.get('source_check'))
+        u.note(f'CONVERTED: {U} -> version {v.vid} (sealed: {rec["n_files"]} files, {rec["n_bytes"]} bytes; the clone is its '
+               f'source: {rec.get("source_check")}); the legacy directory {legacy} is the work directory {W} (every writer '
+               f'step writes it); journal lines written on it since the clone, appended: {app}; journals begun on it across '
+               f'the switch, caught up: {late}')
         u.add_output(v.path('VERSION.json'), 'run_version', pointer=U)
-        _journal_outputs(u, U, J, W)
+        _journal_outputs(u, U, sorted(set(J) | set(late)), W)
     return u
 
 
 def _discard(v, e, note):
     """Discard the never-served version ``v`` after the refusal ``e`` (a failure is added to e's text, never in its place)."""
-    from exopipe.phase3.lib.serve import sublst_build as SB
     try:
         versions.discard(v, note=f'{note}: refused before the switch')
     except Exception as e2:
-        SB._add_failure(e, f' - AND version {v.vid} could not be discarded ({e2}): retention retires it')
+        versions.add_failure(e, f' - AND version {v.vid} could not be discarded ({e2}): retention retires it')
+
+
+JOURNAL_ROUNDS = 20      # the switch re-lists the journal directories under their locks until none is new; then it refuses
+
+
+def _seed_journals(src, run, js):
+    """The journals ``js`` of ``src`` into the unsealed ``run``: copied when ``run`` has none (sublst_copy_journals), else
+    the lines it lacks appended (append_between). The caller holds their journal locks."""
+    for J in js:
+        if os.path.exists(os.path.join(run, J, 'judgements.jsonl')):
+            journals.append_between(src, run, [J])
+        else:
+            journals.sublst_copy_journals(src, run, journals=[J])
+
+
+def _switch_journalled(U, v, J, src_of, switch, after):
+    """THE SWITCH UNDER THE JOURNAL LOCKS: under the locks of the journal directories J, ``src_of()`` (the run labels are posted
+    to now; it may refuse) is listed again; a journal directory begun on it since J was listed (a first label on a page) is
+    copied into ``v`` under its lock and the list taken again with it, until none is new (JOURNAL_ROUNDS, else Refusal); then
+    ``switch()`` and ``after(sw, J)`` (the catch-up of J's lines) inside the same locks. Returns (sw, J, after's result)."""
+    J, pending = sorted(set(J)), []
+    for _ in range(JOURNAL_ROUNDS):
+        with versions.journal_locks(U, J + pending):
+            src = src_of()
+            if pending:
+                _seed_journals(src, v.run, pending)
+                J = sorted(set(J) | set(pending))
+            pending = [x for x in versions.journal_dirs(src) if x not in J]
+            if pending:
+                continue                               # the locks again, with the new journals
+            sw = switch()
+            return sw, J, after(sw, J)
+    raise Refusal(f'journal directories kept appearing on the served run while {U} was switched ({JOURNAL_ROUNDS} rounds; '
+                  f'the last: {pending}) - not switched')
+
+
+def _late_journals(plan, v, prev, U, olds, J):
+    """THE JOURNALS BEGUN ON THE OLD RUN ACROSS THE SWITCH: a journal directory of ``olds`` (the old version's run; for a
+    conversion the work directory and the legacy path) not in J - a first label whose POST held that journal's lock, which the
+    switch did not hold - is caught up into U under its own lock (the POST is done by then; a later one is answered by a page
+    of the new version), until none is new. A failure is OWED (sublst_build._owe). Returns {journal: lines appended}."""
+    from exopipe.phase3.lib.serve import sublst_build as SB
+    out = {}
+    try:
+        for _ in range(JOURNAL_ROUNDS):
+            new = [x for x in versions.journal_dirs(*[o for o in olds if os.path.isdir(o)]) if x not in J and x not in out]
+            if not new:
+                return out
+            with versions.journal_locks(U, new):
+                for o in olds:
+                    if os.path.isdir(o):
+                        for k, n in _merge_old_first(o, U, new).items():
+                            out[k] = out.get(k, 0) + n
+        raise Refusal(f'journal directories kept appearing on {olds[0]} after the switch ({JOURNAL_ROUNDS} rounds)')
+    except Exception as e:
+        allj = versions.journal_dirs(*[o for o in olds if os.path.isdir(o)])
+        raise Refusal(SB._owe(plan, v, prev, olds[0], False, {}, e, journal_dirs=allj)) from e
+
+
+def _merge_old_first(old, U, js):
+    """The lines of the journals ``js`` of the run ``old`` into U's (the caller holds their journal locks): a journal U lacks is
+    appended (journals.append_between); one a page of U's version began since the switch is written anew (a temporary file
+    renamed over it) as the old run's lines, then U's lines the old run lacks - the labels in the order they were posted.
+    Returns {journal: old lines U lacked}."""
+    out = {}
+    for J in js:
+        a, b = os.path.join(old, J, 'judgements.jsonl'), os.path.join(U, J, 'judgements.jsonl')
+        if not os.path.exists(a):
+            continue
+        if not os.path.exists(b):
+            out[J] = journals.append_between(old, U, [J]).get(J, 0)
+            continue
+        with open(a) as f:
+            olds = [x for x in f.read().splitlines() if x.strip()]
+        with open(b) as f:
+            news = [x for x in f.read().splitlines() if x.strip()]
+        have, seen = set(news), set(olds)
+        add = [x for x in olds if x not in have]
+        if add:
+            tmp = f'{b}.merge.{os.getpid()}'
+            with open(tmp, 'w') as f:
+                f.write('\n'.join(olds + [x for x in news if x not in seen]) + '\n')
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, b)
+        out[J] = len(add)
+    return out
 
 
 def snapshot_stage(run, plan, state):
@@ -238,7 +340,7 @@ def snapshot_stage(run, plan, state):
         W = versions.work_path(U)
         if not os.path.isdir(W):
             u.refuse(f'{U} is versioned but has no work directory {W} - not published')
-        v, info = versions.snapshot(U, W, note=_note(u))
+        v, info = versions.snapshot(U, W, note=_note(u), public=(W, os.path.abspath(U)))
         try:
             cur = versions.served(U)
             J = versions.journal_dirs(cur.run, v.run)
@@ -252,10 +354,14 @@ def snapshot_stage(run, plan, state):
             _discard(v, e, _note(u))
             raise
         state.update(version=v, seed_version=cur.vid, journals=J)
-        u.meta.update(version=v.vid, clone=info['clone'], content=info['stats'], seeded_from=cur.vid, journals=J,
-                      journals_copied=len(copied))
-        u.note(f'snapshot of {W} as version {v.vid} ({info["clone"]}); content test: {info["content"][:300]}; '
-               f'{len(copied)} journal(s) of the served version {cur.vid} copied in under the journal locks')
+        src = info['source']
+        u.meta.update(version=v.vid, clone=info['clone'], source=src, lock_s=info['lock_s'], lock_wait_s=info['lock_wait_s'],
+                      public=info['public'], seeded_from=cur.vid, journals=J, journals_copied=len(copied))
+        u.note(f'snapshot of {W} as version {v.vid} ({info["clone"]}); under the writer lock ({info["lock_s"]} s, waited '
+               f'{info["lock_wait_s"]} s) its manifest read once: {src["n_hashed"]} files, {src["hashed_bytes"]} bytes hashed '
+               f'in {src["hash_s"]} s (walk {src["walk_s"]} s); {len(info["public"])} files or links naming {W} made to name '
+               f'{os.path.abspath(U)} in the version (e.g. {info["public"][:3]}); {len(copied)} journal(s) of the served '
+               f'version {cur.vid} copied in under the journal locks')
         u.add_output(v.path('BUILDING.json'), 'run_version_placed')
     return u
 
@@ -267,34 +373,46 @@ def switch_stage(run, plan, state):
     with run.unit(f'deep_{plan.run_name}_switch', stage='switch', tier='deep', version=getattr(v, 'vid', None)) as u:
         if v is None:
             u.refuse('no snapshot version (the snapshot unit did not make one)')
-        switched = False
         try:
             flow.build_page_index(u, v.run)                # no publish marker on a version nobody reads yet
             rec = versions.seal(v, required=SB.seal_required(plan, state, v.run),
-                                checks=[('page_index_current', SB.index_check)], note=_note(u))
+                                checks=[('page_index_current', SB.index_check)], note=_note(u),
+                                forbid=[versions.work_path(plan.U)])
             u.note(f'version {v.vid} sealed: {rec["n_files"]} files, {rec["n_bytes"]} bytes (manifest walk {rec["walk_s"]} s; '
-                   f'{rec["n_hashed"]} files, {rec["hashed_bytes"]} bytes hashed in {rec["hash_s"]} s)')
-            with versions.journal_locks(plan.U, J):
+                   f'{rec["n_hashed"]} files, {rec["hashed_bytes"]} bytes hashed in {rec["hash_s"]} s); the clone is its '
+                   f'source: {rec.get("source_check")}')
+
+            def served_seed():
                 cur = versions.served(plan.U)
                 if cur is None or cur.vid != state.get('seed_version'):
-                    raise Refusal(f'{plan.U} names {cur.vid if cur else "no version"}, not {state.get("seed_version")} whose '
-                                  f'journals the snapshot holds - not switched')
+                    raise Refusal(f'{plan.U} names {cur.vid if cur else "no version"}, not {state.get("seed_version")} '
+                                  f'whose journals the snapshot holds - not switched')
+                return cur.run
+
+            def switch():
                 sw = versions.switch(plan.U, v, note=_note(u), record=rec)
-                switched = state['switched'] = True       # served now: never discarded, also when the catch-up fails
-                prev = sw['previous']
+                state['switched'] = True                   # served now: never discarded, also when the catch-up fails
+                return sw
+
+            def after(sw, J):
                 try:
-                    app = SB.catch_up(prev.run, plan.U, False, {}, journal_dirs=J)
+                    return SB.catch_up(sw['previous'].run, plan.U, False, {}, journal_dirs=J)
                 except Exception as e:
-                    raise Refusal(SB._owe(plan, v, prev, prev.run, False, {}, e, journal_dirs=J)) from e
+                    raise Refusal(SB._owe(plan, v, sw['previous'], sw['previous'].run, False, {}, e, journal_dirs=J)) from e
+            sw, J, app = _switch_journalled(plan.U, v, J, served_seed, switch, after)
+            prev = sw['previous']
+            late = _late_journals(plan, v, prev, plan.U, [prev.run], J)
         except Exception as e:
-            if not switched and v is not None and os.path.isdir(v.dir):
+            if not state.get('switched') and v is not None and os.path.isdir(v.dir):
                 _discard(v, e, _note(u))
             raise
-        u.meta.update(version=v.vid, previous=prev.vid, caught_up=app)
+        state['journals'] = J
+        u.meta.update(version=v.vid, previous=prev.vid, caught_up=app, journals=J, late_journals=late,
+                      source_check=rec.get('source_check'))
         u.note(f'switched: {plan.U} -> version {v.vid} (previous {prev.vid}); {sw["verify"]}; journal lines written on '
-               f'{prev.vid} since the copy, appended: {app}')
+               f'{prev.vid} since the copy, appended: {app}; journals begun on it across the switch, caught up: {late}')
         u.add_output(v.path('VERSION.json'), 'run_version', pointer=plan.U)
-        _journal_outputs(u, plan.U, J, prev.run)
+        _journal_outputs(u, plan.U, sorted(set(J) | set(late)), prev.run)
     return u
 
 

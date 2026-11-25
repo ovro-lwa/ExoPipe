@@ -1326,10 +1326,11 @@ def gate_tier_run(args):
     """C-RUN: the tier tool reads the deep run it names by literal path (photometry_cutouts.TIER_DEEP_RUN); a --src-run /
     --run naming another run refuses (the tool cannot be pointed there in the window)."""
     from exopipe.phase3.lib.photometry import steps_deep as KD
+    from exopipe.phase3.lib.serve import versions
     if not (getattr(args, 'src_run', None) or getattr(args, 'run_label', None)):
         return
-    s = KD.src_run(args)
-    if os.path.realpath(s) != os.path.realpath(_cc().TIER_DEEP_RUN):
+    s = KD.src_run(args)                 # a versioned deep run: its work directory (versions.reads), on both sides
+    if os.path.realpath(s) != os.path.realpath(versions.reads(_cc().TIER_DEEP_RUN)):
         raise Refusal('C-RUN: --src-run / --run %s is not the deep run the tier tool reads (%s; '
                       'photometry_tier_cutouts_20261025.py:46 DEEP)' % (s, _cc().TIER_DEEP_RUN))
 

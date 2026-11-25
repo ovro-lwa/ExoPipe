@@ -5,15 +5,20 @@ checks, runnable with python, under a minute. Scratch under $TMPDIR.
 
     NUMPY_MADVISE_HUGEPAGE=0 /opt/devel/pipeline/envs/py38_orca_nkosogor/bin/python3 tests/test_publish_versions_deep_lst.py
 
-1. The work directory: work_path / work_root; writable(U) of a legacy run is U (no lock without a versions root), of a pointer
-   its work directory (its writer lock taken and kept), of a pointer without one a refusal; writer_out leaves any other
-   directory unchanged.
+1. The work directory: work_path / work_root; writable(U) of a legacy run is U, of a pointer its work directory, of a pointer
+   without one a refusal - the writer lock (beside the versions root, the same file before and after a conversion) taken
+   shared and kept; writer_out takes it for a run that may be converted (its lock file exists, or it lies in the deep
+   served-run root) and leaves any other directory unchanged.
 2. clone and same_content: the clone holds the run (copy-on-write where the file system makes them, else a full copy under
    serve.RUN_VERSIONS_COPY_MAX_BYTES, a larger run refused with nothing copied); a write to the clone never reaches the source;
    same_content passes a copy and fails a changed content of equal size, an added file, a changed link; the review state is
    left out.
-3. snapshot and discard: the snapshot waits for the writer lock another holder has; a failed content test discards it;
-   discard removes an unsealed version (logged), refuses a served one.
+3. snapshot, seal and discard: the snapshot waits for a writer step's shared lock (G31 after serve.WRITER_LOCK_WAIT_S, no
+   version left) and reads the source once under it (SOURCE_MANIFEST.tsv); a file or link naming the source names the public
+   path in the version (the source untouched); the seal refuses a version naming the forbidden path (G32), a clone whose file
+   of the source's size and time has other content, and - strict - any change since the snapshot; a failed snapshot is
+   discarded, and a discard that fails too is added to the cause; a writer step does not snapshot its own run; discard
+   removes an unsealed version (logged), refuses a served one.
 4. Conversion (switch with to_work): the legacy run is the work directory, U a pointer to its sealed clone; a failure to write
    the pointer moves it back; a work directory already there refuses with nothing moved.
 5. stamp / pinned / moved: a switch during the block (also away and back) is seen, a log written into a legacy run is not;
@@ -21,20 +26,29 @@ checks, runnable with python, under a minute. Scratch under $TMPDIR.
 6. The per-LST placement as a version: the first placement adopts the legacy run, the next one is a new version with the
    unchanged files hard-linked from the served one and the review state on its own inodes; the previous version is unchanged;
    a placement that is not the page run, or whose page run fails its own content tests, is discarded before the switch, U
-   unchanged; PLACE_DELETE False refuses.
+   unchanged; the seal's page-run tests are the unit's output tests when the version is unchanged since, else run again.
 7. G30: the cumulative build refuses when an LST run was switched while the merge read it, not when nothing was switched (a
    log written in a legacy LST run included); the read versions are held during the merge and recorded.
-8. The deep serve on a versioned run: convert (the journal lines written on the legacy run during the conversion caught up),
-   a publish (snapshot of the work directory, the served journals copied in, the lines written on the old version during the
-   publish caught up, the old version unchanged), a refused stage discards the snapshot, a switch of U by another serve during
-   the publish refuses, a failed catch-up is owed and completed by the next serve, a partial stage selection refuses, convert
-   twice is no-input, a parity convert refuses, retire runs for deep.
+8. The deep serve on a versioned run: a writer step started before the conversion blocks it (G31 after
+   serve.WRITER_LOCK_WAIT_S, nothing converted; with the full wait the conversion follows the writer); a writer step that
+   waited for the conversion writes the work directory; convert (the journal lines written on the legacy run during the
+   conversion caught up), a publish (snapshot of the work directory, a log naming it made to name U, the served journals
+   copied in, the lines written on the old version during the publish caught up, a journal begun on it during the publish -
+   a first label - in the served version, the old version unchanged), a journal begun on the old version across the switch
+   merged with its lines first, G32 refuses a version naming the work directory, G31 in a publish refuses and frees the
+   coalescing slot, a refused stage discards the snapshot, a switch of U by another serve during the publish refuses, a
+   failed catch-up is owed and completed by the next serve, a partial stage selection refuses, convert twice is no-input, a
+   parity convert refuses, retire runs for deep.
+9. cli: an injected run with --out U (a versioned run) is guarded on U's work directory and its writer lock, never on the
+   version U names; nothing is written into the version.
 """
 import contextlib
 import fcntl
 import json
 import os
+import select
 import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -87,6 +101,38 @@ def release_writers():
     versions._WRITER.clear()
 
 
+WRITER = """
+import sys, time
+sys.path.insert(0, sys.argv[1])
+from exopipe.phase3.lib.serve import versions
+p = versions.writable(sys.argv[2])
+print('LOCKED', p, flush=True)
+time.sleep(float(sys.argv[3]))
+"""
+
+
+def writer_step(U, hold):
+    """A writer step in its own process: versions.writable(U) (the writer lock shared, kept), then ``hold`` s; prints its path."""
+    return subprocess.Popen([sys.executable, '-c', WRITER, REPO, U, str(hold)], stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, universal_newlines=True,
+                            env=dict(os.environ, NUMPY_MADVISE_HUGEPAGE='0'))
+
+
+def line_with(stream, text, timeout=120):
+    """Read ``stream`` until a line holding ``text`` (returned), its end or ``timeout`` s (None)."""
+    end = time.time() + timeout
+    while time.time() < end:
+        r, _, _ = select.select([stream], [], [], max(0.0, end - time.time()))
+        if not r:
+            return None
+        ln = stream.readline()
+        if not ln:
+            return None
+        if text in ln:
+            return ln
+    return None
+
+
 @contextlib.contextmanager
 def patch(*items):
     saved = [(o, k, getattr(o, k)) for o, k, _ in items]
@@ -113,9 +159,25 @@ def test_work():
     U = legacy_run(f'{d}/Run_W')
     R = versions.root_of(U)
     check('work_path is R/work/<name>', versions.work_path(U) == os.path.join(R, 'work', 'Run_W'), versions.work_path(U))
-    check('writable of a legacy run without a versions root: U itself, no writer lock taken',
-          versions.writable(U) == os.path.abspath(U) and not versions._WRITER, versions._WRITER)
-    check('writer_out of a plain directory: unchanged', versions.writer_out(f'{d}/out') == f'{d}/out')
+    lockf = versions.writer_lock_file(R)
+    check('writable of a legacy run: U itself, its writer lock taken shared and kept - a file beside the versions root, which '
+          'is not made', versions.writable(U) == os.path.abspath(U) and os.path.realpath(R) in versions._WRITER
+          and os.path.isfile(lockf) and os.path.dirname(lockf) == os.path.realpath(d) and not os.path.exists(R),
+          (versions._WRITER, lockf))
+    release_writers()
+    check('writer_out of a plain directory: unchanged, no lock', versions.writer_out(f'{d}/out') == f'{d}/out'
+          and versions.writer_lock_of(f'{d}/out') is None and not versions._WRITER, versions._WRITER)
+    check('writer_out of a legacy run whose writer lock file exists: U, with its lock (a conversion waits for it)',
+          versions.writer_out(U) == os.path.abspath(U) and os.path.realpath(R) in versions._WRITER
+          and versions.writer_lock_of(U) == lockf, versions._WRITER)
+    release_writers()
+    key = CFG.serve.RUN_ROOT_KEY['deep']
+    with patch((CFG.paths, key, d)):
+        fresh = f'{d}/Run_NEW'
+        os.makedirs(fresh)
+        check('a run in the deep served-run root may be converted: its writer steps lock it before any lock file exists',
+              versions.convertible(fresh) and versions.writer_lock_of(fresh) == versions.writer_lock_file(versions.root_of(fresh))
+              and not versions.convertible(f'{d}/out/Run_X'), versions.writer_lock_of(fresh))
     v = versions.begin(U, note='test')
     write(os.path.join(v.run, 'x.txt'), 'x')
     versions.publish(U, v)                              # adopts the legacy run; U a pointer without a work directory
@@ -187,40 +249,111 @@ def test_clone_content():
     check('clone into a directory that is not empty refuses', why and 'not empty' in why, why)
 
 
-# ---- 3. snapshot and discard ------------------------------------------------------------------------------------------------
+# ---- 3. snapshot, seal and discard -----------------------------------------------------------------------------------------
 def test_snapshot():
     d = f'{TMP}/snap'
     U = legacy_run(f'{d}/Run_S')
+    write(f'{U}/logs/build.log', f'DONE -> {U}\n')     # a writer step names its output directory in a log
+    os.symlink(f'{U}/a.txt', f'{U}/abs_link')           # and in an absolute link
     R = versions.root_of(U)
     os.makedirs(R)
+    lockf = versions.writer_lock_file(R)
     got, release = threading.Event(), threading.Event()
 
-    def holder():                                      # another writer: its own open file, so the flock excludes
-        fd = os.open(versions._writer_lock_file(os.path.realpath(R)), os.O_RDWR | os.O_CREAT)
-        fcntl.flock(fd, fcntl.LOCK_EX)
+    def holder():                                      # a writer step of another process: its own open file, SHARED
+        fd = os.open(lockf, os.O_RDWR | os.O_CREAT)
+        fcntl.flock(fd, fcntl.LOCK_SH)
         got.set()
-        release.wait(5)
+        release.wait(10)
         fcntl.flock(fd, fcntl.LOCK_UN)
         os.close(fd)
-    th = threading.Thread(target=holder)
-    th.start()
-    got.wait(5)
-    threading.Timer(1.0, release.set).start()
+
+    def hold(seconds):
+        got.clear()
+        release.clear()
+        th = threading.Thread(target=holder)
+        th.start()
+        got.wait(5)
+        if seconds is not None:
+            threading.Timer(seconds, release.set).start()
+        return th
+    th = hold(1.0)
     t0 = time.time()
-    v, info = versions.snapshot(U, U, note='test')
+    v, info = versions.snapshot(U, U, note='test', public=(U, '/public/Run_S'))
     waited = time.time() - t0
     th.join(5)
-    check('the snapshot waits for the writer lock another writer holds', waited >= 0.9, waited)
-    check('the snapshot is an unsealed version holding the run', v.record() is None and versions.same_content(U, v.run)[0]
-          and info['stats']['n_files'] == 3, (v.record(), info))
-    versions.discard(v, note='test')
+    check('the snapshot waits for a writer step holding the writer lock shared', waited >= 0.9 and info['lock_wait_s'] >= 0.9,
+          (waited, info.get('lock_wait_s')))
+    src = versions._read_manifest(v.path(versions.SOURCE_MANIFEST))
+    check('the snapshot: an unsealed version holding the run, the source read once under the lock (its manifest, '
+          'SOURCE_MANIFEST.tsv)', v.record() is None and versions.same_content(U, v.run, exclude=('logs/*', 'abs_link'))[0]
+          and len(src) == 6 and info['source']['n_hashed'] >= 3 and 'lock_s' in info, (v.record(), info, len(src)))
+    st_u, st_v = os.stat(f'{U}/logs/build.log'), os.stat(f'{v.run}/logs/build.log')
+    check('a file and a link naming the source name the public path in the version (mode and modification time kept), the '
+          'source untouched', read(f'{v.run}/logs/build.log') == 'DONE -> /public/Run_S\n'
+          and read(f'{U}/logs/build.log') == f'DONE -> {U}\n' and st_v.st_mtime_ns == st_u.st_mtime_ns
+          and st_v.st_mode == st_u.st_mode and st_v.st_ino != st_u.st_ino
+          and os.readlink(f'{v.run}/abs_link') == '/public/Run_S/a.txt' and os.readlink(f'{U}/abs_link') == f'{U}/a.txt'
+          and info['public'] == ['abs_link', 'logs/build.log'], (info['public'], read(f'{v.run}/logs/build.log')))
+    rec = versions.seal(v, note='test', forbid=[U])
+    sc = rec.get('source_check') or {}
+    check('its seal: nothing names the source (G32), the clone is its source (the file of the same size and time: same '
+          'sha256)', sc.get('differ') == 0 and sc.get('n_compared', 0) >= 3 and sc.get('n_source') == 6, sc)
+    v2, _ = versions.snapshot(U, U, note='test')
+    why = refuses(versions.seal, v2, note='test', forbid=[U])
+    check('G32: a version whose file or link names the forbidden path (the work directory) is not sealed',
+          why and why.startswith('G32 work path') and 'logs/build.log' in why and 'abs_link' in why and v2.record() is None,
+          why)
+    versions.discard(v2, note='test')
+    v3, _ = versions.snapshot(U, U, note='test', public=(U, '/public/Run_S'))
+    st = os.stat(f'{v3.run}/a.txt')
+    write(f'{v3.run}/a.txt', 'B' * 100)
+    os.utime(f'{v3.run}/a.txt', ns=(st.st_atime_ns, st.st_mtime_ns))
+    why = refuses(versions.seal, v3, note='test')
+    check('a clone whose file has the source\'s size and time but other content is not its source: not sealed',
+          why and 'the clone is not its source' in why and '1 of' in why and v3.record() is None, why)
+    versions.discard(v3, note='test')
+    v4, _ = versions.snapshot(U, U, note='test', public=(U, '/public/Run_S'))
+    write(f'{v4.run}/new.txt', 'n')
+    why = refuses(versions.seal, v4, note='test', source_strict=True)
+    check('strict (a conversion): a file added since the snapshot refuses the seal', why and '1 added' in why
+          and 'none may differ' in why, why)
+    versions.discard(v4, note='test')
     log = [json.loads(l) for l in open(os.path.join(R, 'RETIRE_LOG.jsonl'))]
-    check('discard removes the unsealed version and logs it', not os.path.exists(v.dir) and log[-1]['version'] == v.vid
+    check('discard removes the unsealed version and logs it', not os.path.exists(v4.dir) and log[-1]['version'] == v4.vid
           and log[-1]['discarded'], log[-1])
-    with patch((versions, 'same_content', lambda a, b, **k: (False, 'stand-in difference'))):
+    n = len(versions.all_versions(U))
+
+    def bad_clone(a, b):
+        raise Refusal('stand-in clone failure')
+    with patch((versions, 'clone', bad_clone)):
         why = refuses(versions.snapshot, U, U, note='test')
-    check('a snapshot whose content test fails is refused and discarded', why and 'stand-in difference' in why
-          and not versions.all_versions(U), (why, versions.all_versions(U)))
+    check('a failed snapshot is refused and discarded', why == 'stand-in clone failure'
+          and len(versions.all_versions(U)) == n, (why, versions.all_versions(U)))
+    real_discard = versions.discard
+
+    def bad_discard(v, note=''):
+        raise OSError(5, 'stand-in discard failure')
+    with patch((versions, 'clone', bad_clone), (versions, 'discard', bad_discard)):
+        why = refuses(versions.snapshot, U, U, note='test')
+    check('a failed snapshot whose discard fails too: the cause raised, the discard failure added to it',
+          why and why.startswith('stand-in clone failure') and 'could not be discarded' in why
+          and 'stand-in discard failure' in why, why)
+    for x in versions.all_versions(U):
+        if x.record() is None:
+            real_discard(x, note='test')
+    th = hold(None)
+    with patch((CFG.serve, 'WRITER_LOCK_WAIT_S', 0.3)):
+        why = refuses(versions.snapshot, U, U, note='test')
+    release.set()
+    th.join(5)
+    check('G31: a writer step holding the lock past serve.WRITER_LOCK_WAIT_S refuses the snapshot, no version left',
+          why and why.startswith('G31 writer lock') and len(versions.all_versions(U)) == n, (why, versions.all_versions(U)))
+    versions.hold_writer(R)
+    why = refuses(versions.snapshot, U, U, note='test')
+    release_writers()
+    check('a writer step does not snapshot its own run', why and 'writer step' in why
+          and len(versions.all_versions(U)) == n, why)
     v = versions.begin(U, note='test')
     write(os.path.join(v.run, 'a.txt'), 'x')
     versions.publish(U, v)
@@ -337,10 +470,23 @@ def test_place():
     write(f'{P}/{night.REDUCED_DIR}/sel.csv', 'reduced')
 
     page_ok = {'ok': True}
+    from exopipe.phase3.core import validate
+    real_validate, ran = validate.run, []
 
-    def place():
+    def page_run_check(r):                             # the seal's check: its results kept as page_run_check keeps them
+        tier_sublst._PAGE_RUN[os.path.realpath(r)] = [{'name': 'stand_in_page_run', 'passed': page_ok['ok'], 'value': None,
+                                                       'detail': 'stand-in page-run test'}]
+        return page_ok['ok'], f'stand-in page-run test on {r}'
+
+    def counting(cls, path, **ctx):
+        if cls == 'sublst_page_run':
+            ran.append(path)
+            return []
+        return real_validate(cls, path, **ctx)
+
+    def place(*extra):
         run = Run('pages', ['test'], f'{d}/records', CFG, config_sections=None)
-        with patch((tier_sublst, 'page_run_check', lambda r: (page_ok['ok'], f'stand-in page-run test on {r}'))):
+        with patch((tier_sublst, 'page_run_check', page_run_check), (validate, 'run', counting), *extra):
             tier_sublst.stage_place(c, run, {}, lst)
         return run.units[-1]
     u = place()
@@ -375,10 +521,26 @@ def test_place():
     check('a page run whose own content tests fail (sublst_page_run): refused before the switch, discarded, U unchanged',
           u.status == 'refused' and 'sublst_page_run' in (u.reason or '') and versions.served(U).vid == v2.vid
           and len(versions.all_versions(U)) == 3, (u.status, u.reason))
-    with patch((CFG.pages_sublst, 'PLACE_DELETE', False)):
-        u = place()
-    check('PLACE_DELETE False refuses (a placement is a whole version)', u.status == 'refused'
-          and 'PLACE_DELETE' in (u.reason or '') and versions.served(U).vid == v2.vid, (u.status, u.reason))
+    # the seal's page-run tests stand for the unit's output tests only while the version is the one sealed
+    write(f'{P}/candidates/V/x.txt', 'hour 4')
+    ran.clear()
+    u = place()
+    mine = [t for t in u.tests if t.get('cls') == 'sublst_page_run']
+    check('the placed version unchanged since its seal: the seal\'s page-run tests (keyed by its manifest sha256) are the '
+          'output\'s, not run again', u.status == 'done' and not ran and len(mine) == 1
+          and mine[0]['name'] == 'stand_in_page_run' and 'the seal\'s test of version' in mine[0]['detail']
+          and versions.served(U).record()['manifest_sha256'][:16] in mine[0]['detail'], (u.status, ran, mine))
+    write(f'{P}/candidates/V/x.txt', 'hour 5')
+    real_pv = tier_sublst.place_version
+
+    def changed_after_seal(u, P_, U_, note):
+        sw = real_pv(u, P_, U_, note)
+        write(f'{sw["current"].run}/candidates/V/x.txt', 'written after the seal')
+        return sw
+    ran.clear()
+    u = place((tier_sublst, 'place_version', changed_after_seal))
+    check('a version changed since its seal: the page-run tests run again on the placed run', ran == [U]
+          and any('run again' in n for n in u.notes), (ran, u.notes[-2:]))
 
 
 # ---- 7. G30: the LST runs read by the cumulative build are pinned -----------------------------------------------------------
@@ -486,13 +648,37 @@ def test_deep():
              (flow, 'verify_stage', lambda run, p: calls.append(('verify',)))]
     default = [s for s in deep.STAGES if s not in deep.DEFAULT_OFF]
     with patch(*stubs):
-        # convert: the legacy run's journal line written during the conversion (here: while the page index is built) is
-        # caught up into the version
-        hooks['index'] = lambda: write(f'{real}/judgements_V/judgements.jsonl', '{"line": "during convert"}\n', mode='a')
+        # a writer step started before the conversion (on the legacy run, no versions root yet) blocks it
+        wp = writer_step(U, 4)
+        ln = line_with(wp.stdout, 'LOCKED')
+        with patch((CFG.serve, 'WRITER_LOCK_WAIT_S', 0.3)):
+            run = serve(['convert'])
+        u = run.units[-1]
+        check('a writer step started before the conversion blocks it: G31 past serve.WRITER_LOCK_WAIT_S, nothing converted',
+              ln and ln.split()[1] == os.path.abspath(U) and u.status == 'refused' and 'G31' in (u.reason or '')
+              and os.readlink(U) == real and not versions.all_versions(U), (ln, u.status, u.reason))
+        # convert: it waits for that writer; the legacy run's journal line written during the conversion (here: while the
+        # page index is built) is caught up into the version; a writer step started during it waits, then writes the work
+        # directory
+        late = {}
+
+        def during_convert():
+            write(f'{real}/judgements_V/judgements.jsonl', '{"line": "during convert"}\n', mode='a')
+            late['p'] = writer_step(U, 0)
+            late['waits'] = line_with(late['p'].stderr, 'waits up to')
+        hooks['index'] = during_convert
+        t0 = time.time()
         run = serve(['convert'])
+        waited = time.time() - t0
+        wp.wait(30)
+        out2, _ = late['p'].communicate(timeout=120)
         u = run.units[-1]
         v1 = versions.served(U)
         W = versions.work_path(U)
+        check('the conversion waits for the writer step started before it (shared lock), then converts', waited >= 1.0
+              and u.status == 'done' and wp.returncode == 0, (waited, u.status, u.reason))
+        check('a writer step started during the conversion waits for it, then writes the work directory, never the version',
+              late.get('waits') and out2.split() == ['LOCKED', W], (late.get('waits'), out2))
         check('convert: U a pointer to the sealed clone, the legacy run the work directory, the journal line written during the '
               'conversion caught up', u.name == 'deep_Run_P3SX_convert' and u.status == 'done' and v1 is not None
               and os.path.isdir(W) and not os.path.exists(real) and versions.verify(v1)[0]
@@ -504,9 +690,13 @@ def test_deep():
         # a publish: a writer step wrote the work directory; a label is posted on the served version during the publish
         write(f'{W}/a.txt', 'C' * 100)
         write(f'{W}/new_product.csv', 'n\n')
+        write(f'{W}/logs/build.log', f'DONE -> {W}\n')     # the pages builder names its output directory in its log
         calls.clear()
-        hooks['views'] = lambda run, p: write(f'{v1.run}/judgements_V/judgements.jsonl', '{"line": "during publish"}\n',
-                                              mode='a')
+
+        def during_publish(run, p):
+            write(f'{v1.run}/judgements_V/judgements.jsonl', '{"line": "during publish"}\n', mode='a')
+            write(f'{v1.run}/judgements_I/judgements.jsonl', '{"first": "label on page I"}\n')   # a journal begun
+        hooks['views'] = during_publish
         run = serve(default)
         v2 = versions.served(U)
         names = [x.name for x in run.units]
@@ -527,6 +717,55 @@ def test_deep():
         check('the switch unit is done, its journal recorded with the old version\'s as its source', sw.status == 'done'
               and any(o.get('cls') == 'judgement_journal' or o.get('class') == 'judgement_journal' for o in sw.outputs),
               (sw.status, sw.reason, sw.outputs))
+        check('the first label on a page during the publish (a journal begun on the old version after the snapshot) reaches '
+              'the served version', read(f'{U}/judgements_I/judgements.jsonl') == '{"first": "label on page I"}\n'
+              and sw.meta.get('journals') == ['judgements_I', 'judgements_V'], sw.meta.get('journals'))
+        sn = [x for x in run.units if x.name == 'deep_Run_P3SX_snapshot'][0]
+        check('a log naming the work directory names U in the version (the work directory\'s own log unchanged)',
+              read(f'{U}/logs/build.log') == f'DONE -> {os.path.abspath(U)}\n' and read(f'{W}/logs/build.log') ==
+              f'DONE -> {W}\n' and sn.meta.get('public') == ['logs/build.log'], (sn.meta.get('public'),
+                                                                                read(f'{U}/logs/build.log')))
+        # a journal begun on the old version across the switch (its POST held that journal's lock, which the switch did
+        # not hold), and a label on the new version's page of it after the switch: merged, the old line first
+        real_cu = sublst_build.catch_up
+
+        def cu_then_late(prev_run, *a, **k):
+            got = real_cu(prev_run, *a, **k)
+            write(f'{prev_run}/judgements_Q/judgements.jsonl', '{"q": "old page, across the switch"}\n')
+            write(f'{U}/judgements_Q/judgements.jsonl', '{"q": "new page, after the switch"}\n')
+            return got
+        with patch((sublst_build, 'catch_up', cu_then_late)):
+            run = serve(default)
+        sw = [x for x in run.units if x.name == 'deep_Run_P3SX_switch'][0]
+        check('a journal begun on the old version across the switch: merged into the served version, the old line first',
+              sw.status == 'done' and read(f'{U}/judgements_Q/judgements.jsonl').splitlines() == [
+                  '{"q": "old page, across the switch"}', '{"q": "new page, after the switch"}']
+              and sw.meta.get('late_journals') == {'judgements_Q': 1}, (sw.status, sw.reason, sw.meta.get('late_journals')))
+        v2 = versions.served(U)
+        # G32: a file naming the work directory written after the snapshot (by the views stage) refuses the seal
+        n, cur = len(versions.all_versions(U)), versions.served(U).vid
+        hooks['views'] = lambda run, p: write(f'{p.U}/late.log', f'written by the views stage into {W}\n')
+        run = serve(default)
+        check('G32 in a publish: a version naming the work directory is not sealed, the snapshot discarded, U unchanged',
+              any(x.status == 'refused' and 'G32' in (x.reason or '') for x in run.units)
+              and versions.served(U).vid == cur and len(versions.all_versions(U)) == n,
+              [(x.name, x.status, (x.reason or '')[:120]) for x in run.units])
+        # G31 in a publish: a writer step holds the lock past the wait; the snapshot refuses, the coalescing slot is free
+        from exopipe.phase3.lib.serve import coalesce
+        wp = writer_step(U, 3)
+        ln = line_with(wp.stdout, 'LOCKED')
+        with patch((CFG.serve, 'WRITER_LOCK_WAIT_S', 0.3)):
+            run = serve(default)
+        wp.wait(30)
+        slot = coalesce.slot_for(U)
+        fd = slot._try_lock()
+        if fd is not None:
+            os.close(fd)
+        check('G31 in a publish: the snapshot refuses, nothing published, the coalescing slot free (no build pending)',
+              ln and ln.split()[1] == W and any(x.name == 'deep_Run_P3SX_snapshot' and x.status == 'refused'
+                                                and 'G31' in (x.reason or '') for x in run.units)
+              and versions.served(U).vid == cur and len(versions.all_versions(U)) == n and fd is not None
+              and not slot.pending(), (ln, [(x.name, x.status, (x.reason or '')[:120]) for x in run.units]))
         # a refused stage before the switch discards the snapshot
         n = len(versions.all_versions(U))
         hooks['no_queue'] = True
@@ -562,7 +801,7 @@ def test_deep():
         v3 = versions.served(U)
         owed = versions.owed_catchup(U)
         check('a failed catch-up after the switch: refused, OWED recorded with the deep journals, U on the new version',
-              v3.vid != v2.vid and owed and owed['from_version'] == v2.vid and owed['journals'] == ['judgements_V']
+              v3.vid != v2.vid and owed and owed['from_version'] == v2.vid and 'judgements_V' in owed['journals']
               and any('OWED' in (x.reason or '') for x in run.units) and 'start' not in [c[0] for c in calls[-1:]],
               (owed, [(x.name, x.status) for x in run.units]))
         run = serve(default)
@@ -588,6 +827,32 @@ def test_deep():
           (run.units[-1].status, run.units[-1].reason))
 
 
+# ---- 9. cli: an injected run with --out U ---------------------------------------------------------------------------------
+def test_cli_injected():
+    d = f'{TMP}/cli'
+    U = f'{d}/served/Run_INJ'
+    v = versions.begin(U, note='test')
+    write(os.path.join(v.run, 'a.txt'), 'x')
+    versions.publish(U, v)
+    W = versions.work_path(U)
+    os.makedirs(W)
+    audit = f'{d}/audit.csv'
+    write(audit, 'a\n1\n')
+    env = {k: x for k, x in os.environ.items() if k not in ('EXOPIPE3_INJECTED', 'P3_SNAP_INJECTED', 'EXOPIPE3_PARITY_ROOT',
+                                                            'EXOPIPE3_PARITY_LOG')}
+    env.update(PYTHONPATH=REPO, NUMPY_MADVISE_HUGEPAGE='0')
+    r = subprocess.run([sys.executable, '-m', 'exopipe.phase3', 'status', 'register', audit, '--out', U, '--injected',
+                        '--cores', 'none'], cwd=REPO, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                       universal_newlines=True, timeout=300)
+    g = [x for x in r.stderr.splitlines() if x.startswith('INJECTED-RUN GUARD (')]
+    lockf = versions.writer_lock_file(versions.root_of(U))
+    check('an injected run with --out U: its guard allows U\'s work directory and writer lock, never the version U names',
+          g and g[0].split('writes allowed only under ', 1)[1].split(', ')[:2] == [W, lockf] and v.run not in g[0]
+          and 'os.open refused' not in r.stderr, (r.returncode, g, r.stderr[-600:]))
+    check('... its records written in the work directory, nothing into the version', os.path.isdir(f'{W}/_records')
+          and versions.verify(v)[0] and sorted(os.listdir(v.run)) == ['a.txt'], (os.listdir(W), versions.verify(v)))
+
+
 def main():
     shutil.rmtree(TMP, ignore_errors=True)
     os.makedirs(TMP)
@@ -600,6 +865,7 @@ def main():
         test_place()
         test_g30()
         test_deep()
+        test_cli_injected()
     finally:
         release_writers()
         shutil.rmtree(TMP, ignore_errors=True)

@@ -945,14 +945,7 @@ def _owe(plan, v, prev, P, design_b, marks, e, journal_dirs=None):
             f'until the catch-up completes (the next serve --tier {plan.tier} retries it first)')
 
 
-def _add_failure(e, text):
-    """Add ``text`` to the message of the exception ``e`` (re-raised by the caller: the original refusal is never masked)."""
-    if isinstance(e, OSError) and e.strerror is not None:     # OSError's text is errno + strerror, not its args
-        e.strerror = f'{e.strerror}{text}'
-    elif e.args and isinstance(e.args[0], str):
-        e.args = (e.args[0] + text,) + tuple(e.args[1:])
-    else:
-        e.args = (f'{e}{text}',)
+_add_failure = versions.add_failure      # a failure added to the refusal's text, never in its place
 
 
 def catchup_stage(run, plan):
