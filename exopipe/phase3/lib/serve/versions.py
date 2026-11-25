@@ -134,9 +134,13 @@ def _utc(t=None):
     return time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(time.time() if t is None else t))
 
 
-def _atomic_json(path, obj):
+def _atomic_json(path, obj, *, place):
+    """``obj`` written durably and atomically (core/record.atomic_write_json). ``place`` (keyword, always given): True for
+    VERSION.json, the completion record of a version (placed by core/placement: the replaced record's group, mode and ACL, or
+    the directory's rule for a new one); False for the lease and state records (BUILDING.json and the holds, rewritten by the
+    lease renewer's own rename every quarter lease; CATCHUP_OWED.json; the retire plans)."""
     from exopipe.phase3.core.record import atomic_write_json
-    atomic_write_json(path, obj, durable=True)
+    atomic_write_json(path, obj, durable=True, place=place)
 
 
 def _append_jsonl(path, obj):
@@ -400,7 +404,8 @@ def begin(U, note=''):
     vid = _new_vid_dir(R, time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()))
     v = Version(R, vid, name)
     os.mkdir(v.run)
-    _atomic_json(v.path('BUILDING.json'), dict(me(note), format=FORMAT, name=name, version=vid, pointer=os.path.abspath(U)))
+    _atomic_json(v.path('BUILDING.json'), dict(me(note), format=FORMAT, name=name, version=vid, pointer=os.path.abspath(U)),
+                 place=False)
     _renew_build(v)
     return v
 
@@ -424,7 +429,7 @@ def place(U, B, note=''):
     vid = _new_vid_dir(R, time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()))
     v = Version(R, vid, name)
     _atomic_json(v.path('BUILDING.json'), dict(me(note), format=FORMAT, name=name, version=vid, pointer=os.path.abspath(U),
-                                               placed_from=os.path.abspath(B)))
+                                               placed_from=os.path.abspath(B)), place=False)
     os.rename(B, v.run)
     _renew_build(v)
     return v
@@ -721,7 +726,7 @@ def seal(v, required=(), checks=(), note='', forbid=(), source_strict=False):
            'manifest': 'MANIFEST.tsv', 'manifest_sha256': _write_manifest(v, entries), 'mutable': mutable, 'required': req,
            'checks': results, 'hash_rules': rules, **stats}
     renew_stop(v.path('BUILDING.json'))
-    _atomic_json(v.path('VERSION.json'), rec)
+    _atomic_json(v.path('VERSION.json'), rec, place=True)
     return rec
 
 
@@ -904,7 +909,7 @@ def _adopt(U, R):
     try:
         _atomic_json(v.path('VERSION.json'), {'format': FORMAT, 'name': name, 'version': vid, 'state': 'adopted',
                                               'adopted_utc': _utc(), 'adopted_by': me(), 'adopted_from': real,
-                                              'pointer_was_link': was_link, 'manifest': None})
+                                              'pointer_was_link': was_link, 'manifest': None}, place=True)
     except BaseException as e:
         undo = _unadopt(v, real)
         if not isinstance(e, Exception):               # an interrupt stays an interrupt; what was not undone is printed
@@ -934,7 +939,7 @@ def seal_adopted(v, note=''):
                 'n_links': sum(1 for e in entries if e[0] == 'l'), 'n_bytes': sum(e[2] for e in entries),
                 'manifest': 'MANIFEST.tsv', 'manifest_sha256': _write_manifest(v, entries), 'mutable': mutable,
                 'required': [], 'checks': [], 'hash_rules': rules, **stats})
-    _atomic_json(v.path('VERSION.json'), rec)
+    _atomic_json(v.path('VERSION.json'), rec, place=True)
     return rec
 
 
@@ -1420,7 +1425,7 @@ def hold(U, note=''):
         os.makedirs(d, exist_ok=True)
         who = me(note)
         path = os.path.join(d, f'{who["host"]}_{who["pid"]}_{time.time_ns()}.json')
-        _atomic_json(path, who)
+        _atomic_json(path, who, place=False)
     renew(path)                                        # LEASES: a holder on another node stays alive while it holds
     try:
         yield v.run
@@ -1482,7 +1487,7 @@ def refuse_owed(U, what):
 def owe_catchup(U, rec):
     """Record an owed catch-up (rec: from_version, from_run, to_version, the marks, the error). Returns its path."""
     p = os.path.join(root_of(U), OWED_FILE)
-    _atomic_json(p, dict(rec, format=FORMAT, utc=_utc(), by=me(rec.get('note', ''))))
+    _atomic_json(p, dict(rec, format=FORMAT, utc=_utc(), by=me(rec.get('note', ''))), place=False)
     return p
 
 
@@ -1583,7 +1588,7 @@ def retire(U, keep=None, plan=None, note=''):
                'keep_versions': [{'version': v.vid, 'why': why} for v, act, why in rows if act == 'keep']}
         os.makedirs(os.path.join(R, 'retire_plans'), exist_ok=True)
         path = os.path.join(R, 'retire_plans', f'RETIRE_PLAN_{time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())}.json')
-        _atomic_json(path, doc)
+        _atomic_json(path, doc, place=False)
         return {'plan': path, 'retire': doc['retire'], 'keep': doc['keep_versions']}
     with open(plan) as f:
         doc = json.load(f)
