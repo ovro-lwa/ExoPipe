@@ -32,10 +32,10 @@ writes (catalog, forced catflux, pages: cli.main and the steps resolve U through
 SHARED while they run - also before the conversion, for a run in the deep served-run root: versions.convertible), and a
 serve publishes a NEW VERSION:
 convert (unit deep_<run>_convert; only when named, once)  under the run's writer lock held EXCLUSIVE from the clone to the
-       switch (versions.writer_lock: it waits for every writer step, G31 after serve.WRITER_LOCK_WAIT_S; a writer step that
+       switch (versions.writer_lock: it waits for every writer step, G32 after serve.WRITER_LOCK_WAIT_S; a writer step that
        starts meanwhile resolves U after it, so it writes the work directory): the legacy run cloned as a version
        (versions.snapshot: its manifest read once, then a copy-on-write clone), its page index, sealed (the clone tested
-       against that manifest, nothing may differ; G32: no file names the work directory), then - under the journal locks,
+       against that manifest, nothing may differ; G33: no file names the work directory), then - under the journal locks,
        the journal directories listed again until none is new - U switched to it with the legacy directory moved to the
        work directory (versions.switch to_work) and the journal lines written on it since the clone appended; a journal
        begun on it across the switch is caught up under its own lock. Every later serve publishes as below.
@@ -45,7 +45,7 @@ snapshot (unit deep_<run>_snapshot)  the owed catch-up first (sublst_build.catch
        version's judgement journals (versions.journal_dirs) copied into it under the journal locks.
 views, test, carry  as above on the snapshot (no publish marker: nobody reads it yet).
 switch (unit deep_<run>_switch)  the snapshot's page index, the seal (every page's queue and view present, the index
-       current, the clone its source wherever the publish did not write, G32: no file or link names the work directory, the
+       current, the clone its source wherever the publish did not write, G33: no file or link names the work directory, the
        manifest), then under the journal locks - the served version's journal directories listed again under them until
        none is new, a new one copied in first - U switched to it (refused when U names another version than the one whose
        journals were copied) and the lines journalled on the old version since the copy appended (journals.append_between);
@@ -199,7 +199,7 @@ def convert_stage(run, plan):
         legacy = os.path.realpath(U)
         state = {'switched': False}
         # the writer lock EXCLUSIVE from before the clone to after the switch: the conversion waits for every writer step of the
-        # run (G31 after serve.WRITER_LOCK_WAIT_S), and a writer step that starts meanwhile resolves U after it: the work directory
+        # run (G32 after serve.WRITER_LOCK_WAIT_S), and a writer step that starts meanwhile resolves U after it: the work directory
         with versions.writer_lock(U, what=f'the conversion of {U}'):
             v, info = versions.snapshot(U, legacy, note=_note(u))
             u.meta.update(version=v.vid, clone=info['clone'], source=info['source'], lock_s=info['lock_s'])

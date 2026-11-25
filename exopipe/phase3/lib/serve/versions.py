@@ -37,7 +37,7 @@ LAYOUT (name = basename(U); R = the VERSIONS ROOT, <dir>/<name><serve.RUN_VERSIO
                            the seal tests the clone against it
   R/work/<name>/           the WORK DIRECTORY of a converted run (WORK): every writer step of the run writes it
   <dir>/.<name><suffix>.writer.lock  THE WRITER LOCK (writer_lock_file; beside R, so it exists before a conversion): writer
-                           steps hold it shared while they run, a snapshot or a conversion exclusive (G31: a wait is bounded)
+                           steps hold it shared while they run, a snapshot or a conversion exclusive (G32: a wait is bounded)
   Lock files are created group-writable (0o664 set explicitly; R/locks setgid, so they take its group: the serve and the hub
   may run as different users of one group); a lock that cannot be opened is a Refusal naming the file and its owner.
 U -> <name><suffix>/<vid>/<name> (relative when R is beside U, else absolute).
@@ -636,7 +636,7 @@ def seal(v, required=(), checks=(), note='', forbid=(), source_strict=False):
     - the run directory exists, is not a link, holds at least one file;
     - every path of ``required`` (absolute, or relative to the run) exists inside the run, a file non-empty;
     - every check of ``checks`` - (name, callable(run) -> (ok, detail)) - passes;
-    - GATE G32 (``forbid``: paths, the run's work directory): no file the manifest reads in full (every file not a binary) and
+    - GATE G33 (``forbid``: paths, the run's work directory): no file the manifest reads in full (every file not a binary) and
       no link target names one of them - a served version never names the work directory a writer step changes later;
     - a version made by snapshot(): THE CLONE IS ITS SOURCE - every file whose size and modification time are the source
       manifest's (SOURCE_MANIFEST.tsv, read under the writer lock) has its sha256 wherever both hashed it; the files the
@@ -672,7 +672,7 @@ def seal(v, required=(), checks=(), note='', forbid=(), source_strict=False):
     if not any(e[0] == 'f' for e in entries):
         raise Refusal(f'version {v.vid} of {v.name}: the run directory holds no file - not sealed')
     if found:
-        raise Refusal(f'G32 work path: version {v.vid} of {v.name}: {len(found)} files or links name {", ".join(forbid)} (e.g. '
+        raise Refusal(f'G33 work path: version {v.vid} of {v.name}: {len(found)} files or links name {", ".join(forbid)} (e.g. '
                       f'{found[:3]}) - a served version never names its work directory - not sealed')
     if os.path.exists(v.path(SOURCE_MANIFEST)):
         ok, detail, stats['source_check'] = _source_check(_read_manifest(v.path(SOURCE_MANIFEST)), entries, source_strict)
@@ -1005,7 +1005,7 @@ def writer_lock_file(R):
 
 def _flock_wait(fd, mode, path, what):
     """flock ``fd`` (LOCK_SH or LOCK_EX), waiting at most serve.WRITER_LOCK_WAIT_S and saying so when it has to wait; then
-    GATE G31 (Refusal; the caller closes ``fd``)."""
+    GATE G32 (Refusal; the caller closes ``fd``)."""
     try:
         fcntl.flock(fd, mode | fcntl.LOCK_NB)
         return
@@ -1023,14 +1023,14 @@ def _flock_wait(fd, mode, path, what):
         except BlockingIOError:
             left = end - time.time()
             if left <= 0:
-                raise Refusal(f'G31 writer lock: {what} waited {wait:g} s (serve.WRITER_LOCK_WAIT_S) for the writer lock '
+                raise Refusal(f'G32 writer lock: {what} waited {wait:g} s (serve.WRITER_LOCK_WAIT_S) for the writer lock '
                               f'{path}, which {holder} still holds - nothing written') from None
             time.sleep(min(0.5, left))
 
 
 def hold_writer(R):
     """A WRITER STEP's lock of the run whose versions root is R: its writer lock (writer_lock_file) SHARED, taken once and kept
-    until this process ends; G31 after serve.WRITER_LOCK_WAIT_S. Close-on-exec (two_port.open_lock): the step's child processes
+    until this process ends; G32 after serve.WRITER_LOCK_WAIT_S. Close-on-exec (two_port.open_lock): the step's child processes
     write while the step waits for them; none inherits it. Returns the lock file."""
     R = os.path.realpath(R)
     path = writer_lock_file(R)
@@ -1047,7 +1047,7 @@ def hold_writer(R):
 
 @contextlib.contextmanager
 def writer_lock(U, what=None):
-    """U's writer lock EXCLUSIVE for the block (a snapshot, a conversion): it waits for the writer steps to end (G31 after
+    """U's writer lock EXCLUSIVE for the block (a snapshot, a conversion): it waits for the writer steps to end (G32 after
     serve.WRITER_LOCK_WAIT_S) and none starts meanwhile. Nested in this process: the outer block's. Refusal in a process that
     holds the lock shared (a writer step does not also snapshot its own run)."""
     R = os.path.realpath(root_of(U))
@@ -1224,7 +1224,7 @@ def snapshot(U, src, note='', public=None):
     so ``src`` is read once, under the lock, and the clone once, by the seal.
     ``public`` (path, public path): every file that read finds naming ``path`` (a file not a binary - all of them are read - or
     a link's target) names ``public`` in the clone (the work directory's path a writer step wrote into a log, a cache key, a
-    summary), its manifest entry made the rewritten file's (_publicize); the seal's G32 (forbid) then finds none.
+    summary), its manifest entry made the rewritten file's (_publicize); the seal's G33 (forbid) then finds none.
     Returns (Version, {'clone', 'source': the read's statistics, 'lock_wait_s', 'lock_s', 'public': the rewritten paths}). Any
     failure discards the version; a discard that fails too is added to the failure's text (add_failure), never in its place."""
     v = begin(U, note)

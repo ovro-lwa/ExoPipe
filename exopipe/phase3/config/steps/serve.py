@@ -93,7 +93,7 @@ class serve(_Section):
                                             # 2026-11-24: 188.6 GB in 1,511,521 files on a /fast 96% full - never duplicated)
     WRITER_LOCK_WAIT_S = 3600.0             # s: the longest a run's writer step waits for its writer lock (a snapshot or a
                                             # conversion holds it: minutes), and a snapshot or a conversion for the writer steps
-                                            # to finish (lib/serve/versions.py WORK); then gate G31 refuses, nothing written
+                                            # to finish (lib/serve/versions.py WORK); then gate G32 refuses, nothing written
     COALESCE_SLOT_DIR = '.coalesce'         # the coalescing builder's slot inside a run's versions root (lib/serve/coalesce.py)
     SUBLST_PAGE_CONTEXT_WORKERS = 16        # page_context_tenmin.py --workers on the placed version (sublst_cumulative.sh:298; the
                                             # 10-minute panels' run context as page text, Gregg 2026-10-22)

@@ -4,7 +4,7 @@ build -> views -> test -> carry -> swap -> start -> hub -> verify (+ page-index 
 lines written on the old servers between the copy and the swap are appended at the swap, sublst_cumulative.sh:106-120).
 
 build  (unit sublst_<run>_build)  the build lock (G12; sublst_cumulative.sh:23 flock, servers never inherit it); the
-       version each LST run names held while the build reads it (G30: a placement that switches one during the merge
+       version each LST run names held while the build reads it (G31: a placement that switches one during the merge
        refuses the build, whose follow-up reads the new version; lib/serve/versions.pinned); the
        generation-mix gate G8 (every LST run has candidates/, pertie_detections.csv, a verified conform_inputs/ whose
        CONFORM_LOG.txt read lines name it (sublst_cumulative.sh:60, 76-96) and a pos_kind column - else exit 2;
@@ -519,7 +519,7 @@ def omission_table(plan, u):
 
 
 def pin_lsts(plan, u, stack):
-    """G30 THE LST RUNS READ ARE PINNED (lib/serve/versions.py): the version each LST run names when the build starts is held
+    """G31 THE LST RUNS READ ARE PINNED (lib/serve/versions.py): the version each LST run names when the build starts is held
     (retention never deletes it under the merge) and stamped; the merge (production's sublst_cumulative.py, in place) reads the
     runs by their names, so after it the build refuses when any was switched meanwhile (versions.moved) - a placement during
     the build requested the one follow-up build that reads the new version (lib/serve/coalesce.py). Holds the versions until
@@ -578,7 +578,7 @@ def build_stage(run, plan):
             u.refuse(f'merge failed: {res.reason or scripts.last_line(res.tail)}')
         moved = versions.moved(pins)                     # the merge read each LST run by its name: one version of each?
         if moved:
-            u.refuse(f'G30 LST runs placed during the build: {", ".join(moved)} switched to a new version while the merge read '
+            u.refuse(f'G31 LST runs placed during the build: {", ".join(moved)} switched to a new version while the merge read '
                      f'them - the build may mix two versions of an LST; the served cumulative stays as it is (the placement '
                      f'requested the follow-up build, lib/serve/coalesce.py)')
         for f in ('deep_omission.csv', 'deep_omission_dropped.csv', 'deep_omission_summary.txt'):

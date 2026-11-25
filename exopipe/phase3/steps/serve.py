@@ -128,7 +128,10 @@ Failure modes (exit 2 = refused, the gate named in the record; a refused page ke
   holds "card2" or "rejudge" is served only when serve.SNAPSHOT_CARD2_REJUDGE_APPROVED names it; before every stage, exopipe_ops
   35aad1a); G28 an earlier stage's record missing or stale; G29 the snapshot serve hold (serve.SNAPSHOT_SERVE_HOLD exists:
   no snapshot run is served; before every stage, exopipe_ops aa100bf); G30 the cross-Stokes link of a design-B 10-minute
-  build missing, stale or refused (lib/catalog/stokes_link.py; both Stokes served);
+  build missing, stale or refused (lib/catalog/stokes_link.py; both Stokes served); G31 an LST run the 10-minute build
+  read was placed (switched to a new version) during its merge; G32 a deep run's writer lock not obtained within
+  serve.WRITER_LOCK_WAIT_S (a writer step, a snapshot or a conversion; lib/serve/versions.py WORK); G33 a file or link of a
+  version to be served names the run's work directory (the seal);
   the combined view (--family comb): G-V1..G-V6, G-K, T1-T6, F-G1..F-G3 (lib/serve/snapshot_view.py);
   the pages merge absent or stale (deep). Exit 3: nothing to do (no page selected, nothing to carry). Exit 1: error.
   A refused (or errored) run-level stage stops every later stage of the invocation (views/test/carry; build/views/test/

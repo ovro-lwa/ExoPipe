@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Tests of the deep and per-LST publishes on the versioned pointer (lib/serve/versions.py WORK section, lib/serve/deep.py
-THE VERSIONED DEEP RUN, lib/pages/tier_sublst.py place_version, the G30 pins of lib/serve/sublst_build.py): data-free, plain
+THE VERSIONED DEEP RUN, lib/pages/tier_sublst.py place_version, the G31 pins of lib/serve/sublst_build.py): data-free, plain
 checks, runnable with python, under a minute. Scratch under $TMPDIR.
 
     NUMPY_MADVISE_HUGEPAGE=0 /opt/devel/pipeline/envs/py38_orca_nkosogor/bin/python3 tests/test_publish_versions_deep_lst.py
@@ -13,9 +13,9 @@ checks, runnable with python, under a minute. Scratch under $TMPDIR.
    serve.RUN_VERSIONS_COPY_MAX_BYTES, a larger run refused with nothing copied); a write to the clone never reaches the source;
    same_content passes a copy and fails a changed content of equal size, an added file, a changed link; the review state is
    left out.
-3. snapshot, seal and discard: the snapshot waits for a writer step's shared lock (G31 after serve.WRITER_LOCK_WAIT_S, no
+3. snapshot, seal and discard: the snapshot waits for a writer step's shared lock (G32 after serve.WRITER_LOCK_WAIT_S, no
    version left) and reads the source once under it (SOURCE_MANIFEST.tsv); a file or link naming the source names the public
-   path in the version (the source untouched); the seal refuses a version naming the forbidden path (G32), a clone whose file
+   path in the version (the source untouched); the seal refuses a version naming the forbidden path (G33), a clone whose file
    of the source's size and time has other content, and - strict - any change since the snapshot; a failed snapshot is
    discarded, and a discard that fails too is added to the cause; a writer step does not snapshot its own run; discard
    removes an unsealed version (logged), refuses a served one.
@@ -27,15 +27,15 @@ checks, runnable with python, under a minute. Scratch under $TMPDIR.
    unchanged files hard-linked from the served one and the review state on its own inodes; the previous version is unchanged;
    a placement that is not the page run, or whose page run fails its own content tests, is discarded before the switch, U
    unchanged; the seal's page-run tests are the unit's output tests when the version is unchanged since, else run again.
-7. G30: the cumulative build refuses when an LST run was switched while the merge read it, not when nothing was switched (a
+7. G31: the cumulative build refuses when an LST run was switched while the merge read it, not when nothing was switched (a
    log written in a legacy LST run included); the read versions are held during the merge and recorded.
-8. The deep serve on a versioned run: a writer step started before the conversion blocks it (G31 after
+8. The deep serve on a versioned run: a writer step started before the conversion blocks it (G32 after
    serve.WRITER_LOCK_WAIT_S, nothing converted; with the full wait the conversion follows the writer); a writer step that
    waited for the conversion writes the work directory; convert (the journal lines written on the legacy run during the
    conversion caught up), a publish (snapshot of the work directory, a log naming it made to name U, the served journals
    copied in, the lines written on the old version during the publish caught up, a journal begun on it during the publish -
    a first label - in the served version, the old version unchanged), a journal begun on the old version across the switch
-   merged with its lines first, G32 refuses a version naming the work directory, G31 in a publish refuses and frees the
+   merged with its lines first, G33 refuses a version naming the work directory, G32 in a publish refuses and frees the
    coalescing slot, a refused stage discards the snapshot, a switch of U by another serve during the publish refuses, a
    failed catch-up is owed and completed by the next serve, a partial stage selection refuses, convert twice is no-input, a
    parity convert refuses, retire runs for deep.
@@ -297,12 +297,12 @@ def test_snapshot():
           and info['public'] == ['abs_link', 'logs/build.log'], (info['public'], read(f'{v.run}/logs/build.log')))
     rec = versions.seal(v, note='test', forbid=[U])
     sc = rec.get('source_check') or {}
-    check('its seal: nothing names the source (G32), the clone is its source (the file of the same size and time: same '
+    check('its seal: nothing names the source (G33), the clone is its source (the file of the same size and time: same '
           'sha256)', sc.get('differ') == 0 and sc.get('n_compared', 0) >= 3 and sc.get('n_source') == 6, sc)
     v2, _ = versions.snapshot(U, U, note='test')
     why = refuses(versions.seal, v2, note='test', forbid=[U])
-    check('G32: a version whose file or link names the forbidden path (the work directory) is not sealed',
-          why and why.startswith('G32 work path') and 'logs/build.log' in why and 'abs_link' in why and v2.record() is None,
+    check('G33: a version whose file or link names the forbidden path (the work directory) is not sealed',
+          why and why.startswith('G33 work path') and 'logs/build.log' in why and 'abs_link' in why and v2.record() is None,
           why)
     versions.discard(v2, note='test')
     v3, _ = versions.snapshot(U, U, note='test', public=(U, '/public/Run_S'))
@@ -347,8 +347,8 @@ def test_snapshot():
         why = refuses(versions.snapshot, U, U, note='test')
     release.set()
     th.join(5)
-    check('G31: a writer step holding the lock past serve.WRITER_LOCK_WAIT_S refuses the snapshot, no version left',
-          why and why.startswith('G31 writer lock') and len(versions.all_versions(U)) == n, (why, versions.all_versions(U)))
+    check('G32: a writer step holding the lock past serve.WRITER_LOCK_WAIT_S refuses the snapshot, no version left',
+          why and why.startswith('G32 writer lock') and len(versions.all_versions(U)) == n, (why, versions.all_versions(U)))
     versions.hold_writer(R)
     why = refuses(versions.snapshot, U, U, note='test')
     release_writers()
@@ -543,7 +543,7 @@ def test_place():
           and any('run again' in n for n in u.notes), (ran, u.notes[-2:]))
 
 
-# ---- 7. G30: the LST runs read by the cumulative build are pinned -----------------------------------------------------------
+# ---- 7. G31: the LST runs read by the cumulative build are pinned -----------------------------------------------------------
 def test_g30():
     from exopipe.phase3.lib.catalog import deep_omission, grouping_stage
     from exopipe.phase3.lib.serve import scripts, sublst_build
@@ -575,22 +575,24 @@ def test_g30():
         return fake_run
     plan = types.SimpleNamespace(run_name='Run_SLSTB', lsts=lsts, parity=True, U=f'{d}/out/sublst/Run_SLSTB',
                                  U_src=f'{d}/out/sublst/Run_SLSTB', out=f'{d}/out', tier='sublst')
-    common = [(sublst_build, 'generation_mix', lambda l: []), (sublst_build, 'lst_run', lambda l: f'{tr}/Run_SLST{l[:2]}B'),
+    from exopipe.phase3.lib.serve import flow
+    common = [(flow, 'excl_note', lambda u, tier=None: None),     # no exclusion list on a CI runner (not the subject)
+              (sublst_build, 'generation_mix', lambda l: []), (sublst_build, 'lst_run', lambda l: f'{tr}/Run_SLST{l[:2]}B'),
               (sublst_build, 'omission_table', lambda p, u: f'{d}/table.csv'),
               (grouping_stage, 'mode', lambda: types.SimpleNamespace(design_b=False)),
               (deep_omission, 'tenmin_rule_check', lambda l: None),
               (deep_omission, 'tenmin_size_gate', lambda: ('1.7', {}, 'production'))]
     with patch(*common, (scripts, 'run', merge(False))):
         u = sublst_build.build_stage(Run('serve', ['test'], f'{d}/rec', CFG, config_sections=None), plan)
-    check('no switch during the merge (a log written into a legacy LST run): no G30 refusal (the next gate refuses this '
+    check('no switch during the merge (a log written into a legacy LST run): no G31 refusal (the next gate refuses this '
           'stand-in merge), the version read held during the merge and recorded',
-          u.status == 'refused' and 'G30' not in (u.reason or '') and 'no deep omission' in (u.reason or '')
+          u.status == 'refused' and 'G31' not in (u.reason or '') and 'no deep omission' in (u.reason or '')
           and seen['holds'] == 1 and u.meta['lst_versions'] == {'05h': v5.run, '06h': os.path.abspath(U6)}
           and v5.holds() == [], (u.status, u.reason, seen, u.meta.get('lst_versions')))
     with patch(*common, (scripts, 'run', merge(True))):
         u = sublst_build.build_stage(Run('serve', ['test'], f'{d}/rec', CFG, config_sections=None), plan)
-    check('an LST run switched while the merge read it: G30 refuses the build', u.status == 'refused'
-          and 'G30' in (u.reason or '') and U5 in u.reason and v5.holds() == [] and os.path.isdir(v5.run),
+    check('an LST run switched while the merge read it: G31 refuses the build', u.status == 'refused'
+          and 'G31' in (u.reason or '') and U5 in u.reason and v5.holds() == [] and os.path.isdir(v5.run),
           (u.status, u.reason))
 
 
@@ -654,8 +656,8 @@ def test_deep():
         with patch((CFG.serve, 'WRITER_LOCK_WAIT_S', 0.3)):
             run = serve(['convert'])
         u = run.units[-1]
-        check('a writer step started before the conversion blocks it: G31 past serve.WRITER_LOCK_WAIT_S, nothing converted',
-              ln and ln.split()[1] == os.path.abspath(U) and u.status == 'refused' and 'G31' in (u.reason or '')
+        check('a writer step started before the conversion blocks it: G32 past serve.WRITER_LOCK_WAIT_S, nothing converted',
+              ln and ln.split()[1] == os.path.abspath(U) and u.status == 'refused' and 'G32' in (u.reason or '')
               and os.readlink(U) == real and not versions.all_versions(U), (ln, u.status, u.reason))
         # convert: it waits for that writer; the legacy run's journal line written during the conversion (here: while the
         # page index is built) is caught up into the version; a writer step started during it waits, then writes the work
@@ -742,15 +744,15 @@ def test_deep():
                   '{"q": "old page, across the switch"}', '{"q": "new page, after the switch"}']
               and sw.meta.get('late_journals') == {'judgements_Q': 1}, (sw.status, sw.reason, sw.meta.get('late_journals')))
         v2 = versions.served(U)
-        # G32: a file naming the work directory written after the snapshot (by the views stage) refuses the seal
+        # G33: a file naming the work directory written after the snapshot (by the views stage) refuses the seal
         n, cur = len(versions.all_versions(U)), versions.served(U).vid
         hooks['views'] = lambda run, p: write(f'{p.U}/late.log', f'written by the views stage into {W}\n')
         run = serve(default)
-        check('G32 in a publish: a version naming the work directory is not sealed, the snapshot discarded, U unchanged',
-              any(x.status == 'refused' and 'G32' in (x.reason or '') for x in run.units)
+        check('G33 in a publish: a version naming the work directory is not sealed, the snapshot discarded, U unchanged',
+              any(x.status == 'refused' and 'G33' in (x.reason or '') for x in run.units)
               and versions.served(U).vid == cur and len(versions.all_versions(U)) == n,
               [(x.name, x.status, (x.reason or '')[:120]) for x in run.units])
-        # G31 in a publish: a writer step holds the lock past the wait; the snapshot refuses, the coalescing slot is free
+        # G32 in a publish: a writer step holds the lock past the wait; the snapshot refuses, the coalescing slot is free
         from exopipe.phase3.lib.serve import coalesce
         wp = writer_step(U, 3)
         ln = line_with(wp.stdout, 'LOCKED')
@@ -761,9 +763,9 @@ def test_deep():
         fd = slot._try_lock()
         if fd is not None:
             os.close(fd)
-        check('G31 in a publish: the snapshot refuses, nothing published, the coalescing slot free (no build pending)',
+        check('G32 in a publish: the snapshot refuses, nothing published, the coalescing slot free (no build pending)',
               ln and ln.split()[1] == W and any(x.name == 'deep_Run_P3SX_snapshot' and x.status == 'refused'
-                                                and 'G31' in (x.reason or '') for x in run.units)
+                                                and 'G32' in (x.reason or '') for x in run.units)
               and versions.served(U).vid == cur and len(versions.all_versions(U)) == n and fd is not None
               and not slot.pending(), (ln, [(x.name, x.status, (x.reason or '')[:120]) for x in run.units]))
         # a refused stage before the switch discards the snapshot
