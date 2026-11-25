@@ -1302,12 +1302,16 @@ def stage_verify(u, item, ctx, f, outs, sides, raise_on_fail=True):
 
 
 def _copy_into(src, dst):
+    """A directory: shutil.copytree (copy2 per file). A file: core/placement.copy - copied to a temporary file beside ``dst``,
+    its size and md5 checked against ``src``, then placed with the replaced file's group, mode and ACL or the directory's
+    rule for a new one (never src's), with src's times as copy2 gave them; a copy that differs or a placement refusal
+    (PlacementRefusal) leaves ``dst`` as it was and no temporary file."""
     if os.path.isdir(src):
         shutil.copytree(src, dst, symlinks=True)
     else:
         os.makedirs(os.path.dirname(dst), exist_ok=True)
-        shutil.copy2(src, dst + '.part')
-        os.replace(dst + '.part', dst)
+        placement.sweep([dst])              # a killed earlier copy's temporary file (not modified for an hour)
+        placement.copy(src, dst, times=True)
 
 
 def stage_publish(u, item, ctx, f):
@@ -1321,10 +1325,17 @@ def stage_publish(u, item, ctx, f):
     names = [f'Run_{label}', 'transients', f'{item.cell}.log', f'{item.cell}.base.log', f'{item.cell}.inc.log',
              'fit_positions.csv', 'fit_positions_summary.json', f'pbcorr_missing_{item.lst}_{item.scope}.csv',
              RR.RULES_RECORD]                    # B-02: the rules the attempt was searched under (an append reads its base's)
-    for n in names:
-        if os.path.exists(os.path.join(att, n)):
-            _copy_into(os.path.join(att, n), os.path.join(dest + '.part', n))
-    os.replace(dest + '.part', dest)
+    done = []
+    try:
+        for n in names:
+            if os.path.exists(os.path.join(att, n)):
+                _copy_into(os.path.join(att, n), os.path.join(dest + '.part', n))
+                done.append(n)
+    except placement.PlacementRefusal as e:    # nothing published: the partial copy (this call's own directory) goes
+        shutil.rmtree(dest + '.part', ignore_errors=True)
+        raise placement.PlacementRefusal(f'{e} - the attempt is not published: {dest}.part (with {done or "nothing"} copied '
+                                         f'before it) removed') from e
+    os.replace(dest + '.part', dest)        # a directory rename: its files were placed into it one by one (above)
     return dest
 
 
@@ -1441,17 +1452,22 @@ def after_detect(u, item, ctx, f, stages):
         dest = stage_publish(u, item, ctx, f)
         pairs = [(p, os.path.join(dest, os.path.relpath(p, f['attempt'])), cls, dict(tctx, attempt=dest)
                   if cls == 'detection_positions' else tctx) for p, cls, tctx in outs]
-        for p, cls, tctx, final in sides:
-            if final != p:
-                _copy_into(p, final)
-                if p.endswith('.gaul.csv') and os.path.exists(p + '.gen.json'):
-                    _copy_into(p + '.gen.json', final + '.gen.json')
-                if cls == 'fp_gate_verdicts':     # the whole v110_out directory, as the fleet (p3s5_search_fleet.sh:235-236)
-                    for q in glob.glob(os.path.join(os.path.dirname(p), '*')):
-                        if os.path.isfile(q) and q != p:
-                            _copy_into(q, os.path.join(os.path.dirname(final), os.path.basename(q)))
-                    tctx = dict(tctx, catalog=os.path.join(dest, 'transients', f'Run_{f["label"]}', 'master_catalog.csv'))
-            pairs.append((p, final, cls, tctx))
+        try:
+            for p, cls, tctx, final in sides:
+                if final != p:
+                    _copy_into(p, final)
+                    if p.endswith('.gaul.csv') and os.path.exists(p + '.gen.json'):
+                        _copy_into(p + '.gen.json', final + '.gen.json')
+                    if cls == 'fp_gate_verdicts':   # the whole v110_out directory, as the fleet (p3s5_search_fleet.sh:235-236)
+                        for q in glob.glob(os.path.join(os.path.dirname(p), '*')):
+                            if os.path.isfile(q) and q != p:
+                                _copy_into(q, os.path.join(os.path.dirname(final), os.path.basename(q)))
+                        tctx = dict(tctx, catalog=os.path.join(dest, 'transients', f'Run_{f["label"]}', 'master_catalog.csv'))
+                pairs.append((p, final, cls, tctx))
+        except placement.PlacementRefusal as e:
+            raise placement.PlacementRefusal(f'{e} - the attempt IS published at {dest}; the side outputs before this one '
+                                             f'are in place ({[x[1] for x in pairs[len(outs):]] or "none"}); no register '
+                                             f'row appended') from e
         record_outputs(u, pairs, verified)
         reg = register_row(ctx['out'], item, f['att_tag'])
         u.meta.update(attempt=dest, register=reg)

@@ -12,8 +12,10 @@ staged on this node). Units:
                      flowed = <frame>_flowed.fits present (snapshot defect D12; cf72d51: never a count over the cell).
   ship_<cell>        copy the fields to <out>/snapshot_flow/<cell>/ and flow_<sb>.csv / flow_<sb>.log to
                      <out>/snapshot_fleet_out/<cell>/flow/ (production paths.SNAPSHOT_FLOW_ROOT / SNAPSHOT_FLEET_OUT), each
-                     copy verified by sha1; a destination with different bytes refuses (G-S9; today `cp -n` keeps the old
-                     file silently, v9:336-341). The flow movies and series are frames' `movies` stage (_CROSSCHECK group 4).
+                     copy checked against its source (size and md5) BEFORE it is placed (core/placement.copy: the
+                     destination's group and ACL, never the work file's mode); a copy that differs, or a destination with
+                     different bytes, refuses (G-S9; today `cp -n` keeps the old file silently, v9:336-341). The flow
+                     movies and series are frames' `movies` stage (_CROSSCHECK group 4).
 Cell gates (whole cell refused, every subband unit records the reason): G-S1 no GPU id, or no site GPU lock for a GPU;
 G-S2 no done frames stage record, or one made on another node; G-S3 a broken Master link / G-S4 a subband without a Master
 (over the launcher's subband selection: every selected subband in the search chain, v9:146-181; the staged ones in the
@@ -23,9 +25,9 @@ import glob
 import json
 import os
 import re
-import shutil
 import threading
 
+from exopipe.phase3.core import placement
 from exopipe.phase3.core.record import NoInput, Refusal
 from exopipe.phase3.lib.flow import steps_common as C
 
@@ -436,10 +438,13 @@ def flow_subband(u, args, run, cell, sb, gpu, info, partial_list):
 # ---------------------------------------------------------------------------------------------------------------------
 
 def _atomic_copy(src, dst):
+    """Ship one file: placement.copy - the work file (node-local) copied to a temporary file beside ``dst``, its size and md5
+    checked against the work file, then placed with the replaced file's group, mode and ACL or the directory's rule for a
+    new one (the archive's group and inherited ACL), never the work file's; the times are the work file's (as copy2). A copy
+    not verified or a placement refusal (PlacementRefusal) leaves ``dst`` as it was and no temporary file. Returns the
+    md5."""
     os.makedirs(os.path.dirname(dst), exist_ok=True)
-    tmp = os.path.join(os.path.dirname(dst), f'.{os.path.basename(dst)}.tmp.{os.getpid()}')
-    shutil.copy2(src, tmp)
-    os.replace(tmp, dst)
+    return placement.copy(src, dst, times=True)
 
 
 def ship_cell(u, args, run, cell, sbs, flow_recs):
@@ -469,7 +474,8 @@ def ship_cell(u, args, run, cell, sbs, flow_recs):
         if moves:
             u.note(f'--fresh: {len(moves)} shipped files moved aside')
     shipped = same = 0
-    for s, d in plan:
+    placement.sweep([d for _s, d in plan])      # a killed earlier ship's temporary files (not modified for an hour)
+    for i, (s, d) in enumerate(plan):
         if os.path.exists(d):
             if C.same_bytes(s, d):
                 same += 1
@@ -477,9 +483,12 @@ def ship_cell(u, args, run, cell, sbs, flow_recs):
             if c.flow_snapshot.SHIP_ON_EXISTING == 'refuse':
                 raise Refusal(f'G-S9: {d} exists with different bytes - not overwritten (B-49; today `cp -n` kept the old '
                               f'file silently); --fresh --supersede TAG moves the shipped files aside')
-        _atomic_copy(s, d)
-        if not C.same_bytes(s, d):
-            raise Refusal(f'G-S9: the copy {d} differs from its source {s} (checksum)')
+        try:
+            _atomic_copy(s, d)                  # the copy checked against its source BEFORE it is placed (G-S9)
+        except placement.PlacementRefusal as e:
+            why = 'its copy differs from the source' if isinstance(e, placement.CopyNotVerified) else 'not placed'
+            raise Refusal(f'G-S9: {d} not shipped ({why}: {e}); {shipped} file(s) shipped by this run before it stay in '
+                          f'place, {len(plan) - i - 1} file(s) after it not copied') from e
         shipped += 1
     u.meta.update(shipped=shipped, already_identical=same, n_files=len(plan))
     u.note(f'ship {cell}: {shipped} copied, {same} already identical, to {fields_dir} and {qa_dir}')

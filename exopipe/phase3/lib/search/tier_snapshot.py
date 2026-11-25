@@ -663,7 +663,9 @@ def _same(a, b):
 def ship(u, src, dst, fresh, out_root):
     """cp -n of SHIP_PATTERNS (v9:336-337). An existing different PRODUCT file refuses the unit (no-clobber content test)
     unless --fresh (the replaced file is kept under <out>/_superseded/); an existing log or marker (no product class) is
-    kept as cp -n keeps it (counted)."""
+    kept as cp -n keeps it (counted). The files are placed together (core/placement.atomic_many, each copy checked
+    against its source first); a copy that differs or a placement refusal refuses the unit (PlacementRefusal text: what is
+    placed), the node-local output kept."""
     s = cfg().search_snapshot
     os.makedirs(dst, exist_ok=True)
     names = sorted({os.path.basename(p) for pat in s.SHIP_PATTERNS for p in glob.glob(os.path.join(src, pat))})
@@ -689,15 +691,31 @@ def ship(u, src, dst, fresh, out_root):
             for n in stale:
                 os.makedirs(keep, exist_ok=True)
                 shutil.move(os.path.join(dst, n), os.path.join(keep, n))
+        replaced = []
         for n in todo:
-            a, b = os.path.join(src, n), os.path.join(dst, n)
+            b = os.path.join(dst, n)
             if os.path.exists(b):       # fresh: the replaced file is kept
                 os.makedirs(keep, exist_ok=True)
                 shutil.copy2(b, os.path.join(keep, n))
-            tmp = f'{b}.tmp.{os.getpid()}'
-            shutil.copy2(a, tmp)
-            os.replace(tmp, b)
-            copied.append(n)
+                replaced.append(n)
+        # the files placed together (core/placement.atomic_many: a replaced file's group, mode and ACL, or the directory's
+        # rule for a new one - never the node-local output's), each copied beside its destination and checked against the
+        # output (size, md5) first, with its times as copy2 gave them. A copy that differs or an attribute refusal places
+        # none of them (a failed later rename leaves the earlier ones live, and the reason names them); the unit refuses
+        from exopipe.phase3.core import placement
+        dsts = [os.path.join(dst, n) for n in todo]
+        placement.sweep(dsts)           # a killed earlier ship's temporary files (not modified for an hour)
+        try:
+            with placement.atomic_many(dsts) as tmps:
+                for n in todo:
+                    placement.copy_verified(os.path.join(src, n), tmps[os.path.join(dst, n)], times=True)
+        except placement.PlacementRefusal as e:
+            u.meta['shipped'] = dict(dir=dst, refused=str(e), identical=len(same), clashes=clash, logs_kept=kept,
+                                     superseded_stale=stale, replaced_kept_in=keep if replaced else None)
+            u.refuse(f'ship: {e}' + (f'; --fresh: {len(stale)} contradicted earlier outcome file(s) moved aside and '
+                                     f'{len(replaced)} file(s) to be replaced copied to {keep} first' if stale or replaced
+                                     else '') + f' (node-local output kept: {src})')
+        copied = list(todo)
     u.meta['shipped'] = dict(dir=dst, copied=len(copied), identical=len(same), clashes=clash, logs_kept=kept,
                              superseded_stale=stale)
     u.check('ship.no_clobber', not clash, value=len(clash),

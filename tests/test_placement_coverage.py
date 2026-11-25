@@ -1,12 +1,14 @@
-"""Placement coverage guard (PR 177, placement P1; placement P2; placement P3; placement P4; placement P5; core/placement.py): in
-the modules P1-P5 converted to placement.atomic / atomic_many / replace_many, no bare os.replace / os.rename / os.renames / shutil.move
-remains except the sites listed below, each with its reason or the placement PR planned for it
-(/fast/gh/claude_tmp/placement-classify_20261125/PLAN.md: P3 copy2 sources, P4 mosaic and hybrid sites behind a handler on the
-path, P5 others behind a handler on the path, P6 archive writers and per-file volume, P7 directory renames, P8 rewrites of installed products). A new bare rename in these modules fails this test; so does a listed site that is gone (the list must
-shrink with each later placement PR). In the same modules every record.atomic_write_json call passes ``place=`` explicitly
-(True for a product, False for a unit or run record), so a product never takes the unplaced default by omission. Every
-listed entry carries its reason ('stays bare: ...') or planned PR ('P<n>: ...'); an entry without one fails. Data-free: the
-source is parsed, nothing is imported or run (self_test checks that the guards fail on injected input)."""
+"""Placement coverage guard (PR 177, placement P1; placement P2; placement P3; placement P4; placement P5; placement P6;
+core/placement.py): in the modules P1-P6 converted to placement.atomic / atomic_many / replace_many / copy, no bare
+os.replace / os.rename / os.renames / shutil.move remains except the sites listed below, each with its reason or the
+placement PR planned for it (/fast/gh/claude_tmp/placement-classify_20261125/PLAN.md: P3 copy2 sources, P4 mosaic and hybrid
+sites behind a handler on the path, P5 others behind a handler on the path, P6 archive writers and per-file volume, P7
+directory renames, P8 rewrites of installed products). A new bare rename in these modules fails this test; so does a listed
+site that is gone (the list must shrink with each later placement PR). In the same modules every record.atomic_write_json
+call passes ``place=`` explicitly (True for a product, False for a unit or run record), so a product never takes the
+unplaced default by omission. Every listed entry carries its reason ('stays bare: ...') or planned PR ('P<n>: ...'); an
+entry without one fails. Data-free: the source is parsed, nothing is imported or run (self_test checks that the guards fail
+on injected input)."""
 import ast
 import os
 import re
@@ -39,7 +41,9 @@ MODULES = ['core/manifest.py', 'lib/calibrate/common.py', 'lib/calibrate/fluxsca
            'lib/catalog/night_view.py', 'lib/dewarp/steps_common.py', 'lib/flow/steps_common.py', 'lib/masters/coadd.py',
            'lib/masters/epoch_gate.py', 'lib/masters/release1_cards.py', 'lib/masters/tier_sublst.py',
            'lib/masters/vclean_masters.py', 'lib/pages/tess_orbits.py', 'lib/photometry/tests.py', 'lib/qa/percentiles.py',
-           'lib/search/deep_search.py', 'lib/search/tier_sublst.py', 'lib/serve/queues.py']
+           'lib/search/deep_search.py', 'lib/search/tier_sublst.py', 'lib/serve/queues.py',
+           # P6
+           'lib/flow/steps_snapshot.py', 'lib/photometry/steps_snapshot.py', 'lib/search/tier_snapshot.py']
 # every entry's reason: 'stays bare[ until ...]: <why>' or the planned PR 'P<n>: <what>' - nothing else (an entry without
 # a reason or a planned PR fails the guard)
 REASON = re.compile(r'^(stays bare( until [^:]+)?|P[1-9][0-9]*): \S.{9,}$', re.S)
@@ -69,17 +73,14 @@ EXCEPTIONS = {
     ('lib/forced/wide_jobs.py', 'write_jobs', 'os.replace'): (1, 'stays bare: the run\'s job state document, not a product'),
     ('lib/frames/tier_snapshot.py', 'stage_stage.unpack', 'os.replace'): (
         1, 'stays bare: unpacks the staged inputs into the stage\'s scratch directory'),
-    ('lib/frames/tier_snapshot.py', 'stage_cube', 'os.replace'): (1, 'P6: an archive writer (the snapshot cube, a copyfile)'),
     ('lib/frames/tier_snapshot.py', 'strip_legacy_header', 'os.replace'): (
         1, 'stays bare: log - rewrites an engine log without its legacy header line, not a product (a cosmetic rewrite never '
            'fails a movie unit)'),
-    ('lib/frames/tier_snapshot.py', 'flow_movies', 'os.replace'): (1, 'P6: per-file volume (the flow movies)'),
     ('lib/hybrid/warp.py', 'derive_warp_screen', 'os.replace'): (
         2, 'stays bare: the warp-screen cache and its record, node-local (fitsio.scratch_root) and re-derivable, not a product'),
     ('lib/masters/admit.py', 'stale_admissions', 'os.replace'): (1, MOVED_ASIDE + ' - a stale admission'),
     ('lib/masters/admit_stages.py', 'move_aside', 'os.replace'): (1, MOVED_ASIDE + ' - earlier admit outputs'),
     ('lib/masters/admit_stages.py', 'move_aside_files', 'os.replace'): (1, MOVED_ASIDE + ' - earlier admit outputs'),
-    ('lib/masters/admit_stages.py', 'admit_stage', 'os.replace'): (1, 'P6: per-file volume (the admitted night images)'),
     ('lib/masters/deep_stages.py', '_place_build_stats', 'os.replace'): (
         2, MOVED_ASIDE + ' - the earlier build_stats.json, and that same file moved back under its name when nothing is placed'),
     ('lib/masters/deep_stages.py', 'striation', 'os.replace'): (
@@ -92,14 +93,11 @@ EXCEPTIONS = {
         1, 'stays bare: cache - the ionosphere-rank population cache, derived and re-derivable, not a product'),
     ('lib/mosaic/steps_worker.py', 'task_qa', 'os.replace'): (
         1, 'stays bare: writes into the stage\'s temporary directory; steps_qa.run_qa places the table (replace_many)'),
-    ('lib/photometry/steps_common.py', 'atomic_copy', 'os.replace'): (
-        1, 'P6: per-file volume; the temporary file is a shutil.copy2 of the work file'),
     ('lib/search/deep_step.py', 'stage_quarantine', 'os.replace'): (1, 'stays bare: a run record (quarantine plan)'),
     ('lib/search/deep_step.py', 'run_unit', 'os.replace'): (1, 'stays bare: a run record (the unit\'s test report)'),
-    ('lib/search/deep_step.py', '_copy_into', 'os.replace'): (
-        1, 'P6: per-file volume; the temporary file is a shutil.copy2 of the attempt\'s file'),
     ('lib/search/deep_step.py', 'stage_publish', 'os.replace'): (
-        1, 'P6: the published attempt (a directory of copies renamed into place)'),
+        1, 'stays bare: the published attempt, a directory renamed into place - its files were placed into it one by one '
+           '(_copy_into: placement.copy); placement on a directory would set only the directory itself (plan P7)'),
     ('lib/search/deep_step.py', '_child', 'os.replace'): (1, 'stays bare: the child\'s result record in the run\'s scratch'),
     ('phase3_i_deep_package_deep.py', '_sweep_stale', 'shutil.move'): (1, MOVED_ASIDE + ' - stale review directories'),
     # P3
@@ -158,7 +156,9 @@ EXCEPTIONS = {
         1, 'stays bare: the node ledger, a state record of the run (not a product)'),
     ('lib/masters/tier_sublst.py', 'clear_earlier', 'shutil.move'): (1, MOVED_ASIDE + ' - earlier sub-LST products'),
     ('lib/masters/tier_sublst.py', 'cpv', 'os.replace'): (
-        1, 'P6: per-file volume; the temporary file is a shutil.copy2 of the prep source (cp -p keeps its mode)'),
+        1, 'stays bare: the prep copy keeps the source\'s mode and ACL on purpose (cp -p, sublst_prep_lst.sh:18-19); '
+           'replace(like=src) would also set the source\'s group - pipeline for the frozen masters, which gh is not in - and '
+           'refuse every master copy (placement P6)'),
     ('lib/masters/tier_sublst.py', 'stage_prep', 'os.replace'): (
         1, 'stays bare: roots.csv, the run\'s record of its input roots (a state record, not a product)'),
     ('lib/masters/vclean_masters.py', '_refresh', 'shutil.move'): (
@@ -169,12 +169,6 @@ EXCEPTIONS = {
         1, 'stays bare: the identification look-ahead\'s result in the search\'s work directory (scratch, not a product)'),
     ('lib/search/deep_search.py', '_refusal_columns', 'os.replace'): (
         1, 'stays bare: the column list of the search\'s refusal records, written once (a run record, not a product)'),
-    ('lib/search/deep_search.py', '_archive_frame_publish', 'os.replace'): (
-        1, 'P6: an archive writer, one per frame; the temporary file is a shutil.copy2 of the work frame'),
-    ('lib/search/deep_search.py', '_write_archive_frame', 'os.replace'): (
-        1, 'P6: per-file volume (each search frame, validated before its rename)'),
-    ('lib/search/tier_sublst.py', 'copy_tree', 'os.replace'): (
-        1, 'P6: per-file volume; the temporary file is a shutil.copy2 of the attempt\'s file'),
     ('lib/search/tier_sublst.py', 'Lease.try_acquire', 'os.replace'): (
         1, 'stays bare: the cell\'s lease, a state record (not a product)'),
     ('lib/search/tier_sublst.py', 'engine_child._w', 'os.replace'): (
@@ -182,6 +176,13 @@ EXCEPTIONS = {
     ('lib/search/tier_sublst.py', 'detect', 'os.replace'): (1, 'stays bare: the engine child\'s job spec (scratch)'),
     ('lib/search/tier_sublst.py', 'run_unit', 'os.rename'): (
         1, MOVED_ASIDE + ' - the earlier published search (--fresh)'),
+    # P6
+    ('lib/flow/steps_snapshot.py', '_supersede_work', 'os.rename'): (
+        1, MOVED_ASIDE + ' - this subband\'s earlier node-local flow work files'),
+    ('lib/photometry/steps_snapshot.py', 'quarantine', 'os.replace'): (
+        1, MOVED_ASIDE + ' - superseded stage-1 files moved to the quarantine directory'),
+    ('lib/search/tier_snapshot.py', 'ship', 'shutil.move'): (
+        1, MOVED_ASIDE + ' - earlier outcome files the new search contradicts (--fresh)'),
 }
 CALLS = {'os': ('replace', 'rename', 'renames'), 'shutil': ('move',)}
 

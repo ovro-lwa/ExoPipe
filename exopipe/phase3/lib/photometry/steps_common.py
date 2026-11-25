@@ -385,13 +385,26 @@ def outputs_of(rec, cls):
     return [o['path'] for o in rec.get('outputs', []) if o.get('class') == cls]
 
 
-def atomic_copy(src, dst):
-    import shutil
-    os.makedirs(os.path.dirname(dst), exist_ok=True)
-    tmp = os.path.join(os.path.dirname(dst), '.%s.tmp.%d' % (os.path.basename(dst), os.getpid()))
-    shutil.copy2(src, tmp)
-    os.replace(tmp, dst)
-    return dst
+def place_copies(pairs):
+    """Place copies of the work files [(src, dst)] (node-local scratch) together: core/placement.atomic_many - each copied to a
+    temporary file beside its destination and checked against its source (size, md5; placement.copy_verified, with the
+    source's times as copy2 gave them), then all given the replaced file's group, mode and ACL or the directory's rule for a
+    new one (never the work file's), then renamed in order. A copy that differs (CopyNotVerified) or an attribute refusal
+    places none of them; a failed rename after others leaves those placed and its PlacementRefusal names them. Either way
+    no temporary file is left. A killed earlier write's temporary files are removed first (placement.sweep). Returns the
+    destinations. Two pairs with one destination refuse (PlacementRefusal) before anything is written."""
+    dsts = [d for _s, d in pairs]
+    if len({os.path.abspath(d) for d in dsts}) != len(dsts):
+        twice = sorted({d for d in dsts if [os.path.abspath(x) for x in dsts].count(os.path.abspath(d)) > 1})
+        raise placement.PlacementRefusal(f'placement: destinations named twice {twice} (two sources for one product) - '
+                                         f'nothing written')
+    for d in sorted({os.path.dirname(d) for d in dsts}):
+        os.makedirs(d, exist_ok=True)
+    placement.sweep(dsts)
+    with placement.atomic_many(dsts) as tmps:
+        for s, d in pairs:
+            placement.copy_verified(s, tmps[d], times=True)
+    return dsts
 
 
 def write_text_atomic(path, text):

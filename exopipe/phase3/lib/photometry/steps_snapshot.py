@@ -9,8 +9,9 @@ TAG=CSV) is cut and measured, never evaluated. Engines in place (core/legacy.run
 snapshot_forced_phot.py (one child per band) and snapshot_forced_eval.py. Shell logic ported here from
 snapshot_forced_fleet.sh (claims -> exopipe3 run; pinning -> --cores; band list :19-21; one process per band, PAR at once,
 node-local work dir :15, :33-34; 'no HWJ/10pc cutouts' is not a failure :36-37, decided BEFORE launching with the engine's own
-glob; manifest merge in band order :38-40; completion rule :41-42; copy to the product root :43 -> atomic per-file writes;
-done/failed markers -> run records; failed work kept) and from snapshot_forced_reserve_20261007.sh /
+glob; manifest merge in band order :38-40; completion rule :41-42; copy to the product root :43 -> the cell's files
+copied, checked (size, md5) and placed together (core/placement; a refusal places none, SM-SHIP); done/failed markers
+-> run records; failed work kept) and from snapshot_forced_reserve_20261007.sh /
 snapshot_forced_run_20260928.sh (per-kind refused-cell lists :138-147; the cells to evaluate = measured minus refused; two
 evaluations :151-162 with OMP_NUM_THREADS=1; the 8-row check :161, now one row per (sample, Stokes, tier) of the samples
 measured (V2); the grid, zone and stage-1 content tests :164, :169-173). A campaign's stage 1 (lib/photometry/campaign.py) is
@@ -29,6 +30,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 from exopipe.phase3.core import cells as C
+from exopipe.phase3.core import placement
 from exopipe.phase3.core.record import NoInput, Refusal
 from exopipe.phase3.lib.photometry import steps_common as K
 
@@ -394,9 +396,11 @@ def measure_cell(run, args, cell, bands, files, root, stage1, man_name, targets=
         for p in npz:
             u.plan(os.path.join(dst, os.path.basename(p)), 'photometry_snapshot_npz')
         u.plan(mpath, 'photometry_manifest')
-        for p in npz:
-            K.atomic_copy(p, os.path.join(dst, os.path.basename(p)))
-        K.atomic_copy(os.path.join(work, 'cell', man_name), mpath)
+        try:            # the npz and the cell's manifest placed together, each copy checked first (steps_common.place_copies)
+            K.place_copies([(p, os.path.join(dst, os.path.basename(p))) for p in npz]
+                           + [(os.path.join(work, 'cell', man_name), mpath)])
+        except placement.PlacementRefusal as e:
+            u.refuse('SM-SHIP: %s (work kept: %s)' % (e, work))
         for p in npz:
             u.add_output(os.path.join(dst, os.path.basename(p)), 'photometry_snapshot_npz', cutout_root=root,
                          **({'targets': tspec} if tspec else {}))
