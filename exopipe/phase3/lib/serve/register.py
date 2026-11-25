@@ -303,19 +303,13 @@ def register(entries, d):
 
 def page_entry(plan, page, utc, root=None):
     """The registry entry of ``page`` (snapshot_register_page.py:47-54 form; see the module docstring)."""
-    S = _S()
     argv = plan.argv(page, utc, root)
-    code = argv[1] if os.path.isabs(argv[1]) else os.path.join(plan.ops, argv[1])
+    code = plan.code(page)                         # = argv[1], absolute (Page.cwd: its directory)
     a = list(argv[2:])
     if '--port' in a:
         i = a.index('--port')
         del a[i:i + 2]
-    pre = tuple(S.TWO_PORT_ENV_PREFIXES)
-    env = {k: v for k, v in sorted(plan.server_env_extra(page).items()) if k.startswith(pre)}
-    ct = (S.CUTOUTS_TIER.get((page.tier, page.kind)) if page.family in ('review', 'comb')   # the FITS cutouts button (config;
-          else None)                                                                       # comb: the combined view's pages)
-    if ct:
-        env.update(P3_CUTOUTS_TIER=ct, P3_PAGE_ID=f'p{page.port}')
+    env = plan.entry_env(page)                     # the App probe runs with the same (servers.app_probe)
     title = a[a.index('--title') + 1] if '--title' in a else ''
     e = dict(id=f'p{page.port}', kind='review', code=code, argv=a, env=env, legacy_port=page.port, greenlit=False,
              inspection_legacy_port=page.twin, inspection_title=None, title=title)

@@ -82,9 +82,11 @@ from concurrent.futures import ThreadPoolExecutor
 
 from exopipe.phase3.core.record import NoInput, Refusal
 from exopipe.phase3.lib.serve import common, flow, journals, queues, scripts, tess, versions, views
+from exopipe.phase3.lib.serve.plan import ReviewHook
 
 STAGES = ('build', 'views', 'test', 'carry', 'swap', 'page-index', 'start', 'hub', 'verify', 'retire')
 DEFAULT_OFF = ('retire',)          # run only when named in --stages (steps/serve.py)
+PLAN_HOOK = ReviewHook()      # the sub-LST review pages' words (plan.FAMILY_MODULES)
 
 
 def _CFG():

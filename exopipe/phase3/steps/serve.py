@@ -217,14 +217,9 @@ def default_out(args):
 
 
 def _module(plan):
-    from exopipe.phase3.lib.serve import deep, forced, forced_tier, jupiter, pinned, snapshot_copy, sublst_build
-    if plan.family == 'forced':
-        return forced
-    if plan.family == 'forced-tier':
-        return forced_tier
-    if plan.family == 'pinned':
-        return pinned
-    return {'deep': deep, 'sublst': sublst_build, 'snapshot': snapshot_copy, 'jupiter': jupiter}[plan.tier]
+    """The module that serves the plan's family (lib/serve/plan.FAMILY_MODULES: the same module holds the family's PLAN_HOOK)."""
+    from exopipe.phase3.lib.serve import plan as planmod
+    return planmod.family_module(plan.tier, plan.family)
 
 
 def select_stages(all_stages, args, default_off=()):

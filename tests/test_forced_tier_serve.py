@@ -15,12 +15,23 @@ against the LIVE registry and hub are tests/test_serve.py test_production_readon
   3. readiness: no <run>.new = NO-INPUT; no family T record, one of another review root, one not done, one without the queue
      output or with a failed test = not ready; a done record naming the queue = ready, with its site.
   4. the install: check_page's refusals before anything moves (not ready, files missing, an install pending, the kept name taken,
-     the exclusion gate); a failure after staging (the App probe, the page inputs, the second gate) puts <run>.new back; a
-     success swaps with the served run's judgements copied into the new run, the served run kept, the stage directory gone; a
+     the exclusion gate); then whole serves (install_stage through flow.register_pages, the parity registry <out>/two_port
+     written by register.prepare / write, the server and its build stubbed) with a failure injected at each point: BEFORE the
+     swap (the stage directory, the rename into it, the first judgements sync, the journal test, the loader check, the server
+     check inside the lock, the swap's rename; an OSError of one page's inputs refuses that page only, the other registered)
+     the page is served as before and <run>.new is back; AFTER the swap (the second sync, the journal re-test,
+     register.write) the install record names the step, the page's unit ends 'installed, not registered: <step>' (status
+     error, never refused), and the next serve - no <run>.new - resumes and registers it (the record removed); a success
+     keeps the served run and its judgements (rsync --update) and registers the new run with the staged build's title; a
      first install only renames.
-  5. the exclusion gate's keyer for family T rows (10-minute window and deep cand_ids, columns) and its refusal of an unkeyed
-     served event; the content tests of the TESS rows and window times held to the served candidates.
-  6. dispatch: steps/serve.py FAMILIES and _module; pinned refuses a parity serve.
+  5. the exclusion gate's keyer for family T rows (10-minute window and deep cand_ids, columns), its refusal of an unkeyed
+     served event, and its one pass over the run (each file listed and opened once); the content tests of the TESS rows and
+     window times held to the served candidates.
+  6. dispatch: steps/serve.py FAMILIES and _module; pinned refuses a parity serve; every family's plan words from its module's
+     PLAN_HOOK (plan.family_hook: a family without one refuses - no fallback to the tier's words).
+  7. pinned: a publish marker standing on its run (Run_P3S5 / Run_SLSTB: the deep and sub-LST publishers' runs) refuses the
+     registration, 'publish in progress on <run>, retry after', and the marker stays; the App probe of a pinned page runs
+     with exactly the code directory, cwd and environment of its registry entry.
 """
 import atexit
 import csv
@@ -50,7 +61,7 @@ from exopipe.phase3.config import CFG                                  # noqa: E
 from exopipe.phase3.core import validate                               # noqa: E402
 from exopipe.phase3.core.record import Refusal, Run                    # noqa: E402
 from exopipe.phase3.lib.pages import tests as page_tests_mod           # noqa: E402,F401  (registers tess_coverage, ...)
-from exopipe.phase3.lib.serve import exclusion_gate, forced_tier, pinned, plan as planmod, register  # noqa: E402
+from exopipe.phase3.lib.serve import exclusion_gate, flow, forced_tier, pinned, plan as planmod, register, servers  # noqa: E402
 from exopipe.phase3.steps import serve as serve_step                    # noqa: E402
 
 S = CFG.serve
@@ -175,13 +186,13 @@ def test_plan():
                       ('# queue_name: forced photometry (HWJ), Stokes V, deep tier\n', 'not the family T queue header'),
                       ('# something else\n', 'not the family T queue header')):
         make_run(pg.root, 'V', '10min', header=hdr)
-        refused(planmod.forced_tier_words, pg, pg.root, want=want)
-    refused(planmod.forced_tier_words, pg, os.path.join(T, 'nowhere', pg.run_name), want='no queue')
+        refused(forced_tier.forced_tier_words, pg, pg.root, want=want)
+    refused(forced_tier.forced_tier_words, pg, os.path.join(T, 'nowhere', pg.run_name), want='no queue')
     other = os.path.join(T, 'renamed', 'Run_SNAPFORCED_V10min_gen6')
     make_run(other)
-    refused(planmod.forced_tier_words, pg, other, want='not forced_tier_pages.RUN_NAME')
+    refused(forced_tier.forced_tier_words, pg, other, want='not forced_tier_pages.RUN_NAME')
     make_run(pg.root, 'V', '10min')
-    assert planmod.forced_tier_words(pg, pg.root) == ('HWJ + 10 pc + LPT', '5')
+    assert forced_tier.forced_tier_words(pg, pg.root) == ('HWJ + 10 pc + LPT', '5')
     # family T's own content test reads the same header (an LPT sample in the parentheses: f06a293's header)
     from exopipe.phase3.lib.forced import tests_tier_pages
     for hdr in (HEADER.format(S='V', tier='10min'), '# queue_name: forced photometry (HWJ + 10 pc), Stokes I, deep tier\n'):
@@ -210,11 +221,12 @@ def test_plan():
 
 # ---- 3. readiness -------------------------------------------------------------------------------------------------------
 def write_record(out, root, q, status='done', test_passed=True, site='/site'):
+    qs = q if isinstance(q, list) else [q] if q else []
     os.makedirs(os.path.join(out, '_records', 'forced'), exist_ok=True)
     rec = dict(unit='T_runs', status=status, reason='x' if status != 'done' else None,
                meta=dict(site=site, review_root=root, verify_line='TIER-CHAIN-OK test'),
-               outputs=[{'path': q, 'class': 'forced_tier_run'}] if q else [],
-               tests=[dict(name='forced_tier_run.tier_run', path=q, passed=test_passed)] if q else [])
+               outputs=[{'path': x, 'class': 'forced_tier_run'} for x in qs],
+               tests=[dict(name='forced_tier_run.tier_run', path=x, passed=test_passed) for x in qs])
     with open(os.path.join(out, '_records', 'forced', 'T_runs.json'), 'w') as f:
         json.dump(rec, f)
 
@@ -249,85 +261,334 @@ def test_ready():
 
 
 # ---- 4. the install -----------------------------------------------------------------------------------------------------
-def test_install():
+KEEP_UTC = '20990101T000000Z'
+
+
+def mark(D, text):
+    with open(os.path.join(D, 'MARK'), 'w') as f:
+        f.write(text)
+
+
+def marked(D):
+    try:
+        with open(os.path.join(D, 'MARK')) as f:
+            return f.read()
+    except OSError:
+        return None
+
+
+class Harness:
+    """The install's surroundings stubbed: the page's content tests (the judgement journal's injectable), the App probe, the
+    page inputs and the gate on the run (each injectable), the server check (the n-th call injectable), the server's loader
+    check in register.prepare and register.write (injectable; real otherwise, in the parity registry <out>/two_port), the
+    build wait (refuses: no server here - a registered page's unit ends refused 'BUILD-WAIT'), os.mkdir / os.rename of the
+    install's paths and the judgements sync (injectable; rsync otherwise)."""
+
+    def __init__(self):
+        self.fail, self.calls, self.checks = {}, [], 0
+
+    def __enter__(self):
+        H = self
+        self.saved = (forced_tier.page_output, servers.app_probe, forced_tier.page_inputs, forced_tier._gate,
+                      forced_tier._sync_judgements, register.check_server, register.prepare, register.write,
+                      register.wait_built, os.mkdir, os.rename)
+        sync0, prep0, write0, mkdir0, rename0 = (forced_tier._sync_judgements, register.prepare, register.write, os.mkdir,
+                                                 os.rename)
+
+        def page_output(u, pg_, path, cls, what=None, **ctx):
+            H.calls.append(('test', cls, os.path.basename(path), what))
+            if cls == 'judgement_journal' and H.fail.get('journal') and H.fail['journal'] in (what or ''):
+                raise Refusal(f'the content test of {path} (class judgement_journal) failed: carry_consistent (test)')
+
+        def probe(plan, pg_, D, unit=None):
+            H.calls.append(('probe', D))
+            return {'n': 1}
+
+        def inputs(u, plan, pg_, D):
+            H.calls.append(('inputs', D))
+            assert os.path.basename(D) == pg_.run_name and os.path.basename(os.path.dirname(D)) == f'{pg_.run_name}.install'
+            if H.fail.get('inputs') == pg_.key:
+                raise OSError(5, 'Input/output error (test)', os.path.join(D, 'scintillation_index.csv'))
+            for x in list(S.FORCED_TIER_INPUTS_REQUIRED) + ['frame_times.csv']:
+                with open(os.path.join(D, x), 'w') as f:
+                    f.write('x')
+
+        def gate(u, plan, pg_, D, when, after='nothing installed'):
+            H.calls.append(('gate', when))
+            if H.fail.get('gate') == when:
+                raise Refusal(f'G17 serve-time exclusion gate {when}: hit (test) - {after}')
+
+        def sync(src, dst):
+            first = '.install' in dst
+            if H.fail.get('sync') == ('first' if first else 'second'):
+                raise Refusal(f'judgements copy {src}/judgements/ -> {dst}/judgements/ failed (rsync exit 23: test)')
+            return sync0(src, dst)
+
+        def check_server(ports, d):
+            H.checks += 1
+            if H.fail.get('check') == H.checks:
+                raise Refusal(f'G16 two-port server: test refusal (call {H.checks})')
+            return {}
+
+        def prepare(entries, d):
+            if H.fail.get('prepare'):
+                raise Refusal("registration refused by the server's loader (nothing written): test")
+            return prep0(entries, d)
+
+        def write(prep):
+            if H.fail.get('write'):
+                raise OSError(5, 'Input/output error (test)', prep['registry'])
+            return write0(prep)
+
+        def wait_built(*a, **k):
+            raise Refusal('BUILD-WAIT (test): no two-port server here')
+
+        def mkdir(path, *a, **k):
+            if H.fail.get('mkdir') and str(path).endswith('.install'):
+                raise OSError(28, 'No space left on device (test)', path)
+            return mkdir0(path, *a, **k)
+
+        def rename(src, dst, *a, **k):
+            f = H.fail.get('rename')
+            if f and f(str(src), str(dst)):
+                raise OSError(5, 'Input/output error (test)', src)
+            return rename0(src, dst, *a, **k)
+        (forced_tier.page_output, servers.app_probe, forced_tier.page_inputs, forced_tier._gate, forced_tier._sync_judgements,
+         register.check_server, register.prepare, register.write, register.wait_built, os.mkdir, os.rename) = (
+            page_output, probe, inputs, gate, sync, check_server, prepare, write, wait_built, mkdir, rename)
+        return self
+
+    def __exit__(self, *exc):
+        (forced_tier.page_output, servers.app_probe, forced_tier.page_inputs, forced_tier._gate, forced_tier._sync_judgements,
+         register.check_server, register.prepare, register.write, register.wait_built, os.mkdir, os.rename) = self.saved
+        return False
+
+
+def install_setup(name, pages='forced-tier-V-10min', live=True):
+    """A parity review root under <T>/inst_<name> with, per page, a served run (MARK old, journal {"old": 1}) and its new build
+    <run>.new (MARK new, journal {"new": 1}) that family T's record names; the parity registry directory."""
+    out = os.path.join(T, f'inst_{name}')
+    os.makedirs(os.path.join(out, S.TWO_PORT_PARITY_DIR), exist_ok=True)
+    p = planmod.make(args(pages=pages), out)
+    qs = []
+    for pg in p.pages:
+        if live:
+            make_run(pg.root, pg.stokes, pg.kind, label='{"old": 1}\n')
+            mark(pg.root, 'old')
+        new = forced_tier.new_tree(pg)
+        make_run(new, pg.stokes, pg.kind, label='{"new": 1}\n')
+        mark(new, 'new')
+        qs.append(os.path.join(new, f'queue_{pg.stokes}.txt'))
+    write_record(out, forced_tier.install_root(p.pages[0]), qs)
+    return out
+
+
+def serve_once(out, pages='forced-tier-V-10min'):
+    p = planmod.make(args(pages=pages), out)
+    run = Run('serve', ['test'], out, CFG, config_sections=None)
+    forced_tier.install_stage(run, p, flow.new_state(), UTC)
+    return p, {x.name: x for x in run.units}
+
+
+def kept_runs(pg):
+    return sorted(x for x in os.listdir(forced_tier.install_root(pg)) if x.startswith(pg.run_name + '.before_'))
+
+
+def registered(out, pid='p9120'):
+    try:
+        with open(register.files(os.path.join(out, S.TWO_PORT_PARITY_DIR))[0]) as f:
+            return next((e for e in json.load(f)['pages'] if e['id'] == pid), None)
+    except OSError:
+        return None
+
+
+def as_before(pg, out, why=''):
+    """Served as before: the served run untouched, <run>.new back, no stage directory, no kept run, no install record, nothing
+    registered."""
+    new = forced_tier.new_tree(pg)
+    assert marked(pg.root) == 'old' and marked(new) == 'new', (why, marked(pg.root), marked(new))
+    assert open(os.path.join(pg.root, 'judgements', 'judgements.jsonl')).read() == '{"old": 1}\n', why
+    assert not os.path.lexists(forced_tier.stage_dir(pg)), why
+    assert not os.path.lexists(forced_tier.install_record_path(pg)) and not kept_runs(pg), (why, kept_runs(pg))
+    assert registered(out, f'p{pg.port}') is None, why
+
+
+def test_install_checks():
+    """check_page's refusals before anything moves."""
     out = os.path.join(T, 'out_install')
     p = planmod.make(args(pages='forced-tier-V-10min'), out)
     pg = p.pages[0]
     root, new, live = forced_tier.install_root(pg), forced_tier.new_tree(pg), pg.root
     run = Run('serve', ['test'], out, CFG, config_sections=None)
-    calls = []
-    saved = (forced_tier.page_output, forced_tier.servers.app_probe, forced_tier.page_inputs, forced_tier._gate)
-    forced_tier.page_output = lambda u, pg_, path, cls, what=None, **ctx: calls.append(('test', cls, os.path.basename(path)))
-    forced_tier.servers.app_probe = lambda plan, pg_, D, unit=None: calls.append(('probe', D)) or {'n': 1}
-    fail = {}
+    with Harness() as H, run.unit('t_install', stage='install') as u:
+        inst = forced_tier.Install(p, KEEP_UTC)
+        refused(forced_tier.check_page, u, p, pg, inst, want='NO-INPUT')
+        make_run(new, label='{"new": 1}\n')
+        refused(forced_tier.check_page, u, p, pg, inst, want='not ready')
+        write_record(out, root, os.path.join(new, 'queue_V.txt'))
+        os.remove(os.path.join(new, 'forced_fits.csv'))
+        refused(forced_tier.check_page, u, p, pg, inst, want='lacks forced_fits.csv')
+        make_run(new, label='{"new": 1}\n')
+        os.mkdir(forced_tier.stage_dir(pg))
+        refused(forced_tier.check_page, u, p, pg, inst, want='did not finish')
+        os.rename(new, new + '.away')
+        refused(forced_tier.check_page, u, p, pg, inst, want='did not finish')     # before readiness: no NO-INPUT
+        os.rename(new + '.away', new)
+        os.rmdir(forced_tier.stage_dir(pg))
+        make_run(live, label='{"old": 1}\n')
+        os.mkdir(forced_tier.keep_path(pg, KEEP_UTC))
+        refused(forced_tier.check_page, u, p, pg, inst, want='kept name')
+        os.rmdir(forced_tier.keep_path(pg, KEEP_UTC))
+        H.fail['gate'] = 'on the new build'
+        refused(forced_tier.check_page, u, p, pg, inst, want='hit')
+        assert os.path.isdir(new) and not os.path.exists(forced_tier.stage_dir(pg)) and not inst.staged
+        H.fail.clear()
+        D, exp, _notes = forced_tier.check_page(u, p, pg, inst)
+        assert D == os.path.abspath(live) and exp == {'n': 1} and inst.staged == {pg.key: os.path.join(
+            forced_tier.stage_dir(pg), pg.run_name)} and p.title_from[pg.key] == inst.staged[pg.key]
+        assert not os.path.exists(new) and os.path.isdir(inst.staged[pg.key])
+        assert [c[0] for c in H.calls if c[0] in ('probe', 'inputs')][-2:] == ['probe', 'inputs']
+        assert ('test', 'forced_tier_run', 'queue_V.txt') in [c[:3] for c in H.calls]
+        assert any(c[1] == 'judgement_journal' and 'first judgements sync' in c[3] for c in H.calls if c[0] == 'test')
+        inst.unstage(u, pg, 'test')
+        assert os.path.isdir(new) and not os.path.exists(forced_tier.stage_dir(pg)) and not p.title_from
+        u.note('test')
+    ok('install checks: refusals before anything moves (an unfinished install first, before readiness); a staged build put '
+       'back by unstage')
 
-    def inputs(u, plan, pg_, D):
-        calls.append(('inputs', D))
-        assert os.path.basename(D) == pg_.run_name and os.path.basename(os.path.dirname(D)) == f'{pg_.run_name}.install'
-        if fail.get('inputs'):
-            raise Refusal('inputs failed (test)')
-        with open(os.path.join(D, 'scintillation_index.csv'), 'w') as f:
-            f.write('x')
 
-    def gate(u, plan, pg_, D, when):
-        calls.append(('gate', when))
-        if fail.get('gate') == when:
-            raise Refusal(f'G17 serve-time exclusion gate {when}: hit (test)')
-    forced_tier.page_inputs, forced_tier._gate = inputs, gate
-    try:
-        with run.unit('t_install', stage='install') as u:
-            # refusals before anything moves
-            refused(forced_tier.check_page, u, p, pg, '20990101T000000Z', want='NO-INPUT')
-            make_run(new, label='{"new": 1}\n')
-            refused(forced_tier.check_page, u, p, pg, '20990101T000000Z', want='not ready')
-            write_record(out, root, os.path.join(new, 'queue_V.txt'))
-            os.remove(os.path.join(new, 'forced_fits.csv'))
-            refused(forced_tier.check_page, u, p, pg, '20990101T000000Z', want='lacks forced_fits.csv')
-            make_run(new, label='{"new": 1}\n')
-            os.mkdir(forced_tier.stage_dir(pg))
-            refused(forced_tier.check_page, u, p, pg, '20990101T000000Z', want='did not finish')
-            os.rmdir(forced_tier.stage_dir(pg))
-            make_run(live, label='{"old": 1}\n')
-            os.mkdir(forced_tier.keep_path(pg, '20990101T000000Z'))
-            refused(forced_tier.check_page, u, p, pg, '20990101T000000Z', want='kept name')
-            os.rmdir(forced_tier.keep_path(pg, '20990101T000000Z'))
-            fail['gate'] = 'on the new build'
-            refused(forced_tier.check_page, u, p, pg, '20990101T000000Z', want='hit')
-            assert os.path.isdir(new) and not os.path.exists(forced_tier.stage_dir(pg))
-            # failures after staging put <run>.new back
-            for k, v in (('gate', 'on the staged run after its page inputs'), ('inputs', True)):
-                fail.clear()
-                fail[k] = v
-                refused(forced_tier.check_page, u, p, pg, '20990101T000000Z')
-                assert os.path.isdir(new) and not os.path.exists(forced_tier.stage_dir(pg)), k
-                with open(os.path.join(live, 'judgements', 'judgements.jsonl')) as f:
-                    assert f.read() == '{"old": 1}\n'
-            # the swap: the served run's judgements copied into the new run (rsync --update: the newer file wins)
-            fail.clear()
-            os.utime(os.path.join(new, 'judgements', 'judgements.jsonl'), (1, 1))
-            with open(os.path.join(live, 'judgements', 'extra.jsonl'), 'w') as f:
-                f.write('{"extra": 1}\n')
-            D, exp, notes, kept = forced_tier.check_page(u, p, pg, '20990101T000000Z')
-            assert D == live and kept == forced_tier.keep_path(pg, '20990101T000000Z') and exp == {'n': 1}
-            assert not os.path.exists(new) and not os.path.exists(forced_tier.stage_dir(pg))
-            assert os.path.exists(os.path.join(live, 'scintillation_index.csv'))        # the staged run, now served
-            assert open(os.path.join(live, 'judgements', 'judgements.jsonl')).read() == '{"old": 1}\n'
-            assert open(os.path.join(live, 'judgements', 'extra.jsonl')).read() == '{"extra": 1}\n'
-            assert not os.path.exists(os.path.join(kept, 'scintillation_index.csv'))
-            assert [c[0] for c in calls if c[0] in ('probe', 'inputs')][-2:] == ['probe', 'inputs']
-            assert ('test', 'forced_tier_run', 'queue_V.txt') in calls
-            # a first install (no served run) only renames
-            p2 = planmod.make(args(pages='forced-tier-I-deep'), out)
-            pg2 = p2.pages[0]
-            make_run(forced_tier.new_tree(pg2), 'I', 'deep')
-            write_record(out, root, os.path.join(forced_tier.new_tree(pg2), 'queue_I.txt'))
-            D2, _e, _n, kept2 = forced_tier.check_page(u, p2, pg2, '20990101T000000Z')
-            assert kept2 is None and os.path.isdir(D2) and not os.path.exists(forced_tier.new_tree(pg2))
-            u.note('test')
-    finally:
-        forced_tier.page_output, forced_tier.servers.app_probe, forced_tier.page_inputs, forced_tier._gate = saved
-    ok('install: refusals before anything moves; a failure after staging puts <run>.new back; the swap keeps the served '
-       'run and its judgements (rsync --update); a first install only renames')
+def test_install_before_swap():
+    """A failure at each point before the swap: served as before, <run>.new back, the page refused."""
+    run_name = 'Run_SNAPFORCED_V10min_gen5'
+    cases = [
+        ('mkdir', dict(mkdir=True), 'creating'),
+        ('rename', dict(rename=lambda a, b: a.endswith(run_name + '.new')), 'staging'),
+        ('sync1', dict(sync='first'), 'judgements copy'),
+        ('journal1', dict(journal='first judgements sync'), 'judgement_journal'),
+        ('prepare', dict(prepare=True), "server's loader"),
+        ('check2', dict(check=2), 'G16 two-port server: test refusal (call 2)'),
+        ('swap', dict(rename=lambda a, b: a.endswith(f'{run_name}.install/{run_name}') and b.endswith(run_name)),
+         'the served run put back'),
+    ]
+    for name, fail, want in cases:
+        out = install_setup(f'pre_{name}')
+        with Harness() as H:
+            H.fail.update(fail)
+            p, U = serve_once(out)
+        pg = p.pages[0]
+        pu, iu = U[pg.unit], U['snapshot_forced-tier_install']
+        assert pu.status == 'refused' and want in (pu.reason or '') + ' '.join(iu.notes) + (iu.reason or ''), \
+            (name, pu.status, pu.reason, iu.status, iu.reason)
+        assert iu.status in ('refused', 'no-input'), (name, iu.status, iu.reason)
+        as_before(pg, out, name)
+    # an OSError of one page's inputs refuses that page only: the other page is installed and registered
+    pages = 'forced-tier-V-10min,forced-tier-I-10min'
+    out = install_setup('pre_oserror', pages)
+    with Harness() as H:
+        H.fail['inputs'] = 'forced-tier-V-10min'
+        p, U = serve_once(out, pages)
+    v, i = p.pages
+    assert U['snapshot_forced-tier_install'].status == 'done', U['snapshot_forced-tier_install'].reason
+    assert U[v.unit].status == 'refused' and 'OSError on the staged run' in U[v.unit].reason, U[v.unit].reason
+    as_before(v, out, 'oserror')
+    e = registered(out, 'p9121')
+    assert e is not None and e['argv'][e['argv'].index('--run') + 1] == os.path.abspath(i.root) and marked(i.root) == 'new'
+    assert U[i.unit].status == 'refused' and 'BUILD-WAIT' in U[i.unit].reason, U[i.unit].reason    # registered, no server
+    assert not os.path.lexists(forced_tier.install_record_path(i)) and len(kept_runs(i)) == 1
+    ok(f'install before the swap: {len(cases)} injected failures (stage directory, rename into it, first judgements sync, '
+       'journal test, loader check, server check in the lock, the swap rename) leave the page served as before with '
+       '<run>.new back; an OSError of one page\'s inputs refuses that page only')
+
+
+def test_install_after_swap():
+    """A failure at each point after the swap: the run is installed, its record names the step, its unit ends 'installed, not
+    registered: <step>' (status error), and the next serve resumes from the step without a <run>.new."""
+    for name, fail, step in (('sync2', dict(sync='second'), 'second judgements sync'),
+                             ('journal2', dict(journal='second judgements sync'), 'journal re-test'),
+                             ('write', dict(write=True), 'register')):
+        out = install_setup(f'post_{name}')
+        with Harness() as H:
+            H.fail.update(fail)
+            p, U = serve_once(out)
+        pg = p.pages[0]
+        pu, iu = U[pg.unit], U['snapshot_forced-tier_install']
+        want = f'installed, not registered: {step}'
+        assert pu.status == 'error' and want in pu.reason, (name, pu.status, pu.reason)
+        assert iu.status == 'error' and f'installed, not registered: page {pg.key}: {step} (' in iu.reason, \
+            (name, iu.status, iu.reason)
+        rec = json.load(open(forced_tier.install_record_path(pg)))
+        kept = os.path.join(forced_tier.install_root(pg), kept_runs(pg)[0])
+        assert rec['step'] == step and rec['failed'] and rec['kept'] == kept and rec['run'] == os.path.abspath(pg.root), rec
+        assert marked(pg.root) == 'new' and marked(kept) == 'old' and not os.path.lexists(forced_tier.new_tree(pg))
+        assert not os.path.lexists(forced_tier.stage_dir(pg)) and registered(out) is None
+        # a label written in the kept run after the failure (the page served it until the swap)
+        with open(os.path.join(kept, 'judgements', 'late.jsonl'), 'w') as f:
+            f.write('{"late": 1}\n')
+        if name == 'write':           # the server check refusing before anything: the page stays 'installed, not registered'
+            with Harness() as H:
+                H.fail['check'] = 1
+                p, U = serve_once(out)
+            assert U[pg.unit].status == 'error' and 'not resumed' in U[pg.unit].reason, U[pg.unit].reason
+            assert os.path.exists(forced_tier.install_record_path(pg))
+        if name == 'journal2':        # resumed and failing again: still installed, not registered, the record updated
+            with Harness() as H:
+                H.fail['journal'] = 'resumed'
+                p, U = serve_once(out)
+            assert U[pg.unit].status == 'error' and 'installed, not registered: journal re-test' in U[pg.unit].reason
+            rec2 = json.load(open(forced_tier.install_record_path(pg)))
+            assert rec2['step'] == 'journal re-test' and 'carry_consistent' in rec2['failed'] \
+                and rec2['updated'] >= rec['updated'], rec2
+        with Harness() as H:
+            p, U = serve_once(out)
+        iu = U['snapshot_forced-tier_install']
+        assert iu.status == 'done', (name, iu.status, iu.reason)
+        assert any('RESUMING' in n for n in iu.notes) and any('install record' in n and 'removed' in n for n in iu.notes)
+        assert not os.path.lexists(forced_tier.install_record_path(pg)), name
+        e = registered(out)
+        assert e is not None and e['argv'][e['argv'].index('--run') + 1] == os.path.abspath(pg.root), name
+        assert pg.run_name in e['title'] and U[pg.unit].status == 'refused' and 'BUILD-WAIT' in U[pg.unit].reason
+        late = os.path.join(pg.root, 'judgements', 'late.jsonl')
+        assert os.path.exists(late) == (step == 'second judgements sync'), (name, os.path.exists(late))
+        assert any(c[1] == 'judgement_journal' and 'resumed' in c[3] for c in H.calls if c[0] == 'test') \
+            == (step != 'register'), name
+    ok('install after the swap: an injected failure of the second judgements sync, the journal re-test or register.write '
+       'leaves the run installed with its install record; its unit ends "installed, not registered: <step>" (error, never '
+       'refused); the next serve resumes from the step without a <run>.new and registers it')
+
+
+def test_install_success():
+    out = install_setup('ok')
+    pg0 = planmod.make(args(pages='forced-tier-V-10min'), out).pages[0]
+    live = pg0.root
+    new = forced_tier.new_tree(pg0)
+    os.utime(os.path.join(new, 'judgements', 'judgements.jsonl'), (1, 1))     # the served journal is newer: it wins
+    with open(os.path.join(live, 'judgements', 'extra.jsonl'), 'w') as f:
+        f.write('{"extra": 1}\n')
+    with Harness() as H:
+        p, U = serve_once(out)
+    pg = p.pages[0]
+    iu = U['snapshot_forced-tier_install']
+    assert iu.status == 'done' and U[pg.unit].status == 'refused' and 'BUILD-WAIT' in U[pg.unit].reason, (iu.reason,)
+    kept = os.path.join(forced_tier.install_root(pg), kept_runs(pg)[0])
+    assert marked(live) == 'new' and marked(kept) == 'old' and not os.path.exists(new)
+    assert not os.path.exists(forced_tier.stage_dir(pg)) and not os.path.exists(forced_tier.install_record_path(pg))
+    assert os.path.exists(os.path.join(live, 'scintillation_index.csv'))
+    assert open(os.path.join(live, 'judgements', 'judgements.jsonl')).read() == '{"old": 1}\n'
+    assert open(os.path.join(live, 'judgements', 'extra.jsonl')).read() == '{"extra": 1}\n'
+    e = registered(out)
+    assert e['argv'][e['argv'].index('--run') + 1] == os.path.abspath(live) and pg.run_name in e['title']
+    assert iu.meta['installed'][pg.key]['kept'] == kept and not p.title_from
+    whens = [c[3] for c in H.calls if c[0] == 'test' and c[1] == 'judgement_journal']
+    assert len(whens) == 2 and 'first judgements sync' in whens[0] and 'second judgements sync' in whens[1], whens
+    # a first install (no served run) only renames; no second sync
+    out = install_setup('first', 'forced-tier-I-deep', live=False)
+    with Harness() as H:
+        p, U = serve_once(out, 'forced-tier-I-deep')
+    pg = p.pages[0]
+    assert U['snapshot_forced-tier_install'].status == 'done' and marked(pg.root) == 'new' and not kept_runs(pg)
+    assert U['snapshot_forced-tier_install'].meta['installed'][pg.key]['kept'] is None and registered(out, 'p9123')
+    ok('install: the swap keeps the served run, its judgements copied (rsync --update), the new run registered with the '
+       'staged build\'s title and its record removed; a first install only renames')
 
 
 # ---- 5. gate keyer and content tests --------------------------------------------------------------------------------------
@@ -353,6 +614,23 @@ def test_gate_and_tests():
     with open(os.path.join(D, 'candidates', 'V', 'HD_1_18MHz_10min', 'detections.csv'), 'a') as f:
         f.write(',,,V,10min,X_1\n')
     refused(exclusion_gate.scan_forced_tier_run, D, ex=_Ex(set()), want='without an (LST, night, band) key')
+    # one pass over the run: the file list made once, each file opened once (the served events read in the same pass)
+    import builtins
+    lists, opened = [], []
+    saved = exclusion_gate.snapshot_run_files, builtins.open
+    exclusion_gate.snapshot_run_files = lambda r: lists.append(r) or saved[0](r)
+
+    def counting_open(path, *a, **kw):
+        if str(path).startswith(D + os.sep):
+            opened.append(os.path.relpath(path, D))
+        return saved[1](path, *a, **kw)
+    builtins.open = counting_open
+    try:
+        refused(exclusion_gate.scan_forced_tier_run, D, ex=_Ex(set()), want='without an (LST, night, band) key')
+    finally:
+        exclusion_gate.snapshot_run_files, builtins.open = saved
+    assert lists == [D] and len(opened) == len(set(opened)) and \
+        os.path.join('candidates', 'V', 'HD_1_18MHz_10min', 'detections.csv') in opened, (lists, opened)
     # TESS rows and window times held to the served candidates (no master_catalog.csv)
     R = os.path.join(T, 'tess_run')
     make_run(R)
@@ -375,8 +653,8 @@ def test_gate_and_tests():
         w.writerow(row)
     assert all(r['passed'] for r in validate.run('tenmin_frame_times', ft, windows=1, needed=1, served='candidates'))
     assert not all(r['passed'] for r in validate.run('tenmin_frame_times', ft, windows=1, needed=2, served='candidates'))
-    ok('exclusion gate keys family T rows per night and refuses an unkeyed served event; TESS rows and window times held to '
-       'the served candidates')
+    ok('exclusion gate keys family T rows per night, refuses an unkeyed served event, in one pass over the run; TESS rows '
+       'and window times held to the served candidates')
 
 
 # ---- 6. dispatch ----------------------------------------------------------------------------------------------------------
@@ -387,11 +665,94 @@ def test_dispatch():
     assert serve_step._module(q) is pinned and q.parity
     refused(pinned.run, args(), None, q, ('register',), want='no parity serve')
     assert forced_tier.STAGES == ('install', 'hub', 'verify') and pinned.STAGES == ('register', 'verify')
-    ok('dispatch: families forced-tier and pinned, their stages; pinned refuses a parity serve')
+    # every family's plan words from its own module's PLAN_HOOK; none falls back to the tier's
+    from exopipe.phase3.lib.serve import deep, forced, jupiter, snapshot_copy, sublst_build
+    for (tier, fam), mod in (({('snapshot', 'forced-tier'): forced_tier, ('snapshot', 'forced'): forced,
+                               ('snapshot', 'review'): snapshot_copy, ('snapshot', 'comb'): snapshot_copy,
+                               ('deep', 'review'): deep, ('deep', 'pinned'): pinned, ('sublst', 'pinned'): pinned,
+                               ('sublst', 'review'): sublst_build, ('jupiter', 'jupiter'): jupiter}).items()):
+        assert planmod.family_module(tier, fam) is mod and planmod.family_hook(tier, fam) is mod.PLAN_HOOK, (tier, fam)
+    assert isinstance(forced_tier.PLAN_HOOK, forced_tier.ForcedTierHook) and isinstance(pinned.PLAN_HOOK, pinned.PinnedHook)
+    assert {t for t, _f in planmod.FAMILY_MODULES} >= {t for t, _k in S.PAGES}, 'a tier of serve.PAGES without a family module'
+    assert {(t, c['family']) for (t, _k), c in S.PAGES.items()} <= set(planmod.FAMILY_MODULES), 'a family without a module'
+    refused(planmod.family_hook, 'snapshot', 'no-such-family', want='G26')
+    planmod.FAMILY_MODULES[('snapshot', 'hookless')] = 'register'          # a module without PLAN_HOOK
+    try:
+        refused(planmod.family_hook, 'snapshot', 'hookless', want='no PLAN_HOOK')
+        import copy
+        p = planmod.make(args(), os.path.join(T, 'o3'))
+        pg = copy.copy(p.pages[0])
+        pg.family = 'hookless'
+        for fn, a in ((p.argv, (pg, UTC)), (p.title, (pg, UTC)), (p.code, (pg,)), (p.server_env_extra, (pg,)),
+                      (p.siblings, (pg,))):
+            refused(fn, *a, want='no PLAN_HOOK')
+    finally:
+        del planmod.FAMILY_MODULES[('snapshot', 'hookless')]
+    ok('dispatch: families forced-tier and pinned, their stages; pinned refuses a parity serve; each family\'s plan words '
+       'from its module\'s PLAN_HOOK, a family without one refused')
+
+
+# ---- 7. pinned: publish markers it does not own, the App probe's setup ---------------------------------------------------
+def test_pinned_hold_and_probe():
+    out = os.path.join(T, 'out_pinned')
+    os.makedirs(os.path.join(out, S.TWO_PORT_PARITY_DIR), exist_ok=True)
+    q = planmod.make(args(tier='deep', family='pinned'), out)
+    pg = q.pages[0]
+    U = os.path.join(T, 'pin_runs', pg.c['run'])
+    os.makedirs(U, exist_ok=True)
+    register.set_hold(U, 'publish in progress (test)')
+    hold = register.hold_file(U)
+    assert pinned.hold_refusal(U).startswith(f'publish in progress on {U}, retry after')
+    saved = register.check_server
+    register.check_server = lambda *a, **k: {}
+    try:
+        run = Run('serve', ['test'], out, CFG, config_sections=None)
+
+        def prepare(u):
+            return [(pg, U, register.page_entry(q, pg, UTC, U), {'n': 1}, [])], {}
+        flow.register_pages(run, q, prepare, 'deep_pinned_register', stage='register', inc_log=False, holds='refuse')
+    finally:
+        register.check_server = saved
+    ru = {x.name: x for x in run.units}['deep_pinned_register']
+    assert ru.status == 'refused' and f'publish in progress on {U}, retry after' in ru.reason, (ru.status, ru.reason)
+    assert os.path.exists(hold) and registered(out, f'p{pg.port}') is None
+    got = {}
+    saved = pinned.flow.register_pages
+    pinned.flow.register_pages = lambda *a, **k: got.update(k) or {}
+    try:
+        pinned.register_stage(run, q, flow.new_state(), UTC)
+    finally:
+        pinned.flow.register_pages = saved
+    assert got.get('holds') == 'refuse', got
+    # the App probe: exactly the code directory, cwd and environment of the registry entry
+    from exopipe.phase3.core import legacy
+    seen = []
+
+    class Res:
+        rc, tail = 0, '{"n": 2}'
+    saved = legacy.run
+    legacy.run = lambda script, a, **k: seen.append((a, k)) or Res()
+    try:
+        for tier in ('deep', 'sublst'):
+            qq = planmod.make(args(tier=tier, family='pinned'), out)
+            for x in qq.pages:
+                e = register.page_entry(qq, x, UTC, x.root)
+                code, cwd, env = servers.probe_setup(qq, x)
+                assert code == os.path.dirname(e['code']) == x.cwd() == cwd, (x.key, code, e['code'], cwd)
+                assert env == dict(S.TWO_PORT_SERVER_ENV, **e['env']), (x.key, env)
+                assert servers.app_probe(qq, x, x.root)['n'] == 2
+                a, k = seen[-1]
+                assert a[0] == code and k['cwd'] == cwd and k['env'] == env, (x.key, a[0], k)
+    finally:
+        legacy.run = saved
+    assert len(seen) == 6
+    ok('pinned: a publish marker of a run it does not own refuses the registration ("publish in progress on <run>, retry '
+       'after") and stands; the App probe of each pinned page runs with its entry\'s code directory, cwd and environment')
 
 
 def main():
-    for t in (test_config, test_plan, test_ready, test_install, test_gate_and_tests, test_dispatch):
+    for t in (test_config, test_plan, test_ready, test_install_checks, test_install_before_swap, test_install_after_swap,
+              test_install_success, test_gate_and_tests, test_dispatch, test_pinned_hold_and_probe):
         t()
     print(f'{len(PASSED)} passed')
 

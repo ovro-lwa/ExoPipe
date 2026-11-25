@@ -399,17 +399,23 @@ def tess_rows(path, written=None, left_out=None, **ctx):
     # deep forced run of family T, which has no master_catalog.csv; tess_coverage.py --from-candidates) the served events
     # candidates/*/*/detections.csv
     run = os.path.dirname(path)
-    mc = ctx.get('master_catalog') or os.path.join(run, 'master_catalog.csv')
-    src = 'served candidates' if ctx.get('served') == 'candidates' else 'master_catalog.csv'
-    detail = ''
-    if counted and src == 'master_catalog.csv' and not os.path.exists(mc):
-        bad.append(f'no {mc} to test the rows against')
-    if (src != 'master_catalog.csv' or os.path.exists(mc)) and not bad:
-        want = set(common.CFG().pages_deep.TESS_STOKES.split(','))
-        exp = ({r['cand_id'] for r in candidate_rows(run) if r.get('stokes') in want} if src != 'master_catalog.csv' else None)
-        if exp is None:
+    from_candidates = ctx.get('served') == 'candidates'
+    want = set(common.CFG().pages_deep.TESS_STOKES.split(','))
+    detail, exp = '', None
+    if from_candidates:
+        src = 'served candidates'
+        if not bad:
+            exp = {r['cand_id'] for r in candidate_rows(run) if r.get('stokes') in want}
+    else:
+        src = 'master_catalog.csv'
+        mc = ctx.get('master_catalog') or os.path.join(run, 'master_catalog.csv')
+        if not os.path.exists(mc):
+            if counted:
+                bad.append(f'no {mc} to test the rows against')
+        elif not bad:
             with open(mc, newline='') as f:
                 exp = {r['cand_id'] for r in csv.DictReader(f) if r.get('stokes') in want}
+    if exp is not None:
         got = set(ids)
         if counted:
             if got - exp:

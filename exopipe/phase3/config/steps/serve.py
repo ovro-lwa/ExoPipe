@@ -807,6 +807,10 @@ class serve(_Section):
     # written in between). The kept run stays (production kept every one: .superseded_nofit_20261027, .before_epoch_20261110)
     FORCED_TIER_STAGE = '{run}.install'
     FORCED_TIER_KEEP = '{run}.before_{utc}'      # utc = %Y%m%dT%H%M%SZ of the install
+    # the INSTALL RECORD beside the run, from the swap until the registration is written: when the run was installed, the
+    # kept run's name, the step not yet done (lib/serve/forced_tier.POST_SWAP_STEPS) and the failure that stopped it; removed
+    # once the page is registered. The next serve resumes from that step without a <run>.new.
+    FORCED_TIER_INSTALL_RECORD = '{run}.install_record.json'
     # the page inputs of a tier run (production's interim pushes, ledger PUSH-20261112-FORCED-PAGES-FILTER-FILES and
     # PREAMBLE-20261115-TESS-COVERAGE-INTERIM-SERVED-RUNS; no page_context sidecars on these runs), in this order from
     # SNAPSHOT_STEP_CWD: scintillation_index.py RUN --tier FORCED_TIER_SCINT_TIER[kind]; bright_source_filter_precompute.py RUN

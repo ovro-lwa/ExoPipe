@@ -28,7 +28,7 @@ switch: unit snapshot_forced_<TAG>_register (flow.register_pages): the two-port 
      journal already in the new run: carry skipped, gen5:40).
   Then ALL pages that passed are registered in ONE registration (one registry change), each with --sibling links to what every
   other forced page serves AFTER the switch - its new run where it passed, else the run its entry serves now (gen5:47-56;
-  plan.forced_siblings) - and one unit per page waits on its build state (gen5:66-69 waited up to 60 min for the run name in
+  plan.siblings) - and one unit per page waits on its build state (gen5:66-69 waited up to 60 min for the run name in
   the title) and records it (class served_page); the title and hub generation in the words of serve.FORCED_GENERATIONS for
   the run's tag (gen5: HWJ + 10 pc, generation-5 cutouts; gen6: HWJ + 10 pc + LPT, generation-6 cutouts from the rescaled
   cubes; another tag is refused, G26, for that page only); the inspection pages built before requested once; the hub buttons
@@ -193,6 +193,83 @@ def page_context(u, plan, pg, D, view):
     page_output(u, pg, D, 'snapshot_forced_page_context', view=view)
 
 
+# ---- the family's words: its PLAN_HOOK (plan.family_hook) ----------------------------------------------------------------
+def forced_generation(page, run_name):
+    """(samples text, cutout generation text) of a forced page serving ``run_name`` = Run_SNAPFORCED_<S><T>_<tag>
+    (serve.FORCED_RUN_NAME): the first two fields of serve.FORCED_GENERATIONS[tag]. G26 refuses a run of another name or a tag without an entry -
+    the title and the hub button name the samples and the generation the page shows (generation 6 adds LPT)."""
+    S = _CFG().serve
+    pre = S.FORCED_RUN_NAME.format(S=page.stokes, T=page.kind, tag='')
+    tag = run_name[len(pre):] if run_name.startswith(pre) else None
+    if tag not in S.FORCED_GENERATIONS:
+        raise Refusal(f'G26 forced page {page.key}: run {run_name!r} - no serve.FORCED_GENERATIONS entry for its tag {tag!r} '
+                      f'(the samples and cutout generation its title and hub button name; known: '
+                      f'{", ".join(sorted(S.FORCED_GENERATIONS))})')
+    return tuple(S.FORCED_GENERATIONS[tag][:2])
+
+
+class ForcedHook:
+    """PLAN_HOOK of the snapshot forced pages (one run per page): snapshot_forced_serve_20261007.sh:49-51 --run --queue
+    --catalog-dir --port --loc-offsets --default-fp-reason, then --sibling per other page of the family (what it serves AFTER
+    this serve: the run this serve registers for it, plan.forced_after, else its registry entry's run;
+    snapshot_forced_gen5_serve_20261026.sh:47-56, '<port>:<run>/source_catalogs_<S>:<label>'), --title serve.FORCED_TITLE;
+    environment serve.SERVER_ENV[ENV_KEY]; hub words serve.FORCED_HUB_GENERATION. lib/serve/forced_tier.ForcedTierHook builds
+    on it."""
+    ENV_KEY = 'snapshot-forced'
+
+    def code(self, plan, page):
+        return _CFG().serve.SERVER_ARGV0[plan.tier].format(ops=plan.ops)
+
+    def env(self, plan, page):
+        return _CFG().serve.SERVER_ENV[self.ENV_KEY]
+
+    def title(self, plan, page, utc, root=None):
+        S = _CFG().serve
+        run_name = os.path.basename(os.path.normpath(root)) if root else page.run_name
+        samples, gen = forced_generation(page, run_name)
+        return S.FORCED_TITLE.format(S=page.stokes, what=S.SNAPSHOT_WHAT.get(page.kind, ''), run_name=run_name, utc=utc,
+                                     samples=samples, generation=gen)
+
+    def sibling_kind(self, o):
+        """The <T> of a sibling's link label (serve.FORCED_SIBLING_LABEL)."""
+        return '10-s' if o.kind == '10s' else '1-min'
+
+    def siblings(self, plan, page, root=None):
+        S = _CFG().serve
+        out = []
+        for o in plan.all_pages:
+            if o.family != page.family or o.key == page.key:
+                continue
+            run = plan.forced_after.get(o.key) or plan.registered_run(o)
+            if run:
+                lab = S.FORCED_SIBLING_LABEL.format(S=o.stokes, T=self.sibling_kind(o))
+                out += ['--sibling', f'{o.port}:{o.at("catalog", run)}:{lab}']
+        return out
+
+    def argv(self, plan, page, utc, root=None):
+        S = _CFG().serve
+        U = root or page.root
+        argv = [plan.page_python(page), self.code(plan, page), '--run', U, '--queue', page.at('queue', U), '--catalog-dir',
+                page.at('catalog', U), '--port', str(page.port), '--loc-offsets', '--default-fp-reason',
+                S.DEFAULT_FP_REASON['snapshot']]
+        argv += self.siblings(plan, page, U) + ['--title', self.title(plan, page, utc, U)]
+        if plan.parity:
+            argv += ['--lists-dir', plan.lists_dir]
+        return argv
+
+    def hub_words(self, plan, page, root=None):
+        """From ``root``, else the run its entry in this plan's registry serves (what the button points at after a switch or a
+        sibling refresh), else the plan's name; G26 refuses a tag without serve.FORCED_GENERATIONS text."""
+        S = _CFG().serve
+        root = root or plan.registered_run(page)
+        run_name = os.path.basename(os.path.normpath(root)) if root else page.run_name
+        samples, g = forced_generation(page, run_name)
+        return run_name, S.FORCED_HUB_GENERATION.format(S=page.stokes, kind=page.kind, samples=samples, generation=g)
+
+
+PLAN_HOOK = ForcedHook()
+
+
 def page_output(u, pg, path, cls, what=None, **ctx):
     """u.add_output(path, cls, **ctx) in the registration unit - each content test runs once - with a failure refusing page
     ``pg`` only: the output is recorded as a refused item (core.record refuse_item, so the unit's status ignores its failed
@@ -228,7 +305,6 @@ def check_page(u, plan, pg):
     bright-source filter, frame_counts.json and TESS table while its page reads them; a deliberate departure from gen5:38, which registered it again) - then the
     parity copy, AD Leo, the exclusion gate and the App probe (it reads the queue and catalogue, which the page inputs leave
     alone), and only then the page inputs and the judgement carry."""
-    from exopipe.phase3.lib.serve.plan import forced_generation
     S = _CFG().serve
     notes = []
     forced_generation(pg, os.path.basename(os.path.normpath(pg.root_src)))      # G26, before anything changes
@@ -356,7 +432,7 @@ def refresh_siblings(run, plan, state, utc):
             e = register.registered_entry(register.registry_dir(plan), f'p{pg.port}') or {}
             a = e.get('argv') or []
             have = sorted(a[i + 1] for i, x in enumerate(a) if x == '--sibling' and i + 1 < len(a))
-            want = sorted(plan.forced_siblings(pg)[1::2])
+            want = sorted(plan.siblings(pg)[1::2])
             if have == want:
                 refused[pg.key] = f'NO-INPUT: siblings of {pg.port} current'
                 continue

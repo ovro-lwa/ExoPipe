@@ -132,8 +132,9 @@ def _check(scan, ex, rel, rid, keys):
             scan.hits.append((rel, rid, k[0], k[1], k[2]))
 
 
-def scan_files(paths, keyer, base, ex=None, scan=None):
-    """Key every row of the CSV files ``paths`` with ``keyer``; verdicts from core.exclusions (fresh)."""
+def scan_files(paths, keyer, base, ex=None, scan=None, row_hook=None):
+    """Key every row of the CSV files ``paths`` with ``keyer``; verdicts from core.exclusions (fresh). ``row_hook(rel, row,
+    keys)``, when given, sees every row with its keys in the same pass (one read of each file)."""
     ex = ex or fresh_exclusions()
     scan = scan or Scan()
     for p in paths:
@@ -146,8 +147,11 @@ def scan_files(paths, keyer, base, ex=None, scan=None):
                 scan.n_files += 1
                 for row in rd:
                     scan.n_rows += 1
+                    keys = keyer(row)
                     _check(scan, ex, rel, row.get('cand_id') or row.get('best_cand_id') or row.get('source_id') or
-                           row.get('cell') or '', keyer(row))
+                           row.get('cell') or '', keys)
+                    if row_hook is not None:
+                        row_hook(rel, row, keys)
         except (OSError, csv.Error, UnicodeDecodeError) as e:
             raise Refusal(f'G17 serve-time exclusion gate: {rel} could not be read ({e}) - refused')
     return scan
@@ -208,16 +212,20 @@ def keys_forced_tier(row):
 def scan_forced_tier_run(run, ex=None):
     """The serve-time gate of a 10-minute / deep forced run: every CSV a snapshot run's gate reads (snapshot_run_files), keyed
     per night (keys_forced_tier) against core.exclusions read now with family T's reader (PerNight: a wideband excluded with any
-    excluded member subband, the 18 MHz carve-out kept). Every served event (candidates/*/*/detections.csv) must be keyed: an
-    unkeyed one refuses (a gate that keys nothing passes nothing silently)."""
+    excluded member subband, the 18 MHz carve-out kept). Every served event (candidates/<S>/<event>/detections.csv, read in the
+    same pass) must be keyed: an unkeyed one refuses (a gate that keys nothing passes nothing silently)."""
     from exopipe.phase3.core.exclusions import PerNight
-    scan = scan_files(snapshot_run_files(run), keys_forced_tier, run, ex=ex or PerNight(fresh=True))
-    for p in sorted(glob.glob(os.path.join(run, 'candidates', '*', '*', 'detections.csv'))):
-        with open(p, newline='') as fh:
-            unkeyed = [r.get('cand_id') or '?' for r in csv.DictReader(fh) if not keys_forced_tier(r)]
-        if unkeyed:
-            raise Refusal(f'G17 serve-time exclusion gate: {os.path.relpath(p, run)}: {len(unkeyed)} served event(s) without '
-                          f'an (LST, night, band) key, e.g. {unkeyed[:2]} - refused')
+    unkeyed = {}
+
+    def served(rel, row, keys):
+        parts = rel.split(os.sep)
+        if not keys and len(parts) == 4 and parts[0] == 'candidates' and parts[3] == 'detections.csv':
+            unkeyed.setdefault(rel, []).append(row.get('cand_id') or '?')
+    scan = scan_files(snapshot_run_files(run), keys_forced_tier, run, ex=ex or PerNight(fresh=True), row_hook=served)
+    for rel in sorted(unkeyed):
+        ids = unkeyed[rel]
+        raise Refusal(f'G17 serve-time exclusion gate: {rel}: {len(ids)} served event(s) without an (LST, night, band) key, '
+                      f'e.g. {ids[:2]} - refused')
     return scan
 
 
