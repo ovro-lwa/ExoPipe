@@ -1204,7 +1204,9 @@ def why_of(rows):
 def write_decisions(path, rows, tier):
     """The decision table in production's layout: snapshot - the union of the rows' keys (snapshot_deep_omission.write);
     10-minute - the first row's keys with rate_definition (sublst_deep_omission.py main). Atomic."""
-    with open(path + '.tmp', 'w', newline='') as fh:
+    from exopipe.phase3.core import placement      # here, not at the top: the module is loaded without exopipe in children
+    # the directory's group and ACL, or the replaced file's
+    with placement.atomic(path) as tmp, open(tmp, 'w', newline='') as fh:
         if not rows:
             fh.write(EMPTY_SNAPSHOT_HEADER if tier == TIER_SNAPSHOT else EMPTY_TENMIN_HEADER)
         elif tier == TIER_SNAPSHOT:
@@ -1219,7 +1221,6 @@ def write_decisions(path, rows, tier):
             w = csv.DictWriter(fh, fieldnames=list(rows[0]))
             w.writeheader()
             w.writerows(rows)
-    os.replace(path + '.tmp', path)
 
 
 # =====================================================================================================================
@@ -1594,12 +1595,13 @@ def write_served(path, served):
     """deep_omission_served.csv: the served counts the decisions were made with ({(lst, night, band, stokes, tier): n}, the
     rate test's input) - so the build can re-decide from the current refusal record and fleet records and show the decisions
     current (V_combview review F5), and the content test can tie them to the kept and omitted detections."""
-    with open(path + '.tmp', 'w', newline='') as f:
+    from exopipe.phase3.core import placement      # here, not at the top: the module is loaded without exopipe in children
+    # the directory's group and ACL, or the replaced file's
+    with placement.atomic(path) as tmp, open(tmp, 'w', newline='') as f:
         w = csv.writer(f)
         w.writerow(SERVED_COLS)
         for k in sorted(served):
             w.writerow(list(k) + [served[k]])
-    os.replace(path + '.tmp', path)
 
 
 def read_served(path):
@@ -1869,12 +1871,13 @@ def tenmin_rejudge_gate(rej):
 # =====================================================================================================================
 
 def write_record(path, rows, cols):
-    with open(path + '.tmp', 'w', newline='') as f:
+    from exopipe.phase3.core import placement      # here, not at the top: the module is loaded without exopipe in children
+    # the directory's group and ACL, or the replaced file's
+    with placement.atomic(path) as tmp, open(tmp, 'w', newline='') as f:
         w = csv.DictWriter(f, fieldnames=cols, extrasaction='raise')
         w.writeheader()
         for r in rows:
             w.writerow({k: r.get(k, '') for k in cols})
-    os.replace(path + '.tmp', path)
 
 
 def page_line(n):
@@ -2107,11 +2110,12 @@ def rejudge_inputs(runs):
 def write_rejudged(path, rows):
     """rejudged.csv in production's format (snapshot_combined_view.py dbc40a6: write(path, list(REJ_ROWS[0].keys()) if REJ_ROWS
     else ['batch'], REJ_ROWS) - csv.DictWriter, extrasaction 'ignore')."""
-    with open(path + '.tmp', 'w', newline='') as fh:
+    from exopipe.phase3.core import placement      # here, not at the top: the module is loaded without exopipe in children
+    # the directory's group and ACL, or the replaced file's
+    with placement.atomic(path) as tmp, open(tmp, 'w', newline='') as fh:
         w = csv.DictWriter(fh, fieldnames=list(rows[0].keys()) if rows else ['batch'], extrasaction='ignore')
         w.writeheader()
         w.writerows(rows)
-    os.replace(path + '.tmp', path)
 
 
 def tenmin_table(lsts, out_csv, rdir=None, cache_dir=None, seed_dir=None, reader=None, frame_rms=None):
@@ -2203,12 +2207,12 @@ def _record_gate(rdir):
 
 
 def _write_summary(out, summ, n_om, line2):
-    with open(os.path.join(out, 'deep_omission_summary.txt.tmp'), 'w') as fh:
+    from exopipe.phase3.core import placement      # here, not at the top: the module is loaded without exopipe in children
+    # each file: the directory's group and ACL, or the replaced file's
+    with placement.atomic(os.path.join(out, 'deep_omission_summary.txt')) as tmp, open(tmp, 'w') as fh:
         fh.write(page_line(n_om) + '\n' + line2 + '\n')
-    os.replace(os.path.join(out, 'deep_omission_summary.txt.tmp'), os.path.join(out, 'deep_omission_summary.txt'))
-    with open(os.path.join(out, 'deep_omission_summary.json.tmp'), 'w') as fh:
+    with placement.atomic(os.path.join(out, 'deep_omission_summary.json')) as tmp, open(tmp, 'w') as fh:
         json.dump(summ, fh, indent=1, default=str)
-    os.replace(os.path.join(out, 'deep_omission_summary.json.tmp'), os.path.join(out, 'deep_omission_summary.json'))
 
 
 # =====================================================================================================================

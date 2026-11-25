@@ -26,6 +26,7 @@ import os
 import shutil
 import time
 
+from exopipe.phase3.core import placement
 from exopipe.phase3.core.record import Refusal
 from exopipe.phase3.lib.calibrate import common as K
 
@@ -276,13 +277,12 @@ def _loo_arith(V, T, NV, norm):
     k2 = {b: v / n for b, v in k2.items()}
     # written exactly as the heredoc writes it (csv.writer default line ends, CRLF; :22-23): a vector adopted after step
     # 2+ is then byte-identical to production's recipe (band_vector_final_20261001.csv = band_vector_loo6.csv, CRLF)
-    tmp = f'{NV}.tmp.{os.getpid()}'
-    with open(tmp, 'w', newline='') as f:
+    # the directory's group and ACL, or the replaced file's (core/placement.py)
+    with placement.atomic(NV) as tmp, open(tmp, 'w', newline='') as f:
         w = csv.writer(f)
         w.writerow(['subband', 'factor'])
         for b, v in k2.items():
             w.writerow([b, f'{v:.6f}'])
-    os.replace(tmp, NV)
     worst = max(abs(v) for v in m.values())
     return worst, m
 
@@ -378,18 +378,17 @@ def fc_table(ctx):
         for p in files + [vec, K.need_file(scale, 'scale table')]:
             u.add_input(p)
         rows, sh, fit = fit_table(files, vec, scale, ver, ymd)
-        with open(out + '.tmp', 'w', newline='') as f:     # csv.writer default line ends, as flux_correction.build_table (:65-68)
+        # csv.writer default line ends, as flux_correction.build_table (:65-68); each file placed (core/placement.atomic)
+        with placement.atomic(out) as tmp, open(tmp, 'w', newline='') as f:
             w = csv.writer(f)
             w.writerow(TABLE_COLS)
             for r in rows:
                 w.writerow([r[c] for c in TABLE_COLS])
-        os.replace(out + '.tmp', out)
         shp = out.replace('.csv', '_shcells.csv')
-        with open(shp + '.tmp', 'w', newline='') as f:
+        with placement.atomic(shp) as tmp, open(tmp, 'w', newline='') as f:
             w = csv.writer(f)
             w.writerow(['lst', 'scope', 'sh_over_k', 'err'])
             w.writerows(sh)
-        os.replace(shp + '.tmp', shp)
         K.write_json(provenance_path(out), {'class': 'fluxcorr_table', 'stagea': files, 'band_vector': vec, 'scale_table': scale,
                                             'shcells': shp, 'version': ver, 'yyyymmdd': ymd, 'fit': fit})
         u.note(f"g {fit['g']:.6f} +- {fit['g_err']:.6f} over {fit['n']} cells (reduced chi {fit['chi']:.3f}; ivw {fit['g_ivw']:.6f})")

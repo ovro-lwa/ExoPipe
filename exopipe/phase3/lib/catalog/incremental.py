@@ -73,6 +73,7 @@ import time
 from collections import Counter, OrderedDict, defaultdict
 
 from exopipe.phase3.core import cells as _cells
+from exopipe.phase3.core import placement
 from exopipe.phase3.core.record import NoInput, Refusal
 
 STATE_VERSION = 1
@@ -164,20 +165,17 @@ def _read_csv(path):
 def _write_csv(path, header, rows):
     """Atomic CSV write (csv.writer default dialect, as the production modules write)."""
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    tmp = f'{path}.tmp.{os.getpid()}'
-    with open(tmp, 'w', newline='') as f:
+    # the directory's group and ACL, or the replaced file's (core/placement.py)
+    with placement.atomic(path) as tmp, open(tmp, 'w', newline='') as f:
         w = csv.writer(f)
         w.writerow(header)
         w.writerows(rows)
-    os.replace(tmp, path)
 
 
 def _write_json(path, obj):
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    tmp = f'{path}.tmp.{os.getpid()}'
-    with open(tmp, 'w') as f:
+    with placement.atomic(path) as tmp, open(tmp, 'w') as f:
         json.dump(obj, f, indent=1, sort_keys=True, default=str)
-    os.replace(tmp, path)
 
 
 def _load_module_from(path, name):

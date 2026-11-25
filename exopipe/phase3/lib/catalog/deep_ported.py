@@ -13,14 +13,15 @@ import json
 import math
 import os
 
+from exopipe.phase3.core import placement
+
 
 def _atomic_dictwriter_rows(path, fieldnames, rows, extrasaction='raise'):
-    tmp = f'{path}.tmp.{os.getpid()}'
-    with open(tmp, 'w', newline='') as f:
+    # the directory's group and ACL, or the replaced file's (core/placement.py)
+    with placement.atomic(path) as tmp, open(tmp, 'w', newline='') as f:
         w = csv.DictWriter(f, fieldnames=fieldnames, extrasaction=extrasaction)
         w.writeheader()
         w.writerows(rows)
-    os.replace(tmp, path)
 
 
 def split_selection(run_dir, stokes=('V', 'I'), tiers=('wb', 'sb')):

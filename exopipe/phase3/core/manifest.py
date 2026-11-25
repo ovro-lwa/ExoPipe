@@ -15,6 +15,8 @@ Lustre). Nothing is cached: each call reads the named files again.
 import hashlib
 import os
 
+from exopipe.phase3.core import placement
+
 MANIFEST = 'MANIFEST.md5'
 SIDECARS = ('MASTER_MD5_DATA.tsv',)     # listed beside the 10-14 union's manifest, not in it (no step reads it)
 
@@ -53,10 +55,9 @@ def write_manifest(dirpath, out_path):
     names = sorted(n for n in os.listdir(dirpath) if n != MANIFEST and n not in SIDECARS
                    and os.path.isfile(os.path.join(dirpath, n)))
     data = ''.join(f'{md5_file(os.path.join(dirpath, n))}  {n}\n' for n in names).encode()
-    tmp = f'{out_path}.part'
-    with open(tmp, 'wb') as f:
+    # the directory's group and ACL, or the replaced file's (core/placement.py)
+    with placement.atomic(out_path) as tmp, open(tmp, 'wb') as f:
         f.write(data)
-    os.replace(tmp, out_path)
     return len(names), hashlib.md5(data).hexdigest()
 
 

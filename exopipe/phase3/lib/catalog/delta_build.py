@@ -29,6 +29,8 @@ import os
 import shutil
 import time
 
+from exopipe.phase3.core import placement
+
 SELECTED = 'selected_{key}.csv'
 IMAGES = 'v_deep_images.csv'
 PERTIE = os.path.join('pertie', 'pertie_detections.csv')
@@ -490,9 +492,9 @@ def _text(head, rows, term):
 
 def _put(path, text):
     os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
-    with open(path + '.part', 'w', newline='') as f:
+    # the directory's group and ACL, or the replaced file's (core/placement.py)
+    with placement.atomic(path) as tmp, open(tmp, 'w', newline='') as f:
         f.write(text)
-    os.replace(path + '.part', path)
 
 
 def _det_col(head, path):
@@ -1010,9 +1012,9 @@ def view_tie(root, tie, frozen_from, keys):
                            f'detection(s) named twice, {len(lost)} not in its selection (e.g. {lost[:3]}), {len(other)} whose '
                            f'{"/".join(TIE_SAME)} differ from the selected row (e.g. {other[:3]}) - REFUSING')
     dst = os.path.join(root, TIE)
-    with open(dst + '.part', 'wb') as f:
+    # the directory's group and ACL, or the replaced file's (core/placement.py)
+    with placement.atomic(dst) as tmp, open(tmp, 'wb') as f:
         f.write(data)
-    os.replace(dst + '.part', dst)
     return dict(source=tie, sha256=hashlib.sha256(data).hexdigest(), rows=len(rows))
 
 

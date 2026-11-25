@@ -48,6 +48,10 @@ jobs:
         run: python tests/test_no_sendfile.py
       - name: placement keeps the product's group and ACL (core/placement.py; a rename from elsewhere, a copy2 source's ACL; refusals)
         run: python tests/test_placement.py
+      - name: placement.atomic (a replaced file keeps its group, mode and ACL; the temporary file goes on a writer exception and a refusal; unique names)
+        run: python tests/test_placement_atomic.py
+      - name: placement coverage guard (no bare rename left in the modules placement P1 converted, except the listed sites)
+        run: python tests/test_placement_coverage.py
       - name: the parity guard's astropy hook composes with the sub-LST frozen-code guard (no import recursion)
         run: python tests/test_guard_reentry.py
       - name: SIGTERM interrupts only the step's own process (forked pool workers take the default action)

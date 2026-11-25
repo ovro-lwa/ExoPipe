@@ -149,6 +149,12 @@ def _record():
     return record
 
 
+def _placement():
+    """core/placement, imported here (not at the top: the module runs as a stdlib-only child, `tier_sublst.py pcheck`)."""
+    from exopipe.phase3.core import placement
+    return placement
+
+
 def refuse(msg):
     raise _record().Refusal(msg)
 
@@ -1014,16 +1020,17 @@ def _read_catalog(U):
 
 
 def _write_rule(U, hdr, keep, gone, extra_col, removed_name):
-    """The heredocs' writes: csv.DictWriter, master_catalog.csv.new + os.replace."""
-    with open(f'{U}/master_catalog.csv.new', 'w', newline='') as f:
-        w = csv.DictWriter(f, fieldnames=hdr)
-        w.writeheader()
-        w.writerows(keep)
-    with open(f'{U}/{removed_name}', 'w', newline='') as f:
-        w = csv.DictWriter(f, fieldnames=hdr + [extra_col])
-        w.writeheader()
-        w.writerows(gone)
-    os.replace(f'{U}/master_catalog.csv.new', f'{U}/master_catalog.csv')
+    """The heredocs' writes: csv.DictWriter, the kept rows to a temporary file, the removed rows, then the kept table placed
+    over master_catalog.csv (core/placement.atomic: the replaced table's group and ACL)."""
+    with _placement().atomic(f'{U}/master_catalog.csv') as tmp:
+        with open(tmp, 'w', newline='') as f:
+            w = csv.DictWriter(f, fieldnames=hdr)
+            w.writeheader()
+            w.writerows(keep)
+        with open(f'{U}/{removed_name}', 'w', newline='') as f:
+            w = csv.DictWriter(f, fieldnames=hdr + [extra_col])
+            w.writeheader()
+            w.writerows(gone)
 
 
 def _imp(root, name):
@@ -1097,15 +1104,15 @@ def elevation_floor_fitted(U, ops):
         if not np.isfinite(e):
             refuse(f"S-G10: REFUSING: no elevation for {r[ix['cand_id']]} at its fitted position")
         (keep if e >= G.TENMIN_ELEV_FLOOR_DEG else gone).append(r if e >= G.TENMIN_ELEV_FLOOR_DEG else r + ["%.2f" % e])
-    with open(f"{U}/master_catalog.csv.new", "w", newline="") as f:
-        w = csv.writer(f)
-        w.writerow(hdr)
-        w.writerows(keep)
-    with open(f"{U}/master_catalog_elevation_floor_fitted.csv", "w", newline="") as f:
-        w = csv.writer(f)
-        w.writerow(hdr + ["window_elevation_deg"])
-        w.writerows(gone)
-    os.replace(f"{U}/master_catalog.csv.new", f"{U}/master_catalog.csv")
+    with _placement().atomic(f"{U}/master_catalog.csv") as tmp:        # the replaced table's group and ACL (core/placement)
+        with open(tmp, "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(hdr)
+            w.writerows(keep)
+        with open(f"{U}/master_catalog_elevation_floor_fitted.csv", "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(hdr + ["window_elevation_deg"])
+            w.writerows(gone)
     return ("elevation floor (fitted positions): %d of %d detections removed (below %g deg at their window mid-time)"
             % (len(gone), len(rows), G.TENMIN_ELEV_FLOOR_DEG))
 
@@ -1127,15 +1134,15 @@ def ghost_gate_fitted(U, ops):
         hdr = next(rd)
         rows = list(rd)
     keep, recs = G.ghost_gate_tenmin([dict(zip(hdr, r)) for r in rows])
-    with open(f"{U}/master_catalog.csv.new", "w", newline="") as f:
-        w = csv.writer(f)
-        w.writerow(hdr)
-        w.writerows(r for r, k in zip(rows, keep) if k)
-    with open(f"{U}/master_catalog_ghost_removed.csv", "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=GHOST_COLS)
-        w.writeheader()
-        w.writerows(recs)
-    os.replace(f"{U}/master_catalog.csv.new", f"{U}/master_catalog.csv")
+    with _placement().atomic(f"{U}/master_catalog.csv") as tmp:        # the replaced table's group and ACL (core/placement)
+        with open(tmp, "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(hdr)
+            w.writerows(r for r, k in zip(rows, keep) if k)
+        with open(f"{U}/master_catalog_ghost_removed.csv", "w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=GHOST_COLS)
+            w.writeheader()
+            w.writerows(recs)
     return ("ghost-track gate (2024-12-28): %d of %d detections removed%s" % (len(recs), len(rows), "".join(
         " | %s %s %s arcmin (radius %s)" % (r["cand_id"], r["parent"], r["offset_arcmin"], r["radius_arcmin"]) for r in recs)))
 

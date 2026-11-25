@@ -234,7 +234,7 @@ def test_wired_helpers():
     # a refused placement leaves no temporary file beside the product (drop=True)
     real = PL.apply
 
-    def refuse(src_, want_):
+    def refuse(src_, want_, dst=None):
         raise PL.PlacementRefusal('test')
     PL.apply = refuse
     try:

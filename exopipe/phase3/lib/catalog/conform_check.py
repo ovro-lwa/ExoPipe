@@ -66,6 +66,7 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 
 from exopipe.phase3.config import CFG
+from exopipe.phase3.core import placement
 from exopipe.phase3.lib.search import removal_rules as RR
 from exopipe.phase3.lib.search import size_rule as SZ
 
@@ -168,11 +169,11 @@ def _headerless(p):
 
 def _write(path, cols, rows):
     """A CSV written whole and moved into place (a reader never sees half of it)."""
-    with open(path + '.part', 'w', newline='') as fh:
+    # the directory's group and ACL, or the replaced file's (core/placement.py)
+    with placement.atomic(path) as tmp, open(tmp, 'w', newline='') as fh:
         w = csv.DictWriter(fh, fieldnames=cols, extrasaction='ignore')
         w.writeheader()
         w.writerows(rows)
-    os.replace(path + '.part', path)
 
 
 def _veto(r):

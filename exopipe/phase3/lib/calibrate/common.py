@@ -23,6 +23,7 @@ import shutil
 import sys
 import time
 
+from exopipe.phase3.core import placement
 from exopipe.phase3.core.record import Refusal
 
 # table class -> (implementing module, tiers, derive sub-stages per tier)
@@ -72,12 +73,10 @@ def sha256(path):
 
 
 def _atomic(path, write):
-    d = os.path.dirname(os.path.abspath(path))
-    os.makedirs(d, exist_ok=True)
-    tmp = os.path.join(d, f'.{os.path.basename(path)}.tmp.{os.getpid()}')
-    with open(tmp, 'w', newline='') as f:
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    # the directory's group and ACL, or the replaced file's (core/placement.py)
+    with placement.atomic(path) as tmp, open(tmp, 'w', newline='') as f:
         write(f)
-    os.replace(tmp, path)
     return path
 
 
