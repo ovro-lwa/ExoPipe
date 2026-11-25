@@ -13,8 +13,9 @@ it, the apply/verify/record run with --parity):
     never used when no anchor master exists (the real load is NOT covered here)
   - `exopipe3 dewarp --stages apply,verify,record --measurement M --parity` on five synthetic cells: accepted (cubic apply in
     place, D1-D6 by check_mdewarp_gen.py through core.legacy.run, the child's code checked), not accepted (applied=0 row,
-    install's class screen_table + inline row check), accepted-but-apply-refused (G-R2), not routed (G-D2), input carries
-    MDWARP (G-D7)
+    install's class screen_table + inline row check, MDWSTAT on its promoted masters and PB maps), accepted-but-apply-refused
+    (G-R2), not routed (G-D2), input carries MDWARP (G-D7). The not-accepted cell's MDWSTAT card is also tested on its own
+    `--stages record` run (no verify stage, so no content-test child and no G-D0b)
   - `exopipe3 verify dewarped_master <gen>` takes its context from the run record (scratch mode: the generation's sidecars are
     untouched); a corrupted product fails D3; G-A3 refuses a second apply; --fresh removes and records the old generation
 Read-only part (production products, never written): dewarp_table on two production measurement tables, dewarp_screen on a
@@ -109,8 +110,11 @@ def header(scope, **cards):
     for k, v in (('CTYPE1', 'RA---SIN'), ('CTYPE2', 'DEC--SIN'), ('CRVAL1', 180.0), ('CRVAL2', 40.0), ('CRPIX1', N / 2 + 1),
                  ('CRPIX2', N / 2 + 1), ('CDELT1', -0.25), ('CDELT2', 0.25), ('CUNIT1', 'deg'), ('CUNIT2', 'deg'),
                  ('BMAJ', 1.0), ('BMIN', 1.0), ('BPA', 0.0), ('FLUXBAKE', True), ('FLUXVER', 'fluxcorr-v2-20261001-test'),
-                 ('SHSCALE', 1.0)):
+                 ('SHSCALE', 1.0), ('DATE-OBS', '2025-01-01T00:00:00'), ('DURATION', 3600.0), ('INTTIME', 3600.0)):
         h[k] = v
+    # the standard header (validate_header level 'standard': beam, DATE-OBS, DURATION, INTTIME, a frequency), which the
+    # record stage's MDWSTAT write validates; the exact subband center (cfg.SUBBAND_FREQ_HZ), 50 MHz for another scope
+    h['RESTFRQ'] = float(CFG.instrument.SUBBAND_FREQ_HZ.get(scope, {}).get('center', 5.0e7))   # Hz
     h['HISTORY'] = f'COADD constituent {CONSTITUENT}'
     for k, v in cards.items():
         h[k] = v
@@ -234,6 +238,26 @@ def test_acceptance_and_stages():
     long = SC.render_not_accepted({'status': 'REFUSED regression: ' + 'x' * 200, 'anchor_off_med_as': '1',
                                    'cv_resid_med_as': '2'})
     check('applied=0 status cut to 120 characters', len(long) == 120)
+    # MDWSTAT of a not-accepted cell (R-GREGG-20261111-MDWSTAT-CARD): the forms of the deep chat's table (the header
+    # repair's source and the install's sibling card gate), from the final rows of 04h (2026-11-08) and synthetic ones
+    M = SC.mdwstat_not_accepted
+    for row, want in (
+            ({'status': 'REFERENCE ONLY: held-out improvement 4.7 arcsec < 5; not applied', 'anchor_off_med_as': '17.0',
+              'cv_resid_med_as': '12.3'}, 'refused: held-out gain 4.7 arcsec < 5'),
+            ({'status': 'REFERENCE ONLY: held-out improvement -0.0 arcsec < 5; not applied', 'anchor_off_med_as': '10.2',
+              'cv_resid_med_as': '10.3'}, 'refused: held-out gain -0.1 arcsec < 5'),
+            ({'status': 'OK', 'anchor_off_med_as': '17.9', 'cv_resid_med_as': '13.0'}, 'refused: held-out gain 4.9 arcsec < 5'),
+            ({'status': 'REFUSED regression: median VLSSr sep 1.33 -> 1.48 arcmin (N 46 -> 46); cell left unwarped',
+              'med_before': '1.329', 'med_after': '1.476'}, 'refused: VLSSr median would worsen (1.329 -> 1.476 arcmin)'),
+            ({'status': 'NOT ATTEMPTED: arm halted after 3 consecutive refusals'},
+             'not attempted: arm halted after 3 consecutive refusals'),
+            (None, 'not attempted: not measured'),
+            ({'status': 'REFUSED no generation root'}, 'refused: REFUSED no generation root'),
+            ({'status': 'REFERENCE ONLY: x', 'anchor_off_med_as': '', 'cv_resid_med_as': '1'}, 'refused: REFERENCE ONLY: x')):
+        got = M(row)
+        check(f'MDWSTAT of a not-accepted row: {want!r}', got == want, got)
+    got = M({'status': 'NOT ATTEMPTED: ' + 'x' * 200})
+    check('MDWSTAT cut to dewarp.MDWSTAT_MAX_CHARS (68) characters', len(got) == CFG.dewarp.MDWSTAT_MAX_CHARS == 68, got)
 
 
 def test_config():
@@ -303,9 +327,15 @@ def test_gates(tmp):
     roots = SC.Roots(types.SimpleNamespace(out=None, work=None),
                      types.SimpleNamespace(out_root=CFG.dewarp.GEN_ROOT, run_id='dewarp_test'))
     bad = SC.gate_write_roots(roots, list(SC.STAGES))
-    check('G-W: production measure/gen/archive/record roots refuse', len(bad) == 4, f'{len(bad)} violations')
+    check('G-W: production measure/gen/archive/record roots and the promoted rebuild (MDWSTAT card) refuse', len(bad) == 5
+          and any('promoted rebuild root (MDWSTAT card)' in b for b in bad), f'{len(bad)} violations')
     roots = SC.Roots(types.SimpleNamespace(out=tmp, work=None), types.SimpleNamespace(out_root=tmp, run_id='x'))
-    check('G-W: a --out under /tmp passes', SC.gate_write_roots(roots, list(SC.STAGES)) == [])
+    bad = SC.gate_write_roots(roots, list(SC.STAGES))
+    check('G-W: --out does not re-root the promoted rebuild: the record stage (MDWSTAT card) refuses on the production one',
+          len(bad) == 1 and 'promoted rebuild root (MDWSTAT card)' in bad[0] and SC.gate_write_roots(
+              roots, [s for s in SC.STAGES if s != 'record']) == [], str(bad))
+    roots.rebuild = os.path.join(tmp, 'promoted')
+    check('G-W: a --out under /tmp with a promoted rebuild under /tmp passes', SC.gate_write_roots(roots, list(SC.STAGES)) == [])
     # G-D1: a root node-local to ANOTHER host (site NODE_LOCAL_ROOTS) refuses even when the same path exists here
     holder = next(iter(CFG.site.NODE_LOCAL_ROOTS or {}), None)
     if holder:
@@ -485,6 +515,39 @@ def test_end_to_end(tmp):
         check('measure: the screen keys are written beside the table and pass their content test (no screen saved here: '
               'a header-only key file)', len(k) == 1 and k[0]['path'].endswith(f'/tables/screen_keys_{LST}.csv')
               and len(SC.read_table(k[0]['path'])) == 0 and len(kt) == 1 and kt[0]['passed'], str(kt)[:200])
+    # --- R: the not-accepted cell alone, record stage only (parity guard on): MDWSTAT (R-GREGG-20261111-MDWSTAT-CARD) on its
+    #     promoted masters and PB maps; the final row is REFERENCE ONLY, anchor offset 12.0 - held-out 9.0 arcsec
+    outR = os.path.join(tmp, 'outR')
+    seed_record(outR, ('27MHz', '32MHz', '36MHz', '46MHz'))
+    rc, txt, s = cli('dewarp', '--cells', f'{LST}_32MHz', '--stages', 'record', '--measurement', r['meas'], '--out', outR,
+                     '--work', work, '--parity', *common_sets(r))
+    c32 = rec(outR, f'{LST}_32MHz')
+    check('record stage alone: the not-accepted cell is done, install kind rebuild', rc == 0 and c32 and c32['status'] == 'done'
+          and (c32['meta'].get('install') or {}).get('kind') == 'rebuild', f'rc {rc}; ' + (c32['reason'] if c32 else txt[-300:]))
+    cf32 = os.path.join(r['promoted'], f'{LST}_32MHz', 'coadd_final')
+    want = 'refused: held-out gain 3.0 arcsec < 5'
+    top = sorted(glob.glob(os.path.join(cf32, '*_deep_*.fits')))
+    with_card = {os.path.basename(p): fits.getheader(p).get('MDWSTAT') for p in top}
+    coms = {fits.getheader(p).comments['MDWSTAT'] for p in top if 'MDWSTAT' in fits.getheader(p)} or {'?'}
+    from exopipe.common.validate_fits_headers import validate_header
+    check('not-accepted cell: MDWSTAT on every promoted coadd_final/*_deep_*.fits (10 masters + 2 PB maps), value from the '
+          'final row, the production comment, standard header valid',
+          len(top) == 12 and set(with_card.values()) == {want} and len(coms) == 1    # the comment as far as the 80-character
+          and CFG.dewarp.MDWSTAT_COMMENT.startswith(coms.pop())                      # card holds it (fits.setval's cut)
+          and all(validate_header(p, level='standard').ok for p in top), str(with_card)[:300])
+    others = glob.glob(os.path.join(cf32, 'loo', '*.fits')) + glob.glob(os.path.join(r['promoted'], f'{LST}_32MHz',
+                                                                                    'subtracted', '*.fits'))
+    others += glob.glob(os.path.join(r['promoted'], f'{LST}_27MHz', 'coadd_final', '*.fits'))
+    check('not-accepted cell: loo/, subtracted/ and the other cells\' promoted files carry no MDWSTAT',
+          others and not any('MDWSTAT' in fits.getheader(p) for p in others), f'{len(others)} files')
+    md = (c32 or {}).get('meta', {}).get('mdwstat') or {}
+    check("not-accepted cell: the record keeps the value, the files and their md5 ('dewarp.mdwstat' passed per file)",
+          md.get('value') == want and sorted(x['path'] for x in md.get('files', [])) == top
+          and all(x['md5'] == SC.md5(x['path']) and x['before'] is None for x in md['files'])
+          and sum(1 for t in c32['tests'] if t['name'] == 'dewarp.mdwstat' and t['passed']) == 12, str(md)[:200])
+    glog = os.path.join(outR, '_records', '_parity_guard_refusals.log')
+    check('record stage alone: parity guard - no write outside --out/--work/TMPDIR//tmp',
+          not os.path.exists(glog) or not open(glog).read().strip())
     # --- B: apply, verify, record on five cells (parity guard on)
     outB = os.path.join(tmp, 'outB')
     seed_record(outB, ('27MHz', '32MHz', '36MHz', '46MHz'))       # routing (default 'screen_record'): 41 MHz not routed
