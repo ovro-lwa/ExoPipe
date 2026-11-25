@@ -29,8 +29,11 @@ process names or pids.
 Chains (``run submit --chain NAME``; ``CFG.runner.CHAINS``): one worker runs every step of an item in order on its
 node; a step that ends no-input (exit 3: nothing to do for this item) is recorded and the chain goes on; the item stops
 at its first refused (2) or error exit, and its status is that step's. An item where every step had no input ends
-no-input. Gate R-ROOTS: a node that cannot read a root of ``CFG.runner.CHAIN_REQUIRED_ROOTS[NAME]`` (not a directory
-there, or node-local to another host in the site file's NODE_LOCAL_ROOTS) refuses the item before its first step. A
+no-input. Gate R-ROOTS (the roots of ``CFG.runner.CHAIN_REQUIRED_ROOTS[NAME]``, resolved at submit with the job's
+forwarded --config/--set): a submit whose --nodes has no node that can read them refuses; a worker on a node that cannot
+(a root not a directory there, or node-local to another host in the site file's NODE_LOCAL_ROOTS) claims nothing and
+exits with a worker record (``workers/``: refused, or error when the check itself raised); when every lane has such a
+record, the supervisor ends the unfinished items (refused, naming each lane's reason) and runs their closing steps. A
 retried chain item skips the steps that ended done and runs the others again; in a chain of
 CELL_REFUSAL_CHAINS (below) it resumes at its first step that ended neither done nor no-input (a 'running' step of a
 dead worker included), and every step after it runs again (a later entry stays in the record until replaced). Closing
@@ -274,37 +277,82 @@ def chain_finally(name):
     return steps
 
 
-def chain_roots(name):
+def _forwarded_overrides(forward):
+    """[(dotted key, value text, source)] of the overrides a step applies from the job's forwarded argv, in the order
+    cli.py applies them: the --config file's lines first, then each --set."""
+    ov, out = _overrides_of(forward), []
+    if ov['config']:
+        try:
+            lines = open(ov['config']).read().splitlines()
+        except OSError as e:
+            raise SystemExit(f'refused: the forwarded --config {ov["config"]} cannot be read ({e})')
+        for n, line in enumerate(lines, 1):
+            line = line.split('#', 1)[0].strip()
+            if '=' in line:
+                k, v = line.split('=', 1)
+                out.append((k.strip(), v.strip(), f'{ov["config"]}:{n}'))
+    for it in ov['set']:
+        if '=' in it:
+            k, v = it.split('=', 1)
+            out.append((k.strip(), v.strip(), '--set'))
+    return out
+
+
+def chain_roots(name, forward=()):
     """[[config name, path]] of the roots the steps of the chain ``name`` read that must be directories on the node running
-    an item (runner.CHAIN_REQUIRED_ROOTS: 'section.KEY' or 'section.KEY.dict_key' config names, resolved once at submit,
-    as the steps are). An unknown name refuses the submit."""
+    an item (runner.CHAIN_REQUIRED_ROOTS: 'section.KEY' or 'section.KEY.dict_key' config names), resolved once at submit as
+    the steps resolve them: the config value with the job's forwarded --config and --set overrides of that name (a whole
+    value or its entry; the last one wins), never changing this process's config. An unknown name, an override that does
+    not parse, or a value that is not an absolute path refuses the submit."""
+    from exopipe.phase3.config import _coerce, _parse_key
     cfg = _cfg()
+    ovs = []
+    for k, text, src in _forwarded_overrides(forward):
+        try:
+            ovs.append((_parse_key(k), k, text, src))
+        except KeyError:
+            continue                          # not a config key: the step itself refuses it
     out = []
     for ref in (getattr(cfg.runner, 'CHAIN_REQUIRED_ROOTS', None) or {}).get(name) or ():
         sec, key, *sub = ref.split('.')
+
+        def at(v, toks):
+            for t in toks:
+                v = v[t]
+            return v
         try:
-            v = getattr(getattr(cfg, sec), key)
-            for k in sub:
-                v = v[k]
+            base = getattr(getattr(cfg, sec), key)
+            v = at(base, sub)
         except (AttributeError, KeyError, TypeError):
             raise SystemExit(f'refused: runner.CHAIN_REQUIRED_ROOTS[{name!r}] names {ref!r}, which is not a config value')
+        for (s2, k2, path), dotted, text, src in ovs:
+            n = len(path)
+            if (s2, k2) != (sec, key) or n > len(sub) or path != [[t] for t in sub[:n]]:
+                continue
+            try:
+                v = at(_coerce(text, at(base, sub[:n])), sub[n:])
+            except (ValueError, SyntaxError, KeyError, TypeError) as e:
+                raise SystemExit(f'refused: the forwarded override {dotted}={text} ({src}) of {ref} does not resolve: {e}')
         if not isinstance(v, str) or not os.path.isabs(v):
             raise SystemExit(f'refused: runner.CHAIN_REQUIRED_ROOTS[{name!r}] {ref!r} = {v!r} is not an absolute path')
         out.append([ref, v])
     return out
 
 
-def missing_roots(roots):
-    """Gate R-ROOTS: [(config name, path, why)] of the required roots (chain_roots) that this host cannot read - a root the
-    site file's NODE_LOCAL_ROOTS give to another host (the same path here is another disk, or absent), or a path that is not
-    a directory here (a disk not mounted). Hosts come from the site file only."""
+def missing_roots(roots, host=None):
+    """Gate R-ROOTS: [(config name, path, why)] of the required roots (chain_roots) that ``host`` (default this host)
+    cannot read - a root the site file's NODE_LOCAL_ROOTS give to another host (the same path there is another disk, or
+    absent), or, on this host, a path that is not a directory (a disk not mounted). Another host's mounts are not seen
+    from here: only the site file decides for it. Hosts come from the site file only."""
     from exopipe.phase3.core import env as E
-    me, bad = E.host(), []
+    me = E.host()
+    host = me if host in (None, 'localhost') else host.split('.')[0]
+    bad = []
     for ref, p in roots:
         h = E.node_local_holder(p)
-        if h is not None and h != me:
+        if h is not None and h != host:
             bad.append((ref, p, f'node-local to {h} (site NODE_LOCAL_ROOTS)'))
-        elif not os.path.isdir(p):
+        elif host == me and not os.path.isdir(p):
             bad.append((ref, p, 'not a directory on this host (not mounted)' + (f'; the site file gives it to {h}' if h else '')))
     return bad
 
@@ -353,6 +401,15 @@ def submit(name, step_argv, item_list, nodes, after=None, retry=0, gpu=False, py
         bad = [h for h, _ in nodes if h not in cfg.site.GPU_HOSTS]
         if bad:
             raise SystemExit(f'refused: --gpu but {bad} are not GPU hosts in the site file (GPU_HOSTS)')
+    roots = chain_roots(chain, forward) if chain else None
+    if roots:
+        # gate R-ROOTS at submit: a node list with no node that can read the chain's roots refuses (a node without them
+        # among others only runs no item: its workers refuse, see worker)
+        cant = {h: missing_roots(roots, h) for h, _ in nodes}
+        if all(cant.values()):
+            raise SystemExit(f'refused (R-ROOTS): no node of --nodes can read the roots the chain {chain} reads: '
+                             + '; '.join(f'{h}: ' + ', '.join(f'{ref} = {p} ({why})' for ref, p, why in m)
+                                         for h, m in cant.items()))
     python = python or sys.executable
     code_commit = code_root = None
     if code:
@@ -374,7 +431,7 @@ def submit(name, step_argv, item_list, nodes, after=None, retry=0, gpu=False, py
          'site_file': os.environ.get('EXOPIPE3_SITE', ''), 'n_items': len(item_list), 'jobs_root': jobs_root(),
          'forward_argv': forward, 'overrides': _overrides_of(forward),
          'chain': chain, 'chain_steps': steps, 'chain_finally': chain_finally(chain) if chain else None,
-         'chain_roots': chain_roots(chain) if chain else None,        # gate R-ROOTS on the node of each item
+         'chain_roots': roots,                # gate R-ROOTS on the node of each worker (with the forwarded overrides)
          # fixed at submit, as the steps are: a step's refusal of some cells is recorded per cell and the chain goes on
          'cell_refusals': bool(chain) and chain in (getattr(cfg.runner, 'CELL_REFUSAL_CHAINS', None) or ()),
          'code_commit': code_commit, 'code_root': code_root, 'code_repo': code_repo() if code else None}
@@ -426,6 +483,9 @@ def supervise(job):
             print(f'{_now()} refused every item: {why}', flush=True)
             return
     me = socket.gethostname()
+    wd = os.path.join(job_dir(job), WORKERS_DIR)
+    for n in (os.listdir(wd) if os.path.isdir(wd) else ()):
+        os.remove(os.path.join(wd, n))       # an earlier supervisor's workers' records (run retry starts a new one)
     for host, lanes in j['nodes']:
         for lane in range(int(lanes)):
             wl = os.path.join(job_dir(job), 'logs', f'_worker_{host}_{lane}.log')
@@ -444,7 +504,58 @@ def supervise(job):
             print(f'{_now()} started worker {host} lane {lane}', flush=True)
     while job_state(job)[0] != 'finished':
         time.sleep(cfg.runner.POLL_S)
+        n = end_unrunnable(job)
+        if n:
+            print(f'{_now()} every worker lane refused (R-ROOTS): {n} unfinished item(s) ended here', flush=True)
     print(f'{_now()} job finished: {job_state(job)[1]}', flush=True)
+
+
+WORKERS_DIR = 'workers'                 # <job>/workers/<host>_<lane>_<pid>.json: a worker that refused to claim (R-ROOTS)
+
+
+def worker_records(job):
+    wd = os.path.join(job_dir(job), WORKERS_DIR)
+    return ([_rjson(os.path.join(wd, n), {}) for n in sorted(os.listdir(wd)) if n.endswith('.json')]
+            if os.path.isdir(wd) else [])
+
+
+def end_unrunnable(job):
+    """Gate R-ROOTS at run time: when every worker lane of the job wrote a refusal record (worker: a node without the
+    chain's roots, or the check itself raised) and no item is running, no worker will ever claim the unfinished items:
+    each ends here - refused, or failed when every lane's check raised - naming every lane's reason, and its closing steps
+    run from the supervisor's host. Returns the number of items ended."""
+    j = load_job(job)
+    lanes = sum(int(n) for _, n in j['nodes'])
+    recs = [r for r in worker_records(job) if r.get('status') in ('refused', 'error')]
+    if not lanes or len({(r.get('host'), r.get('lane')) for r in recs}) < lanes:
+        return 0                              # a lane without a refusal record may still claim them
+    sts = {it: item_state(job, it) for it in items(job)}
+    if any(st.get('status') == 'running' for st in sts.values()):
+        return 0
+    status = 'refused' if any(r['status'] == 'refused' for r in recs) else 'failed'
+    why = ('R-ROOTS: no worker lane of the job can run it - '
+           + '; '.join(f"{r.get('host')} lane {r.get('lane')}: {r.get('reason')}" for r in recs))
+    me, n = socket.gethostname(), 0
+    for it, st in sts.items():
+        if st.get('status') in TERMINAL:
+            continue
+        ipath = os.path.join(job_dir(job), 'items', f'{_safe(it)}.json')
+        log = os.path.join(job_dir(job), 'logs', f'{_safe(it)}.log')
+        rec = dict(st, status='running', host=me, lane=None, log=log, refusal=why, started=_now())
+        rc = 2 if status == 'refused' else 1
+        with open(log, 'a') as lf:
+            lf.write(f'\n===== {_now()} supervisor on {me}: {status.upper()} before any step of this attempt - {why}\n')
+        if j.get('chain_steps'):
+            rec['summary'] = f'{status.upper()} before any step of this attempt ({why})'
+            rec.setdefault('refused_cells', [])
+            rec.setdefault('refused_by_cell', {})
+        if j.get('chain_finally'):
+            _closing_steps(j, it, ipath, rec, log, me, None, int(st.get('attempts', 0)), status, rc,
+                           [j['python'], '-m', 'exopipe.phase3'], j.get('code_root') or j['pkg_root'])
+        rec.update(status=status, rc=rc, finished=_now())
+        _wjson(ipath, rec)
+        n += 1
+    return n
 
 
 UPSTREAM_FILE = 'upstream_refused.json'
@@ -718,6 +829,8 @@ def worker(job, lane=0):
         if os.path.exists(os.path.join(d, 'HOLD')):
             time.sleep(cfg.runner.POLL_S)
             continue
+        if j.get('chain_roots') and not _roots_here(j, job, host, lane):
+            return                            # gate R-ROOTS: no item claimed (end_unrunnable when no lane can run them)
         picked = None
         for it in items(job):
             st = item_state(job, it)
@@ -731,6 +844,50 @@ def worker(job, lane=0):
             return
         _run_item(j, job, picked[0], picked[1], host, lane)
         _release(job, picked[0])
+
+
+def _roots_here(j, job, host, lane):
+    """Gate R-ROOTS on this worker, before every claim: False (and a worker record) when this host cannot read a root the
+    chain's steps read (refused) or the check itself raised (error); the worker then claims nothing and exits."""
+    try:
+        miss = missing_roots(j['chain_roots'])
+        status = 'refused' if miss else None
+        why = ('this host cannot read root(s) the chain %s reads: ' % j['chain']
+               + '; '.join(f'{ref} = {p}: {w}' for ref, p, w in miss)) if miss else None
+    except Exception as e:                    # the check could not run: no item is claimed on a host it cannot vouch for
+        status, why = 'error', f'the roots check raised {type(e).__name__}: {e}'
+    if status is None:
+        return True
+    _wjson(os.path.join(job_dir(job), WORKERS_DIR, f'{_safe(host)}_{lane}_{os.getpid()}.json'),
+           {'status': status, 'code': 'R-ROOTS', 'host': host, 'lane': lane, 'pid': os.getpid(), 'reason': why,
+            'time': _now()})
+    print(f'{_now()} {status.upper()} (R-ROOTS): {why}; worker exits without claiming an item', flush=True)
+    return False
+
+
+def _closing_steps(j, it, ipath, rec, log, host, lane, attempts, status, rc, head, root):
+    """The chain's closing steps (runner.CHAIN_FINALLY) for an item whose chain ended in ``status``; they read the outcome
+    from its record ({record}); their exit codes go under 'finally' and never change the item's status."""
+    fin = []
+    rec.update(chain_status=status, rc=rc)
+    rec['finally'] = fin
+    _wjson(ipath, rec)
+    with open(log, 'a') as lf:
+        for k, tmpl in enumerate(j['chain_finally']):
+            full = (head + [a.replace('{item}', it).replace('{record}', ipath) for a in _subst_vars(tmpl)]
+                    + list(j.get('forward_argv') or []))     # no '--cells <item>' is appended to a closing step
+            lf.write(f'\n===== {_now()} {host} lane {lane} attempt {attempts} closing step {k + 1}/'
+                     f'{len(j["chain_finally"])} (chain {status}): {" ".join(map(shlex.quote, full))}\n')
+            lf.flush()
+            p = subprocess.Popen(full, stdout=lf, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, cwd=root,
+                                 env=_child_env(j, root))
+            entry = {'step': k, 'name': tmpl[0], 'argv': full, 'status': 'running', 'started': _now(),
+                     'pid': p.pid, 'attempt': attempts}
+            fin.append(entry)
+            _wjson(ipath, rec)
+            frc = p.wait()
+            entry.update(status=RC_STATUS.get(frc, 'error'), rc=frc, finished=_now())
+            _wjson(ipath, rec)
 
 
 def _run_item(j, job, it, st, host, lane):
@@ -765,19 +922,8 @@ def _run_item(j, job, it, st, host, lane):
     status, rc = 'done', 0
     n_noinput = 0
     ran_to = -1
-    # gate R-ROOTS (runner.CHAIN_REQUIRED_ROOTS): a node that cannot read a root the chain's steps read refuses the item
-    # before its first step, naming each root, instead of a step crashing on the missing path
-    miss = missing_roots(j.get('chain_roots') or []) if chain else []
-    if miss:
-        rec['refusal'] = ('R-ROOTS: this host (%s) cannot read root(s) the chain %s reads: ' % (host, j['chain'])
-                          + '; '.join(f'{ref} = {p}: {why}' for ref, p, why in miss) + ' - run the item on a node that has them')
     with open(log, 'a') as lf:
-        if miss:
-            lf.write(f'\n===== {_now()} {host} lane {lane} attempt {attempts}: REFUSED before the first step - {rec["refusal"]}\n')
-            status, rc = 'refused', 2
         for k, argv in enumerate(argvs):
-            if miss:
-                break
             if chain and k < len(steps) and k < resume_at and steps[k].get('status') == 'done':
                 continue                      # done in an earlier attempt (cell-refusal chains: before the resume step)
             ran_to = k
@@ -857,30 +1003,9 @@ def _run_item(j, job, it, st, host, lane):
     if chain:
         rec.update(refused_cells=refused, refused_by_cell=refused_by_cell(refused),
                    summary=chain_outcome(status, steps_now, len(argvs), carried if cellwise else ()))
-        if miss:
-            rec['summary'] = f'REFUSED before step 1 ({rec["refusal"]})'
     if chain and j.get('chain_finally') and status != 'queued':
         # closing steps (runner.CHAIN_FINALLY): whatever the chain's outcome; they read it from the record ({record})
-        fin = []
-        rec.update(chain_status=status, rc=rc)
-        rec['finally'] = fin
-        _wjson(ipath, rec)
-        with open(log, 'a') as lf:
-            for k, tmpl in enumerate(j['chain_finally']):
-                full = (head + [a.replace('{item}', it).replace('{record}', ipath) for a in _subst_vars(tmpl)]
-                        + list(j.get('forward_argv') or []))     # no '--cells <item>' is appended to a closing step
-                lf.write(f'\n===== {_now()} {host} lane {lane} attempt {attempts} closing step {k + 1}/'
-                         f'{len(j["chain_finally"])} (chain {status}): {" ".join(map(shlex.quote, full))}\n')
-                lf.flush()
-                p = subprocess.Popen(full, stdout=lf, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, cwd=root,
-                                     env=_child_env(j, root))
-                entry = {'step': k, 'name': tmpl[0], 'argv': full, 'status': 'running', 'started': _now(),
-                         'pid': p.pid, 'attempt': attempts}
-                fin.append(entry)
-                _wjson(ipath, rec)
-                frc = p.wait()
-                entry.update(status=RC_STATUS.get(frc, 'error'), rc=frc, finished=_now())
-                _wjson(ipath, rec)
+        _closing_steps(j, it, ipath, rec, log, host, lane, attempts, status, rc, head, root)
     rec.update(status=status, rc=rc, finished=_now())
     _wjson(ipath, rec)
 

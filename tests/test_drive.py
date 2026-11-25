@@ -85,6 +85,7 @@ class Scenario:
                  "runner.FREE_CORES_CMD = 'echo 0-4095'",
                  f"runner.CHAINS[epoch] = {chain!r}",
                  f"runner.CHAIN_FINALLY[epoch] = {['fin --epochs {item} --record {record} --out ' + self.out] if self.fin else []!r}",
+                 "runner.CHAIN_REQUIRED_ROOTS[epoch] = ()",     # the fake nodes read no root (gate R-ROOTS: its own test)
                  f"driver.STEP_HEAD = {(STEP,)!r}"]
         for k in ('SBATCH', 'SQUEUE', 'SACCT', 'SCANCEL', 'SINFO', 'SRUN'):
             lines.append(f"driver.{k} = {f'{PY} {FAKE} {k.lower()}'!r}")
