@@ -13,6 +13,8 @@ import csv
 import glob
 import os
 
+from exopipe.phase3.core import placement
+
 # The 46 columns of a deep pages_input file, in the heredoc's order (p3s3_pass.sh:150-164).
 SINGLES_COLUMNS = ('_sid', '_rank', 'lst', 'date', 'band', 'ra', 'dec', 'snr', 'peak_jy', 'pass_ms', 'run', 'common_name',
                    'ra_current', 'dec_current', 'label', 'stokes', 'n_det', 'identity_bands', 'size_beams', 'size_flag',
@@ -92,14 +94,19 @@ def fork_rows(U, K, label, run_label, mcx=None):
 
 
 def write_rows(path, rows, atomic=False):
-    """The heredoc's write (p3s3_pass.sh:166-167): DictWriter on the first row's keys, or a header of '_sid' alone."""
-    tmp = path + '.new' if atomic else path
-    with open(tmp, 'w', newline='') as f:
-        w = csv.DictWriter(f, fieldnames=list(rows[0].keys()) if rows else ['_sid'])
-        w.writeheader()
-        w.writerows(rows)
+    """The heredoc's write (p3s3_pass.sh:166-167): DictWriter on the first row's keys, or a header of '_sid' alone. ``atomic``:
+    through a temporary file placed at ``path`` (core/placement.atomic: the existing file's group, mode and ACL, or the
+    directory's rule for a new file); otherwise in place, as the heredoc."""
+    def write(p):
+        with open(p, 'w', newline='') as f:
+            w = csv.DictWriter(f, fieldnames=list(rows[0].keys()) if rows else ['_sid'])
+            w.writeheader()
+            w.writerows(rows)
     if atomic:
-        os.replace(tmp, path)
+        with placement.atomic(path) as tmp:
+            write(tmp)
+    else:
+        write(path)
     return path
 
 

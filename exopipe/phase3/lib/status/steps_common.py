@@ -11,6 +11,7 @@ import json
 import os
 import time
 
+from exopipe.phase3.core import placement
 from exopipe.phase3.core.record import Refusal, NoInput
 
 csv.field_size_limit(1 << 30)
@@ -139,26 +140,24 @@ def exclusions():
 # ---------------------------------------------------------------------------------------------------------------------
 
 def write_csv(path, columns, rows):
-    """Atomic CSV write (tmp + rename). ``rows``: dicts; missing keys written empty."""
+    """Atomic CSV write (a temporary file placed at ``path``: core/placement.atomic, the existing file's group, mode and ACL,
+    or the directory's rule for a new file). ``rows``: dicts; missing keys written empty."""
     check_write(path)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = f'{path}.part.{os.getpid()}'
-    with open(tmp, 'w', newline='') as f:
+    with placement.atomic(path) as tmp, open(tmp, 'w', newline='') as f:
         w = csv.DictWriter(f, fieldnames=list(columns), extrasaction='ignore')
         w.writeheader()
         for r in rows:
             w.writerow({k: ('' if r.get(k) is None else r.get(k)) for k in columns})
-    os.replace(tmp, path)
     return path
 
 
 def write_text(path, text):
+    """Atomic text write, placed as write_csv."""
     check_write(path)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = f'{path}.part.{os.getpid()}'
-    with open(tmp, 'w') as f:
+    with placement.atomic(path) as tmp, open(tmp, 'w') as f:
         f.write(text)
-    os.replace(tmp, path)
     return path
 
 

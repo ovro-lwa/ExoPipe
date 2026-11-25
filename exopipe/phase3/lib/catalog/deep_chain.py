@@ -415,9 +415,10 @@ class DeepRun:
 
     def copy(self, u, src, d, name=None):
         dst = os.path.join(d, name or os.path.basename(src))
-        tmp = f'{dst}.tmp.{os.getpid()}'
-        shutil.copy2(src, tmp)
-        os.replace(tmp, dst)
+        # copy2 keeps the source's times; the copy ends with the product's group, mode and ACL (the existing file's, or the
+        # directory's rule for a new file), never the source's (core/placement.atomic; any exception removes the temporary file)
+        with placement.atomic(dst) as tmp:
+            shutil.copy2(src, tmp)
         u.meta.setdefault('copies', {})[os.path.basename(src)] = dst
         self.out(u, dst)
         return dst
@@ -505,9 +506,8 @@ class DeepRun:
         if os.path.exists(cur) and _sha1(cur) == _sha1(want):
             return
         if stage == self.first_stage:
-            tmp = f'{cur}.tmp.{os.getpid()}'
-            shutil.copy2(want, tmp)
-            os.replace(tmp, cur)
+            with placement.atomic(cur) as tmp:          # the run's table keeps its own group, mode and ACL, not the stage copy's
+                shutil.copy2(want, tmp)
             u.note(f'restored master_catalog.csv from the recorded predecessor output {want}')
             self.say(f'{stage}: restored master_catalog.csv from {want} (re-pass)')
             return

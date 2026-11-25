@@ -22,6 +22,7 @@ import os
 import shutil
 from collections import Counter
 
+from exopipe.phase3.core import placement
 from exopipe.phase3.core.record import Refusal
 
 
@@ -31,11 +32,12 @@ def _S():
 
 
 def _write(out, fieldnames, rows, **kw):
-    with open(out + '.new', 'w', newline='') as f:
+    """The view's CSV through a temporary file placed at ``out`` (core/placement.atomic: the existing file's group, mode and
+    ACL, or the directory's rule for a new file)."""
+    with placement.atomic(out) as tmp, open(tmp, 'w', newline='') as f:
         w = csv.DictWriter(f, fieldnames=fieldnames, **kw)
         w.writeheader()
         w.writerows(rows)
-    os.replace(out + '.new', out)
 
 
 def pages_merge_env(tier):
