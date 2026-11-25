@@ -61,6 +61,7 @@ def section_tier_queue(U, K, tier, lsts_text=''):
         H = S.QUEUE_HEADERS['sublst_tier']
         text = (f'{H[0].format(lsts=lsts_text, K=K)}\n{H[1]}\n' + '\n'.join(multi) + ('\n' if multi else '')
                 + f'{H[2]}\n' + '\n'.join(single) + ('\n' if single else ''))
+    placement.sweep([qp])                       # a killed earlier write's temporary file
     with placement.atomic(qp) as tmp, open(tmp, 'w') as f:
         f.write(text)
     return {'multi': len(multi), 'single': len(single), 'marginal': len(marg)}
@@ -126,6 +127,7 @@ def deep_multi_queue(U, ST):
             base, lst, date, band = i.rsplit('_', 3)
             keep.add((base, band))
     dst = f'{U}/judgements/queue_p3s3_{ST}_multi.txt'
+    placement.sweep([dst])                      # a killed earlier write's temporary file
     with placement.atomic(dst) as tmp, open(tmp, 'w') as f:
         f.write('\n'.join(lines) + '\n')
     return dst, keep, out_secs

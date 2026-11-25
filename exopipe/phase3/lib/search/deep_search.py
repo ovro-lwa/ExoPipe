@@ -1363,6 +1363,7 @@ def _write_sigstack(sstack, hdr0, run_root, lst, scope, stokes, night=None):   #
     h['STOKES'] = (stokes, 'Stokes parameter')
     if night:                                                              # WAVE2 D-ADMIT
         h['ADMITTED'] = (night, 'the cell\'s searched nights plus this admitted night')
+    placement.sweep([p])                # a killed earlier write's temporary file (not modified for an hour)
     with placement.atomic(p) as _t:     # placed: the replaced map's group, mode and ACL, or the directory's rule (core/placement)
         fits.writeto(_t, np.asarray(sstack, dtype=np.float32), h)
     return p
@@ -1660,7 +1661,10 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
         flows = _batch_flows(cell_work, mup, items)
     if not os.path.exists(_gsc):
         # a temporary name unique per call (core/placement.atomic, then placed with the replaced record's group, mode and ACL,
-        # or the directory's rule): V and I searches of one cell may run concurrently (2026-09-12 race)
+        # or the directory's rule): V and I searches of one cell may run concurrently (2026-09-12 race), so only a temporary
+        # file not modified for an hour is a killed writer's leftover (placement.sweep); the dump is not atomic_write_json's
+        # (no indent, keys in their order)
+        placement.sweep([_gsc])
         with placement.atomic(_gsc) as _t, open(_t, 'w') as _f:
             _js.dump({'master': os.path.basename(mI), 'master_md5_data': _gen,
                       'CONSTDIG': hdr0.get('CONSTDIG', ''), 'written_by': 'phase3_deep', 'n_flows': len(flows)}, _f)
@@ -2316,10 +2320,22 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
             _img = bdsf.process_image(_tmpm, thresh_isl=4.0, thresh_pix=5.0,
                                       quiet=True)
             # placed (core/placement.atomic: the replaced catalog's group, mode and ACL, or the directory's rule); any failure
-            # removes the temporary catalog and the temporary master image
+            # removes the temporary catalog and the temporary master image. A killed earlier write's temporary catalog is
+            # removed first (placement.sweep; under the cell's catalogue lock). An extraction that wrote no catalogue refuses
+            # here, before any placement (deep_child: refused, gate 'engine'): write_catalog returns False when PyBDSF found no
+            # sources (it then writes nothing)
+            placement.sweep([_gaulp])
             with placement.atomic(_gaulp) as _t:
-                _img.write_catalog(outfile=_t, format='csv',
-                                   catalog_type='gaul', clobber=True)
+                _wrote = _img.write_catalog(outfile=_t, format='csv',
+                                            catalog_type='gaul', clobber=True)
+                if not _wrote:
+                    _ns = len(getattr(_img, 'sources', None) or [])
+                    raise RuntimeError(
+                        f'{lst} {scope}: parent catalogue not written - '
+                        + (f'PyBDSF found no sources in {os.path.basename(_pm)} (thresh_isl 4.0, thresh_pix 5.0)' if _ns == 0
+                           else f'PyBDSF did not write the Gaussian list of {os.path.basename(_pm)} ({_ns} sources; '
+                                f'write_catalog returned {_wrote!r}, its log says why)')
+                        + '; REFUSING')
         finally:
             if os.path.exists(_tmpm):
                 os.remove(_tmpm)

@@ -14,7 +14,7 @@ import re
 import sys
 import time
 
-from exopipe.phase3.core import placement
+from exopipe.phase3.core import placement, record
 from exopipe.phase3.core.record import Refusal
 
 FLOW_SECTIONS = ('flow', 'flow_prep', 'flow_snapshot', 'flow_refine')
@@ -195,12 +195,13 @@ def same_bytes(a, b):
 
 
 def write_json_atomic(path, obj):
-    """``obj`` as JSON at ``path`` through a temporary file beside it, placed (core/placement.atomic: the replaced file's
-    group, mode and ACL, or the directory's rule for a new one; a refusal - PlacementRefusal, a record.Refusal: the calling
-    unit records it as refused - renames nothing and removes the temporary file)."""
-    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    with placement.atomic(path) as tmp, open(tmp, 'w') as f:
-        json.dump(obj, f, indent=1, sort_keys=True, default=str)
+    """``obj`` as JSON at ``path``: record.atomic_write_json(place=True) - a temporary file beside it, placed
+    (core/placement.atomic: the replaced file's group, mode and ACL, or the directory's rule for a new one; a refusal -
+    PlacementRefusal, a record.Refusal: the calling unit records it as refused - renames nothing and removes the temporary
+    file). A killed earlier write's temporary file is removed first (placement.sweep)."""
+    path = os.path.abspath(path)
+    placement.sweep([path])
+    record.atomic_write_json(path, obj, place=True)
 
 
 def listing(files):

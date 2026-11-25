@@ -1369,7 +1369,9 @@ def stage_admit(run, opts, sel):
             os.makedirs(os.path.dirname(jf), exist_ok=True)
             # the two job lists placed together (core/placement.atomic_many: the replaced lists' group, mode and ACL, or the
             # directory's rule for new ones). An attribute refusal places neither; a failed second rename leaves the first
-            # placed and names it. Either is a PlacementRefusal (a record.Refusal): this unit's refusal
+            # placed and names it (the refusal text names the list that is live and the one that is not). Either is a
+            # PlacementRefusal (a record.Refusal): this unit's refusal. A killed earlier write's temporary files go first
+            placement.sweep([jf, jdf])
             with placement.atomic_many([jf, jdf]) as tmps:
                 with open(tmps[jf], 'w') as f:
                     f.write("\n".join(main) + "\n")

@@ -1528,6 +1528,7 @@ def fit_sidecar(root, label, out_dir, prev_dir=None, only_dates=None, nproc=None
     # directory's rule for new ones), the CSV renamed first. An attribute refusal places neither; a failed second rename leaves
     # the CSV placed and names it. Either is a PlacementRefusal (a record.Refusal): the unit's refusal
     from exopipe.phase3.core import placement
+    placement.sweep([out_csv, out_json])        # a killed earlier write's temporary files
     with placement.atomic_many([out_csv, out_json]) as tmps:
         with open(tmps[out_csv], 'w', newline='') as f:
             wr = csv.DictWriter(f, fieldnames=cols, extrasaction='ignore')
@@ -1662,8 +1663,9 @@ def _write_report(u, out_dir, root, plan):
     rep = dict(root=root, unit=u.name, tier=TIER, written=time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
                tests=[{k: t.get(k) for k in ('name', 'passed', 'value', 'detail', 'path', 'cls')} for t in u.tests])
     from exopipe.phase3.core import placement
+    placement.sweep([p])                        # a killed earlier write's temporary file
     with placement.atomic(p) as tmp, open(tmp, 'w') as f:    # placed (core/placement.atomic); a refusal: the unit's
-        json.dump(rep, f, indent=1, default=str)
+        json.dump(rep, f, indent=1, default=str)            # (keys in their order: not atomic_write_json's sorted keys)
     return p
 
 

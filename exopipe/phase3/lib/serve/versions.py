@@ -660,9 +660,11 @@ def _manifest(run, mutable, rules, what, scan=()):
 def _write_manifest(v, entries, name='MANIFEST.tsv'):
     """The manifest of ``v`` (beside its run, not in it) through a temporary file (flushed and fsynced), placed
     (core/placement.atomic: the replaced manifest's group, mode and ACL, or the directory's rule for a new one; a refusal -
-    PlacementRefusal, a record.Refusal - renames nothing and removes the temporary file). Returns the text's sha256."""
+    PlacementRefusal, a record.Refusal - renames nothing and removes the temporary file). A killed earlier write's temporary
+    file is removed first (placement.sweep). Returns the text's sha256."""
     text = _manifest_text(entries).encode()
     mpath = v.path(name)
+    placement.sweep([mpath])
     with placement.atomic(mpath) as tmp, open(tmp, 'wb') as f:
         f.write(text)
         f.flush()

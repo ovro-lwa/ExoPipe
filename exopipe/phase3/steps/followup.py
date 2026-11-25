@@ -425,9 +425,10 @@ def _resumed(run, name, admitted=None, **meta):
 def _atomic_text(path, text):
     """``text`` at ``path`` through a temporary file beside it, placed (core/placement.atomic: the replaced file's group, mode
     and ACL, or the directory's rule for a new one; a refusal - PlacementRefusal - renames nothing, removes the temporary file
-    and is raised)."""
+    and is raised). A killed earlier write's temporary file is removed first (placement.sweep)."""
     d = os.path.dirname(os.path.abspath(path))
     os.makedirs(d, exist_ok=True)
+    placement.sweep([path])
     with placement.atomic(path) as tmp, open(tmp, 'w', newline='') as f:
         f.write(text)
 

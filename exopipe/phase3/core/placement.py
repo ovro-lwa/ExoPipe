@@ -25,7 +25,8 @@ anything changes.
 (``<dst>.<pid>.<random>.tmp``, or ``<dst>.<tag>.<pid>.<random>.tmp`` with ``tag``; not created), the block writes it with
 the caller's own writer (open + csv, json.dump, writeto, ...), and a clean exit places it (``replace(tmp, dst, drop=True)``);
 ANY exception inside the block removes the temporary file and propagates. Only a killed process leaves one behind:
-``temp_glob(dst, tag)`` is the glob of those names, for the cleanup of the writer's next run.
+``temp_glob(dst, tag)`` is the glob of those names, for the cleanup of the writer's next run, and ``sweep(dsts)`` removes
+them (the ones not modified for an hour) - each name is unique, so no later write replaces it.
 
 ``atomic_many(dsts)`` is the form for a set of products installed together: ``with placement.atomic_many(dsts) as tmps:``
 yields {dst: tmp}; a clean exit first gives EVERY temporary file its product's attributes (apply: where a refusal happens),
@@ -39,10 +40,14 @@ its product's attributes where it lies, then each is renamed once to its product
 """
 import contextlib
 import errno
+import glob
 import grp
 import os
+import re
 import stat
 import struct
+import sys
+import time
 
 from exopipe.phase3.core.record import Refusal
 
@@ -213,6 +218,40 @@ def temp_glob(dst, tag=None):
     every file of a directory). Without ``tag`` it does not match a tagged name whose tag starts with a letter, and a tag's
     glob matches only that tag's names."""
     return f'{dst}.{tag + "." if tag else ""}[0-9]*.{_HEX8}.tmp'
+
+
+STALE_TEMP_S = 3600                     # sweep: a temporary file not modified for an hour is a leftover
+
+
+def sweep(dsts, tag=None, older_than_s=STALE_TEMP_S, log=None):
+    """Remove the temporary files of the products ``dsts`` (literal paths) that a writer killed between writing and placing
+    left behind: exactly the names atomic / atomic_many give them (``<dst>[.<tag>].<pid>.<8 hex digits>.tmp``), and only
+    those not modified for ``older_than_s`` seconds (default STALE_TEMP_S, one hour). A younger one may be a concurrent
+    writer's (the V and I searches of one cell write the same generation stamp) and stays; so do ``dst`` itself, another
+    product's temporary files and every other name. A writer calls it before it writes (each temporary name is unique, so no
+    later write replaces a leftover). Each removal is reported through ``log`` (default: a line on stderr). Returns the paths
+    removed."""
+    log = log or (lambda m: print(m, file=sys.stderr, flush=True))
+    if isinstance(dsts, (str, bytes, os.PathLike)):
+        dsts = [dsts]
+    now, out = time.time(), []
+    for dst in dsts:
+        dst = os.fspath(dst)
+        name = re.compile(re.escape(os.path.basename(dst)) + (re.escape('.' + tag) if tag else '') + r'\.\d+\.[0-9a-f]{8}\.tmp')
+        for q in sorted(glob.glob(temp_glob(glob.escape(dst), tag))):
+            if not name.fullmatch(os.path.basename(q)):
+                continue                        # e.g. <dst>.1.<pid>.<hex>.tmp: the temporary file of the product <dst>.1
+            try:
+                st = os.lstat(q)
+                if stat.S_ISDIR(st.st_mode) or now - st.st_mtime < older_than_s:
+                    continue
+                os.remove(q)
+            except FileNotFoundError:          # removed meanwhile (placed by its writer, or another sweep)
+                continue
+            out.append(q)
+            log(f'placement: removed {q}, a temporary file of {dst} left by a writer that did not finish (not modified for '
+                f'{(now - st.st_mtime) / 3600:.1f} h)')
+    return out
 
 
 @contextlib.contextmanager

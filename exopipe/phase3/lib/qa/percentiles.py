@@ -109,10 +109,12 @@ def write(run, tier, path=None):
     """Write the run's table (default <run>/qa_percentiles.csv), whole, through a temporary file beside it, placed
     (core/placement.atomic: the replaced table's group, mode and ACL, or the directory's rule for a new one). Any failure -
     an OSError, or a PlacementRefusal (a record.Refusal) when the temporary file cannot be given those attributes - removes
-    the temporary file, leaves the table before unchanged and is raised. Returns (path, rows written)."""
+    the temporary file, leaves the table before unchanged and is raised. A killed earlier write's temporary file is removed
+    first (placement.sweep). Returns (path, rows written)."""
     from exopipe.phase3.core import placement
     rows = table(run, tier)
     path = path or os.path.join(run, TABLE)
+    placement.sweep([path])
     with placement.atomic(path) as tmp, open(tmp, 'w', newline='') as f:
         w = csv.DictWriter(f, fieldnames=COLUMNS, lineterminator='\n')
         w.writeheader()

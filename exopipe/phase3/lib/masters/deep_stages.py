@@ -1024,12 +1024,14 @@ def own_note(side, run):
     the new code does not have (B-01 b). Its note gets this build's provenance in place of that sentence (appended when the
     sentence is absent); every other key is kept. Written to a temporary file and placed (core/placement.atomic: the
     rewritten sidecar keeps its group, mode and ACL; a refusal - PlacementRefusal - renames nothing and removes the temporary
-    file; the sources stage records it as the unit's refusal). Returns the new note."""
+    file; the sources stage records it as the unit's refusal). A killed earlier write's temporary file is removed first
+    (placement.sweep). Returns the new note."""
     j = json.load(open(side))
     own = f'built by exopipe3 masters --tier deep --stages sources (run {run.run_id}) on the installed master'
     note = j.get('note', '')
     j['note'] = note.replace(PATCH_NOTE, own) if PATCH_NOTE in note else (f'{note}; {own}' if note else own)
-    with placement.atomic(side) as tmp, open(tmp, 'w') as f:
+    placement.sweep([side])
+    with placement.atomic(side) as tmp, open(tmp, 'w') as f:      # indent 1, keys in their order (not atomic_write_json's)
         json.dump(j, f, indent=1)
     return j['note']
 

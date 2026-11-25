@@ -65,9 +65,11 @@ def evaluate_cell(final_dir, sub_dir, fl):
 def write_record(final_dir, rows):
     """<final_dir>/epoch_gate.csv through a temporary file, placed (core/placement.atomic: the replaced record's group, mode
     and ACL, or the directory's rule for a new one). A refusal (PlacementRefusal, a record.Refusal) renames nothing and
-    removes the temporary file; the record before stays as it was."""
+    removes the temporary file; the record before stays as it was. A killed earlier write's temporary file is removed first
+    (placement.sweep)."""
     from exopipe.phase3.core import placement
     p = f'{final_dir}/{GATE_FILE}'
+    placement.sweep([p])
     with placement.atomic(p) as tmp, open(tmp, 'w', newline='') as f:
         w = csv.DictWriter(f, fieldnames=COLS, extrasaction='ignore'); w.writeheader()
         for d in sorted(rows):

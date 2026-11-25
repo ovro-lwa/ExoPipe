@@ -1837,8 +1837,10 @@ def write_zone_flags(path, rows):
     one row per key, the LAST of the rows in evaluation order (sb then wb, cells sorted) - production's dict 'seen' - and
     the keys sorted. Written through a temporary file beside ``path`` and placed (core/placement.atomic: the replaced file's
     group, mode and ACL, or the directory's rule for a new one; a refusal - PlacementRefusal, a record.Refusal: the calling
-    unit records it as refused - renames nothing and removes the temporary file)."""
+    unit records it as refused - renames nothing and removes the temporary file). A killed earlier write's temporary file is
+    removed first (placement.sweep)."""
     from exopipe.phase3.core import placement
+    placement.sweep([path])
     seen = {}
     for k, a, b in rows:
         seen[tuple(k)] = (a, b)

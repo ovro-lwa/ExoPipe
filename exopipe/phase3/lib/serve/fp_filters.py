@@ -254,8 +254,9 @@ def write_files(out, rows, meta, counts, log=print):
     placed together (core/placement.replace_many: each .part given the directory's rule - both files are new here - where it
     lies, then renamed): the json renamed into place BEFORE the CSV (the CSV is the file the page keys its rows on, so no state
     ever shows a CSV without its json; production renamed the CSV first). A placement refusal of either .part renames neither;
-    a failed CSV rename after the json's is a PlacementRefusal naming the json placed. On any failure the .part files are
-    removed, and so is the json this call renamed into place when the CSV is not installed (nothing is left half-installed).
+    a failed CSV rename after the json's is a PlacementRefusal whose text says what is on disk afterwards: the json renamed
+    into place was removed again, so neither file is installed. On any failure the .part files are removed, and so is the json
+    this call renamed into place when the CSV is not installed (nothing is left half-installed).
     Refuses when either file exists (installed_refusal); a .part left by an earlier attempt that died is this step's own
     intermediate, removed with a note."""
     S = _S()
@@ -284,13 +285,19 @@ def write_files(out, rows, meta, counts, log=print):
                                f'written) - nothing installed')
         ours = os.stat(parts[1]).st_ino
         placement.replace_many([(parts[1], jp), (parts[0], cp)])
-    except BaseException:
+    except BaseException as e:
         for p in parts:
             if os.path.lexists(p):
                 os.remove(p)
         if (ours is not None and not os.path.lexists(cp) and os.path.lexists(jp)
                 and os.stat(jp).st_ino == ours):   # the CSV's rename failed: take back the json this call installed
             os.remove(jp)
+            if isinstance(e, placement.PlacementRefusal):  # its text ('already placed ... stay live') is no longer true
+                c = e.__cause__
+                why = (f'{c.strerror} (errno {c.errno})' if isinstance(c, OSError) else str(e))
+                raise placement.PlacementRefusal(
+                    f'placement: renaming {parts[0]} to {cp} failed: {why}, after {jp} was renamed into place; that json '
+                    f'was removed again - neither {FP_FILE} nor {FP_META} is installed in {out}') from e
         raise
     return cp, jp
 

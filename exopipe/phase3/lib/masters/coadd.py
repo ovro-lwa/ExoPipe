@@ -4038,12 +4038,14 @@ def _write_scale2_record(final_dir, scale2_meas, med_dc):
     whether it entered the cell median (n >= 8, as run_final_lst_freq takes it), and on the row dated 'median' the median
     the degeneracy guard used (n = the nights it was taken over; 0: none qualified and the guard used 1.0). Written to a
     temporary name and placed (core/placement.atomic: the replaced record's group, mode and ACL, or the directory's rule for
-    a new one; a refusal - PlacementRefusal, a record.Refusal - renames nothing and removes the temporary file)."""
+    a new one; a refusal - PlacementRefusal, a record.Refusal - renames nothing and removes the temporary file). A killed
+    earlier write's temporary file is removed first (placement.sweep)."""
     from exopipe.phase3.core import placement
     from exopipe.phase3.lib.masters import admit as _A
     rows = [dict(date=d, dc2=repr(float(c[0][0])), n2=int(c[1]), in_median=int(c[1] >= 8)) for d, c in sorted(scale2_meas.items())]
     rows.append(dict(date='median', dc2=repr(float(med_dc)), n2=sum(r['in_median'] for r in rows), in_median=''))
     p = os.path.join(final_dir, _A.SCALE2)
+    placement.sweep([p])
     with placement.atomic(p) as tmp, open(tmp, 'w', newline='') as f:
         w = csv.DictWriter(f, fieldnames=list(_A.SCALE2_COLS))
         w.writeheader()
@@ -4632,10 +4634,23 @@ def run_final_lst_freq(lst, freq_str, exclusions):
     return {'lst': lst, 'freq': fl, 'n_good': len(dates_good), 'n_total': len(dates)}
 
 
+def _run_final_one(lst, freq_str, exclusions):
+    """run_final_lst_freq for one (LST, freq). A product it could not place (core/placement.PlacementRefusal: nothing renamed,
+    no temporary file left) is that combination's refusal, not an error: printed as REFUSED and returned as
+    {'lst', 'freq', 'refused': the placement text}; run_final lists it apart from the combinations processed."""
+    from exopipe.phase3.core import placement
+    try:
+        return run_final_lst_freq(lst, freq_str, exclusions)
+    except placement.PlacementRefusal as e:
+        fl = freq_label(freq_str)
+        print(f"  REFUSED {lst} {fl}: {e}", flush=True)
+        return {'lst': lst, 'freq': fl, 'refused': str(e)}
+
+
 def _run_final_worker(args_tuple):
     lst, freq_str, exclusions = args_tuple
     try:
-        return run_final_lst_freq(lst, freq_str, exclusions)
+        return _run_final_one(lst, freq_str, exclusions)
     except Exception as e:
         fl = freq_label(freq_str)
         print(f"  ERROR {lst} {fl}: {e}")
@@ -4666,14 +4681,17 @@ def run_final(lsts, freqs, exclusions, args):
                     all_results.append(r)
         else:
             for lst in lsts:
-                result = run_final_lst_freq(lst, freq_str, exclusions)
+                result = _run_final_one(lst, freq_str, exclusions)
                 if result:
                     all_results.append(result)
 
-    n_combos = len(all_results)
+    refused = [r for r in all_results if 'refused' in r]
+    n_combos = len(all_results) - len(refused)
     print(f"\n{'═'*70}")
     print(f"  FINAL STAGE COMPLETE")
     print(f"  {n_combos} (LST, freq) combinations processed")
+    for r in refused:
+        print(f"  REFUSED {r['lst']} {r['freq']}: {r['refused'][:300]}")
     print(f"  Time: {(time.time()-t_start)/60:.1f} min")
     print(f"{'═'*70}")
 

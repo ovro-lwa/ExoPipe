@@ -450,8 +450,9 @@ def test_fp_filters():
     try:
         fp_filters.write_files(F, good, meta, cnt, log=lambda m: None)
         raise AssertionError('a failed CSV rename was not raised')
-    except fp_filters.placement.PlacementRefusal as e:      # core/placement.replace_many phase 2: names the json placed
-        assert 'simulated' in str(e) and 'fp_filters.csv' in str(e) and 'already placed' in str(e), e
+    except fp_filters.placement.PlacementRefusal as e:      # replace_many phase 2, the json taken back: the text says so
+        assert 'simulated' in str(e) and 'fp_filters.csv' in str(e) and 'removed again' in str(e), e
+        assert 'neither fp_filters.csv nor fp_filters.json is installed' in str(e) and 'stay live' not in str(e), e
     finally:
         fp_filters.os.replace = real_replace
     assert not os.listdir(F), os.listdir(F)
@@ -473,8 +474,8 @@ def test_fp_filters():
             PL.target_attrs = real_attrs
         assert not os.listdir(F), os.listdir(F)
     ok('fp_filters install: json renamed before the CSV; a dead attempt\'s .part removed with a note; CSV or json alone refused '
-       'as HALF-INSTALLED (build and write), untouched; a content-test failure, a failed CSV rename (a PlacementRefusal naming '
-       'the json placed, the json taken back) or a placement refusal before the renames leaves nothing')
+       'as HALF-INSTALLED (build and write), untouched; a content-test failure, a failed CSV rename (the json taken back; the '
+       'PlacementRefusal says neither file is installed) or a placement refusal before the renames leaves nothing')
 
     # the content test's negatives
     def bad(name, edit_csv=None, edit_json=None):
