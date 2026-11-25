@@ -581,11 +581,43 @@ def _needles(paths):
     return tuple(sorted(out, key=len, reverse=True))
 
 
+def served_read(rel):
+    """The class of serve.SERVED_READS the run-relative path ``rel`` belongs to (the files the served pages and the two-port
+    server read: queues, page JSON/CSV, HTML, the merge links), or None - always None for a log (serve.SERVED_READS_NEVER:
+    a log records what its writer was given and is never served)."""
+    S = _S()
+    base = os.path.basename(rel)
+    if any(fnmatch.fnmatchcase(base, g) for g in S.SERVED_READS_NEVER):
+        return None
+    for cls, globs in S.SERVED_READS.items():
+        if any(fnmatch.fnmatchcase(rel, g) for g in globs):
+            return cls
+    return None
+
+
+def links_into(run, entries, roots):
+    """The relative paths of the links of ``entries`` (a manifest of ``run``) whose target resolves into one of ``roots``
+    (the work directory): the target taken as written, absolute or from the link's directory (normpath); a link whose
+    target leaves the run is resolved again on disk (realpath: through other links), one that stays in the run needs no
+    second look - a link it passes through is an entry of its own."""
+    base = os.path.realpath(run)
+    rr = {os.path.abspath(r) for r in roots} | {os.path.realpath(r) for r in roots}
+    under = (lambda p: any(p == r or p.startswith(r.rstrip('/') + '/') for r in rr))
+    out = []
+    for e in entries:
+        if e[0] != 'l':
+            continue
+        t = os.path.normpath(e[4] if os.path.isabs(e[4]) else os.path.join(base, os.path.dirname(e[1]), e[4]))
+        if under(t) or (not (t == base or t.startswith(base + '/')) and under(os.path.realpath(os.path.join(run, e[1])))):
+            out.append(e[1])
+    return out
+
+
 def _manifest(run, mutable, rules, what, scan=()):
     """(entries with their sha256, statistics, found): the walk of ``run`` and the sha256 of every file the rules hash (CONTENT).
     Refusal when a hashed file changed (size or mtime) or vanished while it was read. ``scan`` (byte strings, _needles): found
-    = the relative paths of the files not binaries (is_small: every one is read) holding one of them, and of the links whose
-    target names one - the same reads, nothing read twice."""
+    = the relative paths of the files of the served reads (served_read; each is a text type, read whole) holding one of them -
+    the same reads, nothing read twice; every other file is not searched."""
     t0 = time.time()
     entries = walk(run, mutable)
     walk_s = time.time() - t0
@@ -593,17 +625,15 @@ def _manifest(run, mutable, rules, what, scan=()):
     large = [e[1] for e in files if not is_small(e[1], e[2], rules)]
     todo = {e[1] for e in files if is_small(e[1], e[2], rules)}
     todo |= set(large) if rules['large'] == 'all' else large_sample(large, rules)
-    out, n, nb, found = [], 0, 0, []
-    names = tuple(x.decode() for x in scan)
+    out, n, nb, found, nscan = [], 0, 0, [], 0
     t1 = time.time()
     for e in entries:
         sha = ''
-        if e[0] == 'l' and names and any(t in e[4] for t in names):
-            found.append(e[1])
         if e[0] == 'f' and e[1] in todo:
             p = os.path.join(run, e[1])
             try:
-                if scan and is_small(e[1], e[2], rules):
+                if scan and is_small(e[1], e[2], rules) and served_read(e[1]):
+                    nscan += 1
                     sha, hit = _sha256_scan(p, scan)
                     if hit:
                         found.append(e[1])
@@ -617,7 +647,8 @@ def _manifest(run, mutable, rules, what, scan=()):
             n, nb = n + 1, nb + e[2]
         out.append(tuple(e) + (sha,))
     return out, {'walk_s': round(walk_s, 1), 'hash_s': round(time.time() - t1, 1), 'n_hashed': n, 'hashed_bytes': nb,
-                 'n_binaries': len(large), 'n_binaries_hashed': sum(1 for r in large if r in todo)}, found
+                 'n_binaries': len(large), 'n_binaries_hashed': sum(1 for r in large if r in todo),
+                 **({'n_served_reads_scanned': nscan} if scan else {})}, found
 
 
 def _write_manifest(v, entries, name='MANIFEST.tsv'):
@@ -636,8 +667,10 @@ def seal(v, required=(), checks=(), note='', forbid=(), source_strict=False):
     - the run directory exists, is not a link, holds at least one file;
     - every path of ``required`` (absolute, or relative to the run) exists inside the run, a file non-empty;
     - every check of ``checks`` - (name, callable(run) -> (ok, detail)) - passes;
-    - GATE G33 (``forbid``: paths, the run's work directory): no file the manifest reads in full (every file not a binary) and
-      no link target names one of them - a served version never names the work directory a writer step changes later;
+    - GATE G33 (``forbid``: paths, the run's work directory): no file the served pages or the two-port server read
+      (served_read: the classes of serve.SERVED_READS - queues, page JSON/CSV, HTML, the merge links; never a log) names one
+      of them, and no link resolves into one (links_into) - a served page never reads the work directory a writer step
+      changes later. Logs and every other file nothing serves are left as their writers wrote them;
     - a version made by snapshot(): THE CLONE IS ITS SOURCE - every file whose size and modification time are the source
       manifest's (SOURCE_MANIFEST.tsv, read under the writer lock) has its sha256 wherever both hashed it; the files the
       publish wrote since the snapshot (another size or modification time), removed or added are counted, not compared -
@@ -671,9 +704,13 @@ def seal(v, required=(), checks=(), note='', forbid=(), source_strict=False):
     entries, stats, found = _manifest(v.run, mutable, rules, 'the seal', scan=_needles(forbid))
     if not any(e[0] == 'f' for e in entries):
         raise Refusal(f'version {v.vid} of {v.name}: the run directory holds no file - not sealed')
-    if found:
-        raise Refusal(f'G33 work path: version {v.vid} of {v.name}: {len(found)} files or links name {", ".join(forbid)} (e.g. '
-                      f'{found[:3]}) - a served version never names its work directory - not sealed')
+    links = links_into(v.run, entries, forbid) if forbid else []
+    if found or links:
+        what = [f'{len(found)} served files name it' + (f' ({", ".join(f"{r} [{served_read(r)}]" for r in found[:3])})'
+                                                         if found else ''),
+                f'{len(links)} links resolve into it' + (f' ({", ".join(links[:3])})' if links else '')]
+        raise Refusal(f'G33 work path: version {v.vid} of {v.name} - {"; ".join(what)} - work directory '
+                      f'{", ".join(forbid)}: a served page never reads the work directory (serve.SERVED_READS) - not sealed')
     if os.path.exists(v.path(SOURCE_MANIFEST)):
         ok, detail, stats['source_check'] = _source_check(_read_manifest(v.path(SOURCE_MANIFEST)), entries, source_strict)
         if not ok:
@@ -1216,29 +1253,25 @@ def add_failure(e, text):
         e.args = (f'{e}{text}',)
 
 
-def snapshot(U, src, note='', public=None):
+def snapshot(U, src, note=''):
     """A new unsealed version of U whose run is a clone of ``src`` (U's work directory, or the legacy run being converted).
     Under U's writer lock EXCLUSIVE (writer_lock: no writer step writes ``src`` meanwhile): ONE read of ``src`` - its manifest
     (CONTENT: the walk and the sha256 of every file the rules hash) - and the clone; then the lock is released. That manifest
     is the version's SOURCE_MANIFEST.tsv, and the version's seal tests the clone against it (seal(): the clone is its source),
-    so ``src`` is read once, under the lock, and the clone once, by the seal.
-    ``public`` (path, public path): every file that read finds naming ``path`` (a file not a binary - all of them are read - or
-    a link's target) names ``public`` in the clone (the work directory's path a writer step wrote into a log, a cache key, a
-    summary), its manifest entry made the rewritten file's (_publicize); the seal's G33 (forbid) then finds none.
-    Returns (Version, {'clone', 'source': the read's statistics, 'lock_wait_s', 'lock_s', 'public': the rewritten paths}). Any
-    failure discards the version; a discard that fails too is added to the failure's text (add_failure), never in its place."""
+    so ``src`` is read once, under the lock, and the clone once, by the seal. The clone is never rewritten: a log or another
+    file nothing serves keeps what its writer wrote (the work directory's path included; the coordinator, PR 170), and the
+    seal's G33 refuses a version in which what the pages read names it (SERVED_READS).
+    Returns (Version, {'clone', 'source': the read's statistics, 'lock_wait_s', 'lock_s'}). Any failure discards the version;
+    a discard that fails too is added to the failure's text (add_failure), never in its place."""
     v = begin(U, note)
     try:
         t0 = time.time()
         with writer_lock(U):
             t1 = time.time()
-            needles = _needles([public[0]]) if public else ()
-            entries, st, found = _manifest(src, list(_S().RUN_VERSIONS_MUTABLE), hash_rules(), 'the snapshot', scan=needles)
+            entries, st, _ = _manifest(src, list(_S().RUN_VERSIONS_MUTABLE), hash_rules(), 'the snapshot')
             info = {'clone': clone(src, v.run)}
             t2 = time.time()
-        info.update(source=st, lock_wait_s=round(t1 - t0, 1), lock_s=round(t2 - t1, 1), public=[])
-        if found:
-            entries, info['public'] = _publicize(v.run, entries, found, needles, public[1])
+        info.update(source=st, lock_wait_s=round(t1 - t0, 1), lock_s=round(t2 - t1, 1))
         _write_manifest(v, entries, SOURCE_MANIFEST)
     except BaseException as e:
         try:
@@ -1247,37 +1280,6 @@ def snapshot(U, src, note='', public=None):
             add_failure(e, f' - AND version {v.vid} could not be discarded ({e2}): retention retires it')
         raise
     return v, info
-
-
-def _publicize(run, entries, found, needles, public):
-    """Make every path of ``found`` in the clone ``run`` (files and links of its source manifest ``entries`` naming one of
-    ``needles``) name ``public`` instead: a file written anew whole (its own inode in the clone - the source is never touched -
-    with its mode and modification time), a link made anew. Returns (the entries with the rewritten ones' size, target and
-    sha256, the rewritten paths)."""
-    pub, idx, out = public.encode(), {e[1]: i for i, e in enumerate(entries)}, list(entries)
-    for rel in found:
-        p, e = os.path.join(run, rel), out[idx[rel]]
-        tmp = os.path.join(os.path.dirname(p), f'.{os.path.basename(p)}.public.{os.getpid()}')
-        if e[0] == 'l':
-            t = e[4]
-            for n in needles:
-                t = t.replace(n.decode(), public)
-            os.symlink(t, tmp)
-            os.replace(tmp, p)
-            out[idx[rel]] = ('l', rel, 0, 0, t, '')
-            continue
-        st = os.lstat(p)
-        with open(p, 'rb') as f:
-            data = f.read()
-        for n in needles:
-            data = data.replace(n, pub)
-        with open(tmp, 'wb') as f:
-            f.write(data)
-        os.chmod(tmp, st.st_mode & 0o7777)
-        os.utime(tmp, ns=(st.st_atime_ns, st.st_mtime_ns))
-        os.replace(tmp, p)
-        out[idx[rel]] = ('f', rel, len(data), st.st_mtime_ns, '', hashlib.sha256(data).hexdigest())
-    return out, sorted(found)
 
 
 def discard(v, note=''):

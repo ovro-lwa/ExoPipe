@@ -35,17 +35,18 @@ convert (unit deep_<run>_convert; only when named, once)  under the run's writer
        switch (versions.writer_lock: it waits for every writer step, G32 after serve.WRITER_LOCK_WAIT_S; a writer step that
        starts meanwhile resolves U after it, so it writes the work directory): the legacy run cloned as a version
        (versions.snapshot: its manifest read once, then a copy-on-write clone), its page index, sealed (the clone tested
-       against that manifest, nothing may differ; G33: no file names the work directory), then - under the journal locks,
+       against that manifest, nothing may differ; G33: no served file names the work directory), then - under the journal locks,
        the journal directories listed again until none is new - U switched to it with the legacy directory moved to the
        work directory (versions.switch to_work) and the journal lines written on it since the clone appended; a journal
        begun on it across the switch is caught up under its own lock. Every later serve publishes as below.
 snapshot (unit deep_<run>_snapshot)  the owed catch-up first (sublst_build.catchup_stage); the work directory cloned as a
        new unsealed version (versions.snapshot: under the writer lock, exclusive - no writer step writes it meanwhile - its
-       manifest read ONCE and the clone made; a file or link naming the work directory names U in the version); the served
+       manifest read ONCE and the clone made; never rewritten: a log keeps the path its writer was given); the served
        version's judgement journals (versions.journal_dirs) copied into it under the journal locks.
 views, test, carry  as above on the snapshot (no publish marker: nobody reads it yet).
 switch (unit deep_<run>_switch)  the snapshot's page index, the seal (every page's queue and view present, the index
-       current, the clone its source wherever the publish did not write, G33: no file or link names the work directory, the
+       current, the clone its source wherever the publish did not write, G33: no file the pages read - serve.SERVED_READS:
+       queues, page JSON/CSV, HTML, the merge links, never a log - names the work directory and no link resolves into it, the
        manifest), then under the journal locks - the served version's journal directories listed again under them until
        none is new, a new one copied in first - U switched to it (refused when U names another version than the one whose
        journals were copied) and the lines journalled on the old version since the copy appended (journals.append_between);
@@ -340,7 +341,7 @@ def snapshot_stage(run, plan, state):
         W = versions.work_path(U)
         if not os.path.isdir(W):
             u.refuse(f'{U} is versioned but has no work directory {W} - not published')
-        v, info = versions.snapshot(U, W, note=_note(u), public=(W, os.path.abspath(U)))
+        v, info = versions.snapshot(U, W, note=_note(u))
         try:
             cur = versions.served(U)
             J = versions.journal_dirs(cur.run, v.run)
@@ -356,11 +357,10 @@ def snapshot_stage(run, plan, state):
         state.update(version=v, seed_version=cur.vid, journals=J)
         src = info['source']
         u.meta.update(version=v.vid, clone=info['clone'], source=src, lock_s=info['lock_s'], lock_wait_s=info['lock_wait_s'],
-                      public=info['public'], seeded_from=cur.vid, journals=J, journals_copied=len(copied))
+                      seeded_from=cur.vid, journals=J, journals_copied=len(copied))
         u.note(f'snapshot of {W} as version {v.vid} ({info["clone"]}); under the writer lock ({info["lock_s"]} s, waited '
                f'{info["lock_wait_s"]} s) its manifest read once: {src["n_hashed"]} files, {src["hashed_bytes"]} bytes hashed '
-               f'in {src["hash_s"]} s (walk {src["walk_s"]} s); {len(info["public"])} files or links naming {W} made to name '
-               f'{os.path.abspath(U)} in the version (e.g. {info["public"][:3]}); {len(copied)} journal(s) of the served '
+               f'in {src["hash_s"]} s (walk {src["walk_s"]} s); {len(copied)} journal(s) of the served '
                f'version {cur.vid} copied in under the journal locks')
         u.add_output(v.path('BUILDING.json'), 'run_version_placed')
     return u

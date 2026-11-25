@@ -1658,7 +1658,7 @@ def _identity_unit(ctx):
                     latest = os.path.join(U, c.TRANSIENT_LIST_NAME.format(label=ctx.label, utc='latest'))
                     if os.path.islink(latest) or os.path.exists(latest):
                         os.unlink(latest)
-                    os.symlink(listp, latest)
+                    os.symlink(os.path.basename(listp), latest)    # relative: beside the list (serve G33, PR 170)
             else:
                 raise Refusal(f'catalog_incremental.REPLAY_STAGES_IDENTITY names an unknown stage {stage!r}')
         if ctx.dry:

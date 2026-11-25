@@ -14,9 +14,11 @@ checks, runnable with python, under a minute. Scratch under $TMPDIR.
    same_content passes a copy and fails a changed content of equal size, an added file, a changed link; the review state is
    left out.
 3. snapshot, seal and discard: the snapshot waits for a writer step's shared lock (G32 after serve.WRITER_LOCK_WAIT_S, no
-   version left) and reads the source once under it (SOURCE_MANIFEST.tsv); a file or link naming the source names the public
-   path in the version (the source untouched); the seal refuses a version naming the forbidden path (G33), a clone whose file
-   of the source's size and time has other content, and - strict - any change since the snapshot; a failed snapshot is
+   version left) and reads the source once under it (SOURCE_MANIFEST.tsv); the clone is never rewritten (a log or a summary
+   naming the work directory stays as written and passes the seal); served_read classes paths by serve.SERVED_READS, a log
+   never; the seal refuses (G33) a version whose served reads (queue, page JSON/CSV, HTML, merge links) name the work
+   directory or whose link resolves into it (absolute, or relative climbing out), a clone whose file of the source's size and
+   time has other content, and - strict - any change since the snapshot; a failed snapshot is
    discarded, and a discard that fails too is added to the cause; a writer step does not snapshot its own run; discard
    removes an unsealed version (logged), refuses a served one.
 4. Conversion (switch with to_work): the legacy run is the work directory, U a pointer to its sealed clone; a failure to write
@@ -32,11 +34,11 @@ checks, runnable with python, under a minute. Scratch under $TMPDIR.
 8. The deep serve on a versioned run: a writer step started before the conversion blocks it (G32 after
    serve.WRITER_LOCK_WAIT_S, nothing converted; with the full wait the conversion follows the writer); a writer step that
    waited for the conversion writes the work directory; convert (the journal lines written on the legacy run during the
-   conversion caught up), a publish (snapshot of the work directory, a log naming it made to name U, the served journals
+   conversion caught up), a publish (snapshot of the work directory, a log naming it served as written, the served journals
    copied in, the lines written on the old version during the publish caught up, a journal begun on it during the publish -
    a first label - in the served version, the old version unchanged), a journal begun on the old version across the switch
-   merged with its lines first, G33 refuses a version naming the work directory, G32 in a publish refuses and frees the
-   coalescing slot, a refused stage discards the snapshot, a switch of U by another serve during the publish refuses, a
+   merged with its lines first, G33 refuses an HTML page naming the work directory and an absolute link into it, G32 in a
+   publish refuses and frees the coalescing slot, a refused stage discards the snapshot, a switch of U by another serve during the publish refuses, a
    failed catch-up is owed and completed by the next serve, a partial stage selection refuses, convert twice is no-input, a
    parity convert refuses, retire runs for deep.
 9. cli: an injected run with --out U (a versioned run) is guarded on U's work directory and its writer lock, never on the
@@ -143,6 +145,12 @@ def patch(*items):
     finally:
         for o, k, v in reversed(saved):
             setattr(o, k, v)
+
+
+def patched_served_read_of_log():
+    """served_read of a log is None even when a class names every path (serve.SERVED_READS_NEVER)"""
+    with patch((CFG.serve, 'SERVED_READS', {'everything': ('*',)})):
+        return versions.served_read('candidates/V/J1/build.log') is None and versions.served_read('x.csv') == 'everything'
 
 
 def legacy_run(U, tag='A'):
@@ -254,7 +262,8 @@ def test_snapshot():
     d = f'{TMP}/snap'
     U = legacy_run(f'{d}/Run_S')
     write(f'{U}/logs/build.log', f'DONE -> {U}\n')     # a writer step names its output directory in a log
-    os.symlink(f'{U}/a.txt', f'{U}/abs_link')           # and in an absolute link
+    write(f'{U}/fit_summary.json', json.dumps({'run': U}))   # and in a summary nothing serves
+    os.symlink('a.txt', f'{U}/rel_link')               # a link made relative by its writer
     R = versions.root_of(U)
     os.makedirs(R)
     lockf = versions.writer_lock_file(R)
@@ -279,33 +288,46 @@ def test_snapshot():
         return th
     th = hold(1.0)
     t0 = time.time()
-    v, info = versions.snapshot(U, U, note='test', public=(U, '/public/Run_S'))
+    v, info = versions.snapshot(U, U, note='test')
     waited = time.time() - t0
     th.join(5)
     check('the snapshot waits for a writer step holding the writer lock shared', waited >= 0.9 and info['lock_wait_s'] >= 0.9,
           (waited, info.get('lock_wait_s')))
     src = versions._read_manifest(v.path(versions.SOURCE_MANIFEST))
-    check('the snapshot: an unsealed version holding the run, the source read once under the lock (its manifest, '
-          'SOURCE_MANIFEST.tsv)', v.record() is None and versions.same_content(U, v.run, exclude=('logs/*', 'abs_link'))[0]
-          and len(src) == 6 and info['source']['n_hashed'] >= 3 and 'lock_s' in info, (v.record(), info, len(src)))
-    st_u, st_v = os.stat(f'{U}/logs/build.log'), os.stat(f'{v.run}/logs/build.log')
-    check('a file and a link naming the source name the public path in the version (mode and modification time kept), the '
-          'source untouched', read(f'{v.run}/logs/build.log') == 'DONE -> /public/Run_S\n'
-          and read(f'{U}/logs/build.log') == f'DONE -> {U}\n' and st_v.st_mtime_ns == st_u.st_mtime_ns
-          and st_v.st_mode == st_u.st_mode and st_v.st_ino != st_u.st_ino
-          and os.readlink(f'{v.run}/abs_link') == '/public/Run_S/a.txt' and os.readlink(f'{U}/abs_link') == f'{U}/a.txt'
-          and info['public'] == ['abs_link', 'logs/build.log'], (info['public'], read(f'{v.run}/logs/build.log')))
+    check('the snapshot: an unsealed version holding the run as written (never rewritten), the source read once under the '
+          'lock (its manifest, SOURCE_MANIFEST.tsv)', v.record() is None and versions.same_content(U, v.run)[0]
+          and len(src) == 7 and info['source']['n_hashed'] >= 4 and 'lock_s' in info and 'public' not in info,
+          (v.record(), info, len(src)))
     rec = versions.seal(v, note='test', forbid=[U])
     sc = rec.get('source_check') or {}
-    check('its seal: nothing names the source (G33), the clone is its source (the file of the same size and time: same '
-          'sha256)', sc.get('differ') == 0 and sc.get('n_compared', 0) >= 3 and sc.get('n_source') == 6, sc)
+    check('its seal: a log and a summary naming the work directory are not served reads and stay as written (G33 passes), '
+          'the clone is its source (the file of the same size and time: same sha256)', sc.get('differ') == 0
+          and sc.get('n_compared', 0) >= 4 and sc.get('n_source') == 7 and read(f'{v.run}/logs/build.log') ==
+          f'DONE -> {U}\n' and json.loads(read(f'{v.run}/fit_summary.json')) == {'run': U}
+          and rec.get('n_served_reads_scanned') == 0, (sc, rec.get('n_served_reads_scanned')))
+    check('served_read: the classes of serve.SERVED_READS by path; a log never, whatever the classes say',
+          [versions.served_read(r) for r in ('judgements/queue_p3s3_V.txt', 'source_catalogs_V/18MHz_sources_survivors.csv',
+                                             'source_catalogs_V/18MHz_source_members.csv', 'candidates/V/J1/p1.page.json',
+                                             'index.html', 'candidates/V/J1/build.log', 'fork_I/fit_positions.log',
+                                             'fit_positions_summary.json', 'TRANSIENT_LIST_P3S5_20261101T0000.csv')]
+          == ['queue', 'merge_links', 'page_data', 'page_data', 'html', None, None, None, None]
+          and patched_served_read_of_log(), None)
     v2, _ = versions.snapshot(U, U, note='test')
+    for rel in ('judgements/queue_p3s3_V.txt', 'candidates/V/J1/p1.page.json', 'index.html',
+                'source_catalogs_V/18MHz_sources_survivors.csv'):
+        write(f'{v2.run}/{rel}', f'x,{U}/candidates/V/J1\n')
+    write(f'{v2.run}/candidates/V/J1/build.log', f'built in {U}\n')
+    os.symlink(f'{U}/a.txt', f'{v2.run}/abs_link')                                     # absolute, into the work directory
+    os.symlink(os.path.relpath(f'{U}/a.txt', v2.run), f'{v2.run}/up_link')            # relative, climbing into it
+    os.symlink(os.path.abspath(f'{v2.run}/a.txt'), f'{v2.run}/own_link')             # absolute, into the version itself
     why = refuses(versions.seal, v2, note='test', forbid=[U])
-    check('G33: a version whose file or link names the forbidden path (the work directory) is not sealed',
-          why and why.startswith('G33 work path') and 'logs/build.log' in why and 'abs_link' in why and v2.record() is None,
-          why)
+    check('G33: a version whose served reads (a queue, a page JSON, an HTML page, a merge-link catalog) name the work '
+          'directory, or whose link resolves into it (absolute or relative), is not sealed; its log and a link into the '
+          'version are not named', why and why.startswith('G33 work path') and '4 served files name it' in why
+          and '[queue]' in why and '[html]' in why and '2 links resolve into it' in why and 'abs_link' in why
+          and 'up_link' in why and 'build.log' not in why and 'own_link' not in why and v2.record() is None, why)
     versions.discard(v2, note='test')
-    v3, _ = versions.snapshot(U, U, note='test', public=(U, '/public/Run_S'))
+    v3, _ = versions.snapshot(U, U, note='test')
     st = os.stat(f'{v3.run}/a.txt')
     write(f'{v3.run}/a.txt', 'B' * 100)
     os.utime(f'{v3.run}/a.txt', ns=(st.st_atime_ns, st.st_mtime_ns))
@@ -313,7 +335,7 @@ def test_snapshot():
     check('a clone whose file has the source\'s size and time but other content is not its source: not sealed',
           why and 'the clone is not its source' in why and '1 of' in why and v3.record() is None, why)
     versions.discard(v3, note='test')
-    v4, _ = versions.snapshot(U, U, note='test', public=(U, '/public/Run_S'))
+    v4, _ = versions.snapshot(U, U, note='test')
     write(f'{v4.run}/new.txt', 'n')
     why = refuses(versions.seal, v4, note='test', source_strict=True)
     check('strict (a conversion): a file added since the snapshot refuses the seal', why and '1 added' in why
@@ -723,10 +745,9 @@ def test_deep():
               'the served version', read(f'{U}/judgements_I/judgements.jsonl') == '{"first": "label on page I"}\n'
               and sw.meta.get('journals') == ['judgements_I', 'judgements_V'], sw.meta.get('journals'))
         sn = [x for x in run.units if x.name == 'deep_Run_P3SX_snapshot'][0]
-        check('a log naming the work directory names U in the version (the work directory\'s own log unchanged)',
-              read(f'{U}/logs/build.log') == f'DONE -> {os.path.abspath(U)}\n' and read(f'{W}/logs/build.log') ==
-              f'DONE -> {W}\n' and sn.meta.get('public') == ['logs/build.log'], (sn.meta.get('public'),
-                                                                                read(f'{U}/logs/build.log')))
+        check('a log naming the work directory is served as its writer wrote it (never rewritten), the publish sealed',
+              sn.status == 'done' and sw.status == 'done' and read(f'{U}/logs/build.log') == f'DONE -> {W}\n'
+              and 'public' not in sn.meta, (sn.status, sn.meta.keys(), read(f'{U}/logs/build.log')))
         # a journal begun on the old version across the switch (its POST held that journal's lock, which the switch did
         # not hold), and a label on the new version's page of it after the switch: merged, the old line first
         real_cu = sublst_build.catch_up
@@ -744,14 +765,19 @@ def test_deep():
                   '{"q": "old page, across the switch"}', '{"q": "new page, after the switch"}']
               and sw.meta.get('late_journals') == {'judgements_Q': 1}, (sw.status, sw.reason, sw.meta.get('late_journals')))
         v2 = versions.served(U)
-        # G33: a file naming the work directory written after the snapshot (by the views stage) refuses the seal
-        n, cur = len(versions.all_versions(U)), versions.served(U).vid
-        hooks['views'] = lambda run, p: write(f'{p.U}/late.log', f'written by the views stage into {W}\n')
-        run = serve(default)
-        check('G33 in a publish: a version naming the work directory is not sealed, the snapshot discarded, U unchanged',
-              any(x.status == 'refused' and 'G33' in (x.reason or '') for x in run.units)
-              and versions.served(U).vid == cur and len(versions.all_versions(U)) == n,
-              [(x.name, x.status, (x.reason or '')[:120]) for x in run.units])
+        # G33: a page the server reads naming the work directory, written after the snapshot (by the views stage), refuses
+        # the seal; so does an absolute link into it - the writer makes it relative (the transient list's latest link)
+        for what, hook in (('an HTML page naming the work directory', lambda run, p: write(
+                               f'{p.U}/late.html', f'<a href="file://{W}/a.txt">written by the views stage</a>\n')),
+                           ('an absolute link into the work directory', lambda run, p: os.symlink(
+                               f'{W}/a.txt', f'{p.U}/TRANSIENT_LIST_P3SX_latest.csv'))):
+            n, cur = len(versions.all_versions(U)), versions.served(U).vid
+            hooks['views'] = hook
+            run = serve(default)
+            check(f'G33 in a publish: {what} - not sealed, the snapshot discarded, U unchanged',
+                  any(x.status == 'refused' and 'G33' in (x.reason or '') for x in run.units)
+                  and versions.served(U).vid == cur and len(versions.all_versions(U)) == n,
+                  [(x.name, x.status, (x.reason or '')[:160]) for x in run.units])
         # G32 in a publish: a writer step holds the lock past the wait; the snapshot refuses, the coalescing slot is free
         from exopipe.phase3.lib.serve import coalesce
         wp = writer_step(U, 3)
