@@ -928,16 +928,36 @@ class _Ctx:
         bad = [p for p in self.phases if p not in PHASES]
         if bad:
             raise Refusal(f'--inc-phase {ph!r}: unknown phase(s) {bad}; phases: {", ".join(PHASES)}')
-        par = getattr(args, 'inc_parents', None) or getattr(args, 'parents', None) or c.PARENT_DIR
+        self._parents_arg = getattr(args, 'inc_parents', None) or getattr(args, 'parents', None) or c.PARENT_DIR
+        self._parents = None
         self.rebuild = bool(getattr(args, 'inc_rebuild', False) or run.fresh)
         self.source_spec = getattr(args, 'inc_source', None)
         self._source = None
-        # --inc-parents pass (catalog.PARENT_FROM_PASS; the per-hour chain): the snapshot of the source run's latest finished
-        # table pass (deep_records.pass_parent_dir); parents_why = the P-PASS reason the associate phase refuses with
-        from exopipe.phase3.lib.catalog import deep_records
-        par, self.parents_how, self.parents_why = deep_records.resolve_parent_arg(
-            par, self.source.dir if par == _deep('catalog', 'PARENT_FROM_PASS') else None, self.label)
-        self.parents = os.path.abspath(par) if (par and par != 'snapshot') else None
+
+    def _resolve_parents(self):
+        """(parents, how, why), resolved on first use (the source stays lazy: a phase that reads no parents never opens
+        it). --inc-parents pass (catalog.PARENT_FROM_PASS; the per-hour chain): the snapshot of the SOURCE run's latest
+        finished table pass, by that run's own label (Run_<label>; deep_records.pass_parent_dir); why = the P-PASS reason
+        the associate phase refuses with. Any other value is the directory itself."""
+        if self._parents is None:
+            from exopipe.phase3.lib.catalog import deep_records
+            par = self._parents_arg
+            par, how, why = deep_records.resolve_parent_arg(
+                par, self.source.dir if par == _deep('catalog', 'PARENT_FROM_PASS') else None, None)
+            self._parents = (os.path.abspath(par) if (par and par != 'snapshot') else None, how, why)
+        return self._parents
+
+    @property
+    def parents(self):
+        return self._resolve_parents()[0]
+
+    @property
+    def parents_how(self):
+        return self._resolve_parents()[1]
+
+    @property
+    def parents_why(self):
+        return self._resolve_parents()[2]
 
     @property
     def source(self):
