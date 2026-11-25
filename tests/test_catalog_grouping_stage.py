@@ -19,10 +19,15 @@ lib/catalog/wraps/builder_grouping.py (the builder with the grouping), the 10-mi
                design B, refuses a selected row the grouping does not hold, runs it in place under production's mode
   record       one_rule_record against synthetic builder outputs: rescued multiples, singles dropped by the sigma-stack test
                and by the repeat rungs, a single kept by a cross-match rung
-  carry        carry_judgements: agreeing pages carried unchanged, a disagreement a CONFLICT not carried, an unreached judgement
-               reported, a non-empty journal refused
+  carry        carry_judgements: agreeing pages carried unchanged, a disagreement a CONFLICT not carried (kept with both
+               verdicts for the page, merge_conflicts.jsonl), an unreached judgement reported, a non-empty journal refused
   cli          `exopipe3 catalog --tier sublst --stages group --group-input <frozen 10-minute subset>`: the first run needs
                --group-new-state; a second run carries every ID; under production's mode the unit is no-input
+  naming       THE NAMING RULE (grouping_stage.naming_order) through the 10-minute unit on the frozen I and V subsets: asked
+               V,I or I,V, the unit groups I first; a name both Stokes would take stays I's short name and V takes the long
+               form; no name is held in both; the cross-Stokes link is written (S-G27 not hit); an unchanged dataset gives the
+               same names and IDs run after run and in either order asked; each run switches the link to a new version, keeping
+               the current one and KEEP_SUPERSEDED before it
 Run: NUMPY_MADVISE_HUGEPAGE=0 EXOPIPE3_SITE=/lustre/gh/main/exopipe_ops/exopipe3_site.py taskset -c $(bash
      /lustre/gh/main/exopipe_ops/node_free_cores.sh) /opt/devel/pipeline/envs/py38_orca_nkosogor/bin/python3
      tests/test_catalog_grouping_stage.py [names]
@@ -627,12 +632,40 @@ def test_carry():
     check('carry: a judgement reaching no detection is reported; a retracted one is not carried',
           rep.get('OLD_GONE', {}).get('outcome') == 'old judgement reached no new detection' and 'J0532+3300a' not in new, rep)
     check('carry: the counts', cnt['carried'] == 1 and cnt['conflicts'] == 1 and cnt['unmatched'] == 1, cnt)
+    mc = [json.loads(ln) for ln in open(f'{d}/new/{GS.MERGE_CONFLICTS}')]
+    check('carry: the CONFLICT is kept with BOTH verdicts for the page (merge_conflicts.jsonl: shown and marked AMBIGUOUS, '
+          'never one picked; R-GREGG-20261124-CROSS-STOKES-LINK-TEST-APPROVED)',
+          len(mc) == 1 and mc[0]['source_id'] == 'J0536+3400a' and mc[0]['group_identity_id'] == 'GTI-0000005'
+          and mc[0]['origin'] == 'carry' and [(v['source'], v['judge_confidence'], v['judge_fp_reason']) for v in
+                                              mc[0]['verdicts']] == [('OLD_E1', 'FP', 'bilobe'), ('OLD_E2', 'REAL', '')]
+          and cnt['ambiguous_kept'] == 1, (mc, cnt))
     try:
         GS.carry_judgements(f'{d}/old/judgements.jsonl', members, f'{d}/grouping_I/detections.csv', f'{d}/new', 'Run_TEST')
         got = 'written'
     except GS.StageRefusal as e:
         got = str(e)
     check('carry: refuses to write over a non-empty journal (it only seeds)', 'only seeds' in got, got)
+    # the next build: the unsettled conflict is carried, both verdicts listed again (never dropped by a rebuild)
+    members2 = {'J0520+3000a': [det['I_05h_A1'], det['I_05h_A2']], 'J0536+3400a': [det['I_05h_E1'], det['I_05h_E2']]}
+    cnt2 = GS.carry_judgements(f'{d}/new/judgements.jsonl', members2, f'{d}/grouping_I/detections.csv', f'{d}/new2',
+                               'Run_TEST2', carried_from_run='Run_TEST')
+    mc2 = [json.loads(ln) for ln in open(f'{d}/new2/{GS.MERGE_CONFLICTS}')]
+    new2 = {json.loads(ln)['source_id'] for ln in open(f'{d}/new2/judgements.jsonl')}
+    check('carry: an UNSETTLED merge conflict is carried to the next build with both verdicts, the page still unjudged',
+          len(mc2) == 1 and mc2[0]['source_id'] == 'J0536+3400a' and mc2[0].get('carried_conflict_from') == 'J0536+3400a'
+          and sorted((v['source'], v['judge_confidence']) for v in mc2[0]['verdicts']) == [('OLD_E1', 'FP'), ('OLD_E2', 'REAL')]
+          and 'J0536+3400a' not in new2 and cnt2['conflicts_carried'] == 1, (mc2, cnt2))
+    # a reviewer judges the page: the conflict is settled and not carried again
+    with open(f'{d}/new2/judgements.jsonl', 'a') as f:
+        f.write(json.dumps(dict(action='classify', scope='source', source_id='J0536+3400a', judge_confidence='REAL',
+                                judge_fp_reason='', judge_fp_reason_2='', ts='2030-02-01T00:00:00Z')) + '\n')
+    cnt3 = GS.carry_judgements(f'{d}/new2/judgements.jsonl', members2, f'{d}/grouping_I/detections.csv', f'{d}/new3',
+                               'Run_TEST3', carried_from_run='Run_TEST2')
+    mc3 = [json.loads(ln) for ln in open(f'{d}/new3/{GS.MERGE_CONFLICTS}') if ln.strip()]
+    new3 = {json.loads(ln)['source_id']: json.loads(ln) for ln in open(f'{d}/new3/judgements.jsonl')}
+    check('carry: a conflict settled by a verdict judged on the page is not carried; that verdict is',
+          not mc3 and new3.get('J0536+3400a', {}).get('judge_confidence') == 'REAL' and cnt3['conflicts_carried'] == 0,
+          (mc3, cnt3))
     try:
         GS.carry_judgements(f'{d}/old/judgements.jsonl', {'OLD_A1': ['I_05h_A1']}, f'{d}/grouping_I/detections.csv',
                             f'{d}/new_ids_only', 'Run_TEST')
@@ -767,8 +800,9 @@ def test_carry_between_window():
            dict(cand_id='I1_05h_2030-01-02T03_46MHz_0002', band='46MHz', lst='05h', date='2030-01-02T03', ra=80.0, dec=30.0,
                 name='J0520+3000a', id='GTI-0000001')]
 
-    def cl(sid, conf, reason=''):
-        return json.dumps(dict(action='classify', scope='source', source_id=sid, judge_confidence=conf, judge_fp_reason=reason))
+    def cl(sid, conf, reason='', note=''):
+        return json.dumps(dict(action='classify', scope='source', source_id=sid, judge_confidence=conf, judge_fp_reason=reason,
+                               **({'judge_note': note} if note else {})))
 
     def rt(sid):
         return json.dumps(dict(action='retract', scope='source', source_id=sid))
@@ -814,6 +848,19 @@ def test_carry_between_window():
     check('F1 (5): an identity judged on the new page is never overridden by the window carry (reported)',
           f == {'J0520+3000a': ('real', '', False)} and c['judged_on_new_page'] == 1
           and rep[-1]['outcome'] == 'not carried: judged on the new page' and ok_[0], (c, f, rep[-1:], ok_))
+    # F1 residual (CUTOVER_READINESS 2026-11-04): a note changed in the window with the verdict unchanged re-carries the
+    # identity (the carried note quotes the new note); the same label sent again with the same note writes nothing
+    c, f, rep, ok_ = carry('c8', [cl('J0520+3000', 'FP', 'leakage', 'first note')],
+                           [cl('J0520+3000', 'FP', 'leakage', 'second note')])
+    n8 = [json.loads(l) for l in open(f'{D}/c8/new/judgements.jsonl')]
+    check('F1 residual: a note changed in the window with the verdict unchanged is carried (the last record quotes it)',
+          c['carried'] == 1 and c['unchanged'] == 0 and len(n8) == 2 and n8[-1]['judge_note'].endswith(
+              'original note: second note') and f == {'J0520+3000a': ('FP', 'leakage', True)} and ok_[0], (c, n8, ok_))
+    c, f, rep, ok_ = carry('c9', [cl('J0520+3000', 'FP', 'leakage', 'same note')],
+                           [cl('J0520+3000', 'FP', 'leakage', 'same note')])
+    n9 = [json.loads(l) for l in open(f'{D}/c9/new/judgements.jsonl')]
+    check('F1 residual: the same verdict and the same note sent again in the window write nothing (unchanged)',
+          c['carried'] == 0 and c['unchanged'] == 1 and len(n9) == 1 and ok_[0], (c, n9, ok_))
     # the review server keys a page's state by (source_id, presentation_id): a judgement made on a re-queue presentation (p2)
     # carries as p1 (production's carry tools: deep_carry_judgements.py:106), and the retract a conflict writes names p1
     p2 = json.dumps(dict(json.loads(cl('J0520+3001', 'real')), presentation_id='p2'))
@@ -1144,10 +1191,80 @@ def test_cli():
           rc == 3 and rec.get('status') == 'no-input' and 'no grouping stage' in (rec.get('reason') or ''), (rc, rec.get('reason')))
 
 
+def _names(out, S):
+    return {r['cand_id']: (r['identity_id'], r['identity_name']) for r in rcsv(f'{out}/grouping_{S}/detections.csv')[1]}
+
+
+def test_naming():
+    from exopipe.phase3.lib.catalog import stokes_link as SL
+    check('naming: naming_order - both Stokes in either order: I first reserving nothing, V reserving (run_group default: '
+          'I\'s new names); one Stokes: as asked, the default reservation',
+          GS.naming_order(['V', 'I']) == (['I', 'V'], {'I': frozenset()}) == GS.naming_order(['I', 'V'])
+          and GS.naming_order(['V']) == (['V'], {}) and GS.naming_order(['I']) == (['I'], {}))
+    outs = {}
+    for k, order in (('a', 'V,I'), ('b', 'I,V')):
+        out = outs[k] = f'{T}/naming/{k}'
+        rc, txt = cli(['catalog', '--tier', 'sublst', '--stages', 'group', '--group-input', f'{FROZEN}/tenmin', '--out', out,
+                       '--cores', 'none', '--group-stokes', order, '--group-new-state'])
+        rec = json.load(open(f'{out}/_records/catalog/Run_SLSTB.group.json'))
+        check(f'naming: --group-stokes {order} groups both and links them (exit 0, unit done, no S-G27)',
+              rc == 0 and rec.get('status') == 'done' and isinstance(rec.get('meta', {}).get('stokes_link'), dict)
+              and os.path.islink(SL.link_dir(out)) and not TG.link_failures(os.path.join(SL.link_dir(out), SL.LINKS)),
+              (rc, rec.get('status'), rec.get('reason'), txt[-300:]))
+    a = {S: _names(outs['a'], S) for S in ('I', 'V')}
+    b = {S: _names(outs['b'], S) for S in ('I', 'V')}
+    nI, nV = {v[1] for v in a['I'].values()}, {v[1] for v in a['V'].values()}
+    check('naming: no display name is held in both Stokes', not (nI & nV), sorted(nI & nV)[:3])
+    check('naming: the same dataset gives the same identity IDs and names whichever order the Stokes were asked',
+          a == b, [S for S in a if a[S] != b[S]])
+    # the collision rule: V grouped alone, reserving nothing, would take some of I's names; in the unit I keeps them and V takes
+    # the long form (I grouped alone reserving nothing equals the unit's I: I's names come from I's groupings only)
+    mc, side = inputs('10min')
+    free = {}
+    for S in ('I', 'V'):
+        o = f'{T}/naming/free_{S}'
+        GS.run_group(GS.load_det('10min', S, mc, side), '10min', S, o, o, 'free', dict(master_catalog=mc), new_state=True,
+                     reserved_names=frozenset())
+        free[S] = _names(o, S)
+    coll = {v[1] for v in free['V'].values()} & {v[1] for v in free['I'].values()}
+    movedV = {c for c, v in free['V'].items() if v[1] in coll}
+    check(f'naming: grouped alone and reserving nothing, I and V would share {len(coll)} display names (the case the rule '
+          f'decides; non-zero on this subset)', len(coll) > 0, len(coll))
+    check('naming: in the unit I keeps its names exactly (I keeps the short name)', a['I'] == free['I'],
+          sum(1 for c in a['I'] if a['I'][c] != free['I'].get(c)))
+    longV = [c for c in movedV if a['V'][c][1] == G._jname_long(*_pos_of(outs['a'], 'V', a['V'][c][0]))]
+    check('naming: every V identity whose name I holds takes the long form; every other V name is unchanged',
+          len(longV) == len(movedV) and all(a['V'][c] == free['V'][c] for c in free['V'] if c not in movedV),
+          (len(longV), len(movedV), sum(1 for c in free['V'] if c not in movedV and a['V'][c] != free['V'][c])))
+    # run after run on an unchanged dataset (incremental, the state carried): the same names; the link switched to a new version
+    vers0 = sorted(os.listdir(os.path.join(outs['a'], SL.VERSIONS)))
+    for k in range(3):
+        rc, txt = cli(['catalog', '--tier', 'sublst', '--stages', 'group', '--group-input', f'{FROZEN}/tenmin', '--out',
+                       outs['a'], '--cores', 'none', '--group-stokes', 'V,I'])
+        same = all(_names(outs['a'], S) == a[S] for S in ('I', 'V'))
+        if rc != 0 or not same:
+            break
+    vers = sorted(os.listdir(os.path.join(outs['a'], SL.VERSIONS)))
+    cur = os.path.basename(os.path.realpath(SL.link_dir(outs['a'])))
+    check('naming: three more runs on the unchanged dataset give the same IDs and names each time (exit 0)', rc == 0 and same,
+          (rc, txt[-300:]))
+    check(f'naming: each run switched the link to a new version; the current one and {SL.KEEP_SUPERSEDED} before it are kept, '
+          f'the older ones deleted',
+          len(vers0) == 1 and vers0[0] not in vers and len(vers) == 1 + SL.KEEP_SUPERSEDED and cur == vers[-1], (vers0, vers, cur))
+
+
+def _pos_of(out, S, iid):
+    """(ra, dec) of identity iid in grouping_<S>/identities.csv (the position its display name is made from)"""
+    for r in rcsv(f'{out}/grouping_{S}/identities.csv')[1]:
+        if r['identity_id'] == iid:
+            return float(r['name_ra']), float(r['name_dec'])
+    raise KeyError(iid)
+
+
 # =====================================================================================================================
 ORDER = ['test_mode', 'test_frozen', 'test_defects', 'test_runner', 'test_sublst_build', 'test_one_rule_record', 'test_carry',
          'test_serve_carry', 'test_carry_between_window', 'test_refused_grouping', 'test_grouping_mix', 'test_identity_writeback',
-         'test_tenmin_input', 'test_cli']
+         'test_tenmin_input', 'test_cli', 'test_naming']
 
 
 def main(names):

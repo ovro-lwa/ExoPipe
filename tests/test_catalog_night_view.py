@@ -365,7 +365,8 @@ def test_wiring():
           (TS._all_nights_tie(cx, '19h', prod_fl), TS._all_nights_tie(cx, '05h', f'{T}/FL')))
     check('wiring: the localizations of a view are computed on a side directory of the touched names with the view\'s own '
           'window-tie table and the hour\'s environment, merged, and the root is marked complete only after them',
-          'DB.loc_side(root, tag, cats)' in vw and 'P3_TENMIN_PERTIE=os.path.join(root, DB.PERTIE)' in vw and 'env=cL.env(' in vw
+          'DB.loc_side(root, tag, cats, partners)' in vw and 'partners = SL.partner_names(lenv[SL.LOC_ENV])' in vw
+          and 'P3_TENMIN_PERTIE=os.path.join(root, DB.PERTIE)' in vw and 'env=cL.env(' in vw
           and vw.index('DB.view_root(') < vw.index('DB.loc_side(') < vw.index('DB.loc_merge(') < vw.index('DB.finish_root(root, locs)'))
     check('wiring: the index is written last, with every hour\'s certificates and the hours not viewed',
           vw.index('DB.finish_root(') < vw.index("DB._dump(os.path.join(U, DB.INDEX), index)")

@@ -167,7 +167,9 @@ class DeepRun:
         self.fork_on = not self.label.startswith(c.DEEP_FORK_SKIP_PREFIX)
         self.keys = [K for K in c.DEEP_ASSOC_KEYS if K[0] in self.stokes]
         self.fork_stokes = [S for S in CFG.catalog_fork.STOKES if S in self.stokes]
-        self.group_stokes = [S for S in CFG.catalog_fork.STOKES if S in self.stokes]     # V first, as the fork (item F.3)
+        self.group_stokes = [S for S in CFG.catalog_fork.STOKES if S in self.stokes]     # V first, as the fork (item F.3);
+        # st_group runs them in THE NAMING RULE's order (grouping_stage.naming_order: I first when both are grouped)
+        self.grouped_det = {}                   # {S: det} grouped in this invocation (the cross-Stokes link's have=)
         self.ts = time.strftime('%Y%m%dT%H%M', time.gmtime())
         self.lock_fd = None
         self.checked_first = False
@@ -1073,7 +1075,7 @@ class DeepRun:
     def grouping_table(self, S):
         return os.path.join(self.U, f'grouping_{S}', 'detections.csv')
 
-    def _group_one(self, S):
+    def _group_one(self, S, reserved=None):
         from exopipe.phase3.lib.catalog import grouping_stage as GS, tests_grouping as TG
         u = self.new_unit('group', S)
         with u:
@@ -1097,9 +1099,10 @@ class DeepRun:
                 paths, summ, _res = GS.run_group(
                     det, 'deep', S, self.U, state, u.name, dict(master_catalog=src, frame_beam=beam),
                     group_mode=getattr(self.args, 'group_mode', None), new_state=bool(getattr(self.args, 'group_new_state', False)),
-                    check=lambda pp: TG.failures(pp, tier='deep', stokes=S, input=src))
+                    check=lambda pp: TG.failures(pp, tier='deep', stokes=S, input=src), reserved_names=reserved)
             except GS.StageRefusal as e:
                 u.refuse(f'D-G24 grouping {S}: {e}')
+            self.grouped_det[S] = det               # the very detections grouped: the link's (st_identity, have=)
             self.write_stage_json(d, input=src, frame_beam=beam, state_dir=state, mode=self.grouping_mode.as_dict(),
                                   counts=summ['counts'], group_mode=summ.get('mode'))
             u.meta['counts'] = summ['counts']
@@ -1117,9 +1120,13 @@ class DeepRun:
         return u
 
     def st_group(self):
+        """the group units, in THE NAMING RULE's order (grouping_stage.naming_order: both Stokes - I first, reserving
+        nothing; V reserving I's new names)"""
+        from exopipe.phase3.lib.catalog import grouping_stage as GS
         out = []
-        for S in self.group_stokes:
-            x = self._group_one(S)
+        order, reserved = GS.naming_order(self.group_stokes)
+        for S in order:
+            x = self._group_one(S, reserved.get(S))
             out.append(x)
             if x.status not in ('done', 'no-input', 'skipped-valid'):
                 break
@@ -1379,6 +1386,17 @@ class DeepRun:
                 u.note(f'design B identities written: {cnt}')
                 for p in sorted(tier_files | union_files):
                     self.out(u, p, 'identity_table', grouping='design-b', tables=tables)
+                # the cross-Stokes link of the two groupings (R-GREGG-20261124-CROSS-STOKES-LINK-TEST-APPROVED): U/stokes_link/,
+                # which the localization, the transient list and the pages merge on (lib/catalog/stokes_link.py)
+                from exopipe.phase3.lib.catalog import stokes_link as SL
+                try:
+                    lp, lc = SL.run_link(SL.dets_of_tables(self.U, 'deep', self.grouped_det), self.U, 'deep')
+                except SL.LinkRefused as e:
+                    u.refuse(f'D-G21 cross-Stokes link: {e}')
+                u.meta['stokes_link'] = lc
+                self.out(u, lp['links'], 'stokes_link')
+                self.say(f"cross-Stokes link: {lc['linked_pairs']} linked I/V pairs, {lc['ambiguous_components']} ambiguous "
+                         f"components")
                 return u
             noerr, unparsed = deep_ported.identity_row_fallbacks(tier_files)      # WAVE2 B-30: pre-check (M4)
             if noerr:
@@ -1400,6 +1418,20 @@ class DeepRun:
                 self.out(u, p, 'identity_table')
         return u
 
+    def link_env(self, u):
+        """{P3_LOC_LINKS: U/stokes_link/stokes_links.csv} under design B - the cross-Stokes link of the very grouping tables this
+        pass recorded (their sha1; stokes_link.current_links refuses a missing or stale link); {} under production's grouping"""
+        if not self.design_b:
+            return {}
+        from exopipe.phase3.lib.catalog import stokes_link as SL
+        sha = {S: self.chain.meta(self.u('group', S), 'grouping_table_sha1') for S in ('I', 'V')}
+        try:
+            p = SL.current_links(self.U, sha if all(sha.values()) else None)
+        except SL.LinkRefused as e:
+            u.refuse(f'D-G21 {e}')
+        u.add_input(p)
+        return {SL.LOC_ENV: p}
+
     def st_localize(self):
         c = self.cfg
         u = self.new_unit('localize')
@@ -1417,7 +1449,7 @@ class DeepRun:
             outd = os.path.join(self.U, 'source_catalogs')
             for name in ('localizations.csv', 'localization_offsets.csv'):
                 self.move_aside(os.path.join(outd, name), u)
-            rc, tail, _ = self.call(u, 'build_localizations.py', [self.U], self.env(), self.log)
+            rc, tail, _ = self.call(u, 'build_localizations.py', [self.U], self.env(extra=self.link_env(u)), self.log)
             if rc != 0:
                 self.say('localization tables FAILED - pass aborted')
                 u.refuse(f'D-G21 localizations exit {rc}: {tail[-1] if tail else ""}')
@@ -1449,6 +1481,14 @@ class DeepRun:
             tmp = f'{link}.tmp.{os.getpid()}'
             if os.path.lexists(tmp):
                 os.unlink(tmp)
+            le = self.link_env(u)
+            if le:                                       # the list merges on the cross-Stokes link: its own columns
+                from exopipe.phase3.lib.catalog import stokes_link as SL
+                try:
+                    n, nl = SL.add_link_columns(out, self.U, le[SL.LOC_ENV])
+                except SL.LinkRefused as e:
+                    u.refuse(f'D-G21 transient list: {e}')
+                u.note(f'cross-Stokes link columns: {nl} of {n} rows linked')
             os.symlink(out, tmp)
             os.replace(tmp, link)
             u.note(tail[-1] if tail else '')
@@ -1651,7 +1691,8 @@ class DeepRun:
                 p('    then the split (ported PYS): selected_{V,I}_{wb,sb}.csv; class selection')
                 p('    not here: TESS coverage (pages; spec Q10)')
             elif stage == 'group':
-                for S in self.group_stokes:
+                from exopipe.phase3.lib.catalog import grouping_stage as GS_
+                for S in GS_.naming_order(self.group_stokes)[0]:
                     p(f'    unit {self.u("group", S)}')
                 if not self.design_b:
                     p("    no-input: catalog_grouping.GROUPING = 'production' (the builder groups, as production; the parity file)")

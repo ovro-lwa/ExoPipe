@@ -30,7 +30,9 @@ when the label is written (Store.get current, Store.moved, under the run's journ
 the previous version never writes its page ids into the new version's journal. And a label form is accepted only from the
 version that rendered it: every label form of a page whose labels directory lies in a version carries that version's token
 (PAGE_TOKEN_FIELD, added here to the page's HTML); a label POST whose token is missing or names another version is answered
-409 and nothing is recorded (a form loaded before a switch or a rebuild - its page ids may be the old version's). Lock files
+409 and nothing is recorded (a form loaded before a switch or a rebuild - its page ids may be the old version's) - unless the
+form carries its identity's stable ID and that identity maps onto the new build (lib/serve/label_identity.py mappable: its own
+page, renamed, or merged into another): then run_request resolves it onto that identity's page now. Lock files
 are group-writable (open_lock); one that cannot be opened is answered 503 naming the file and its owner.
 At a registry change every built page is rebuilt, one at a time, in its backend's rebuild thread; until its rebuild is done the
 page built before answers requests (STALE_HEADER says so), and only a GET carrying FRESH_HEADER waits for the rebuilt page. A page
@@ -70,6 +72,9 @@ import threading
 import time
 import urllib.parse
 from collections.abc import MutableMapping
+
+from exopipe.phase3.lib.serve import label_identity
+from exopipe.phase3.lib.serve import stokes_banner
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 _RUNTIME = os.environ.get('XDG_RUNTIME_DIR') or '/tmp'
@@ -475,7 +480,21 @@ class _FakeServer:
 
 
 def run_request(page, method, path, headers, body=b''):
-    """(status, [(header, value)], body bytes) of the page module's Handler for one request, on a fake socket."""
+    """(status, [(header, value)], body bytes) of the page module's Handler for one request, on a fake socket. Under design B a
+    POST is first read against this build's identities and a served page's forms carry the identity's stable ID
+    (lib/serve/label_identity.py: a label lands on the identity it was made on, or is refused with nothing recorded), and a
+    source page opens with its cross-Stokes link (lib/serve/stokes_banner.py)."""
+    maps = label_identity.page_maps(page)
+    if method == 'POST' and maps[0]:
+        sent = body
+        cp = label_identity.conflicts_path(page)
+        body, refused, _what = label_identity.resolve(
+            path, body, maps, merges=label_identity.merge_map(page), held=lambda sid: label_identity.held_verdicts(page, sid),
+            record=(lambda rec: label_identity.append_conflict(cp, rec)) if cp else None)
+        if refused is not None:
+            return refused
+        if body is not sent:                     # source_id rewritten: the Handler reads Content-Length bytes
+            headers = {k: v for k, v in (headers or {}).items() if k.lower() != 'content-length'}
     H = page.mod.Handler
     h = H.__new__(H)
     h.server = _FakeServer(page.legacy_port)
@@ -499,6 +518,14 @@ def run_request(page, method, path, headers, body=b''):
     lines = head.decode('iso-8859-1').split('\r\n')
     status = int(lines[0].split()[1])
     hdrs = [tuple(x.split(': ', 1)) for x in lines[1:] if ': ' in x]
+    if maps[0] and method == 'GET' and dict((k.lower(), v) for k, v in hdrs).get('content-type', '').startswith('text/html'):
+        text = payload.decode('utf-8')
+        if status == 200:
+            text = stokes_banner.insert(page, path, text, maps[0], first=(label_identity.ambiguous_html,))
+        stamped = label_identity.stamp(text, maps[0]).encode('utf-8')
+        if stamped != payload:
+            payload = stamped
+            hdrs = [(k, str(len(payload)) if k.lower() == 'content-length' else v) for k, v in hdrs]
     return status, hdrs, payload
 
 
@@ -1051,7 +1078,10 @@ def serve_request(store, inspect, method, path, headers, body=b''):
                 if store.moved(pg):
                     continue
                 want = page_token(pg.labels_real)
-                if label_post and token != want and (want is not None or token is not None):
+                # a form of another version whose stable identity maps onto this build (lib/serve/label_identity.py:
+                # renamed or merged) is resolved by run_request; only an unmappable stale form is refused here
+                if label_post and token != want and (want is not None or token is not None) and \
+                        not label_identity.mappable(pg, body):
                     return 409, [('Content-Type', 'text/plain; charset=utf-8')], (
                         'the page changed since you loaded it; reload and judge again; nothing was recorded').encode()
                 status, hdrs, payload = run_request(pg, method, sub, headers, body)

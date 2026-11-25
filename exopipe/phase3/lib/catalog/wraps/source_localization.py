@@ -173,6 +173,62 @@ def fitted_detections(mod, fallback):
     return detections
 
 
+def _link_tables():
+    """lib/catalog/stokes_link_tables.py, loaded once by its path (this wrap imports nothing from the branch by name: a
+    child's `exopipe` can be production's package)"""
+    import importlib.util
+    import os
+    import sys
+    name = 'exopipe3_wrap.stokes_link_tables'
+    m = sys.modules.get(name)
+    if m is None:
+        p = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'stokes_link_tables.py')
+        spec = importlib.util.spec_from_file_location(name, p)
+        m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m)
+        sys.modules[name] = m
+    return m
+
+
+def link_detections(mod):
+    """THE CROSS-STOKES LINK (R-GREGG-20261124-CROSS-STOKES-LINK-TEST-APPROVED; R-REFACTOR-20261104-CROSS-STOKES-LINK-COLUMN:
+    the localization merges on the link). With P3_LOC_LINKS naming a stokes_links.csv (lib/catalog/stokes_link.py; read at
+    call time), an identity linked UNAMBIGUOUSLY to an identity of the other Stokes is localized on the detections of both:
+    the partner's survivors rows and detections are appended (a detection once), so the combined position, its error, the
+    consistency, the Master context and the catalogue cross-match are the link's. A one-to-many component (link_ambiguous)
+    pools nothing: each of its identities keeps its own position (the grouping keeps them apart; the link marks them
+    ambiguous). The grouping reserves the other Stokes' names (grouping.display_names), so a name is one (Stokes, identity)
+    and the localization is per (Stokes, identity) for every identity without a link. Unset: the detections unchanged.
+    The table is read by the link's one reader, lib/catalog/stokes_link_tables.partner_names, loaded by its path beside
+    this file (standard library only; registered as sys.modules['exopipe3_wrap.stokes_link_tables'], so the child's code
+    fingerprint names it as it names this wrap)."""
+    import os
+    base = mod.detections
+    cache = {}
+
+    def partners(path):
+        if path not in cache:
+            cache[path] = _link_tables().partner_names(path)
+        return cache[path]
+
+    def detections(ident, U):
+        srcs, dets = base(ident, U)
+        path = os.environ.get('P3_LOC_LINKS')
+        if not path:
+            return srcs, dets
+        if not os.path.exists(path):
+            raise RuntimeError(f'P3_LOC_LINKS {path} is missing - REFUSING (the localization merges on the cross-Stokes link)')
+        seen = {d['cand_id'] for d in dets}
+        for name in partners(path).get(ident, ()):
+            s2, d2 = base(name, U)
+            srcs = list(srcs) + list(s2)
+            dets = list(dets) + [d for d in d2 if d['cand_id'] not in seen]
+            seen.update(d['cand_id'] for d in d2)
+        return srcs, dets
+    detections.__doc__ = 'the cross-Stokes link: a linked identity localized on both Stokes (wrapped).'
+    return detections
+
+
 def beam_as_site(mod, fallback):
     """beam_as() with B-30's site where production takes 900 arcsec for a band without a Master (outside the strict tiers)."""
     def beam_as(band):
@@ -230,6 +286,7 @@ def apply(mod, cfg, fallback):
         mod.combine = ivw_combine(mod)
     if cfg.get('astrometry.LOC_ERROR_SOURCE') == 'fitted':
         mod.detections = fitted_detections(mod, fallback)
+    mod.detections = link_detections(mod)
     mod.beam_as = beam_as_site(mod, fallback)
     mod.locate = locate_site(mod, fallback)
     mod.B32_WRAPPED = dict(cfg)

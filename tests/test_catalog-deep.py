@@ -629,9 +629,11 @@ def test_grouping_design_b_in_the_chain():
     m._GROUPING, m._MRULE = 'design-b', 'one-rule'
     try:
         rc, err = cli('--until', 'group', expect=2)
-        r = rec(f'{LABEL}.group.V')
+        # THE NAMING RULE (grouping_stage.naming_order): both Stokes grouped in one run - I first (the first to refuse here)
+        r = rec(f'{LABEL}.group.I')
         assert r and r['status'] == 'refused' and 'D-G24' in r['reason'] and 'new=True' in r['reason'], (r and r['reason'])
-        assert not os.path.exists(f'{U}/_grouping_state/grouping_deep_V_state.json')
+        assert not os.path.exists(f'{U}/_grouping_state/grouping_deep_I_state.json')
+        assert not rec(f'{LABEL}.group.V'), 'the V group unit ran after I refused'
         rc, err = cli('--from', 'group', '--until', 'fork', '--group-new-state', expect=0)
         for S in ('V', 'I'):
             r = rec(f'{LABEL}.group.{S}')
@@ -697,6 +699,15 @@ def test_grouping_design_b_in_the_chain():
                     assert x['identity_tiers'] == '+'.join(sorted(tiers[x['identity_id']])), x
         u_rows = rows(f'{U}/source_catalogs/Full_sources_survivors.csv')
         assert u_rows and all(x['identity_tiers'] for x in u_rows)
+        # the cross-Stokes link (R-GREGG-20261124-CROSS-STOKES-LINK-TEST-APPROVED): written by the identity stage with its
+        # content test (L1-L4), read by the localization (its input) and joined onto the transient list (its own columns)
+        lk = f'{U}/stokes_link/stokes_links.csv'
+        assert os.path.exists(lk) and isinstance(r['meta'].get('stokes_link'), dict), r['meta'].get('stokes_link')
+        assert any(t['name'].startswith('stokes_link') and t['passed'] for t in r['tests']), [t['name'] for t in r['tests']]
+        lr = rec(f'{LABEL}.localize')
+        assert lk in json.dumps(lr.get('inputs') or lr), 'the localization does not read the link'
+        tl = [ln for ln in open(f'{U}/TRANSIENT_LIST_{LABEL}_latest.csv').read().splitlines() if not ln.startswith('#')]
+        assert tl and tl[0].endswith('stokes_link_id,stokes_link_name,stokes_link_ambiguous,stokes_linked_names'), tl[:1]
         # a second pass over the same detections: every identity and multiples ID carried, no ID event
         ids0 = {S: {x['cand_id']: (x['identity_id'], x['multiples_id']) for x in rows(f'{U}/grouping_{S}/detections.csv')}
                 for S in ('V', 'I')}

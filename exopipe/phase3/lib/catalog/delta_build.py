@@ -1060,12 +1060,14 @@ def view_root(root, lst, frozen_from, night_dirs, states, groupings, tags, keys,
     return rec
 
 
-def loc_side(root, tag, cats):
+def loc_side(root, tag, cats, partners=None):
     """The side directory for the localizations a view root owes for one build tag: <root>/_loc/<tag>, holding, for every
     catalog directory of the root under the glob ``cats``, the survivors rows of the NAMES to localize again and their
     bands' member tables. The names: the present name of every touched identity and the name of every source a delta
     replaced, over all the keys (a name's position is combined over every key and both Stokes, so it is computed on the
-    view, never on one delta). Returns (side directory, sorted names, survivors rows written)."""
+    view, never on one delta), and their cross-Stokes link partners (partners: {name: [names]}, lib/catalog/stokes_link.py
+    partner_names - a linked identity is localized on both Stokes' detections, so a touched partner moves it too).
+    Returns (side directory, sorted names, survivors rows written)."""
     dirs = sorted(glob.glob(os.path.join(root, cats)))
     names = set()
     for d in dirs:
@@ -1074,6 +1076,7 @@ def loc_side(root, tag, cats):
             for t in _json(os.path.join(vr['delta'], DELTA_RECORD))['touched']:
                 names.add(t['identity_name'])
                 names.update(n for _b, n in t['replaces'])
+    names.update(p for n in list(names) for p in (partners or {}).get(n, ()))
     side = os.path.join(root, '_loc', tag)
     if os.path.lexists(side):
         shutil.rmtree(side)

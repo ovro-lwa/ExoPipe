@@ -1091,17 +1091,24 @@ def _jname_long(ra, dec):
     return 'J%02d%02d%02d%s%02d%02d%02d' % (h, m, sec, '+' if dec >= 0 else '-', dd, dm, dsec)
 
 
-def display_names(ra, dec):
+def display_names(ra, dec, reserved=()):
     """unique display names of positions, in the given order: production's jname; a name shared by two or more becomes
     JHHMMSS+DDMMSS (production's unique_names); one still shared takes a letter suffix in order (production refuses there - a
-    display name never stops the grouping). Returns (names, number of letter suffixes)."""
+    display name never stops the grouping). reserved: names held by the OTHER Stokes of the tier (the cross-Stokes link,
+    R-REFACTOR-20261104-CROSS-STOKES-LINK-COLUMN: a name names one (Stokes, identity), so the localization and the pages, which
+    key by name across both Stokes, never merge an I and a V identity by a name coincidence; linked identities are joined by
+    the link, lib/catalog/stokes_link.py): a name among them counts as shared. Returns (names, number of letter suffixes)."""
+    reserved = set(reserved)
     short = _jname_many(ra, dec)
     n = collections.Counter(short)
-    names = [_jname_long(a, d) if n[s] > 1 else s for s, a, d in zip(short, ra, dec)]
+    names = [_jname_long(a, d) if n[s] > 1 or s in reserved else s for s, a, d in zip(short, ra, dec)]
     c2, seen, out, clash = collections.Counter(names), collections.Counter(), [], 0
     for x in names:
-        if c2[x] > 1:
-            seen[x] += 1; out.append(x + _suffix(seen[x] - 1)); clash += 1
+        if c2[x] > 1 or x in reserved:
+            y = x
+            while y == x or y in reserved:
+                seen[x] += 1; y = x + _suffix(seen[x] - 1)
+            out.append(y); clash += 1
         else:
             out.append(x)
     return out, clash
@@ -1438,7 +1445,7 @@ def _carry(level, labels, prev_ids, cand_id, snr, state, run_label, allow_split)
     return out, events
 
 
-def group_catalog(det, tier, stokes, state=None, run_label='', mode=None, P=None, match_tolerance=None):
+def group_catalog(det, tier, stokes, state=None, run_label='', mode=None, P=None, match_tolerance=None, reserved_names=()):
     """The catalog step's entry point for one tier and Stokes: group every detection of det (all bands, nights, LSTs) at the
     ruled operating point, give each identity and multiples-level group its stable ID, name it, count its windows (nights) and
     record every change of an ID (events: 'merge', 'split', 'move' - every detection whose ID changes, 'remeasured' - a
@@ -1456,6 +1463,7 @@ def group_catalog(det, tier, stokes, state=None, run_label='', mode=None, P=None
           identity split refuses; the multiples level may split an earlier group, recorded),
           'regroup' (the whole partition recomputed, IDs carried by member detections - matched as above; every merge,
           split and move recorded).
+    reserved_names: the display names the tier's other Stokes holds now (display_names: never given to an identity here).
     Returns a GroupingResult (its .state is the next run's state; the state passed in is not modified)."""
     p_thr, p_fork, u_cap = operating_point(tier, stokes)
     P = _resolve(P, p_thr, u_cap)
@@ -1542,7 +1550,7 @@ def group_catalog(det, tier, stokes, state=None, run_label='', mode=None, P=None
         members[i].append(j)
     order_ids = sorted(members, key=_seq_of)
     pos = [mean_position(det['ra'][members[i]], det['dec'][members[i]], det['C'][members[i]], snr[members[i]]) for i in order_ids]
-    nm, clash = display_names([p[0] for p in pos], [p[1] for p in pos])
+    nm, clash = display_names([p[0] for p in pos], [p[1] for p in pos], reserved=reserved_names)
     names = dict(zip(order_ids, nm))
     best = {i: float(np.max(np.abs(snr[members[i]]))) for i in order_ids}
     mult = multiplicity(det, fork, tier)
