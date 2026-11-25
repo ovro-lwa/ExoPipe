@@ -1669,7 +1669,11 @@ def publish(u, run, plan, attempt):
                 created.append(dst)
             copy_tree(src, dst)
     except placement.PlacementRefusal as e:     # a file not placed (it is as it was): the publish is undone, not left partial
-        n = len(saved) + len(created) - 1
+        if saved and saved[-1][1] == dst:       # the refused file itself is as it was: not restored, not removed
+            saved.pop()
+        elif created and created[-1] == dst:
+            created.pop()
+        n = len(saved) + len(created)
         try:
             rollback()
             what = f'the {n} file(s) published before it rolled back (replaced ones restored from {backup}, new ones removed)'
