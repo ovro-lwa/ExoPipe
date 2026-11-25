@@ -5,8 +5,10 @@ module). Each test checks the file's CONTENT; a test that needs context and has 
                                            REFERENCE ONLY rows re-derived from the written values ((a), N >= 10, (b'))
   dewarp_screen         record             SCREEN_X/SCREEN_Y equal shape = the measured master's; METHOD rbf, KERNEL, SUBBAND;
                                            NANCHOR = the scope's final table row; finite offsets
-  dewarp_screen_key     rows               tables/screen_keys_<LST>.csv: the key columns; one row per screen of the LST and no
-                                           other; each screen's md5 and NANCHOR as keyed; md5s of the two measured files
+  dewarp_screen_key     rows               tables/screen_keys_<LST>.csv: the key columns; one row per screen of the LST, plus
+                                           rows with an empty screen only for scopes without one (a measured scope with no
+                                           saved screen: G-R4's identity); each screen's md5 and NANCHOR as keyed; md5s of
+                                           the two measured files
                                            (dewarp.MEASURE_FILES of the scope) - the keys gate G-A12 applies screens by
   dewarped_master       D1_D6              check_mdewarp_gen.py (CMG) run IN PLACE through core.legacy.run (site interpreter
                                            'default'; its child imports the production phase3_master_dewarp, pb_apply and
@@ -271,11 +273,24 @@ def screen_key_rows(path, lst=None, **ctx):
         problems.append(f'scopes keyed twice {dup}')
     if sorted(set(screens) - set(scopes)):
         problems.append(f'screens without a key {sorted(set(screens) - set(scopes))}')
-    if sorted(set(scopes) - set(screens)):
-        problems.append(f'keys without a screen {sorted(set(scopes) - set(screens))}')
+    # a row with an empty screen is a measured scope without a saved screen (keyed by its measured files only, for G-R4)
+    bare = [r['scope'] for r in mine if not r['screen'] and not r['screen_md5'] and not r['n_anchors']]
+    if sorted(set(scopes) - set(screens) - set(bare)):
+        problems.append(f'keys without a screen {sorted(set(scopes) - set(screens) - set(bare))}')
+    if sorted(set(bare) & set(screens)):
+        problems.append(f'screens keyed as unsaved {sorted(set(bare) & set(screens))}')
     for r in mine:
         s = r['scope']
         p = os.path.join(mdir, r['screen'])
+        if s in bare and s not in screens:
+            for col in ('master_md5', 'pbcorr_md5'):
+                if not _HEX32.match(r[col] or ''):
+                    problems.append(f'{s}: {col} {r[col]!r} is not an md5')
+            want = SC.measured_files('', s)
+            if (os.path.basename(r['master']), os.path.basename(r['pbcorr'])) != tuple(os.path.basename(x) for x in want):
+                problems.append(f'{s}: keyed to {os.path.basename(r["master"])} / {os.path.basename(r["pbcorr"])}, not the '
+                                f'measured files {[os.path.basename(x) for x in want]}')
+            continue
         if s not in screens or os.path.abspath(p) != os.path.abspath(screens[s]):
             continue                                   # reported above
         if SC.md5(p) != r['screen_md5']:
@@ -289,10 +304,12 @@ def screen_key_rows(path, lst=None, **ctx):
         if (os.path.basename(r['master']), os.path.basename(r['pbcorr'])) != tuple(os.path.basename(x) for x in want):
             problems.append(f'{s}: keyed to {os.path.basename(r["master"])} / {os.path.basename(r["pbcorr"])}, not the '
                             f'measured files {[os.path.basename(x) for x in want]}')
-    value = f'{len(mine)} screen(s) keyed'
+    nb = len(set(bare) - set(screens))
+    value = f'{len(mine) - nb} screen(s) keyed' + (f', {nb} measured scope(s) without a screen' if nb else '')
     if problems:
         return False, value, '; '.join(problems[:5])
-    return True, value, f'every screen of {lst} keyed by md5 to the master and pbcorr sibling it was measured on'
+    return True, value, (f'every screen of {lst} keyed by md5 to the master and pbcorr sibling it was measured on'
+                         + (f'; {nb} measured scope(s) without a saved screen keyed by the md5 of those two files' if nb else ''))
 
 
 # ---------------------------------------------------------------------------------------------------------------------

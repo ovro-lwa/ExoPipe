@@ -4,9 +4,9 @@ Ports dewarp_lst.sh:18-35 and measure_on_09.sh: stage the two measured files of 
 its pbcorr sibling, from the first of REBUILD_ROOT / paths.COADD_SB_ROOT holding the plain file, per FILE) to node-local scratch,
 md5-verified (G-D6); then phase3_master_dewarp.run_lst IN PLACE on the staged copies, measurement only, into a fresh
 <measure root>/<run_id>/ (tables/table_<LST>.csv + <LST>/maps/<scope>_warp_screen.fits + diagnostics). The collection copy
-(dewarp_lst.sh:33-35) is dropped: the cell units read the measurement directory it was written to. Then every saved screen
-is KEYED BY CONTENT: tables/screen_keys_<LST>.csv holds its md5 and the md5 of the two files it was measured on
-(steps_common.SCREEN_KEYS; the apply's gate G-A12).
+(dewarp_lst.sh:33-35) is dropped: the cell units read the measurement directory it was written to. Then every measured
+scope is KEYED BY CONTENT: tables/screen_keys_<LST>.csv holds the md5 of the two files it was measured on and, when it has
+one, its saved screen's md5 (steps_common.SCREEN_KEYS; the apply's gate G-A12, the record stage's gate G-R4).
 Gates here: G-D3 pinned VLSSr files, G-D8 single-thread BLAS, G-D5 excluded constituents, G-D0 in-place values, G-D4 VLSSr
 catalog loads, G-D6 staged copies verified (and, measured in place, unchanged by the end of the measurement).
 """
@@ -97,14 +97,17 @@ def in_place_sums(srcs):
 
 
 def key_screens(u, meas, measured):
-    """SCREEN_KEYS: one row per screen of the LST - its md5 and the md5 of the two files it was measured on - written once
-    into the measurement directory and registered as class 'dewarp_screen_key' (G-A12 reads it at the apply)."""
+    """SCREEN_KEYS: one row per measured scope of the LST - the md5 of the two files it was measured on, and its saved
+    screen's md5 when it has one - written once into the measurement directory and registered as class 'dewarp_screen_key'
+    (G-A12 reads it at the apply, G-R4 at the record stage)."""
     from exopipe.phase3.core.record import utcnow
     rows = SC.screen_key_rows(meas, measured, utcnow())
     keys = SC.write_screen_keys(meas, rows)
     u.meta['screen_keys'] = {r['scope']: {'screen_md5': r['screen_md5'], 'master_md5': r['master_md5'],
                                           'pbcorr_md5': r['pbcorr_md5']} for r in rows}
-    u.note(f'screen keys: {len(rows)} screen(s) keyed to the md5 of the masters they were measured on -> {keys}')
+    n_scr = sum(1 for r in rows if r['screen'])
+    u.note(f'screen keys: {n_scr} screen(s) keyed to the md5 of the masters they were measured on, and {len(rows) - n_scr} '
+           f'measured scope(s) without a saved screen keyed by the md5 of their measured master and pbcorr sibling -> {keys}')
     u.add_output(keys, 'dewarp_screen_key', lst=meas.lst)
     return keys
 

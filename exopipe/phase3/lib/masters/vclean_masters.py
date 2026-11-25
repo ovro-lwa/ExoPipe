@@ -236,8 +236,8 @@ def refresh_vclean_cell(cell, root=None, tmp_root=None, mdw_table=None, check_on
     files -> the round's archive quarantine (md5 re-checked), the new pair published (size-checked copy), the archive audited: its
     vclean files are exactly the pair, md5 equal. Env: P3_ARCHIVE_RUN (required), P3_INSTALL_ROUND (the quarantine pair; the
     install step sets both). Returns (cell, status): 'OK ...' or 'CURRENT ...' on success, anything else is a refusal.
-    mdw_table (v2, CUTOVER_READINESS "INSTALL-CELL HEADER REPAIR"): the MDWSTAT table path - the Release 1 cards are written on the
-    new pair after its stamp, before it is published (release1_cards.write_cell), as install step b writes them on the cell's
+    mdw_table (v2, CUTOVER_READINESS "INSTALL-CELL HEADER REPAIR"): the MDWSTAT table path, or the install's MDWSTAT source
+    (lib/install/mdwstat.Source, release1_cards.mdw_rows) - the Release 1 cards are written on the new pair after its stamp, before it is published (release1_cards.write_cell), as install step b writes them on the cell's
     other co-adds; production instead repairs the archived pair afterwards (install_cell.sh:35-54). None = production's pair.
     With mdw_table, CURRENT also requires the cards: a pair that is current but still lacks a sourced card takes the same path
     as a refresh without the sv2 run - (2') md5-verified working copies of the installed pair in scratch, then (3)-(6) with the

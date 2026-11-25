@@ -67,9 +67,11 @@ REBUILD_OK = 'REBUILD_CONTENT_OK'        # <REBUILD_CHECK_ROOT>/<cell>/ (chain_c
 # of every screen it saved and of the two files that screen was measured on (dewarp.MEASURE_FILES of the scope, as staged -
 # the staged copy is md5-verified against its source). The apply stage applies a keyed screen only to those exact bytes (gate
 # G-A12): a screen whose content changed since it was measured, or a master that is not the one it was measured on, REFUSES
-# and is never applied; nothing is matched by name or time. Class 'dewarp_screen_key' (lib/dewarp/tests.py). A measurement
-# without keys (made before they existed: every production measurement) is applied as production applies it, with the note
-# NO_KEY_NOTE - unless dewarp.SCREEN_KEY_REQUIRED, which refuses it.
+# and is never applied; nothing is matched by name or time. Since 2026-11-25 a measured scope without a saved screen has a
+# row too (screen, screen_md5 and n_anchors empty): the md5 of its measured files, the identity the record stage's G-R4
+# needs. Class 'dewarp_screen_key' (lib/dewarp/tests.py). A measurement without keys (made before they existed: every
+# production measurement) is applied as production applies it, with the note NO_KEY_NOTE - unless
+# dewarp.SCREEN_KEY_REQUIRED, which refuses it.
 SCREEN_KEYS = 'screen_keys_{lst}.csv'    # <measure dir>/tables/
 KEY_COLUMNS = ['lst', 'scope', 'screen', 'screen_md5', 'n_anchors', 'master', 'master_md5', 'pbcorr', 'pbcorr_md5',
                'measured_at', 'keyed_utc']
@@ -241,21 +243,30 @@ def measured_files(cell_dir_final, scope):
 
 
 def screen_key_rows(meas, measured, keyed_utc):
-    """One SCREEN_KEYS row per screen the measurement saved for its LST. ``measured``: {scope: ((plain path, md5), (pbcorr
-    path, md5))} of the files the screen was measured on (the staged copies' sources and their md5, verified equal at
-    staging). A screen of a scope that was not measured refuses."""
+    """One SCREEN_KEYS row per scope the measurement measured for its LST. ``measured``: {scope: ((plain path, md5), (pbcorr
+    path, md5))} of the files each scope was measured on (the staged copies' sources and their md5, verified equal at
+    staging). A scope with a saved screen gets the screen's path, md5 and NANCHOR; a measured scope without one (a refusal
+    before or at the screen, NOT ATTEMPTED, no wideband master) gets empty screen, screen_md5 and n_anchors and still the md5
+    of its two measured files: the identity of the measured master that the record stage's gate G-R4 compares with the
+    master it stamps (2026-11-25, PR 173 follow-up; before, such a scope had no row and G-R4 only noted it). A screen of a
+    scope that was not measured refuses."""
     from astropy.io import fits
     finals = final_rows(meas.table, meas.lst) if meas.exists() else {}
-    rows = []
+    screens = {}
     for scr in meas.screens():
         scope = os.path.basename(scr)[:-len('_warp_screen.fits')]
         if scope not in measured:
             raise refusal(f'G-D6: {scr} is a screen of {meas.lst} {scope}, which this measurement did not measure')
-        (plain, pmd5), (pbc, bmd5) = measured[scope]
+        screens[scope] = scr
+    rows = []
+    for scope, ((plain, pmd5), (pbc, bmd5)) in measured.items():
         row = finals.get((meas.lst, scope)) or {}
-        rows.append(dict(lst=meas.lst, scope=scope, screen=os.path.relpath(scr, meas.dir), screen_md5=md5(scr),
-                         n_anchors=fits.getheader(scr, 'SCREEN_X').get('NANCHOR', ''), master=plain, master_md5=pmd5,
-                         pbcorr=pbc, pbcorr_md5=bmd5, measured_at=row.get('measured_at', ''), keyed_utc=keyed_utc))
+        scr = screens.get(scope)
+        rows.append(dict(lst=meas.lst, scope=scope, screen=os.path.relpath(scr, meas.dir) if scr else '',
+                         screen_md5=md5(scr) if scr else '',
+                         n_anchors=fits.getheader(scr, 'SCREEN_X').get('NANCHOR', '') if scr else '', master=plain,
+                         master_md5=pmd5, pbcorr=pbc, pbcorr_md5=bmd5, measured_at=row.get('measured_at', ''),
+                         keyed_utc=keyed_utc))
     return rows
 
 
@@ -280,6 +291,10 @@ def screen_key_problems(key, screen, plain, pbcorr):
     for what, path, want, was in (('screen', screen, key.get('screen_md5'), os.path.join('<measurement>', key.get('screen') or '')),
                                   ('master', plain, key.get('master_md5'), key.get('master')),
                                   ('pbcorr sibling', pbcorr, key.get('pbcorr_md5'), key.get('pbcorr'))):
+        if what == 'screen' and not key.get('screen_md5'):
+            out.append(f'the measurement saved no screen for {key.get("scope")} (its key row records only the md5 of the '
+                       f'measured master and pbcorr sibling): there is no keyed screen to apply')
+            continue
         if not os.path.isfile(path):
             out.append(f'{what} {path} missing')
             continue
@@ -296,8 +311,9 @@ def measured_master_identity(meas, roots, cell):
     that md5 - or, when they carry an MDWSTAT card (this stage's own earlier stamp, on a rerun), that md5 with the card
     removed (md5_without_card). Nothing is matched by name or time. Returns (identity, problems):
       identity None - the measurement records no identity of the master it measured for the scope (no key file: made
-          before the keys existed, or by production; or no key row: no screen was saved for the scope); then only G-A11's
-          time check applies (a follow-up: the measure stage records the measured master's md5 for every scope);
+          before the keys existed, or by production; or no key row: keyed before 2026-11-25, when only scopes with a saved
+          screen got a row); then only G-A11's time check applies. Since 2026-11-25 the measure stage keys every measured
+          scope (screen_key_rows), so a v2 measurement always records the identity;
       problems [] - both files are the measured bytes; else one line per file naming the measured file and md5 and the
           promoted file and md5."""
     scope = cell.split('_', 1)[1]
@@ -797,19 +813,23 @@ def not_accepted_row(lst, scope, row, written_utc):
 STAMP_ROOT = 'promoted rebuild root (MDWSTAT card of a not-accepted cell)'      # G-W's name of that write root
 
 
-def mdwstat_files(roots, cell):
-    """The files the record stage writes MDWSTAT on, sorted: the cell's masters, i.e. the files of
-    <REBUILD_ROOT>/<cell>/coadd_final (top level) whose names match lib/masters/coadd._MASTER_RE - the set
-    release1_cards.CellCards.masters gives MDWSTAT and the install's sibling card gate compares. Never the PB maps
-    (PB_deep_<s>, PB_deep_R075_<s>: release1_cards writes MDWSTAT on masters only), loo/ or subtracted/."""
+def master_files(d):
+    """The masters of a coadd_final directory ``d``, sorted: its top-level files whose names match
+    lib/masters/coadd._MASTER_RE - the set release1_cards.CellCards.masters gives MDWSTAT and the install's sibling card gate
+    compares. Never the PB maps (PB_deep_<s>, PB_deep_R075_<s>: release1_cards writes MDWSTAT on masters only), loo/ or
+    subtracted/."""
     from exopipe.phase3.lib.masters.coadd import _MASTER_RE
-    d = os.path.join(roots.rebuild, cell, 'coadd_final')
     try:
         names = os.listdir(d)
     except (FileNotFoundError, NotADirectoryError):
         return []
     return sorted(os.path.join(d, f) for f in names if f.endswith('.fits') and _MASTER_RE.match(f)
                   and os.path.isfile(os.path.join(d, f)))
+
+
+def mdwstat_files(roots, cell):
+    """The files the record stage writes MDWSTAT on: master_files of <REBUILD_ROOT>/<cell>/coadd_final."""
+    return master_files(os.path.join(roots.rebuild, cell, 'coadd_final'))
 
 
 def _gain_text(g, threshold, most=3):

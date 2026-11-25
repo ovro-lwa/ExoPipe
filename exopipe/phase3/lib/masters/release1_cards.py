@@ -235,6 +235,17 @@ def load_mdw_table(path):
         return f'the MDWSTAT table {path} cannot be used ({str(ex)[:60]})'
 
 
+def mdw_rows(mdw):
+    """The MDWSTAT rows a writer or the gate reads: ``mdw`` a table path (load_mdw_table), or the install's MDWSTAT source
+    (lib/install/mdwstat.Source: the table with each cell whose value comes from its dewarp record replaced by the
+    record's row, so every reader compares with the one source the install chose); None stays None."""
+    if mdw is None:
+        return None
+    if isinstance(mdw, str):
+        return load_mdw_table(mdw)
+    return mdw.rows()
+
+
 # ---------------------------------------------------------------------------------------------------------------------
 # one cell
 # ---------------------------------------------------------------------------------------------------------------------
@@ -435,23 +446,28 @@ class CellCards:
         # ---- MDWSTAT on masters (mdw_cards, :830-863; the PB maps take only the MDWMED1 update, not ported)
         if mdw is not None and f in self.masters:
             cell = f'{self.lst}_{self.scope}'
+            tname = getattr(mdw_path, 'table', mdw_path)       # the table path of an install's MDWSTAT source
             if isinstance(mdw, str):
                 add('MDWSTAT', None, mdw)
             elif cell not in mdw:
-                add('MDWSTAT', None, f'cell {cell} is not in the MDWSTAT table {mdw_path}')
+                add('MDWSTAT', None, f'cell {cell} is not in the MDWSTAT table {tname}')
             else:
                 v = mdw[cell].get('mdwstat') or ''
+                src = mdw[cell].get('mdwstat_source') or 'table'      # 'dewarp record' for a record-sourced row
                 why = None
                 if not (0 < len(v) <= 68 and v.isascii() and v.isprintable()):
-                    why = f'the table\'s mdwstat {v[:40]!r} is not a one-card value'
+                    why = f'the {src}\'s mdwstat {v[:40]!r} is not a one-card value'
                 else:
                     has_w, mdwarp, has_sb = 'MDWARP' in kws, h.get('MDWARP'), 'LSWBSB' in kws
                     if has_sb and not has_w:
                         why = ('a combination of subband products (LSWBSB, no MDWARP): never master-dewarped itself; each member '
                                'master carries its own MDWSTAT')
                     elif v.startswith('applied') != (mdwarp is True):
-                        why = f'the table says {v[:40]!r} but the file\'s MDWARP is {mdwarp!r}: the table and the file disagree'
-                add('MDWSTAT', None if why else v, why or f'{mdw_path} column mdwstat ({RULING_MDWSTAT})')
+                        why = (f'the {src} says {v[:40]!r} but the file\'s MDWARP is {mdwarp!r}: the {src} and the file '
+                               f'disagree')
+                rfrom = mdw[cell].get('mdwstat_from')
+                add('MDWSTAT', None if why else v, why or (f'the dewarp record {rfrom} meta.mdwstat ({RULING_MDWSTAT})' if rfrom
+                                                           else f'{tname} column mdwstat ({RULING_MDWSTAT})'))
         return rec
 
     def provenance_table(self):
@@ -524,11 +540,11 @@ def _write_text(path, text):
 def write_cell(final_dir, lst, scope, mdw_table=None, files=None, pbmaps=True, provenance=False, name_dir=None, today=None):
     """Write the Release 1 cards on the cell's coadd-class files in final_dir (the masters, and the PB maps when ``pbmaps``;
     or exactly ``files``, names in final_dir) and, with ``provenance``, its provenance_nights.csv. ``mdw_table``: the MDWSTAT
-    table path (None = no MDWSTAT: the masters build). Partial policy (decision 3): a card without a source is not written and
+    table path or the install's MDWSTAT source (mdw_rows; None = no MDWSTAT: the masters build). Partial policy (decision 3): a card without a source is not written and
     is returned with its reason. Returns a report dict: ref, files {name: {added, refused {card: reason}, file_refusals}},
     provenance (path or None), lines (one per file, for the log / unit notes)."""
     cell = CellCards(final_dir, lst, scope, name_dir=name_dir)
-    mdw = load_mdw_table(mdw_table) if mdw_table else None
+    mdw = mdw_rows(mdw_table) if mdw_table else None
     names = list(files) if files is not None else cell.masters + (cell.pbmaps if pbmaps else [])
     rep = dict(cell=f'{lst}_{scope}', ref=list(cell.ref), files={}, provenance=None, lines=[])
     if cell.err or cell.ref[0] == 'error':
@@ -561,7 +577,7 @@ def planned_adds(final_dir, lst, scope, mdw_table=None, files=None, pbmaps=True,
     """{name: [cards a write_cell would add now]} - empty lists when every sourced card is present (the repair's dry run
     finding nothing to add: the install's cards gate on the archived cell)."""
     cell = CellCards(final_dir, lst, scope, name_dir=name_dir)
-    mdw = load_mdw_table(mdw_table) if mdw_table else None
+    mdw = mdw_rows(mdw_table) if mdw_table else None
     names = list(files) if files is not None else cell.masters + (cell.pbmaps if pbmaps else [])
     out = {}
     for f in names:
@@ -576,14 +592,18 @@ def planned_adds(final_dir, lst, scope, mdw_table=None, files=None, pbmaps=True,
 # ---------------------------------------------------------------------------------------------------------------------
 
 def value_problems(h, row):
-    """The MDWSTAT / MDWMED1 value checks of one header against the cell's table row (None = no row) (sibling_card_gate.py:34-45)."""
+    """The MDWSTAT / MDWMED1 value checks of one header against the cell's row (None = no row) (sibling_card_gate.py:34-45):
+    the table's row, or a record-sourced cell's row (lib/install/mdwstat.record_row: mdwstat_source 'dewarp record', the
+    MDWMED1 columns empty), so the header is compared with the source the install chose and the message names it."""
     out = []
     if 'MDWSTAT' in h:
+        src = (row or {}).get('mdwstat_source') or 'table'
         if row is None:
             out.append('MDWSTAT present but the cell has no MDWSTAT table row')
         elif str(h['MDWSTAT']).strip() != row['mdwstat'].strip():
-            out.append(f"MDWSTAT {str(h['MDWSTAT'])[:50]!r} != table {row['mdwstat'][:50]!r}")
-    if 'MDWMED1' in h and row is not None and row['mdwmed1_header_arcmin'].strip() and row['mdwmed1_installed_cubic_arcmin'].strip():
+            out.append(f"MDWSTAT {str(h['MDWSTAT'])[:50]!r} != {src} {row['mdwstat'][:50]!r}")
+    if ('MDWMED1' in h and row is not None and (row.get('mdwmed1_header_arcmin') or '').strip()
+            and (row.get('mdwmed1_installed_cubic_arcmin') or '').strip()):
         old, new = float(row['mdwmed1_header_arcmin']), float(row['mdwmed1_installed_cubic_arcmin'])
         if abs(new - old) > MDWMED1_TOL and abs(float(h['MDWMED1']) - old) <= MDWMED1_TOL:
             out.append(f"MDWMED1 {h['MDWMED1']} is the uncorrected value (table: header {old}, installed {new}; {RULING_MDWMED1})")
@@ -620,7 +640,9 @@ def sibling_card_gate(cell, archive_run, mdw_table, sibling_run=None, refusals=(
     the writer's loader, and the cell's row is looked up under the writer's key '<LST>_<band>' (the table's 'LST band' cell
     column, stripped, spaces to '_'; sibling_card_gate.py:83-84 read it with csv and the key '<LST> <band>' - the same row for
     the table's 'LST band' format); a table that cannot be used refuses. ``exclude``: fnmatch patterns of archived file names
-    left out (the cleaned Stokes V refresh's pre-check of every other file, before it writes)."""
+    left out (the cleaned Stokes V refresh's pre-check of every other file, before it writes). ``mdw_table``: the table path
+    or the install's MDWSTAT source (mdw_rows: a cell whose value comes from its dewarp record is compared with the record's
+    value)."""
     import fnmatch
     m = re.fullmatch(r'(\d\dh)_(\w+)', cell)
     if not m:
@@ -628,7 +650,7 @@ def sibling_card_gate(cell, archive_run, mdw_table, sibling_run=None, refusals=(
     lst, band = m.groups()
     sibling_run = sibling_run or archive_run
     lines = []
-    table = load_mdw_table(mdw_table)
+    table = mdw_rows(mdw_table)
     if isinstance(table, str):
         return False, [f'SIBLING-CARD-GATE REFUSED {cell}: {table}']
     mine = [f for f in sorted(glob.glob(f'{archive_run}/{lst}/{band}/*.fits'))
@@ -673,5 +695,6 @@ def sibling_card_gate(cell, archive_run, mdw_table, sibling_run=None, refusals=(
         return False, lines
     lines.append(f'SIBLING-CARD-GATE PASS {cell}: {len(mine) - exempt} of {len(mine)} archived files carry every card key of their '
                  f'repaired siblings ({n_sib} sibling files read), {exempt} exempt (refused whole by the repair), and MDWSTAT / '
-                 f'MDWMED1 agree with the table ({"row " + repr(trow["mdwstat"][:40]) if trow else "no table row"})')
+                 f'MDWMED1 agree with the {(trow or {}).get("mdwstat_source") or "table"} '
+                 f'({"row " + repr(trow["mdwstat"][:40]) if trow else "no table row"})')
     return True, lines

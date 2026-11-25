@@ -28,17 +28,19 @@ MOVE_STEPS = ('working-quarantine', 'installed', 'cell-file', 'cell-dir', 'epoch
 # Gates, in evaluation order (spec section 5). WAIVABLE: evaluated by this step only (not re-evaluated inside PI) and not
 # structural; everything evaluated inside PI cannot be waived during the window (PI raises).
 GATES = ('H', 'R', 'G-1', 'G-1b', 'G1', 'G1-EXACT', 'CUB', 'RB', 'RB-FILES', 'CELL', 'G-MEM', 'G-PROD', 'G1b', 'Z',
-         'G2', 'G3', 'STG', 'G0-GEN', 'G-DEST', 'a0', 'EG', 'G4', 'G0', 'SET', 'b', 'AQ', 'd', 'e', 'V', 'VCLEAN', 'CARDS',
-         'CARD-GATE', 'Q')
+         'G2', 'G3', 'STG', 'G0-GEN', 'MDW-REC', 'G-DEST', 'a0', 'EG', 'G4', 'G0', 'SET', 'b', 'AQ', 'd', 'e', 'V', 'VCLEAN',
+         'CARDS', 'CARD-GATE', 'Q')
 WAIVABLE = ('H', 'G1-EXACT', 'Q')
 # VCLEAN / CARDS / CARD-GATE (stages vclean, cards): production's chain stops on them with no waiver path (install_cell.sh:34, :53)
-NEVER_WAIVABLE = ('G0', 'G0-GEN', 'b', 'a0', 'SET', 'AQ', 'd', 'e', 'G-1b', 'G-DEST', 'VCLEAN', 'CARDS', 'CARD-GATE')  # DESIGN 11.6
+NEVER_WAIVABLE = ('G0', 'G0-GEN', 'b', 'a0', 'SET', 'AQ', 'd', 'e', 'G-1b', 'G-DEST', 'VCLEAN', 'CARDS', 'CARD-GATE',
+                  'MDW-REC')  # DESIGN 11.6; MDW-REC: the MDWSTAT source (lib/install/mdwstat), a stale dewarp record
 # content tests that are never waivable (digest / set mismatches, excluded constituents)
 NEVER_WAIVABLE_TESTS = ('install_manifest.rows_match_files', 'archive_cell.audit', 'installed_cell.exclusion_conformance',
                         'screen_table.install_cell_row', 'screen_table.rows')
 
 # PI RuntimeError text -> the gate it is (phase3_install.py raise sites; coadd_full_pipeline for G0)
 _PI_GATE_TEXT = (
+    ('the MDWSTAT dewarp record is not current', 'MDW-REC'),   # v2: lib/install/mdwstat, before b's trial copy
     ('on the Release 1 trial copy', 'b'),             # v2: b's Release 1 writes on a trial copy, before the first move
     ('P3_ARCHIVE_RUN unset', 'R'), ('freeze is not confirmed', 'G-1'), ('snapshot_masters links resolve', 'G-1b'),
     ('no content-test record', 'G1'), ('content record (D1-D6)', 'CUB'), ('lack MDWINTP', 'CUB'),
@@ -290,6 +292,14 @@ def release1_mdw_table():
     return t
 
 
+def mdw_table_path():
+    """install.MDWSTAT_TABLE when install.RELEASE1_CARDS, else None - unchecked: the cell's MDWSTAT source reads it
+    (lib/install/mdwstat), and a cell whose value comes from the table refuses at gate MDW-REC when it cannot be used; a
+    record-sourced cell never depends on it."""
+    C = cfg().install
+    return C.MDWSTAT_TABLE if C.RELEASE1_CARDS else None
+
+
 MASTER_HELD_18 = ('keep', 'refuse')     # the values of install.MASTER_HELD_18MHZ (as search_detect.MASTER_HELD_18MHZ's)
 
 
@@ -338,15 +348,19 @@ def keep_held_18(cell_dir, value, built_before=None):
 
 
 @contextlib.contextmanager
-def pi_context(PI, roots, rnd=None, cards=False):
+def pi_context(PI, roots, rnd=None, cards=False, mdw=None):
     """Set PI's module globals and the environment it and coadd_full_pipeline read, for one call; restore afterwards.
     Yields the settings (recorded by the caller). ``cards``: the call runs PI's step b (install, recover), which writes the
-    Release 1 cards - only then is the MDWSTAT table resolved (release1_mdw_table); every other call leaves it None."""
+    Release 1 cards - only then is the MDWSTAT source set (install.RELEASE1_CARDS); every other call leaves it None.
+    ``mdw``: the cell's MDWSTAT source (lib/install/mdwstat.Source, chosen at gate MDW-REC), set in place of the table
+    path when the cards are written (without one: release1_mdw_table, the table path, checked readable); the settings
+    show it as text."""
     C = cfg().install
+    t = (mdw if mdw is not None else release1_mdw_table()) if cards and C.RELEASE1_CARDS else None
     g = {'ROOT': roots.working, 'RECORD': roots.record_csv, 'FREEZE_MARKER': C.FREEZE_MARKER,
          'CELL_FILES': tuple(C.CELL_FILES), 'CELL_TOP': tuple(C.CELL_TOP), 'CELL_DIRS': tuple(C.CELL_DIRS),
          'MASTER_HELD_18MHZ': master_held_18(),             # WAVE2 18 MHz exception at G-MEM (PI's text: production's 'refuse')
-         'RELEASE1_MDW_TABLE': release1_mdw_table() if cards else None}   # the Release 1 cards at b (PI's text: None, production)
+         'RELEASE1_MDW_TABLE': t}            # the Release 1 cards at b (PI's text: None, production)
     if rnd:
         g.update(INSTALL_ROUND=rnd, WQ=roots.wq(rnd), QROOT_NAME=roots.aq_name(rnd))
     env = {'P3_ARCHIVE_RUN': roots.run, 'P3_ARCHIVE_ROOT': roots.archive, 'P3_INSTALL_FREE_FLOOR_GB': repr(float(C.FREE_FLOOR_GB)),
@@ -359,7 +373,7 @@ def pi_context(PI, roots, rnd=None, cards=False):
         for k, v in g.items():
             setattr(PI, k, v)
         os.environ.update(env)
-        yield dict(globals=g, env=env)
+        yield dict(globals=dict(g, RELEASE1_MDW_TABLE=None if t is None else str(t)), env=env)
     finally:
         for k, v in saved_g.items():
             setattr(PI, k, v)

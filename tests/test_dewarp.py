@@ -15,9 +15,12 @@ it, the apply/verify/record run with --parity):
     place, D1-D6 by check_mdewarp_gen.py through core.legacy.run, the child's code checked), not accepted (applied=0 row,
     install's class screen_table + inline row check, MDWSTAT on its promoted masters, not the PB maps), accepted-but-apply-refused
     (G-R2), not routed (G-D2), input carries MDWARP (G-D7). The not-accepted cell's MDWSTAT card is also tested on its own
-    `--stages record` run (no verify stage, so no content-test child and no G-D0b)
+    `--stages record` run (no verify stage, so no content-test child and no G-D0b). The accepted cell's apply records
+    MDWSTAT 'applied' with each new master's md5, size and mtime (meta.mdwstat); a rerun of the record stage interrupted by a
+    master it cannot write keeps the last done record (meta.last_done), which the install's source takes while current
   - `exopipe3 verify dewarped_master <gen>` takes its context from the run record (scratch mode: the generation's sidecars are
-    untouched); a corrupted product fails D3; G-A3 refuses a second apply; --fresh removes and records the old generation
+    untouched); a corrupted product fails D3; G-A3 refuses a second apply and keeps the last done record; --fresh removes
+    and records the old generation
 Read-only part (production products, never written): dewarp_table on two production measurement tables, dewarp_screen on a
 production screen, the light dewarped_master tests on the installed 12h_Red generation (skipped when absent); the MDWSTAT
 value against install.MDWSTAT_TABLE on every refused cell (test_mdwstat_table).
@@ -592,9 +595,14 @@ def test_end_to_end(tmp):
         check('measure: node-local staging removed', not glob.glob(os.path.join(work, 'dewarp_stage_*')))
         k = [o for o in ra['outputs'] if o['class'] == 'dewarp_screen_key']
         kt = [t for t in ra['tests'] if t['name'] == 'dewarp_screen_key.rows']
+        krows = SC.read_table(k[0]['path']) if len(k) == 1 else []
         check('measure: the screen keys are written beside the table and pass their content test (no screen saved here: '
-              'a header-only key file)', len(k) == 1 and k[0]['path'].endswith(f'/tables/screen_keys_{LST}.csv')
-              and len(SC.read_table(k[0]['path'])) == 0 and len(kt) == 1 and kt[0]['passed'], str(kt)[:200])
+              'one row per measured scope, screen empty, keyed by the md5 of its measured master and pbcorr sibling - '
+              'the identity G-R4 needs)', len(k) == 1 and k[0]['path'].endswith(f'/tables/screen_keys_{LST}.csv')
+              and len(krows) == 5 and len(kt) == 1 and kt[0]['passed']
+              and sorted(r['scope'] for r in krows) == sorted(ra['meta'].get('screen_keys', {}))
+              and all(not r['screen'] and not r['screen_md5'] and r['master_md5'] == SC.md5(r['master'])
+                      and r['pbcorr_md5'] == SC.md5(r['pbcorr']) for r in krows), str(kt)[:200] + str(krows)[:200])
     # unstamped copies of the not-accepted cell's promoted coadd_final (top level) for the direct record() cases below
     from exopipe.phase3.core import record as _record, validate as _validate
     from exopipe.phase3.lib.dewarp import steps_cell as SCL
@@ -644,6 +652,46 @@ def test_end_to_end(tmp):
     glog = os.path.join(outR, '_records', '_parity_guard_refusals.log')
     check('record stage alone: parity guard - no write outside --out/--work/TMPDIR//tmp',
           not os.path.exists(glog) or not open(glog).read().strip())
+    # --- R8: a rerun that refuses or fails keeps the cell's last done record (meta.last_done, steps_cell.keep_last_done);
+    #     the install takes it while the masters keep its md5 (lib/install/mdwstat): an interrupted stamp (a master it
+    #     cannot write), then a master rewritten with another value as an interrupted stamp of a new value would leave it
+    from exopipe.phase3.lib.install import mdwstat as MW
+    out8 = os.path.join(tmp, 'outR8')
+    seed_record(out8, ('32MHz',))
+    a8 = ('dewarp', '--cells', f'{LST}_32MHz', '--stages', 'record', '--measurement', r['meas'], '--out', out8, '--work',
+          work, *common_sets(r))
+    rc8, txt, s = cli(*a8)
+    d8 = rec(out8, f'{LST}_32MHz')
+    seed_record(out8, ('32MHz',))                  # routed again for the rerun
+    os.chmod(masters[5], 0o444)
+    try:
+        rc9, txt, s = cli(*a8)
+    finally:
+        os.chmod(masters[5], 0o644)
+    e8 = rec(out8, f'{LST}_32MHz')
+    last8 = ((e8 or {}).get('meta') or {}).get('last_done') or {}
+    ch8 = MW.choose(f'{LST}_32MHz', {}, 'no table', out8)
+    check('interrupted stamp: the rerun refuses (dewarp.mdwstat) and keeps the last done record (meta.last_done: its run, '
+          'its MDWSTAT with the stamp md5); the install takes it, noting the refused attempt, current while the masters '
+          'keep that md5', rc8 == 0 and d8 and d8['status'] == 'done' and rc9 == 2 and e8 and e8['status'] == 'refused'
+          and 'dewarp.mdwstat' in e8['reason'] and last8.get('run_id') == d8['run_id']
+          and last8.get('mdwstat') == d8['meta']['mdwstat'] and ch8.source == MW.RECORD and ch8.value == want
+          and ch8.entry == 'meta.last_done.mdwstat' and "'refused'" in ch8.notes[0]
+          and MW.problems(ch8, {os.path.basename(p): SC.md5(p) for p in masters}) == []
+          and MW.stat_problems(ch8, {os.path.basename(p): (os.stat(p).st_size, os.stat(p).st_mtime_ns)
+                                     for p in masters})[0] == [],
+          f'rc {rc8}/{rc9}; {(e8 or {}).get("reason", "")[:160]}; {ch8.notes[:1]}')
+    keep8 = os.path.join(tmp, 'keep_master0.fits')
+    shutil.copy2(masters[0], keep8)
+    with fits.open(masters[0], mode='update', memmap=False) as hl:
+        hl[0].header['MDWSTAT'] = 'refused: another value (interrupted)'
+    pr8 = MW.problems(ch8, {os.path.basename(p): SC.md5(p) for p in masters})
+    sp8 = MW.stat_problems(ch8, {os.path.basename(p): (os.stat(p).st_size, os.stat(p).st_mtime_ns) for p in masters})
+    shutil.copy2(keep8, masters[0])
+    check('interrupted stamp of another value: the master it rewrote (same size) is left to the md5 by the plan\'s '
+          'pre-check and makes the last done record STALE at the md5, naming the master', len(pr8) == 1
+          and os.path.basename(masters[0]) in pr8[0] and sp8[0] == [] and os.path.basename(masters[0]) in sp8[1]
+          and SC.md5(masters[0]) == SC.md5(keep8), f'{pr8} {sp8}')
     # --- R2: --resume re-tests the stamped masters: a master replaced by an unstamped one is never skipped-valid
     if c32 and c32['status'] == 'done':
         dirty = str(c32.get('commit') or '').endswith('-dirty')
@@ -796,6 +844,17 @@ def test_end_to_end(tmp):
                   for n in sibling_names('27MHz')))
         check('accepted cell: INSTALL_CONTENT_OK and APPLIED_SCREEN.json beside the generation',
               all(os.path.isfile(os.path.join(os.path.dirname(gen), f)) for f in (SC.CONTENT_OK, SC.APPLIED_SCREEN)))
+        md27 = c27['meta'].get('mdwstat') or {}
+        gm = SC.master_files(os.path.join(gen, 'coadd_final'))
+        check("accepted cell: the apply records MDWSTAT 'applied' and each new master's md5, size and mtime (meta.mdwstat, "
+              "as the record stage records its stamp), each an mdwstat_master output; after verify the masters still carry "
+              "the card and those bytes", md27.get('value') == 'applied' and len(gm) >= 10
+              and sorted(x['path'] for x in md27.get('files', [])) == gm
+              and all(x['md5'] == SC.md5(x['path']) and x['size'] == os.stat(x['path']).st_size
+                      and x['mtime_ns'] == os.stat(x['path']).st_mtime_ns
+                      and fits.getheader(x['path']).get('MDWSTAT') == 'applied' for x in md27['files'])
+              and sorted(o['path'] for o in c27['outputs'] if o['class'] == 'mdwstat_master') == gm,
+              f'{len(gm)} masters; {str(md27)[:200]}')
     csvp = os.path.join(outB, 'archive', 'mdewarp_screens', CFG.paths.ARCHIVE_RUN, 'mdewarp_screens.csv')
     rows = SC.read_table(csvp) if os.path.isfile(csvp) else []
     check('not-accepted cell: done, install kind rebuild',
@@ -857,6 +916,14 @@ def test_end_to_end(tmp):
                      *common_sets(r))
     c = rec(outB, f'{LST}_27MHz')
     check('G-A3: a written generation is never overwritten', rc == 2 and c and 'G-A3' in c['reason'], c['reason'][:100] if c else '')
+    last27 = ((c or {}).get('meta') or {}).get('last_done') or {}
+    ch27 = MW.choose(f'{LST}_27MHz', {}, 'no table', outB)
+    check("G-A3: the refused rerun keeps the last done record (meta.last_done: the apply's MDWSTAT with the md5); the "
+          "install takes it, noting the refusal, current for the generation",
+          last27.get('mdwstat') == c27['meta'].get('mdwstat') and ch27.source == MW.RECORD and ch27.value == 'applied'
+          and ch27.entry == 'meta.last_done.mdwstat' and 'G-A3' in ch27.notes[0]
+          and MW.problems(ch27, {os.path.basename(p): SC.md5(p)
+                                 for p in SC.master_files(os.path.join(gen, 'coadd_final'))}) == [], ch27.notes[:1])
     rc, txt, s = cli('dewarp', '--cells', f'{LST}_27MHz', '--stages', 'apply', '--measurement', r['meas'], '--out', outB,
                      '--fresh', *common_sets(r))
     c = rec(outB, f'{LST}_27MHz')
@@ -883,6 +950,17 @@ def test_stale_measurement(tmp):
     check('G-A11: a measurement older than the rebuild is refused (no applied=0 row written)',
           rc == 2 and c and 'G-A11' in c['reason'] and not os.path.exists(os.path.join(out, 'archive')),
           f'rc {rc}, {s} s; ' + (c['reason'][:100] if c else txt[-200:]))
+
+
+def _stub_master(lst, scope):
+    """What a stubbed master_dewarp.apply_saved leaves: one master of the new generation carrying MDWSTAT 'applied' (the apply's
+    MDWSTAT record, steps_cell.applied_mdwstat, refuses a generation without one). Returns 1 (files written)."""
+    d = os.path.join(os.environ['MDEWARP_OUT_ROOT'], f'{lst}_{scope}', SC.C().GEN_DIR, 'coadd_final')
+    os.makedirs(d, exist_ok=True)
+    h = fits.Header()
+    h['MDWSTAT'] = 'applied'
+    fits.writeto(os.path.join(d, f'I_deep_Taper_R075_mdewarp_{scope}.fits'), np.zeros((2, 2), np.float32), h)
+    return 1
 
 
 def test_screen_keys(tmp):
@@ -924,7 +1002,7 @@ def test_screen_keys(tmp):
             calls.append(a)
             if during:
                 during(master)
-            return 0
+            return _stub_master(*a[:2])
         del calls[:]
         MD.apply_saved = stub
         try:
@@ -1041,6 +1119,69 @@ def test_screen_keys(tmp):
     check('dry run: without the apply stage no G-A12 line', 'G-A12' not in txt, f'rc {rc}; ' + txt[-300:])
 
 
+def test_screenless_keys(tmp):
+    """PR 173 follow-up (2026-11-25): the measure stage keys EVERY measured scope, not only those with a saved screen, so the
+    record stage's gate G-R4 has the measured master's md5 for every cell it stamps. On the synthetic round (screens for 27,
+    32 and 36 MHz; 41 and 46 MHz measured without one): screen_key_rows gives five rows, the two screenless ones with empty
+    screen columns and the md5 of their measured master and pbcorr sibling; the key file's content test passes and counts
+    them; G-R4 (measured_master_identity) then returns the identity of a screenless scope, and refuses a master that is other
+    bytes than the measured one; G-A12 never applies a screenless row; a screenless row for a scope that has a screen, or one
+    without an md5, fails the content test."""
+    promoted = os.path.join(tmp, 'promoted')
+    src = os.path.join(tmp, 'meas')
+    if not os.path.isdir(src):
+        check('screenless keys: synthetic round present', False)
+        return
+    mdir = os.path.join(tmp, 'gsk', 'meas')
+    shutil.copytree(src, mdir)
+    meas = SC.Measurement(mdir, LST)
+    os.remove(meas.keys())
+    scopes = ('27MHz', '32MHz', '36MHz', '41MHz', '46MHz')
+    measured = {s: tuple((f, SC.md5(f)) for f in SC.measured_files(os.path.join(promoted, f'{LST}_{s}', 'coadd_final'), s))
+                for s in scopes}
+    rows = SC.screen_key_rows(meas, measured, '2026-11-25T00:00:00Z')
+    by = {r['scope']: r for r in rows}
+    bare = sorted(s for s, r in by.items() if not r['screen'])
+    check('screen_key_rows: one row per measured scope; 41 and 46 MHz (no screen saved) keyed by the md5 of their measured '
+          'master and pbcorr sibling, screen columns empty', sorted(by) == sorted(scopes) and bare == ['41MHz', '46MHz']
+          and all(by[s]['master_md5'] == measured[s][0][1] and by[s]['pbcorr_md5'] == measured[s][1][1]
+                  and not by[s]['screen_md5'] and not by[s]['n_anchors'] for s in bare)
+          and all(by[s]['screen_md5'] == SC.md5(meas.screen(s)) for s in ('27MHz', '32MHz', '36MHz')), str(rows)[:300])
+    kp = SC.write_screen_keys(meas, rows)
+    ok, v, d = T.screen_key_rows(kp)
+    check('dewarp_screen_key: the five-row key file passes and counts the screenless scopes',
+          ok and v == '3 screen(s) keyed, 2 measured scope(s) without a screen', f'{v}; {d}')
+    roots = types.SimpleNamespace(rebuild=promoted)
+    ident, probs = SC.measured_master_identity(meas, roots, f'{LST}_41MHz')
+    check('G-R4: a measured scope without a saved screen now has an identity: the promoted master and pbcorr sibling are the '
+          'measured bytes', ident is not None and not probs and ident['master']['md5'] == measured['41MHz'][0][1]
+          and ident['pbcorr sibling']['md5'] == measured['41MHz'][1][1], f'{ident} {probs}')
+    other = os.path.join(tmp, 'gsk', 'promoted')
+    shutil.copytree(os.path.join(promoted, f'{LST}_41MHz'), os.path.join(other, f'{LST}_41MHz'))
+    plain = SC.measured_files(os.path.join(other, f'{LST}_41MHz', 'coadd_final'), '41MHz')[0]
+    with fits.open(plain, mode='update', memmap=False) as hl:      # another master: one pixel differs
+        hl[0].data[(0,) * (hl[0].data.ndim - 2) + (N // 2, N // 2)] += 1.0
+    ident2, probs2 = SC.measured_master_identity(meas, types.SimpleNamespace(rebuild=other), f'{LST}_41MHz')
+    check('G-R4: on a screenless scope, a promoted master other than the measured one is a problem naming both md5',
+          len(probs2) == 1 and measured['41MHz'][0][1] in probs2[0] and SC.md5(plain) in probs2[0], str(probs2)[:300])
+    p41 = SC.measured_files(os.path.join(promoted, f'{LST}_41MHz', 'coadd_final'), '41MHz')
+    g = SC.screen_key_problems(meas.screen_key('41MHz'), meas.screen('41MHz'), *p41)
+    check('G-A12: a screenless key row is never applied (no keyed screen)', len(g) == 1 and 'saved no screen' in g[0], g)
+    for name, edit, want in (('unsaved', lambda r: r.update(screen='', screen_md5='', n_anchors='') if r['scope'] == '27MHz'
+                              else None, 'screens keyed as unsaved'),
+                             ('nomd5', lambda r: r.update(master_md5='') if r['scope'] == '46MHz' else None, 'is not an md5')):
+        m2 = os.path.join(tmp, 'gsk', f'meas_{name}')
+        shutil.copytree(mdir, m2)
+        mm = SC.Measurement(m2, LST)
+        rr = SC.read_table(mm.keys())
+        for r in rr:
+            edit(r)
+        os.remove(mm.keys())
+        SC.write_screen_keys(mm, rr)
+        ok, v, d = T.screen_key_rows(mm.keys())
+        check(f'dewarp_screen_key: {want} fails', not ok and want in d, d)
+
+
 def test_pb_weights(tmp):
     """B-30 (review 2026-10-14 m3): the apply checks the PB weights it installs - the cards of the source generation's
     siblings, which the recomputed siblings keep - before --fresh removes the previous generation: a wideband missing the
@@ -1050,7 +1191,7 @@ def test_pb_weights(tmp):
     from exopipe.phase3.lib.dewarp import master_dewarp as MD
     from exopipe.phase3.lib.dewarp import steps_cell as SCL
     calls, orig, cell = [], MD.apply_saved, '12h_Blue'
-    MD.apply_saved = lambda *a, **k: calls.append(a) or 0
+    MD.apply_saved = lambda *a, **k: calls.append(a) or _stub_master(*a[:2])
     res = {}
     try:
         for name, nd, nm in (('over', 2, 2), ('under', 30, 2)):
@@ -1190,6 +1331,7 @@ def main():
         test_end_to_end(SCRATCH)
         test_stale_measurement(SCRATCH)
         test_screen_keys(SCRATCH)
+        test_screenless_keys(SCRATCH)
         test_pb_weights(SCRATCH)
         test_real_products()
         test_mdwstat_table()

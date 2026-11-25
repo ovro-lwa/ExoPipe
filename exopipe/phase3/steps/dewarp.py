@@ -58,8 +58,9 @@ Outputs (product classes):
          dewarp_table          <measure dir>/tables/table_<LST>.csv (24 columns, one row per attempt; the final row decides)
          dewarp_screen         <measure dir>/<LST>/maps/<scope>_warp_screen.fits (SCREEN_X, SCREEN_Y; one per scope reaching
                                the screen fit). Diagnostics beside them (PNG, JSON) are listed in the record, not products.
-         dewarp_screen_key     <measure dir>/tables/screen_keys_<LST>.csv: per screen its md5 and the md5 of the master and
-                               pbcorr sibling it was measured on (screens keyed by content, never by name or time)
+         dewarp_screen_key     <measure dir>/tables/screen_keys_<LST>.csv: per measured scope the md5 of the master and
+                               pbcorr sibling it was measured on and, when a screen was saved, the screen's md5 (screens
+                               keyed by content, never by name or time; the rows without a screen are G-R4's identity)
          dewarped_master       <GEN_ROOT>/<cell>/gen_mdewarp_rbf/ (coadd_final incl. loo/, PB maps, recomputed pbcorr
                                siblings, subtracted/; '_mdewarp' token; MDWARP/MDWMETH/MDWINTP/... cards) with
                                <GEN_ROOT>/<cell>/INSTALL_CONTENT_OK and APPLIED_SCREEN.json (written by D1-D6 on success)
@@ -443,6 +444,7 @@ def run(args, run):
                               f'rebuilds under {roots.rebuild})')
         for cell in bad:
             with run.unit(cell, lst=lst, kind='cell') as u:
+                SCELL.keep_last_done(run, u, cell)
                 u.refuse(refused[cell])
         for cell in good:
             try:

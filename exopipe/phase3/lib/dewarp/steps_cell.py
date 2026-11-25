@@ -6,7 +6,8 @@ Ports dewarp_lst.sh:36-94 for ONE routed cell, after its LST's measurement:
               <GEN_ROOT>/<cell>/gen_mdewarp_rbf (dewarp_lst.sh:56-60; G-A2..G-A5); an exception is a refusal (G-R2: an
               accepted cell whose apply refused is refused, never sent to the not-accepted path as dewarp_lst.sh:63 does).
               G-A12 before and after: the screen and the master it dewarps are the bytes the measurement keyed (md5); a
-              measurement without keys is noted and applied (dewarp.SCREEN_KEY_REQUIRED True refuses it)
+              measurement without keys is noted and applied (dewarp.SCREEN_KEY_REQUIRED True refuses it); then the
+              apply's MDWSTAT record (applied_mdwstat: 'applied' and each new master's md5, size and mtime)
   verify      content test D1-D6 (D7 with --prior-gen-root) = check_mdewarp_gen.py IN PLACE, on the generation itself so its
               INSTALL_CONTENT_OK / APPLIED_SCREEN.json land where the install reads them, plus the install's cubic,
               applied-screen and product gates and the tested-pixel count (G-A6..G-A10); pass -> meta.install
@@ -15,7 +16,8 @@ Ports dewarp_lst.sh:36-94 for ONE routed cell, after its LST's measurement:
               119-131; G-W, G-R3), then the applied=0 row of the archived screen record through
               phase3_install._screen_row IN PLACE (dewarp_lst.sh:72-90; G-R1)
               -> meta.install {kind 'rebuild', gen <REBUILD_ROOT>/<cell>} (dewarp_lst.sh:92)
-The promoted marker removal (dewarp_lst.sh:94) is replaced by the unit record.
+The promoted marker removal (dewarp_lst.sh:94) is replaced by the unit record. Each attempt keeps the cell's last done
+record that recorded MDWSTAT as meta.last_done (keep_last_done), so a rerun that refuses or fails does not erase it.
 """
 import os
 import shutil
@@ -91,7 +93,8 @@ def screen_key_gate(u, run, meas, cell, groot):
 
 def apply(u, run, roots, cell, meas, row):
     """G-A2, G-A3, G-A12 (+ --fresh removal, recorded), then phase3_master_dewarp.apply_saved in place, then G-A12 again (the
-    screen and the master unchanged during the apply). Returns the generation."""
+    screen and the master unchanged during the apply), then the apply's MDWSTAT record (applied_mdwstat). Returns the
+    generation."""
     from exopipe.phase3.lib.dewarp import master_dewarp as MD
     c = SC.C()
     lst, scope = cell.split('_', 1)
@@ -157,8 +160,61 @@ def apply(u, run, roots, cell, meas, row):
                        f'{key["pbcorr_md5"]}; both unchanged through the apply')
     u.meta['n_written'] = n
     u.note(f'apply: {n} files written into {gen} ({c.RESAMPLE_METHOD}; from {groot})')
+    applied_mdwstat(u, cell, gen)
     print(f'{lst} {scope}: APPLIED - {n} files written', flush=True)
     return gen
+
+
+def applied_mdwstat(u, cell, gen):
+    """The apply's MDWSTAT record (2026-11-25, PR 176 decision 1: one rule for accepted and not-accepted cells): every
+    master of the new generation (steps_common.master_files of <gen>/coadd_final - the masters the install takes) must
+    carry MDWSTAT 'applied' as master_dewarp._apply wrote it (header only, check 'dewarp.mdwstat'); then meta.mdwstat =
+    {value 'applied', files [{path, before None, md5, size, mtime_ns}]}, as the record stage records its stamp, and each
+    master is an output of class 'mdwstat_master', so --resume re-tests it. The install takes MDWSTAT from here and the md5
+    is its currency rule (lib/install/mdwstat). A generation without a master, or a master without the card, refuses."""
+    from exopipe.phase3.core.record import fits_primary_cards
+    value = 'applied'
+    files = SC.master_files(os.path.join(gen, 'coadd_final'))
+    if not files:
+        u.refuse(f'dewarp.mdwstat: {cell}: the apply wrote no master (coadd._MASTER_RE) into {gen}/coadd_final: the '
+                 f'install would take no MDWSTAT')
+    done = []
+    for p in files:
+        got = fits_primary_cards(p).get('MDWSTAT')
+        u.check('dewarp.mdwstat', got == value, value=got, path=p,
+                detail=f'{os.path.basename(p)}: MDWSTAT {got!r}' + ('' if got == value else f' (the apply writes {value!r})'))
+        if got != value:
+            u.refuse(f'dewarp.mdwstat: {cell}: {p} carries MDWSTAT {got!r} after the apply, not {value!r}')
+        st = os.stat(p)
+        done.append({'path': p, 'before': None, 'md5': SC.md5(p), 'size': st.st_size, 'mtime_ns': st.st_mtime_ns})
+    u.meta['mdwstat'] = {'value': value, 'files': done}
+    for d in done:
+        u.add_output(d['path'], 'mdwstat_master', test=False, mdwstat=value, md5=d['md5'])
+
+
+def keep_last_done(run, u, cell):
+    """A rerun of the cell that refuses or fails must not erase its last finished record (PR 176 review item 4): the unit
+    record of every attempt is written at the same path, so the attempt keeps, as meta.last_done, the newest earlier done
+    attempt that recorded MDWSTAT - the earlier record itself when it is such a one, else the meta.last_done it carried -
+    with its run, times, meta.mdwstat (the stamp md5 included) and meta.install. The install uses it only while the newest
+    attempt is not done or recorded no MDWSTAT of its own, and only while the masters keep its md5
+    (lib/install/mdwstat)."""
+    from exopipe.phase3.core import record as R
+    try:
+        prev = R.load_record(run.out_root, 'dewarp', cell)
+    except Exception as e:                         # an unreadable record is not kept; the note says so
+        u.note(f'the earlier dewarp record of {cell} could not be read ({type(e).__name__}: {e}); no meta.last_done kept')
+        return
+    if not prev:
+        return
+    m = prev.get('meta') or {}
+    if prev.get('status') == 'done' and m.get('mdwstat') is not None:
+        last = {k: prev.get(k) for k in ('run_id', 'commit', 'started', 'finished')}
+        last.update(status='done', mdwstat=m.get('mdwstat'), install=m.get('install'))
+    else:
+        last = m.get('last_done')
+    if last:
+        u.meta['last_done'] = last
 
 
 def verify(u, run, args, roots, cell, meas, gen):
@@ -305,7 +361,8 @@ def stamp_mdwstat(u, cell, value, files):
     would read back otherwise), the standard header is valid (validate=True; validate_header reads headers only) and the
     file size is unchanged; then its md5 is taken (one full read). The first failure refuses the unit - record() has
     written nothing else yet, so the cell stays routed and a rerun stamps every file again. Returns [{path, before (the
-    value the file held), md5}]."""
+    value the file held), md5, size (bytes), mtime_ns}]: the install pre-checks size and mtime at its plan and decides on
+    the md5 at staging (lib/install/mdwstat)."""
     import warnings
     from astropy.io import fits
     from exopipe.common.validate_fits_headers import validate_header
@@ -327,7 +384,8 @@ def stamp_mdwstat(u, cell, value, files):
                      f'{len(done)} of {len(files)} master(s) stamped, no applied=0 row written: the cell stays routed')
         back = fits_primary_cards(p).get('MDWSTAT')
         rep = validate_header(p, level='standard')
-        size2 = os.path.getsize(p)
+        st = os.stat(p)
+        size2 = st.st_size
         ok = rep.ok and back == value and size2 == size
         u.check('dewarp.mdwstat', ok, value=back,
                 detail=(f'{name}: MDWSTAT {value!r}, standard header valid' if ok else
@@ -337,7 +395,7 @@ def stamp_mdwstat(u, cell, value, files):
             u.refuse(f'dewarp.mdwstat: {cell}: {p} failed its check after the write (read back {back!r}, wrote {value!r}; '
                      f'header errors {list(rep.errors)[:2]}; size {size} -> {size2} bytes); no applied=0 row written: '
                      f'the cell stays routed')
-        done.append({'path': p, 'before': before, 'md5': SC.md5(p)})
+        done.append({'path': p, 'before': before, 'md5': SC.md5(p), 'size': size2, 'mtime_ns': st.st_mtime_ns})
     print(f'{cell}: MDWSTAT = {value!r} on {len(done)} master(s) of the promoted rebuild', flush=True)
     return done
 
@@ -370,9 +428,11 @@ def run_cell(run, args, roots, lst, cell, meas, stages, route_src=None, resume_o
             return u
         if resume_only:
             with run.unit(cell, cell=cell, lst=lst, kind='cell') as u:
+                keep_last_done(run, u, cell)
                 u.refuse(f'{resume_only}; its earlier dewarp record is not current ({why})')
             return u
     with run.unit(cell, cell=cell, lst=lst, kind='cell') as u:
+        keep_last_done(run, u, cell)
         u.meta['stages'] = [s for s in stages if s in SC.CELL_STAGES]
         if meas is None:
             u.refuse(f'measurement unit {lst} not done')
