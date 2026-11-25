@@ -27,7 +27,8 @@ own code is unchanged:
             conflicting verdicts, show both and mark the source ambiguous; never pick one"): it is kept in the labels
             directory's merge_conflicts.jsonl with the verdicts it conflicts with, HTTP 409 says so, and the survivor's page
             opens with both verdicts, marked AMBIGUOUS (ambiguous_html), until a reviewer judges it on its page;
-          - no page or several pages have it otherwise (a regroup issued new IDs, the identity retired, or gained or lost a
+          - no page or several pages have it otherwise (a regroup issued new IDs, the identity retired, it was merged into an
+            identity that retired since - the merge table records that survivor as 'retired' -, or it gained or lost a
             member identity): REFUSED with HTTP 409 - nothing is recorded, the message names the identity and echoes the label,
             the reviewer reloads.
           A POST /label WITHOUT the stamp to a stamped build is REFUSED the same way when its source_id names a stamped page
@@ -41,7 +42,6 @@ NOT COVERED (stated in the PR): notes, note deletions and the reviewed mark are 
 (classify_transients.py:2949, 4875, 4883), not from a form, so they carry no stamp and pass as before; covering them needs the
 page code to send the stamp. The per-person lists post their form (FormData) and so carry the stamp."""
 import collections
-import csv
 import html
 import json
 import os
@@ -49,6 +49,8 @@ import re
 import threading
 import time
 import urllib.parse
+
+from exopipe.phase3.lib.catalog import stokes_link_tables as SLT
 
 FIELD = 'group_identity_id'
 LABEL_PATH = '/label'
@@ -59,7 +61,6 @@ _HIDDEN_SID = re.compile(r'<input type="hidden" name="source_id" value="([^"]*)"
 _MAPS_ATTR = '_label_identity_maps'
 _MERGES_ATTR = '_label_identity_merges'
 MERGE_CONFLICTS = 'merge_conflicts.jsonl'      # in the labels directory, beside judgements.jsonl
-LINK_DIR, MERGES = 'stokes_link', 'identity_merges.csv'   # = lib/catalog/stokes_link.py DIRNAME, MERGES
 VERDICT = ('judge_confidence', 'judge_fp_reason', 'judge_fp_reason_2')
 _LOCK = threading.Lock()
 
@@ -97,10 +98,12 @@ def _argv_value(entry, flag):
 
 
 def merge_map(page):
-    """{merged identity ID: the live ID it stands for} of the page's run (<run>/stokes_link/identity_merges.csv, read once per
-    version of the file); {} when the run has none (production's grouping)."""
+    """{merged identity ID: the LIVE ID it stands for} of the page's run (<run>/stokes_link/identity_merges.csv through the
+    link's one reader, lib/catalog/stokes_link_tables.read_merges, once per version of the file): a merged ID whose chain ends
+    at a RETIRED identity is not in it, so a label made on it has no page and is refused (HTTP 409); {} when the run has none
+    (production's grouping)."""
     d = _argv_value(getattr(page, 'entry', None), '--run')
-    p = os.path.join(d, LINK_DIR, MERGES) if d else None
+    p = os.path.join(SLT.link_dir(d), SLT.MERGES) if d else None
     try:
         st = os.stat(p) if p else None
     except OSError:
@@ -111,8 +114,7 @@ def merge_map(page):
     with _LOCK:
         c = getattr(page, _MERGES_ATTR, None)
         if c is None or c[0] != key:
-            with open(p, newline='') as f:
-                c = (key, {r['identity_id']: r['into_id'] for r in csv.DictReader(f)})
+            c = (key, SLT.read_merges(SLT.link_dir(d)))
             setattr(page, _MERGES_ATTR, c)
         return c[1]
 

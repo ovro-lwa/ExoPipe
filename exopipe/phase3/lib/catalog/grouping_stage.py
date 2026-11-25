@@ -325,7 +325,8 @@ def run_group(det, tier, stokes, out_dir, state_dir, run_label, inputs, group_mo
     event history, then the previous grouping_<S>/ is moved to grouping_<S>.superseded_<UTC> and the new one renamed into
     place. The whole run holds an exclusive lock on the state (<state dir>/.grouping_<tier>_<S>.lock; a second run refuses).
     reserved_names: the display names no identity here may take (default: those of the tier's other Stokes in out_dir now,
-    present_names; the cross-Stokes link, lib/catalog/stokes_link.py).
+    present_names; the cross-Stokes link, lib/catalog/stokes_link.py). A run that groups both Stokes passes naming_order's
+    (THE NAMING RULE).
     Returns (paths, summary, result) with the final paths and the table's sha1 (paths['detections_sha1'])."""
     m = mode()
     if not m.design_b:
@@ -372,6 +373,20 @@ def run_group(det, tier, stokes, out_dir, state_dir, run_label, inputs, group_mo
 
 def other_stokes(stokes):
     return {'I': 'V', 'V': 'I'}[stokes]
+
+
+def naming_order(stokes):
+    """(the Stokes in grouping order, {S: reserved_names for run_group}) of a run that groups ``stokes`` - THE NAMING RULE
+    (a display name names one (Stokes, identity) of the tier; the cross-Stokes link, lib/catalog/stokes_link.py):
+      both Stokes in one run   the names are decided from this run's groupings only: I is grouped first and reserves nothing
+                               (I keeps its short names), then V reserves I's NEW names (run_group's default, present_names,
+                               read after I's table is in place), so V takes the long form on a collision. Deterministic: an
+                               unchanged dataset gives unchanged names run after run, in whatever order the Stokes were asked.
+      one Stokes               it reserves the other Stokes' present names (run_group's default): after a run of both on the
+                               same data that gives the same names, and a name is never held in both Stokes."""
+    if {'I', 'V'} <= set(stokes):
+        return sorted(stokes, key=lambda S: S != 'I'), {'I': frozenset()}
+    return list(stokes), {}
 
 
 def present_names(out_dir, stokes):
@@ -1319,13 +1334,16 @@ def _run_tenmin_unit(args, u, m, label, out, src, stokes, lsts, cells):
     for S in stokes:
         if S not in ('I', 'V'):
             u.refuse(f'--group-stokes {S}: I and/or V')
+    order, reserved = naming_order(stokes)
+    for S in order:
         from exopipe.phase3.lib.catalog import tests_grouping as TG
         try:
             det = grouped[S] = load_det('10min', S, mc, pt)
             paths, summ, _res = run_group(det, '10min', S, out, out, f'{label}.{STAGE}', dict(master_catalog=mc, pertie=pt),
                                           group_mode=getattr(args, 'group_mode', None),
                                           new_state=bool(getattr(args, 'group_new_state', False)),
-                                          check=lambda pp, S=S: TG.failures(pp, tier='10min', stokes=S, input=mc))
+                                          check=lambda pp, S=S: TG.failures(pp, tier='10min', stokes=S, input=mc),
+                                          reserved_names=reserved.get(S))
         except (StageRefusal, G.GroupingRefused) as e:
             u.refuse(f'{S}: {e}')
         u.meta.setdefault('summary', {})[S] = summ['counts']
@@ -1342,8 +1360,10 @@ def _run_tenmin_unit(args, u, m, label, out, src, stokes, lsts, cells):
 def link_unit(u, out, tier, have=None):
     """the cross-Stokes link of the groupings under out (lib/catalog/stokes_link.py; R-GREGG-20261124-CROSS-STOKES-LINK-TEST-
     APPROVED), after any grouping run: both Stokes' present tables (the one grouped now and the other as it stands) -> out/
-    stokes_link/; a refusal refuses the unit (the readers merge on the link: a stale link must not stand beside a new table).
-    With one Stokes grouped there is nothing to link: (None, None), noted (the readers ask for a link only when both are)."""
+    stokes_link/; a refusal refuses the unit with gate S-G27 (the readers merge on the link: a stale link must not stand
+    beside a new table; a shared display name, a broken merge chain, a missing state or table). have: {S: det} the unit just
+    grouped (the very detections; the other Stokes' are loaded from its grouping summary's inputs). With one Stokes grouped
+    there is nothing to link: (None, None), noted (the readers ask for a link only when both are)."""
     from exopipe.phase3.lib.catalog import stokes_link as SL
     one = SL.grouped_stokes(out) | set(have or ())
     if one != {'I', 'V'}:                       # one Stokes grouped so far: nothing to link (the readers need no link then)
@@ -1353,7 +1373,7 @@ def link_unit(u, out, tier, have=None):
     try:
         paths, counts = SL.run_link(SL.dets_of_tables(out, tier, have), out, tier)
     except SL.LinkRefused as e:
-        u.refuse(str(e))
+        u.refuse(f'S-G27 cross-Stokes link: {e}')
     u.meta['stokes_link'] = counts
     u.add_output(paths['links'], 'stokes_link', tier=tier)
     u.note(f"cross-Stokes link: {counts['linked_pairs']} linked I/V pairs in {counts['components']} components "

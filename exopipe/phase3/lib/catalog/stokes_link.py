@@ -11,13 +11,15 @@ RULINGS
   (association probability P >= 0.97, 4-sigma cap), with the other Stokes' identity density as the background; one-to-many
   links form one connected component, named by its best-localized member and marked ambiguous.
 
-THE TEST (design B's arithmetic, lib/catalog/grouping.py; every constant from config catalog_grouping)
+THE TEST (design B's arithmetic; the positions and the association in core/astrometry.py identity_means and
+identity_association; every constant from config catalog_grouping, read through grouping.Params - one source: P_IDENTITY and
+U_CAP for the decision, and a Params override (tests, diagnostics) changes both)
   identity moments  per identity: the inverse-covariance mean of its detections (grouping.mean_position's arithmetic, in the
                     brightest member's tangent plane) and the covariance of that mean, (sum C^-1)^-1 (arcsec^2; C = the
                     detection's covariance, grouping.covariance: elevation term and Master-frame term included)
   the pair          d = the V mean's (east, north) offset from the I mean; S = Cov_I + Cov_V + STAGE_B_FLOOR_ARCSEC^2 (the stage-B
                     error floor, once, as grouping evaluate adds it to a unit against a component); u = sqrt(d^T S^-1 d)
-  likelihood        f = the window-source offset profile PROFILE_WS at u as an areal density (grouping._areal)
+  likelihood        f = the window-source offset profile PROFILE_WS at u as an areal density (grouping._areal's arithmetic)
   background        rho = the other Stokes' identity means per arcsec^2 in design B's background probes (PROBES_PX along the
                     frame x axis of the identity's brightest detection, discs of PROBE_RADIUS_PX['other_lst'], median, floor
                     PROBE_FLOOR_COUNT per disc: grouping._probe_lists / _category_density's rho_OL); a link is symmetric, so
@@ -32,53 +34,42 @@ THE TEST (design B's arithmetic, lib/catalog/grouping.py; every constant from co
   recorded          per pair: offset (arcsec), u, P, the offset percentile (core/astrometry.offset_pct_profile, PROFILE_WS)
                     and the chance-coincidence probability (core/astrometry.p_chance_ellipse with the pair's rho and S)
 
-PRODUCTS (directory stokes_link/ beside grouping_I/ and grouping_V/; written in a temporary directory, renamed into place)
+PRODUCTS (stokes_link/ beside grouping_I/ and grouping_V/: a symbolic link to the current version in stokes_link.versions/,
+switched atomically - lib/catalog/stokes_link_tables.py, which holds the names, the columns and the one reader of each table)
   stokes_links.csv       LINK_COLS: one row per identity of a component of two or more (an identity absent from the table is
                          its own source: link_id = its group_identity_id)
   stokes_link_pairs.csv  PAIR_COLS: one row per linked (I, V) pair
   identity_merges.csv    MERGE_COLS: every identity ID of either Stokes that a grouping run merged into another, with the
-                         live ID it stands for now (the state saved with each grouping table, grouping_<S>/state_next; the
-                         'into' chain followed). A label made on a page shown before the merge follows it to the survivor's page
-                         (R-GREGG-20261124-CROSS-STOKES-LINK-TEST-APPROVED, Q2: "carry labels along the grouping's merge
-                         events"; lib/serve/label_identity.py)
+                         ID its 'into' chain ends at (the state saved with each grouping table, grouping_<S>/state_next) and that
+                         ID's status: 'live', or 'retired' (valid history: the survivor left the grouping later). A label made on
+                         a page shown before the merge follows it to a live survivor's page (R-GREGG-20261124-CROSS-STOKES-LINK-
+                         TEST-APPROVED, Q2: "carry labels along the grouping's merge events"; lib/serve/label_identity.py); one
+                         whose survivor retired is refused (HTTP 409). A chain that cycles or ends at an ID the state never
+                         issued REFUSES the link.
   summary.json           counts and the inputs (the two grouping tables and their sha1)
 """
 import collections
 import csv
+import datetime
 import hashlib
 import json
 import math
 import os
 import shutil
-import time
 
 import numpy as np
 from scipy.spatial import cKDTree
 
+from exopipe.phase3.core import astrometry as A
 from exopipe.phase3.lib.catalog import grouping as G
-
-DIRNAME = 'stokes_link'
-LINKS = 'stokes_links.csv'
-PAIRS = 'stokes_link_pairs.csv'
-SUMMARY = 'summary.json'
-FORMAT = 'exopipe3-stokes-link-1'
-LINK_COLS = ('link_id', 'link_name', 'link_size', 'link_ambiguous', 'stokes', 'identity_id', 'identity_name', 'linked_ids',
-             'linked_names', 'best_p', 'best_u', 'best_offset_arcsec', 'best_offset_pct', 'best_p_chance', 'mean_ra', 'mean_dec',
-             'pos_err_arcsec', 'n_det')
-PAIR_COLS = ('link_id', 'link_ambiguous', 'I_identity_id', 'I_identity_name', 'V_identity_id', 'V_identity_name', 'offset_arcsec',
-             'u', 'p', 'offset_pct', 'p_chance', 'rho_I_per_deg2', 'rho_V_per_deg2', 'I_pos_err_arcsec', 'V_pos_err_arcsec')
+from exopipe.phase3.lib.catalog.stokes_link_tables import (  # noqa: F401  (the one set of names and readers, re-exported)
+    DIRNAME, FORMAT, INTO_STATUS, KEEP_SUPERSEDED, LINK_COLS, LINKS, LIST_COLS, LOC_ENV, MERGE_COLS, MERGES, PAIR_COLS, PAIRS,
+    SUMMARY, VERSIONS, TableRefused, dir_of, link_dir, link_key, link_test_values, members, partner_names, read_links,
+    read_merge_rows, read_merges, read_pairs, read_rows, read_summary)
 
 
-MERGES = 'identity_merges.csv'
-MERGE_COLS = ('stokes', 'identity_id', 'into_id', 'run')
-
-
-class LinkRefused(RuntimeError):
+class LinkRefused(TableRefused):
     pass
-
-
-def link_dir(out):
-    return os.path.join(out, DIRNAME)
 
 
 def grouped_stokes(out):
@@ -98,24 +89,10 @@ def identity_moments(det, identity_id):
     ident = np.asarray([str(x) for x in identity_id])
     if len(ident) != len(det['ra']):
         raise LinkRefused(f'stokes link: {len(ident)} identity labels for {len(det["ra"])} detections - REFUSING')
-    ids, inv = np.unique(ident, return_inverse=True)
-    snr = np.abs(np.asarray(det['snr'], float))
-    order = np.lexsort((-snr, inv))                       # per identity, its brightest detection first
-    first = np.ones(len(order), bool); first[1:] = inv[order][1:] != inv[order][:-1]
-    anchor = np.empty(len(ids), int); anchor[inv[order][first]] = order[first]
-    ra, de, C = np.asarray(det['ra'], float), np.asarray(det['dec'], float), np.asarray(det['C'], float)
-    a = anchor[inv]
-    dx, dy = G.offset_en(ra[a], de[a], ra, de)
-    Ci = G._inv2(C)
-    A = np.zeros((len(ids), 2, 2)); b = np.zeros((len(ids), 2))
-    np.add.at(A, inv, Ci)
-    np.add.at(b, inv, np.einsum('nij,nj->ni', Ci, np.c_[dx, dy]))
-    cov = G._inv2(A)
-    m = np.einsum('nij,nj->ni', cov, b)
-    mde = de[anchor] + m[:, 1] / 3600.0
-    mra = (ra[anchor] + m[:, 0] / 3600.0 / np.cos(np.radians(de[anchor]))) % 360
-    return dict(ids=ids, ra=mra, dec=mde, cov=cov, lst=np.asarray(det['lst'])[anchor], band=np.asarray(det['band'])[anchor],
-                n_det=np.bincount(inv, minlength=len(ids)), snr=snr[anchor])
+    m = A.identity_means(det['ra'], det['dec'], det['C'], det['snr'], ident)
+    anchor = m.pop('anchor')
+    return dict(m, lst=np.asarray(det['lst'])[anchor], band=np.asarray(det['band'])[anchor],
+                snr=np.abs(np.asarray(det['snr'], float))[anchor])
 
 
 def background(mom, other, P):
@@ -140,29 +117,25 @@ def background(mom, other, P):
 
 def pair_test(mI, mV, tier, P=None):
     """every (I, V) identity pair within STAGE_B_RADIUS_DEG (candidates; performance only): arrays i, v, offset_arcsec, u, p,
-    rho_I, rho_V (per arcsec^2), detS (arcsec^4) and the decision `linked` (u <= U_CAP and P >= P_IDENTITY of the tier)"""
+    rho_I, rho_V (per arcsec^2), detS (arcsec^4) and the decision `linked` (core/astrometry.identity_association: u <= U_CAP
+    and P >= P_IDENTITY, both from P - config catalog_grouping unless the caller's Params overrides them)"""
     P = P or G.Params()
-    p_thr = float(G.operating_point(tier, 'I')[0])
-    if float(G.operating_point(tier, 'V')[0]) != p_thr:
-        raise LinkRefused('stokes link: the identity level differs between I and V - REFUSING')
-    u_cap = P.u_cap
+    try:
+        G.operating_point(tier, 'I')                      # a tier without an operating point REFUSES
+    except G.GroupingRefused as e:
+        raise LinkRefused(f'stokes link: {e}') from None
+    p_thr, u_cap = float(P.p_thr), float(P.u_cap)
     rho_V_at_I = background(mI, mV, P)                    # V identities around each I identity
     rho_I_at_V = background(mV, mI, P)
     tV = cKDTree(G._unit(mV['ra'], mV['dec']))
     near = tV.query_ball_point(G._unit(mI['ra'], mI['dec']), G._chord(P.rnb))
     ln = np.fromiter((len(r) for r in near), int, len(near))
     i = np.repeat(np.arange(len(near)), ln); v = np.fromiter((j for r in near for j in r), int, ln.sum())
-    dx, dy = G.offset_en(mI['ra'][i], mI['dec'][i], mV['ra'][v], mV['dec'][v])
-    S = mI['cov'][i] + mV['cov'][v] + (P.floor ** 2) * np.eye(2)[None]
-    q, detS = G._quad(np.c_[dx, dy], S)
-    f = G._areal(q, detS, P.prof_ws)
     rho = np.maximum(rho_V_at_I[i], rho_I_at_V[v])
-    odds = f / rho
-    p = odds / (1.0 + odds)
-    u = np.sqrt(q)
-    linked = (u <= u_cap) & (p >= p_thr)
-    return dict(i=i, v=v, offset_arcsec=np.hypot(dx, dy), u=u, p=p, rho_I=rho_I_at_V[v], rho_V=rho_V_at_I[i], rho=rho,
-                detS=detS, linked=linked, p_thr=p_thr, u_cap=u_cap)
+    a = A.identity_association(mI['ra'][i], mI['dec'][i], mI['cov'][i], mV['ra'][v], mV['dec'][v], mV['cov'][v], rho,
+                               P.prof_ws, P.floor, p_thr, u_cap)
+    return dict(i=i, v=v, offset_arcsec=a['offset_arcsec'], u=a['u'], p=a['p'], rho_I=rho_I_at_V[v], rho_V=rho_V_at_I[i],
+                rho=rho, detS=a['detS'], linked=a['associated'], p_thr=p_thr, u_cap=u_cap)
 
 
 def components(nI, nV, i, v):
@@ -192,7 +165,6 @@ def pos_err(cov):
 
 def link(mI, mV, namesI, namesV, tier, P=None):
     """(link rows, pair rows, counts) of the two Stokes' identity moments; names*: {identity_id: display name}"""
-    from exopipe.phase3.core import astrometry as A
     P = P or G.Params()
     t = pair_test(mI, mV, tier, P)
     sel = np.nonzero(t['linked'])[0]
@@ -326,7 +298,10 @@ def check_names(out):
 
 def merges_of(out, tier):
     """[MERGE_COLS rows] of the grouping under out: every identity-level ID the state saved with grouping_<S>/ (state_next)
-    holds as merged, with the live ID its 'into' chain ends at (GroupingState.resolve). A missing state REFUSES."""
+    holds as merged, with the ID its 'into' chain ends at (GroupingState.resolve) and that ID's status - 'live', or 'retired'
+    (valid history: the survivor itself left the grouping in a later run). A missing state, a chain that cycles, or one that
+    ends at an ID the state never issued (or at a non-identity ID) REFUSES - the merge history is broken, and a label carried
+    along it could land on the wrong identity."""
     from exopipe.phase3.lib.catalog import grouping_stage as GS
     rows = []
     for S in ('I', 'V'):
@@ -339,23 +314,26 @@ def merges_of(out, tier):
         st.ids = doc['ids']
         for i, r in sorted(doc['ids'].items()):
             if r.get('level') == 'identity' and r.get('status') == 'merged':
-                rows.append(dict(stokes=S, identity_id=i, into_id=st.resolve(i), run=r.get('last_run', '')))
+                try:
+                    end = st.resolve(i)
+                except G.GroupingRefused as e:
+                    raise LinkRefused(f'stokes link: the merge history of {S} {i} in {sp} is broken ({e}) - REFUSING') from None
+                e_ = st.ids.get(end)
+                if e_ is None or e_.get('level') != 'identity' or e_.get('status') not in INTO_STATUS:
+                    raise LinkRefused(f'stokes link: the merge chain of {S} {i} in {sp} ends at {end!r}, '
+                                      + ('an ID the state never issued' if e_ is None else
+                                         f'a {e_.get("level")} ID of status {e_.get("status")!r}')
+                                      + ' - the merge history is broken - REFUSING')
+                rows.append(dict(stokes=S, identity_id=i, into_id=end, into_status=e_['status'], run=r.get('last_run', '')))
     return rows
-
-
-def read_merges(links_dir):
-    """{stale identity ID: the live ID it was merged into} of a stokes_link/ directory; {} when it holds no merge table"""
-    p = os.path.join(links_dir, MERGES)
-    if not os.path.exists(p):
-        return {}
-    with open(p, newline='') as f:
-        return {r['identity_id']: r['into_id'] for r in csv.DictReader(f)}
 
 
 def run_link(det_by_stokes, out, tier, P=None):
     """Link the I and V identities of the grouping under `out` (grouping_I/, grouping_V/ written by run_group from these det)
-    and write stokes_link/ (temporary directory, renamed into place; the previous one moved to .superseded_<UTC>). Returns
-    (paths, counts). A missing Stokes REFUSES: the link needs both."""
+    and write stokes_link/: a new version (new_version), then one atomic switch of the symbolic link (switch_to; the
+    KEEP_SUPERSEDED versions before it kept, older ones deleted). Returns (paths, counts). A missing Stokes REFUSES: the link
+    needs both. P: grouping.Params (default: config catalog_grouping - P_IDENTITY and U_CAP decide, and the summary records
+    the values used)."""
     from exopipe.phase3.lib.catalog import grouping_stage as GS
     if set(det_by_stokes) != {'I', 'V'}:
         raise LinkRefused(f'stokes link: needs the I and V groupings, got {sorted(det_by_stokes)} - REFUSING')
@@ -375,43 +353,99 @@ def run_link(det_by_stokes, out, tier, P=None):
     rows, pairs, counts = link(mom['I'], mom['V'], names['I'], names['V'], tier, P)
     merges = merges_of(out, tier)
     counts['merged_ids'] = {S: sum(1 for m in merges if m['stokes'] == S) for S in ('I', 'V')}
-    final = link_dir(out)
-    tmp = f'{final}.tmp.{os.getpid()}'
-    if os.path.exists(tmp):
-        shutil.rmtree(tmp)
-    os.makedirs(tmp)
-    _write_csv(os.path.join(tmp, LINKS), LINK_COLS, rows)
-    _write_csv(os.path.join(tmp, PAIRS), PAIR_COLS, pairs)
-    _write_csv(os.path.join(tmp, MERGES), MERGE_COLS, merges)
-    summ = dict(format=FORMAT, tier=tier, tables=tables, counts=counts, utc=time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()))
-    with open(os.path.join(tmp, SUMMARY), 'w') as f:
+    counts['merged_ids_retired'] = {S: sum(1 for m in merges if m['stokes'] == S and m['into_status'] == 'retired')
+                                    for S in ('I', 'V')}
+    v = new_version(out)
+    _write_csv(os.path.join(v, LINKS), LINK_COLS, rows)
+    _write_csv(os.path.join(v, PAIRS), PAIR_COLS, pairs)
+    _write_csv(os.path.join(v, MERGES), MERGE_COLS, merges)
+    summ = dict(format=FORMAT, tier=tier, tables=tables, counts=counts, utc=_utc())
+    with open(os.path.join(v, SUMMARY), 'w') as f:
         json.dump(summ, f, indent=1, sort_keys=True)
-    if os.path.exists(final):
-        os.rename(final, f'{final}.superseded_{time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())}')
-    os.rename(tmp, final)
-    return {k: os.path.join(final, v) for k, v in (('links', LINKS), ('pairs', PAIRS), ('summary', SUMMARY))}, counts
+    final = switch_to(out, v)
+    return {k: os.path.join(final, v_) for k, v_ in (('links', LINKS), ('pairs', PAIRS), ('summary', SUMMARY))}, counts
+
+
+# =====================================================================================================================
+# versions: stokes_link is a symbolic link to the current version, switched atomically
+# =====================================================================================================================
+
+def _utc():
+    return datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.%fZ')
+
+
+def new_version(parent):
+    """a new, empty version directory parent/stokes_link.versions/<UTC to the microsecond>_<pid>/ (unique: a name taken
+    REFUSES rather than reuse it); readers never see it until switch_to points stokes_link at it"""
+    vid = datetime.datetime.utcnow().strftime('%Y%m%dT%H%M%S.%fZ') + f'_{os.getpid()}'
+    v = os.path.join(parent, VERSIONS, vid)
+    try:
+        os.makedirs(os.path.join(parent, VERSIONS), exist_ok=True)
+        os.mkdir(v)
+    except OSError as e:
+        raise LinkRefused(f'stokes link: cannot create the version directory {v} ({e}) - REFUSING') from None
+    return v
+
+
+def _versions(parent):
+    d = os.path.join(parent, VERSIONS)
+    return sorted(n for n in os.listdir(d) if os.path.isdir(os.path.join(d, n))) if os.path.isdir(d) else []
+
+
+def switch_to(parent, v):
+    """Point parent/stokes_link at version v (a directory in parent/stokes_link.versions/) in ONE rename: a new relative
+    symbolic link under a temporary name, os.replace over stokes_link - a reader that opens stokes_link/<file> gets the old
+    version or the new one, never a moment without a link table. A stokes_link that is still a plain directory (written before
+    this layout) is first moved into the versions directory (<its modification time>_adopted), the one moment it is
+    absent. Then the versions older than v beyond the KEEP_SUPERSEDED newest are deleted (intermediates; a deletion that
+    fails leaves the directory for the next switch). A failed rename, link or move REFUSES (LinkRefused). Returns
+    parent/stokes_link."""
+    final = link_dir(parent)
+    rel = os.path.join(VERSIONS, os.path.basename(v))
+    if os.path.realpath(os.path.dirname(v)) != os.path.realpath(os.path.join(parent, VERSIONS)) or not os.path.isdir(v):
+        raise LinkRefused(f'stokes link: {v} is not a version directory of {parent} - REFUSING')
+    tmp = f'{final}.switch.{os.getpid()}'
+    try:
+        if os.path.isdir(final) and not os.path.islink(final):
+            t = datetime.datetime.utcfromtimestamp(os.stat(final).st_mtime).strftime('%Y%m%dT%H%M%S.%fZ')
+            os.rename(final, os.path.join(parent, VERSIONS, f'{t}_adopted'))
+        if os.path.lexists(tmp):
+            os.remove(tmp)
+        os.symlink(rel, tmp)
+        os.replace(tmp, final)
+    except OSError as e:
+        raise LinkRefused(f'stokes link: switching {final} to {rel} failed ({e}) - REFUSING') from None
+    cur = os.path.basename(v)
+    older = [n for n in _versions(parent) if n < cur]
+    for n in older[:max(0, len(older) - KEEP_SUPERSEDED)]:
+        shutil.rmtree(os.path.join(parent, VERSIONS, n), ignore_errors=True)
+    return final
 
 
 # =====================================================================================================================
 # readers: the link of a (Stokes, identity)
 # =====================================================================================================================
 
-LOC_ENV = 'P3_LOC_LINKS'          # the localization's link table (lib/catalog/wraps/source_localization.py link_detections)
-
-
 def current_links(out, tables=None):
     """the path of out/stokes_link/stokes_links.csv after checking that the link was computed from the grouping tables the
     reader stands on: tables {S: sha1} (default: the sha1 of the present grouping_<S>/detections.csv under out). A missing
     link, or one computed from other tables (a grouping run whose link step refused), REFUSES: the readers merge on the
     link, and a stale link would merge identities of another grouping."""
+    _check_version(out, link_dir(out), tables)
+    return os.path.join(link_dir(out), LINKS)
+
+
+def _check_version(out, d, tables=None):
+    """current_links' check on one directory d (the current link, or the version a publish copies)"""
     from exopipe.phase3.lib.catalog import grouping_stage as GS
-    d = link_dir(out)
     sp, lp = os.path.join(d, SUMMARY), os.path.join(d, LINKS)
     if not (os.path.exists(sp) and os.path.exists(lp)):
         raise LinkRefused(f'stokes link: {d} holds no link (run the grouping stage: it links the two Stokes after grouping) - '
                           f'REFUSING')
-    with open(sp) as f:
-        summ = json.load(f)
+    summ = read_summary(d)
+    if summ.get('format') != FORMAT:
+        raise LinkRefused(f'stokes link: {d} is of format {summ.get("format")!r}, not {FORMAT!r} (re-run the grouping stage) - '
+                          f'REFUSING')
     for S in ('I', 'V'):
         want = (tables or {}).get(S) or _sha1(os.path.join(GS.group_dir(out, S), GS.DETECTIONS))
         got = ((summ.get('tables') or {}).get(S) or {}).get('sha1')
@@ -422,34 +456,19 @@ def current_links(out, tables=None):
 
 
 def publish(out, dest, tables=None):
-    """copy the current link of the grouping under out (current_links) into dest/stokes_link/ - a served run's own copy, which
-    its localization and its pages read; returns the copied stokes_links.csv"""
-    current_links(out, tables)
-    src, final = link_dir(out), link_dir(dest)
-    tmp = f'{final}.tmp.{os.getpid()}'
-    if os.path.exists(tmp):
-        shutil.rmtree(tmp)
-    shutil.copytree(src, tmp)
-    if os.path.exists(final):
-        shutil.rmtree(final)
-    os.rename(tmp, final)
-    return os.path.join(final, LINKS)
+    """copy the current link of the grouping under out (checked as current_links checks it) into a new version of
+    dest/stokes_link and switch to it atomically (switch_to: a live server reading dest never sees a moment without a link
+    table) - a served run's own copy, which its localization and its pages read; returns dest/stokes_link/stokes_links.csv"""
+    src = os.path.realpath(link_dir(out))          # one version, fixed: a switch under out while copying changes nothing here
+    _check_version(out, src, tables)
+    v = new_version(dest)
+    try:
+        for n in sorted(os.listdir(src)):
+            shutil.copy2(os.path.join(src, n), os.path.join(v, n))
+    except OSError as e:
+        raise LinkRefused(f'stokes link: copying {src} into {v} failed ({e}) - REFUSING') from None
+    return os.path.join(switch_to(dest, v), LINKS)
 
-
-def partner_names(links_path):
-    """{display name: [the names it is localized with]} of a stokes_links.csv: the other members of its component, for an
-    UNAMBIGUOUS component only (a one-to-many component pools nothing; the localization wrap reads the table the same way,
-    lib/catalog/wraps/source_localization.py link_detections)"""
-    with open(links_path, newline='') as f:
-        rows = list(csv.DictReader(f))
-    comp = collections.defaultdict(list)
-    for r in rows:
-        comp[r['link_id']].append(r['identity_name'])
-    return {r['identity_name']: [n for n in comp[r['link_id']] if n != r['identity_name']]
-            for r in rows if r['link_ambiguous'] == '0'}
-
-
-LIST_COLS = ('stokes_link_id', 'stokes_link_name', 'stokes_link_ambiguous', 'stokes_linked_names')
 
 
 def add_link_columns(table, out, links_path):
@@ -460,8 +479,9 @@ def add_link_columns(table, out, links_path):
     columns added after them. Rewritten in place (temporary file, replaced). A row whose (Stokes, name) is no identity of the
     grouping under out REFUSES. Returns (rows, rows linked)."""
     from exopipe.phase3.lib.catalog import grouping_stage as GS
-    with open(links_path, newline='') as f:
-        links = {(r['stokes'], r['identity_name']): r for r in csv.DictReader(f)}
+    lrows = read_rows(links_path, LINK_COLS)
+    links = {(r['stokes'], r['identity_name']): r for r in lrows}
+    comps = members(lrows)                          # the components, indexed by link_id once
     ids = {}
     for S in ('I', 'V'):
         with open(os.path.join(GS.group_dir(out, S), GS.IDENTITIES), newline='') as f:
@@ -484,7 +504,7 @@ def add_link_columns(table, out, links_path):
         if lk:
             n += 1
             others = [x for x in lk['linked_names'].split(';') if x]
-            comp = [m for m in links.values() if m['link_id'] == lk['link_id'] and m['stokes'] != key[0]]
+            comp = [m for m in comps[lk['link_id']] if m['stokes'] != key[0]]
             r.update(stokes_link_id=lk['link_id'], stokes_link_name=lk['link_name'], stokes_link_ambiguous=lk['link_ambiguous'],
                      stokes_linked_names=';'.join(sorted({m['identity_name'] for m in comp} | set(others))))
         elif key in ids:
@@ -507,20 +527,3 @@ def add_link_columns(table, out, links_path):
         w.writerows(rows)
     os.replace(tmp, table)
     return len(rows), n
-
-
-def read_links(out_or_dir):
-    """{(stokes, identity_id): link row} of a stokes_link/ directory (or the grouping output holding it); a missing
-    directory REFUSES (a reader that merges on the link must not silently fall back to per-Stokes sources)"""
-    d = out_or_dir if os.path.basename(os.path.normpath(out_or_dir)) == DIRNAME else link_dir(out_or_dir)
-    p = os.path.join(d, LINKS)
-    if not os.path.exists(p):
-        raise LinkRefused(f'stokes link table {p} is missing - REFUSING')
-    with open(p, newline='') as f:
-        return {(r['stokes'], r['identity_id']): r for r in csv.DictReader(f)}
-
-
-def link_key(links, stokes, identity_id):
-    """the link id of a (Stokes, stable identity ID): its component's link_id, or the identity's own ID (a source of one)"""
-    r = links.get((stokes, identity_id))
-    return r['link_id'] if r else identity_id

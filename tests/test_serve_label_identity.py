@@ -21,7 +21,8 @@ leaves (merged) and GTI-0000004 is new. Forms rendered by build 1 are posted to 
             merged into GTI-0000003): build 1's label of GTI-0000006 follows the merge to J0200+0200; a label of a different
             verdict is NOT made its verdict - it is kept with the verdict it conflicts with (merge_conflicts.jsonl), 409 says
             so, and the page opens AMBIGUOUS with both verdicts until a verdict is recorded on it; the same verdict follows the
-            merge; a non-label POST follows it; without the merge table the label is refused as before
+            merge; a non-label POST follows it; without the merge table the label is refused as before; a label of an
+            identity merged into one that retired since (into_status 'retired') is refused
   settled   label_identity.conflict_settled: what settles a merge conflict (shared with the journal carry)
   versions  through serve_request on a versioned run (PR 155): a form of the version before the switch whose identity maps
             (merged) lands on the survivor; only an unmappable or unstamped form gets the stale-form 409
@@ -349,7 +350,7 @@ def test_merged():
     run3 = write_run(os.path.join(TMP, 'run3'), BUILD2)
     os.makedirs(os.path.join(run3, 'stokes_link'))
     with open(os.path.join(run3, 'stokes_link', 'identity_merges.csv'), 'w') as f:
-        f.write('stokes,identity_id,into_id,run\nI,GTI-0000006,GTI-0000003,R2\n')
+        f.write('stokes,identity_id,into_id,into_status,run\nI,GTI-0000006,GTI-0000003,live,R2\n')
     lab1, lab3 = os.path.join(TMP, 'labels1m'), os.path.join(TMP, 'labels3')
     p1, p3 = build('m1', run1, lab1), build('m3', run3, lab3)
     f6 = form_bodies(get(p1, 'J0600+0600')[2])
@@ -384,18 +385,40 @@ def test_merged():
     st, hd, body = post(p2, *f6[0])
     check('merged: without the run\'s merge table the label is refused as before (409, nothing written)',
           st == 409 and not journal(os.path.join(TMP, 'labels2m')), (st, body[:200]))
+    run4 = write_run(os.path.join(TMP, 'run4'), BUILD2)
+    os.makedirs(os.path.join(run4, 'stokes_link'))
+    with open(os.path.join(run4, 'stokes_link', 'identity_merges.csv'), 'w') as f:
+        f.write('stokes,identity_id,into_id,into_status,run\nI,GTI-0000006,GTI-0000066,retired,R2\n')
+    p4 = build('m4', run4, os.path.join(TMP, 'labels4m'))
+    st, hd, body = post(p4, *f6[0])
+    check('merged: a label of an identity merged into one that RETIRED since (the merge table records it retired: valid '
+          'history) is refused (409, nothing written) - no page holds the survivor',
+          st == 409 and not journal(os.path.join(TMP, 'labels4m')), (st, body[:200]))
 
 
 def test_banner():
     run3 = os.path.join(TMP, 'run3')
+    from exopipe.phase3.lib.catalog import stokes_link_tables as SLT
     d = os.path.join(run3, 'stokes_link')
-    with open(os.path.join(d, 'stokes_links.csv'), 'w') as f:
-        f.write('link_id,link_name,link_size,link_ambiguous,stokes,identity_id,identity_name,linked_ids,linked_names\n'
-                'GTI-0000001,J0100+0101,2,0,I,GTI-0000001,J0100+0101,GTV-0000005,J0100+0102\n'
-                'GTI-0000001,J0100+0101,2,0,V,GTV-0000005,J0100+0102,GTI-0000001,J0100+0101\n')
-    with open(os.path.join(d, 'stokes_link_pairs.csv'), 'w') as f:
-        f.write('link_id,link_ambiguous,I_identity_id,I_identity_name,V_identity_id,V_identity_name,offset_arcsec,u,p,'
-                'offset_pct,p_chance\nGTI-0000001,0,GTI-0000001,J0100+0101,GTV-0000005,J0100+0102,12.5,0.4,0.991,8.1,0.0012\n')
+    common = dict(link_id='GTI-0000001', link_name='J0100+0101', link_size=2, link_ambiguous=0, best_p=0.991, best_u=0.4,
+                  best_offset_arcsec=12.5, best_offset_pct=8.1, best_p_chance=0.0012, mean_ra=15.0, mean_dec=1.0,
+                  pos_err_arcsec=20.0, n_det=3)
+    with open(os.path.join(d, SLT.LINKS), 'w', newline='') as f:
+        w = csv.DictWriter(f, fieldnames=SLT.LINK_COLS)
+        w.writeheader()
+        w.writerow(dict(common, stokes='I', identity_id='GTI-0000001', identity_name='J0100+0101', linked_ids='GTV-0000005',
+                        linked_names='J0100+0102'))
+        w.writerow(dict(common, stokes='V', identity_id='GTV-0000005', identity_name='J0100+0102', linked_ids='GTI-0000001',
+                        linked_names='J0100+0101'))
+    with open(os.path.join(d, SLT.PAIRS), 'w', newline='') as f:
+        w = csv.DictWriter(f, fieldnames=SLT.PAIR_COLS)
+        w.writeheader()
+        w.writerow(dict(link_id='GTI-0000001', link_ambiguous=0, I_identity_id='GTI-0000001', I_identity_name='J0100+0101',
+                        V_identity_id='GTV-0000005', V_identity_name='J0100+0102', offset_arcsec=12.5, u=0.4, p=0.991,
+                        offset_pct=8.1, p_chance=0.0012, rho_I_per_deg2=1.0, rho_V_per_deg2=1.0, I_pos_err_arcsec=20.0,
+                        V_pos_err_arcsec=20.0))
+    with open(os.path.join(d, SLT.SUMMARY), 'w') as f:
+        json.dump(dict(format=SLT.FORMAT, tier='10min', counts=dict(p_threshold=0.97, u_cap=4.0)), f)
     pb = build('mb', run3, os.path.join(TMP, 'labelsb'), stokes_partner=[dict(port=8787, stokes='V', kind='single')])
     st, hd, h = get(pb, 'J0100+0101')
     check('banner: a source page of a build naming its other-Stokes pages opens with the link (the V identity, its page, P, '
@@ -453,7 +476,7 @@ def test_versions():
     os.makedirs(os.path.join(v2.run, J))
     os.makedirs(os.path.join(v2.run, 'stokes_link'))
     with open(os.path.join(v2.run, 'stokes_link', 'identity_merges.csv'), 'w') as f:
-        f.write('stokes,identity_id,into_id,run\nI,GTI-0000006,GTI-0000003,R2\n')
+        f.write('stokes,identity_id,into_id,into_status,run\nI,GTI-0000006,GTI-0000003,live,R2\n')
     with versions.journal_locks(U, [J]):
         versions.switch(U, v2, record=versions.seal(v2))
 

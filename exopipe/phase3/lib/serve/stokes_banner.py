@@ -15,19 +15,20 @@ stable identity IDs (lib/serve/label_identity.py identity_maps):
                chance-coincidence probability (core/astrometry.py offset_pct_profile, p_chance_ellipse); "the localization
                combines both Stokes' detections";
   ambiguous    marked AMBIGUOUS, every member of the component listed, "positions are not combined";
-  not linked   one line saying so, with the test;
+  not linked   one line saying so, with the test and the values the link was computed with (its summary.json: config
+               catalog_grouping P_IDENTITY and U_CAP);
   no table     one line naming the missing table (the build stages refuse to publish without it, so this is a run served
                from outside them).
 The review page's own code is unchanged; pages without stable IDs (production's grouping) are byte for byte as before."""
-import csv
 import html
 import os
 import re
 import threading
 import urllib.parse
 
+from exopipe.phase3.lib.catalog import stokes_link_tables as SLT
+
 ENTRY_KEY = 'stokes_partner'           # registry entry: [{"port": legacy port, "stokes": "I", "kind": "single"}, ...]
-DIRNAME, LINKS, PAIRS = 'stokes_link', 'stokes_links.csv', 'stokes_link_pairs.csv'   # = lib/catalog/stokes_link.py
 SOURCE_PATH = '/source/'
 _BODY = re.compile(r'<body[^>]*>')
 _CACHE_ATTR = '_stokes_banner_cache'
@@ -41,28 +42,31 @@ def run_dir(entry):
 
 
 def tables(page):
-    """(links {stokes_identity_id: row}, pairs [row], members {link_id: [row]}, links path) of the page's run, read once per
-    version of the files (their mtime and size); None when the run has no link table."""
+    """(links {stokes_identity_id: row}, pairs [row], members {link_id: [row]}, (P threshold, u cap)) of the page's run,
+    read through the link's one reader (lib/catalog/stokes_link_tables.py) from ONE version of the link (the directory
+    stokes_link points at when read: a switch while reading changes nothing), once per version; the path of the missing
+    table when the run has none (or one in another format)."""
     d = run_dir(page.entry)
     if not d:
         return None
-    lp, pp = os.path.join(d, DIRNAME, LINKS), os.path.join(d, DIRNAME, PAIRS)
+    ld = SLT.link_dir(d)
+    v = os.path.realpath(ld)
     try:
-        key = tuple((os.stat(p).st_mtime_ns, os.stat(p).st_size) for p in (lp, pp))
+        key = (v,) + tuple((os.stat(p).st_mtime_ns, os.stat(p).st_size)
+                           for p in (os.path.join(v, n) for n in (SLT.LINKS, SLT.PAIRS, SLT.SUMMARY)))
     except OSError:
-        return lp
+        return os.path.join(ld, SLT.LINKS)
     with _LOCK:
         c = getattr(page, _CACHE_ATTR, None)
         if c is not None and c[0] == key:
             return c[1]
-        with open(lp, newline='') as f:
-            rows = list(csv.DictReader(f))
-        with open(pp, newline='') as f:
-            pairs = list(csv.DictReader(f))
-        members = {}
-        for r in rows:
-            members.setdefault(r['link_id'], []).append(r)
-        t = ({r['identity_id']: r for r in rows}, pairs, members, lp)
+        try:
+            rows = SLT.read_rows(os.path.join(v, SLT.LINKS), SLT.LINK_COLS)
+            pairs = SLT.read_pairs(v)
+            test = SLT.link_test_values(SLT.read_summary(v))
+        except (SLT.TableRefused, KeyError, ValueError) as e:
+            return f'{os.path.join(ld, SLT.LINKS)} ({e})'
+        t = ({r['identity_id']: r for r in rows}, pairs, SLT.members(rows), test)
         setattr(page, _CACHE_ATTR, (key, t))
         return t
 
@@ -91,14 +95,14 @@ def html_for(page, sid, gids):
     t = tables(page)
     if not isinstance(t, tuple):
         return (f'<div class="stokes-link" {style.format(c="#b00", b="#fee")}>Cross-Stokes link: no link table for this run '
-                f'({html.escape(str(t))} is missing), so no Stokes {other} identity is named here.</div>')
-    links, pairs, members, _lp = t
+                f'({html.escape(str(t))}: missing or not readable), so no Stokes {other} identity is named here.</div>')
+    links, pairs, members, (p_thr, u_cap) = t
     parts = []
     for g in gids:
         r = links.get(g)
         if r is None:
-            parts.append(f'Not linked to a Stokes {other} identity (cross-Stokes test: probability P &ge; 0.97 within 4 '
-                         f'standard deviations of the combined position error).')
+            parts.append(f'Not linked to a Stokes {other} identity (cross-Stokes test: probability P &ge; {p_thr:g} within '
+                         f'{u_cap:g} standard deviations of the combined position error).')
             continue
         comp = members.get(r['link_id'], [])
         mine_pairs = [p for p in pairs if p[f'{mine}_identity_id'] == g]

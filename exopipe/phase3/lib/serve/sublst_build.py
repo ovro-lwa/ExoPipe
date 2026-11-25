@@ -407,8 +407,7 @@ def stokes_link_stage(B, u):
     except SL.LinkRefused as e:
         u.refuse(f'G30 cross-Stokes link: {e}')
     u.add_output(p, 'stokes_link')
-    with open(os.path.join(os.path.dirname(p), SL.SUMMARY)) as f:
-        counts = json.load(f)['counts']
+    counts = SL.read_summary(os.path.dirname(p))['counts']
     u.meta['stokes_link'] = counts
     u.note(f"G30 cross-Stokes link: {counts['linked_pairs']} linked I/V pairs, {counts['ambiguous_components']} ambiguous "
            f"components; the localization merges on it")

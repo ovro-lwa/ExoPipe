@@ -629,9 +629,11 @@ def test_grouping_design_b_in_the_chain():
     m._GROUPING, m._MRULE = 'design-b', 'one-rule'
     try:
         rc, err = cli('--until', 'group', expect=2)
-        r = rec(f'{LABEL}.group.V')
+        # THE NAMING RULE (grouping_stage.naming_order): both Stokes grouped in one run - I first (the first to refuse here)
+        r = rec(f'{LABEL}.group.I')
         assert r and r['status'] == 'refused' and 'D-G24' in r['reason'] and 'new=True' in r['reason'], (r and r['reason'])
-        assert not os.path.exists(f'{U}/_grouping_state/grouping_deep_V_state.json')
+        assert not os.path.exists(f'{U}/_grouping_state/grouping_deep_I_state.json')
+        assert not rec(f'{LABEL}.group.V'), 'the V group unit ran after I refused'
         rc, err = cli('--from', 'group', '--until', 'fork', '--group-new-state', expect=0)
         for S in ('V', 'I'):
             r = rec(f'{LABEL}.group.{S}')

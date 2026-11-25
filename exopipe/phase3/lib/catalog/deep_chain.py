@@ -167,7 +167,9 @@ class DeepRun:
         self.fork_on = not self.label.startswith(c.DEEP_FORK_SKIP_PREFIX)
         self.keys = [K for K in c.DEEP_ASSOC_KEYS if K[0] in self.stokes]
         self.fork_stokes = [S for S in CFG.catalog_fork.STOKES if S in self.stokes]
-        self.group_stokes = [S for S in CFG.catalog_fork.STOKES if S in self.stokes]     # V first, as the fork (item F.3)
+        self.group_stokes = [S for S in CFG.catalog_fork.STOKES if S in self.stokes]     # V first, as the fork (item F.3);
+        # st_group runs them in THE NAMING RULE's order (grouping_stage.naming_order: I first when both are grouped)
+        self.grouped_det = {}                   # {S: det} grouped in this invocation (the cross-Stokes link's have=)
         self.ts = time.strftime('%Y%m%dT%H%M', time.gmtime())
         self.lock_fd = None
         self.checked_first = False
@@ -1073,7 +1075,7 @@ class DeepRun:
     def grouping_table(self, S):
         return os.path.join(self.U, f'grouping_{S}', 'detections.csv')
 
-    def _group_one(self, S):
+    def _group_one(self, S, reserved=None):
         from exopipe.phase3.lib.catalog import grouping_stage as GS, tests_grouping as TG
         u = self.new_unit('group', S)
         with u:
@@ -1097,9 +1099,10 @@ class DeepRun:
                 paths, summ, _res = GS.run_group(
                     det, 'deep', S, self.U, state, u.name, dict(master_catalog=src, frame_beam=beam),
                     group_mode=getattr(self.args, 'group_mode', None), new_state=bool(getattr(self.args, 'group_new_state', False)),
-                    check=lambda pp: TG.failures(pp, tier='deep', stokes=S, input=src))
+                    check=lambda pp: TG.failures(pp, tier='deep', stokes=S, input=src), reserved_names=reserved)
             except GS.StageRefusal as e:
                 u.refuse(f'D-G24 grouping {S}: {e}')
+            self.grouped_det[S] = det               # the very detections grouped: the link's (st_identity, have=)
             self.write_stage_json(d, input=src, frame_beam=beam, state_dir=state, mode=self.grouping_mode.as_dict(),
                                   counts=summ['counts'], group_mode=summ.get('mode'))
             u.meta['counts'] = summ['counts']
@@ -1117,9 +1120,13 @@ class DeepRun:
         return u
 
     def st_group(self):
+        """the group units, in THE NAMING RULE's order (grouping_stage.naming_order: both Stokes - I first, reserving
+        nothing; V reserving I's new names)"""
+        from exopipe.phase3.lib.catalog import grouping_stage as GS
         out = []
-        for S in self.group_stokes:
-            x = self._group_one(S)
+        order, reserved = GS.naming_order(self.group_stokes)
+        for S in order:
+            x = self._group_one(S, reserved.get(S))
             out.append(x)
             if x.status not in ('done', 'no-input', 'skipped-valid'):
                 break
@@ -1383,7 +1390,7 @@ class DeepRun:
                 # which the localization, the transient list and the pages merge on (lib/catalog/stokes_link.py)
                 from exopipe.phase3.lib.catalog import stokes_link as SL
                 try:
-                    lp, lc = SL.run_link(SL.dets_of_tables(self.U, 'deep'), self.U, 'deep')
+                    lp, lc = SL.run_link(SL.dets_of_tables(self.U, 'deep', self.grouped_det), self.U, 'deep')
                 except SL.LinkRefused as e:
                     u.refuse(f'D-G21 cross-Stokes link: {e}')
                 u.meta['stokes_link'] = lc
@@ -1684,7 +1691,8 @@ class DeepRun:
                 p('    then the split (ported PYS): selected_{V,I}_{wb,sb}.csv; class selection')
                 p('    not here: TESS coverage (pages; spec Q10)')
             elif stage == 'group':
-                for S in self.group_stokes:
+                from exopipe.phase3.lib.catalog import grouping_stage as GS_
+                for S in GS_.naming_order(self.group_stokes)[0]:
                     p(f'    unit {self.u("group", S)}')
                 if not self.design_b:
                     p("    no-input: catalog_grouping.GROUPING = 'production' (the builder groups, as production; the parity file)")

@@ -3,20 +3,32 @@
 synthetic data (no data files):
 
   astrometry   core/astrometry.offset_pct_profile = 100 x the profile's mass within u (grouping._profile_mass, numerical);
-               p_chance_ellipse = 1 - exp(-rho pi u^2 sqrt(det S)), 0 at u = 0, rising with u
+               p_chance_ellipse = 1 - exp(-rho pi u^2 sqrt(det S)), 0 at u = 0, rising with u; identity_means and
+               identity_association (the link's positions and test) = design B's arithmetic (grouping.offset_en, _inv2, _quad,
+               _areal) bit for bit
   names        grouping.display_names(reserved=): a name the other Stokes holds is never reused (short -> long form; a long
                form also held -> a letter suffix); without reserved names nothing changes
   link         on synthetic identity moments: a close I/V pair is linked (P >= 0.97, u <= 4), a far one is not; an I identity
                with two V identities near it is ONE component of three, marked ambiguous and named by its best-localized
-               member; the counts; every pair records an offset percentile in 0-100 and a chance-coincidence probability in 0-1
+               member; the counts; every pair records an offset percentile in 0-100 and a chance-coincidence probability in 0-1;
+               the test's P and cap are config catalog_grouping P_IDENTITY and U_CAP, and a Params override changes both the
+               decision and the recorded values
   stage        run_link on grouping directories on disk: the content test stokes_link (L1-L4) passes on the grouping's own link
                and on a served copy (publish); a shared display name, a stale table and a corrupted merge table are caught or
-               refused; identity_merges.csv follows the 'into' chain to the live ID
+               refused; identity_merges.csv follows the 'into' chain to the live ID, and records a chain ending at a RETIRED
+               identity as 'retired' (valid history: L4 passes, read_merges leaves it out); a chain that cycles or ends at an
+               ID the state never issued REFUSES; L4 catches a merge row the state does not hold and a wrong end status
+  versions     stokes_link is a symbolic link switched atomically to a new version per run; the current version and
+               KEEP_SUPERSEDED before it kept, older ones deleted; a stokes_link left as a plain directory (the earlier layout)
+               is adopted as a version; publish switches the served copy the same way (the old version kept); a version
+               directory outside the parent refuses
   readers      partner_names and the localization wrap (P3_LOC_LINKS: a linked identity localized on both Stokes' detections,
                a detection once; an ambiguous component pools nothing; a missing table refuses); add_link_columns (the
                transient list's link columns; an unknown (Stokes, name) refuses)
   banner       lib/serve/stokes_banner.py: the partner pages of a plan page; the banner of a linked, an ambiguous and an
-               unlinked identity and of a run without a link table; inserted after <body> of a source page only
+               unlinked identity and of a run without a link table; the P and cap it prints are the link's (its summary);
+               inserted after <body> of a source page only
+  one-Stokes   tier_sublst._link_env: a view standing on one Stokes needs no link - {} with a note in the record and the log
 
 Run: env PYTHONPATH=$PWD NUMPY_MADVISE_HUGEPAGE=0 EXOPIPE3_SITE=/lustre/gh/main/exopipe_ops/exopipe3_site.py
      /opt/devel/pipeline/envs/py38_orca_nkosogor/bin/python3 tests/test_catalog_stokes_link.py
@@ -79,6 +91,45 @@ def test_astrometry():
     v = [A.p_chance_ellipse(rho, u, det) for u in (0.0, 1.0, 2.0)]
     check('astrometry: p_chance_ellipse = 1 - exp(-rho pi u^2 sqrt(det S)), 0 at u = 0, rising',
           v[0] == 0.0 and abs(v[1] - (1 - math.exp(-rho * math.pi * 400.0))) < 1e-12 and v[2] > v[1], v)
+    # identity_means / identity_association against design B's own functions, on random detections
+    rng = np.random.default_rng(7)
+    n = 400
+    ra, dec = rng.uniform(0, 360, n), rng.uniform(-20, 85, n)
+    lab = rng.integers(0, 60, n)
+    ra = (ra[lab] * 0 + rng.uniform(0, 360, 60)[lab] + rng.normal(0, 0.01, n)) % 360
+    dec = rng.uniform(-20, 85, 60)[lab] + rng.normal(0, 0.01, n)
+    L = rng.normal(0, 30, (n, 2, 2))
+    C = np.einsum('nij,nkj->nik', L, L) + 25.0 * np.eye(2)[None]
+    snr = rng.uniform(5, 50, n) * rng.choice([-1, 1], n)
+    m = A.identity_means(ra, dec, C, snr, lab)
+    ids, inv = np.unique(lab, return_inverse=True)
+    order = np.lexsort((-np.abs(snr), inv))
+    first = np.ones(n, bool); first[1:] = inv[order][1:] != inv[order][:-1]
+    anc = np.empty(len(ids), int); anc[inv[order][first]] = order[first]
+    dx, dy = G.offset_en(ra[anc[inv]], dec[anc[inv]], ra, dec)
+    Ci = G._inv2(C)
+    AA = np.zeros((len(ids), 2, 2)); b = np.zeros((len(ids), 2))
+    np.add.at(AA, inv, Ci); np.add.at(b, inv, np.einsum('nij,nj->ni', Ci, np.c_[dx, dy]))
+    cov = G._inv2(AA); mm = np.einsum('nij,nj->ni', cov, b)
+    rde = dec[anc] + mm[:, 1] / 3600.0
+    rra = (ra[anc] + mm[:, 0] / 3600.0 / np.cos(np.radians(dec[anc]))) % 360
+    check('astrometry: identity_means = design B\'s inverse-covariance mean (grouping.offset_en, _inv2), bit for bit',
+          np.array_equal(m['ra'], rra) and np.array_equal(m['dec'], rde) and np.array_equal(m['cov'], cov)
+          and np.array_equal(m['anchor'], anc) and np.array_equal(m['n_det'], np.bincount(inv)))
+    P = G.Params()
+    k = len(ids)
+    j = rng.permutation(k)
+    rho = rng.uniform(1e-9, 1e-7, k)
+    a = A.identity_association(m['ra'], m['dec'], m['cov'], m['ra'][j] + 0.003, m['dec'][j] - 0.002, m['cov'][j], rho,
+                               P.prof_ws, P.floor, 0.97, 4.0)
+    ex, ey = G.offset_en(m['ra'], m['dec'], m['ra'][j] + 0.003, m['dec'][j] - 0.002)
+    q, detS = G._quad(np.c_[ex, ey], m['cov'] + m['cov'][j] + (P.floor ** 2) * np.eye(2)[None])
+    odds = G._areal(q, detS, P.prof_ws) / rho
+    pr = odds / (1.0 + odds)
+    check('astrometry: identity_association = design B\'s identity-level test (grouping.offset_en, _quad, _areal), bit for bit',
+          np.array_equal(a['u'], np.sqrt(q)) and np.array_equal(a['p'], pr) and np.array_equal(a['detS'], detS)
+          and np.array_equal(a['offset_arcsec'], np.hypot(ex, ey))
+          and np.array_equal(a['associated'], (np.sqrt(q) <= 4.0) & (pr >= 0.97)))
 
 
 def test_names():
@@ -135,11 +186,25 @@ def test_link():
           a['link_id'] == 'GTI-0000001' and by[('V', 'GTV-0000001')]['link_name'] == 'J0520+3000', a)
     check('link: the counts', c['linked_pairs'] == 3 and c['components'] == 2 and c['ambiguous_components'] == 1
           and c['component_sizes'] == {'2': 1, '3': 1} and c['linked_identities_I'] == 2 and c['linked_identities_V'] == 3, c)
+    from exopipe.phase3.config import CFG
+    g = CFG.catalog_grouping
+    check('link: the test\'s P and cap are config catalog_grouping P_IDENTITY and U_CAP (recorded in the counts)',
+          (c['p_threshold'], c['u_cap']) == (float(g.P_IDENTITY), float(g.U_CAP)), (c['p_threshold'], c['u_cap']))
+    P = G.Params()
+    P.u_cap = 0.05
+    _r, pairs2, c2 = SL.link(mI, mV, nI, nV, '10min', P)
+    P = G.Params()
+    P.p_thr = 1.0 - 1e-15
+    _r, pairs3, c3 = SL.link(mI, mV, nI, nV, '10min', P)
+    check('link: a Params override of the cap or of P changes the decision and the recorded values (one source: the Params)',
+          (len(pairs2), c2['u_cap']) == (0, 0.05) and len(pairs3) < 3 and c3['p_threshold'] == 1.0 - 1e-15,
+          (len(pairs2), c2['u_cap'], len(pairs3), c3['p_threshold']))
     return mI, mV, nI, nV
 
 
-def write_grouping(out, S, m, names, merged=()):
-    """grouping_<S>/ with one detection per identity (detections.csv, identities.csv, state_next) and its det"""
+def write_grouping(out, S, m, names, merged=(), retired=()):
+    """grouping_<S>/ with one detection per identity (detections.csv, identities.csv, state_next) and its det; merged:
+    (ID, into) pairs in the state; retired: IDs retired in the state (in no table)"""
     d = GS.group_dir(out, S)
     ids = [str(x) for x in m['ids']]
     rows = [dict(cand_id=f'{S}_05h_{k}', identity_id=i, identity_name=names[i]) for k, i in enumerate(ids)]
@@ -147,6 +212,8 @@ def write_grouping(out, S, m, names, merged=()):
     wcsv(os.path.join(d, GS.IDENTITIES), ('identity_id', 'identity_name'), [dict(identity_id=i, identity_name=names[i])
                                                                              for i in ids])
     st = {i: dict(level='identity', status='live', into='') for i in ids}
+    for a in retired:
+        st[a] = dict(level='identity', status='retired', into='', last_run='R2')
     for a, b in merged:
         st[a] = dict(level='identity', status='merged', into=b, last_run='R2')
     os.makedirs(os.path.join(d, 'state_next'), exist_ok=True)
@@ -158,26 +225,50 @@ def write_grouping(out, S, m, names, merged=()):
 
 def test_stage(mI, mV, nI, nV):
     out = os.path.join(T, 'grouping')
-    det = {'I': write_grouping(out, 'I', mI, nI, merged=[('GTI-0000009', 'GTI-0000008'), ('GTI-0000008', 'GTI-0000002')]),
+    merged = [('GTI-0000009', 'GTI-0000008'), ('GTI-0000008', 'GTI-0000002'), ('GTI-0000007', 'GTI-0000006')]
+    det = {'I': write_grouping(out, 'I', mI, nI, merged=merged, retired=['GTI-0000006']),
            'V': write_grouping(out, 'V', mV, nV)}
     paths, c = SL.run_link(det, out, '10min')
     bad = TG.link_failures(paths['links'])
-    check('stage: run_link writes the link; the content test stokes_link (L1-L4) passes on it', not bad and c['linked_pairs'] == 3,
-          (bad, c))
-    mg = {r['identity_id']: r['into_id'] for r in rcsv(os.path.join(SL.link_dir(out), SL.MERGES))}
-    check("stage: identity_merges.csv follows the 'into' chain to the live ID (GTI-0000009 -> GTI-0000008 -> GTI-0000002)",
-          mg == {'GTI-0000009': 'GTI-0000002', 'GTI-0000008': 'GTI-0000002'} and c['merged_ids'] == {'I': 2, 'V': 0}, (mg, c))
+    check('stage: run_link writes the link; the content test stokes_link (L1-L4) passes on it, a chain ending at a retired '
+          'identity included', not bad and c['linked_pairs'] == 3, (bad, c))
+    mg = {r['identity_id']: (r['into_id'], r['into_status']) for r in rcsv(os.path.join(SL.link_dir(out), SL.MERGES))}
+    check("stage: identity_merges.csv follows the 'into' chain to the live ID (GTI-0000009 -> GTI-0000008 -> GTI-0000002) and "
+          "records a chain ending at a retired identity as retired (GTI-0000007 -> GTI-0000006)",
+          mg == {'GTI-0000009': ('GTI-0000002', 'live'), 'GTI-0000008': ('GTI-0000002', 'live'),
+                 'GTI-0000007': ('GTI-0000006', 'retired')}
+          and c['merged_ids'] == {'I': 3, 'V': 0} and c['merged_ids_retired'] == {'I': 1, 'V': 0}, (mg, c))
+    check('stage: read_merges (the label carrying\'s reader) maps a merged ID to its live survivor only; the one whose '
+          'survivor retired is left out (a label for it gets the 409)',
+          SL.read_merges(out) == {'GTI-0000009': 'GTI-0000002', 'GTI-0000008': 'GTI-0000002'}, SL.read_merges(out))
+    for what, mrg, ret, want in (('a chain that cycles', [('GTI-0000005', 'GTI-0000004'), ('GTI-0000004', 'GTI-0000005')], [],
+                                  'is broken'),
+                                 ('a chain ending at an ID the state never issued', [('GTI-0000005', 'GTI-0000099')], [],
+                                  'never issued')):
+        ob = os.path.join(T, 'grouping_broken')
+        shutil.rmtree(ob, ignore_errors=True)
+        db = {'I': write_grouping(ob, 'I', mI, nI, merged=mrg, retired=ret), 'V': write_grouping(ob, 'V', mV, nV)}
+        try:
+            SL.run_link(db, ob, '10min')
+            got = 'linked'
+        except SL.LinkRefused as e:
+            got = str(e)
+        check(f'stage: {what} REFUSES the link (merge history broken)', want in got and 'REFUSING' in got
+              and not os.path.lexists(SL.link_dir(ob)), got)
     dest = os.path.join(T, 'served_run')
     lp = SL.publish(out, dest)
     check('stage: a served copy (publish) passes the same content test (its tables are the grouping it names)',
           lp == os.path.join(dest, 'stokes_link', 'stokes_links.csv') and not TG.link_failures(lp), TG.link_failures(lp))
-    # a corrupted merge table
+    # a corrupted merge table (the served copy; L4 checks it against the grouping's state)
     mp = os.path.join(dest, 'stokes_link', SL.MERGES)
     keep = open(mp).read()
     with open(mp, 'a') as f:
-        f.write('I,GTI-0000007,GTI-0000099,R3\n')
+        f.write('I,GTI-0000003,GTI-0000002,live,R3\n')
     bad = TG.link_failures(lp)
-    check('stage: L4 catches a merged ID standing for no live identity', any(b.startswith('L4') for b in bad), bad)
+    check('stage: L4 catches a merge row of an ID the state does not hold as merged', any(b.startswith('L4') for b in bad), bad)
+    open(mp, 'w').write(keep.replace('GTI-0000006,retired', 'GTI-0000006,live'))
+    bad = TG.link_failures(lp)
+    check('stage: L4 catches a wrong end status (a retired survivor recorded live)', any(b.startswith('L4') for b in bad), bad)
     open(mp, 'w').write(keep)
     # a stale table
     p = os.path.join(GS.group_dir(out, 'V'), GS.DETECTIONS)
@@ -225,6 +316,60 @@ def test_stage(mI, mV, nI, nV):
           r == (None, None) and u.meta['stokes_link'] is None and not os.path.exists(SL.link_dir(out3))
           and 'nothing to link' in ' '.join(u.notes) and SL.grouped_stokes(out3) == {'I'}, (r, u.notes))
     return out, dest
+
+
+def test_versions(mI, mV, nI, nV):
+    out = os.path.join(T, 'grouping_versions')
+    det = {'I': write_grouping(out, 'I', mI, nI), 'V': write_grouping(out, 'V', mV, nV)}
+    os.makedirs(SL.link_dir(out))                       # the earlier layout: a plain directory
+    with open(os.path.join(SL.link_dir(out), 'old.txt'), 'w') as f:
+        f.write('the earlier link\n')
+    seen = []
+    for k in range(4):
+        paths, _c = SL.run_link(det, out, '10min')
+        seen.append(os.path.realpath(SL.link_dir(out)))
+    vers = sorted(os.listdir(os.path.join(out, SL.VERSIONS)))
+    cur = os.path.basename(seen[-1])
+    check('versions: stokes_link is a relative symbolic link to the newest version; each run made a new one',
+          os.path.islink(SL.link_dir(out)) and not os.path.isabs(os.readlink(SL.link_dir(out))) and len(set(seen)) == 4
+          and cur == vers[-1] and not TG.link_failures(paths['links']), (os.readlink(SL.link_dir(out)), seen, vers))
+    adopted = [v for v in os.listdir(os.path.join(out, SL.VERSIONS)) if v.endswith('_adopted')]
+    check(f'versions: the current version and {SL.KEEP_SUPERSEDED} before it are kept, older ones deleted (the adopted '
+          f'plain directory of the earlier layout among them, being the oldest)',
+          len(vers) == 1 + SL.KEEP_SUPERSEDED and [os.path.basename(x) for x in seen[-3:]] == vers and not adopted, vers)
+    o2 = os.path.join(T, 'grouping_adopt')
+    d2 = {'I': write_grouping(o2, 'I', mI, nI), 'V': write_grouping(o2, 'V', mV, nV)}
+    os.makedirs(SL.link_dir(o2))
+    with open(os.path.join(SL.link_dir(o2), 'old.txt'), 'w') as f:
+        f.write('the earlier link\n')
+    SL.run_link(d2, o2, '10min')
+    adopted = [v for v in os.listdir(os.path.join(o2, SL.VERSIONS)) if v.endswith('_adopted')]
+    check('versions: a stokes_link left as a plain directory is adopted as a version (its files kept), then switched',
+          os.path.islink(SL.link_dir(o2)) and len(adopted) == 1
+          and os.path.exists(os.path.join(o2, SL.VERSIONS, adopted[0], 'old.txt')), adopted)
+    check('versions: no temporary switch link is left behind',
+          not [n for n in os.listdir(out) + os.listdir(o2) if '.switch.' in n])
+    dest = os.path.join(T, 'served_versions')
+    SL.publish(out, dest)
+    v1 = os.path.realpath(SL.link_dir(dest))
+    SL.run_link(det, out, '10min')
+    lp = SL.publish(out, dest)
+    v2 = os.path.realpath(SL.link_dir(dest))
+    check('versions: publish switches the served copy to a new version (the previous one kept) and the copy passes L1-L4',
+          os.path.islink(SL.link_dir(dest)) and v1 != v2 and os.path.isdir(v1) and not TG.link_failures(lp), (v1, v2))
+    try:
+        SL.switch_to(dest, os.path.join(T, 'grouping_adopt'))
+        got = 'switched'
+    except SL.LinkRefused as e:
+        got = str(e)
+    check('versions: switching to a directory that is not a version of the parent REFUSES', 'not a version directory' in got,
+          got)
+    # a reader holding the old path while the link switches reads one complete version
+    p_old = os.path.join(v2, SL.LINKS)
+    SL.run_link(det, out, '10min')
+    SL.publish(out, dest)
+    check('versions: a reader of the previous version still reads it after a switch (kept: KEEP_SUPERSEDED >= 1)',
+          os.path.exists(p_old) and rcsv(p_old) == rcsv(os.path.join(SL.link_dir(dest), SL.LINKS)))
 
 
 def test_readers(out, dest):
@@ -314,7 +459,9 @@ def test_banner(dest):
           and 'chance-coincidence probability' in h1 and 'AMBIGUOUS' not in h1, h1)
     check('banner: an identity of a one-to-many component is marked AMBIGUOUS with every member listed and both pairs',
           'AMBIGUOUS' in h2 and 'J0528+3200a' in h2 and 'J0528+3200b' in h2 and h2.count('P = ') == 2, h2)
-    check('banner: an unlinked identity says so', 'Not linked to a Stokes V identity' in h3, h3)
+    pt, uc = SL.link_test_values(SL.read_summary(dest))
+    check('banner: an unlinked identity says so, with the P and the cap the link was computed with (its summary)',
+          'Not linked to a Stokes V identity' in h3 and f'P &ge; {pt:g} within {uc:g} standard deviations' in h3, h3)
     page2 = types.SimpleNamespace(entry={'argv': ['--run', os.path.join(T, 'nowhere')], SB.ENTRY_KEY: pr})
     check('banner: a run without a link table says so (no silent omission)', 'no link table' in
           SB.html_for(page2, 'J0520+3000', ['GTI-0000001']))
@@ -330,6 +477,37 @@ def test_banner(dest):
           (a[:120], b == txt, c == txt, d == txt))
 
 
+def test_banner_override(mI, mV, nI, nV):
+    """the banner prints the values of the link it reads: a link computed with a Params override (P 0.99, cap 3.5)"""
+    out = os.path.join(T, 'grouping_override')
+    det = {'I': write_grouping(out, 'I', mI, nI), 'V': write_grouping(out, 'V', mV, nV)}
+    P = G.Params()
+    P.p_thr, P.u_cap = 0.99, 3.5
+    SL.run_link(det, out, '10min', P)
+    dest = os.path.join(T, 'served_override')
+    SL.publish(out, dest)
+    page = types.SimpleNamespace(entry={'argv': ['--run', dest], SB.ENTRY_KEY: [dict(port=8787, stokes='V', kind='single')]})
+    h = SB.html_for(page, 'J0536+3400', ['GTI-0000003'])
+    check('banner: the P and the cap printed are the link\'s own (a link computed with P 0.99 and cap 3.5 prints them)',
+          'P &ge; 0.99 within 3.5 standard deviations' in h and SL.link_test_values(SL.read_summary(dest)) == (0.99, 3.5), h)
+
+
+def test_one_stokes_view():
+    from exopipe.phase3.lib.catalog import tier_sublst as TS
+    said = []
+    ctx = types.SimpleNamespace(grouping_mode=types.SimpleNamespace(design_b=True), grouping_dir=os.path.join(T, 'nowhere'),
+                                log=types.SimpleNamespace(say=said.append))
+    notes = []
+    s = types.SimpleNamespace(u=types.SimpleNamespace(note=notes.append))
+    gI = os.path.join(T, 'grouping', 'grouping_I', 'detections.csv')
+    r = TS._link_env(ctx, os.path.join(T, 'view_05h'), {'I': (gI, 'x' * 40)}, s)
+    check('one-Stokes: a view standing on one Stokes needs no link - {} (no refusal), noted in the record and the log',
+          r == {} and len(notes) == 1 and 'nothing to link' in notes[0] and said == notes, (r, notes, said))
+    r2 = TS._link_env(ctx, os.path.join(T, 'build_05h'), None, s)
+    check('one-Stokes: a build on a grouping of one Stokes (or none) needs no link either - {}, noted',
+          r2 == {} and len(notes) == 2 and 'nothing to link' in notes[1], (r2, notes))
+
+
 def main():
     shutil.rmtree(T, ignore_errors=True)
     os.makedirs(T)
@@ -338,8 +516,11 @@ def main():
         test_names()
         mI, mV, nI, nV = test_link()
         out, dest = test_stage(mI, mV, nI, nV)
+        test_versions(mI, mV, nI, nV)
         test_readers(out, dest)
         test_banner(dest)
+        test_banner_override(mI, mV, nI, nV)
+        test_one_stokes_view()
     finally:
         shutil.rmtree(T, ignore_errors=True)
     print(f'{N[0] - len(FAILS)} of {N[0]} checks passed')

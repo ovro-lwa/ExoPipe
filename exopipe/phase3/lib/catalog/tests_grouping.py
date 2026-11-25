@@ -26,7 +26,9 @@
        (u <= U_CAP, P >= the identity level), with an offset percentile in 0-100 and a chance-coincidence probability in 0-1
     L3 the components are the pairs' connected components: each holds both Stokes, link_size members, link_ambiguous exactly
        when it holds three or more, and is named (link_id, link_name) by one of its members, the best-localized one
-    L4 identity_merges.csv: every merged ID stands for a live identity of its Stokes' table and is not live itself
+    L4 identity_merges.csv: every merged ID is merged in the grouping's state (grouping_<S>/state_next) and not in its table;
+       its 'into' chain, followed in that state, ends at into_id with status into_status: 'live' (an identity of the table)
+       or 'retired' (valid history: not in the table). A chain that cycles or ends at an ID the state never issued fails.
 ``failures(paths, tier, stokes, input)`` runs both on a stage's products before the stage saves the state (run_group's check).
 """
 import collections
@@ -286,16 +288,19 @@ def link_failures(path):
     """L1-L4 on stokes_link/stokes_links.csv (path) and its siblings: [] or what fails. The link directory is the grouping's
     own (beside grouping_I/ and grouping_V/) or a served run's copy (lib/serve/sublst_build.stokes_link_stage): the tables
     are the ones its summary names, in one grouping directory, and the grouping's own when one stands beside it."""
-    from exopipe.phase3.lib.catalog import grouping_stage as GS, stokes_link as SL
-    d = os.path.dirname(os.path.abspath(path))
+    from exopipe.phase3.lib.catalog import grouping as G, grouping_stage as GS, stokes_link as SL
+    ld = os.path.dirname(os.path.abspath(path))
+    d = os.path.realpath(ld)                    # one version, fixed: a switch while testing changes nothing here
+    path = os.path.join(d, os.path.basename(path))
     bad = []
-    with open(os.path.join(d, SL.SUMMARY)) as f:
-        summ = json.load(f)
+    summ = SL.read_summary(d)
+    if summ.get('format') != SL.FORMAT:
+        bad.append(f'L1 {d}: format {summ.get("format")!r}, not {SL.FORMAT!r}')
     outs = {os.path.dirname(os.path.dirname(os.path.abspath(summ['tables'][S]['path']))) for S in ('I', 'V')}
     out = sorted(outs)[0]
     if len(outs) != 1:
         bad.append(f'L1 the two Stokes\' tables are in two grouping directories {sorted(outs)}')
-    beside = os.path.dirname(d)
+    beside = os.path.dirname(ld)
     if os.path.isdir(GS.group_dir(beside, 'I')) and os.path.abspath(beside) != out:
         bad.append(f'L1 the link read the grouping under {out}, not the one beside it ({beside})')
     names = {}
@@ -309,9 +314,9 @@ def link_failures(path):
     shared = SL.check_names(out)
     if shared:
         bad.append(f'L1 {len(shared)} display name(s) held in both Stokes, e.g. {shared[:3]}')
-    _h, links = _rows(path)
-    _h, pairs = _rows(os.path.join(d, SL.PAIRS))
-    p_thr, u_cap = float(summ['counts']['p_threshold']), float(summ['counts']['u_cap'])
+    links = SL.read_rows(path, SL.LINK_COLS)
+    pairs = SL.read_pairs(d)
+    p_thr, u_cap = SL.link_test_values(summ)
     for r in links:
         if names.get(r['stokes'], {}).get(r['identity_id']) != r['identity_name']:
             bad.append(f'L2 {r["stokes"]} {r["identity_id"]} {r["identity_name"]}: not an identity of that name in its table')
@@ -335,9 +340,7 @@ def link_failures(path):
     comp = collections.defaultdict(set)
     for x in list(parent):
         comp[find(x)].add(x)
-    by_link = collections.defaultdict(list)
-    for r in links:
-        by_link[r['link_id']].append(r)
+    by_link = SL.members(links)
     got = sorted(sorted((r['stokes'], r['identity_id']) for r in rs) for rs in by_link.values())
     want = sorted(sorted(c) for c in comp.values())
     if got != want:
@@ -353,15 +356,40 @@ def link_failures(path):
             bad.append(f'L3 {lid}: not named by one of its members')
         elif float(head[0]['pos_err_arcsec']) > min(float(r['pos_err_arcsec']) for r in rs):
             bad.append(f'L3 {lid}: named by a member that is not the best-localized')
-    # L4 the merge table: every merged ID stands for a live identity of its Stokes' table and is none itself
-    mp = os.path.join(d, SL.MERGES)
-    if not os.path.exists(mp):
-        bad.append(f'L4 {mp} is missing')
-    else:
-        for m in _rows(mp)[1]:
-            live = names.get(m['stokes'], {})
-            if m['into_id'] not in live or m['identity_id'] in live:
-                bad.append(f'L4 {m["stokes"]} {m["identity_id"]} -> {m["into_id"]}: not a merged ID of a live identity')
+    # L4 the merge table against the grouping's state: a live or a retired end; a cycle or an unknown end fails
+    try:
+        merges = SL.read_merge_rows(d)
+    except SL.TableRefused as e:
+        return bad + [f'L4 {e}']
+    states = {}
+    for S in ('I', 'V'):
+        sp = GS.state_path(os.path.join(GS.group_dir(out, S), 'state_next'), summ.get('tier'), S)
+        if os.path.exists(sp):
+            st = G.GroupingState(summ.get('tier'), S)
+            with open(sp) as f:
+                st.ids = json.load(f)['ids']
+            states[S] = st
+    for m in merges:
+        S, i, end, status = m['stokes'], m['identity_id'], m['into_id'], m['into_status']
+        what = f'L4 {S} {i} -> {end} ({status})'
+        st = states.get(S)
+        if st is None:
+            bad.append(f'{what}: no grouping state of Stokes {S} beside the tables to check it against')
+            continue
+        if (st.ids.get(i) or {}).get('status') != 'merged' or i in names.get(S, {}):
+            bad.append(f'{what}: not a merged ID of the state, or an identity of the table')
+            continue
+        try:
+            got = st.resolve(i)
+        except G.GroupingRefused as e:
+            bad.append(f'{what}: the chain cycles ({e})')
+            continue
+        e_ = st.ids.get(got)
+        if got != end or e_ is None or e_.get('status') != status or status not in SL.INTO_STATUS:
+            bad.append(f'{what}: the chain ends at {got!r}, ' + ('an ID the state never issued' if e_ is None else
+                                                                f'status {e_.get("status")!r}'))
+        elif (status == 'live') != (end in names.get(S, {})):
+            bad.append(f'{what}: a live end must be an identity of the table, a retired one must not')
     return bad
 
 
@@ -371,4 +399,5 @@ def stokes_link(path, **ctx):
     _h, rows = _rows(path)
     return (not bad), len(rows), ('; '.join(bad[:4]) if bad else
                                   f'{len(rows)} linked identities; tables current, names unique across Stokes, pairs pass the '
-                                  f'test, components named by their best-localized member, merged IDs stand for live ones')
+                                  f'test, components named by their best-localized member, merge chains end at a live or a '
+                                  f'retired identity of the state')

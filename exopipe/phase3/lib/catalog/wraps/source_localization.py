@@ -173,6 +173,23 @@ def fitted_detections(mod, fallback):
     return detections
 
 
+def _link_tables():
+    """lib/catalog/stokes_link_tables.py, loaded once by its path (this wrap imports nothing from the branch by name: a
+    child's `exopipe` can be production's package)"""
+    import importlib.util
+    import os
+    import sys
+    name = 'exopipe3_wrap.stokes_link_tables'
+    m = sys.modules.get(name)
+    if m is None:
+        p = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'stokes_link_tables.py')
+        spec = importlib.util.spec_from_file_location(name, p)
+        m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m)
+        sys.modules[name] = m
+    return m
+
+
 def link_detections(mod):
     """THE CROSS-STOKES LINK (R-GREGG-20261124-CROSS-STOKES-LINK-TEST-APPROVED; R-REFACTOR-20261104-CROSS-STOKES-LINK-COLUMN:
     the localization merges on the link). With P3_LOC_LINKS naming a stokes_links.csv (lib/catalog/stokes_link.py; read at
@@ -181,21 +198,17 @@ def link_detections(mod):
     consistency, the Master context and the catalogue cross-match are the link's. A one-to-many component (link_ambiguous)
     pools nothing: each of its identities keeps its own position (the grouping keeps them apart; the link marks them
     ambiguous). The grouping reserves the other Stokes' names (grouping.display_names), so a name is one (Stokes, identity)
-    and the localization is per (Stokes, identity) for every identity without a link. Unset: the detections unchanged."""
-    import csv
+    and the localization is per (Stokes, identity) for every identity without a link. Unset: the detections unchanged.
+    The table is read by the link's one reader, lib/catalog/stokes_link_tables.partner_names, loaded by its path beside
+    this file (standard library only; registered as sys.modules['exopipe3_wrap.stokes_link_tables'], so the child's code
+    fingerprint names it as it names this wrap)."""
     import os
     base = mod.detections
     cache = {}
 
     def partners(path):
         if path not in cache:
-            with open(path, newline='') as f:
-                rows = list(csv.DictReader(f))
-            comp = {}
-            for r in rows:
-                comp.setdefault(r['link_id'], []).append(r['identity_name'])
-            cache[path] = {r['identity_name']: [n for n in comp[r['link_id']] if n != r['identity_name']]
-                           for r in rows if r['link_ambiguous'] == '0'}
+            cache[path] = _link_tables().partner_names(path)
         return cache[path]
 
     def detections(ident, U):
