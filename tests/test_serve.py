@@ -1412,7 +1412,7 @@ def test_stage_halting():
         plan = planmod.make(a, out)
         plan.U_src = src
         run = Run('serve', ['test'], out, CFG, config_sections=None)
-        deep.run(a, run, plan, deep.STAGES)
+        deep.run(a, run, plan, [s for s in deep.STAGES if s not in deep.DEFAULT_OFF])     # the default stages
         assert [u.name for u in run.units] == ['deep_Run_TEST_views'], [u.name for u in run.units]
         assert run.units[0].status == 'refused' and 'G2' in run.units[0].reason and run.exit_code() == 2
         ok('deep: G2 refuses the views stage and nothing after it runs (no test, nothing registered) - exit 2')

@@ -706,7 +706,8 @@ class Source:
         if not spec.startswith('run:'):
             raise Refusal(f'--inc-source {spec!r}: expected run:<deep run dir> or search')
         self.kind = 'run'
-        self.dir = spec[4:].rstrip('/')
+        from exopipe.phase3.lib.serve import versions
+        self.dir = versions.reads(spec[4:].rstrip('/'))   # a versioned run: its work directory, never a served version
         self.spec = f'run:{self.dir}'
         self.files = {k: os.path.join(self.dir, v) for k, v in c.SOURCE_FILES.items()}
         self._cache = {}

@@ -67,6 +67,10 @@ def context(args, run):
     c = Ctx()
     c.label, c.out = label, run.out_root
     c.U = os.path.join(run.out_root, C.RUN_DIR['deep'].format(label=label))
+    # a versioned deep run (serve --tier deep --stages convert) is written through its work directory, never the version
+    # its pointer names (lib/serve/versions.writable: the writer lock kept while this process runs; a dry run takes none)
+    from exopipe.phase3.lib.serve import versions
+    c.U = versions.writable(c.U, lock=not getattr(args, 'dry_run', False))
     c.roots = common.legacy_roots(args.legacy_root)
     c.stages = common.select_stages(args, TIER)
     c.sets = common.select_sets(args, TIER)

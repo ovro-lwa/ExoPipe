@@ -20,7 +20,11 @@ build, copy, carry, register, hub, verify ...). Pages (config serve.PAGES; famil
             the combined view's pages V-10s 8986, I-10s 8987, V-1min 8988, I-1min 8989 (--family comb)
   jupiter   p1 8800 (jupiter_server.py), v2-site 8801 (http.server)
 Stages (--stages/--from/--until; default all, in order):
-  deep      views, test, carry (only with --carry-from), start, hub, verify
+  deep      views, test, carry (only with --carry-from), start, hub, verify; convert (only when named, once: the run becomes
+            a versioned run - a pointer to sealed versions, its legacy directory the work directory every writer step writes;
+            lib/serve/deep.py) and retire (only when named: the retention of its versions). On a versioned run views, test
+            and start run together: a snapshot of the work directory, the views and tests on it, the seal, one switch of
+            the pointer, then the registration
   sublst    build, views, test, carry, swap, start (carry+swap+start only together), hub, verify; retire (only when named:
             the retention of Run_SLSTB's versions - a dry run, or with --retire-plan the planned deletions)
   snapshot  gate, copy, localize, gate-copy, carry, scintillation, page-context, tess, bright-filter, page-index, test, start,
@@ -184,8 +188,8 @@ def add_arguments(p):
     g.add_argument('--stop', metavar='PORTS', help='stop the servers on these ports by exact pid; nothing else runs')
     g.add_argument('--stages', help='comma list of stages (default all but those run only when named, in order; see above)')
     g.add_argument('--retire-plan', metavar='PLAN',
-                   help='sub-LST --stages retire: delete the versions of this dry-run plan (RETIRE_PLAN_<UTC>.json written by '
-                        'a --stages retire without it); refused unless every planned version is still to be retired')
+                   help='sub-LST or deep --stages retire: delete the versions of this dry-run plan (RETIRE_PLAN_<UTC>.json '
+                        'written by a --stages retire without it); refused unless every planned version is still to be retired')
     g.add_argument('--from', dest='from_stage', help='first stage')
     g.add_argument('--until', help='last stage')
 

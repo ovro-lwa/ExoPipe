@@ -449,6 +449,16 @@ def main(argv=None):
         if why:
             print(f'REFUSED: {why}', file=sys.stderr)
             return record.EXIT_REFUSED
+    if getattr(mod, 'WRITES', True) and name != 'run':
+        # a VERSIONED RUN (lib/serve/versions.py) is written through its work directory, never through the version its
+        # pointer names; the writer lock is kept until this process ends, so a serve's snapshot never clones a half-written
+        # run (a run placed whole by its builder - the sub-LST runs - has no work directory: refused)
+        from exopipe.phase3.lib.serve import versions as _versions
+        try:
+            out = _versions.writer_out(out, lock=not args.dry_run)
+        except _versions.Refusal as e:
+            print(f'REFUSED: {e}', file=sys.stderr)
+            return record.EXIT_REFUSED
     if args.parity and name != 'run' and not inj:   # `run submit --parity` forwards it to every step command instead;
         if not args.out:                            # an injected run's guard (above) already confines every write
             print('REFUSED: --parity needs --out (the parity root)', file=sys.stderr)
