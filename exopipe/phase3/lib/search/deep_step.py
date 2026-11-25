@@ -1302,24 +1302,40 @@ def stage_verify(u, item, ctx, f, outs, sides, raise_on_fail=True):
 
 
 def _copy_into(src, dst):
-    """A directory: shutil.copytree (copy2 per file). A file: core/placement.copy - copied to a temporary file beside ``dst``,
-    its size and md5 checked against ``src``, then placed with the replaced file's group, mode and ACL or the directory's
-    rule for a new one (never src's), with src's times as copy2 gave them; a copy that differs or a placement refusal
-    (PlacementRefusal) leaves ``dst`` as it was and no temporary file."""
+    """A directory: core/placement.copy_tree into a new ``dst`` - every file copied and checked against its source (size,
+    md5) before it is placed, every new directory by its parent's rule (never copytree's copy2 mode and ACL); a failure
+    removes the partial tree and refuses. A file: core/placement.copy - copied to a temporary file beside ``dst``, checked,
+    then placed with the replaced file's group, mode and ACL or the directory's rule for a new one (never src's). Both keep
+    src's file times as copy2 gave them; a copy that differs (CopyNotVerified) or a placement refusal (PlacementRefusal)
+    leaves no temporary file."""
     if os.path.isdir(src):
-        shutil.copytree(src, dst, symlinks=True)
+        placement.copy_tree(src, dst, times=True)
     else:
         os.makedirs(os.path.dirname(dst), exist_ok=True)
         placement.sweep([dst])              # a killed earlier copy's temporary file (not modified for an hour)
         placement.copy(src, dst, times=True)
 
 
-def stage_publish(u, item, ctx, f):
-    """Copy the attempt and its side products into --out in today's collect layout; append the register row."""
+def stage_publish(u, item, ctx, f, sides=()):
+    """Copy the attempt into <out>/attempts/<attempt>.part in today's collect layout, then place its side products
+    (``sides``: [(path, final)] - outside the attempt), then publish the attempt by one directory rename. Every file goes
+    through core/placement (checked against its source before it is placed); a refusal anywhere before the rename removes
+    the .part tree and publishes nothing (side products placed before it stay, named in the refusal). An attempt already
+    published refuses: with its register row (once only), or - an earlier run stopped between the publish and the register
+    append - without one, named with how to recover. The register row is appended by the caller (after_detect)."""
+    from exopipe.phase3.core.record import Refusal
     att, label = f['attempt'], f['label']
     dest = os.path.join(ctx['out'], 'attempts', os.path.basename(att))
     if os.path.exists(dest):
-        raise RuntimeError(f'{dest} exists - an attempt is published once')
+        reg = os.path.join(ctx['out'], f'published_{item.stokes}.csv')
+        if any(t == f.get('att_tag') for _h, t in _ATTS.register_rows(reg, item.cell)):
+            raise Refusal(f'{dest} exists and {reg} registers it - an attempt is published once')
+        raise Refusal(f'{dest} is published but {reg} has no row for it (cell {item.cell}, attempt {f.get("att_tag")}): an '
+                      f'earlier run stopped between the publish and the register append. To recover, move {dest} out of '
+                      f'{os.path.dirname(dest)} (e.g. to {dest}.unregistered) and run the unit again - it is published anew')
+    if os.path.lexists(dest + '.part'):         # a killed earlier run's partial copy (never published; the unit holds the
+        shutil.rmtree(dest + '.part')           # cell lock): this unit's own scratch
+        u.note(f'publish: a killed earlier run\'s unpublished {dest}.part removed before the copy')
     os.makedirs(dest + '.part')
     from exopipe.phase3.lib.search import removal_rules as RR
     names = [f'Run_{label}', 'transients', f'{item.cell}.log', f'{item.cell}.base.log', f'{item.cell}.inc.log',
@@ -1335,6 +1351,15 @@ def stage_publish(u, item, ctx, f):
         shutil.rmtree(dest + '.part', ignore_errors=True)
         raise placement.PlacementRefusal(f'{e} - the attempt is not published: {dest}.part (with {done or "nothing"} copied '
                                          f'before it) removed') from e
+    placed = []
+    try:                                        # the side products, before the attempt is published
+        for p, final in sides:
+            _copy_into(p, final)
+            placed.append(final)
+    except placement.PlacementRefusal as e:
+        shutil.rmtree(dest + '.part', ignore_errors=True)
+        raise placement.PlacementRefusal(f'{e} - the attempt is not published ({dest}.part removed); the side products '
+                                         f'placed before this one stay: {placed or "none"}') from e
     os.replace(dest + '.part', dest)        # a directory rename: its files were placed into it one by one (above)
     return dest
 
@@ -1449,25 +1474,22 @@ def after_detect(u, item, ctx, f, stages):
     sides = side_outputs(item, ctx, f)
     verified = stage_verify(u, item, ctx, f, outs, sides) if 'verify' in stages else {}
     if 'publish' in stages:
-        dest = stage_publish(u, item, ctx, f)
+        dest = os.path.join(ctx['out'], 'attempts', os.path.basename(f['attempt']))
+        copies, side_pairs = [], []             # the side products' copies, placed BEFORE the attempt is published
+        for p, cls, tctx, final in sides:
+            if final != p:
+                copies.append((p, final))
+                if p.endswith('.gaul.csv') and os.path.exists(p + '.gen.json'):
+                    copies.append((p + '.gen.json', final + '.gen.json'))
+                if cls == 'fp_gate_verdicts':   # the whole v110_out directory, as the fleet (p3s5_search_fleet.sh:235-236)
+                    copies += [(q, os.path.join(os.path.dirname(final), os.path.basename(q)))
+                               for q in sorted(glob.glob(os.path.join(os.path.dirname(p), '*')))
+                               if os.path.isfile(q) and q != p]
+                    tctx = dict(tctx, catalog=os.path.join(dest, 'transients', f'Run_{f["label"]}', 'master_catalog.csv'))
+            side_pairs.append((p, final, cls, tctx))
+        dest = stage_publish(u, item, ctx, f, sides=copies)
         pairs = [(p, os.path.join(dest, os.path.relpath(p, f['attempt'])), cls, dict(tctx, attempt=dest)
-                  if cls == 'detection_positions' else tctx) for p, cls, tctx in outs]
-        try:
-            for p, cls, tctx, final in sides:
-                if final != p:
-                    _copy_into(p, final)
-                    if p.endswith('.gaul.csv') and os.path.exists(p + '.gen.json'):
-                        _copy_into(p + '.gen.json', final + '.gen.json')
-                    if cls == 'fp_gate_verdicts':   # the whole v110_out directory, as the fleet (p3s5_search_fleet.sh:235-236)
-                        for q in glob.glob(os.path.join(os.path.dirname(p), '*')):
-                            if os.path.isfile(q) and q != p:
-                                _copy_into(q, os.path.join(os.path.dirname(final), os.path.basename(q)))
-                        tctx = dict(tctx, catalog=os.path.join(dest, 'transients', f'Run_{f["label"]}', 'master_catalog.csv'))
-                pairs.append((p, final, cls, tctx))
-        except placement.PlacementRefusal as e:
-            raise placement.PlacementRefusal(f'{e} - the attempt IS published at {dest}; the side outputs before this one '
-                                             f'are in place ({[x[1] for x in pairs[len(outs):]] or "none"}); no register '
-                                             f'row appended') from e
+                  if cls == 'detection_positions' else tctx) for p, cls, tctx in outs] + side_pairs
         record_outputs(u, pairs, verified)
         reg = register_row(ctx['out'], item, f['att_tag'])
         u.meta.update(attempt=dest, register=reg)

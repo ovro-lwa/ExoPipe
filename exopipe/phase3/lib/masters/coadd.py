@@ -3549,17 +3549,16 @@ def _stamp_all_masters(final_dir, lst, fl):
 
 
 def _atomic_copy(src, dst):
-    """Archive write = copy to .part, VERIFY, rename. 2026-09-10: a cross-filesystem copy from Lustre came
-    back short (28.2 of 39.0 MB) with no error, so a size check is a write gate here: a short copy is
-    removed and REFUSED, never renamed into the archive."""
-    os.makedirs(os.path.dirname(dst), exist_ok=True)
-    shutil.copy2(src, dst + '.part')
-    _ss, _ds = os.path.getsize(src), os.path.getsize(dst + '.part')
-    if _ss != _ds:
-        os.remove(dst + '.part')
-        raise RuntimeError(f'archive copy short: {dst} got {_ds} of {_ss} bytes; REFUSING (source {src})')
+    """Archive write = copy, VERIFY, place (core/placement.copy). 2026-09-10: a cross-filesystem copy from Lustre came
+    back short (28.2 of 39.0 MB) with no error, so verification is a write gate here: the source is read once into a
+    temporary file beside ``dst``, the copy checked against the bytes read (size and md5; a short read refused) and only
+    then placed with the archive's group and ACL (the replaced file's, or the directory's rule - never the copy2 source's),
+    with the source's times. A copy that is not verified is removed and REFUSED (placement.CopyNotVerified), never placed;
+    a killed earlier copy's temporary file is swept first."""
     from exopipe.phase3.core import placement
-    placement.replace(dst + '.part', dst, drop=True)   # the archive's group and ACL, not the copy2 source's (core/placement.py)
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    placement.sweep([dst])
+    placement.copy(src, dst, times=True)
 
 
 def _refuse_excluded_constituents(final_dir, lst, fl):

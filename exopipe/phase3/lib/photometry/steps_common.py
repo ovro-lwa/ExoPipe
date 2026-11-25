@@ -393,9 +393,10 @@ def place_copies(pairs):
     places none of them; a failed rename after others leaves those placed and its PlacementRefusal names them. Either way
     no temporary file is left. A killed earlier write's temporary files are removed first (placement.sweep). Returns the
     destinations. Two pairs with one destination refuse (PlacementRefusal) before anything is written."""
+    import collections
     dsts = [d for _s, d in pairs]
-    if len({os.path.abspath(d) for d in dsts}) != len(dsts):
-        twice = sorted({d for d in dsts if [os.path.abspath(x) for x in dsts].count(os.path.abspath(d)) > 1})
+    twice = sorted(a for a, n in collections.Counter(os.path.abspath(d) for d in dsts).items() if n > 1)
+    if twice:
         raise placement.PlacementRefusal(f'placement: destinations named twice {twice} (two sources for one product) - '
                                          f'nothing written')
     for d in sorted({os.path.dirname(d) for d in dsts}):

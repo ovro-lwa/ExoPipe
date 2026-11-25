@@ -692,20 +692,21 @@ def ship(u, src, dst, fresh, out_root):
                 os.makedirs(keep, exist_ok=True)
                 shutil.move(os.path.join(dst, n), os.path.join(keep, n))
         replaced = []
-        for n in todo:
-            b = os.path.join(dst, n)
-            if os.path.exists(b):       # fresh: the replaced file is kept
-                os.makedirs(keep, exist_ok=True)
-                shutil.copy2(b, os.path.join(keep, n))
-                replaced.append(n)
         # the files placed together (core/placement.atomic_many: a replaced file's group, mode and ACL, or the directory's
         # rule for a new one - never the node-local output's), each copied beside its destination and checked against the
         # output (size, md5) first, with its times as copy2 gave them. A copy that differs or an attribute refusal places
-        # none of them (a failed later rename leaves the earlier ones live, and the reason names them); the unit refuses
+        # none of them (a failed later rename leaves the earlier ones live, and the reason names them); the unit refuses.
+        # --fresh keeps each file to be replaced first, by a verified copy placed by the keep directory's rule
         from exopipe.phase3.core import placement
         dsts = [os.path.join(dst, n) for n in todo]
-        placement.sweep(dsts)           # a killed earlier ship's temporary files (not modified for an hour)
+        placement.sweep(dsts)           # a killed earlier ship's temporary files (an hour old)
         try:
+            for n in todo:
+                b = os.path.join(dst, n)
+                if os.path.exists(b):   # fresh: the replaced file is kept
+                    os.makedirs(keep, exist_ok=True)
+                    placement.copy(b, os.path.join(keep, n), times=True)
+                    replaced.append(n)
             with placement.atomic_many(dsts) as tmps:
                 for n in todo:
                     placement.copy_verified(os.path.join(src, n), tmps[os.path.join(dst, n)], times=True)

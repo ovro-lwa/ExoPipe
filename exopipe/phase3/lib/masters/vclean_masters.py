@@ -151,10 +151,6 @@ def write_vclean_sibling(cf, scope, master=None, out=None):
     return why
 
 
-class _CopyNotVerified(Exception):
-    """build_vclean_cell: the copy of the cleaned master beside the product differs from the engine's file (size or md5)."""
-
-
 def build_vclean_cell(coadd_root, cell, tmp_root=None, skip_existing=True):
     """Build V_deep_Taper_R0_clean(+pbcorr) for one cell. Returns (cell, status).
 
@@ -229,23 +225,17 @@ def build_vclean_cell(coadd_root, cell, tmp_root=None, skip_existing=True):
         # the cleaned master is in node-local scratch (tmp_root), on another file system than the cell. The master and its PB
         # sibling are placed together (core/placement.atomic_many: the replaced pair's group, mode and ACL, or the directory's
         # rule for new ones - never the scratch file's): the master copied to a temporary file beside the product, the copy's
-        # size and md5 checked against the scratch file (a short copy refuses: 2 of 828 shutil copies from Lustre were short,
-        # 2026-11-09), the sibling written from that copy. Any failure before the renames places neither (the temporary files
+        # size and md5 checked against the bytes read from the scratch file (placement.copy_verified: a short read or a copy
+        # that differs refuses, CopyNotVerified; 2 of 828 shutil copies from Lustre were short, 2026-11-09), the sibling
+        # written from that copy. Any failure before the renames places neither (the temporary files
         # removed); an attribute refusal places neither; a failed second rename leaves the master placed and the refusal text
         # says so ('already placed: [...] (those stay live); ... not placed: [...]'). Leftovers of a killed build go first
         placement.sweep([out_ap, out_pb])
-        n0, m0 = os.path.getsize(res[0]), md5(res[0])
         with placement.atomic_many([out_ap, out_pb]) as t:
-            shutil.copyfile(res[0], t[out_ap])
-            n1, m1 = os.path.getsize(t[out_ap]), md5(t[out_ap])
-            if (n1, m1) != (n0, m0):
-                raise _CopyNotVerified(f'the copy of the cleaned master is not verified: {t[out_ap]} has {n1} bytes, md5 '
-                                       f'{m1}; the engine\'s {res[0]} {n0} bytes, md5 {m0} - nothing placed')
+            placement.copy_verified(res[0], t[out_ap])
             write_vclean_sibling(cf, scope, master=t[out_ap], out=t[out_pb])   # one writer for build and repair (2026-10-03)
         return cell, 'OK'
-    except _CopyNotVerified as e:
-        return cell, f'REFUSED {e}'
-    except placement.PlacementRefusal as e:     # a refusal (status 'REFUSED ...'; the vclean unit refuses on any status but OK)
+    except placement.PlacementRefusal as e:     # a refusal, or a copy not verified (CopyNotVerified) (status 'REFUSED ...'; the vclean unit refuses on any status but OK)
         return cell, f'REFUSED {e}'
     except Exception as e:
         return cell, f'ERROR {e}'

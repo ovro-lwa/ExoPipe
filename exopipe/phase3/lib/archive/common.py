@@ -182,17 +182,22 @@ def quarantine_move(src, dest, algo='md5', what='quarantine'):
 
 
 def verified_copy(src, dst, algo='md5', want=None, preserve=True):
-    """Copy ``src`` to '<dst>.part' (copy2 when ``preserve``, as p3s5_archive_sync.py:97; copyfile otherwise, as
-    push_mosaic_v2:69) and check its checksum against ``want`` (default: the source's now). G6: on a mismatch the '.part'
-    is removed and the copy refused; nothing live is touched. Returns (part path, checksum)."""
-    import shutil
-    m = want or checksum(src, algo)
+    """Copy ``src`` to '<dst>.part' through core/placement.copy_verified (one read of the source, the copy checked against
+    the bytes read - size and md5 - a short read refused; with the source's times when ``preserve``, as copy2 at
+    p3s5_archive_sync.py:97; the mode and ACL are commit_part's, never the source's) and check its checksum against
+    ``want`` (default: the source's - the bytes read for md5, else read now). G6: a copy not verified or a mismatch
+    removes the '.part' and refuses the copy; nothing live is touched. Returns (part path, checksum)."""
+    from exopipe.phase3.core import placement
     part = dst + '.part'
     if os.path.lexists(part):
         raise Refusal(f'G6: a stale {part} exists (an earlier transfer did not finish) - inspect it; never overwritten')
     os.makedirs(os.path.dirname(dst), exist_ok=True)
-    (shutil.copy2 if preserve else shutil.copyfile)(src, part)
-    got = checksum(part, algo)
+    try:
+        read = placement.copy_verified(src, part, times=preserve)
+    except placement.CopyNotVerified as e:
+        raise Refusal(f'G6: copy of {src} not verified ({e}) - STOPPED, nothing replaced') from e
+    m = want or (read if algo == 'md5' else checksum(src, algo))
+    got = read if algo == 'md5' else checksum(part, algo)
     if got != m:
         os.remove(part)
         raise Refusal(f'G6: copy of {src} not verified ({algo} {got} != {m}) - STOPPED, nothing replaced')

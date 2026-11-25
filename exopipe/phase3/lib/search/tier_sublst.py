@@ -346,15 +346,17 @@ def log_tail(path, n=5):
 
 
 def copy_tree(src, dst):
-    """rsync -a semantics for one item: a directory is merged into dst (files replaced, extra files kept; shutil.copytree,
-    copy2 per file), a file replaced; mtimes preserved. A file goes through core/placement.copy: copied to a temporary file
-    beside dst, its size and md5 checked against src, then placed with the replaced file's group, mode and ACL or the
-    directory's rule for a new one (not src's mode, as rsync -a would keep it); a copy that differs (CopyNotVerified) or a
-    placement refusal (PlacementRefusal) leaves dst as it was and no temporary file."""
+    """rsync -a semantics for one item: a directory is merged into dst (files replaced, extra files kept), a file replaced;
+    file mtimes preserved. Every file goes through core/placement: copied to a temporary file beside its destination, its
+    size and md5 checked against its source, then placed with the replaced file's group, mode and ACL or the directory's
+    rule for a new one (not src's mode, as rsync -a would keep it); a new directory takes its parent's rule
+    (placement.copy_tree). A copy that differs (CopyNotVerified) or a placement refusal (PlacementRefusal) leaves no
+    temporary file; in a directory it removes what the copy made (new directories and files) and names the files it had
+    already replaced."""
+    from exopipe.phase3.core import placement
     if os.path.isdir(src):
-        shutil.copytree(src, dst, symlinks=True, dirs_exist_ok=True)
+        placement.copy_tree(src, dst, times=True, merge=True)
     else:
-        from exopipe.phase3.core import placement
         os.makedirs(os.path.dirname(dst), exist_ok=True)
         placement.sweep([dst])          # a killed earlier copy's temporary file (not modified for an hour)
         placement.copy(src, dst, times=True)
@@ -1660,10 +1662,10 @@ def publish(u, run, plan, attempt):
                 pass
     try:
         for src, dst in pairs:
-            if os.path.exists(dst):
-                b = os.path.join(backup, os.path.relpath(dst, pub))
+            if os.path.exists(dst):             # the published file kept first: a verified copy, placed by the
+                b = os.path.join(backup, os.path.relpath(dst, pub))     # backup directory's rule (core/placement.copy)
                 os.makedirs(os.path.dirname(b), exist_ok=True)
-                shutil.copy2(dst, b)
+                placement.copy(dst, b, times=True)
                 saved.append((b, dst))
             else:
                 created.append(dst)

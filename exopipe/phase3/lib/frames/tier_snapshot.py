@@ -821,27 +821,43 @@ def stage_cube(ctx, cell, lst, date, sbs):
                      + f' - NOT shipped (logs in {work})')
         # ship: each cube copied to a temporary file beside its destination, the copy's size and md5 checked against the
         # local cube BEFORE it is placed (core/placement.copy: the archive's group and inherited ACL, or a replaced cube's -
-        # never the scratch file's); a copy that differs is not placed (COPY-MISMATCH). MANIFEST lines as cube pass :118-132
+        # never the scratch file's); a copy that differs is not placed (COPY-MISMATCH). MANIFEST lines as cube pass :118-132.
+        # The cell is never COMPLETE over a mix of two generations: an earlier MANIFEST.txt (--fresh) is removed BEFORE any
+        # cube is placed (its lines kept in this unit's record), and the new one is placed LAST, only when every cube is
+        # verified and placed - a refusal leaves the cell without a MANIFEST.txt, i.e. not complete
         os.makedirs(dest, exist_ok=True)
         names = [f'{cell}_{sb}_{st}_flowcube.fits' for sb, st in jobs]
-        placement.sweep([os.path.join(dest, b) for b in names])   # a killed earlier ship's temporary files (an hour old)
+        extra = ['cube_write.log', 'cube_verify.log', 'MANIFEST.txt']          # placed after the cubes, MANIFEST.txt last
+        placement.sweep([os.path.join(dest, b) for b in names + extra])     # a killed earlier ship's temporary files
+        old_man = os.path.join(dest, 'MANIFEST.txt')
+        gone = ''
+        if os.path.lexists(old_man):
+            with open(old_man, errors='replace') as fh:
+                u.meta['replaced_manifest'] = fh.read().splitlines()
+            os.remove(old_man)
+            gone = f'; the earlier {old_man} was removed before any cube was placed (its lines in meta.replaced_manifest)'
+            u.note(f'cube ship {cell}: the earlier MANIFEST.txt removed before any cube was placed - the cell is not '
+                   f'complete until the new one is placed (its lines in meta.replaced_manifest)')
         lines, mismatch, md5s = [], [], {}
         for i, ((sb, st), b) in enumerate(zip(jobs, names)):
             src, dst = os.path.join(cub, b), os.path.join(dest, b)
             try:
                 md5s[dst] = placement.copy(src, dst)
-            except placement.CopyNotVerified as e:
+            except placement.CopyNotVerified as e:     # the copy as written and the local cube as read again
                 mismatch.append(b)
-                lines.append(f'{b} md5={e.copy_md5} COPY-MISMATCH | {results[(sb, st)][2]}')
+                lines.append(f'{b} md5={e.copy_md5} COPY-MISMATCH copy_size={e.copy_size} source_size={e.src_size} '
+                             f'source_md5={e.src_md5} | {results[(sb, st)][2]}')
                 continue
             except placement.PlacementRefusal as e:
                 u.refuse(f'N-G8 SHIP-FAILED {cell}: {e}; placed in {dest} before it: '
                          f'{[os.path.basename(p) for p in md5s] or "none"}; not copied: {names[i + 1:] or "none"}; no '
-                         f'MANIFEST.txt written (logs in {work})')
+                         f'MANIFEST.txt written - the cell is not complete{gone} (logs in {work})')
             lines.append(f'{b} md5={md5s[dst]} copy-OK | {results[(sb, st)][2]}')
         if mismatch:
-            u.refuse(f'N-G8 SHIP-FAILED {cell}: {len(mismatch)} cube(s) differ on the destination - not placed: {mismatch}; '
-                     f'the other {len(md5s)} placed in {dest}; no MANIFEST.txt written (logs in {work})')
+            u.meta['copy_mismatch'] = [l for l in lines if ' COPY-MISMATCH ' in l]
+            u.refuse(f'N-G8 SHIP-FAILED {cell}: {len(mismatch)} cube(s) differ on the destination - not placed: {mismatch} '
+                     f'(the copy\'s and the local cube\'s sizes and md5s in meta.copy_mismatch); the other {len(md5s)} '
+                     f'placed in {dest}; no MANIFEST.txt written - the cell is not complete{gone} (logs in {work})')
         size = subprocess.run(['du', '-sh', dest], capture_output=True, text=True).stdout.split('\t')[0].strip()
         code = subprocess.run(['git', '-C', os.path.dirname(script), 'rev-parse', '--short', 'HEAD'], capture_output=True,
                               text=True).stdout.strip() or 'unknown'
@@ -850,8 +866,14 @@ def stage_cube(ctx, cell, lst, date, sbs):
         man = os.path.join(work, 'MANIFEST.txt')
         with open(man, 'w') as f:
             f.write(''.join(l + '\n' for l in lines))
-        for fn in ('MANIFEST.txt', 'cube_write.log', 'cube_verify.log'):
-            shutil.copyfile(os.path.join(work, fn), os.path.join(dest, fn))
+        done = []
+        try:                                    # the two logs, then MANIFEST.txt last: verified copies, placed
+            for fn in extra:
+                placement.copy(os.path.join(work, fn), os.path.join(dest, fn))
+                done.append(fn)
+        except placement.PlacementRefusal as e:
+            u.refuse(f'N-G8 SHIP-FAILED {cell}: {e}; every cube placed in {dest}, and {done or "nothing"} of {extra}; no '
+                     f'MANIFEST.txt placed - the cell is not complete{gone} (logs in {work})')
         for dst, m in md5s.items():
             u.add_output(dst, 'snapshot_cube', md5=m)
         u.add_output(os.path.join(dest, 'MANIFEST.txt'), 'snapshot_cube', staged_subbands=len(staged))

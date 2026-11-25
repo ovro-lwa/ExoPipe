@@ -2,8 +2,10 @@
 stage, the sub-LST job lists, the deep search's parent catalogue and the frames-only engine child): what a placement refusal
 does at each handler that would otherwise crash on it or swallow it, and the sweep of a killed writer's temporary files.
 Data-free: scratch directories under TMPDIR; a refusal is forced by giving the placement a group this user is not in
-(UNTESTED is printed when there is none, e.g. as root). Checks:
-  sweep    placement.sweep removes a product's temporary file not modified for an hour and keeps a young one, another product's,
+(UNTESTED is printed when there is none, e.g. as root). sweep ages a temporary file by its ctime, which utime cannot set
+back: a planted leftover is aged by its mtime through placement's seam _changed (test_placement_p6 tests the ctime).
+Checks:
+  sweep    placement.sweep removes a product's temporary file not changed for an hour and keeps a young one, another product's,
            a <dst>.1 product's, a name that is not a temporary name and the product; a tag's sweep only that tag's;
   writers  eight converted writers callable without data (flow write_json_atomic, epoch_gate.write_record,
            release1_cards._write_text, photometry write_zone_flags, coadd._write_scale2_record, deep_stages.own_note, the
@@ -18,11 +20,11 @@ Data-free: scratch directories under TMPDIR; a refusal is forced by giving the p
   vclean   build_vclean_cell: the cleaned master is copied from the cleaning engine's scratch directory to a temporary file
            beside the product, its size and md5 checked, the PB sibling written from that copy, and the pair placed together
            (the directory's rule for new files; the replaced pair's mode). A refusal of either file places neither ('REFUSED
-           placement: ... none of the 2 products placed'); a truncated copy refuses ('REFUSED the copy of the cleaned master
-           is not verified ...') with neither placed; a failed sibling rename leaves the master placed and the status says
-           so ('already placed: [<master>] (those stay live)'). No temporary file and no scratch directory left. Across two
-           file systems when EXOPIPE_TEST_OTHER_FS names a writable directory on another file system than TMPDIR (UNTESTED
-           otherwise);
+           placement: ... none of the 2 products placed'); a short copy refuses ('REFUSED placement: the copy ... is not
+           verified ... nothing placed', placement.copy_verified) with neither placed; a failed sibling rename leaves the
+           master placed and the status says so ('already placed: [<master>] (those stay live)'). No temporary file and no
+           scratch directory left. Across two file systems when EXOPIPE_TEST_OTHER_FS names a writable directory on another
+           file system than TMPDIR (UNTESTED otherwise);
   coadd    the final stage's worker: a PlacementRefusal of a (LST, freq) is REFUSED (returned with its text, listed apart from
            the combinations processed), not ERROR; any other exception is still ERROR;
   admit    the sub-LST job lists: a failed rename of the second list leaves the first placed; the unit's refusal names the
@@ -322,23 +324,29 @@ def test_vclean_cross_filesystem():
         assert np.array_equal(fits.getdata(ap, memmap=False), fits.getdata(vp, memmap=False) * 0.25)
         pair = lambda: (_sha(ap), _sha(pbp))
         before = pair()
-        # a short copy of the cleaned master beside the product (size and md5 differ from the engine's file): refused before
-        # any placement, neither file placed, the pair before unchanged
-        real_copy = VM.shutil.copyfile
+        # a short copy of the cleaned master beside the product (core/placement writes half of each block it reads: size
+        # and md5 differ from the bytes read): refused before any placement, neither file placed, the pair before unchanged
+        class _Half:
+            def __init__(self, f):
+                self.f = f
 
-        def short_copy(a, b, **kw):
-            r = real_copy(a, b, **kw)
-            if os.path.dirname(os.path.abspath(b)) == cf:
-                with open(b, 'r+b') as f:
-                    f.truncate(os.path.getsize(b) // 2)
-            return r
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                self.f.close()
+                return False
+
+            def write(self, b):
+                return self.f.write(bytes(b[:max(1, len(b) // 2)]))
         VM.subprocess.run = _fake_sv2(0.125)
-        VM.shutil.copyfile = short_copy
+        PL.open = lambda p, mode='r', *a, **kw: (_Half(open(p, mode, *a, **kw)) if mode == 'xb' and
+                                                 os.path.dirname(os.path.abspath(p)) == cf else open(p, mode, *a, **kw))
         try:
             st = VM.build_vclean_cell(root, cell, tmp_root=tmp_root, skip_existing=False)[1]
         finally:
-            VM.shutil.copyfile = real_copy
-        assert st.startswith('REFUSED the copy of the cleaned master is not verified') and 'nothing placed' in st, st
+            del PL.open
+        assert st.startswith('REFUSED placement: the copy ') and 'is not verified' in st and 'nothing placed' in st, st
         assert pair() == before and not _leftovers(cf) and not os.listdir(tmp_root), (_leftovers(cf), os.listdir(tmp_root))
         # the sibling cannot be placed (an attribute refusal): neither file placed
         if CAN_REFUSE:
@@ -573,6 +581,7 @@ def test_gaul_empty_extraction():
 def main():
     shutil.rmtree(TMP, ignore_errors=True)
     os.makedirs(TMP)
+    real_changed, PL._changed = PL._changed, lambda st: st.st_mtime    # planted leftovers are aged by utime (mtime)
     try:
         test_sweep()
         test_writers_sweep()
@@ -584,6 +593,7 @@ def main():
         test_gaul_empty_extraction()
         test_deep_child_placement_refusal()
     finally:
+        PL._changed = real_changed
         shutil.rmtree(TMP, ignore_errors=True)
     print('PASS test_placement_p5')
 
