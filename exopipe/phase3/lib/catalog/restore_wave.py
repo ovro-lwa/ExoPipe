@@ -74,6 +74,8 @@ import os
 import re
 import time
 
+from exopipe.phase3.core import placement
+
 csv.field_size_limit(10 ** 9)
 RESTORED_BY = "restore-only 3-D gate 20261104"            # clv15 phase3_snapshot_chain.RESTORED_BY (catalog_snapshot.RESTORED_BY)
 POST3D = ["seed-post3d", "assoc", "seed-assoc", "anchor-assoc", "seed-anchor", "identity-merge", "seed-identity", "refl-floor",
@@ -480,12 +482,10 @@ def diff(old, new, out=None, remade_roots=None, records_roots=None):
     order = {c: i for i, c in enumerate(CAUSES)}
     rows.sort(key=lambda r: (order[r["cause"]], r["cell"], r["ts"], r["det_uid"]))
     os.makedirs(out, exist_ok=True)
-    with open(os.path.join(out, CSV_NAME + ".part"), "w", newline="") as f:
+    with placement.atomic(os.path.join(out, CSV_NAME)) as tmp, open(tmp, "w", newline="") as f:   # group and ACL (placement)
         w = csv.DictWriter(f, fieldnames=COLS)
         w.writeheader()
         w.writerows(rows)
-    from exopipe.phase3.core import placement
-    placement.replace(os.path.join(out, CSV_NAME + ".part"), os.path.join(out, CSV_NAME), drop=True)   # group, ACL
     counts = collections.OrderedDict(
         prev_served=len(prev), **{c: cnt[c] for c in CAUSES}, restored=len(restored), restored_served=len(rs_served),
         gained=sum(gained.values()), gained_restored=gained["restored"], gained_other=gained["other"], new_record_rows=n_rows,

@@ -37,7 +37,7 @@ import sys
 import time
 from collections import deque
 
-from exopipe.phase3.core import legacy, record
+from exopipe.phase3.core import legacy, placement, record
 from exopipe.phase3.core.record import NoInput, Refusal
 from exopipe.phase3.lib.catalog import deep_binding, deep_ported, deep_records
 
@@ -681,7 +681,8 @@ class DeepRun:
                 raise NoInput('no published attempt in the search state')
             man = os.path.join(d, 'harvest_manifest.csv')
             n_patched = {'V': 0, 'I': 0}
-            with open(man + '.tmp', 'w', newline='') as f:
+            # the directory's group and ACL, or the replaced file's
+            with placement.atomic(man) as tmp, open(tmp, 'w', newline='') as f:
                 w = csv.DictWriter(f, fieldnames=['cell', 'stokes', 'node', 'att', 'dir', 'harvested', 'label', 'patched',
                                                   'patched_from'])
                 w.writeheader()
@@ -691,8 +692,6 @@ class DeepRun:
                     w.writerow(dict(cell=a['cell'], stokes=a['stokes'], node=a['node'], att=a['att'], dir=a['dir'],
                                     harvested='1' if a['harvested'] else '0', label=self.label,
                                     patched='1' if src is not None else '0', patched_from=src or ''))
-            from exopipe.phase3.core import placement
-            placement.replace(man + '.tmp', man, drop=True)     # the directory's group and ACL, or the replaced file's
             u.meta['state_dir'] = state
             u.meta['harvest_manifest'] = man
             u.meta['patched_attempts'] = n_patched
@@ -883,12 +882,11 @@ class DeepRun:
             rd = csv.DictReader(f)
             cols, keep = rd.fieldnames, [r for r in rd if (r['cell'], r['stokes']) not in stale]
         out = os.path.join(d, CC.MERGED_ATTEMPTS)
-        with open(out + '.tmp', 'w', newline='') as f:
+        # the directory's group and ACL, or the replaced file's
+        with placement.atomic(out) as tmp, open(tmp, 'w', newline='') as f:
             w = csv.DictWriter(f, fieldnames=cols)
             w.writeheader()
             w.writerows(keep)
-        from exopipe.phase3.core import placement
-        placement.replace(out + '.tmp', out, drop=True)     # the directory's group and ACL, or the replaced file's
         u.meta['merged_attempts'] = {'n': len(keep), 'stale_left_out': sorted(map(list, stale))}
         return out
 
