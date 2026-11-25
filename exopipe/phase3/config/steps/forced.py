@@ -165,7 +165,15 @@ class forced_snapshot(_Section):
     LIGHTCURVE_TICK_STEP = {'10s': 30, '1min': 5}   # points between tick labels (:138)
     FIG_THREADS = 6                              # astrometry-figure threads (:1098)
     FIG_TIMEOUT_S = 900                          # s per figure (:1095)
-    NPROC = {'fit': 24, 'tie': 12, 'render': 12}  # processes, module defaults (:1423,1426,1429); --workers overrides
+    # processes of fit / tie / render (--workers overrides). Production's module defaults are 24, 12 and 12 (:1520, :1523,
+    # :1517); each reads Lustre (fit: the event planes; tie: the reference frames, one CASA worker per shard; render: the
+    # Masters and cutouts), and the site rule is at most 6 Lustre-heavy workers. The products do not depend on it: the fit
+    # writes its rows in completion order whatever the count (imap_unordered, :905), the tie's shards run the same fits on
+    # the same files (phase3_snapshot_refastro.run_worker), the render draws each panel alone
+    NPROC = {'fit': 6, 'tie': 6, 'render': 6}
+    # the most --workers (or NPROC) may ask for: C-WORKERS refuses above it before any unit (the site rule, as
+    # forced_tier_pages.MAX_WORKERS and forced_wide_search.MAX_WORKERS)
+    MAX_WORKERS = 6
     VERIFY_PANEL_MIN_HEIGHT_PX = 1300            # px; a panel shorter has no light-curve strip (:1360)
     VERIFY_SNR_SAMPLE = (5, 1)                   # 5 events, random seed 1 (:1363)
     VERIFY_SNR_TOL = 0.01                        # |S/N| stage 1 vs evaluation (:1365)
