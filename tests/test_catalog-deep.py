@@ -16,6 +16,8 @@ In-place modules: a stub exopipe_ops root holds
     ops/p3s2_conform.py:632-637) - with no switch, as production today, unless a test writes the pending patch's
     P3_CONFORM_AXIS switch into it (stub_conform) - and the fork stub runs it for its validity step, as production's
     multiples_fork.py does (fork mode, table off, its removals kept under the tag A as well).
+  The stub roots (exopipe_ops and an empty clv15) are git repositories of their own, every change to their code committed
+  before a step runs, so the code-identity gate (B-30 GITTAG_FALLBACK) passes under its ruled value 'refuse' (commit_stub_code).
 The test patches CFG in process (stub legacy root, collect roots, masters root, OPS_ROOT; binding check off for the stubs)
 - protected keys cannot be overridden on the command line, by design. Read-only checks on production: the binding check
 against the real exopipe_ops modules. Nothing outside the scratch directory is written.
@@ -297,7 +299,39 @@ def make_ops():
     for name, text in STUBS.items():
         open(f'{ops}/{name}', 'w').write(text.lstrip())
     open(f'{ops}/_stubcat.py', 'w').write(STUBCAT)
+    commit_stub_code('stub code roots of the catalog-deep test')
     return ops
+
+
+# B-30 GITTAG_FALLBACK, ruled 'refuse' (R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32): a step refuses when a
+# code tree it runs names no commit of its own (core/record.code_identity_problems: `git rev-parse` gives a commit, and the
+# tree is the top of its own checkout). The stub roots are therefore git repositories of their own, and every change to their
+# code is committed before a step runs (stub_conform, the design-B builder), so the commit the gate reads names the code that
+# runs; cli() refuses to start a step on a stub root with uncommitted changes.
+STUB_ROOTS = (f'{T}/clv15', f'{T}/exopipe_ops')
+_GIT_ID = ('-c', 'user.name=exopipe3 catalog-deep test', '-c', 'user.email=exopipe3-test@localhost', '-c', 'commit.gpgsign=false',
+           '-c', 'core.hooksPath=/dev/null')
+
+
+def _git(root, *args):
+    r = subprocess.run(['git', '-C', root] + list(_GIT_ID) + list(args), capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, (root, args, r.stderr[-600:])
+    return r.stdout
+
+
+def commit_stub_code(message):
+    for root in STUB_ROOTS:
+        if not os.path.isdir(f'{root}/.git'):
+            _git(root, 'init', '-q')
+            open(f'{root}/.gitignore', 'w').write('__pycache__/\n')
+        _git(root, 'add', '-A')
+        _git(root, 'commit', '-q', '--allow-empty', '-m', message)
+
+
+def stub_code_uncommitted():
+    """The stub roots' changes since their commit ([] = each root's commit is the code that runs)."""
+    return [f'{root}: {ln}' for root in STUB_ROOTS if os.path.isdir(root)
+            for ln in _git(root, 'status', '--porcelain').splitlines()]
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -452,8 +486,10 @@ def unpatch_cfg():
     return CFG
 
 
-def cli(*argv, expect=None):
+def cli(*argv, expect=None, code_check=True):
     from exopipe.phase3 import cli as C
+    dirty = stub_code_uncommitted() if code_check else []
+    assert not dirty, f'stub code changed since its commit (commit_stub_code first): {dirty[:6]}'
     patch_cfg()
     err = io.StringIO()
     with contextlib.redirect_stderr(err):
@@ -485,6 +521,25 @@ def test_help_and_dry_run():
     make_world()
     rc, _ = cli('--dry-run', expect=0)
     assert not os.path.exists(U), 'dry-run wrote the run dir'
+
+
+def test_b30_code_identity_gate_refuses_a_stub_root_without_commit():
+    """The code-identity gate is live in this test (B-30 GITTAG_FALLBACK at its ruled 'refuse', nothing overridden): the stub
+    exopipe_ops root without its git repository refuses the step before any unit runs; with it (every other test) the step
+    runs."""
+    from exopipe.phase3.core import fallback
+    make_world()
+    K = 'fallbacks.GITTAG_FALLBACK'
+    assert unpatch_cfg().fallbacks.GITTAG_FALLBACK == 'refuse' and fallback.policy(K) == 'refuse', fallback.policy(K)
+    os.rename(f'{T}/exopipe_ops/.git', f'{T}/exopipe_ops/.git_off')
+    try:
+        rc, err = cli('--stages', 'preflight', expect=2, code_check=False)
+    finally:
+        os.rename(f'{T}/exopipe_ops/.git_off', f'{T}/exopipe_ops/.git')
+    assert 'REFUSED' in err and K in err and f'{T}/exopipe_ops: git rev-parse failed' in err \
+        and f'{T}/clv15' not in err, err[-800:]
+    assert not rec(f'{LABEL}.preflight'), 'a unit ran past the code-identity refusal'
+    cli('--stages', 'preflight', expect=0)
 
 
 def test_preflight_refuses_missing_parent():
@@ -626,6 +681,7 @@ def test_grouping_design_b_in_the_chain():
     open(f'{T}/exopipe_ops/astrom_frame.py', 'w').write(
         f"import sys as _s\n_s.path.append({REAL_OPS!r})\n_R = {REAL_OPS + '/astrom_frame.py'!r}\n"
         f"exec(compile(open(_R).read(), _R, 'exec'), globals())\n")
+    commit_stub_code('the builder with the grouping patch points; astrom_frame in place')
     m._GROUPING, m._MRULE = 'design-b', 'one-rule'
     try:
         rc, err = cli('--until', 'group', expect=2)
@@ -939,6 +995,7 @@ def stub_conform(kind):
     sw = "AXIS_STEP = os.environ.get('P3_CONFORM_AXIS', '1') != '0'"
     lines[i] = {'today': 'AXIS_STEP = True', 'patched': sw, 'ignored': sw + '; AXIS_STEP = True'}[kind] + '   # AXIS-SWITCH\n'
     open(p, 'w').writelines(lines)
+    commit_stub_code(f'conform stub: axis switch {kind!r}')
 
 
 def size_world(records=True):
@@ -1360,7 +1417,8 @@ def test_compileall():
     assert r.returncode == 0, r.stderr
 
 
-ORDER = ['test_help_and_dry_run', 'test_preflight_refuses_missing_parent', 'test_preflight_fails_on_an_empty_parent_copy',
+ORDER = ['test_help_and_dry_run', 'test_b30_code_identity_gate_refuses_a_stub_root_without_commit',
+         'test_preflight_refuses_missing_parent', 'test_preflight_fails_on_an_empty_parent_copy',
          'test_chain_to_fork_then_union_to_list',
          'test_stale_directory_refused_d9', 'test_changed_input_makes_records_stale', 'test_overrides_of_bound_keys_refused',
          'test_harvest_refuses_unharvested_outside_production', 'test_b30_unharvested_merge',
