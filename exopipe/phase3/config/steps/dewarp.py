@@ -90,6 +90,15 @@ class dewarp(_Section):
                                   'held-out gain {anchor_off_med_as} -> {cv_resid_med_as} arcsec')   # text; dewarp_lst.sh:82-83;
     #                                             'not measured' / '?' when the row or a value is absent; round wording, no
     #                                             ruling (spec Q8)
+    # ---- the MDWSTAT card of a routed cell that is NOT accepted (R-GREGG-20261111-MDWSTAT-CARD: every master states its
+    #      master dewarp status). The record stage writes it on the promoted rebuild before the install takes it, as
+    #      dewarp_lst.sh:119-131 does (exopipe_ops 6f489ba); an accepted cell's products get 'applied' from the apply
+    #      (master_dewarp._apply, production 52e9ee1). The value is steps_common.mdwstat_not_accepted(final row); the files
+    #      are the cell's masters (steps_common.mdwstat_files: coadd._MASTER_RE, as release1_cards; never the PB maps) ----
+    MDWSTAT_COMMENT = 'master dewarp status (Gregg 2026-11-11)'   # card comment (protected); dewarp_lst.sh:130; cut to what
+    #                                  the 80-character card holds after the value, as fits.setval cuts it
+    MDWSTAT_MAX_CHARS = 68           # characters of the card value as FITS writes it, a quote counting twice (one card, no
+    #                                  CONTINUE); dewarp_lst.sh:127 [:68]; release1_cards.plan_file's one-card check
 
     # ---- measurement method [in-place: phase2_config / cascade_dewarp / phase3_master_dewarp] ----
     ANCHOR_SUBBAND = _p2.ANCHOR_SUBBAND                      # '73MHz'; phase2_config.py:72; R-MASTER-DEWARP-RBF-MULTIQUADRIC
@@ -226,6 +235,7 @@ class dewarp(_Section):
     # lists the second group and test_dewarp checks that every one of them is here
     PROTECTED_KEYS = ('MEASURE_FILES', 'VLSSR_PEAKS', 'VLSSR_PEAKS_SHA1', 'VLSSR_CATALOG', 'VLSSR_CATALOG_SHA1', 'ROUTE_LIST',
                       'SCREEN_RECORD_DIR', 'SCREEN_RECORD_FILE', 'GEN_DIR', 'GEN_TOKEN', 'CONTENT_CHECK_SCRIPT',
+                      'MDWSTAT_COMMENT', 'MDWSTAT_MAX_CHARS',
                       # ---- read in place (window) ----
                  'ANCHOR_SUBBAND', 'ANCHOR_FALLBACK', 'ANCHOR_FREQ_MHZ', 'ANCHOR_MATCH_RADIUS_ARCMIN', 'ANCHOR_FLUX_RATIO',
                  'CASCADE_MATCH_RADIUS_BASE_ARCMIN', 'CASCADE_MATCH_RADIUS_EXPONENT', 'CASCADE_FLUX_RATIO',
