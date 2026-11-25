@@ -2,21 +2,28 @@
 install.MDWSTAT_TABLE only when no dewarp record exists for the cell (2026-11-25, the follow-up of
 MERGE-20261125-V2-PR173-DEWARP-RECORD-MDWSTAT).
 
-The dewarp record is the unit record <root>/_records/dewarp/<cell>.json of `exopipe3 dewarp`. Its record stage
-(lib/dewarp/steps_cell.record) stamps MDWSTAT on the promoted masters of a cell whose dewarp is not accepted, and it
-records meta.mdwstat = {value, files: [{path, before, md5}]}: the value and the md5 each stamped master has after the stamp.
-That md5 is the record's fingerprint. The record counts only if it is CURRENT: every master the install takes (the
-top-level coadd_final files of the generation matching coadd._MASTER_RE, before step b's stamp) is one the record stamped,
-with the md5 the record holds, and every master the record stamped is taken (unless --omit-vclean leaves it out). A stale
-record REFUSES the cell (gate MDW-REC); it never falls back to the table. Where record and table differ, the record wins
-and the difference is noted with the cell and both values.
+The dewarp record is the unit record <root>/_records/dewarp/<cell>.json of `exopipe3 dewarp`. Both ends of a cell's dewarp
+record MDWSTAT there (2026-11-25): the apply of an accepted cell (master_dewarp._apply writes MDWSTAT 'applied' on the new
+generation) and the record stage of a cell whose dewarp is not accepted (it stamps its value on the promoted masters),
+as meta.mdwstat = {value, files: [{path, before, md5, size, mtime_ns}]}: the value and each master's md5, size and mtime
+after the write. The md5 is the record's fingerprint. The record counts only if it is CURRENT: every master the install
+takes (the top-level coadd_final files of the generation matching coadd._MASTER_RE, before step b's stamp) is one the
+record stamped, with the md5 the record holds, and every master the record stamped is taken (unless --omit-vclean leaves
+it out). The plan pre-checks size and mtime (no read of the masters' bytes: a size or name difference refuses there, a
+rewrite of the same size is left to the md5); the md5 of the staged copies decides (phase3_install, before b's trial
+copy). A stale record REFUSES the cell (gate MDW-REC); it never falls back to the
+table. Where record and table differ, the record wins and the difference is noted with the cell and both values.
 
-A record without meta.mdwstat:
-  - status done: the apply of an accepted cell (the dewarp's own MDWSTAT 'applied' card, master_dewarp._apply). It carries
-    no MDWSTAT value and no md5 of the kind above, so the value comes from the table, with a note (open question: a
-    currency rule for applied records);
-  - any other status: the cell's dewarp did not finish (refused or failed before the stamp), so the install REFUSES.
-    It does not use the table in its place.
+A rerun of the dewarp that refuses or fails does not erase the cell's last finished record: the cell unit keeps it as
+meta.last_done (lib/dewarp/steps_cell.keep_last_done). When the newest attempt is not done, or done without an MDWSTAT of
+its own (a verify-only rerun), its meta.last_done is used, with a note naming the attempt; the same md5 rule decides, so
+an attempt that wrote on the masters makes it stale. A record with no usable MDWSTAT in either place refuses; the table is
+never used in its place.
+
+The table is read only where it is needed: for a cell without a dewarp record (it gives the value; a table that cannot
+be used refuses that cell at MDW-REC), and for the record-vs-table note of a record-sourced cell (a table that cannot be
+used is noted there and never refuses or replaces the record's value). One ``Source`` reads it once, so every step of one
+install sees the same rows.
 
 ``Source`` is what phase3_install's RELEASE1_MDW_TABLE holds for an install with install.RELEASE1_CARDS. release1_cards
 reads its rows(): the table's rows, with the row of a record-sourced cell replaced by the record's value. So step b, the
@@ -57,17 +64,23 @@ def record_file(cell, root):
 
 class Choice:
     """The source chosen for one cell: source RECORD or TABLE, the value, the record path (RECORD), the stamped masters
-    {name: md5} (RECORD), the table's value (None = no row), and notes."""
+    {name: md5} and {name: (size, mtime_ns)} (RECORD; a master without a recorded size and mtime is absent from
+    ``stats``), the record entry used ('meta.mdwstat', or 'meta.last_done.mdwstat' when the newest attempt did not
+    finish), the table's value (None = no row, or no usable table: ``table_show`` says which), and notes."""
 
-    def __init__(self, cell, source, value, record=None, files=None, table_value=None, notes=()):
+    def __init__(self, cell, source, value, record=None, files=None, table_value=None, notes=(), stats=None, entry=None,
+                 table_show=None):
         self.cell, self.source, self.value, self.record = cell, source, value, record
         self.files = dict(files or {})
+        self.stats = dict(stats or {})
+        self.entry = entry
         self.table_value = table_value
+        self.table_show = table_show or ('no row' if table_value is None else repr(table_value))
         self.notes = list(notes)
 
     def summary(self):
-        return dict(source=self.source, value=self.value, record=self.record, table_value=self.table_value,
-                    files=dict(sorted(self.files.items())))
+        return dict(source=self.source, value=self.value, record=self.record, record_entry=self.entry,
+                    table_value=self.table_value, files=dict(sorted(self.files.items())))
 
 
 def _table_value(rows, cell):
@@ -77,15 +90,44 @@ def _table_value(rows, cell):
     return None if r is None else (r.get('mdwstat') or '').strip()
 
 
+def _bad_mdwstat(mdw):
+    """None when meta.mdwstat {value, files} is well formed, else what is wrong."""
+    value = mdw.get('value') if isinstance(mdw, dict) else None
+    files = mdw.get('files') if isinstance(mdw, dict) else None
+    if not isinstance(value, str) or not value.strip():
+        return f'value {value!r}'
+    if not isinstance(files, list) or not files:
+        return f'files {str(files)[:80]}'
+    for x in files:
+        m = x.get('md5') if isinstance(x, dict) else None
+        if not (isinstance(x, dict) and x.get('path') and isinstance(m, str) and len(m) == 32 and set(m) <= _HEX):
+            return f'file entry {str(x)[:120]}'
+        if any(k in x and not (isinstance(x[k], int) and not isinstance(x[k], bool) and x[k] >= 0)
+               for k in ('size', 'mtime_ns')):
+            return f'file entry size / mtime_ns {str(x)[:120]}'
+    names = [os.path.basename(x['path']) for x in files]
+    if len(set(names)) != len(names):
+        return 'a master name listed twice'
+    return None
+
+
 def choose(cell, rows, table_path, root):
-    """The MDWSTAT source of ``cell`` ('<LST>_<band>'): ``rows`` = release1_cards.load_mdw_table(table_path), ``root`` = the
-    dewarp record root (record_root). Returns a Choice; a record that cannot be used refuses (Refusal, gate MDW-REC)."""
+    """The MDWSTAT source of ``cell`` ('<LST>_<band>'). ``rows``: the table's rows as release1_cards.load_mdw_table returns
+    them, or a callable returning them, called only where the table is needed: the value of a cell without a dewarp record
+    (a table that cannot be used then refuses), and the record-vs-table note of a record-sourced cell (a table that cannot
+    be used is noted there, never refusing). ``root`` = the dewarp record root (record_root). Returns a Choice; a record
+    that cannot be used refuses (Refusal, gate MDW-REC), never falling back to the table."""
+    def table():
+        return rows() if callable(rows) else rows
     p = record_file(cell, root)
-    tv = _table_value(rows, cell)
-    tshow = 'no row' if tv is None else repr(tv)
     if not os.path.exists(p):
+        t = table()
+        if isinstance(t, str):
+            raise Refusal(f'{GATE}: {cell}: no dewarp record {p}, so MDWSTAT comes from the table, and {t}')
+        tv = _table_value(t, cell)
         return Choice(cell, TABLE, tv, table_value=tv, notes=[
-            f'{GATE}: {cell}: no dewarp record {p}: MDWSTAT from the table {table_path} ({tshow})'])
+            f'{GATE}: {cell}: no dewarp record {p}: MDWSTAT from the table {table_path} '
+            f'({"no row" if tv is None else repr(tv)})'])
     try:
         with open(p) as f:
             rec = json.load(f)
@@ -93,48 +135,51 @@ def choose(cell, rows, table_path, root):
         st = rec.get('status')
     except Exception as ex:
         raise Refusal(f'{GATE}: {cell}: the dewarp record {p} cannot be read ({type(ex).__name__}: {str(ex)[:120]})')
-    mdw = meta.get('mdwstat')
+    why = str(rec.get('reason') or '')[:200]
+    notes = []
+    mdw, entry = (meta.get('mdwstat'), 'meta.mdwstat') if st == 'done' else (None, None)
     if mdw is None:
-        if st == 'done':
+        last = meta.get('last_done')
+        if isinstance(last, dict) and last.get('mdwstat') is not None:
+            mdw, entry = last['mdwstat'], 'meta.last_done.mdwstat'
+            notes.append(f'{GATE}: {cell}: the newest attempt in the dewarp record {p} is {st!r} '
+                         + (f'({why}) ' if st != 'done' else '(no MDWSTAT of its own) ')
+                         + f'(started {rec.get("started")}); its last done attempt (run {last.get("run_id")}, finished '
+                         f'{last.get("finished")}) recorded MDWSTAT: that is used, current only while every master keeps '
+                         f'the md5 it stamped')
+        elif st == 'done':
             kind = (meta.get('install') or {}).get('kind')
-            return Choice(cell, TABLE, tv, table_value=tv, notes=[
-                f'{GATE}: {cell}: the dewarp record {p} (done; install kind {kind!r}) carries no MDWSTAT value: only the '
-                f'record stage of a not-accepted cell writes one (meta.mdwstat); MDWSTAT from the table {table_path} ({tshow})'])
-        raise Refusal(f'{GATE}: {cell}: the dewarp record {p} is {st!r} ({str(rec.get("reason") or "")[:200]}) and records no '
-                      f'MDWSTAT value: the cell\'s dewarp did not finish - rerun it before the install (the table is not '
-                      f'used in its place)')
-    if st != 'done':
-        raise Refusal(f'{GATE}: {cell}: the dewarp record {p} holds an MDWSTAT value but is {st!r} '
-                      f'({str(rec.get("reason") or "")[:200]}): not a finished record - rerun the dewarp record stage')
-    value = mdw.get('value') if isinstance(mdw, dict) else None
-    files = mdw.get('files') if isinstance(mdw, dict) else None
-    bad = None
-    if not isinstance(value, str) or not value.strip():
-        bad = f'value {value!r}'
-    elif not isinstance(files, list) or not files:
-        bad = f'files {str(files)[:80]}'
-    else:
-        for x in files:
-            m = x.get('md5') if isinstance(x, dict) else None
-            if not (isinstance(x, dict) and x.get('path') and isinstance(m, str) and len(m) == 32 and set(m) <= _HEX):
-                bad = f'file entry {str(x)[:120]}'
-                break
-    if bad is None:
-        names = [os.path.basename(x['path']) for x in files]
-        if len(set(names)) != len(names):
-            bad = 'a master name listed twice'
+            raise Refusal(f'{GATE}: {cell}: the dewarp record {p} is done (install kind {kind!r}) but records no MDWSTAT '
+                          f'(meta.mdwstat, or meta.last_done): every finished dewarp records it since 2026-11-25 (the apply '
+                          f'of an accepted cell \'applied\', the record stage of a not-accepted one its value) - rerun the '
+                          f'dewarp of the cell (the table is not used in its place)')
+        else:
+            raise Refusal(f'{GATE}: {cell}: the dewarp record {p} is {st!r} ({why}) and no earlier attempt of it recorded '
+                          f'MDWSTAT (meta.last_done): the cell\'s dewarp did not finish - rerun it before the install (the '
+                          f'table is not used in its place)')
+    bad = _bad_mdwstat(mdw)
     if bad:
-        raise Refusal(f'{GATE}: {cell}: the dewarp record {p} has a malformed meta.mdwstat ({bad})')
-    value = value.strip()
+        raise Refusal(f'{GATE}: {cell}: the dewarp record {p} has a malformed {entry} ({bad})')
+    value = mdw['value'].strip()
+    files = mdw['files']
     fm = {os.path.basename(x['path']): x['md5'] for x in files}
-    if tv is None:
-        why = f'the table {table_path} has no row for the cell'
-    elif tv != value:
-        why = f'it differs from the table {table_path} ({tv!r}): the record wins'
+    stats = {os.path.basename(x['path']): (x['size'], x['mtime_ns']) for x in files if 'size' in x and 'mtime_ns' in x}
+    try:
+        t = table()
+    except Exception as ex:                # the record's value never depends on the table
+        t = f'the MDWSTAT table {table_path} cannot be read ({type(ex).__name__}: {str(ex)[:60]})'
+    if isinstance(t, str):
+        tv, tshow = None, f'unusable: {t}'
+        cmp = f'not compared with the table ({t}): the record does not depend on it'
     else:
-        why = 'equal to the table'
-    return Choice(cell, RECORD, value, record=p, files=fm, table_value=tv, notes=[
-        f'{GATE}: {cell}: MDWSTAT from the dewarp record {p}: {value!r} ({len(fm)} stamped masters); {why}'])
+        tv = _table_value(t, cell)
+        tshow = 'no row' if tv is None else repr(tv)
+        cmp = (f'the table {table_path} has no row for the cell' if tv is None else
+               f'it differs from the table {table_path} ({tv!r}): the record wins' if tv != value else 'equal to the table')
+    notes.append(f'{GATE}: {cell}: MDWSTAT from the dewarp record {p} ({entry}): {value!r} ({len(fm)} stamped masters); '
+                 f'{cmp}')
+    return Choice(cell, RECORD, value, record=p, files=fm, table_value=tv, notes=notes, stats=stats, entry=entry,
+                  table_show=tshow)
 
 
 def problems(choice, taken, omitted=()):
@@ -155,6 +200,35 @@ def problems(choice, taken, omitted=()):
     for n in sorted(set(choice.files) - set(taken) - set(omitted)):
         out.append(f'{n} (record md5 {choice.files[n]}) is stamped by the record but not installed')
     return out
+
+
+def stat_problems(choice, stats, omitted=()):
+    """The plan's pre-check, which reads no master's bytes: ``stats`` {name: (size, mtime_ns)} of the generation's masters
+    now (os.stat). Returns (problems, deferred): a problem - certain staleness - for a master the record did not stamp, a
+    size other than the record's, and a stamped master missing from the generation (unless ``omitted``); ``deferred``
+    {name: why} for the masters the plan cannot clear: no size and mtime in the record (made before 2026-11-25), or the
+    same size with another mtime (the file was rewritten since the stamp - an interrupted rerun rewrites a master with the
+    value it already held - so only its bytes can tell). The md5 of the staged copies (staged_problems) decides, for every
+    master."""
+    if choice.source != RECORD:
+        return [], {}
+    out, deferred = [], {}
+    if not stats:
+        out.append('no master of the generation is known to the install (none taken)')
+    for n, got in sorted(stats.items()):
+        if n not in choice.files:
+            out.append(f'{n} is not a master the record stamped')
+            continue
+        want = choice.stats.get(n)
+        if want is None:
+            deferred[n] = 'no size and mtime in the record'
+        elif got[0] != want[0]:
+            out.append(f'{n} is {got[0]} bytes, the record stamped {want[0]} bytes (changed since the stamp)')
+        elif got[1] != want[1]:
+            deferred[n] = f'rewritten since the stamp (mtime {got[1]} ns, the record\'s {want[1]} ns; same size)'
+    for n in sorted(set(choice.files) - set(stats) - set(omitted)):
+        out.append(f'{n} is stamped by the record but not in the generation')
+    return out, deferred
 
 
 def master_names(rels):
@@ -189,19 +263,37 @@ def record_row(choice, trow):
 
 class Source:
     """PI.RELEASE1_MDW_TABLE for an install whose cells may take MDWSTAT from a dewarp record: the table path and the
-    record-sourced choices. Truthy, as the table path it replaces."""
+    record-sourced choices. Truthy, as the table path it replaces. The table is read once per Source (table_rows), so
+    every step of one install - the plan's choice, step b, the cleaned-V refresh, the sibling card gate - sees the same
+    rows."""
 
-    def __init__(self, table, choices=()):
+    def __init__(self, table, choices=(), rows=None):
         self.table = table
-        self.choices = {c.cell: c for c in choices if c.source == RECORD}
+        self.choices = {}
+        self._rows = rows
+        for c in choices:
+            self.add(c)
+
+    def add(self, choice):
+        if choice.source == RECORD:
+            self.choices[choice.cell] = choice
+
+    def table_rows(self):
+        """The table's rows as release1_cards.load_mdw_table returns them (or its error text), read on the first call."""
+        if self._rows is None:
+            from exopipe.phase3.lib.masters.release1_cards import load_mdw_table
+            self._rows = load_mdw_table(self.table)
+        return self._rows
 
     def rows(self):
-        """{'<LST>_<band>': row} as release1_cards.load_mdw_table returns it, a record-sourced cell's row replaced
-        (record_row); the loader's error text when the table cannot be used."""
-        from exopipe.phase3.lib.masters.release1_cards import load_mdw_table
-        t = load_mdw_table(self.table)
+        """{'<LST>_<band>': row}: the table's rows, a record-sourced cell's row replaced (record_row). A table that cannot be
+        used gives its error text when no cell is record-sourced, else the record-sourced rows alone: it refuses only the
+        cells whose value comes from it and never removes a record's value."""
+        t = self.table_rows()
         if isinstance(t, str):
-            return t
+            if not self.choices:
+                return t
+            t = {}
         t = dict(t)
         for cell, c in self.choices.items():
             t[cell] = record_row(c, t.get(cell))
@@ -216,33 +308,63 @@ class Source:
         return problems(c, taken, omitted_masters(c.files) if omit_vclean else ())
 
     def __str__(self):
-        return self.table + ''.join(f'; {cell}: MDWSTAT from the dewarp record {c.record} ({c.value!r})'
-                                    for cell, c in sorted(self.choices.items()))
+        return f'{self.table}' + ''.join(f'; {cell}: MDWSTAT from the dewarp record {c.record} ({c.value!r})'
+                                         for cell, c in sorted(self.choices.items()))
 
 
 def source_for(cell, table, roots):
-    """(Choice, Source) for one cell: choose() on the table and the record root of ``roots``."""
-    from exopipe.phase3.lib.masters.release1_cards import load_mdw_table
-    ch = choose(cell, load_mdw_table(table), table, record_root(roots))
-    return ch, Source(table, [ch])
+    """(Choice, Source) for one cell: choose() on the record root of ``roots``, the table read through the Source (once,
+    and only where needed)."""
+    src = Source(table)
+    ch = choose(cell, src.table_rows, table, record_root(roots))
+    src.add(ch)
+    return ch, src
 
 
-def installed_problems(choice, install_rec):
-    """problems() of a record-sourced choice against the masters the cell's install installed, from its done install
-    record: the inputs it recorded under <meta.gen>/coadd_final with their md5 (phase3_install's 'installed' rows: the
-    generation file's md5 before step b's stamp), and the omissions its MDW-REC gate recorded. Also a difference between the
-    source the install recorded (meta.mdwstat_source) and ``choice``."""
-    if install_rec is None:
-        return ['no done install record of the cell: the installed masters cannot be shown to be the ones the record '
-                'stamped'] if choice.source == RECORD else []
-    meta = install_rec.get('meta') or {}
+def installed_values(cell_dir):
+    """{name: MDWSTAT} of the masters in <cell_dir>/coadd_final (top level, coadd._MASTER_RE), header only (no memory map)."""
+    from exopipe.phase3.core.record import fits_primary_cards
+    fd = os.path.join(cell_dir, 'coadd_final')
+    try:
+        names = os.listdir(fd)
+    except (FileNotFoundError, NotADirectoryError):
+        return {}
+    return {os.path.basename(r): fits_primary_cards(os.path.join(cell_dir, r)).get('MDWSTAT')
+            for r in master_names(sorted(f'coadd_final/{n}' for n in names))}
+
+
+def installed_problems(choice, install_rec, cell_dir=None):
+    """[] when ``choice`` is the source the cell's install used and holds for what it installed. ``install_rec``: the cell's
+    newest done install or recover record (None: none). The source the install recorded (meta.mdwstat_source) must be
+    ``choice``'s; a record without it (made before 2026-11-25, or with install.RELEASE1_CARDS off) means the TABLE, as its
+    step b wrote the table's value. A record-sourced choice must be current for the masters installed: the inputs the
+    install recorded under <meta.gen>/coadd_final with their md5 (phase3_install's 'installed' rows: the generation file's
+    md5 before step b's stamp), less the omissions its MDW-REC gate recorded. In every case the MDWSTAT in the headers of
+    the installed masters (``cell_dir``: the working cell) must be ``choice``'s value; a difference names both values.
+    Each problem of the source ends 'reinstall the cell'."""
     out = []
-    was = meta.get('mdwstat_source')
-    if was and (was.get('source'), was.get('value')) != (choice.source, choice.value):
-        out.append(f'the install took MDWSTAT from the {was.get("source")} ({was.get("value")!r}), the source now is the '
-                   f'{choice.source} ({choice.value!r}): reinstall the cell')
+    meta = (install_rec or {}).get('meta') or {}
+    was = meta.get('mdwstat_source') or None
+    if install_rec is not None:
+        if not was:
+            if choice.source != TABLE:
+                out.append(f'the install record holds no MDWSTAT source (made before 2026-11-25, or with '
+                           f'install.RELEASE1_CARDS off), so its step b took the table\'s value; the source now is the '
+                           f'{choice.source} ({choice.value!r}): reinstall the cell')
+        elif (was.get('source'), was.get('value')) != (choice.source, choice.value):
+            out.append(f'the install took MDWSTAT from the {was.get("source")} ({was.get("value")!r}), the source now is '
+                       f'the {choice.source} ({choice.value!r}): reinstall the cell')
+    if cell_dir:
+        want = (choice.value or '').strip()
+        for n, got in sorted(installed_values(cell_dir).items()):
+            if str(got if got is not None else '').strip() != want:
+                out.append(f'the installed master {n} carries MDWSTAT {got!r}, the {choice.source} gives '
+                           f'{choice.value!r}: reinstall the cell')
     if choice.source != RECORD:
         return out
+    if install_rec is None:
+        return out + ['no done install record of the cell: the installed masters cannot be shown to be the ones the '
+                      'record stamped']
     gen = os.path.abspath(meta['gen']).rstrip('/') if meta.get('gen') else ''         # record inputs are absolute paths
     fd = os.path.join(gen, 'coadd_final') if gen else None
     sums = {}

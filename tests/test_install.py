@@ -32,6 +32,10 @@ out-of-master table and the archived screen record are read by the in-place memb
          with the installed_cell output; under production's value (the parity file's) the install is refused at G-MEM
   e2e F0 a rebuild made after the enforcement whose record still holds such a night: refused at G-MEM (strict); F is a
          rebuild made now without it (strict, passes)
+  e2e G  MDWSTAT from the cell's dewarp record: stale by size refuses at the plan, stale by md5 at staging, the current
+         record installs, stage cards compares with it; a record changed after the install refuses cards (reinstall)
+  e2e H  an install interrupted after the working-quarantine moves (R1): report-only recover chooses no MDWSTAT source;
+         recover --execute refuses on a stale record, then records MDW-REC and the installed masters' md5; cards passes
 
 The two snapshot_masters link scans (912 links, ~40 s each on Lustre) are stubbed in the e2e runs; the scan itself is
 tested on a synthetic tree (unit). Run: python tests/test_install.py   (about a minute)
@@ -521,6 +525,7 @@ def test_e2e():
         _e2e_rebuild_holds_18(run, nights, hdrs)
         _e2e_rebuild(run, nights, hdrs)
         _e2e_record(run, nights, hdrs)
+        _e2e_recover(run, nights, hdrs)
         _e2e_parity(run, nights, hdrs)
     finally:
         SD.snapshot_link_scan, PI.glob = real_scan, real_glob
@@ -969,11 +974,13 @@ def _e2e_rebuild(run, nights, hdrs):
     ok('F: the rebuild verdict recorded', 'T1-T8 passed' in (rec['meta'].get('rebuild_verdict') or ''))
 
 
-def _stamp_record(out, gen, value, wrong=None, status='done'):
-    """The dewarp record stage of a not-accepted cell, as lib/dewarp/steps_cell.record leaves it: MDWSTAT = value stamped on
-    the generation's masters (top-level coadd_final, coadd._MASTER_RE) and the unit record <out>/_records/dewarp/<cell>.json
-    with meta.mdwstat {value, files [{path, before, md5 after the stamp}]}. ``wrong``: a master name recorded with another
-    md5 (a record that is not current for the generation). Returns {name: md5}."""
+def _stamp_record(out, gen, value, wrong=None, status='done', kind='rebuild', wrong_size=None):
+    """The dewarp of a cell as lib/dewarp/steps_cell leaves its record: MDWSTAT = value on the generation's masters
+    (top-level coadd_final, coadd._MASTER_RE; the record stage of a not-accepted cell, or the apply's 'applied') and the
+    unit record <out>/_records/dewarp/<cell>.json with meta.mdwstat {value, files [{path, before, md5, size, mtime_ns after
+    the write}]}. ``wrong``: a master name recorded with another md5 (a record that is not current for the generation,
+    found by the md5 at staging); ``wrong_size``: one recorded with another size (found by the plan's pre-check). Returns
+    {name: md5}."""
     from astropy.io import fits
     from exopipe.phase3.core import record as R
     from exopipe.phase3.lib.install import mdwstat as MW
@@ -983,10 +990,12 @@ def _stamp_record(out, gen, value, wrong=None, status='done'):
         with fits.open(p, mode='update', memmap=False) as h:
             before = h[0].header.get('MDWSTAT')
             h[0].header['MDWSTAT'] = (value, 'master dewarp status (Gregg 2026-11-11)')
-        files.append(dict(path=p, before=before, md5='0' * 32 if os.path.basename(p) == wrong else md5(p)))
+        st = os.stat(p)
+        files.append(dict(path=p, before=before, md5='0' * 32 if os.path.basename(p) == wrong else md5(p),
+                          size=st.st_size + (2880 if os.path.basename(p) == wrong_size else 0), mtime_ns=st.st_mtime_ns))
     R.atomic_write_json(R.record_path(out, 'dewarp', CELL), dict(
         unit=CELL, step='dewarp', status=status, started='2026-11-25T01:00:00Z', finished='2026-11-25T01:05:00Z',
-        meta=dict(mdwstat=dict(value=value, files=files), install=dict(kind='rebuild', gen=gen)), reason=''))
+        meta=dict(mdwstat=dict(value=value, files=files), install=dict(kind=kind, gen=gen)), reason=''))
     return {os.path.basename(x['path']): x['md5'] for x in files}
 
 
@@ -1012,17 +1021,27 @@ def _e2e_record(run, nights, hdrs):
     rr = f'{ROOT}/rebuildG/{CELL}'
     rebuild_root(rr, drop_held_18=True)
     wrong = f'I_deep_Taper_R0_{SCOPE}.fits'
-    files = _stamp_record(out, gen, value, wrong=wrong)
+    files = _stamp_record(out, gen, value, wrong_size=wrong)
     before = tree_md5(cdir)
     args = ('install', '--cells', CELL, '--kind', 'rebuild', '--gen', gen, '--rebuild-root', rr, '--out', out,
             '--cores', 'none', '--set', 'install.FREE_FLOOR_GB=0.0', '--stages', 'plan,install,verify')
     rc = cli(*args)
     rec = record(out, CELL)
-    ok('G: a dewarp record not current for the generation (one master\'s md5 differs) - refused at MDW-REC before staging, '
-       'naming the master, the table not used in its place -> exit 2', rc == 2 and rec and rec['status'] == 'refused'
-       and rec['reason'].startswith('MDW-REC') and 'STALE' in rec['reason'] and wrong in rec['reason'],
-       f'rc {rc}, {rec and rec["reason"][:300]}')
+    ok('G: a dewarp record not current for the generation by size (one master) - refused at the plan\'s MDW-REC pre-check, '
+       'before staging, naming the master, the table not used in its place -> exit 2', rc == 2 and rec
+       and rec['status'] == 'refused' and rec['reason'].startswith('MDW-REC') and 'STALE' in rec['reason']
+       and wrong in rec['reason'], f'rc {rc}, {rec and rec["reason"][:300]}')
     ok('G: ... nothing staged, the cell untouched', tree_md5(cdir) == before and not os.path.exists(f'{cdir}/.install_staging'))
+    files = _stamp_record(out, gen, value, wrong=wrong)
+    rc = cli(*args)
+    rec = record(out, CELL)
+    ok('G: a dewarp record whose md5 of one master differs (size and mtime equal) - passes the plan\'s pre-check, REFUSED '
+       'at MDW-REC on the md5 of the staged copies before any move, naming the master; staging removed, the cell untouched '
+       '-> exit 2', rc == 2 and rec and rec['status'] == 'refused' and rec['reason'].startswith('MDW-REC')
+       and 'not current for the staged masters' in rec['reason'] and wrong in rec['reason']
+       and 'install.MDW-REC' in {t['name'] for t in rec['tests'] if t['passed']}
+       and tree_md5(cdir) == before and not os.path.exists(f'{cdir}/.install_staging'),
+       f'rc {rc}, {rec and rec["reason"][:300]}')
     files = _stamp_record(out, gen, value)
     rc = cli(*args)
     rec = record(out, CELL)
@@ -1064,6 +1083,88 @@ def _e2e_record(run, nights, hdrs):
     ok('G: the record changed after the install (another value, the masters re-stamped) - stage cards refused at MDW-REC '
        '(reinstall the cell), nothing refreshed -> exit 2', rc == 2 and vrec['status'] == 'refused' and calls == []
        and 'reinstall the cell' in bad.get('install.MDW-REC', ''), f'rc {rc} {sorted(bad)} {str(bad)[:400]}')
+
+
+def _e2e_recover(run, nights, hdrs):
+    """H (2026-11-25, MDWSTAT on a recover): an mdewarp install with a current dewarp record (the apply's MDWSTAT 'applied')
+    interrupted after the working-quarantine moves (phase3_install._finish raising: state R1, the staging kept). A
+    report-only recover chooses no MDWSTAT source (no gate MDW-REC, no mdwstat_source) and moves nothing; recover --execute
+    with the record made stale (one master's md5) is refused at MDW-REC on the staged md5, nothing moved; with the current
+    record it is done, records gate MDW-REC, the source and every installed master's md5 as an input (as the install
+    path); stage cards then finds them: MDW-REC passes against the recover record."""
+    from exopipe.phase3.core import record as R
+    from exopipe.phase3.lib.install import steps_common as SC
+    PI = SC.pi_module()
+    out = f'{ROOT}/outH'
+    common = ['--out', out, '--cores', 'none', '--set', 'install.FREE_FLOOR_GB=0.0', '--kind', 'mdewarp', '--not-rebuilt']
+    cdir = build_current(out, hdrs, nights, run)
+    gen = build_generation(f'{ROOT}/genH/{CELL}/gen_mdewarp_rbf', hdrs, nights, seed=11)
+    files = _stamp_record(out, gen, 'applied', kind='mdewarp')
+    arch_before = tree_md5(f'{out}/archive')
+    real_finish = PI._finish
+
+    def interrupted(*a, **k):
+        raise OSError('[Errno 28] No space left on device (synthetic interruption after the working-quarantine moves)')
+    PI._finish = interrupted
+    rc = None
+    try:
+        rc = cli('install', '--cells', CELL, '--gen', gen, '--stages', 'plan,install', *common)
+    except RuntimeError as e:                   # the unit's error propagates out of cli.main (record written first)
+        rc = f'raised: {str(e)[:120]}'
+    finally:
+        PI._finish = real_finish
+    rec = record(out, CELL)
+    stg = f'{cdir}/.install_staging'
+    ok('H: an install interrupted after the working-quarantine moves -> error; state R1: no working FITS, the staging kept, '
+       'the archive untouched', rc != 0 and rec and rec['status'] == 'error' and 'STOPPED after' in rec['reason']
+       and rec['meta'].get('round') and os.path.isdir(stg)
+       and not glob.glob(f'{cdir}/coadd_final/*.fits') and tree_md5(f'{out}/archive') == arch_before,
+       f'rc {rc}, {rec and rec["status"]} {rec and rec["reason"][:200]}')
+    stg_before = tree_md5(stg)
+    rc = cli('install', '--cells', CELL, '--stages', 'recover', '--gen', gen, *common)
+    rr = record(out, f'{CELL}.recover')
+    ok('H: a report-only recover chooses no MDWSTAT source (no gate MDW-REC, no mdwstat_source) and moves nothing -> '
+       'no-input', rc == R.EXIT_NO_INPUT and rr and rr['status'] == 'no-input' and 'mdwstat_source' not in rr['meta']
+       and not any(t['name'] == 'install.MDW-REC' for t in rr['tests']) and tree_md5(stg) == stg_before
+       and 'R1' in rr['reason'], f'rc {rc}, {rr and rr["status"]} {rr and rr["reason"][:200]}')
+    rp = R.record_path(out, 'dewarp', CELL)
+    good = json.load(open(rp))
+    bad = json.loads(json.dumps(good))
+    wrong = os.path.basename(bad['meta']['mdwstat']['files'][0]['path'])
+    bad['meta']['mdwstat']['files'][0]['md5'] = '0' * 32
+    R.atomic_write_json(rp, bad)
+    rc = cli('install', '--cells', CELL, '--stages', 'recover', '--gen', gen, '--execute', *common)
+    rr = record(out, f'{CELL}.recover')
+    ok('H: recover --execute with a dewarp record not current (one master\'s md5) - refused at MDW-REC on the staged md5, '
+       'naming the master, nothing moved (the staging as it was, the archive untouched) -> exit 2', rc == 2 and rr
+       and rr['status'] == 'refused' and 'MDWSTAT dewarp record is not current' in rr['reason'] and wrong in rr['reason']
+       and tree_md5(stg) == stg_before and tree_md5(f'{out}/archive') == arch_before,
+       f'rc {rc}, {rr and rr["status"]} {rr and rr["reason"][:300]}')
+    R.atomic_write_json(rp, good)
+    rc = cli('install', '--cells', CELL, '--stages', 'recover', '--gen', gen, '--execute', *common)
+    rr = record(out, f'{CELL}.recover')
+    passed = {t['name'] for t in (rr or {}).get('tests', []) if t['passed']}
+    ms = (rr or {}).get('meta', {}).get('mdwstat_source') or {}
+    ins = {os.path.basename(k): v.get('md5') for k, v in (rr or {}).get('inputs', {}).items() if k.startswith(gen)}
+    ok('H: recover --execute with the current record -> done; MDW-REC passed, the source recorded (dewarp record, '
+       '\'applied\', the stamped md5), every installed master an input with the md5 it was installed with',
+       rc == 0 and rr['status'] == 'done' and 'install.MDW-REC' in passed and 'install.RECOVER-OK' in passed
+       and ms.get('source') == 'dewarp record' and ms.get('value') == 'applied' and ms.get('files') == files
+       and all(ins.get(n) == m for n, m in files.items()) and not os.path.exists(stg),
+       f'rc {rc}, {rr and rr["reason"][:300]}; {sorted(passed)}; {len(ins)} inputs; {str(ms)[:200]}')
+    mdir = SC.Roots(out, True).masters_dir(LST, SCOPE)
+    sib = f'{ROOT}/sibling_archiveH'
+    for lst2 in ('13h', '14h'):
+        d = f'{sib}/Coadd/{run}/{lst2}/{SCOPE}'
+        os.makedirs(d, exist_ok=True)
+        for p in glob.glob(f'{mdir}/*.fits'):
+            shutil.copy2(p, f'{d}/{os.path.basename(p).replace(f"_LST{LST}_", f"_LST{lst2}_")}')
+    rc, calls = _cards_stage(out, sib)
+    vrec = record(out, f'{CELL}.verify')
+    vpass = {t['name']: str(t.get('detail')) for t in (vrec or {}).get('tests', []) if t['passed']}
+    ok('H: stage cards after the recover -> done; MDW-REC current for the masters the recover record installed',
+       rc == 0 and vrec['status'] == 'done' and f'install record {CELL}.recover installed' in vpass.get('install.MDW-REC', ''),
+       f'rc {rc} {vrec and vrec["reason"][:300]}; {[(t["name"], str(t.get("detail"))[:200]) for t in failed_tests(vrec)]}')
 
 
 def _e2e_parity(run, nights, hdrs):

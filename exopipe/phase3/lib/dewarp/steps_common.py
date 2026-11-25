@@ -813,19 +813,23 @@ def not_accepted_row(lst, scope, row, written_utc):
 STAMP_ROOT = 'promoted rebuild root (MDWSTAT card of a not-accepted cell)'      # G-W's name of that write root
 
 
-def mdwstat_files(roots, cell):
-    """The files the record stage writes MDWSTAT on, sorted: the cell's masters, i.e. the files of
-    <REBUILD_ROOT>/<cell>/coadd_final (top level) whose names match lib/masters/coadd._MASTER_RE - the set
-    release1_cards.CellCards.masters gives MDWSTAT and the install's sibling card gate compares. Never the PB maps
-    (PB_deep_<s>, PB_deep_R075_<s>: release1_cards writes MDWSTAT on masters only), loo/ or subtracted/."""
+def master_files(d):
+    """The masters of a coadd_final directory ``d``, sorted: its top-level files whose names match
+    lib/masters/coadd._MASTER_RE - the set release1_cards.CellCards.masters gives MDWSTAT and the install's sibling card gate
+    compares. Never the PB maps (PB_deep_<s>, PB_deep_R075_<s>: release1_cards writes MDWSTAT on masters only), loo/ or
+    subtracted/."""
     from exopipe.phase3.lib.masters.coadd import _MASTER_RE
-    d = os.path.join(roots.rebuild, cell, 'coadd_final')
     try:
         names = os.listdir(d)
     except (FileNotFoundError, NotADirectoryError):
         return []
     return sorted(os.path.join(d, f) for f in names if f.endswith('.fits') and _MASTER_RE.match(f)
                   and os.path.isfile(os.path.join(d, f)))
+
+
+def mdwstat_files(roots, cell):
+    """The files the record stage writes MDWSTAT on: master_files of <REBUILD_ROOT>/<cell>/coadd_final."""
+    return master_files(os.path.join(roots.rebuild, cell, 'coadd_final'))
 
 
 def _gain_text(g, threshold, most=3):

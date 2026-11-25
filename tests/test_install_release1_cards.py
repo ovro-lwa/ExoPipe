@@ -610,14 +610,31 @@ class _Gates:
         return bool(ok)
 
 
-def _dewarp_record(root, cell, value, files, status='done', install=None):
-    """A dewarp unit record as the record stage writes it (meta.mdwstat), or an apply record (value None: no meta.mdwstat)."""
+def _mdwstat(files, stats=True):
+    """meta.mdwstat's files as the dewarp writes them: {path, before, md5, size, mtime_ns} (size and mtime of the file now;
+    ``stats`` False: a record made before 2026-11-25, without them)."""
+    out = []
+    for p, m in files.items():
+        x = dict(path=p, before=None, md5=m)
+        if stats and os.path.exists(p):
+            st = os.stat(p)
+            x.update(size=st.st_size, mtime_ns=st.st_mtime_ns)
+        out.append(x)
+    return out
+
+
+def _dewarp_record(root, cell, value, files, status='done', install=None, stats=True, last_done=None, reason='synthetic'):
+    """A dewarp unit record as the apply or the record stage writes it (meta.mdwstat), or one without (value None);
+    ``last_done``: the meta.last_done an attempt carries (lib/dewarp/steps_cell.keep_last_done)."""
     from exopipe.phase3.core import record
     meta = dict(install=install or dict(kind='rebuild', gen=f'{root}/gen/{cell}'))
     if value is not None:
-        meta['mdwstat'] = dict(value=value, files=[dict(path=p, before=None, md5=m) for p, m in files.items()])
+        meta['mdwstat'] = dict(value=value, files=_mdwstat(files, stats))
+    if last_done is not None:
+        meta['last_done'] = last_done
     p = record.record_path(root, 'dewarp', cell)
-    record.atomic_write_json(p, dict(unit=cell, step='dewarp', status=status, meta=meta, reason='synthetic'))
+    record.atomic_write_json(p, dict(unit=cell, step='dewarp', status=status, meta=meta, reason=reason,
+                                     started='2026-11-25T03:00:00Z'))
     return p
 
 
@@ -675,9 +692,35 @@ def test_mdwstat_source(fd):
                                                     MW.omitted_masters(ch.files)) == [], pr)
     ok('source: no master taken - not current', MW.problems(ch, {}) != [])
     _dewarp_record(root, '15h_Red', None, {}, install=dict(kind='mdewarp', gen=f'{root}/x'))
-    c15 = MW.choose('15h_Red', rows, t, root)
-    ok('source: an accepted cell\'s apply record (done, no MDWSTAT value) - the table, noted', c15.source == MW.TABLE
-       and 'carries no MDWSTAT value' in c15.notes[0] and "'mdewarp'" in c15.notes[0], c15.notes)
+    w15 = refusal(lambda: MW.choose('15h_Red', rows, t, root))
+    ok('source: a done dewarp record that records no MDWSTAT (an apply record made before 2026-11-25) - REFUSED, never '
+       'the table (one rule for accepted and not-accepted cells)', w15.startswith('MDW-REC') and 'records no MDWSTAT' in w15
+       and "'mdewarp'" in w15, w15)
+    _dewarp_record(root, '15h_Blue', 'applied', files, install=dict(kind='mdewarp', gen=gen))
+    c15 = MW.choose('15h_Blue', rows, t, root)
+    ok('source: an accepted cell\'s apply record (meta.mdwstat \'applied\', md5 of the new masters) - the record, as for a '
+       'not-accepted cell', c15.source == MW.RECORD and c15.value == 'applied' and c15.files == sums
+       and set(c15.stats) == set(sums), c15.notes)
+    # a rerun that did not finish keeps the last done attempt (meta.last_done, lib/dewarp/steps_cell.keep_last_done)
+    last = dict(run_id='dewarp_A', finished='2026-11-25T01:05:00Z', status='done',
+                mdwstat=dict(value=rv, files=_mdwstat(files)), install=dict(kind='rebuild', gen=gen))
+    _dewarp_record(root, '21h_Red', None, {}, status='refused', last_done=last,
+                   reason='G-A3: the generation already holds files')
+    c21 = MW.choose('21h_Red', rows, t, root)
+    ok('source: a rerun refused (G-A3) after a done attempt - the last done record is used (meta.last_done), the refused '
+       'attempt noted; current while the masters keep its md5', c21.source == MW.RECORD and c21.value == rv
+       and c21.entry == 'meta.last_done.mdwstat' and "'refused'" in c21.notes[0] and 'G-A3' in c21.notes[0]
+       and 'dewarp_A' in c21.notes[0] and MW.problems(c21, dict(sums)) == [], c21.notes)
+    _dewarp_record(root, '22h_Red', 'refused: another value', files, status='error', last_done=last, reason='interrupted')
+    c22 = MW.choose('22h_Red', rows, t, root)
+    pr22 = MW.problems(c22, dict(sums, **{names[0]: 'e' * 32}))
+    ok('source: an interrupted stamp (status error, its own half-written meta.mdwstat ignored) - the last done record; a '
+       'master the attempt rewrote (md5 changed) makes it STALE, naming the master', c22.source == MW.RECORD
+       and c22.value == rv and "'error'" in c22.notes[0] and len(pr22) == 1 and names[0] in pr22[0], (c22.notes, pr22))
+    _dewarp_record(root, '23h_Red', None, {}, status='done', last_done=last)
+    c23 = MW.choose('23h_Red', rows, t, root)
+    ok('source: a done rerun without an MDWSTAT of its own (verify only) - the last done record, noted', c23.value == rv
+       and c23.entry == 'meta.last_done.mdwstat' and 'no MDWSTAT of its own' in c23.notes[0], c23.notes)
     _dewarp_record(root, '16h_Red', None, {}, status='refused')
     _dewarp_record(root, '17h_Red', rv, files, status='failed')
     os.makedirs(os.path.dirname(MW.record_file('18h_Red', root)), exist_ok=True)
@@ -685,11 +728,42 @@ def test_mdwstat_source(fd):
     _dewarp_record(root, '19h_Red', rv, {f'{gen}/coadd_final/{names[0]}': 'not-an-md5'})
     _dewarp_record(root, '20h_Red', '', files)
     why = {c: refusal(lambda c=c: MW.choose(c, rows, t, root)) for c in ('16h_Red', '17h_Red', '18h_Red', '19h_Red', '20h_Red')}
-    ok('source: a record whose dewarp did not finish, a not-done record with a value, an unreadable record, a bad md5, an '
-       'empty value - each REFUSED (MDW-REC), never the table in its place',
+    ok('source: a record whose dewarp did not finish, a not-done record with a value (no earlier done attempt), an '
+       'unreadable record, a bad md5, an empty value - each REFUSED (MDW-REC), never the table in its place',
        all(w.startswith('MDW-REC') for w in why.values()) and 'did not finish' in why['16h_Red']
-       and "'failed'" in why['17h_Red'] and 'cannot be read' in why['18h_Red'] and 'malformed' in why['19h_Red']
-       and 'malformed' in why['20h_Red'], why)
+       and "'failed'" in why['17h_Red'] and 'did not finish' in why['17h_Red'] and 'cannot be read' in why['18h_Red']
+       and 'malformed' in why['19h_Red'] and 'malformed' in why['20h_Red'], why)
+    # the table is read once per Source, and only where needed
+    calls = []
+    real_load = R1.load_mdw_table
+
+    def counted(path):
+        calls.append(path)
+        return real_load(path)
+    t9 = mdw_table(f'{ROOT}/mdw_once.csv', [('12h Blue', 'applied', '', '')])
+    R1.load_mdw_table = counted
+    try:
+        ch9, s9 = MW.source_for('12h_Blue', t9, SC.Roots(root, True))
+        r9a = s9.rows()
+        mdw_table(t9, [('12h Blue', 'changed', '', '')])
+        r9b = s9.rows()
+    finally:
+        R1.load_mdw_table = real_load
+    ok('source: one Source reads the table once - the choice, then every rows() of the install see the same rows (the '
+       'table rewritten in between)', len(calls) == 1 and ch9.value == 'applied' and r9a['12h_Blue']['mdwstat'] == 'applied'
+       and r9b['12h_Blue']['mdwstat'] == 'applied' and R1.load_mdw_table(t9)['12h_Blue']['mdwstat'] == 'changed', calls)
+    badt = f'{ROOT}/mdw_bad.csv'
+    with open(badt, 'w') as f:
+        f.write('cell,mdwstat\n12h Red,applied\n12h Red,applied\n12h Blue,applied\n')
+    chb = MW.choose(CELL, R1.load_mdw_table(badt), badt, root)
+    srcb = MW.Source(badt, [chb])
+    wb = refusal(lambda: MW.choose('12h_Blue', R1.load_mdw_table(badt), badt, root))
+    ok('source: a malformed table (a cell listed twice) - the record-sourced cell keeps the record\'s value (noted, not '
+       'compared) and its row; a table-sourced cell REFUSES (MDW-REC), naming the table',
+       chb.source == MW.RECORD and chb.value == rv and 'not compared with the table' in chb.notes[-1]
+       and isinstance(R1.load_mdw_table(badt), str) and srcb.rows() == {CELL: MW.record_row(chb, None)}
+       and srcb.rows()[CELL]['mdwstat'] == rv and wb.startswith('MDW-REC') and 'cannot be used' in wb
+       and isinstance(MW.Source(badt).rows(), str), (chb.notes, wb))
     src = MW.Source(t, [ch])
     srows = src.rows()
     ok('source: the rows every reader sees - the record cell\'s row holds the record\'s value, names the record, MDWMED1 '
@@ -784,19 +858,57 @@ def test_mdwstat_source(fd):
         plan = types.SimpleNamespace(cell=CELL, roots=roots, gen=gen, new=[f'coadd_final/{n}' for n in names]
                                      + [f'coadd_final/PB_deep_{SCOPE}.fits', 'subtracted/x.fits'], omit_vclean=False, mdw=None)
         gates = _Gates()
-        SD.mdw_gate(u, plan, gates)
-        ok('source: plan gate MDW-REC - a current record passes with the cell and both values, plan.mdw the source, the '
-           'install record\'s mdwstat_source names it', gates.seen and gates.seen[0][:2] == ('MDW-REC', True)
-           and f"{CELL}: record {rv!r} != table 'applied'" in gates.seen[0][2] and plan.mdw is not None
+        real_md5, real_many = SC.md5, SC.md5_many
+
+        def no_read(*a, **k):
+            raise AssertionError('the plan read a master\'s bytes')
+        SC.md5 = SC.md5_many = no_read
+        try:
+            SD.mdw_gate(u, plan, gates)
+        finally:
+            SC.md5, SC.md5_many = real_md5, real_many
+        ok('source: plan gate MDW-REC - a current record passes with the cell and both values, by size and mtime alone (no '
+           'master read; \'md5 currency checked at staging\'), plan.mdw the source, the install record\'s mdwstat_source '
+           'names it', gates.seen and gates.seen[0][:2] == ('MDW-REC', True)
+           and f"{CELL}: record {rv!r} != table 'applied'" in gates.seen[0][2]
+           and 'md5 currency checked at staging' in gates.seen[0][2] and plan.mdw is not None
            and plan.mdw.choices[CELL].value == rv and u.meta['mdwstat_source']['source'] == MW.RECORD
            and u.meta['mdwstat_source']['files'] == sums and ch.record in u.inputs, gates.seen)
         open(f'{gen}/coadd_final/{names[3]}', 'ab').write(b' ' * 2880)
         plan.mdw, gates = None, _Gates()
         SD.mdw_gate(u, plan, gates)
-        ok('source: plan gate MDW-REC - a master changed after the record stamped it: STALE, refused, plan.mdw unset',
+        ok('source: plan gate MDW-REC - a master changed after the record stamped it (size): STALE, refused, plan.mdw unset',
            gates.seen[0][:2] == ('MDW-REC', False) and 'STALE' in gates.seen[0][2] and names[3] in gates.seen[0][2]
            and plan.mdw is None, gates.seen)
         shutil.copy2(f'{fd}/{names[3]}', f'{gen}/coadd_final/{names[3]}')
+        st4 = os.stat(f'{gen}/coadd_final/{names[4]}')
+        os.utime(f'{gen}/coadd_final/{names[4]}', ns=(st4.st_atime_ns, st4.st_mtime_ns + 10**9))
+        plan.mdw, gates = None, _Gates()
+        SD.mdw_gate(u, plan, gates)
+        ok('source: plan gate MDW-REC - a master rewritten since the stamp with the same size (mtime only, as an '
+           'interrupted rerun of the same value leaves it): passes the plan, left to the md5 at staging (noted)',
+           gates.seen[0][:2] == ('MDW-REC', True) and f'1 left to the md5: {names[4]} rewritten since the stamp'
+           in gates.seen[0][2] and plan.mdw is not None, gates.seen)
+        os.utime(f'{gen}/coadd_final/{names[4]}', ns=(st4.st_atime_ns, st4.st_mtime_ns))
+        _dewarp_record(root, CELL, rv, files, stats=False)
+        plan.mdw, gates = None, _Gates()
+        SD.mdw_gate(u, plan, gates)
+        ok('source: plan gate MDW-REC - a record without size and mtime (made before 2026-11-25): passes, noted, the md5 at '
+           'staging deciding', gates.seen[0][:2] == ('MDW-REC', True) and f'{len(names)} left to the md5'
+           in gates.seen[0][2] and 'no size and mtime in the record' in gates.seen[0][2] and plan.mdw is not None,
+           gates.seen)
+        _dewarp_record(root, CELL, rv, files)
+        CFG.install.MDWSTAT_TABLE = f'{ROOT}/absent_table.csv'
+        plan.cell, plan.mdw, gates = '12h_Blue', None, _Gates()
+        SD.mdw_gate(u, plan, gates)
+        g_abs_t = gates.seen
+        plan.cell, plan.mdw, gates = CELL, None, _Gates()
+        SD.mdw_gate(u, plan, gates)
+        CFG.install.MDWSTAT_TABLE = t
+        ok('source: plan gate MDW-REC - a missing table: an MDW-REC failure of a table-sourced cell inside the gate (the '
+           'dry run lists it, no abort); a record-sourced cell passes on its record', g_abs_t[0][:2] == ('MDW-REC', False)
+           and 'cannot be used' in g_abs_t[0][2] and gates.seen[0][:2] == ('MDW-REC', True) and plan.mdw is not None
+           and plan.mdw.choices[CELL].value == rv, (g_abs_t, gates.seen))
         plan.cell, plan.mdw, gates = '12h_Blue', None, _Gates()
         SD.mdw_gate(u, plan, gates)
         ok('source: plan gate MDW-REC - no record: the table (no row: the cards stage refuses MDWSTAT itself)',
@@ -805,9 +917,40 @@ def test_mdwstat_source(fd):
         SD.mdw_gate(u, plan, gates)
         ok('source: plan gate MDW-REC - an unfinished dewarp: refused', gates.seen[0][:2] == ('MDW-REC', False)
            and plan.mdw is None, gates.seen)
+        # the plan's MDW-REC failed: stages vclean and cards refuse with its result, never choosing again
+        u6 = types.SimpleNamespace(tests=[dict(name='install.MDW-REC', passed=False, detail='synthetic: STALE for gen')])
+        g6 = _Gates()
+        real_ims = SD.installed_mdw_source
+        SD.installed_mdw_source = no_read
+        try:
+            r6 = SD.post_install_source(u6, CELL, roots, g6, types.SimpleNamespace(mdw=None), ['verify', 'vclean', 'cards'])
+        finally:
+            SD.installed_mdw_source = real_ims
+        ok('source: the plan\'s MDW-REC failed - stages vclean and cards refuse with that result (MDW-REC), never chosen '
+           'again against an earlier install record', r6 is False and len(g6.seen) == 1 and g6.seen[0][:2] == ('MDW-REC', False)
+           and 'synthetic: STALE for gen' in g6.seen[0][2], g6.seen)
         # the installed cell (stages vclean and cards without install)
         inst = dict(status='done', meta=dict(gen=gen, mdwstat_source=dict(ch.summary(), omitted=[])),
                     inputs={f'{gen}/coadd_final/{n}': dict(md5=sums[n]) for n in names})
+        legacy = dict(inst, meta=dict(gen=gen))
+        cdir_ = f'{ROOT}/src_inst/{CELL}'                 # an installed cell: the masters carry the record's value
+        os.makedirs(f'{cdir_}/coadd_final')
+        for n in names + [f'PB_deep_{SCOPE}.fits']:
+            shutil.copy2(f'{gen}/coadd_final/{n}', f'{cdir_}/coadd_final/{n}')
+            if not n.startswith('PB_'):
+                with fits.open(f'{cdir_}/coadd_final/{n}', mode='update', memmap=False) as h_:
+                    h_[0].header['MDWSTAT'] = rv
+        ct = MW.Choice(CELL, MW.TABLE, 'applied', table_value='applied')
+        ct_rv = MW.Choice(CELL, MW.TABLE, rv, table_value=rv)
+        lp = MW.installed_problems(ch, legacy)
+        hp = MW.installed_problems(ct, legacy, cdir_)
+        ok('source: a legacy install record (no mdwstat_source: made before 2026-11-25 or with RELEASE1_CARDS off) means the '
+           'table - a record source now refuses (reinstall the cell); a table source passes when the installed masters\' '
+           'headers carry its value, and a header that differs refuses, naming both values (PB maps not compared)',
+           any('holds no MDWSTAT source' in x and 'reinstall the cell' in x for x in lp)
+           and MW.installed_problems(ct_rv, legacy, cdir_) == [] and len(hp) == len(names)
+           and all('reinstall the cell' in x and repr(rv) in x and "'applied'" in x for x in hp)
+           and MW.installed_problems(ch, inst, cdir_) == [], (lp, hp[:1]))
         ok('source: installed cell - current for the masters the install record installed; the source changed since the '
            'install refuses (reinstall); no install record refuses a record source; a table source with no record passes',
            MW.installed_problems(ch, inst) == []
@@ -931,9 +1074,10 @@ def test_install_wiring():
         ok('install: a call that does not run b loads no MDWSTAT table (an unreadable one does not refuse it)', inside is None)
         CFG.install.MDWSTAT_TABLE = t
         src_sd = inspect.getsource(SD)
-        ok('install: only install and recover (the calls that run b) ask pi_context for the table',
-           src_sd.count('cards=True') == 2 and src_sd.index('cards=True') > src_sd.index('def install_cell')
-           and src_sd.rindex('cards=True') > src_sd.index('def recover_cell'))
+        ok('install: only install and recover --execute (the calls that run b) ask pi_context for the table',
+           src_sd.count('cards=True') == 1 and src_sd.index('cards=True') > src_sd.index('def install_cell')
+           and src_sd.count('cards=execute') == 1 and src_sd.index('cards=execute') > src_sd.index('def recover_cell')
+           and src_sd.count('cards=') == 2)
         CFG.install.RELEASE1_CARDS = False
         with SC.pi_context(PI, roots, 'r1', cards=True):
             inside = PI.RELEASE1_MDW_TABLE

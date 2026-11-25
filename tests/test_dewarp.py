@@ -15,9 +15,12 @@ it, the apply/verify/record run with --parity):
     place, D1-D6 by check_mdewarp_gen.py through core.legacy.run, the child's code checked), not accepted (applied=0 row,
     install's class screen_table + inline row check, MDWSTAT on its promoted masters, not the PB maps), accepted-but-apply-refused
     (G-R2), not routed (G-D2), input carries MDWARP (G-D7). The not-accepted cell's MDWSTAT card is also tested on its own
-    `--stages record` run (no verify stage, so no content-test child and no G-D0b)
+    `--stages record` run (no verify stage, so no content-test child and no G-D0b). The accepted cell's apply records
+    MDWSTAT 'applied' with each new master's md5, size and mtime (meta.mdwstat); a rerun of the record stage interrupted by a
+    master it cannot write keeps the last done record (meta.last_done), which the install's source takes while current
   - `exopipe3 verify dewarped_master <gen>` takes its context from the run record (scratch mode: the generation's sidecars are
-    untouched); a corrupted product fails D3; G-A3 refuses a second apply; --fresh removes and records the old generation
+    untouched); a corrupted product fails D3; G-A3 refuses a second apply and keeps the last done record; --fresh removes
+    and records the old generation
 Read-only part (production products, never written): dewarp_table on two production measurement tables, dewarp_screen on a
 production screen, the light dewarped_master tests on the installed 12h_Red generation (skipped when absent); the MDWSTAT
 value against install.MDWSTAT_TABLE on every refused cell (test_mdwstat_table).
@@ -649,6 +652,46 @@ def test_end_to_end(tmp):
     glog = os.path.join(outR, '_records', '_parity_guard_refusals.log')
     check('record stage alone: parity guard - no write outside --out/--work/TMPDIR//tmp',
           not os.path.exists(glog) or not open(glog).read().strip())
+    # --- R8: a rerun that refuses or fails keeps the cell's last done record (meta.last_done, steps_cell.keep_last_done);
+    #     the install takes it while the masters keep its md5 (lib/install/mdwstat): an interrupted stamp (a master it
+    #     cannot write), then a master rewritten with another value as an interrupted stamp of a new value would leave it
+    from exopipe.phase3.lib.install import mdwstat as MW
+    out8 = os.path.join(tmp, 'outR8')
+    seed_record(out8, ('32MHz',))
+    a8 = ('dewarp', '--cells', f'{LST}_32MHz', '--stages', 'record', '--measurement', r['meas'], '--out', out8, '--work',
+          work, *common_sets(r))
+    rc8, txt, s = cli(*a8)
+    d8 = rec(out8, f'{LST}_32MHz')
+    seed_record(out8, ('32MHz',))                  # routed again for the rerun
+    os.chmod(masters[5], 0o444)
+    try:
+        rc9, txt, s = cli(*a8)
+    finally:
+        os.chmod(masters[5], 0o644)
+    e8 = rec(out8, f'{LST}_32MHz')
+    last8 = ((e8 or {}).get('meta') or {}).get('last_done') or {}
+    ch8 = MW.choose(f'{LST}_32MHz', {}, 'no table', out8)
+    check('interrupted stamp: the rerun refuses (dewarp.mdwstat) and keeps the last done record (meta.last_done: its run, '
+          'its MDWSTAT with the stamp md5); the install takes it, noting the refused attempt, current while the masters '
+          'keep that md5', rc8 == 0 and d8 and d8['status'] == 'done' and rc9 == 2 and e8 and e8['status'] == 'refused'
+          and 'dewarp.mdwstat' in e8['reason'] and last8.get('run_id') == d8['run_id']
+          and last8.get('mdwstat') == d8['meta']['mdwstat'] and ch8.source == MW.RECORD and ch8.value == want
+          and ch8.entry == 'meta.last_done.mdwstat' and "'refused'" in ch8.notes[0]
+          and MW.problems(ch8, {os.path.basename(p): SC.md5(p) for p in masters}) == []
+          and MW.stat_problems(ch8, {os.path.basename(p): (os.stat(p).st_size, os.stat(p).st_mtime_ns)
+                                     for p in masters})[0] == [],
+          f'rc {rc8}/{rc9}; {(e8 or {}).get("reason", "")[:160]}; {ch8.notes[:1]}')
+    keep8 = os.path.join(tmp, 'keep_master0.fits')
+    shutil.copy2(masters[0], keep8)
+    with fits.open(masters[0], mode='update', memmap=False) as hl:
+        hl[0].header['MDWSTAT'] = 'refused: another value (interrupted)'
+    pr8 = MW.problems(ch8, {os.path.basename(p): SC.md5(p) for p in masters})
+    sp8 = MW.stat_problems(ch8, {os.path.basename(p): (os.stat(p).st_size, os.stat(p).st_mtime_ns) for p in masters})
+    shutil.copy2(keep8, masters[0])
+    check('interrupted stamp of another value: the master it rewrote (same size) is left to the md5 by the plan\'s '
+          'pre-check and makes the last done record STALE at the md5, naming the master', len(pr8) == 1
+          and os.path.basename(masters[0]) in pr8[0] and sp8[0] == [] and os.path.basename(masters[0]) in sp8[1]
+          and SC.md5(masters[0]) == SC.md5(keep8), f'{pr8} {sp8}')
     # --- R2: --resume re-tests the stamped masters: a master replaced by an unstamped one is never skipped-valid
     if c32 and c32['status'] == 'done':
         dirty = str(c32.get('commit') or '').endswith('-dirty')
@@ -801,6 +844,17 @@ def test_end_to_end(tmp):
                   for n in sibling_names('27MHz')))
         check('accepted cell: INSTALL_CONTENT_OK and APPLIED_SCREEN.json beside the generation',
               all(os.path.isfile(os.path.join(os.path.dirname(gen), f)) for f in (SC.CONTENT_OK, SC.APPLIED_SCREEN)))
+        md27 = c27['meta'].get('mdwstat') or {}
+        gm = SC.master_files(os.path.join(gen, 'coadd_final'))
+        check("accepted cell: the apply records MDWSTAT 'applied' and each new master's md5, size and mtime (meta.mdwstat, "
+              "as the record stage records its stamp), each an mdwstat_master output; after verify the masters still carry "
+              "the card and those bytes", md27.get('value') == 'applied' and len(gm) >= 10
+              and sorted(x['path'] for x in md27.get('files', [])) == gm
+              and all(x['md5'] == SC.md5(x['path']) and x['size'] == os.stat(x['path']).st_size
+                      and x['mtime_ns'] == os.stat(x['path']).st_mtime_ns
+                      and fits.getheader(x['path']).get('MDWSTAT') == 'applied' for x in md27['files'])
+              and sorted(o['path'] for o in c27['outputs'] if o['class'] == 'mdwstat_master') == gm,
+              f'{len(gm)} masters; {str(md27)[:200]}')
     csvp = os.path.join(outB, 'archive', 'mdewarp_screens', CFG.paths.ARCHIVE_RUN, 'mdewarp_screens.csv')
     rows = SC.read_table(csvp) if os.path.isfile(csvp) else []
     check('not-accepted cell: done, install kind rebuild',
@@ -862,6 +916,14 @@ def test_end_to_end(tmp):
                      *common_sets(r))
     c = rec(outB, f'{LST}_27MHz')
     check('G-A3: a written generation is never overwritten', rc == 2 and c and 'G-A3' in c['reason'], c['reason'][:100] if c else '')
+    last27 = ((c or {}).get('meta') or {}).get('last_done') or {}
+    ch27 = MW.choose(f'{LST}_27MHz', {}, 'no table', outB)
+    check("G-A3: the refused rerun keeps the last done record (meta.last_done: the apply's MDWSTAT with the md5); the "
+          "install takes it, noting the refusal, current for the generation",
+          last27.get('mdwstat') == c27['meta'].get('mdwstat') and ch27.source == MW.RECORD and ch27.value == 'applied'
+          and ch27.entry == 'meta.last_done.mdwstat' and 'G-A3' in ch27.notes[0]
+          and MW.problems(ch27, {os.path.basename(p): SC.md5(p)
+                                 for p in SC.master_files(os.path.join(gen, 'coadd_final'))}) == [], ch27.notes[:1])
     rc, txt, s = cli('dewarp', '--cells', f'{LST}_27MHz', '--stages', 'apply', '--measurement', r['meas'], '--out', outB,
                      '--fresh', *common_sets(r))
     c = rec(outB, f'{LST}_27MHz')
@@ -888,6 +950,17 @@ def test_stale_measurement(tmp):
     check('G-A11: a measurement older than the rebuild is refused (no applied=0 row written)',
           rc == 2 and c and 'G-A11' in c['reason'] and not os.path.exists(os.path.join(out, 'archive')),
           f'rc {rc}, {s} s; ' + (c['reason'][:100] if c else txt[-200:]))
+
+
+def _stub_master(lst, scope):
+    """What a stubbed master_dewarp.apply_saved leaves: one master of the new generation carrying MDWSTAT 'applied' (the apply's
+    MDWSTAT record, steps_cell.applied_mdwstat, refuses a generation without one). Returns 1 (files written)."""
+    d = os.path.join(os.environ['MDEWARP_OUT_ROOT'], f'{lst}_{scope}', SC.C().GEN_DIR, 'coadd_final')
+    os.makedirs(d, exist_ok=True)
+    h = fits.Header()
+    h['MDWSTAT'] = 'applied'
+    fits.writeto(os.path.join(d, f'I_deep_Taper_R075_mdewarp_{scope}.fits'), np.zeros((2, 2), np.float32), h)
+    return 1
 
 
 def test_screen_keys(tmp):
@@ -929,7 +1002,7 @@ def test_screen_keys(tmp):
             calls.append(a)
             if during:
                 during(master)
-            return 0
+            return _stub_master(*a[:2])
         del calls[:]
         MD.apply_saved = stub
         try:
@@ -1118,7 +1191,7 @@ def test_pb_weights(tmp):
     from exopipe.phase3.lib.dewarp import master_dewarp as MD
     from exopipe.phase3.lib.dewarp import steps_cell as SCL
     calls, orig, cell = [], MD.apply_saved, '12h_Blue'
-    MD.apply_saved = lambda *a, **k: calls.append(a) or 0
+    MD.apply_saved = lambda *a, **k: calls.append(a) or _stub_master(*a[:2])
     res = {}
     try:
         for name, nd, nm in (('over', 2, 2), ('under', 30, 2)):

@@ -97,9 +97,10 @@ class install(_Section):
     RELEASE1_CARDS = True
     MDWSTAT_TABLE = '/lustre/gh/main/exopipe_ops/mdewarp_coverage_20261111/mdwstat_for_header_repair.csv'   # the deep chat's MDWSTAT table (header_repair_release1.py:231 --mdw-table, sibling_card_gate.py:27; install_cell.sh:41 "updates mdwstat_for_header_repair.csv BEFORE this step"); read only
     # MDWSTAT SOURCE (gate MDW-REC, lib/install/mdwstat; 2026-11-25): a cell's MDWSTAT comes from its dewarp record
-    # (<root>/_records/dewarp/<cell>.json, meta.mdwstat of the dewarp record stage) when one exists and is current for the
-    # masters installed (md5), else from MDWSTAT_TABLE; a stale record refuses. The root: None = the install's --out under
-    # --out (where an --out dewarp run writes its records), else dewarp.GEN_ROOT (the dewarp step's production out root)
+    # (<root>/_records/dewarp/<cell>.json, meta.mdwstat of the apply or the record stage, or meta.last_done after a
+    # rerun that did not finish) when one exists and is current for the masters installed (md5), else from MDWSTAT_TABLE;
+    # a stale record refuses. The root: None = the install's --out under --out (where an --out dewarp run writes its
+    # records), else dewarp.GEN_ROOT (the dewarp step's production out root)
     DEWARP_RECORD_ROOT = None
     CARD_GATE_SIBLING_ROOT = None                        # archive root whose Coadd/<run>/<other LSTs>/<band>/ are the gate's repaired siblings; None = paths.PHASE3_ARCHIVE_ROOT (sibling_card_gate.py:26 RUN; also under --out, where the re-rooted archive holds only this cell)
     # ---- the cleaned Stokes V refresh after the verify (stage vclean; install_cell.sh:28-34, FIX-20261113-DEEP-REBUILD-CLEANS-V-

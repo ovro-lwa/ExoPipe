@@ -292,6 +292,14 @@ def release1_mdw_table():
     return t
 
 
+def mdw_table_path():
+    """install.MDWSTAT_TABLE when install.RELEASE1_CARDS, else None - unchecked: the cell's MDWSTAT source reads it
+    (lib/install/mdwstat), and a cell whose value comes from the table refuses at gate MDW-REC when it cannot be used; a
+    record-sourced cell never depends on it."""
+    C = cfg().install
+    return C.MDWSTAT_TABLE if C.RELEASE1_CARDS else None
+
+
 MASTER_HELD_18 = ('keep', 'refuse')     # the values of install.MASTER_HELD_18MHZ (as search_detect.MASTER_HELD_18MHZ's)
 
 
@@ -343,13 +351,12 @@ def keep_held_18(cell_dir, value, built_before=None):
 def pi_context(PI, roots, rnd=None, cards=False, mdw=None):
     """Set PI's module globals and the environment it and coadd_full_pipeline read, for one call; restore afterwards.
     Yields the settings (recorded by the caller). ``cards``: the call runs PI's step b (install, recover), which writes the
-    Release 1 cards - only then is the MDWSTAT table resolved (release1_mdw_table); every other call leaves it None.
-    ``mdw``: the cell's MDWSTAT source (lib/install/mdwstat.Source: a cell whose value comes from its dewarp record), set
-    in place of the table path when the cards are written; the settings show it as text."""
+    Release 1 cards - only then is the MDWSTAT source set (install.RELEASE1_CARDS); every other call leaves it None.
+    ``mdw``: the cell's MDWSTAT source (lib/install/mdwstat.Source, chosen at gate MDW-REC), set in place of the table
+    path when the cards are written (without one: release1_mdw_table, the table path, checked readable); the settings
+    show it as text."""
     C = cfg().install
-    t = release1_mdw_table() if cards else None
-    if t and mdw is not None:
-        t = mdw
+    t = (mdw if mdw is not None else release1_mdw_table()) if cards and C.RELEASE1_CARDS else None
     g = {'ROOT': roots.working, 'RECORD': roots.record_csv, 'FREEZE_MARKER': C.FREEZE_MARKER,
          'CELL_FILES': tuple(C.CELL_FILES), 'CELL_TOP': tuple(C.CELL_TOP), 'CELL_DIRS': tuple(C.CELL_DIRS),
          'MASTER_HELD_18MHZ': master_held_18(),             # WAVE2 18 MHz exception at G-MEM (PI's text: production's 'refuse')

@@ -25,9 +25,10 @@ plan,install,verify with it False):
             With install.RELEASE1_CARDS (ruled) b also writes the Release 1 header-repair cards and provenance_nights.csv
             (lib/masters/release1_cards) before c publishes them. Always preceded by plan. Not separable inside (no --from/--until).
             MDWSTAT SOURCE (gate MDW-REC in plan, again on the staged masters before b; lib/install/mdwstat): the cell's
-            dewarp record (<install.DEWARP_RECORD_ROOT>/_records/dewarp/<cell>.json, meta.mdwstat of the dewarp record
-            stage) when one exists, only if CURRENT - every master taken has the md5 the record stamped - else refused;
-            install.MDWSTAT_TABLE only without one (or for an accepted cell's apply record, which carries no value). A
+            dewarp record (<install.DEWARP_RECORD_ROOT>/_records/dewarp/<cell>.json, meta.mdwstat of the apply of an
+            accepted cell or of the record stage of a not-accepted one; meta.last_done when a later rerun did not finish)
+            when one exists, only if CURRENT - every master taken has the md5 the record stamped (the plan pre-checks size
+            and mtime; the md5 of the staged copies decides) - else refused; install.MDWSTAT_TABLE only without one. A
             record value that differs from the table wins and is noted with the cell and both values.
   verify    the installed cell against every membership and product ruling (membership.verify + verify_products; today
             `python -m exopipe.phase3.membership verify <cell>`, install_cell.sh:23)
@@ -45,9 +46,9 @@ plan,install,verify with it False):
             differs from the one derived; gate CARD-GATE = the sibling card-key gate (sibling_card_gate.py): every archived
             FITS of the cell carries every card key its repaired same-named siblings of the band's other LSTs all hold, and
             MDWSTAT / MDWMED1 agree with the MDWSTAT source the install chose (the dewarp record or install.MDWSTAT_TABLE;
-            without install in the same invocation it is chosen again and must be the one the install recorded, current
-            for the masters it installed: gate MDW-REC). Read only. Implies vclean. Refused when install.RELEASE1_CARDS is
-            False.
+            without install in the same invocation it is chosen again and must be the one the install recorded - a record
+            without one means the table - current for the masters it installed, and carried by the installed masters'
+            headers: gate MDW-REC). Read only. Implies vclean. Refused when install.RELEASE1_CARDS is False.
   enqueue   hand the cell to the re-search (install_cell.sh:27-42): retire its search markers / policy-skips / parks, assign
             both Stokes (node of the first line of assign_<S>.csv), flow-holder map row, ready.txt; write the request
             record and the per-hour re-run items. Needs a record of the cell with V passed, and VCLEAN, CARDS and CARD-GATE

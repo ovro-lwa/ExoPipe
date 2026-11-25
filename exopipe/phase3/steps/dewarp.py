@@ -444,6 +444,7 @@ def run(args, run):
                               f'rebuilds under {roots.rebuild})')
         for cell in bad:
             with run.unit(cell, lst=lst, kind='cell') as u:
+                SCELL.keep_last_done(run, u, cell)
                 u.refuse(refused[cell])
         for cell in good:
             try:
