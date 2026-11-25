@@ -490,11 +490,11 @@ def pbdiffuse_not_product(path, **ctx):
 
 @content_test('hybrid_pbdiffuse')
 def pbdiffuse_header(path, **ctx):
-    """Spec D6: no SH* card, no master flux or noise card, BUNIT blank (pb_apply.pbdiffuse_header_problems; rulings
+    """Spec D6: no SH* card, no master flux or noise card, BUNIT blank (lib/hybrid/common.pbdiffuse_header_problems; rulings
     R-GREGG-20261116-PB-MAPS-SH-CARDS-REMOVE-BUNIT-BLANK-GO, R-GREGG-20261118-HYBRID-Q1-Q3-GO-WITH-RECOMMENDATIONS)."""
-    from exopipe.phase3.lib.masters import pb_apply as PBA
+    from exopipe.phase3.lib.hybrid.common import pbdiffuse_header_problems
     _d, h = _read(path)
-    bad = PBA.pbdiffuse_header_problems(h)
+    bad = pbdiffuse_header_problems(h)
     return not bad, len(bad), '; '.join(bad) or 'no SH* or master card, BUNIT blank'
 
 

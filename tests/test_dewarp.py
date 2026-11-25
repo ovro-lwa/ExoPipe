@@ -332,6 +332,11 @@ def test_gates(tmp):
     bad, sums = SC.gate_child_modules()
     check("G-D0b: the content-test child's production modules equal the branch's", not bad and len(sums) == 6,
           f'{len(sums)} modules; {bad[:1]}')
+    # the CI pins (tests/test_dewarp_child_pins.py checks the branch side) are production's modules
+    stale = [br for prod_rel, br in SC.CHILD_MODULES
+             if SC.child_text_sha256(open(os.path.join(SC.child_repo(), prod_rel)).read()) != SC.CHILD_PINS.get(br)]
+    check("G-D0b CI pins: each steps_common.CHILD_PINS value is the sha256 of production's module", not stale,
+          f'stale pins {stale} - set each to the sha256 G-D0b passes with (steps_common.child_text_sha256)')
     # a modified copy of the production repository refuses
     fake = os.path.join(tmp, 'fake_repo')
     for prod_rel, _ in SC.CHILD_MODULES:

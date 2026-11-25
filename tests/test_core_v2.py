@@ -16,6 +16,9 @@ Every test makes its own scratch directory and removes it. Scratch root: $EXOPIP
 /fast/gh/refactor_scratch/infra when it exists and is writable, else the system temp directory. Nothing outside the
 scratch directory is written (the fix ledger is read, never written).
 
+Needs the site file (EXOPIPE3_SITE, default /lustre/gh/main/exopipe_ops/exopipe3_site.py, as the other cluster tests): the
+children of items 3 and 7 run through core.legacy.run under the site's PYTHON interpreters 'default' and 'py36'. Node-only.
+
 Run standalone:  python tests/test_core_v2.py [test_name ...]
 Under pytest:    pytest tests/test_core_v2.py
 """
@@ -30,6 +33,8 @@ import time
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
 os.environ.setdefault('NUMPY_MADVISE_HUGEPAGE', '0')
+os.environ.setdefault('EXOPIPE3_SITE', '/lustre/gh/main/exopipe_ops/exopipe3_site.py')   # before any exopipe import: the config
+#                                                       loads the site file once (site.PYTHON 'default' / 'py36' for legacy.run)
 PY = sys.executable
 INFRA_SCRATCH = '/fast/gh/refactor_scratch/infra'
 
