@@ -929,10 +929,15 @@ class _Ctx:
         if bad:
             raise Refusal(f'--inc-phase {ph!r}: unknown phase(s) {bad}; phases: {", ".join(PHASES)}')
         par = getattr(args, 'inc_parents', None) or getattr(args, 'parents', None) or c.PARENT_DIR
-        self.parents = os.path.abspath(par) if (par and par != 'snapshot') else None
         self.rebuild = bool(getattr(args, 'inc_rebuild', False) or run.fresh)
         self.source_spec = getattr(args, 'inc_source', None)
         self._source = None
+        # --inc-parents pass (catalog.PARENT_FROM_PASS; the per-hour chain): the snapshot of the source run's latest finished
+        # table pass (deep_records.pass_parent_dir); parents_why = the P-PASS reason the associate phase refuses with
+        from exopipe.phase3.lib.catalog import deep_records
+        par, self.parents_how, self.parents_why = deep_records.resolve_parent_arg(
+            par, self.source.dir if par == _deep('catalog', 'PARENT_FROM_PASS') else None, self.label)
+        self.parents = os.path.abspath(par) if (par and par != 'snapshot') else None
 
     @property
     def source(self):
@@ -1476,9 +1481,13 @@ def _associate_unit(ctx):
                 ctx.say(f'associate: (plan) the state would hold {len(epochs)} epoch(s) after the epoch phase')
             else:
                 raise NoInput(f'no epoch blocks under {ctx.state_dir}/epochs - run the epoch phase first')
+        if ctx.parents_how:
+            u.meta['parent_dir_from'] = ctx.parents_how
+            ctx.say(f'associate: parent catalogues {ctx.parents} from {ctx.parents_how}')
         if not ctx.parents or not os.path.isdir(ctx.parents):
-            msg = (f'P3_PARENT_DIR is required and is {ctx.parents or "unset"}: pass --inc-parents DIR (the parent-catalogue '
-                   f'snapshot of the current masters; B-59 - gate_inputs.py:22 would otherwise read its module default, a fixed union that goes stale when a master is rebuilt)')
+            msg = ctx.parents_why or (
+                f'P3_PARENT_DIR is required and is {ctx.parents or "unset"}: pass --inc-parents DIR (the parent-catalogue '
+                f'snapshot of the current masters; B-59 - gate_inputs.py:22 would otherwise read its module default, a fixed union that goes stale when a master is rebuilt)')
             if ctx.dry:
                 ctx.say(f'  GATE would refuse: {msg}')
             else:
@@ -1660,7 +1669,8 @@ def add_arguments(p):
                         "until that layout exists)")
     g.add_argument('--inc-parents', metavar='DIR',
                    help='parent-catalogue snapshot passed as P3_PARENT_DIR to conformance and the fork (required for '
-                        'the associate phase; never defaulted, B-59)')
+                        'the associate phase; never defaulted, B-59); the value `pass` (catalog.PARENT_FROM_PASS) '
+                        'resolves the snapshot of the source run\'s latest finished table pass (gate P-PASS)')
     g.add_argument('--inc-rebuild', action='store_true',
                    help='rebuild the association state from every epoch block (the canonical FULL rebuild of the same '
                         'epochs) instead of updating it')

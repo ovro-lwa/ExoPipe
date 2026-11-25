@@ -25,6 +25,7 @@ from concurrent.futures import ThreadPoolExecutor
 from exopipe.phase3.core import cells as C
 from exopipe.phase3.core import record
 from exopipe.phase3.core.record import NoInput, Refusal
+from exopipe.phase3.lib.catalog import deep_records
 from exopipe.phase3.lib.photometry import steps_common as K
 
 
@@ -179,7 +180,10 @@ def stage_frames(run, args):
     out = run.out_root
     roots = roots_cells()
     cells, eps = select_cells(args, roots)
-    src, par = src_run(args), args.parent_dir or f.PARENT_DIR
+    src = src_run(args)
+    # --parent-dir pass (catalog.PARENT_FROM_PASS; the per-hour chain): the snapshot of the searched run's latest finished
+    # table pass (deep_records.pass_parent_dir, gate P-PASS) - what production exports as P3_PARENT_DIR to that pass
+    par, par_how, par_why = deep_records.resolve_parent_arg(args.parent_dir or f.PARENT_DIR, src, args.run_label, c)
     coadd = c.paths.COADD_SB_ROOT
     fl = os.path.join(out, f.FRAMES_FILE)
     K.plan(run, '[frames] %d cells%s -> %s  (deep_forced_frames.py in place: DEEP_FORCED_SRC_RUN=%s P3_PARENT_DIR=%s '
@@ -189,6 +193,10 @@ def stage_frames(run, args):
     if not cells:
         raise NoInput('no deep cell selected (roots table %s, --cells/--epochs/--scopes/--exclude-cells)' % f.ROOTS_CSV)
     if run.dry_run:
+        if par_how:
+            K.plan(run, '[frames]   parent catalogues from %s' % par_how)
+        if par_why:
+            K.would_refuse(run, 'frames', par_why)
         for what, p in (('searched run (F-SRCRUN)', src), ('parent catalogues (F-PARENTDIR)', par),
                         ('roots table', f.ROOTS_CSV)):
             if p and os.path.isdir(p) or (what == 'roots table' and p and os.path.exists(p)):
@@ -215,6 +223,10 @@ def stage_frames(run, args):
         if not src or not os.path.isdir(src):
             u.refuse('F-SRCRUN: the searched deep run is required (--src-run DIR or --run LABEL; no default, D7): %s'
                      % (src or 'not given'))
+        if par_why:
+            u.refuse(par_why)
+        if par_how:
+            u.meta['parent_dir_from'] = par_how
         if not par or not os.path.isdir(par):
             u.refuse('F-PARENTDIR: the parent catalogue directory the deep table pass used is required (--parent-dir; '
                      'gate_inputs.py would fall back to the stale Run_P3S4 catalogues): %s' % (par or 'not given'))
