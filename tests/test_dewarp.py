@@ -507,7 +507,7 @@ def build_round(tmp):
     m27 = os.path.join(promoted, f'{LST}_27MHz', 'coadd_final', 'I_deep_Taper_R075_27MHz.fits')
     scr27 = save_screen(mdir, '27MHz', 50, m27)
     save_screen(mdir, '36MHz', 40, os.path.join(promoted, f'{LST}_36MHz', 'coadd_final', 'I_deep_Taper_R075_36MHz.fits'))
-    # a REFERENCE ONLY scope saves its screen too (phase3_master_dewarp.py:236, before the acceptance): its key names the
+    # a REFERENCE ONLY scope saves its screen too (phase3_master_dewarp.py:233, before the acceptance): its key names the
     # master the status was measured on (G-R4)
     save_screen(mdir, '32MHz', 40, os.path.join(promoted, f'{LST}_32MHz', 'coadd_final', 'I_deep_Taper_R075_32MHz.fits'))
     with fits.open(m27) as h:
