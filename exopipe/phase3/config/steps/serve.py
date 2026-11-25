@@ -87,6 +87,10 @@ class serve(_Section):
                                             # every file whose size or modification time differs from the manifest
     RUN_VERSIONS_LEASE_S = 600              # s: a holder's or builder's lease (lib/serve/versions.py LEASES): one on another node
                                             # counts as alive until its lease, renewed every quarter lease while it runs, expires
+    RUN_VERSIONS_COPY_MAX_BYTES = 1 << 30   # bytes (1 GiB): a snapshot of a work directory (versions.clone) is a copy-on-write
+                                            # clone (cp --reflink=always; /fast is XFS with reflink); on a file system without
+                                            # clones a run up to this size is copied in full and a larger one is REFUSED (Run_P3S5
+                                            # 2026-11-24: 188.6 GB in 1,511,521 files on a /fast 96% full - never duplicated)
     COALESCE_SLOT_DIR = '.coalesce'         # the coalescing builder's slot inside a run's versions root (lib/serve/coalesce.py)
     SUBLST_PAGE_CONTEXT_WORKERS = 16        # page_context_tenmin.py --workers on the placed version (sublst_cumulative.sh:298; the
                                             # 10-minute panels' run context as page text, Gregg 2026-10-22)

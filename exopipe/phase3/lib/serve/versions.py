@@ -104,6 +104,7 @@ import sys
 import re
 import shutil
 import socket
+import subprocess
 import threading
 import time
 
@@ -816,12 +817,13 @@ def seal_adopted(v, note=''):
     return rec
 
 
-def switch(U, v, note='', record=None):
+def switch(U, v, note='', record=None, to_work=False):
     """Point U at version ``v`` atomically: verify(v, record) (a refusal switches nothing; ``record``: the record seal()
     returned to this caller, whose walk stands for the switch's), then a new link under a temporary name renamed over U. The
-    first switch of a legacy run adopts it first (see ADOPTION; the caller then calls seal_adopted, outside the lock).
-    Returns {'previous': Version or None, 'current': Version, 'adopted': Version or None, 'verify': detail}. Refusal when
-    ``v`` is not a version of U's root."""
+    first switch of a legacy run adopts it first (see ADOPTION; the caller then calls seal_adopted, outside the lock) - or,
+    with ``to_work`` (CONVERSION, WORK), moves it to U's work directory instead (``v`` is then its clone). Returns
+    {'previous': Version or None, 'current': Version, 'adopted': Version or None, 'verify': detail, 'converted': the work
+    directory or None}. Refusal when ``v`` is not a version of U's root."""
     _guard(U, 'the pointer')
     name = os.path.basename(os.path.normpath(U))
     if v.name != name:
@@ -836,9 +838,13 @@ def switch(U, v, note='', record=None):
         prev, adopted = served(U), None
         if prev is not None and prev.vid == v.vid:
             raise Refusal(f'{U} already names version {v.vid}')
+        converted = None
         if prev is None and os.path.lexists(U):
-            adopted, _, real = _adopt(U, v.root)
-            prev = adopted
+            if to_work:                                # CONVERSION: the legacy run becomes U's work directory
+                real = converted = _to_work(U, v.root)
+            else:
+                adopted, _, real = _adopt(U, v.root)
+                prev = adopted
         tmp = os.path.join(os.path.dirname(os.path.abspath(U)), f'.{name}.pointer.{os.getpid()}')
         try:
             if os.path.lexists(tmp):
@@ -848,7 +854,7 @@ def switch(U, v, note='', record=None):
         except BaseException as e:                     # U does not point at v: an adopted run goes back where it was
             with contextlib.suppress(OSError):
                 os.unlink(tmp)
-            undo = _unadopt(adopted, real) if adopted is not None else None
+            undo = _unadopt(adopted, real) if adopted is not None else (_unwork(U, v.root, real) if converted else None)
             if not isinstance(e, Exception):           # an interrupt stays an interrupt; what was not undone is printed
                 if undo:
                     print(f'versions: {undo}', file=sys.stderr, flush=True)
@@ -859,8 +865,10 @@ def switch(U, v, note='', record=None):
             raise
         _append_jsonl(os.path.join(v.root, 'POINTER_LOG.jsonl'),
                       {'utc': _utc(), 'pointer': os.path.abspath(U), 'from': prev.vid if prev else None, 'to': v.vid,
-                       'adopted': adopted.vid if adopted else None, 'by': me(note)})
-    return {'previous': prev, 'current': v, 'adopted': adopted, 'verify': detail}
+                       'adopted': adopted.vid if adopted else None, 'by': me(note),
+                       **({'converted_from': converted, 'work': work_path(U)} if converted else {})})
+    return {'previous': prev, 'current': v, 'adopted': adopted, 'verify': detail,
+            'converted': work_path(U) if converted else None}
 
 
 def publish(U, v, required=(), checks=(), note=''):
@@ -877,6 +885,323 @@ def publish(U, v, required=(), checks=(), note=''):
         except (Refusal, OSError) as e:
             out['adopted_record'], out['adopted_error'] = None, str(e)
     return out
+
+
+# ---- the work directory and its writers (WORK) ------------------------------------------------------------------------
+WORK = 'work'                      # R/work/<name>: the work directory of a run whose steps write it over many invocations
+_WRITER = {}                       # versions root -> descriptor of its writer lock held by this process until it ends
+
+
+def work_path(U):
+    """R/<WORK>/<name>, the work directory of U (whether or not it exists)."""
+    return os.path.join(root_of(U), WORK, os.path.basename(os.path.normpath(U)))
+
+
+def work_root(path):
+    """The versions root R when ``path`` is the work directory R/<WORK>/<name> of a run (R = <dir>/<name><suffix>, an existing
+    directory), else None."""
+    p = os.path.normpath(os.path.abspath(path))
+    d, name = os.path.split(p)
+    R = os.path.dirname(d)
+    if os.path.basename(d) == WORK and os.path.basename(R) == name + _suffix() and os.path.isdir(R):
+        return R
+    return None
+
+
+def _writer_lock_file(R):
+    d = os.path.join(R, 'locks')
+    os.makedirs(d, exist_ok=True)
+    return os.path.join(d, 'writer.lock')
+
+
+def _take_writer(R, what):
+    """flock the writer lock of R (waits; says so when it has to), returns the descriptor."""
+    fd = _open_lock(_writer_lock_file(R))
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        print(f'versions: {what} waits for the writer lock {_writer_lock_file(R)} (a writer step or a snapshot holds it)',
+              file=sys.stderr, flush=True)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+    return fd
+
+
+def hold_writer(R):
+    """THE WRITER LOCK of versions root R (R/locks/writer.lock, flock exclusive), taken once and kept until this process ends:
+    a writer step holds it while it writes the work directory, so a snapshot never clones a directory a step is writing.
+    Close-on-exec (two_port.open_lock): the step's child processes write while the step waits for them; none inherits it."""
+    R = os.path.realpath(R)
+    if R not in _WRITER:
+        _WRITER[R] = _take_writer(R, f'pid {os.getpid()}')
+    return _writer_lock_file(R)
+
+
+@contextlib.contextmanager
+def writer_lock(U):
+    """U's writer lock for the block (a snapshot); a no-op when this process holds it already (hold_writer)."""
+    R = os.path.realpath(root_of(U))
+    if R in _WRITER:
+        yield
+        return
+    fd = _take_writer(R, f'the snapshot of {U}')
+    try:
+        yield
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
+def writable(U, lock=True):
+    """THE DIRECTORY A WRITER OF RUN U WRITES, and reads its own products from (WORK): when U is a pointer, its work directory
+    (Refusal when it has none: a run its builder places - Run_SLSTB, the per-LST runs - is never written in place); else U
+    itself (a legacy run, written in place as before; serve --tier deep --stages convert makes the deep run a versioned one).
+    With ``lock`` the writer lock is taken and kept until this process ends (hold_writer): always for a work directory, and
+    for a legacy run whose versions root exists (a conversion may be under way)."""
+    if is_pointer(U):
+        W = work_path(U)
+        if not os.path.isdir(W):
+            raise Refusal(f'{U} is a versioned run without a work directory {W}: its versions are placed whole by its builder '
+                          f'and never written in place - nothing written')
+        if lock:
+            hold_writer(root_of(U))
+        return W
+    R = work_root(U)
+    if R is None and lock and os.path.isdir(root_of(U)):
+        R = root_of(U)
+    if lock and R is not None:
+        hold_writer(R)
+    return os.path.abspath(U)
+
+
+def reads(U):
+    """The directory a step that writes run U reads U's own earlier products from: writable(U) without its lock."""
+    return writable(U, lock=False)
+
+
+def writer_out(out, lock=True):
+    """A writer step's output directory (cli.main, before its record is made): a versioned run's pointer is written through
+    its work directory (Refusal for a pointer without one), a work directory given as the output takes its writer lock
+    (writable); any other directory is returned unchanged - with the lock taken when it is a legacy run whose versions root
+    exists (a conversion may be under way). ``lock`` False (a dry run): the directory only."""
+    if is_pointer(out) or work_root(out) or os.path.isdir(root_of(out)):
+        return writable(out, lock=lock)
+    return out
+
+
+def _probe_reflink(d):
+    """True when the file system of directory ``d`` makes copy-on-write clones (cp --reflink=always of a probe file)."""
+    a = os.path.join(d, f'.reflink_probe_{os.getpid()}')
+    b = a + '.clone'
+    try:
+        with open(a, 'wb') as f:
+            f.write(b'\0' * 4096)
+        r = subprocess.run(['cp', '--reflink=always', a, b], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return r.returncode == 0
+    finally:
+        for p in (a, b):
+            with contextlib.suppress(OSError):
+                os.unlink(p)
+
+
+def clone(src, dst):
+    """Copy the run directory ``src`` into the empty directory ``dst``: a COPY-ON-WRITE CLONE (cp -a --reflink=always: each
+    file its own inode sharing src's data blocks until one of them is written, so a later write to either never reaches the
+    other; no data is copied) where the file system makes them; elsewhere a full copy (cp -a) only of a run of at most
+    serve.RUN_VERSIONS_COPY_MAX_BYTES, else Refusal (nothing copied: a large run is never duplicated in full). Modes,
+    modification times and hard links within the run are kept. Returns {'method', 'seconds', 'bytes' (a full copy)}."""
+    if not os.path.isdir(src) or os.listdir(dst):
+        raise Refusal(f'clone {src} -> {dst}: no source directory, or the destination is not empty')
+    t0, out = time.time(), {}
+    if _probe_reflink(dst):
+        cmd = ['cp', '-a', '--reflink=always', src.rstrip('/') + '/.', dst.rstrip('/') + '/']
+        out['method'] = 'reflink'
+    else:
+        cap = int(_S().RUN_VERSIONS_COPY_MAX_BYTES)
+        n = sum(e[2] for e in walk(src) if e[0] == 'f')
+        if n > cap:
+            raise Refusal(f'{dst} is on a file system without copy-on-write clones and {src} holds {n} bytes, over '
+                          f'serve.RUN_VERSIONS_COPY_MAX_BYTES ({cap} bytes): it is not copied in full - nothing cloned')
+        cmd = ['cp', '-a', src.rstrip('/') + '/.', dst.rstrip('/') + '/']
+        out.update(method='copy', bytes=n)
+    r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
+    if r.returncode != 0:
+        raise Refusal(f'clone {src} -> {dst} failed ({" ".join(cmd[:3])}, rc {r.returncode}): {r.stdout[-400:]}')
+    out['seconds'] = round(time.time() - t0, 1)
+    return out
+
+
+def same_content(src, run, exclude=(), stats=None):
+    """(ok, detail): ``run`` holds exactly the files and links of ``src`` (relative paths matching a pattern of ``exclude``
+    left out on both sides, and the mutable review state of RUN_VERSIONS_MUTABLE), every link with src's target, every file
+    with src's size, and the same sha256 in both for every file the content rules re-hash (CONTENT): every file not a
+    binary and the stable sample of the binaries. Reads both. ``stats`` receives the counts and the bytes read."""
+    rules = hash_rules()
+    skip = tuple(exclude) + tuple(_S().RUN_VERSIONS_MUTABLE)
+    a, b = {e[1]: e for e in walk(src, skip)}, {e[1]: e for e in walk(run, skip)}
+    missing, added = sorted(set(a) - set(b)), sorted(set(b) - set(a))
+    both = sorted(set(a) & set(b))
+    kinds = [p for p in both if a[p][0] != b[p][0] or (a[p][0] == 'l' and a[p][4] != b[p][4])]
+    files = [p for p in both if a[p][0] == b[p][0] == 'f']
+    sizes = [p for p in files if a[p][2] != b[p][2]]
+    small = {p for p in files if is_small(p, a[p][2], rules)}
+    sample = large_sample([p for p in files if p not in small], rules)
+    differ, nbytes = [], 0
+    for p in sorted((small | sample) - set(sizes)):
+        if sha256_file(os.path.join(src, p)) != sha256_file(os.path.join(run, p)):
+            differ.append(p)
+        nbytes += 2 * a[p][2]
+    st = {'n_files': len(files), 'n_small': len(small), 'n_sample': len(sample), 'n_binaries': len(files) - len(small),
+          'bytes_read': nbytes}
+    if stats is not None:
+        stats.update(st)
+    if missing or added or kinds or sizes or differ:
+        return False, (f'{run} is not {src}: {len(missing)} missing (e.g. {missing[:3]}), {len(added)} added (e.g. '
+                       f'{added[:3]}), {len(kinds)} links or kinds differ (e.g. {kinds[:3]}), {len(sizes)} sizes differ (e.g. '
+                       f'{sizes[:3]}), {len(differ)} with other content (sha256; e.g. {differ[:3]})')
+    return True, (f'{run} holds the {len(files)} files and the links of {src}; sha256 equal for {len(small)} files not '
+                  f'binaries and the stable sample of {len(sample)} of {len(files) - len(small)} binaries ({nbytes} bytes '
+                  f'read)')
+
+
+def snapshot(U, src, note=''):
+    """A new unsealed version of U whose run is a clone of ``src`` (U's work directory, or the legacy run being converted),
+    made under U's writer lock - no writer step writes ``src`` while it is cloned - and tested against it in content while the
+    lock is still held (same_content). Returns (Version, {'clone': clone()'s dict, 'content': detail, 'stats': ...}). Any
+    failure discards the version (nothing else changed)."""
+    v = begin(U, note)
+    try:
+        with writer_lock(U):
+            info = {'clone': clone(src, v.run)}
+            st = {}
+            ok, detail = same_content(src, v.run, stats=st)
+        if not ok:
+            raise Refusal(f'the snapshot of {src} is not its copy - {detail}')
+        info.update(content=detail, stats=st)
+    except BaseException:
+        discard(v, note=f'{note}: the snapshot failed')
+        raise
+    return v, info
+
+
+def discard(v, note=''):
+    """Remove a version that was never served - a snapshot or placement whose build refused: unsealed, or sealed and never
+    switched to (ever_served). It is renamed out of R's names first (R/.retiring_<vid>), then deleted, and logged in
+    R/RETIRE_LOG.jsonl. Refusal for a version that was served."""
+    _guard(v.run, 'a version of')
+    if v.record() is not None and ever_served(v):
+        raise Refusal(f'version {v.vid} was served (POINTER_LOG.jsonl or a link): it stays a version')
+    renew_stop(v.path('BUILDING.json'))
+    gone = os.path.join(v.root, f'.retiring_{v.vid}')
+    os.rename(v.dir, gone)
+    shutil.rmtree(gone)
+    _append_jsonl(os.path.join(v.root, 'RETIRE_LOG.jsonl'), {'utc': _utc(), 'version': v.vid, 'discarded': True,
+                                                             'by': me(note)})
+
+
+def _to_work(U, R):
+    """CONVERSION (switch with to_work): move the legacy run U (a directory, or a link to one) to its work directory
+    R/<WORK>/<name>; returns the directory it was moved from. The caller holds R's lock and writes the pointer right after;
+    _unwork undoes it. Refusal, nothing moved: not a directory, another file system, a work directory already there."""
+    real = os.path.realpath(U)
+    W = os.path.join(R, WORK, os.path.basename(os.path.normpath(U)))
+    if not os.path.isdir(real):
+        raise Refusal(f'{U} is neither a pointer nor a run directory - nothing switched')
+    if os.path.lexists(W):
+        raise Refusal(f'{W} exists already: {U} is not converted twice - nothing switched')
+    os.makedirs(os.path.dirname(W), exist_ok=True)
+    if os.stat(real).st_dev != os.stat(os.path.dirname(W)).st_dev:
+        raise Refusal(f'{real} is not on the file system of the versions root {R} - nothing switched')
+    try:
+        os.rename(real, W)
+    except OSError as e:
+        raise Refusal(f'{real} could not be moved to {W} ({e}) - nothing switched, {U} unchanged') from None
+    return real
+
+
+def _unwork(U, R, real):
+    """Undo _to_work: the work directory moved back to ``real``. Returns None, or the text of what could not be undone."""
+    W = os.path.join(R, WORK, os.path.basename(os.path.normpath(U)))
+    try:
+        os.rename(W, real)
+    except OSError as e:
+        return f'the legacy run could not be moved back: it is {W}; move it back to {real} by hand ({e})'
+    return None
+
+
+def unshare_mutable(run):
+    """Give every file of ``run`` matching serve.RUN_VERSIONS_MUTABLE (the review state appended in place while a version is
+    served) its own inode when it is hard-linked (a placement's --link-dest): an append to it then never reaches another
+    version. Returns the relative paths copied."""
+    pats, out = tuple(_S().RUN_VERSIONS_MUTABLE), []
+    for dp, _dn, fns in os.walk(run):
+        for fn in fns:
+            p = os.path.join(dp, fn)
+            rel = os.path.relpath(p, run)
+            if not any(fnmatch.fnmatchcase(rel, m) for m in pats) or os.path.islink(p) or os.lstat(p).st_nlink < 2:
+                continue
+            tmp = f'{p}.unshare.{os.getpid()}'
+            shutil.copy2(p, tmp)
+            os.replace(tmp, p)
+            out.append(rel)
+    return sorted(out)
+
+
+def stamp(U):
+    """What U is now, for a reader that reads U by its name over a while (a script given the path) and must know afterwards
+    that it read one version: (link target or 'dir', inode, change time in ns) of U itself (lstat); every switch writes a new
+    link (a new inode), so any switch in between - also away and back - changes it. None when U does not exist. A directory
+    (a legacy run): ('dir', inode, None) - its change time moves whenever an entry is made in it (a log), which is no switch;
+    its adoption (a link in its place) changes the stamp."""
+    try:
+        st = os.lstat(U)
+    except FileNotFoundError:
+        return None
+    if not os.path.islink(U):
+        return ('dir', st.st_ino, None)
+    return (os.readlink(U), st.st_ino, st.st_ctime_ns)
+
+
+@contextlib.contextmanager
+def pinned(Us, note=''):
+    """Hold the version each run of ``Us`` names (hold) for the block: yields {U: (run directory held, stamp)}. The stamp is
+    taken after the hold and must name the held run (else the hold is taken again; Refusal after three tries: U is being
+    switched without pause). With moved() the caller learns afterwards whether any U was switched in the block - a reader
+    that read U by its name then read more than one version."""
+    with contextlib.ExitStack() as st:
+        out = {}
+        for U in Us:
+            for _ in range(3):
+                held = contextlib.ExitStack()
+                d = held.enter_context(hold(U, note=note))
+                s = stamp(U)
+                if os.path.realpath(U) == os.path.realpath(d):
+                    st.push(held.pop_all())
+                    out[U] = (d, s)
+                    break
+                held.close()
+            else:
+                raise Refusal(f'{U} was switched three times while its version was held - not pinned')
+        yield out
+
+
+def moved(pins):
+    """[U] of ``pins`` (pinned()'s dict) whose pointer changed since it was pinned (stamp)."""
+    return [U for U, (_d, s) in pins.items() if stamp(U) != s]
+
+
+def journal_dirs(*runs):
+    """The judgement journal directories (relative to the run) of ``runs``: every directory of the journal patterns of
+    serve.RUN_VERSIONS_MUTABLE (those naming a judgements.jsonl) that holds one in any of them, sorted."""
+    pats = [m for m in _S().RUN_VERSIONS_MUTABLE if m.endswith('/judgements.jsonl')]
+    out = set()
+    for r in runs:
+        if not r or not os.path.isdir(r):
+            continue
+        for d in os.listdir(r):
+            if os.path.isfile(os.path.join(r, d, 'judgements.jsonl')) and \
+                    any(fnmatch.fnmatchcase(f'{d}/judgements.jsonl', m) for m in pats):
+                out.add(d)
+    return sorted(out)
 
 
 # ---- holds ------------------------------------------------------------------------------------------------------------
@@ -952,7 +1277,7 @@ def refuse_owed(U, what):
     if rec is not None:
         raise Refusal(f'{what}: {U} owes the catch-up of the journal lines of version {rec.get("from_version")} into '
                       f'{rec.get("to_version")} (failed {rec.get("utc")}: {str(rec.get("error"))[:200]}; '
-                      f'{os.path.join(root_of(U), OWED_FILE)}) - the next serve --tier sublst retries it first')
+                      f'{os.path.join(root_of(U), OWED_FILE)}) - the next serve of the run (--tier sublst or deep) retries it first')
 
 
 def owe_catchup(U, rec):
