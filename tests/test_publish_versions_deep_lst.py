@@ -20,7 +20,8 @@ checks, runnable with python, under a minute. Scratch under $TMPDIR.
    the pinned versions are held; journal_dirs; unshare_mutable.
 6. The per-LST placement as a version: the first placement adopts the legacy run, the next one is a new version with the
    unchanged files hard-linked from the served one and the review state on its own inodes; the previous version is unchanged;
-   a placement whose content test fails is discarded, U unchanged; PLACE_DELETE False refuses.
+   a placement that is not the page run, or whose page run fails its own content tests, is discarded before the switch, U
+   unchanged; PLACE_DELETE False refuses.
 7. G30: the cumulative build refuses when an LST run was switched while the merge read it, not when nothing was switched (a
    log written in a legacy LST run included); the read versions are held during the merge and recorded.
 8. The deep serve on a versioned run: convert (the journal lines written on the legacy run during the conversion caught up),
@@ -335,9 +336,12 @@ def test_place():
     write(f'{P}/judgements/judgements.jsonl', '{"j": 1}\n')
     write(f'{P}/{night.REDUCED_DIR}/sel.csv', 'reduced')
 
+    page_ok = {'ok': True}
+
     def place():
         run = Run('pages', ['test'], f'{d}/records', CFG, config_sections=None)
-        tier_sublst.stage_place(c, run, {}, lst)
+        with patch((tier_sublst, 'page_run_check', lambda r: (page_ok['ok'], f'stand-in page-run test on {r}'))):
+            tier_sublst.stage_place(c, run, {}, lst)
         return run.units[-1]
     u = place()
     v1 = versions.served(U)
@@ -365,6 +369,12 @@ def test_place():
     check('a placement whose content test fails: refused, the version discarded, U unchanged',
           u.status == 'refused' and 'stand-in' in (u.reason or '') and versions.served(U).vid == v2.vid
           and len(versions.all_versions(U)) == 3, (u.status, u.reason, [x.vid for x in versions.all_versions(U)]))
+    page_ok['ok'] = False
+    u = place()
+    page_ok['ok'] = True
+    check('a page run whose own content tests fail (sublst_page_run): refused before the switch, discarded, U unchanged',
+          u.status == 'refused' and 'sublst_page_run' in (u.reason or '') and versions.served(U).vid == v2.vid
+          and len(versions.all_versions(U)) == 3, (u.status, u.reason))
     with patch((CFG.pages_sublst, 'PLACE_DELETE', False)):
         u = place()
     check('PLACE_DELETE False refuses (a placement is a whole version)', u.status == 'refused'

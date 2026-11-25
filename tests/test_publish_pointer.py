@@ -967,7 +967,12 @@ def test_coalescer_wired():
     write(f'{P}/candidates/V/x.txt', 'hour')         # (the unit's sublst_page_run content test refuses this stand-in run)
     os.makedirs(f'{d}/transients')
     run = Run('pages', ['test'], f'{d}/pages_records', CFG, config_sections=None)
-    tier_sublst.stage_place(c, run, {}, lst)
+    real_check = tier_sublst.page_run_check
+    tier_sublst.page_run_check = lambda r: (True, 'stand-in: the page run\'s own content tests are not the subject')
+    try:
+        tier_sublst.stage_place(c, run, {}, lst)
+    finally:
+        tier_sublst.page_run_check = real_check
     u = run.units[-1]
     cum = coalesce.slot_for(os.path.join(f'{d}/transients', CFG.serve.RUN_NAME['sublst']))
     check('the sub-LST placement places the hour run and requests a build of the cumulative run beside it',

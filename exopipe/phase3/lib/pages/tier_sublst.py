@@ -512,6 +512,15 @@ def place_target(c, P):
     return common.CFG().pages_sublst.PLACE_TARGET.format(review_host=host, run=os.path.basename(P)), None
 
 
+def page_run_check(run):
+    """(ok, detail): every content test of class sublst_page_run passes on ``run`` (the placed version before its switch: a
+    page run that fails them is never served)."""
+    from exopipe.phase3.core import validate
+    bad = [r for r in validate.run('sublst_page_run', run) if not r['passed']]
+    return not bad, ('; '.join(f'{r["name"]}: {r["detail"]}' for r in bad)[:600] if bad else
+                     'every sublst_page_run content test passes')
+
+
 def place_version(u, P, U, note):
     """THE PLACEMENT AS A VERSION (lib/serve/versions.py; plan/CUTOVER_READINESS.md:333-344 (a); requirement 11 of
     plan/ORCHESTRATION_DESIGN_20261117.md): the page run P becomes a new version of the placed run U, and U - a pointer - is
@@ -526,9 +535,10 @@ def place_version(u, P, U, note):
               size kept within the second of the copy it replaces is skipped (shown 2026-11-25 with rsync 3.1.3); a
               hard-linked file of the review state appended in place (serve.RUN_VERSIONS_MUTABLE) then gets its own inode
               (versions.unshare_mutable). No step writes a placed version's other files (versions.writable);
-      seal    the content test as the seal's check: the version holds exactly P's files, with P's sizes and the same sha256
-              for every file not a binary and the stable sample of the binaries (versions.same_content); then the manifest
-              and the completion record (versions.seal);
+      seal    the content tests as the seal's checks: the version holds exactly P's files, with P's sizes and the same sha256
+              for every file not a binary and the stable sample of the binaries (versions.same_content), and the page run's
+              own content tests pass on it (page_run_check: production placed first and tested after, so a failing run was
+              served); then the manifest and the completion record (versions.seal);
       switch  U switched to it (versions.switch; the first placement adopts the legacy run as a version and gives it its
               manifest: versions.publish).
     A refusal before the switch discards the version (U unchanged). Returns versions.publish()'s dict."""
@@ -550,7 +560,8 @@ def place_version(u, P, U, note):
 
         def equals_page_run(run):
             return versions.same_content(P, run, exclude=(night.REDUCED_DIR + '/*',), stats=stats)
-        sw = versions.publish(U, v, checks=[('equals_page_run', equals_page_run)], note=note)
+        sw = versions.publish(U, v, checks=[('equals_page_run', equals_page_run), ('sublst_page_run', page_run_check)],
+                              note=note)
         switched = True
     except BaseException as e:
         if not switched and os.path.isdir(v.dir):
