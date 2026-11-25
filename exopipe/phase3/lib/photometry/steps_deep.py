@@ -76,12 +76,17 @@ def select_cells(args, roots):
 
 
 def src_run(args):
+    """The deep run photometry reads; a versioned run (lib/serve/versions.py): its work directory, never a served version
+    (versions.reads, as the catalog's and the forced step's deep readers)."""
+    from exopipe.phase3.lib.serve import versions
     c = K.cfg()
     if args.src_run:
-        return os.path.abspath(args.src_run)
-    if args.run_label:
-        return os.path.join(c.paths.TRANSIENTS_ROOT, c.photometry_frames.SRC_RUN_DIR.format(label=args.run_label))
-    return c.photometry_frames.SRC_RUN
+        s = os.path.abspath(args.src_run)
+    elif args.run_label:
+        s = os.path.join(c.paths.TRANSIENTS_ROOT, c.photometry_frames.SRC_RUN_DIR.format(label=args.run_label))
+    else:
+        s = c.photometry_frames.SRC_RUN
+    return versions.reads(s) if s else s
 
 
 def default_out(args):

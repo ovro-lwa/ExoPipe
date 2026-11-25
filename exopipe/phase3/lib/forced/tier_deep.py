@@ -58,6 +58,8 @@ def run(args, run):
         raise Refusal('G1 searched run required: --run LABEL (e.g. P3S5) - no default (D7, '
                       'FIX-REFACTOR-DEFECTS-D2-D6-D7-D9-D10-AND-RULINGS-D1-D5-D8-20261013)')
     src = os.path.join(K.cfg().paths.TRANSIENTS_ROOT, 'Run_%s' % _label(args))
+    from exopipe.phase3.lib.serve import versions
+    src = versions.reads(src)            # a versioned run: its work directory (the catalog's own products), never a version
     {'catflux': stage_catflux, 'panels': stage_panels}[stages[0]](args, run, src)
     return None
 

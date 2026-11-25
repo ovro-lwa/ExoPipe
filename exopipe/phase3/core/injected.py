@@ -415,10 +415,12 @@ def check_flags(step, args, out, writes=True):
 
 # ---- the run ----------------------------------------------------------------------------------------------------------------
 
-def begin(why, out, explicit_out=True, work=None, default_out=None, writes=True):
+def begin(why, out, explicit_out=True, work=None, default_out=None, writes=True, locks=()):
     """Make this process an injected run before its step runs (cli): the flag (sticky), paths.PRODUCTION_WRITES False, --out
     and --work checked against refused_roots (with the step's default --out), and the write guard installed here and exported
-    to every Python child. Raises Refusal on a missing or non-scratch --out / --work. Returns the guard's allowed roots."""
+    to every Python child. ``locks``: lock files the step opens beside its --out (the writer lock of a versioned run,
+    lib/serve/versions.writer_lock_of), each checked as --out is and allowed as that one file. Raises Refusal on a missing
+    or non-scratch --out / --work / lock. Returns the guard's allowed roots."""
     why = mark(why)
     C = _cfg()
     C.paths.PRODUCTION_WRITES = False
@@ -433,6 +435,11 @@ def begin(why, out, explicit_out=True, work=None, default_out=None, writes=True)
             if root is not None:
                 raise _refusal(f'{LABEL}: {flag} {d} is under {root}, which an injected run ({why}) never writes '
                                f'(core/injected.refused_roots) - give a scratch {flag}')
+    for p in locks:
+        root = refused_root_of(p, C, extra)
+        if root is not None:
+            raise _refusal(f'{LABEL}: the lock {p} of --out {out} is under {root}, which an injected run ({why}) never '
+                           f'writes (core/injected.refused_roots) - give a scratch --out')
     from exopipe.phase3.core import fitsio
     try:
         scratch = fitsio.scratch_root(None)
@@ -442,7 +449,7 @@ def begin(why, out, explicit_out=True, work=None, default_out=None, writes=True)
     if writes and out and _norm(out) in {_norm(x) for x in shared}:
         raise _refusal(f'{LABEL}: --out {out} is a shared scratch root - an injected run marks its whole --out as injected '
                        f'(core/record.mark_injected), so it needs a directory of its own below it')
-    roots = [out] + ([work] if work else [])
+    roots = [out] + ([work] if work else []) + [p for p in locks if p]
     if not work and scratch and refused_root_of(scratch, C) is None:   # node-local scratch (core/fitsio.scratch_dir) is
         roots.append(scratch)                                          # temporary, never a product
     from exopipe.phase3.core import guard

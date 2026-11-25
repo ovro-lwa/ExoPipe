@@ -15,7 +15,9 @@ Stages (core.legacy.run, site PYTHON['default'], code from a VERIFIED FROZEN TRE
   build  build_tenmin_pages.py P/source_catalogs/tenmin_selection_<K>.csv P <s> <n>, every shard of every set at once
          (SUBLST_SEARCH_ROOT, SUBLST_LOO_MASTER_DIR=P/loo_masters); a set whose selection holds only its header is skipped
   index  p3t_pages_index.py P <K> per set, in pages.SUBLST_INDEX_ORDER (a refusal refuses the LST: P15)
-  place  rsync -a --delete P/ <target>/ (a LOCAL target only: the review-host copy is production and is refused in the window)
+  place  P as a new version of <target> (place_version: rsync into the version, its content test against P, sealed, the
+         pointer switched; production: rsync -a --delete P/ <target>/ in place). A LOCAL target only: the review-host copy is
+         production and is refused in the window
 The review_dir merge of the served cumulative union happens at serve time (serve's sub-LST prepare) through lib/pages/merge.run
 with pages.REVIEW_DIR_MERGE['sublst'].
 
@@ -510,9 +512,110 @@ def place_target(c, P):
     return common.CFG().pages_sublst.PLACE_TARGET.format(review_host=host, run=os.path.basename(P)), None
 
 
+_PAGE_RUN = {}            # realpath of a version's run -> the results of its seal's sublst_page_run tests (page_run_check)
+
+
+def page_run_check(run):
+    """(ok, detail): every content test of class sublst_page_run passes on ``run`` (the placed version before its switch: a
+    page run that fails them is never served). Its results are kept for the placement's output (_page_run_output)."""
+    from exopipe.phase3.core import validate
+    res = validate.run('sublst_page_run', run)
+    _PAGE_RUN[os.path.realpath(run)] = res
+    bad = [r for r in res if not r['passed']]
+    return not bad, ('; '.join(f'{r["name"]}: {r["detail"]}' for r in bad)[:600] if bad else
+                     'every sublst_page_run content test passes')
+
+
+def _page_run_output(u, U, sw):
+    """The placed run U as the unit's output of class sublst_page_run. Its content tests are the seal's (page_run_check, keyed
+    by the version's manifest sha256 in place_version) when the version still holds that record and its run that manifest's
+    files, sizes and modification times (versions.unchanged); else they run again (add_output)."""
+    from exopipe.phase3.lib.serve import versions
+    v, rec = sw['current'], sw['record']
+    key, res = sw.get('page_run') or (None, None)
+    if res is None or key != rec.get('manifest_sha256'):
+        why = 'no result of the seal keyed by this version\'s manifest'
+    else:
+        same, why = versions.unchanged(v, rec)
+        if same:
+            u.add_output(U, 'sublst_page_run', test=False)
+            for r in res:
+                u.check(r['name'], r['passed'], r.get('value'), f'{r.get("detail", "")} [the seal\'s test of version {v.vid}, '
+                        f'manifest sha256 {key[:16]}; unchanged since: {why}]', cls='sublst_page_run', path=U)
+            return
+    u.note(f'sublst_page_run run again on {U}: {why}')
+    u.add_output(U, 'sublst_page_run')
+
+
+def place_version(u, P, U, note):
+    """THE PLACEMENT AS A VERSION (lib/serve/versions.py; plan/CUTOVER_READINESS.md:333-344 (a); requirement 11 of
+    plan/ORCHESTRATION_DESIGN_20261117.md): the page run P becomes a new version of the placed run U, and U - a pointer - is
+    switched to it once it is sealed. Production rsyncs P over the served run in place (rsync -a --delete,
+    sublst_publish_lst.sh:38), so a reader - the cumulative build, a page - could read half a placement.
+      begin   a new, empty, unsealed version of U (versions.begin);
+      copy    rsync -a P/ into it, without the reduced selections (night.REDUCED_DIR: the renderer's input, not a served
+              selection), with --link-dest the version U names (held while it is read: retention never deletes it under the
+              copy) - a file of the same size, modification time to the nanosecond (--modify-window=-1) and mode is
+              hard-linked, not copied (as production's rsync skips it: the carried leave-one-out Masters keep their times,
+              night._link); the rest is written new. Production's rsync compares whole seconds: a file rewritten with its
+              size kept within the second of the copy it replaces is skipped (shown 2026-11-25 with rsync 3.1.3); a
+              hard-linked file of the review state appended in place (serve.RUN_VERSIONS_MUTABLE) then gets its own inode
+              (versions.unshare_mutable). No step writes a placed version's other files (versions.writable);
+      seal    the content tests as the seal's checks: the version holds exactly P's files, with P's sizes and the same sha256
+              for every file not a binary and the stable sample of the binaries (versions.same_content), and the page run's
+              own content tests pass on it (page_run_check: production placed first and tested after, so a failing run was
+              served; their results, keyed by the manifest's sha256, are the unit's output tests while the version is
+              unchanged: _page_run_output); then the manifest and the completion record (versions.seal);
+      switch  U switched to it (versions.switch; the first placement adopts the legacy run as a version and gives it its
+              manifest: versions.publish).
+    A refusal before the switch discards the version (U unchanged; a discard that fails is added to the refusal). Returns
+    versions.publish()'s dict, with 'page_run': (the manifest's sha256, the seal's sublst_page_run results)."""
+    from exopipe.phase3.lib.serve import versions
+    v = versions.begin(U, note=note)
+    switched = False
+    try:
+        with versions.hold(U, note=note) as cur:
+            link = os.path.realpath(cur) if os.path.isdir(cur) else None
+            cmd = (['rsync', '-a', '--modify-window=-1', '--exclude', night.REDUCED_DIR + '/']
+                   + (['--link-dest', link] if link else [])
+                   + [P + '/', v.run + '/'])
+            r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
+        u.meta['rsync'] = dict(cmd=cmd, rc=r.returncode, tail=r.stdout[-500:])
+        if r.returncode != 0:
+            raise common.Refusal(f'P17 rsync of {P} into version {v.vid} of {U} failed (rc {r.returncode}): {r.stdout[-200:]}')
+        u.meta['unshared'] = versions.unshare_mutable(v.run)       # review state appended in place: never a shared inode
+        stats = {}
+
+        def equals_page_run(run):
+            return versions.same_content(P, run, exclude=(night.REDUCED_DIR + '/*',), stats=stats)
+        sw = versions.publish(U, v, checks=[('equals_page_run', equals_page_run), ('sublst_page_run', page_run_check)],
+                              note=note)
+        switched = True
+    except BaseException as e:
+        if not switched and os.path.isdir(v.dir):
+            try:
+                versions.discard(v, note=f'{note}: refused before the switch')
+            except Exception as e2:                     # noqa: BLE001 - added to the refusal, which is the one raised
+                versions.add_failure(e, f' - AND version {v.vid} could not be discarded ({e2}): retention retires it')
+        if isinstance(e, versions.Refusal) and not str(e).startswith('P17'):
+            raise common.Refusal(f'P17 place: {e}') from e
+        raise
+    rec = sw['record']
+    sw['page_run'] = (rec.get('manifest_sha256'), _PAGE_RUN.pop(os.path.realpath(v.run), None))
+    u.meta['version'] = dict(vid=v.vid, previous=sw['previous'].vid if sw['previous'] else None, linked_from=link,
+                             content=stats, record={k: rec[k] for k in ('n_files', 'n_bytes', 'n_hashed', 'hashed_bytes')
+                                                    if k in rec})
+    u.note(f'placed as version {v.vid} of {U} (hard links from {link or "nothing (first placement)"}); content test: '
+           f'{rec["checks"][0]["detail"][:300]}; switched from {sw["previous"].vid if sw["previous"] else "nothing"}'
+           + (' (the legacy run adopted as that version)' if sw['adopted'] else ''))
+    if sw.get('adopted_error'):                        # U is switched: a refusal of the adopted run's own seal is recorded
+        u.note(f'ADOPTED WITHOUT A MANIFEST: {sw["adopted"].vid} ({sw["adopted_error"][:300]}) - kept by retention')
+    u.add_output(v.path('VERSION.json'), 'run_version', pointer=U)
+    return sw
+
+
 def stage_place(c, run, done, lst):
     from exopipe.phase3.config import CFG
-    S = common.CFG().pages_sublst
     name = f'{lst}:place'
     P = P_of(c, lst)
     run_name = os.path.basename(P)
@@ -531,14 +634,9 @@ def stage_place(c, run, done, lst):
             raise common.Refusal(f'P17 place: {tgt} is under the production root {CFG.production_root_of(tgt)}')
         if os.path.basename(tgt) != run_name:
             tgt = os.path.join(tgt, run_name)
-        os.makedirs(tgt, exist_ok=True)
-        cmd = (['rsync', '-a'] + (['--delete'] if S.PLACE_DELETE else [])   # the reduced selections of a night run are the
-               + ['--exclude', night.REDUCED_DIR + '/', P + '/', tgt + '/'])   # renderer's input, not a served selection
-        r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
-        u.meta['rsync'] = dict(cmd=cmd, rc=r.returncode, tail=r.stdout[-500:])
-        if r.returncode != 0:
-            raise common.Refusal(f'P17 rsync to {tgt} failed (rc {r.returncode}): {r.stdout[-200:]}')
-        u.add_output(tgt, 'sublst_page_run')
+        os.makedirs(os.path.dirname(tgt), exist_ok=True)
+        sw = place_version(u, P, tgt, f'pages --tier sublst {name}')
+        _page_run_output(u, tgt, sw)
         # a placement requests a build of the cumulative run beside it (requirement 11, 2026-11-17: one coalescing builder -
         # a placement during a build schedules exactly one follow-up; lib/serve/coalesce.py); the build is serve --tier
         # sublst, which takes the request (the per-hour chain's next step), or the running builder's follow-up
@@ -651,7 +749,8 @@ def dry_run(c, run_):
                 refuse.append(f'{lst}: P17 {why}')
             else:
                 remote = ':' in tgt.split('/')[0]
-                print(f'    place: rsync -a{" --delete" if S.PLACE_DELETE else ""} {P}/ {tgt}'
+                print(f'    place: {P} as a new version of {tgt} (rsync -a --modify-window=-1 --link-dest the served version; '
+                      f'content test against {P}; sealed; switched)'
                       + ('  -> WOULD REFUSE (review host = production)' if remote else ''))
                 if remote:
                     refuse.append(f'{lst}: P17 place target {tgt} is production')

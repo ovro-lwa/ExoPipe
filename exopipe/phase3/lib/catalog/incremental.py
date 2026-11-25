@@ -706,7 +706,8 @@ class Source:
         if not spec.startswith('run:'):
             raise Refusal(f'--inc-source {spec!r}: expected run:<deep run dir> or search')
         self.kind = 'run'
-        self.dir = spec[4:].rstrip('/')
+        from exopipe.phase3.lib.serve import versions
+        self.dir = versions.reads(spec[4:].rstrip('/'))   # a versioned run: its work directory, never a served version
         self.spec = f'run:{self.dir}'
         self.files = {k: os.path.join(self.dir, v) for k, v in c.SOURCE_FILES.items()}
         self._cache = {}
@@ -1657,7 +1658,7 @@ def _identity_unit(ctx):
                     latest = os.path.join(U, c.TRANSIENT_LIST_NAME.format(label=ctx.label, utc='latest'))
                     if os.path.islink(latest) or os.path.exists(latest):
                         os.unlink(latest)
-                    os.symlink(listp, latest)
+                    os.symlink(os.path.basename(listp), latest)    # relative: beside the list (serve G33, PR 170)
             else:
                 raise Refusal(f'catalog_incremental.REPLAY_STAGES_IDENTITY names an unknown stage {stage!r}')
         if ctx.dry:

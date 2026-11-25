@@ -87,6 +87,40 @@ class serve(_Section):
                                             # every file whose size or modification time differs from the manifest
     RUN_VERSIONS_LEASE_S = 600              # s: a holder's or builder's lease (lib/serve/versions.py LEASES): one on another node
                                             # counts as alive until its lease, renewed every quarter lease while it runs, expires
+    RUN_VERSIONS_COPY_MAX_BYTES = 1 << 30   # bytes (1 GiB): a snapshot of a work directory (versions.clone) is a copy-on-write
+                                            # clone (cp --reflink=always; /fast is XFS with reflink); on a file system without
+                                            # clones a run up to this size is copied in full and a larger one is REFUSED (Run_P3S5
+                                            # 2026-11-24: 188.6 GB in 1,511,521 files on a /fast 96% full - never duplicated)
+    WRITER_LOCK_WAIT_S = 3600.0             # s: the longest a run's writer step waits for its writer lock (a snapshot or a
+                                            # conversion holds it: minutes), and a snapshot or a conversion for the writer steps
+                                            # to finish (lib/serve/versions.py WORK); then gate G32 refuses, nothing written
+    # GATE G33 (lib/serve/versions.py seal, served_read): WHAT THE SERVED PAGES AND THE TWO-PORT SERVER READ from a run, by
+    # class - (fnmatch on the path relative to the run; '*' matches '/' too). A version in which a file of these classes names
+    # the run's work directory, or any link resolves into it, is refused; every other file (logs, summaries, scripts, caches)
+    # is left as its writer wrote it (the coordinator, PR 170: a log records truthfully what its writer was given). Sources:
+    # classify_transients.py (the page server) and review_filters.py, the files they open in the run
+    SERVED_READS = {
+        'queue': ('judgements*/queue_*',),  # --queue / --mchain-queue (SERVE_PAGES queue=), the strat queues and their maps
+        'merge_links': ('source_catalogs*/*_sources_survivors.csv', 'source_catalogs*/*_pages_index*.csv',
+                        'views/*_sources_survivors.csv', 'views/*_pages_index*.csv'),
+                                            # the review_dir column the merge writes (p3s3_merge_review_dir.py:55-87: relative
+                                            # to the run) and the page indexes it resolves it from
+        'page_data': ('source_catalogs*/*.csv', 'source_catalogs*/*.json', 'views/*.csv', 'views/*.json',
+                      'candidates/*.csv', 'candidates/*.json', 'localization_figs/*.json', 'page_index/*.json',
+                      'fp_study/*.csv', 'fp_study/*.json', 'blind_items/*.csv', 'addendum_20260823/*.csv', 'fp_review/*.csv',
+                      'v_deep_images.csv', 'detection_ts.csv', 'master_catalog.csv', 'quality_flags.csv', 'table_filter.csv',
+                      'card2_filter.csv', 'tess_coverage.csv', 'tess_coverage_forced.csv', 'fp_filters.csv',
+                      'fp_filters.json', 'scintillation_index.csv', 'scintillation_index.json', 'frame_counts.json',
+                      'coadd_root.txt'),
+                                            # the catalog views (--catalog-dir, --mchain-catalog-dir, localizations.csv;
+                                            # classify_transients.py:1788,2228-2360), each page folder's detections.csv,
+                                            # vetoed detections and panel sidecars <png>.page.json (candidates/<S>/<page>/;
+                                            # :2282-2295,3978,4377), the page index's manifest (:2146-2165), the 10-s frames
+                                            # (:1891), v_deep_images.csv (:3841) and detection_ts.csv (:4314); the page
+                                            # filters' tables (review_filters.py:92,101,236,269,301-326,389)
+        'html': ('*.html', '*.htm'),
+    }
+    SERVED_READS_NEVER = ('*.log', '*.log.*')   # (fnmatch on the file name) never a served read, whatever SERVED_READS says
     COALESCE_SLOT_DIR = '.coalesce'         # the coalescing builder's slot inside a run's versions root (lib/serve/coalesce.py)
     SUBLST_PAGE_CONTEXT_WORKERS = 16        # page_context_tenmin.py --workers on the placed version (sublst_cumulative.sh:298; the
                                             # 10-minute panels' run context as page text, Gregg 2026-10-22)

@@ -1489,7 +1489,10 @@ class DeepRun:
                 except SL.LinkRefused as e:
                     u.refuse(f'D-G21 transient list: {e}')
                 u.note(f'cross-Stokes link columns: {nl} of {n} rows linked')
-            os.symlink(out, tmp)
+            # RELATIVE (deliberate deviation from ops/p3s3_pass.sh:136, whose `ln -sf` names the list by its absolute path):
+            # the list lies beside the link, and in a versioned run an absolute link written in the work directory would
+            # resolve into it from every served version (serve gate G33 refuses that; the coordinator, PR 170)
+            os.symlink(os.path.basename(out), tmp)
             os.replace(tmp, link)
             u.note(tail[-1] if tail else '')
             self.out(u, out, 'transient_list')

@@ -226,7 +226,6 @@ class pages_sublst(_Section):
     SHARD_FAILURE = 'refuse'     # B-30 (a): a crashed page shard (a failed sub-product) refuses the build; 'record' = production
                                  # (sublst_pages_build.sh:16-19 waits without checking; the LST is placed when every index passes)
     PLACE_TARGET = '{review_host}:/data07/gh/phase3/transients/{run}/'   # rsync -a --delete; sublst_publish_lst.sh:38 ({review_host} = the site file's REVIEW_HOST; no host name in config, README rule 2)
-    PLACE_DELETE = True         # --delete (stale 19h test pages, 2026-09-30)
     CODE_PINNED = True           # the in-place code must be a verified frozen tree (FROZEN.ok + MANIFEST.sha256; sublst_code_root.sh:15-31)
     # THE PAGES OF A NIGHT (design 2.3a of plan/PER_HOUR_GAP_DESIGNS_20261111.md, stage 3; lib/pages/night.py)
     NIGHT_INDEX = 'hour_views.json'   # in a night pass's catalog directory: its view of every hour (lib/catalog/delta_build.INDEX)
@@ -252,7 +251,6 @@ class pages_sublst(_Section):
     PREP_SHA1 = ('38da7a8723f0a789f799b021b71c82bf913497cb',   # sublst_pages_prep.py of the frozen trees up to 2026-11-13 (path-normalized sha1)
                  '187acd897b30e8f5ce6c189fc4a8bc6ca0e838d4')   # live exopipe_ops since 2026-11-13 (tie_members.csv travels with the pages)
     RULED = {'SERVED_CATALOG_TAG': 'R-SUBLST-FORCED-SKIP-V110-AND-LEAK-VETO',
-             'PLACE_DELETE': 'R-NEW-CHAIN-TAKES-OVER-10MIN-PAGES-CUMULATIVE',
              'CODE_PINNED': 'INSTALLED-FROZEN-CODE-PER-10MIN-LAUNCH-20261011',
              'ARM': 'R-10MIN-TIER-NEW-CUBE-CHAIN-ADOPTED',
              'SHARD_FAILURE': 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32'}

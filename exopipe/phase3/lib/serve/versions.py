@@ -33,6 +33,11 @@ LAYOUT (name = basename(U); R = the VERSIONS ROOT, <dir>/<name><serve.RUN_VERSIO
   R/locks/journal_<J>.lock flock of the judgement journal directory <J> of every version (journal_locks; the two-port server's
                            POST lock of a labels directory in a version, two_port.journal_lock_path): one file across versions
   R/.lock                  flock: switch() and retire() exclusive
+  R/<vid>/SOURCE_MANIFEST.tsv  snapshot(): the manifest of the cloned source (the work directory), read under the writer lock;
+                           the seal tests the clone against it
+  R/work/<name>/           the WORK DIRECTORY of a converted run (WORK): every writer step of the run writes it
+  <dir>/.<name><suffix>.writer.lock  THE WRITER LOCK (writer_lock_file; beside R, so it exists before a conversion): writer
+                           steps hold it shared while they run, a snapshot or a conversion exclusive (G32: a wait is bounded)
   Lock files are created group-writable (0o664 set explicitly; R/locks setgid, so they take its group: the serve and the hub
   may run as different users of one group); a lock that cannot be opened is a Refusal naming the file and its owner.
 U -> <name><suffix>/<vid>/<name> (relative when R is beside U, else absolute).
@@ -104,6 +109,7 @@ import sys
 import re
 import shutil
 import socket
+import subprocess
 import threading
 import time
 
@@ -547,18 +553,71 @@ def large_sample(rels, rules):
 
 def sha256_file(p):
     """sha256 of the file ``p``: ordinary 1 MiB reads, never a memory map."""
-    d = hashlib.sha256()
+    return _sha256_scan(p, ())[0]
+
+
+def _sha256_scan(p, scan):
+    """(sha256 of the file ``p``, the byte strings of ``scan`` it contains): the same 1 MiB reads, each searched with the end of
+    the one before it (a string across two reads is found)."""
+    d, found, tail = hashlib.sha256(), set(), b''
+    keep = max((len(n) for n in scan), default=1) - 1
     with open(p, 'rb') as f:
         while True:
             b = f.read(1 << 20)
             if not b:
-                return d.hexdigest()
+                return d.hexdigest(), found
             d.update(b)
+            if scan:
+                buf = tail + b
+                found.update(n for n in scan if n not in found and n in buf)
+                tail = buf[-keep:] if keep else b''
 
 
-def _manifest(run, mutable, rules, what):
-    """(entries with their sha256, statistics): the walk of ``run`` and the sha256 of every file the rules hash (CONTENT).
-    Refusal when a hashed file changed (size or mtime) or vanished while it was read."""
+def _needles(paths):
+    """The byte strings a scan for ``paths`` looks for: each path as given and as its realpath, longest first."""
+    out = set()
+    for q in paths:
+        out.update(x.encode() for x in (os.path.abspath(q), os.path.realpath(q)))
+    return tuple(sorted(out, key=len, reverse=True))
+
+
+def served_read(rel):
+    """The class of serve.SERVED_READS the run-relative path ``rel`` belongs to (the files the served pages and the two-port
+    server read: queues, page JSON/CSV, HTML, the merge links), or None - always None for a log (serve.SERVED_READS_NEVER:
+    a log records what its writer was given and is never served)."""
+    S = _S()
+    base = os.path.basename(rel)
+    if any(fnmatch.fnmatchcase(base, g) for g in S.SERVED_READS_NEVER):
+        return None
+    for cls, globs in S.SERVED_READS.items():
+        if any(fnmatch.fnmatchcase(rel, g) for g in globs):
+            return cls
+    return None
+
+
+def links_into(run, entries, roots):
+    """The relative paths of the links of ``entries`` (a manifest of ``run``) whose target resolves into one of ``roots``
+    (the work directory): the target taken as written, absolute or from the link's directory (normpath); a link whose
+    target leaves the run is resolved again on disk (realpath: through other links), one that stays in the run needs no
+    second look - a link it passes through is an entry of its own."""
+    base = os.path.realpath(run)
+    rr = {os.path.abspath(r) for r in roots} | {os.path.realpath(r) for r in roots}
+    under = (lambda p: any(p == r or p.startswith(r.rstrip('/') + '/') for r in rr))
+    out = []
+    for e in entries:
+        if e[0] != 'l':
+            continue
+        t = os.path.normpath(e[4] if os.path.isabs(e[4]) else os.path.join(base, os.path.dirname(e[1]), e[4]))
+        if under(t) or (not (t == base or t.startswith(base + '/')) and under(os.path.realpath(os.path.join(run, e[1])))):
+            out.append(e[1])
+    return out
+
+
+def _manifest(run, mutable, rules, what, scan=()):
+    """(entries with their sha256, statistics, found): the walk of ``run`` and the sha256 of every file the rules hash (CONTENT).
+    Refusal when a hashed file changed (size or mtime) or vanished while it was read. ``scan`` (byte strings, _needles): found
+    = the relative paths of the files of the served reads (served_read; each is a text type, read whole) holding one of them -
+    the same reads, nothing read twice; every other file is not searched."""
     t0 = time.time()
     entries = walk(run, mutable)
     walk_s = time.time() - t0
@@ -566,14 +625,20 @@ def _manifest(run, mutable, rules, what):
     large = [e[1] for e in files if not is_small(e[1], e[2], rules)]
     todo = {e[1] for e in files if is_small(e[1], e[2], rules)}
     todo |= set(large) if rules['large'] == 'all' else large_sample(large, rules)
-    out, n, nb = [], 0, 0
+    out, n, nb, found, nscan = [], 0, 0, [], 0
     t1 = time.time()
     for e in entries:
         sha = ''
         if e[0] == 'f' and e[1] in todo:
             p = os.path.join(run, e[1])
             try:
-                sha = sha256_file(p)
+                if scan and is_small(e[1], e[2], rules) and served_read(e[1]):
+                    nscan += 1
+                    sha, hit = _sha256_scan(p, scan)
+                    if hit:
+                        found.append(e[1])
+                else:
+                    sha = sha256_file(p)
                 st = os.lstat(p)
             except FileNotFoundError:
                 raise Refusal(f'{p} vanished while {what} read it - not sealed') from None
@@ -582,12 +647,13 @@ def _manifest(run, mutable, rules, what):
             n, nb = n + 1, nb + e[2]
         out.append(tuple(e) + (sha,))
     return out, {'walk_s': round(walk_s, 1), 'hash_s': round(time.time() - t1, 1), 'n_hashed': n, 'hashed_bytes': nb,
-                 'n_binaries': len(large), 'n_binaries_hashed': sum(1 for r in large if r in todo)}
+                 'n_binaries': len(large), 'n_binaries_hashed': sum(1 for r in large if r in todo),
+                 **({'n_served_reads_scanned': nscan} if scan else {})}, found
 
 
-def _write_manifest(v, entries):
+def _write_manifest(v, entries, name='MANIFEST.tsv'):
     text = _manifest_text(entries).encode()
-    mpath = v.path('MANIFEST.tsv')
+    mpath = v.path(name)
     with open(mpath + '.part', 'wb') as f:
         f.write(text)
         f.flush()
@@ -596,11 +662,19 @@ def _write_manifest(v, entries):
     return hashlib.sha256(text).hexdigest()
 
 
-def seal(v, required=(), checks=(), note=''):
+def seal(v, required=(), checks=(), note='', forbid=(), source_strict=False):
     """Seal version ``v``: its manifest, then its completion record, written only when the run is complete:
     - the run directory exists, is not a link, holds at least one file;
     - every path of ``required`` (absolute, or relative to the run) exists inside the run, a file non-empty;
-    - every check of ``checks`` - (name, callable(run) -> (ok, detail)) - passes.
+    - every check of ``checks`` - (name, callable(run) -> (ok, detail)) - passes;
+    - GATE G33 (``forbid``: paths, the run's work directory): no file the served pages or the two-port server read
+      (served_read: the classes of serve.SERVED_READS - queues, page JSON/CSV, HTML, the merge links; never a log) names one
+      of them, and no link resolves into one (links_into) - a served page never reads the work directory a writer step
+      changes later. Logs and every other file nothing serves are left as their writers wrote them;
+    - a version made by snapshot(): THE CLONE IS ITS SOURCE - every file whose size and modification time are the source
+      manifest's (SOURCE_MANIFEST.tsv, read under the writer lock) has its sha256 wherever both hashed it; the files the
+      publish wrote since the snapshot (another size or modification time), removed or added are counted, not compared -
+      with ``source_strict`` (nothing written since the snapshot: a conversion) any of them refuses too.
     Refusal (nothing written) otherwise, and for a version already sealed. Returns the record."""
     _guard(v.run, 'the seal of')
     if v.record() is not None:
@@ -627,9 +701,20 @@ def seal(v, required=(), checks=(), note=''):
         if not ok:
             raise Refusal(f'version {v.vid} of {v.name}: content check {name} failed ({str(detail)[:400]}) - not sealed')
     mutable, rules = list(_S().RUN_VERSIONS_MUTABLE), hash_rules()
-    entries, stats = _manifest(v.run, mutable, rules, 'the seal')
+    entries, stats, found = _manifest(v.run, mutable, rules, 'the seal', scan=_needles(forbid))
     if not any(e[0] == 'f' for e in entries):
         raise Refusal(f'version {v.vid} of {v.name}: the run directory holds no file - not sealed')
+    links = links_into(v.run, entries, forbid) if forbid else []
+    if found or links:
+        what = [f'{len(found)} served files name it' + (f' ({", ".join(f"{r} [{served_read(r)}]" for r in found[:3])})'
+                                                         if found else ''),
+                f'{len(links)} links resolve into it' + (f' ({", ".join(links[:3])})' if links else '')]
+        raise Refusal(f'G33 work path: version {v.vid} of {v.name} - {"; ".join(what)} - work directory '
+                      f'{", ".join(forbid)}: a served page never reads the work directory (serve.SERVED_READS) - not sealed')
+    if os.path.exists(v.path(SOURCE_MANIFEST)):
+        ok, detail, stats['source_check'] = _source_check(_read_manifest(v.path(SOURCE_MANIFEST)), entries, source_strict)
+        if not ok:
+            raise Refusal(f'version {v.vid} of {v.name}: the clone is not its source - {detail} - not sealed')
     rec = {'format': FORMAT, 'name': v.name, 'version': v.vid, 'state': 'sealed', 'sealed_utc': _utc(),
            'sealed_by': me(note), 'builder': v.builder(), 'n_files': sum(1 for e in entries if e[0] == 'f'),
            'n_links': sum(1 for e in entries if e[0] == 'l'), 'n_bytes': sum(e[2] for e in entries),
@@ -712,6 +797,43 @@ def verify(v, record=None, stats=None):
                   f'(sha256): {len(small)} files not binaries, {len(sample)} of {len(large)} binaries (the stable '
                   f'sample), {len(meta)} with a changed size or modification time (same content) - {st["n_rehashed"]} files, '
                   f'{nbytes} bytes')
+
+
+def unchanged(v, record):
+    """(ok, detail): version ``v`` still holds the completion record ``record`` (the one seal() returned to its caller; its
+    manifest's sha256 the recorded one) and its run the manifest's files and links with their sizes, modification times and
+    targets (one walk, no file read): a content check the seal ran on it may stand for the run now."""
+    ok, detail = verify(v, record)
+    if not ok:
+        return False, detail
+    want = {e[1]: tuple(e[:5]) for e in _read_manifest(v.path(record.get('manifest') or 'MANIFEST.tsv'))}
+    have = {e[1]: tuple(e) for e in walk(v.run, record.get('mutable') or ())}
+    diff = sorted(set(want) ^ set(have)) + sorted(p for p in set(want) & set(have) if want[p] != have[p])
+    if diff:
+        return False, (f'{len(diff)} files or links differ from the manifest in name, size, modification time or target (e.g. '
+                       f'{diff[:3]})')
+    return True, (f'the record and its manifest (sha256 {record.get("manifest_sha256", "")[:16]}) as sealed; the walk of '
+                  f'{len(have)} files and links equals the manifest')
+
+
+def _source_check(src, have, strict):
+    """(ok, detail, counts): the manifest ``have`` of a clone against its SOURCE manifest ``src`` (seal())."""
+    a, b = {e[1]: e for e in src}, {e[1]: e for e in have}
+    missing, added = sorted(set(a) - set(b)), sorted(set(b) - set(a))
+    both = sorted(set(a) & set(b))
+    kinds = [p for p in both if a[p][0] != b[p][0] or (a[p][0] == 'l' and a[p][4] != b[p][4])]
+    files = [p for p in both if a[p][0] == b[p][0] == 'f']
+    written = [p for p in files if a[p][2:4] != b[p][2:4]]
+    compared = [p for p in files if a[p][2:4] == b[p][2:4] and a[p][5] and b[p][5]]
+    differ = [p for p in compared if a[p][5] != b[p][5]]
+    counts = {'n_source': len(a), 'n_compared': len(compared), 'differ': len(differ), 'written': len(written),
+              'removed': len(missing), 'added': len(added), 'links_or_kinds': len(kinds), 'strict': bool(strict)}
+    bad = bool(differ) or (strict and bool(missing or added or kinds or written))
+    detail = (f'{len(differ)} of {len(compared)} files with the source\'s size and modification time have other content '
+              f'(sha256; e.g. {differ[:3]}); since the snapshot {len(written)} written (e.g. {written[:3]}), {len(missing)} '
+              f'removed (e.g. {missing[:3]}), {len(added)} added (e.g. {added[:3]}), {len(kinds)} links or kinds changed (e.g. '
+              f'{kinds[:3]})' + (' - none may differ in a conversion' if strict else ''))
+    return not bad, detail, counts
 
 
 # ---- the switch -------------------------------------------------------------------------------------------------------
@@ -805,7 +927,7 @@ def seal_adopted(v, note=''):
     if old.get('state') != 'adopted' or old.get('version') != v.vid:
         raise Refusal(f'version {v.vid}: state {old.get("state")!r}, not adopted - not sealed as adopted')
     mutable, rules = list(_S().RUN_VERSIONS_MUTABLE), hash_rules()
-    entries, stats = _manifest(v.run, mutable, rules, 'the seal of the adopted run')
+    entries, stats, _ = _manifest(v.run, mutable, rules, 'the seal of the adopted run')
     rec = {k: old[k] for k in ('adopted_utc', 'adopted_by', 'adopted_from', 'pointer_was_link') if k in old}
     rec.update({'format': FORMAT, 'name': v.name, 'version': v.vid, 'state': 'sealed', 'adopted': True, 'sealed_utc': _utc(),
                 'sealed_by': me(note), 'builder': None, 'n_files': sum(1 for e in entries if e[0] == 'f'),
@@ -816,12 +938,13 @@ def seal_adopted(v, note=''):
     return rec
 
 
-def switch(U, v, note='', record=None):
+def switch(U, v, note='', record=None, to_work=False):
     """Point U at version ``v`` atomically: verify(v, record) (a refusal switches nothing; ``record``: the record seal()
     returned to this caller, whose walk stands for the switch's), then a new link under a temporary name renamed over U. The
-    first switch of a legacy run adopts it first (see ADOPTION; the caller then calls seal_adopted, outside the lock).
-    Returns {'previous': Version or None, 'current': Version, 'adopted': Version or None, 'verify': detail}. Refusal when
-    ``v`` is not a version of U's root."""
+    first switch of a legacy run adopts it first (see ADOPTION; the caller then calls seal_adopted, outside the lock) - or,
+    with ``to_work`` (CONVERSION, WORK), moves it to U's work directory instead (``v`` is then its clone). Returns
+    {'previous': Version or None, 'current': Version, 'adopted': Version or None, 'verify': detail, 'converted': the work
+    directory or None}. Refusal when ``v`` is not a version of U's root."""
     _guard(U, 'the pointer')
     name = os.path.basename(os.path.normpath(U))
     if v.name != name:
@@ -836,9 +959,13 @@ def switch(U, v, note='', record=None):
         prev, adopted = served(U), None
         if prev is not None and prev.vid == v.vid:
             raise Refusal(f'{U} already names version {v.vid}')
+        converted = None
         if prev is None and os.path.lexists(U):
-            adopted, _, real = _adopt(U, v.root)
-            prev = adopted
+            if to_work:                                # CONVERSION: the legacy run becomes U's work directory
+                real = converted = _to_work(U, v.root)
+            else:
+                adopted, _, real = _adopt(U, v.root)
+                prev = adopted
         tmp = os.path.join(os.path.dirname(os.path.abspath(U)), f'.{name}.pointer.{os.getpid()}')
         try:
             if os.path.lexists(tmp):
@@ -848,7 +975,7 @@ def switch(U, v, note='', record=None):
         except BaseException as e:                     # U does not point at v: an adopted run goes back where it was
             with contextlib.suppress(OSError):
                 os.unlink(tmp)
-            undo = _unadopt(adopted, real) if adopted is not None else None
+            undo = _unadopt(adopted, real) if adopted is not None else (_unwork(U, v.root, real) if converted else None)
             if not isinstance(e, Exception):           # an interrupt stays an interrupt; what was not undone is printed
                 if undo:
                     print(f'versions: {undo}', file=sys.stderr, flush=True)
@@ -859,8 +986,10 @@ def switch(U, v, note='', record=None):
             raise
         _append_jsonl(os.path.join(v.root, 'POINTER_LOG.jsonl'),
                       {'utc': _utc(), 'pointer': os.path.abspath(U), 'from': prev.vid if prev else None, 'to': v.vid,
-                       'adopted': adopted.vid if adopted else None, 'by': me(note)})
-    return {'previous': prev, 'current': v, 'adopted': adopted, 'verify': detail}
+                       'adopted': adopted.vid if adopted else None, 'by': me(note),
+                       **({'converted_from': converted, 'work': work_path(U)} if converted else {})})
+    return {'previous': prev, 'current': v, 'adopted': adopted, 'verify': detail,
+            'converted': work_path(U) if converted else None}
 
 
 def publish(U, v, required=(), checks=(), note=''):
@@ -877,6 +1006,401 @@ def publish(U, v, required=(), checks=(), note=''):
         except (Refusal, OSError) as e:
             out['adopted_record'], out['adopted_error'] = None, str(e)
     return out
+
+
+# ---- the work directory and its writers (WORK) ------------------------------------------------------------------------
+WORK = 'work'                      # R/work/<name>: the work directory of a run whose steps write it over many invocations
+_WRITER = {}                       # versions root -> descriptor of the writer lock this writer process holds SHARED until it ends
+_EXCL = {}                         # versions root -> descriptor of the writer lock a snapshot or conversion holds EXCLUSIVE
+
+
+def work_path(U):
+    """R/<WORK>/<name>, the work directory of U (whether or not it exists)."""
+    return os.path.join(root_of(U), WORK, os.path.basename(os.path.normpath(U)))
+
+
+def work_root(path):
+    """The versions root R when ``path`` is the work directory R/<WORK>/<name> of a run (R = <dir>/<name><suffix>, an existing
+    directory), else None."""
+    p = os.path.normpath(os.path.abspath(path))
+    d, name = os.path.split(p)
+    R = os.path.dirname(d)
+    if os.path.basename(d) == WORK and os.path.basename(R) == name + _suffix() and os.path.isdir(R):
+        return R
+    return None
+
+
+def writer_lock_file(R):
+    """THE WRITER LOCK of the run whose versions root is R: <dir of R>/.<name><suffix>.writer.lock, BESIDE R, never in it - the
+    same file before a conversion makes R and after it, so the writer steps of the legacy run and of its work directory, the
+    conversion and every snapshot lock one file. A writer step holds it SHARED until it ends (writer steps never exclude one
+    another, as before); a snapshot or a conversion holds it EXCLUSIVE for its block (no writer step writes the run while it is
+    read, cloned or moved)."""
+    R = os.path.realpath(R)
+    return os.path.join(os.path.dirname(R), '.' + os.path.basename(R) + '.writer.lock')
+
+
+def _flock_wait(fd, mode, path, what):
+    """flock ``fd`` (LOCK_SH or LOCK_EX), waiting at most serve.WRITER_LOCK_WAIT_S and saying so when it has to wait; then
+    GATE G32 (Refusal; the caller closes ``fd``)."""
+    try:
+        fcntl.flock(fd, mode | fcntl.LOCK_NB)
+        return
+    except BlockingIOError:
+        pass
+    wait = float(_S().WRITER_LOCK_WAIT_S)
+    holder = 'a snapshot or a conversion' if mode == fcntl.LOCK_SH else 'a writer step'
+    print(f'versions: {what} waits up to {wait:.0f} s for the writer lock {path} ({holder} holds it)', file=sys.stderr,
+          flush=True)
+    end = time.time() + wait
+    while True:
+        try:
+            fcntl.flock(fd, mode | fcntl.LOCK_NB)
+            return
+        except BlockingIOError:
+            left = end - time.time()
+            if left <= 0:
+                raise Refusal(f'G32 writer lock: {what} waited {wait:g} s (serve.WRITER_LOCK_WAIT_S) for the writer lock '
+                              f'{path}, which {holder} still holds - nothing written') from None
+            time.sleep(min(0.5, left))
+
+
+def hold_writer(R):
+    """A WRITER STEP's lock of the run whose versions root is R: its writer lock (writer_lock_file) SHARED, taken once and kept
+    until this process ends; G32 after serve.WRITER_LOCK_WAIT_S. Close-on-exec (two_port.open_lock): the step's child processes
+    write while the step waits for them; none inherits it. Returns the lock file."""
+    R = os.path.realpath(R)
+    path = writer_lock_file(R)
+    if R not in _WRITER:
+        fd = _open_lock(path)
+        try:
+            _flock_wait(fd, fcntl.LOCK_SH, path, f'the writer step pid {os.getpid()}')
+        except BaseException:
+            os.close(fd)
+            raise
+        _WRITER[R] = fd
+    return path
+
+
+@contextlib.contextmanager
+def writer_lock(U, what=None):
+    """U's writer lock EXCLUSIVE for the block (a snapshot, a conversion): it waits for the writer steps to end (G32 after
+    serve.WRITER_LOCK_WAIT_S) and none starts meanwhile. Nested in this process: the outer block's. Refusal in a process that
+    holds the lock shared (a writer step does not also snapshot its own run)."""
+    R = os.path.realpath(root_of(U))
+    if R in _EXCL:
+        yield
+        return
+    if R in _WRITER:
+        raise Refusal(f'this process is a writer step of {U} (it holds its writer lock shared): it does not also snapshot or '
+                      f'convert the run')
+    path = writer_lock_file(R)
+    fd = _open_lock(path)
+    try:
+        _flock_wait(fd, fcntl.LOCK_EX, path, what or f'the snapshot of {U}')
+    except BaseException:
+        os.close(fd)
+        raise
+    _EXCL[R] = fd
+    try:
+        yield
+    finally:
+        del _EXCL[R]
+        with contextlib.suppress(OSError):
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
+def writable(U, lock=True):
+    """THE DIRECTORY A WRITER OF RUN U WRITES, and reads its own products from (WORK): when U is a pointer, its work directory
+    (Refusal when it has none: a run its builder places - Run_SLSTB, the per-LST runs - is never written in place); else U
+    itself (a legacy run, written in place as before; serve --tier deep --stages convert makes the deep run a versioned one).
+    With ``lock`` the writer lock is taken SHARED first and kept until this process ends (hold_writer: the same file before and
+    after a conversion), and U is resolved after it: a writer step that waited for a conversion writes the work directory the
+    conversion made, never the version U names now."""
+    def no_work():
+        if is_pointer(U) and not os.path.isdir(work_path(U)):
+            raise Refusal(f'{U} is a versioned run without a work directory {work_path(U)}: its versions are placed whole by '
+                          f'its builder and never written in place - nothing written')
+    no_work()                                          # before any lock
+    if lock:
+        hold_writer(work_root(U) or root_of(U))
+        no_work()
+    return work_path(U) if is_pointer(U) else os.path.abspath(U)
+
+
+def reads(U):
+    """The directory a step that writes run U reads U's own earlier products from: writable(U) without its lock."""
+    return writable(U, lock=False)
+
+
+def convertible(out):
+    """True when ``out`` is a run that is, or may become, a versioned run with a work directory: one whose versions root or
+    writer lock file exists, or a run directly in the deep served-run root (paths[serve.RUN_ROOT_KEY['deep']]: the runs serve
+    --tier deep converts). Its writer steps take its writer lock whether or not it is converted yet."""
+    R = root_of(out)
+    if os.path.isdir(R) or os.path.exists(writer_lock_file(R)):
+        return True
+    from exopipe.phase3.config import CFG
+    key = (_S().RUN_ROOT_KEY or {}).get('deep')
+    root = getattr(CFG.paths, key, None) if key else None
+    return bool(root) and os.path.realpath(os.path.dirname(os.path.abspath(out))) == os.path.realpath(root)
+
+
+def writer_lock_of(out):
+    """The writer lock file (writer_lock_file) a writer step with the output directory ``out`` takes (writer_out), else None.
+    The injected-run guard allows that one file (cli, core/injected.begin): it lies beside the run, outside its --out."""
+    if is_pointer(out) or work_root(out) or convertible(out):
+        return writer_lock_file(work_root(out) or root_of(out))
+    return None
+
+
+def writer_out(out, lock=True):
+    """A writer step's output directory (cli.main, before its record is made): a versioned run's pointer is written through
+    its work directory (Refusal for a pointer without one); a work directory given as the output, and a run that may be
+    converted (convertible), take the writer lock (writable); any other directory is returned unchanged. ``lock`` False (a dry
+    run, and cli's resolution before its guards): the directory only."""
+    if is_pointer(out) or work_root(out) or convertible(out):
+        return writable(out, lock=lock)
+    return out
+
+
+def _probe_reflink(d):
+    """True when the file system of directory ``d`` makes copy-on-write clones (cp --reflink=always of a probe file)."""
+    a = os.path.join(d, f'.reflink_probe_{os.getpid()}')
+    b = a + '.clone'
+    try:
+        with open(a, 'wb') as f:
+            f.write(b'\0' * 4096)
+        r = subprocess.run(['cp', '--reflink=always', a, b], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return r.returncode == 0
+    finally:
+        for p in (a, b):
+            with contextlib.suppress(OSError):
+                os.unlink(p)
+
+
+def clone(src, dst):
+    """Copy the run directory ``src`` into the empty directory ``dst``: a COPY-ON-WRITE CLONE (cp -a --reflink=always: each
+    file its own inode sharing src's data blocks until one of them is written, so a later write to either never reaches the
+    other; no data is copied) where the file system makes them; elsewhere a full copy (cp -a) only of a run of at most
+    serve.RUN_VERSIONS_COPY_MAX_BYTES, else Refusal (nothing copied: a large run is never duplicated in full). Modes,
+    modification times and hard links within the run are kept. Returns {'method', 'seconds', 'bytes' (a full copy)}."""
+    if not os.path.isdir(src) or os.listdir(dst):
+        raise Refusal(f'clone {src} -> {dst}: no source directory, or the destination is not empty')
+    t0, out = time.time(), {}
+    if _probe_reflink(dst):
+        cmd = ['cp', '-a', '--reflink=always', src.rstrip('/') + '/.', dst.rstrip('/') + '/']
+        out['method'] = 'reflink'
+    else:
+        cap = int(_S().RUN_VERSIONS_COPY_MAX_BYTES)
+        n = sum(e[2] for e in walk(src) if e[0] == 'f')
+        if n > cap:
+            raise Refusal(f'{dst} is on a file system without copy-on-write clones and {src} holds {n} bytes, over '
+                          f'serve.RUN_VERSIONS_COPY_MAX_BYTES ({cap} bytes): it is not copied in full - nothing cloned')
+        cmd = ['cp', '-a', src.rstrip('/') + '/.', dst.rstrip('/') + '/']
+        out.update(method='copy', bytes=n)
+    r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
+    if r.returncode != 0:
+        raise Refusal(f'clone {src} -> {dst} failed ({" ".join(cmd[:3])}, rc {r.returncode}): {r.stdout[-400:]}')
+    out['seconds'] = round(time.time() - t0, 1)
+    return out
+
+
+def same_content(src, run, exclude=(), stats=None):
+    """(ok, detail): ``run`` holds exactly the files and links of ``src`` (relative paths matching a pattern of ``exclude``
+    left out on both sides, and the mutable review state of RUN_VERSIONS_MUTABLE), every link with src's target, every file
+    with src's size, and the same sha256 in both for every file the content rules re-hash (CONTENT): every file not a
+    binary and the stable sample of the binaries. Reads both. ``stats`` receives the counts and the bytes read."""
+    rules = hash_rules()
+    skip = tuple(exclude) + tuple(_S().RUN_VERSIONS_MUTABLE)
+    a, b = {e[1]: e for e in walk(src, skip)}, {e[1]: e for e in walk(run, skip)}
+    missing, added = sorted(set(a) - set(b)), sorted(set(b) - set(a))
+    both = sorted(set(a) & set(b))
+    kinds = [p for p in both if a[p][0] != b[p][0] or (a[p][0] == 'l' and a[p][4] != b[p][4])]
+    files = [p for p in both if a[p][0] == b[p][0] == 'f']
+    sizes = [p for p in files if a[p][2] != b[p][2]]
+    small = {p for p in files if is_small(p, a[p][2], rules)}
+    sample = large_sample([p for p in files if p not in small], rules)
+    differ, nbytes = [], 0
+    for p in sorted((small | sample) - set(sizes)):
+        if sha256_file(os.path.join(src, p)) != sha256_file(os.path.join(run, p)):
+            differ.append(p)
+        nbytes += 2 * a[p][2]
+    st = {'n_files': len(files), 'n_small': len(small), 'n_sample': len(sample), 'n_binaries': len(files) - len(small),
+          'bytes_read': nbytes}
+    if stats is not None:
+        stats.update(st)
+    if missing or added or kinds or sizes or differ:
+        return False, (f'{run} is not {src}: {len(missing)} missing (e.g. {missing[:3]}), {len(added)} added (e.g. '
+                       f'{added[:3]}), {len(kinds)} links or kinds differ (e.g. {kinds[:3]}), {len(sizes)} sizes differ (e.g. '
+                       f'{sizes[:3]}), {len(differ)} with other content (sha256; e.g. {differ[:3]})')
+    return True, (f'{run} holds the {len(files)} files and the links of {src}; sha256 equal for {len(small)} files not '
+                  f'binaries and the stable sample of {len(sample)} of {len(files) - len(small)} binaries ({nbytes} bytes '
+                  f'read)')
+
+
+SOURCE_MANIFEST = 'SOURCE_MANIFEST.tsv'      # R/<vid>/: the manifest of a snapshot's source, read under the writer lock
+
+
+def add_failure(e, text):
+    """Add ``text`` to the message of the exception ``e`` (re-raised by the caller: the original failure is never masked)."""
+    if isinstance(e, OSError) and e.strerror is not None:     # OSError's text is errno + strerror, not its args
+        e.strerror = f'{e.strerror}{text}'
+    elif e.args and isinstance(e.args[0], str):
+        e.args = (e.args[0] + text,) + tuple(e.args[1:])
+    else:
+        e.args = (f'{e}{text}',)
+
+
+def snapshot(U, src, note=''):
+    """A new unsealed version of U whose run is a clone of ``src`` (U's work directory, or the legacy run being converted).
+    Under U's writer lock EXCLUSIVE (writer_lock: no writer step writes ``src`` meanwhile): ONE read of ``src`` - its manifest
+    (CONTENT: the walk and the sha256 of every file the rules hash) - and the clone; then the lock is released. That manifest
+    is the version's SOURCE_MANIFEST.tsv, and the version's seal tests the clone against it (seal(): the clone is its source),
+    so ``src`` is read once, under the lock, and the clone once, by the seal. The clone is never rewritten: a log or another
+    file nothing serves keeps what its writer wrote (the work directory's path included; the coordinator, PR 170), and the
+    seal's G33 refuses a version in which what the pages read names it (SERVED_READS).
+    Returns (Version, {'clone', 'source': the read's statistics, 'lock_wait_s', 'lock_s'}). Any failure discards the version;
+    a discard that fails too is added to the failure's text (add_failure), never in its place."""
+    v = begin(U, note)
+    try:
+        t0 = time.time()
+        with writer_lock(U):
+            t1 = time.time()
+            entries, st, _ = _manifest(src, list(_S().RUN_VERSIONS_MUTABLE), hash_rules(), 'the snapshot')
+            info = {'clone': clone(src, v.run)}
+            t2 = time.time()
+        info.update(source=st, lock_wait_s=round(t1 - t0, 1), lock_s=round(t2 - t1, 1))
+        _write_manifest(v, entries, SOURCE_MANIFEST)
+    except BaseException as e:
+        try:
+            discard(v, note=f'{note}: the snapshot failed')
+        except Exception as e2:                        # noqa: BLE001 - added to the failure, which is raised
+            add_failure(e, f' - AND version {v.vid} could not be discarded ({e2}): retention retires it')
+        raise
+    return v, info
+
+
+def discard(v, note=''):
+    """Remove a version that was never served - a snapshot or placement whose build refused: unsealed, or sealed and never
+    switched to (ever_served). It is renamed out of R's names first (R/.retiring_<vid>), then deleted, and logged in
+    R/RETIRE_LOG.jsonl. Refusal for a version that was served."""
+    _guard(v.run, 'a version of')
+    if v.record() is not None and ever_served(v):
+        raise Refusal(f'version {v.vid} was served (POINTER_LOG.jsonl or a link): it stays a version')
+    renew_stop(v.path('BUILDING.json'))
+    gone = os.path.join(v.root, f'.retiring_{v.vid}')
+    os.rename(v.dir, gone)
+    shutil.rmtree(gone)
+    _append_jsonl(os.path.join(v.root, 'RETIRE_LOG.jsonl'), {'utc': _utc(), 'version': v.vid, 'discarded': True,
+                                                             'by': me(note)})
+
+
+def _to_work(U, R):
+    """CONVERSION (switch with to_work): move the legacy run U (a directory, or a link to one) to its work directory
+    R/<WORK>/<name>; returns the directory it was moved from. The caller holds R's lock and writes the pointer right after;
+    _unwork undoes it. Refusal, nothing moved: not a directory, another file system, a work directory already there."""
+    real = os.path.realpath(U)
+    W = os.path.join(R, WORK, os.path.basename(os.path.normpath(U)))
+    if not os.path.isdir(real):
+        raise Refusal(f'{U} is neither a pointer nor a run directory - nothing switched')
+    if os.path.lexists(W):
+        raise Refusal(f'{W} exists already: {U} is not converted twice - nothing switched')
+    os.makedirs(os.path.dirname(W), exist_ok=True)
+    if os.stat(real).st_dev != os.stat(os.path.dirname(W)).st_dev:
+        raise Refusal(f'{real} is not on the file system of the versions root {R} - nothing switched')
+    try:
+        os.rename(real, W)
+    except OSError as e:
+        raise Refusal(f'{real} could not be moved to {W} ({e}) - nothing switched, {U} unchanged') from None
+    return real
+
+
+def _unwork(U, R, real):
+    """Undo _to_work: the work directory moved back to ``real``. Returns None, or the text of what could not be undone."""
+    W = os.path.join(R, WORK, os.path.basename(os.path.normpath(U)))
+    try:
+        os.rename(W, real)
+    except OSError as e:
+        return f'the legacy run could not be moved back: it is {W}; move it back to {real} by hand ({e})'
+    return None
+
+
+def unshare_mutable(run):
+    """Give every file of ``run`` matching serve.RUN_VERSIONS_MUTABLE (the review state appended in place while a version is
+    served) its own inode when it is hard-linked (a placement's --link-dest): an append to it then never reaches another
+    version. Returns the relative paths copied."""
+    pats, out = tuple(_S().RUN_VERSIONS_MUTABLE), []
+    for dp, _dn, fns in os.walk(run):
+        for fn in fns:
+            p = os.path.join(dp, fn)
+            rel = os.path.relpath(p, run)
+            if not any(fnmatch.fnmatchcase(rel, m) for m in pats) or os.path.islink(p) or os.lstat(p).st_nlink < 2:
+                continue
+            tmp = f'{p}.unshare.{os.getpid()}'
+            shutil.copy2(p, tmp)
+            os.replace(tmp, p)
+            out.append(rel)
+    return sorted(out)
+
+
+def stamp(U):
+    """What U is now, for a reader that reads U by its name over a while (a script given the path) and must know afterwards
+    that it read one version: (link target or 'dir', inode, change time in ns) of U itself (lstat); every switch writes a new
+    link (a new inode), so any switch in between - also away and back - changes it. None when U does not exist. A directory
+    (a legacy run): ('dir', inode, None) - its change time moves whenever an entry is made in it (a log), which is no switch;
+    its adoption (a link in its place) changes the stamp."""
+    try:
+        st = os.lstat(U)
+    except FileNotFoundError:
+        return None
+    if not os.path.islink(U):
+        return ('dir', st.st_ino, None)
+    return (os.readlink(U), st.st_ino, st.st_ctime_ns)
+
+
+@contextlib.contextmanager
+def pinned(Us, note=''):
+    """Hold the version each run of ``Us`` names (hold) for the block: yields {U: (run directory held, stamp)}. The stamp is
+    taken after the hold and must name the held run (else the hold is taken again; Refusal after three tries: U is being
+    switched without pause). With moved() the caller learns afterwards whether any U was switched in the block - a reader
+    that read U by its name then read more than one version."""
+    with contextlib.ExitStack() as st:
+        out = {}
+        for U in Us:
+            for _ in range(3):
+                held = contextlib.ExitStack()
+                d = held.enter_context(hold(U, note=note))
+                s = stamp(U)
+                if os.path.realpath(U) == os.path.realpath(d):
+                    st.push(held.pop_all())
+                    out[U] = (d, s)
+                    break
+                held.close()
+            else:
+                raise Refusal(f'{U} was switched three times while its version was held - not pinned')
+        yield out
+
+
+def moved(pins):
+    """[U] of ``pins`` (pinned()'s dict) whose pointer changed since it was pinned (stamp)."""
+    return [U for U, (_d, s) in pins.items() if stamp(U) != s]
+
+
+def journal_dirs(*runs):
+    """The judgement journal directories (relative to the run) of ``runs``: every directory of the journal patterns of
+    serve.RUN_VERSIONS_MUTABLE (those naming a judgements.jsonl) that holds one in any of them, sorted."""
+    pats = [m for m in _S().RUN_VERSIONS_MUTABLE if m.endswith('/judgements.jsonl')]
+    out = set()
+    for r in runs:
+        if not r or not os.path.isdir(r):
+            continue
+        for d in os.listdir(r):
+            if os.path.isfile(os.path.join(r, d, 'judgements.jsonl')) and \
+                    any(fnmatch.fnmatchcase(f'{d}/judgements.jsonl', m) for m in pats):
+                out.add(d)
+    return sorted(out)
 
 
 # ---- holds ------------------------------------------------------------------------------------------------------------
@@ -952,7 +1476,7 @@ def refuse_owed(U, what):
     if rec is not None:
         raise Refusal(f'{what}: {U} owes the catch-up of the journal lines of version {rec.get("from_version")} into '
                       f'{rec.get("to_version")} (failed {rec.get("utc")}: {str(rec.get("error"))[:200]}; '
-                      f'{os.path.join(root_of(U), OWED_FILE)}) - the next serve --tier sublst retries it first')
+                      f'{os.path.join(root_of(U), OWED_FILE)}) - the next serve of the run (--tier sublst or deep) retries it first')
 
 
 def owe_catchup(U, rec):

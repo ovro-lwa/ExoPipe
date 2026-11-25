@@ -139,11 +139,12 @@ def hold_check(old, new, reader=None):
     return notfp, n
 
 
-def sublst_copy_journals(src_run, B):
-    """mkdir -p B/J; cp -p src/J/judgements.jsonl B/J/ for every journal (sublst_cumulative.sh:98-100). Returns the copied
-    paths [(source, copy)]."""
+def sublst_copy_journals(src_run, B, journals=None):
+    """mkdir -p B/J; cp -p src/J/judgements.jsonl B/J/ for every journal (sublst_cumulative.sh:98-100; ``journals``: the
+    journal directories, default serve.SUBLST_JOURNALS - the deep run's are versions.journal_dirs). Returns the copied paths
+    [(source, copy)]."""
     out = []
-    for J in _S().SUBLST_JOURNALS:
+    for J in (_S().SUBLST_JOURNALS if journals is None else journals):
         os.makedirs(os.path.join(B, J), exist_ok=True)
         a = os.path.join(src_run, J, 'judgements.jsonl')
         if os.path.isfile(a):
@@ -252,11 +253,11 @@ def sublst_carry_between(P, U, marks, maps=None):
     return out
 
 
-def append_between(P, U):
-    """Append to U's journals the lines of P's journals they lack (exact lines, journal order; sublst_cumulative.sh:110-119).
-    Returns {journal: n appended}."""
+def append_between(P, U, journals=None):
+    """Append to U's journals the lines of P's journals they lack (exact lines, journal order; sublst_cumulative.sh:110-119;
+    ``journals`` as sublst_copy_journals). Returns {journal: n appended}."""
     out = {}
-    for J in _S().SUBLST_JOURNALS:
+    for J in (_S().SUBLST_JOURNALS if journals is None else journals):
         a, b = os.path.join(P, J, 'judgements.jsonl'), os.path.join(U, J, 'judgements.jsonl')
         if not os.path.exists(a):
             continue
