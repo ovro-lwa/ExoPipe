@@ -548,6 +548,21 @@ def test_end_to_end(tmp):
     glog = os.path.join(outR, '_records', '_parity_guard_refusals.log')
     check('record stage alone: parity guard - no write outside --out/--work/TMPDIR//tmp',
           not os.path.exists(glog) or not open(glog).read().strip())
+    # --- R3: no file to carry MDWSTAT refuses G-R3 BEFORE the applied=0 row (the row would end the cell's routing)
+    from exopipe.phase3.core import record as _record
+    from exopipe.phase3.lib.dewarp import steps_cell as SCL
+    out3 = os.path.join(tmp, 'outR3')
+    csv3 = seed_record(out3, ('32MHz',))
+    roots3 = SC.Roots(types.SimpleNamespace(out=out3, work=None), types.SimpleNamespace(out_root=out3, run_id='r3'))
+    roots3.rebuild = os.path.join(tmp, 'promoted_empty')
+    os.makedirs(os.path.join(roots3.rebuild, f'{LST}_32MHz', 'coadd_final'))
+    before3 = open(csv3).read()
+    run3 = _record.Run('dewarp', ['test'], out3, CFG, dry_run=True)
+    with run3.unit(f'{LST}_32MHz') as u3:
+        SCL.record(u3, roots3, f'{LST}_32MHz', SC.Measurement(r['meas'], LST).final_row('32MHz'))
+    check('G-R3: no promoted *_deep_*.fits refuses before the applied=0 row (the record file unchanged)',
+          u3.status == 'refused' and 'G-R3' in (u3.reason or '') and open(csv3).read() == before3,
+          f'{u3.status}: {(u3.reason or "")[:120]}')
     # --- B: apply, verify, record on five cells (parity guard on)
     outB = os.path.join(tmp, 'outB')
     seed_record(outB, ('27MHz', '32MHz', '36MHz', '46MHz'))       # routing (default 'screen_record'): 41 MHz not routed

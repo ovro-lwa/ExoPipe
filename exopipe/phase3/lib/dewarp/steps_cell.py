@@ -222,7 +222,8 @@ def verify(u, run, args, roots, cell, meas, gen):
 
 
 def record(u, roots, cell, row):
-    """G-R1, then the applied=0 row (phase3_install._screen_row in place, flock-guarded). The record file is install's class
+    """G-R1 and G-R3, then the applied=0 row (phase3_install._screen_row in place, flock-guarded), then MDWSTAT on the
+    promoted masters (stamp_mdwstat; dewarp_lst.sh:119-131 writes it after the row too). The record file is install's class
     'screen_table' (crosscheck 4.2: one class, owned by install); this unit's own row is checked inline ('dewarp.record_row':
     exactly one row for the cell, applied=0, the status as written)."""
     import csv
@@ -240,6 +241,9 @@ def record(u, roots, cell, row):
         probe = os.path.dirname(probe)
     if not os.access(probe, os.W_OK):
         u.refuse(f'G-R1: the archive record directory {sdir} is not writable ({probe})')
+    if not SC.mdwstat_files(roots, cell):       # G-R3 before any write: the applied=0 row ends the cell's routing
+        u.refuse(f'G-R3: no {c.MDWSTAT_FILES} in {os.path.join(roots.rebuild, cell, "coadd_final")}: the masters the '
+                 f'install takes would carry no MDWSTAT')
     # the record file is this stage's OUTPUT (one row replaced, INS._screen_row): it is not fingerprinted as an input (it
     # would make the unit stale the moment it is written); the row it replaces is kept in the record instead
     u.meta['screen_row_replaced'] = SC.routing_row(roots, cell)
@@ -270,18 +274,17 @@ def stamp_mdwstat(u, roots, cell, row):
     (Header.set: a card already there takes the new value in place, else it is appended). Each file is then validated
     (standard header, validate=True) and the card read back ('dewarp.mdwstat', refuses on failure). No file to write refuses
     (G-R3: an install of masters without the card would follow). The files, the value each held before and their md5 after
-    the write are kept in the record (meta.mdwstat)."""
-    import glob
+    the write are kept in the record (meta.mdwstat). record() checks G-R3 before it writes the applied=0 row."""
     import warnings
     from astropy.io import fits
     from exopipe.common.validate_fits_headers import validate_header
     from exopipe.phase3.core.record import fits_primary_cards
     c = SC.C()
     value = SC.mdwstat_not_accepted(row)
-    final = os.path.join(roots.rebuild, cell, 'coadd_final')
-    files = sorted(glob.glob(os.path.join(final, c.MDWSTAT_FILES)))
+    files = SC.mdwstat_files(roots, cell)
     if not files:
-        u.refuse(f'G-R3: no {c.MDWSTAT_FILES} in {final}: the masters the install takes would carry no MDWSTAT')
+        u.refuse(f'G-R3: no {c.MDWSTAT_FILES} in {os.path.join(roots.rebuild, cell, "coadd_final")}: the masters the '
+                 f'install takes would carry no MDWSTAT')
     done = []
     for p in files:
         before = fits_primary_cards(p).get('MDWSTAT')

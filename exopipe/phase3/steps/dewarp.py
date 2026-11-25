@@ -207,7 +207,6 @@ def _mb(p):
 
 
 def _dry_run(args, run, roots, stages, gate_bad, gw, staging, plan, refused, route_src):
-    import glob
     from exopipe.phase3.lib.dewarp import steps_common as SC, steps_measure as SM
     from exopipe.phase3.lib.dewarp import master_dewarp as MD
     c, CFG = SC.C(), SC.cfg()
@@ -292,7 +291,7 @@ def _dry_run(args, run, roots, stages, gate_bad, gw, staging, plan, refused, rou
                     pr(f'      WOULD REFUSE - {why}')
                     would.append(why)
                 if not acc and 'record' in stages:   # the record stage's MDWSTAT card (steps_cell.stamp_mdwstat, G-R3)
-                    nmd = len(glob.glob(os.path.join(roots.rebuild, cell, 'coadd_final', c.MDWSTAT_FILES)))
+                    nmd = len(SC.mdwstat_files(roots, cell))
                     pr(f'      record: MDWSTAT {SC.mdwstat_not_accepted(row)!r} on {nmd} promoted '
                        f'coadd_final/{c.MDWSTAT_FILES}' + ('' if nmd else ' - WOULD REFUSE (G-R3: no file)'))
                     if not nmd:
@@ -319,7 +318,7 @@ def _dry_run(args, run, roots, stages, gate_bad, gw, staging, plan, refused, rou
                 would.append(str(e))
             pr(f'      if accepted: {gen} (dewarped_master; D1-D6 via {cmg})'
                + (' - EXISTS: G-A3 refuses without --fresh' if exists and 'apply' in stages else ''))
-            nmd = len(glob.glob(os.path.join(roots.rebuild, cell, 'coadd_final', c.MDWSTAT_FILES)))
+            nmd = len(SC.mdwstat_files(roots, cell))
             pr(f'      if not accepted: applied=0 row in {roots.record_csv} (screen_table); MDWSTAT on {nmd} '
                f'{roots.rebuild}/{cell}/coadd_final/{c.MDWSTAT_FILES}; install kind rebuild {roots.rebuild}/{cell}')
             if not nmd and 'record' in stages and (meas is None or not meas.exists()):

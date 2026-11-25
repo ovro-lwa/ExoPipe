@@ -694,6 +694,12 @@ def not_accepted_row(lst, scope, row, written_utc):
                 measured_at=r.get('measured_at', ''), written_utc=written_utc)
 
 
+def mdwstat_files(roots, cell):
+    """The files the record stage writes MDWSTAT on: <REBUILD_ROOT>/<cell>/coadd_final/<dewarp.MDWSTAT_FILES>, sorted."""
+    import glob
+    return sorted(glob.glob(os.path.join(roots.rebuild, cell, 'coadd_final', C().MDWSTAT_FILES)))
+
+
 def mdwstat_not_accepted(row):
     """The MDWSTAT card value of a routed cell that is NOT accepted, from its final table row (R-GREGG-20261111-MDWSTAT-CARD,
     the ruling row: "MDWSTAT = 'applied' | 'refused: <reason>' (e.g. gain 3.6 arcsec < 5, median would worsen) | 'not
