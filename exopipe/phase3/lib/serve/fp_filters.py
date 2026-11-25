@@ -251,10 +251,13 @@ def installed_refusal(out):
 def write_files(out, rows, meta, counts, log=print):
     """<out>/fp_filters.csv (the note line, header, rows; csv.writer's line ends, as production) and fp_filters.json (indent 1):
     both written as .part, both content-tested (check_files; a file the page cannot read is dropped by the page silently), then
-    the json renamed into place BEFORE the CSV (the CSV is the file the page keys its rows on, so no state ever shows a CSV
-    without its json; production renamed the CSV first). On any failure the .part files are removed (and a json renamed in this
-    call, so nothing is left half-installed). Refuses when either file exists (installed_refusal); a .part left by an earlier
-    attempt that died is this step's own intermediate, removed with a note."""
+    placed together (core/placement.replace_many: each .part given the directory's rule - both files are new here - where it
+    lies, then renamed): the json renamed into place BEFORE the CSV (the CSV is the file the page keys its rows on, so no state
+    ever shows a CSV without its json; production renamed the CSV first). A placement refusal of either .part renames neither;
+    a failed CSV rename after the json's is a PlacementRefusal naming the json placed. On any failure the .part files are
+    removed, and so is the json this call renamed into place when the CSV is not installed (nothing is left half-installed).
+    Refuses when either file exists (installed_refusal); a .part left by an earlier attempt that died is this step's own
+    intermediate, removed with a note."""
     S = _S()
     why = installed_refusal(out)
     if why:
@@ -265,7 +268,7 @@ def write_files(out, rows, meta, counts, log=print):
         if os.path.lexists(p):
             log(f'fp_filters: removing {p} left by an earlier attempt that did not finish')
             os.remove(p)
-    installed = []
+    ours = None                            # the json .part's inode: the file this call renames into place
     try:
         with open(parts[0], 'x', newline='') as f:
             f.write(S.SNAPVIEW_FP_NOTE.format(factor=S.SNAPVIEW_FLOOD_FACTOR, n_failed=f'{counts["align_failed"]:,}',
@@ -279,15 +282,14 @@ def write_files(out, rows, meta, counts, log=print):
         if not ok or n != len(rows):
             raise HidesRefusal(f'the written fp_filters fail their content test ({detail}; {n} rows read back, {len(rows)} '
                                f'written) - nothing installed')
-        os.replace(parts[1], jp)
-        installed.append(jp)
-        os.replace(parts[0], cp)
-        installed.append(cp)
+        ours = os.stat(parts[1]).st_ino
+        placement.replace_many([(parts[1], jp), (parts[0], cp)])
     except BaseException:
         for p in parts:
             if os.path.lexists(p):
                 os.remove(p)
-        if installed == [jp]:              # the CSV's rename failed: take back the json this call installed
+        if (ours is not None and not os.path.lexists(cp) and os.path.lexists(jp)
+                and os.stat(jp).st_ino == ours):   # the CSV's rename failed: take back the json this call installed
             os.remove(jp)
         raise
     return cp, jp

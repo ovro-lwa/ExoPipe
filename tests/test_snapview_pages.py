@@ -444,19 +444,37 @@ def test_fp_filters():
 
     def fail_csv(a, b):
         if b.endswith('.csv'):
-            raise OSError('simulated rename failure')
+            raise OSError(5, 'simulated rename failure')     # errno EIO; the placement's text quotes the strerror
         return real_replace(a, b)
     fp_filters.os.replace = fail_csv
     try:
         fp_filters.write_files(F, good, meta, cnt, log=lambda m: None)
         raise AssertionError('a failed CSV rename was not raised')
-    except OSError as e:
-        assert 'simulated' in str(e)
+    except fp_filters.placement.PlacementRefusal as e:      # core/placement.replace_many phase 2: names the json placed
+        assert 'simulated' in str(e) and 'fp_filters.csv' in str(e) and 'already placed' in str(e), e
     finally:
         fp_filters.os.replace = real_replace
     assert not os.listdir(F), os.listdir(F)
+    # a placement refusal before any rename (phase 1: the .part cannot be given the directory's group): neither file renamed
+    PL = fp_filters.placement
+    foreign = next((g for g in (0, 1, 2, 3, 4, 65534) if g not in os.getgroups() and g != os.getegid()), None)
+    if foreign is None or os.geteuid() == 0:
+        print('UNTESTED fp_filters phase-1 placement refusal: no group this user cannot set (running as root?)')
+    else:
+        real_attrs = PL.target_attrs
+        PL.target_attrs = lambda dst, like=None: (dict(real_attrs(dst, like), gid=foreign) if dst.endswith('fp_filters.csv')
+                                                  else real_attrs(dst, like))
+        try:
+            fp_filters.write_files(F, good, meta, cnt, log=lambda m: None)
+            raise AssertionError('a placement refusal of the CSV was not raised')
+        except PL.PlacementRefusal as e:
+            assert 'none of the 2 products placed' in str(e), e
+        finally:
+            PL.target_attrs = real_attrs
+        assert not os.listdir(F), os.listdir(F)
     ok('fp_filters install: json renamed before the CSV; a dead attempt\'s .part removed with a note; CSV or json alone refused '
-       'as HALF-INSTALLED (build and write), untouched; a content-test failure or a failed CSV rename leaves nothing')
+       'as HALF-INSTALLED (build and write), untouched; a content-test failure, a failed CSV rename (a PlacementRefusal naming '
+       'the json placed, the json taken back) or a placement refusal before the renames leaves nothing')
 
     # the content test's negatives
     def bad(name, edit_csv=None, edit_json=None):

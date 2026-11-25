@@ -431,7 +431,10 @@ def stage_search(c):
 
 
 def search_job(c, job, pending, stage, jobs_path):
-    """One unit W_search_<S>_<identity>: wait for its bands' results, gate them, place the npz files (os.replace)."""
+    """One unit W_search_<S>_<identity>: wait for its bands' results, gate them, place the npz files (core/placement.replace
+    of the worker's file in the staging directory beside them: the replaced file's group, mode and ACL, or the directory's rule
+    for a new one). A placement refusal (PlacementRefusal, a record.Refusal) removes that band's staged file and is the unit's
+    refusal (recorded 'refused'): the bands placed before it stay placed."""
     from exopipe.phase3.lib.forced import wide_search as WS
     from exopipe.phase3.core import validate
     name = search_unit(job)
@@ -472,7 +475,7 @@ def search_job(c, job, pending, stage, jobs_path):
                 u.refuse_item(final, 'content test of the staged file failed: %s' % '; '.join(
                     '%s (%s)' % (t['name'], str(t['detail'])[:200]) for t in bad), gate='forced_wide_bursts')
                 continue
-            os.replace(part, final)
+            placement.replace(part, final, drop=True)
             nights.update(res['nights'])
             inputs.update(res.get('inputs') or ())
             u.add_output(final, 'forced_wide_bursts', stokes=job['stokes'], identity=job['identity'], band=b)

@@ -1524,14 +1524,17 @@ def fit_sidecar(root, label, out_dir, prev_dir=None, only_dates=None, nproc=None
     out_csv = os.path.join(out_dir, 'fit_positions.csv')
     out_json = os.path.join(out_dir, 'fit_positions_summary.json')
     cols = ['cand_id'] + fitting.DET_COLS + FIT_EXTRA
-    with open(out_csv + '.part', 'w', newline='') as f:
-        wr = csv.DictWriter(f, fieldnames=cols, extrasaction='ignore')
-        wr.writeheader()
-        wr.writerows(res[i] for i in sorted(res))
-    os.replace(out_csv + '.part', out_csv)
-    with open(out_json + '.part', 'w') as f:
-        json.dump(summ, f, indent=1)
-    os.replace(out_json + '.part', out_json)
+    # the sidecar and its summary placed together (core/placement.atomic_many: the replaced files' group, mode and ACL, or the
+    # directory's rule for new ones), the CSV renamed first. An attribute refusal places neither; a failed second rename leaves
+    # the CSV placed and names it. Either is a PlacementRefusal (a record.Refusal): the unit's refusal
+    from exopipe.phase3.core import placement
+    with placement.atomic_many([out_csv, out_json]) as tmps:
+        with open(tmps[out_csv], 'w', newline='') as f:
+            wr = csv.DictWriter(f, fieldnames=cols, extrasaction='ignore')
+            wr.writeheader()
+            wr.writerows(res[i] for i in sorted(res))
+        with open(tmps[out_json], 'w') as f:
+            json.dump(summ, f, indent=1)
     say(f"fit: {len(rows)} detections on {len(byf)} frames: {summ['kinds']}; {len(fp)} fitted, {on_ctr} on a pixel "
         f"centre; peak-fallback fraction {summ['peak_fallback_fraction']}")
     return out_csv, out_json, summ
@@ -1658,9 +1661,9 @@ def _write_report(u, out_dir, root, plan):
     p = os.path.join(out_dir, 'verify_report.json')
     rep = dict(root=root, unit=u.name, tier=TIER, written=time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
                tests=[{k: t.get(k) for k in ('name', 'passed', 'value', 'detail', 'path', 'cls')} for t in u.tests])
-    with open(p + '.part', 'w') as f:
+    from exopipe.phase3.core import placement
+    with placement.atomic(p) as tmp, open(tmp, 'w') as f:    # placed (core/placement.atomic); a refusal: the unit's
         json.dump(rep, f, indent=1, default=str)
-    os.replace(p + '.part', p)
     return p
 
 

@@ -1835,16 +1835,17 @@ def zf1(path, **ctx):
 def write_zone_flags(path, rows):
     """Write the recomputed screens (Z1) as the production flags file (test_snapshot_forced_reserve.cmd_zones :225-239):
     one row per key, the LAST of the rows in evaluation order (sb then wb, cells sorted) - production's dict 'seen' - and
-    the keys sorted."""
+    the keys sorted. Written through a temporary file beside ``path`` and placed (core/placement.atomic: the replaced file's
+    group, mode and ACL, or the directory's rule for a new one; a refusal - PlacementRefusal, a record.Refusal: the calling
+    unit records it as refused - renames nothing and removes the temporary file)."""
+    from exopipe.phase3.core import placement
     seen = {}
     for k, a, b in rows:
         seen[tuple(k)] = (a, b)
-    tmp = '%s.tmp.%d' % (path, os.getpid())
-    with open(tmp, 'w', newline='') as f:
+    with placement.atomic(path) as tmp, open(tmp, 'w', newline='') as f:
         wr = csv.writer(f)
         wr.writerow(list(ZONE_FLAG_COLUMNS))
         for k, v in sorted(seen.items()):
             wr.writerow(list(k) + list(v))
-    os.replace(tmp, path)
     return path
 

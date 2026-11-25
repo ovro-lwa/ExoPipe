@@ -21,7 +21,8 @@
   g30          the real package on the pinned rank-0 bundle (child processes: G13) with T5 replaced: T5 raising ->
                refused G30 with the partial dossier recorded and present; the same under --no-write -> refused G30
                (not no-input); T5 returning -> done
-  summary      synthetic top-50 + one evidence file: ranked summary, missing dossier row, re-score written back
+  summary      synthetic top-50 + one evidence file: ranked summary, missing dossier row, re-score written back; a
+               re-scored evidence file that cannot be placed refuses the unit (placement P5), the file unchanged
   hone         the REAL phase3_honing.py on a 2-candidate CSV: every candidate no-products (exit 3), as production today
   periodicity  fake stage scripts: lightcurves -> search (G28 refuses 1 of 24 cells; then all 24) -> page; a second
                invocation reads the first one's records through --lc-root; an unrecorded light curve refuses (G28)
@@ -759,6 +760,49 @@ def test_summary():
         assert (F._recorded(run_, tgt, 'lc3_x', [rdir]) is not None) == want, fin
 
 
+def test_summary_placement_refusal():
+    """The re-scored evidence file that cannot be placed (core/placement.PlacementRefusal: forced here by a group this user is
+    not in) refuses the summary unit with the placement's reason; it is not swallowed as a row 'no dossier / evidence.json'
+    (the handler before placement P5), the evidence file is unchanged and no temporary file is left."""
+    from exopipe.phase3.followup import candidate as CM
+    foreign = next((g for g in (0, 1, 2, 3, 4, 65534) if g not in os.getgroups() and g != os.getegid()), None)
+    if foreign is None or os.geteuid() == 0:
+        print('UNTESTED summary placement refusal: no group this user cannot set (running as root?)')
+        return
+    d = _fresh('summary_refused')
+    out = os.path.join(d, 'out')
+    top50 = os.path.join(d, 'top50.csv')
+    with open(top50, 'w', newline='') as f:
+        w = csv.DictWriter(f, fieldnames=['rank', 'ra', 'dec', 'band', 'date', 'cadence', 'lst', 'peak_snr'])
+        w.writeheader()
+        w.writerow(dict(rank=1, ra=94.9, dec=41.1, band='Red', date='2024-12-31', cadence='deep', lst='07h', peak_snr=7))
+    c1 = CM.load_top50(top50)[0]
+    cdir = os.path.join(out, 'transients', 'Run_PROD', 'candinv', c1.cand_id)
+    os.makedirs(cdir)
+    ej = os.path.join(cdir, f'{c1.cand_id}_evidence.json')
+    with open(ej, 'w') as f:
+        json.dump({'candidate': {'cand_id': c1.cand_id}, 'context': {'ateam_sep_deg': 40.0, 'elevation_deg': 60.0},
+                   'p_astro': {'p_astro': 0.123}}, f)
+    before = open(ej, 'rb').read()
+    code = ('import runpy, sys\n'
+            'from exopipe.phase3.core import placement as PL\n'
+            'real = PL.target_attrs\n'
+            'PL.target_attrs = lambda dst, like=None: (dict(real(dst, like), gid=%d) if str(dst).endswith("_evidence.json") '
+            'else real(dst, like))\n'
+            'sys.argv = ["exopipe3"] + sys.argv[1:]\n'
+            'runpy.run_module("exopipe.phase3", run_name="__main__")\n' % foreign)
+    import subprocess
+    p = subprocess.run([sys.executable, '-c', code, 'followup', 'summary', '--set',
+                        f'followup_investigate.TOP50_CSV={top50}', '--out', out, '--cores', 'none'],
+                       capture_output=True, text=True, env=dict(os.environ, PYTHONPATH=REPO), cwd=d, timeout=120)
+    r = _records(out, 'summary_investigation_summary')
+    assert r['status'] == 'refused' and r['reason'].startswith('placement:') and '_evidence.json' in r['reason'], \
+        (p.returncode, r['status'], r['reason'], p.stderr[-800:])
+    assert p.returncode != 0, p.returncode
+    assert open(ej, 'rb').read() == before and os.listdir(cdir) == [os.path.basename(ej)], os.listdir(cdir)
+    assert not os.path.exists(os.path.join(out, 'transients', 'Run_PROD', 'candinv', 'investigation_summary.csv'))
+
+
 def test_hone():
     d = _fresh('hone')
     cands = _write(os.path.join(d, 'cands.csv'), 'cand_id,lst,date,ra,dec,snr,band\n'
@@ -978,7 +1022,8 @@ def test_real_products():
 
 
 TESTS = ['test_cli', 'test_config', 'test_ep_plan', 'test_tess', 'test_real_products', 'test_investigate',
-         'test_t5_scratch', 'test_funpack', 'test_g30', 'test_summary', 'test_hone', 'test_periodicity',
+         'test_t5_scratch', 'test_funpack', 'test_g30', 'test_summary', 'test_summary_placement_refusal', 'test_hone',
+         'test_periodicity',
          'test_fold_and_source_page', 'test_negative']
 
 

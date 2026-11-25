@@ -16,9 +16,13 @@ A fetched table replaces the current one only when its content passes these chec
   - every segment of the current table that has ENDED (end < now) is in the new table unchanged (sector, orbit, start, end):
     past segments do not change, so a change there is refused for a person to look at;
   - the new table's latest end is not earlier than the current table's.
+A table that passes is installed through a temporary file beside the current one, placed (core/placement: the current table's
+group, mode and ACL, or the directory's rule for a new one). A write or rename that fails is recorded as 'install failed: ...';
+a placement refusal (the temporary file cannot be given those attributes) as 'install refused: ...'. Either way the temporary
+file is removed and the current table stays, its modification time untouched.
 Complete when, on content: the installed table's latest segment end is at least AHEAD_DAYS (14) days after now. That holds even
-when the fetch failed or the install failed (the reason is in the record) and the current table still reaches that far. Otherwise
-the step refuses, with exit status 2. Exit status 1 means the arguments or the current table are unusable.
+when the fetch failed or the install failed or was refused (the reason is in the record) and the current table still reaches
+that far. Otherwise the step refuses, with exit status 2. Exit status 1 means the arguments or the current table are unusable.
 'unchanged' and 'refused' set the table's modification time to now ("checked now"; content identity is its sha1, so nothing
 re-runs): while the reader still refreshes on its own (pages_deep.TESS_REFRESH_IN_READER True, tess_coverage.py:57-64, older
 than 7 days), it then does not re-fetch and install, with its weaker check, a table this step refused.
@@ -44,6 +48,7 @@ import re
 import sys
 import urllib.request
 
+from exopipe.phase3.core import placement
 from exopipe.phase3.config.steps.pages import pages_deep as _PD
 
 HEADER = ['Sector', 'Orbit', 'Start of Orbit', 'End of Orbit']
@@ -197,15 +202,15 @@ def refresh(table, url=URL, now=None, ahead_days=AHEAD_DAYS, fetch=None):
             elif data == cur:
                 rec['fetch'] = 'unchanged'
             else:
-                part = table + '.part'
+                # placed (core/placement.atomic: the replaced table's group, mode and ACL, or the directory's rule for a new
+                # one); on any failure the temporary file is removed and the current table stays, judged below
                 try:
-                    with open(part, 'wb') as f:
+                    with placement.atomic(table) as part, open(part, 'wb') as f:
                         f.write(data)
-                    os.replace(part, table)
-                except OSError as e:          # the current table stays and is judged below; no .part is left behind
+                except placement.PlacementRefusal as e:   # not placed: recorded as a refused install (not a crash of main)
+                    rec['fetch'] = f'install refused: {e}'[:600]
+                except OSError as e:
                     rec['fetch'] = f'install failed: {e}'[:300]
-                    if os.path.exists(part):
-                        os.remove(part)
                 else:
                     rec['fetch'] = 'installed'
                     rec['rows_before'] = len(old)

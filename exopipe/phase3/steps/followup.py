@@ -423,12 +423,13 @@ def _resumed(run, name, admitted=None, **meta):
 
 
 def _atomic_text(path, text):
+    """``text`` at ``path`` through a temporary file beside it, placed (core/placement.atomic: the replaced file's group, mode
+    and ACL, or the directory's rule for a new one; a refusal - PlacementRefusal - renames nothing, removes the temporary file
+    and is raised)."""
     d = os.path.dirname(os.path.abspath(path))
     os.makedirs(d, exist_ok=True)
-    tmp = os.path.join(d, f'.{os.path.basename(path)}.tmp.{os.getpid()}')
-    with open(tmp, 'w', newline='') as f:
+    with placement.atomic(path) as tmp, open(tmp, 'w', newline='') as f:
         f.write(text)
-    os.replace(tmp, path)
 
 
 def _read_csv(path):
@@ -994,6 +995,8 @@ def _op_summary(args, run):
                 ev['p_astro'] = SC.p_astrophysical(ev)
                 _atomic_text(ej, json.dumps(ev, indent=2, default=str))
                 rescored.append(ej)
+            except placement.PlacementRefusal:      # the re-scored evidence not placed: the unit's refusal, not a missing file
+                raise
             except Exception:
                 ev = {'error': 'no dossier / evidence.json'}
             rows.append(_summary_row(c, ev))

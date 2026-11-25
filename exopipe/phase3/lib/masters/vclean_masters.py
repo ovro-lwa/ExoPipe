@@ -50,6 +50,7 @@ Usage (batch, mirrors the frozen driver):
     python vclean_masters.py refresh <cell list file> [NPAR] [tmp root]
 """
 from exopipe.phase3.config import coadd_root
+from exopipe.phase3.core import placement
 import os
 import re
 import sys
@@ -215,9 +216,15 @@ def build_vclean_cell(coadd_root, cell, tmp_root=None, skip_existing=True):
         with fits.open(res[0], mode='update', memmap=False) as h:
             h[0].header[VCSRC] = (md5(vp), 'md5 of the V master this was cleaned from')
             h[0].header[VCISRC] = (md5(ip), 'md5 of the I master (source positions)')
-        shutil.move(res[0], out_ap)
+        # the cleaned master is in node-local scratch (tmp_root), on another file system than the cell: copied to a temporary
+        # file beside the product, then placed (core/placement.atomic: the replaced master's group, mode and ACL, or the
+        # directory's rule for a new one - never the scratch file's). A refusal renames nothing and removes the copy
+        with placement.atomic(out_ap) as part:
+            shutil.copyfile(res[0], part)
         write_vclean_sibling(cf, scope)     # one writer for build and repair (2026-10-03)
         return cell, 'OK'
+    except placement.PlacementRefusal as e:     # not placed: a refusal (status 'REFUSED ...'; the vclean unit refuses on it)
+        return cell, f'REFUSED {e}'
     except Exception as e:
         return cell, f'ERROR {e}'
     finally:

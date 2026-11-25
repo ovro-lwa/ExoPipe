@@ -4037,16 +4037,17 @@ def _write_scale2_record(final_dir, scale2_meas, med_dc):
     """WAVE2 D-ADMIT: <final_dir>/scale2.csv - each night's second-pass DC (PASS 1, against the new master) and source count,
     whether it entered the cell median (n >= 8, as run_final_lst_freq takes it), and on the row dated 'median' the median
     the degeneracy guard used (n = the nights it was taken over; 0: none qualified and the guard used 1.0). Written to a
-    temporary name and renamed."""
+    temporary name and placed (core/placement.atomic: the replaced record's group, mode and ACL, or the directory's rule for
+    a new one; a refusal - PlacementRefusal, a record.Refusal - renames nothing and removes the temporary file)."""
+    from exopipe.phase3.core import placement
     from exopipe.phase3.lib.masters import admit as _A
     rows = [dict(date=d, dc2=repr(float(c[0][0])), n2=int(c[1]), in_median=int(c[1] >= 8)) for d, c in sorted(scale2_meas.items())]
     rows.append(dict(date='median', dc2=repr(float(med_dc)), n2=sum(r['in_median'] for r in rows), in_median=''))
     p = os.path.join(final_dir, _A.SCALE2)
-    with open(p + '.part', 'w', newline='') as f:
+    with placement.atomic(p) as tmp, open(tmp, 'w', newline='') as f:
         w = csv.DictWriter(f, fieldnames=list(_A.SCALE2_COLS))
         w.writeheader()
         w.writerows(rows)
-    os.replace(p + '.part', p)
     return p
 
 

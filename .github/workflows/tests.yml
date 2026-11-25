@@ -52,6 +52,8 @@ jobs:
         run: python tests/test_placement_atomic.py
       - name: placement coverage guard (no bare rename left in the modules placement P1 converted, except the listed sites)
         run: python tests/test_placement_coverage.py
+      - name: placement P5 handlers (a table, a cleaned Stokes V master or an engine product that cannot be placed is a refusal, never a crash or a swallowed error; the current file stays, no temporary file)
+        run: python tests/test_placement_p5.py
       - name: the parity guard's astropy hook composes with the sub-LST frozen-code guard (no import recursion)
         run: python tests/test_guard_reentry.py
       - name: SIGTERM interrupts only the step's own process (forked pool workers take the default action)

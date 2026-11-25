@@ -13,6 +13,7 @@ flux-scaling, no native subtraction is redone — only the ×2 refine + detect.
 I = direct + sigma_stack + veto;  V = signed ±V + 20×I rule, SAME ×2 flow as I.
 """
 from exopipe.phase3.config import coadd_root
+from exopipe.phase3.core import placement
 import os, sys, glob, re, subprocess, time, csv, fcntl
 _ARGV = list(sys.argv)        # captured before lab imports that reset sys.argv
 import numpy as np
@@ -1362,8 +1363,8 @@ def _write_sigstack(sstack, hdr0, run_root, lst, scope, stokes, night=None):   #
     h['STOKES'] = (stokes, 'Stokes parameter')
     if night:                                                              # WAVE2 D-ADMIT
         h['ADMITTED'] = (night, 'the cell\'s searched nights plus this admitted night')
-    fits.writeto(p + '.part', np.asarray(sstack, dtype=np.float32), h, overwrite=True)
-    os.replace(p + '.part', p)
+    with placement.atomic(p) as _t:     # placed: the replaced map's group, mode and ACL, or the directory's rule (core/placement)
+        fits.writeto(_t, np.asarray(sstack, dtype=np.float32), h)
     return p
 
 
@@ -1658,9 +1659,11 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
     else:
         flows = _batch_flows(cell_work, mup, items)
     if not os.path.exists(_gsc):
-        _js.dump({'master': os.path.basename(mI), 'master_md5_data': _gen,
-                  'CONSTDIG': hdr0.get('CONSTDIG', ''), 'written_by': 'phase3_deep', 'n_flows': len(flows)},
-                 open(_gsc + f'.part{os.getpid()}', 'w')); os.replace(_gsc + f'.part{os.getpid()}', _gsc)   # pid-unique: V and I searches of one cell may run concurrently (2026-09-12 race)
+        # a temporary name unique per call (core/placement.atomic, then placed with the replaced record's group, mode and ACL,
+        # or the directory's rule): V and I searches of one cell may run concurrently (2026-09-12 race)
+        with placement.atomic(_gsc) as _t, open(_t, 'w') as _f:
+            _js.dump({'master': os.path.basename(mI), 'master_md5_data': _gen,
+                      'CONSTDIG': hdr0.get('CONSTDIG', ''), 'written_by': 'phase3_deep', 'n_flows': len(flows)}, _f)
     _noflow = [d for d in dates if d not in flows]   # WAVE2 B-30: the site is after the exclusion gates below
     dates = [d for d in dates if d in flows]
     # (0) drop data_decisions-excluded epochs — the master already excludes them, but the
@@ -2309,12 +2312,17 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                         header=_det_header(_phdr, scope, (em if _pm == mI else float(_phdr['BMAJ']) / abs(_phdr['CDELT1'])),
                                            abs(_phdr['CDELT1']), None)   # the parent master's own beam
                         ).writeto(_tmpm, overwrite=True)
-        _img = bdsf.process_image(_tmpm, thresh_isl=4.0, thresh_pix=5.0,
-                                  quiet=True)
-        _img.write_catalog(outfile=_gaulp + '.part', format='csv',
-                           catalog_type='gaul', clobber=True)
-        os.replace(_gaulp + '.part', _gaulp)
-        os.remove(_tmpm)
+        try:
+            _img = bdsf.process_image(_tmpm, thresh_isl=4.0, thresh_pix=5.0,
+                                      quiet=True)
+            # placed (core/placement.atomic: the replaced catalog's group, mode and ACL, or the directory's rule); any failure
+            # removes the temporary catalog and the temporary master image
+            with placement.atomic(_gaulp) as _t:
+                _img.write_catalog(outfile=_t, format='csv',
+                                   catalog_type='gaul', clobber=True)
+        finally:
+            if os.path.exists(_tmpm):
+                os.remove(_tmpm)
         # CAT1 generation stamp (R-CAT1-7 2026-08-15; landed 2026-09-04): md5 of
         # the master DATA payload + extraction record, as a sidecar shipped
         # with the catalog. CAT4 (FITS table) remains a DOC row.
