@@ -1442,7 +1442,7 @@ class DeepRun:
             outd = os.path.join(self.U, 'source_catalogs')
             for name in ('localizations.csv', 'localization_offsets.csv'):
                 self.move_aside(os.path.join(outd, name), u)
-            rc, tail, _ = self.call(u, 'build_localizations.py', [self.U], dict(self.env(), **self.link_env(u)), self.log)
+            rc, tail, _ = self.call(u, 'build_localizations.py', [self.U], self.env(extra=self.link_env(u)), self.log)
             if rc != 0:
                 self.say('localization tables FAILED - pass aborted')
                 u.refuse(f'D-G21 localizations exit {rc}: {tail[-1] if tail else ""}')
