@@ -400,6 +400,26 @@ def test_ep_plan():
                                               for t in ok['tests']), ok['tests']
         assert recs['replay_refused_20261013T034102Z']['status'] == 'done'   # passes under today's 6 h bound
         assert recs['replay_raw_20300101T000000Z']['status'] == 'refused'
+        # a refused placement of the replayed plan: a FAIL row in replay_log.csv (as G1 / G2), the unit refused with the
+        # placement reason, no plan and no temporary file left (PR 178 fix round)
+        from exopipe.phase3.core import placement as PL
+        foreign = next((g for g in (0, 1, 2, 3, 4, 65534) if g not in os.getgroups() and g != os.getegid()), None)
+        if os.geteuid() != 0 and foreign is not None:
+            rp2 = os.path.join(d, 'replay_placement')
+            real = PL.target_attrs
+            PL.target_attrs = lambda dst, like=None: (dict(real(dst, like), gid=foreign)
+                                                      if os.path.basename(dst).startswith('wxtplan_') else real(dst, like))
+            try:
+                rc, o, e = _cli(['ep-plan', '--action', 'replay', '--raw', RAW_OK, '--out', rp2])
+            finally:
+                PL.target_attrs = real
+            r = _records(rp2, 'replay_raw_20261012T124103Z')
+            rows = list(csv.DictReader(open(os.path.join(rp2, 'replay', 'replay_log.csv'))))
+            assert rc == 2 and r['status'] == 'refused' and r['reason'].startswith('placement:'), (rc, r.get('reason'))
+            assert [x['status'] for x in rows] == ['FAIL'] and rows[0]['detail'].startswith('placement:'), rows
+            assert sorted(os.listdir(os.path.join(rp2, 'replay'))) == ['replay_log.csv'], os.listdir(os.path.join(rp2, 'replay'))
+        else:
+            print('  UNTESTED the refused placement of a replayed plan (root, or a member of every candidate group)')
         rc, o, e = _cli(['ep-plan', '--action', 'replay', '--raw', RAW_OK, '--out', os.path.join(ARCH, 'replay')])
         assert rc == 2 and ('G7' in e or 'archive root' in e), (rc, e)
         assert not os.path.exists(os.path.join(ARCH, 'replay'))

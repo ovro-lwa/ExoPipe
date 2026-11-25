@@ -470,31 +470,52 @@ def injected_runs(path):
     return out
 
 
-def atomic_write_json(path, obj, durable=False):
+def atomic_write_json(path, obj, durable=False, place=False):
     """Write ``obj`` as JSON to ``path`` atomically: a temporary file beside it, renamed over ``path`` (on any exception the
     temporary file is removed and the exception propagates). ``durable`` (the unit and run records): the temporary file is
     flushed and fsynced before the rename and the directory fsynced after it (core/fitsio.fsync_fd / fsync_path), so an
     OSError reports a record that is not on disk - a Lustre eviction discards dirty pages, and an error that reaches only the
-    page cache is reported by fsync (FINDING-20261122-CUTOUT-WRITER-DISCARDED-PAGES-PASS-AS-DONE)."""
-    from exopipe.phase3.core.fitsio import fsync_fd, fsync_path
+    page cache is reported by fsync (FINDING-20261122-CUTOUT-WRITER-DISCARDED-PAGES-PASS-AS-DONE). ``place`` (products
+    written as JSON, never the unit and run records): written inside core/placement.atomic(path) - its temporary file, placed
+    with the existing file's group, mode and ACL, or the directory's rule for a new file; a refusal (PlacementRefusal) renames
+    nothing and removes the temporary file. Callers in the modules core/placement covers pass ``place`` explicitly
+    (tests/test_placement_coverage.py)."""
+    from exopipe.phase3.core.fitsio import fsync_path
     d = os.path.dirname(path)
     os.makedirs(d, exist_ok=True)
-    tmp = f'{path}.tmp.{os.getpid()}'
-    try:
-        with open(tmp, 'w') as f:
-            json.dump(obj, f, indent=1, sort_keys=True, default=str)
-            if durable:
-                f.flush()
-                fsync_fd(f.fileno())
-        os.replace(tmp, path)
-    except BaseException:
+    if place:
+        from exopipe.phase3.core import placement     # here: placement imports this module
+        with placement.atomic(path) as tmp:
+            write_json(tmp, obj, durable=durable)
+    else:
+        from exopipe.phase3.core.fitsio import fsync_fd
+        tmp = f'{path}.tmp.{os.getpid()}'
         try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+            with open(tmp, 'w') as f:
+                json.dump(obj, f, indent=1, sort_keys=True, default=str)
+                if durable:
+                    f.flush()
+                    fsync_fd(f.fileno())
+            os.replace(tmp, path)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
     if durable:
         fsync_path(d)
+
+
+def write_json(path, obj, durable=False):
+    """Write ``obj`` as JSON straight into ``path`` (no temporary file of its own), the bytes atomic_write_json writes: for a
+    writer that already holds a temporary file, inside core/placement.atomic. ``durable``: flushed and fsynced."""
+    from exopipe.phase3.core.fitsio import fsync_fd
+    with open(path, 'w') as f:
+        json.dump(obj, f, indent=1, sort_keys=True, default=str)
+        if durable:
+            f.flush()
+            fsync_fd(f.fileno())
 
 
 def _jsonable_ctx(ctx):

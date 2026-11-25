@@ -41,6 +41,7 @@ import os
 
 import numpy as np
 
+from exopipe.phase3.core import placement
 from exopipe.phase3.lib.mosaic import gen_common as GC
 
 SUMMARY_COLS = ('map', 'variant', 'band', 'domain', 'n_tiles', 'n_sources', 'median_ratio', 'p05', 'p95', 'frac_within_5pct', 'result')
@@ -248,10 +249,9 @@ def _write(path, head, rows):
     w.writerow(head)
     for row in rows:
         w.writerow(row)
-    tmp = f'{path}.tmp.{os.getpid()}'
-    with open(tmp, 'w', newline='') as f:
+    # the existing file's group, mode and ACL, or the directory's rule for a new file (core/placement.atomic)
+    with placement.atomic(path) as tmp, open(tmp, 'w', newline='') as f:
         f.write(buf.getvalue())
-    os.replace(tmp, path)
 
 
 def merge(archived_rows, new_rows, key, sort_key):

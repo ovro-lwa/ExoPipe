@@ -32,6 +32,7 @@ import shutil
 
 import numpy as np
 
+from exopipe.phase3.core import placement
 from exopipe.phase3.core.record import atomic_write_json
 from exopipe.phase3.lib.hybrid.common import (TAPER_OF, VARIANT, diag_header, inputs_dir, log, lowpass, rd, sky_interior,
                                               write_atomic)
@@ -344,7 +345,7 @@ def stack_variant(lst, band, v, workdir, prep, screen_cache, read=None):
         log(lst, band, v, 'residual_stack')
         rec['derived_screens'] = derived
         rec['nights_raw_admitted'] = sorted(raw_admitted)
-        atomic_write_json(f'{workdir}/{v}_stack.json', rec)
+        atomic_write_json(f'{workdir}/{v}_stack.json', rec, place=True)     # a product: placed (core/placement.py)
         return rec
     aligned = align('dirty', rows_d)                  # each night once; the three co-adds read the same aligned files
     for name, rr in (('dirty_stack', rows_d), ('dirty_halfA', srt[0::2]), ('dirty_halfB', srt[1::2])):
@@ -370,7 +371,7 @@ def stack_variant(lst, band, v, workdir, prep, screen_cache, read=None):
     rec['inputs'] = copy_inputs(inputs_dir(workdir), S.COADD_SB, lst, band, v, read)
     rec['derived_screens'] = derived
     rec['nights_raw_admitted'] = sorted(raw_admitted)
-    atomic_write_json(f'{workdir}/{v}_stack.json', rec)
+    atomic_write_json(f'{workdir}/{v}_stack.json', rec, place=True)         # a product: placed (core/placement.py)
     return rec
 
 
@@ -434,13 +435,16 @@ def copy_inputs(ind, coadd_sb, lst, band, v, read, archive_masters=None):
             raise StackRefusal(f'{arc}: pixels differ from the co-add build file {src} - REFUSING', 'HG5')
         dst = os.path.join(ind, os.path.basename(src))
         if not (os.path.exists(dst) and md5(dst) == want):
-            tmp = f'{dst}.{v}.part'
-            with open(tmp, 'wb') as f:
-                f.write(raw)
-            shutil.copystat(arc, tmp)
-            if md5(tmp) != want:
-                raise StackRefusal(f'{tmp}: copy differs from {arc} - REFUSING', 'HG5')
-            os.replace(tmp, dst)
+            # placed with the existing copy's group, mode and ACL, or the work directory's rule for a new file - not the
+            # archived file's, which copystat carries (its times are kept); any exception removes the temporary file
+            # (core/placement.atomic). Tagged with the weighting: the cell's two weightings share ind, and a unit's cleanup
+            # removes only its own weighting's leftovers (placement.temp_glob(..., tag=v), steps/hybrid.stack_unit).
+            with placement.atomic(dst, tag=v) as tmp:
+                with open(tmp, 'wb') as f:
+                    f.write(raw)
+                shutil.copystat(arc, tmp)
+                if md5(tmp) != want:
+                    raise StackRefusal(f'{tmp}: copy differs from {arc} - REFUSING', 'HG5')
         out[os.path.basename(src)] = dict(installed=arc, md5=want)
     return out
 

@@ -831,7 +831,26 @@ def build_stubs():
               open(f'{st}/exopipe/exopipe/common/parent_curve_tables_sublst.json', 'w'))
     for rel, txt in SNAP_STUBS.items():
         open(f'{st}/{rel}', 'w').write(txt)
+    # B-30 GITTAG_FALLBACK, ruled 'refuse' (R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32): a step refuses when
+    # a code tree it runs names no commit of its own (core/record.code_identity_problems). The site's LEGACY_CODE_ROOTS stub
+    # trees are therefore git repositories of their own, as in tests/test_catalog-deep.py. The tests below still edit their
+    # files (p3s2_conform.py); the gate reads the commit, not whether the work tree is clean.
+    for root in (f'{st}/clv15', f'{st}/exopipe_ops'):
+        _git(root, 'init', '-q')
+        open(f'{root}/.gitignore', 'w').write('__pycache__/\n')
+        _git(root, 'add', '-A')
+        _git(root, 'commit', '-q', '--allow-empty', '-m', 'stub code roots of the catalog-tiers test')
     return st
+
+
+_GIT_ID = ('-c', 'user.name=exopipe3 catalog-tiers test', '-c', 'user.email=exopipe3-test@localhost', '-c', 'commit.gpgsign=false',
+           '-c', 'core.hooksPath=/dev/null')
+
+
+def _git(root, *args):
+    r = subprocess.run(['git', '-C', root] + list(_GIT_ID) + list(args), capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, (root, args, r.stderr[-600:])
+    return r.stdout
 
 
 def test_e2e_sublst(site):

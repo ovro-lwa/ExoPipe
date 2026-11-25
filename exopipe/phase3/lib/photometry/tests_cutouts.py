@@ -28,6 +28,7 @@ import os
 import random
 import re
 
+from exopipe.phase3.core import placement
 from exopipe.phase3.core.validate import content_test
 from exopipe.phase3.core.fitsio import hdu_shape
 
@@ -88,13 +89,12 @@ def read_manifest(path):
 def write_manifest(path, rows):
     cols = list(_cfg().photometry_cutouts.MANIFEST_COLUMNS)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = '%s.tmp.%d' % (path, os.getpid())
-    with open(tmp, 'w', newline='') as f:
+    # the existing file's group, mode and ACL, or the directory's rule for a new file (core/placement.atomic)
+    with placement.atomic(path) as tmp, open(tmp, 'w', newline='') as f:
         w = csv.DictWriter(f, fieldnames=cols)
         w.writeheader()
         for r in sorted(rows, key=lambda r: r['file']):
             w.writerow({k: r[k] for k in cols})
-    os.replace(tmp, path)
     return path
 
 

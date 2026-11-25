@@ -64,6 +64,8 @@ never is, lies in or contains a production work run or an archive run, and is ne
 """
 import os
 
+from exopipe.phase3.core import placement
+
 SUMMARY = 'hybrid NoTaper route: stacks, large-scale reconstruction, wideband, hybrid masters, Full, per-tile zero-spacing fill'
 TIERS = None
 SELECTORS = ('lsts', 'scopes')
@@ -325,7 +327,6 @@ def stack_unit(u, lst, band, w, out_root, work):
     are the nights its written stacks hold (a night dropped from a stack is not admitted)."""
     from exopipe.phase3.config import CFG
     from exopipe.phase3.core import fitsio
-    import glob
     from exopipe.phase3.lib.hybrid import stack as HST
     from exopipe.phase3.lib.hybrid.common import TAPER_OF, inputs_dir
     from exopipe.phase3.lib.hybrid.warp import ScreenLockRefusal
@@ -339,7 +340,7 @@ def stack_unit(u, lst, band, w, out_root, work):
         files = [(p, c) for p, c in plan if p in own or (v in TAPER_OF and c == 'hybrid_stack_input')]
         for p, c in files:
             u.plan(p, c)
-        temps = lambda: sorted(glob.glob(os.path.join(glob.escape(inputs_dir(workdir)), f'*.{v}.part')))
+        temps = lambda: _input_temps(inputs_dir(workdir), v)
         _clear(own + temps())
         prep = fitsio.scratch_dir(f'hybrid_stack_{lst}_{band}_{v}', work)
         read = set()
@@ -402,13 +403,22 @@ def wideband_plan(out_root, lst, scope, w):
 
 
 def _clear(paths):
-    """Remove a unit's own earlier outputs and their temporaries <path>.part and <path>.tmp.* (no stale file stands beside a
-    new run or a refusal)."""
+    """Remove a unit's own earlier outputs and their temporaries <path>.part, <path>.tmp.* and core/placement.atomic's
+    <path>.<pid>.<8 hex digits>.tmp (placement.temp_glob) - no stale file stands beside a new run or a refusal."""
     import glob
     for p in paths:
-        for q in [p, f'{p}.part'] + glob.glob(f'{glob.escape(p)}.tmp.*'):
+        for q in [p, f'{p}.part'] + glob.glob(f'{glob.escape(p)}.tmp.*') + glob.glob(placement.temp_glob(glob.escape(p))):
             if os.path.lexists(q):
                 os.remove(q)
+
+
+def _input_temps(ind, v):
+    """The temporary files weighting ``v`` leaves in the cell's shared inputs/ directory when its process is killed: the
+    names core/placement.atomic(dst, tag=v) writes in lib/hybrid/stack.copy_inputs (placement.temp_glob), and the
+    <name>.<v>.part of the copies written before placement. The other weighting's are never matched."""
+    import glob
+    d = glob.escape(ind)
+    return sorted(set(glob.glob(placement.temp_glob(os.path.join(d, '*'), tag=v)) + glob.glob(os.path.join(d, f'*.{v}.part'))))
 
 
 def _upstream_problem(out_root, unit, paths):
@@ -850,10 +860,9 @@ def tilefill_field(out_root, scope, w, rows, mosaic_out=None):
         old = None
         rec = dict(scope=scope, weighting=w, result='FAIL', error=f'{type(e).__name__}: {e}')
     if rec is not old:
-        part = f'{rj}.{os.getpid()}.part'
-        with open(part, 'w') as f:
+        # the existing file's group, mode and ACL, or the directory's rule for a new file (core/placement.atomic)
+        with placement.atomic(rj) as part, open(part, 'w') as f:
             json.dump(rec, f, indent=1, default=str)
-        os.replace(part, rj)
     _FIELDS[key] = rec
     return rec
 

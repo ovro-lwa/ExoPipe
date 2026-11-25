@@ -305,7 +305,7 @@ def test_stage():
     rc4, _ = cli(*common, '--deep-installed-root', wt, '--fresh')
     aside = sorted(f for f in os.listdir(f'{cd}/coadd_final') if f.startswith('build_stats.superseded_'))
     old_basis = [json.load(open(f'{cd}/coadd_final/{f}')).get('basis') for f in aside]
-    left = [f for f in os.listdir(f'{cd}/coadd_final') if '.part' in f]
+    left = [f for f in os.listdir(f'{cd}/coadd_final') if '.part' in f or f.endswith('.tmp')]
     check('a record of either basis refuses without --fresh; --fresh replaces it and moves the old one aside, no partial file',
           rc == 2 and "'build'" in r4.get('reason', '') and rc4 == 0 and json.load(open(dest))['basis'] == 'stage'
           and 'build' in old_basis and not left, (r4.get('reason'), rc4, aside, old_basis, left))
@@ -416,6 +416,87 @@ def test_review2():
           'generation' in gen, gen)
 
 
+def test_superseded_same_second():
+    """build-stats --fresh placement (deep_stages._place_build_stats, PR 178 fix round), data-free with the record's content
+    test stubbed: two reruns inside one second get two superseded names (microseconds + pid), each holding the record it
+    replaced; an existing superseded name refuses and moves nothing; a refused placement moves back exactly the file it moved
+    (its inode) - and not a new file under the superseded name, even one that reuses the freed inode number."""
+    from exopipe.phase3.core import placement as PL, record as R, validate
+    from exopipe.phase3.lib.masters import deep_stages as DS
+    cf = os.path.join(T, 'same_second', 'coadd_final')
+    os.makedirs(cf)
+    dest = os.path.join(cf, BS.FILE)
+
+    class _U:
+        def refuse(self, msg):
+            raise R.Refusal(msg)
+
+    def snap(p):
+        return open(p, 'rb').read(), os.stat(p).st_ino
+
+    def temps():
+        return [n for n in os.listdir(cf) if n.endswith('.tmp')]
+
+    def second(p):
+        return os.path.basename(p).split('superseded_')[1].split('.')[0]
+    real_run, real_path, real_attrs = validate.run, DS._superseded_path, PL.target_attrs
+    validate.run = lambda name, path, **kw: [] if name == 'build_stats' else real_run(name, path, **kw)
+    try:
+        for _ in range(5):                    # a pair that straddles a second boundary is run again
+            for n in os.listdir(cf):
+                os.remove(os.path.join(cf, n))
+            R.write_json(dest, {'n': 0})
+            olds = [DS._place_build_stats(_U(), 'x', dest, {'n': i}) for i in (1, 2)]
+            if second(olds[0]) == second(olds[1]):
+                break
+        check('two --fresh reruns in the same second: two superseded names (microseconds + pid), each the record it replaced',
+              second(olds[0]) == second(olds[1]) and olds[0] != olds[1] and f'_{os.getpid()}.json' in olds[0]
+              and json.load(open(olds[0])) == {'n': 0} and json.load(open(olds[1])) == {'n': 1}
+              and json.load(open(dest)) == {'n': 2} and not temps(), (olds, os.listdir(cf)))
+        before = (snap(dest), snap(olds[0]), sorted(os.listdir(cf)))
+        DS._superseded_path = lambda coadd_dir: olds[0]
+        try:
+            DS._place_build_stats(_U(), 'x', dest, {'n': 3})
+            got = 'no refusal'
+        except R.Refusal as e:
+            got = str(e)
+        DS._superseded_path = real_path
+        check('an existing superseded name refuses: nothing moved over it, the record unchanged, no temporary file',
+              'never moved over another file' in got and (snap(dest), snap(olds[0]), sorted(os.listdir(cf))) == before,
+              (got, os.listdir(cf)))
+        foreign = next((g for g in (0, 1, 2, 3, 4, 65534) if g not in os.getgroups() and g != os.getegid()), None)
+        if os.geteuid() == 0 or foreign is None:
+            print('UNTESTED the refused placement (root, or a member of every candidate group)')
+            return
+        PL.target_attrs = lambda dst, like=None: dict(real_attrs(dst, like), gid=foreign)
+        try:
+            DS._place_build_stats(_U(), 'x', dest, {'n': 4})
+            got = 'no refusal'
+        except PL.PlacementRefusal as e:
+            got = str(e)
+        check('a refused placement: the earlier record back under its name (the same inode), no superseded file of the '
+              'attempt, no temporary file', got.startswith('placement:')
+              and (snap(dest), snap(olds[0]), sorted(os.listdir(cf))) == before, (got, os.listdir(cf)))
+        swapped = {}
+
+        def swap_then_refuse(dst, like=None):
+            if like and os.path.exists(like):          # a new file under the superseded name (may reuse the freed inode)
+                os.remove(like)
+                R.write_json(like, {'n': 'other'})
+                swapped['path'] = like
+            return dict(real_attrs(dst, like), gid=foreign)
+        PL.target_attrs = swap_then_refuse
+        try:
+            DS._place_build_stats(_U(), 'x', dest, {'n': 5})
+        except PL.PlacementRefusal:
+            pass
+        p = swapped.get('path')
+        check('the restore moves back only the file it moved: a different file under the superseded name stays there',
+              p and not os.path.exists(dest) and json.load(open(p)) == {'n': 'other'} and not temps(), (p, os.listdir(cf)))
+    finally:
+        validate.run, DS._superseded_path, PL.target_attrs = real_run, real_path, real_attrs
+
+
 def main():
     shutil.rmtree(T, ignore_errors=True)
     os.makedirs(T)
@@ -426,6 +507,7 @@ def main():
         test_record_and_recheck()
         test_wiring()
         test_stage()
+        test_superseded_same_second()
         test_review2()
     finally:
         shutil.rmtree(T, ignore_errors=True)

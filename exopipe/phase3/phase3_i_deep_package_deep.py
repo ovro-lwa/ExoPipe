@@ -20,6 +20,7 @@ from astropy.coordinates import SkyCoord
 import astropy.units as u
 from exopipe.phase3 import assemble as live
 from exopipe.phase3 import phase3_i_deep_final as F
+from exopipe.phase3.core import placement
 from exopipe.phase3.core import products as prod
 
 ROOT = live.ROOT
@@ -250,12 +251,12 @@ def _finalize_csv(sel, srcs):
     sel_ids = {s['cand_id']: s['review_dir'] for s in sel.values()}
     for s in srcs:
         s['review_dir'] = sel_ids.get(s['cand_id'], s.get('review_dir', ''))
-    with open(CSV + '.tmp', 'w', newline='') as fh:
+    # the existing file's group, mode and ACL, or the directory's rule for a new file (core/placement.atomic)
+    with placement.atomic(CSV) as tmp, open(tmp, 'w', newline='') as fh:
         w = csv.DictWriter(fh, fieldnames=F.COLS, extrasaction='ignore')
         w.writeheader()
         for s in srcs:
             w.writerow(s)
-    os.replace(CSV + '.tmp', CSV)
     print(f'review_dir updated in {CSV}')
 
 

@@ -39,6 +39,8 @@ import json
 import math
 import os
 
+from exopipe.phase3.core import placement
+
 FILE = 'build_stats.json'
 VERSION = 3                    # 3 (2026-11-02): the search tier's setting is SEARCH_TIER_RATIO (its threshold ratio x median);
                                # version 2 had SEARCH_TIER_SIGMA - no version-2 record exists on disk (checked 2026-11-02)
@@ -266,9 +268,9 @@ def compute(cell_dir, lst, scope, co, cfg, basis):
 
 def write(cell_dir, stats):
     p = os.path.join(cell_dir, 'coadd_final', FILE)
-    with open(p + '.tmp', 'w') as f:
+    # the existing file's group, mode and ACL, or the directory's rule for a new file (core/placement.atomic)
+    with placement.atomic(p) as tmp, open(tmp, 'w') as f:
         json.dump(stats, f, indent=1, sort_keys=True)
-    os.replace(p + '.tmp', p)
     return p
 
 

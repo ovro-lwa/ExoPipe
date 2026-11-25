@@ -259,8 +259,86 @@ def test_refusal_recorded_by_unit():
     assert not os.path.exists(os.path.join(d, 'p.csv')) and not _leftovers(d)
 
 
+def test_tag_and_temp_glob():
+    """atomic(dst, tag=) puts the tag before the pid; temp_glob(dst, tag) matches exactly the names atomic writes for that tag
+    (untagged: only untagged names; 'R0' never matches 'R075'), also as <dir>/* for every file of a directory; a killed
+    writer's leftover is matched; a tag that is not a name refuses (ValueError)."""
+    import glob
+    import signal
+    _fresh()
+    d = _dir('plain', False)
+    p = os.path.join(d, 'PB_deep_46MHz.fits')
+    made, held = {}, []                     # held: an unreferenced generator is closed, and its exit removes the file
+    for tag in (None, 'R075', 'R0'):
+        held.append(PL.atomic(p, tag=tag))
+        made[tag] = held[-1].__enter__()
+        open(made[tag], 'w').close()                           # left as a killed writer would leave it
+    assert made['R075'].startswith(p + f'.R075.{os.getpid()}.') and made[None].startswith(p + f'.{os.getpid()}.'), made
+    e = glob.escape(p)
+    assert glob.glob(PL.temp_glob(e)) == [made[None]], glob.glob(PL.temp_glob(e))
+    for tag in ('R075', 'R0'):
+        assert glob.glob(PL.temp_glob(e, tag=tag)) == [made[tag]], (tag, glob.glob(PL.temp_glob(e, tag=tag)))
+        assert glob.glob(PL.temp_glob(os.path.join(glob.escape(d), '*'), tag=tag)) == [made[tag]]
+    for bad in ('', '0R', 'R/0', 'R.0'):
+        _raises(ValueError, lambda: PL.atomic(p, tag=bad).__enter__())
+    for f_ in made.values():
+        os.remove(f_)
+    env = dict(os.environ, PYTHONPATH=os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    code = ('import os, signal, sys; from exopipe.phase3.core import placement as PL\n'
+            'with PL.atomic(sys.argv[1], tag="R075") as tmp:\n'
+            '    open(tmp, "w").write("half")\n'
+            '    os.kill(os.getpid(), signal.SIGKILL)\n')
+    rc = subprocess.run([sys.executable, '-c', code, p], env=env).returncode
+    left = glob.glob(PL.temp_glob(os.path.join(glob.escape(d), '*'), tag='R075'))
+    assert rc == -signal.SIGKILL and len(left) == 1 and sorted(os.listdir(d)) == [os.path.basename(left[0])], (rc, left)
+    assert not glob.glob(PL.temp_glob(os.path.join(glob.escape(d), '*'), tag='R0')) and not glob.glob(PL.temp_glob(e))
+
+
+def test_atomic_write_json_place():
+    """record.atomic_write_json(place=True) writes inside placement.atomic: the bytes of place=False, the replaced file's
+    group, mode and ACL kept, a new file the directory's rule; a refusal leaves the product and no temporary file. The
+    place=False default keeps its own temporary name (<path>.tmp.<pid>) and plain rename."""
+    _fresh()
+    d = _dir('arch', True)
+    obj = {'b': [1, 2.5, None], 'a': 'x', 'when': 'now'}
+    plain = os.path.join(TMP, 'plain.json')
+    record.atomic_write_json(plain, obj)
+    p = _product(d, 'stack.json')
+    before = _attrs(p)
+    record.atomic_write_json(p, obj, place=True)
+    assert open(p, 'rb').read() == open(plain, 'rb').read() and _attrs(p) == before, (_attrs(p), before)
+    q = os.path.join(d, 'new.json')
+    want = PL.target_attrs(q)
+    record.atomic_write_json(q, obj, place=True)
+    got = _attrs(q)
+    assert (got[0], got[1], got[2]) == (want['gid'], want['acl'], want['mode']), (got, want)
+    assert not _leftovers(d)
+    foreign = next((g for g in (0, 1, 2, 3, 4, 65534) if g not in os.getgroups() and g != os.getegid()), None)
+    if os.geteuid() != 0 and foreign is not None:
+        real = PL.target_attrs
+        PL.target_attrs = lambda dst, like=None: dict(real(dst, like), gid=foreign)
+        try:
+            snap = (_attrs(p), open(p, 'rb').read(), os.stat(p).st_ino)
+            _raises(PL.PlacementRefusal, lambda: record.atomic_write_json(p, {'other': 1}, place=True))
+        finally:
+            PL.target_attrs = real
+        assert (_attrs(p), open(p, 'rb').read(), os.stat(p).st_ino) == snap and not _leftovers(d) \
+            and sorted(os.listdir(d)) == ['new.json', 'stack.json'], os.listdir(d)
+    else:
+        print('  UNTESTED: the refusal of atomic_write_json(place=True) (root, or a member of every candidate group)')
+    seen = []
+    real_replace = os.replace
+    os.replace = lambda a, b: (seen.append(a), real_replace(a, b))
+    try:
+        record.atomic_write_json(os.path.join(TMP, 'rec.json'), obj)
+    finally:
+        os.replace = real_replace
+    assert seen == [os.path.join(TMP, 'rec.json') + f'.tmp.{os.getpid()}'], seen
+
+
 TESTS = [test_replaced_keeps_attrs, test_new_file_directory_rule, test_writer_exception_removes_tmp,
-         test_refusal_removes_tmp_names_group_and_file, test_unique_names, test_refusal_recorded_by_unit]
+         test_refusal_removes_tmp_names_group_and_file, test_unique_names, test_refusal_recorded_by_unit,
+         test_tag_and_temp_glob, test_atomic_write_json_place]
 
 
 def main():

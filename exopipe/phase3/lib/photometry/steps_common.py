@@ -5,7 +5,7 @@ import hashlib
 import os
 import sys
 
-from exopipe.phase3.core import record
+from exopipe.phase3.core import placement, record
 from exopipe.phase3.core.record import NoInput, Refusal
 
 
@@ -396,10 +396,9 @@ def atomic_copy(src, dst):
 
 def write_text_atomic(path, text):
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    tmp = '%s.tmp.%d' % (path, os.getpid())
-    with open(tmp, 'w', newline='') as f:
+    # the existing file's group, mode and ACL, or the directory's rule for a new file (core/placement.atomic)
+    with placement.atomic(path) as tmp, open(tmp, 'w', newline='') as f:
         f.write(text)
-    os.replace(tmp, path)
     return path
 
 

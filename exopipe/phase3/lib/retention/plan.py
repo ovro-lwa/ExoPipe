@@ -45,6 +45,7 @@ import re
 import stat
 import time
 
+from exopipe.phase3.core import placement
 from exopipe.phase3.core.record import Refusal
 from exopipe.phase3.lib.retention import table as T
 
@@ -321,15 +322,14 @@ def make_plan(root, out, now=None, nights=None, subbands=None, checksum=None, ma
 
 def _write_csv(path, columns, rows):
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = path + '.part'
-    with open(tmp, 'w', newline='') as f:
+    # the existing file's group, mode and ACL, or the directory's rule for a new file (core/placement.atomic)
+    with placement.atomic(path) as tmp, open(tmp, 'w', newline='') as f:
         w = csv.DictWriter(f, fieldnames=columns, lineterminator='\n')
         w.writeheader()
         for r in rows:
             w.writerow({k: r.get(k, '') for k in columns})
         f.flush()
         os.fsync(f.fileno())
-    os.replace(tmp, path)
 
 
 def _ids(xs):
@@ -382,12 +382,10 @@ def write_plan(pl, out, when=None):
                 n_expired_in_tree=pl.n_expired, n_expired_not_in_manifest=pl.n_expired - len(items),
                 plan_csv=os.path.basename(plan_csv), records=pl.records, items=items)
     man_json = os.path.splitext(man_csv)[0] + '.json'
-    tmp = man_json + '.part'
-    with open(tmp, 'w') as f:
+    with placement.atomic(man_json) as tmp, open(tmp, 'w') as f:     # as _write_csv (core/placement.atomic)
         json.dump(side, f, indent=1, sort_keys=True)
         f.flush()
         os.fsync(f.fileno())
-    os.replace(tmp, man_json)
     return plan_csv, man_csv, man_json
 
 

@@ -8,7 +8,7 @@ import re
 import socket
 import subprocess
 
-from exopipe.phase3.core import record
+from exopipe.phase3.core import placement, record
 from exopipe.phase3.core.record import Refusal
 
 # Config keys the WRAPPER acts on (paths it passes, stages it runs, processes it starts). Every other key of the forced
@@ -326,10 +326,9 @@ def roots_cells(path=None):
 
 
 def write_rows(path, rows, fieldnames):
-    """CSV written as the production scripts write theirs (csv.DictWriter, newline=''), tmp + rename."""
-    tmp = '%s.tmp.%d' % (path, os.getpid())
-    with open(tmp, 'w', newline='') as f:
+    """CSV written as the production scripts write theirs (csv.DictWriter, newline=''), tmp + rename; placed with the
+    existing file's group, mode and ACL, or the directory's rule for a new file (core/placement.atomic)."""
+    with placement.atomic(path) as tmp, open(tmp, 'w', newline='') as f:
         w = csv.DictWriter(f, fieldnames=fieldnames)
         w.writeheader()
         w.writerows(rows)
-    os.replace(tmp, path)

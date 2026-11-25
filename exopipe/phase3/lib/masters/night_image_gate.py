@@ -17,9 +17,10 @@ median 0.98, regridded pre-cutover nights in masters median 0.989 with none belo
 Record: coadd_final/night_image_gate.csv, one row per night (date, corr_zero, corr_best, best_shift_deg, maxabs_jy, verdict,
 reason, method). The search refuses a cell whose record is missing (a gate refuses, it never skips)."""
 import csv
-import os
 
 import numpy as np
+
+from exopipe.phase3.core import placement
 
 THRESHOLD = 0.5
 MAX_SHIFT_DEG = 3.0
@@ -72,12 +73,12 @@ def evaluate(night_aligned, ref, cdelt_deg, night_raw=None):
 
 def write_record(final_dir, rows, method):
     """rows: {date: evaluate() dict or a dict with verdict/reason}. Written whole (atomic), never appended."""
-    p = f'{final_dir}/{GATE_FILE}'; tmp = p + '.part'
-    with open(tmp, 'w', newline='') as f:
+    p = f'{final_dir}/{GATE_FILE}'
+    # the existing file's group, mode and ACL, or the directory's rule for a new file (core/placement.atomic)
+    with placement.atomic(p) as tmp, open(tmp, 'w', newline='') as f:
         w = csv.DictWriter(f, fieldnames=COLS, extrasaction='ignore'); w.writeheader()
         for d in sorted(rows):
             w.writerow(dict(rows[d], date=d, method=method))
-    os.replace(tmp, p)
     return p
 
 

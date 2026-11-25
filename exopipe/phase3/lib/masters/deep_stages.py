@@ -26,7 +26,7 @@ import shutil
 import sys
 import traceback
 
-from exopipe.phase3.core import record
+from exopipe.phase3.core import placement, record
 from exopipe.phase3.core.record import NoInput, Refusal
 from exopipe.phase3.lib.masters import constituents
 from exopipe.phase3.lib.masters.pb_qa import pb_qa_gate, pb_qa_inputs, pb_qa_missing   # noqa: F401 (B-30; also the dewarp apply)
@@ -1311,9 +1311,10 @@ def build_stats_stage(cell, args, run, out, ran_now):
     paths.PRODUCTION_WRITES is False: until cutover the stage runs on a copy of the cell. --out holds the run records only.
     Refuses when a night of the population is excluded now, when the cell fails membership.verify, when its records give no
     record (another stage-2 metric, or not one generation: build_stats.NoRecord) and when the cell already has a record -
-    --fresh replaces it, of either basis, the old one moved aside to coadd_final/build_stats.superseded_<UTC>.json. The
-    record is written to a temporary name, content-tested and only then renamed (a failing record never stays). No input
-    without the records. The beam block says whether today's gate rule flags the nights the build flagged ('agree')."""
+    --fresh replaces it, of either basis, the old one moved aside to coadd_final/build_stats.superseded_<UTC to the
+    microsecond>_<pid>.json (_place_build_stats). The record is written to a temporary name, content-tested and only then
+    renamed (a failing record never stays). No input without the records. The beam block says whether today's gate rule
+    flags the nights the build flagged ('agree')."""
     from exopipe.phase3.lib.masters import build_stats as BS, deep_inplace as IP
     lst, sc = cell.split('_', 1)
     src = args.deep_installed_root or _cfg().paths.COADD_SB_ROOT
@@ -1358,18 +1359,9 @@ def build_stats_stage(cell, args, run, out, ran_now):
                      f'to judge an admitted night by')
         for p in _build_stats_inputs(cell_src, cell, mods['coadd']):
             u.add_input(p)
-        from exopipe.phase3.core import record as _R, validate
-        tmp = os.path.join(cell_src, 'coadd_final', f'{BS.FILE}.part{os.getpid()}')
-        _R.atomic_write_json(tmp, st)
-        bad = [t for t in validate.run('build_stats', tmp) if not t['passed']]
-        if bad:
-            os.remove(tmp)
-            u.refuse(f'{cell}: the record fails its own content test before it is placed ({bad[0]["detail"][:300]})')
-        if os.path.exists(dest):
-            old = os.path.join(cell_src, 'coadd_final', f'build_stats.superseded_{_R.utcnow().replace(":", "")}.json')
-            os.replace(dest, old)
+        old = _place_build_stats(u, cell, dest, st)
+        if old:
             u.note(f'--fresh: the earlier record moved aside to {old}')
-        os.replace(tmp, dest)
         p = dest
         bg = st['beam_gate']
         u.note(f'{cell}: stage 2 I n={st["stage2"]["I"]["n"]} V n={st["stage2"]["V"]["n"]}, beam gate n={bg["n"]}, sanity '
@@ -1379,6 +1371,45 @@ def build_stats_stage(cell, args, run, out, ran_now):
                   f'{bg["recorded_outliers"]} (recorded; the image rule changed 2026-10-13, D1)'))
         u.meta['beam_gate_agree'] = bg['agree']
         u.add_output(p, 'build_stats', cell=cell)
+
+
+def _superseded_path(coadd_dir):
+    """<coadd_final>/build_stats.superseded_<UTC to the microsecond>_<pid>.json: a new name for every move-aside (two --fresh
+    reruns in the same second never share one)."""
+    import datetime
+    t = datetime.datetime.utcnow().strftime('%Y-%m-%dT%H%M%S.%fZ')
+    return os.path.join(coadd_dir, f'build_stats.superseded_{t}_{os.getpid()}.json')
+
+
+def _place_build_stats(u, cell, dest, st):
+    """Place the record ``st`` at ``dest`` (coadd_final/build_stats.json) after its own content test in the temporary file
+    (core/placement.atomic; the bytes record.atomic_write_json writes). An earlier record is moved aside to _superseded_path
+    inside the block - never over an existing file (that refuses) - and the new record takes its group, mode and ACL
+    (like=); a new record gets the directory's rule. On any failure after the move, exactly the file moved goes back under
+    its own name (the same device, inode, size and mtime - an inode number freed and reused by a new file is not the file
+    moved). Returns the superseded path, or None when there was no earlier record."""
+    from exopipe.phase3.core import record as _R, validate
+    old = _superseded_path(os.path.dirname(dest)) if os.path.exists(dest) else None
+    moved = None                                  # the earlier record's identity, set before this call moves it
+    try:
+        with placement.atomic(dest, like=old) as tmp:
+            _R.write_json(tmp, st)
+            bad = [t for t in validate.run('build_stats', tmp) if not t['passed']]
+            if bad:
+                u.refuse(f'{cell}: the record fails its own content test before it is placed ({bad[0]["detail"][:300]})')
+            if old:
+                if os.path.lexists(old):
+                    u.refuse(f'{cell}: {old} exists - the earlier record is never moved over another file; nothing replaced')
+                s0 = os.stat(dest)
+                moved = (s0.st_dev, s0.st_ino, s0.st_size, s0.st_mtime_ns)
+                os.replace(dest, old)
+    except BaseException:
+        if moved and not os.path.lexists(dest) and os.path.lexists(old):
+            s1 = os.stat(old)
+            if (s1.st_dev, s1.st_ino, s1.st_size, s1.st_mtime_ns) == moved:
+                os.replace(old, dest)             # nothing placed: the earlier record back under its own name
+        raise
+    return old
 
 
 STAGES = {'stage-in': stage_in, 'build': build, 'pbmaps': pbmaps, 'vclean': vclean, 'fluxscale': fluxscale,
