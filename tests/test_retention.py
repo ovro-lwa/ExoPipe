@@ -2,7 +2,8 @@
 """Two-week retention of the raw night data (`exopipe3 retention`, lib/retention/, config section retention; plan
 CUTOVER_REMAINING_20261124.md row 40, ORCHESTRATION_DESIGN_20261117.md 5.4). Data free: a synthetic raw tree of small files in
 the test's scratch directory (<subband>/<UT date>/<UT hour>/<YYYYMMDD_HHMMSS>_<subband>_averaged.ms.tar, dates relative to
-the clock) and a synthetic fix ledger (CRLF). Every delete in this test is of that scratch tree (asserted before each one).
+the clock), a synthetic fix ledger (CRLF) and a synthetic data_decisions.csv without do-not-delete rows (the do-not-delete
+gate: tests/test_retention_do_not_delete.py). Every delete in this test is of that scratch tree (asserted before each one).
 Asserts:
   - the table: production records and holds append one row each, read back; an empty range, a production before the range or
     in the future, no source, a name that is not a subband refuse (RT-RECORD / RT-HOLD); a damaged row or header refuses
@@ -229,14 +230,15 @@ def test_classify(W):
                     path=os.path.join(W.root, '73MHz', W.OLD2, '05'), t0=W.t_old + DAY + 5 * 3600)
     empty_it['t1'] = empty_it['t0'] + 3600
     rec = [dict(record_id='P-x', start=W.t_old, end=W.t_old + 3 * DAY, subbands=None, produced=W.t_old + DAY, source='s')]
-    check('empty: an hour directory without files (recorded)', P.classify(empty_it, rec, [], time.time())['status'] == 'empty')
+    check('empty: an hour directory without files (recorded)',
+          P.classify(empty_it, rec, [], time.time(), protect=[])['status'] == 'empty')
     first = dict((it['item'], it) for it, c in pl.items)[W.item('73MHz', W.OLD, 2)]
     c3 = P.classify(first, T.read_records(W.out) + [dict(record_id='P-z', start=W.t_old, end=W.t_old + 3 * 3600,
                                                           subbands=None, produced=time.time() - 60, source='s')],
-                    [], time.time())
+                    [], time.time(), protect=[])
     check('... an expired hour re-processed now is retained again', c3['status'] == 'retained', c3)
     c4 = P.classify(first, T.read_records(W.out), [dict(hold_id='H-x', start=0, end=2e9, subbands={'78MHz'}, reason='r')],
-                    time.time())
+                    time.time(), protect=[])
     check('a hold of another subband does not hold it', c4['status'] == 'expired', c4)
     pl1 = P.make_plan(W.root, W.out, max_items=1)
     check('the batch limit: the oldest-expiring expired item first (73MHz before 78MHz at the same expiry)',
@@ -527,6 +529,11 @@ def main():
     d = tempfile.mkdtemp(prefix='test_retention_', dir=base)
     Pt = Patch()
     try:
+        dd = os.path.join(d, 'data_decisions.csv')      # the plan and the delete read it (lib/retention/protect.py)
+        with open(dd, 'w', newline='') as f:
+            csv.writer(f, lineterminator='\n').writerows([['lst', 'subband', 'date', 'verdict', 'reason'],
+                                                          ['04h', '64MHz', '2025-01-09', 'exclude', 'synthetic row']])
+        Pt.set(CFG.paths, 'DATA_DECISIONS', dd)
         test_table(d)
         W = World(os.path.join(d, 'w'))
         Pt.set(CFG.retention, 'RAW_ROOT', W.root)

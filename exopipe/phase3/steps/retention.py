@@ -14,8 +14,14 @@ and the data are averaged by 4 channels, so it's <100 Tb for 2 weeks retention."
 
 Actions and units (records <out>/_records/retention/<unit>.json):
   plan     unit plan_<UTC>. Lists the raw tree by name (subband, UT date and UT hour directories; never a walk of the tree) and
-           classifies each (subband, date, hour) item from the production records and the active holds (lib/retention/plan.py:
-           held, unprocessed, unrecognized, empty, partial, retained, expired). Writes <out>/plans/RETENTION_TABLE_<UTC>.csv
+           classifies each (subband, date, hour) item from the do-not-delete cells of data_decisions.csv, the production
+           records and the active holds (lib/retention/plan.py: protected, held, unprocessed, unrecognized, empty, partial,
+           retained, expired). PROTECTED (lib/retention/protect.py): the item's data overlap a UTC range of a cell (LST hour
+           + date: every range of that date in the LST hour, core/sidereal.py, widened by retention.DO_NOT_DELETE_PAD_S on
+           both sides) that a data_decisions.csv row marks "do not delete" - in ANY subband, 13 MHz included, since a cell is
+           a time range on the sky; never listed, never in a manifest. A do-not-delete row read with an irregularity (more
+           fields than the header, the text outside the reason column) protects its cell and is named in the plan's note.
+           Writes <out>/plans/RETENTION_TABLE_<UTC>.csv
            (every item; class retention_plan) and, when items are expired, <out>/manifests/DRYRUN_RETENTION_<UTC>.csv + .json
            (class retention_manifest): the oldest-expiring retention.MAX_ITEMS_PER_MANIFEST expired items and every path a
            delete would remove - each file, and each file and directory of an MS directory (listed inside that MS only) - with
@@ -29,16 +35,20 @@ Actions and units (records <out>/_records/retention/<unit>.json):
            (default now); --source names the chain, job or ledger ID. Expiry = the latest covering production + RETENTION_DAYS.
   hold     unit hold_<UTC>: appends a hold of [--start, --end) on --scopes to <out>/retention.HOLDS_NAME (retention_holds).
   release  unit release_<UTC>: appends the release of --hold-id.
-  delete   one unit per item, delete_<subband>_<date>_<hour>. REFUSES unless: --out is retention.ROOT, so the records and holds
-           are the production ones (RT-ROOT); --manifest is a dry-run manifest of this tree whose sidecar sha256 still matches,
-           planned from the records of this --out (RT-MANIFEST); --ruling-for retention.DELETE=<ledger ID> names a row of
-           paths.FIX_LEDGER whose fix_id starts with retention.RULING_PREFIX (R-GREGG-), whose authorized_by begins with the word
-           Gregg, whose status begins with RULED (any case) and whose text quotes this manifest's sha256 - in full or its first
-           12 hex digits or more; its file name alone does not count (RT-RULING: Gregg's go is for one manifest; code cannot
-           prove who wrote a row - the guard is procedural, no session writes an R-GREGG row without Gregg's words, plus these
-           checks); the table and the holds file only grew since the plan (their planned bytes still hash to the planned
-           digests: RT-RECORDS); and, checked for EVERY item before anything is deleted, the item directory holds exactly the
-           paths listed with the
+  delete   one unit per item, delete_<subband>_<date>_<hour>. REFUSES, deleting nothing, when any item of --manifest lies in a
+           do-not-delete cell of data_decisions.csv as read at the delete (RT-DO-NOT-DELETE, the first check of the
+           preflight; the reason names the items and the cells; Gregg's go for the manifest does not lift it: the cell's row
+           does), and re-checks each item right before deleting it (re-reading the cells only when the file's sha1 changed).
+           REFUSES unless: --out is retention.ROOT, so
+           the records and holds are the production ones (RT-ROOT); --manifest is a dry-run manifest of this tree whose sidecar
+           sha256 still matches, planned from the records of this --out (RT-MANIFEST); --ruling-for retention.DELETE=<ledger ID>
+           names a row of paths.FIX_LEDGER whose fix_id starts with retention.RULING_PREFIX (R-GREGG-), whose authorized_by
+           begins with the word Gregg, whose status begins with RULED (any case) and whose text quotes this manifest's sha256 -
+           in full or its first 12 hex digits or more; its file name alone does not count (RT-RULING: Gregg's go is for one
+           manifest; code cannot prove who wrote a row - the guard is procedural, no session writes an R-GREGG row without
+           Gregg's words, plus these checks); the table and the holds file only grew since the plan (their planned bytes still
+           hash to the planned digests: RT-RECORDS); and, checked for EVERY item before anything is deleted, the item directory
+           holds exactly the paths listed with the
            same kind, size, mtime and inode (and sha256 for a content manifest) (RT-MATCH), is still expired by the records now
            (RT-NOT-EXPIRED) and is not held now (RT-HELD). Then, item by item, it unlinks the listed files (each re-checked right
            before), removes the listed MS directories deepest first with os.rmdir (empty directories only; never a recursive
@@ -47,12 +57,16 @@ Actions and units (records <out>/_records/retention/<unit>.json):
            that does not end done stops the delete. Deleting raw data always needs Gregg's go: there is no other path to a
            delete in this step.
 Inputs:  the raw tree retention.RAW_ROOT (names; os.lstat of the paths of manifest items only); <out>/retention.TABLE_NAME and
-         <out>/retention.HOLDS_NAME; paths.FIX_LEDGER (delete). Every key: `exopipe3 config --section retention`.
+         <out>/retention.HOLDS_NAME; paths.FIX_LEDGER (delete); paths.DATA_DECISIONS through core/exclusions (its
+         do-not-delete rows; plan and delete). Every key: `exopipe3 config --section retention`.
 Failure modes (exit 2 = refused): RT-ROOT the raw root is not a directory, or a delete's --out is not retention.ROOT;
          RT-TABLE a table or holds row that cannot be read;
          RT-RECORD / RT-HOLD an invalid record, hold or release; RT-CHECKSUM an unknown checksum kind; RT-MANIFEST, RT-RULING,
-         RT-RECORDS, RT-MATCH, RT-NOT-EXPIRED, RT-HELD (delete, above). No space gate (SPACE_GATE below). Exit 3: the tree holds no item
-         in the selection.
+         RT-RECORDS, RT-MATCH, RT-NOT-EXPIRED, RT-HELD (delete, above); RT-DO-NOT-DELETE (plan and delete) a manifest item in
+         a do-not-delete cell, or - fail closed - data_decisions.csv missing or unreadable, a do-not-delete row whose LST,
+         date or subband cannot be read, a row with deletion wording (delet, keep raw, retain, preserv, don't) but not
+         "do not delete", or a cell whose UTC ranges cannot be computed. No space gate (SPACE_GATE below). Exit 3:
+         the tree holds no item in the selection.
 Selectors: --nights (UT dates of the tree) and --scopes (subbands) restrict plan; record and hold take --scopes as the
          subbands they cover.
 NOT YET: holds from a review-page action (the command only); extraction of a held range to a kept area with a checksum
@@ -64,7 +78,7 @@ import sys
 SUMMARY = 'raw night data kept 2 weeks: retention table, extraction holds, expiry plan (dry run) and the ruled delete'
 TIERS = ()
 SELECTORS = ('nights', 'scopes')
-CONFIG = ('retention', 'paths')
+CONFIG = ('retention', 'paths', 'exclusions', 'instrument')
 WRITES = True
 PRODUCTS = False          # writes tables and manifests, no data product (no GITTAG to stamp)
 SPACE_GATE = False        # the one writer step without the space gate (cli.main; core/space.py): its delete FREES room, and
@@ -132,6 +146,7 @@ def run(args, run):
     from exopipe.phase3.core import ledger, record
     from exopipe.phase3.core.record import Refusal
     from exopipe.phase3.lib.retention import plan as P
+    from exopipe.phase3.lib.retention import protect as D
     from exopipe.phase3.lib.retention import table as T
     c = CFG.retention
     out = run.out_root
@@ -146,6 +161,9 @@ def run(args, run):
         pl = P.make_plan(c.RAW_ROOT, out, now=now, nights=_nights(args), subbands=_set(args.scopes),
                          checksum=args.checksum, max_items=args.max_items, stat=not run.dry_run)
         by = pl.counts()
+        irr = D.irregular_note(pl.protect)   # do-not-delete rows that protect their cells but want fixing
+        if irr:
+            print('retention plan: %s' % irr, file=sys.stderr)
         if run.dry_run:                  # names and statuses only: no lstat, no checksum, nothing written
             print('retention plan (dry run: listed and classified only - no stat, no checksum, nothing written): %d items '
                   '(%s); %d expired, %d would be in the manifest%s' % (
@@ -174,6 +192,8 @@ def run(args, run):
             else:
                 u.note('no expired item: no manifest written')
             u.note(line)
+            if irr:
+                u.note(irr)
         print('retention plan: %s; table %s%s' % (line, plan_csv, '; manifest %s' % man_csv if man_csv else ''),
               file=sys.stderr)
         return run.exit_code()

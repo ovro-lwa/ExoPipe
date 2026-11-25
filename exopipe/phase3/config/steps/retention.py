@@ -51,4 +51,9 @@ class retention(_Section):
     CHECKSUM = 'identity'               # 'identity': per file size, mtime (ns) and inode, sha256 per item over them (reads no
                                         # data); 'content': also sha256 of every file's bytes (reads all of it: ~45 GB per
                                         # subband hour of .ms.tar sets; a question for Gregg, see the pull request)
+    # seconds added on both sides of each UTC range of a do-not-delete cell of data_decisions.csv (lib/retention/protect.py):
+    # the ranges come from the standard GMST formula with UTC taken as UT1 (core/sidereal.py; under 1 s from Phase 1's
+    # conversion), so the pad protects more, never less
+    DO_NOT_DELETE_PAD_S = 300.0
     RULED = {'RETENTION_DAYS': 'R-GREGG-20261117-ORCHESTRATION-DESIGN-COMMENTS'}
+    PROTECTED_KEYS = ('DO_NOT_DELETE_PAD_S',)

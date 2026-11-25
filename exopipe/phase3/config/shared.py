@@ -18,6 +18,8 @@ class instrument(_Section):
     SUBBAND_FREQ_HZ = dict(_p2.SUBBAND_FREQ_HZ)       # Hz, exact subband centres (label -> Hz)
     SUBBAND_BANDS = {k: tuple(v) for k, v in _p2.SUBBAND_BANDS.items()}   # band label -> member subbands
     INTEGRATION_S = _p2.LWA_DT                        # s, one integration
+    SITE_LON_DEG = float(_p2.OVRO_LOC.lon.deg)        # deg east (west negative): the observatory, common/pipeline_config
+                                                      # .OVRO_LOC (Phase 1's LST conversion uses it); core/sidereal.py
     del _p2
 
 
@@ -139,6 +141,16 @@ class exclusions(_Section):
     # tiers whose readers read the snapshot scopes per night (core/exclusions.for_tier: 'snapshot-gpu' on a GPU-frame cell,
     # 'snapshot' on every other night); the deep tier reads the default
     SNAPSHOT_SCOPE_TIERS = ('snapshot', 'sublst', '10s', '1min', '10min')
+    # reason text of a do-not-delete row (Gregg's rows "ionospheric vortex event; do not delete (Gregg 2026-06-28)": 255 rows,
+    # 17 LST-hour cells on 2026-11-25): its cell's raw visibilities are never deleted (core/exclusions.do_not_delete_cells;
+    # lib/retention/protect.py). data_decisions.csv has no structured column or bracket tag for it, so the reason is matched
+    # as free text: case-insensitive, with hyphens, underscores and runs of white space read as one space, any verdict
+    DO_NOT_DELETE_TEXT = 'do not delete'
+    # FAIL CLOSED on other wording: a row with a field that matches this (case-insensitive, on the same normalized text) but
+    # no field with DO_NOT_DELETE_TEXT refuses the do-not-delete read, naming its line (it may mean to protect raw data in
+    # words the gate does not read). Plain 'keep' is neither: it is the readmission verdict. On 2026-11-25 no row of the live
+    # file matches (its 255 deletion-related rows all say "do not delete")
+    DO_NOT_DELETE_SUSPECT_RE = r"delet|keep raw|retain|preserv|don['\u2019`]t"
 
 
 class astrometry(_Section):
