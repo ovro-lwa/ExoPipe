@@ -4,6 +4,8 @@ build -> views -> test -> carry -> swap -> start -> hub -> verify (+ page-index 
 lines written on the old servers between the copy and the swap are appended at the swap, sublst_cumulative.sh:106-120).
 
 build  (unit sublst_<run>_build)  the build lock (G12; sublst_cumulative.sh:23 flock, servers never inherit it); the
+       version each LST run names held while the build reads it (G30: a placement that switches one during the merge
+       refuses the build, whose follow-up reads the new version; lib/serve/versions.pinned); the
        generation-mix gate G8 (every LST run has candidates/, pertie_detections.csv, a verified conform_inputs/ whose
        CONFORM_LOG.txt read lines name it (sublst_cumulative.sh:60, 76-96) and a pos_kind column - else exit 2;
        today the caller skipped the cumulative and exited 0, sublst_catalog_publish.sh:96-100, batch row B-73);
@@ -516,13 +518,27 @@ def omission_table(plan, u):
     return table
 
 
+def pin_lsts(plan, u, stack):
+    """G30 THE LST RUNS READ ARE PINNED (lib/serve/versions.py): the version each LST run names when the build starts is held
+    (retention never deletes it under the merge) and stamped; the merge (production's sublst_cumulative.py, in place) reads the
+    runs by their names, so after it the build refuses when any was switched meanwhile (versions.moved) - a placement during
+    the build requested the one follow-up build that reads the new version (lib/serve/coalesce.py). Holds the versions until
+    ``stack`` closes (the build stage's end); records {LST: version run read} as u.meta['lst_versions']. Returns the pins."""
+    runs = {lst_run(l): l for l in plan.lsts}
+    pins = stack.enter_context(versions.pinned(list(runs), note=f'serve --tier sublst build of {plan.run_name}'))
+    u.meta['lst_versions'] = {runs[U]: d for U, (d, _s) in pins.items()}
+    return pins
+
+
 def build_stage(run, plan):
     S = _CFG().serve
     B = build_dir(plan)
-    with run.unit(f'sublst_{plan.run_name}_build', stage='build', tier='sublst', lsts=plan.lsts, parity=plan.parity) as u:
+    with run.unit(f'sublst_{plan.run_name}_build', stage='build', tier='sublst', lsts=plan.lsts, parity=plan.parity) as u, \
+            contextlib.ExitStack() as held:
         flow.excl_note(u, 'sublst')
         if not plan.lsts:
             raise NoInput('no LST run to merge (no Run_SLST<hh>B under the runs root, or --lsts empty)')
+        pins = pin_lsts(plan, u, held)
         bad = generation_mix(plan.lsts)
         if bad:
             u.refuse('G8 sub-LST generation mix: ' + '; '.join(f'{l}: {why}' for l, why in bad)
@@ -560,6 +576,11 @@ def build_stage(run, plan):
                           unit=u)
         if not res.ok:
             u.refuse(f'merge failed: {res.reason or scripts.last_line(res.tail)}')
+        moved = versions.moved(pins)                     # the merge read each LST run by its name: one version of each?
+        if moved:
+            u.refuse(f'G30 LST runs placed during the build: {", ".join(moved)} switched to a new version while the merge read '
+                     f'them - the build may mix two versions of an LST; the served cumulative stays as it is (the placement '
+                     f'requested the follow-up build, lib/serve/coalesce.py)')
         for f in ('deep_omission.csv', 'deep_omission_dropped.csv', 'deep_omission_summary.txt'):
             if not os.path.exists(os.path.join(B, f)):
                 u.refuse(f'the merge applied no deep omission: {B}/{f} not written (sublst_deep_omission_drop.finish)')
@@ -897,28 +918,31 @@ def switch_stage(run, plan, state):
     return u
 
 
-def catch_up(P, U, design_b, marks, maps=None):
+def catch_up(P, U, design_b, marks, maps=None, journal_dirs=None):
     """The journal lines written on the old run P after the seed carry/copy, into U's served version: design B,
     journals.sublst_carry_between from the marks (maps loaded before the locks); else journals.append_between (the exact
-    lines U lacks). Both are safe to repeat (an owed catch-up is retried in full). The caller holds the journal locks."""
+    lines U lacks; ``journal_dirs`` its journals, default serve.SUBLST_JOURNALS - the deep run's: versions.journal_dirs). Both
+    are safe to repeat (an owed catch-up is retried in full). The caller holds the journal locks."""
     if design_b:
         return journals.sublst_carry_between(P, U, marks, maps=maps)
-    return journals.append_between(P, U)
+    return journals.append_between(P, U, journal_dirs)
 
 
-def _owe(plan, v, prev, P, design_b, marks, e):
-    """Record the owed catch-up after a switch (versions.owe_catchup); the refusal text."""
+def _owe(plan, v, prev, P, design_b, marks, e, journal_dirs=None):
+    """Record the owed catch-up after a switch (versions.owe_catchup; ``journal_dirs`` the journals it covers, default
+    serve.SUBLST_JOURNALS); the refusal text."""
     head = (f'SWITCHED {plan.U} to version {v.vid}, but the catch-up of the journal lines written on '
             f'{prev.vid if prev else P} failed ({type(e).__name__}: {str(e)[:300]})')
     try:
         p = versions.owe_catchup(plan.U, {'from_version': prev.vid if prev else None, 'from_run': P, 'to_version': v.vid,
                                           'design_b': bool(design_b), 'marks': marks, 'error': f'{type(e).__name__}: {e}'[:600],
-                                          'note': f'serve --tier sublst {plan.run_name}'})
+                                          'journals': list(journal_dirs) if journal_dirs is not None else None,
+                                          'note': f'serve --tier {plan.tier} {plan.run_name}'})
     except Exception as e2:
         return (f'{head} - AND the owed catch-up could not be recorded ({e2}): no build or switch of {plan.U} may run until '
                 f'the lines of {P} are caught up by hand')
     return (f'{head} - OWED ({p}): every later build or switch of {plan.U} refuses, and {prev.vid if prev else P} is kept, '
-            f'until the catch-up completes (the next serve --tier sublst retries it first)')
+            f'until the catch-up completes (the next serve --tier {plan.tier} retries it first)')
 
 
 def _add_failure(e, text):
@@ -940,7 +964,8 @@ def catchup_stage(run, plan):
     rec = versions.owed_catchup(plan.U)
     if rec is None:
         return None
-    with run.unit(f'sublst_{plan.run_name}_catchup', stage='catch-up', tier='sublst', parity=plan.parity) as u:
+    J = rec.get('journals') or S.SUBLST_JOURNALS          # the deep run's: the journals its switch caught up
+    with run.unit(f'{plan.tier}_{plan.run_name}_catchup', stage='catch-up', tier=plan.tier, parity=plan.parity) as u:
         cur = versions.served(plan.U)
         if cur is None or cur.vid != rec.get('to_version'):
             u.refuse(f'the owed catch-up is into version {rec.get("to_version")}, but {plan.U} names '
@@ -949,13 +974,13 @@ def catchup_stage(run, plan):
         if not P or not os.path.isdir(P):
             u.refuse(f'the old run {P} of the owed catch-up is gone - its journal lines cannot be caught up')
         maps = journals.sublst_carry_maps(P, cur.run) if rec.get('design_b') else None
-        with versions.journal_locks(plan.U, S.SUBLST_JOURNALS):
-            app = catch_up(P, plan.U, rec.get('design_b'), rec.get('marks') or {}, maps)
+        with versions.journal_locks(plan.U, J):
+            app = catch_up(P, plan.U, rec.get('design_b'), rec.get('marks') or {}, maps, journal_dirs=J)
             versions.catchup_done(plan.U, rec)
         u.meta.update(owed=rec, caught_up=app)
         u.note(f'the owed catch-up of {rec.get("from_version")} into {cur.vid} completed: {app}; record removed')
-        for J in S.SUBLST_JOURNALS:
-            j = os.path.join(plan.U, J, 'judgements.jsonl')
+        for jd in J:
+            j = os.path.join(plan.U, jd, 'judgements.jsonl')
             if os.path.exists(j):
                 u.add_output(j, 'judgement_journal')
     return u
@@ -965,11 +990,11 @@ def retire_stage(run, plan, args):
     """RETENTION (unit sublst_<run>_retire): versions.retire on U - a dry run without --retire-plan (the plan written, its
     path in the record; nothing deleted), the planned deletions with it. Returns the unit."""
     plan_path = getattr(args, 'retire_plan', None)
-    with run.unit(f'sublst_{plan.run_name}_retire', stage='retire', tier='sublst', parity=plan.parity,
+    with run.unit(f'{plan.tier}_{plan.run_name}_retire', stage='retire', tier=plan.tier, parity=plan.parity,
                   apply=bool(plan_path)) as u:
         if not versions.all_versions(plan.U):
             raise NoInput(f'{plan.U} has no versions under {versions.root_of(plan.U)}')
-        res = versions.retire(plan.U, plan=plan_path, note=f'serve --tier sublst {u.name}')
+        res = versions.retire(plan.U, plan=plan_path, note=f'serve --tier {plan.tier} {u.name}')
         if plan_path is None:
             u.meta.update(plan=res['plan'], retire=[r['version'] for r in res['retire']])
             u.note(f'DRY RUN: {len(res["retire"])} version(s) would be retired '
@@ -1040,21 +1065,28 @@ def _fresh_plan(args, run_):
 def run(args, run, plan, stages):
     """THE COALESCING BUILDER around build_and_serve (module text). Without build and start (page-index, retire, hub, verify
     alone) the stages run directly."""
-    from exopipe.phase3.lib.serve import coalesce
     if not set(COALESCED_STAGES) & set(stages):
         return build_and_serve(args, run, plan, stages)
+    return coalesced(args, run, plan, stages, build_and_serve)
+
+
+def coalesced(args, run, plan, stages, body):
+    """``body(args, run, plan, stages)`` through the coalescing slot of plan.U (lib/serve/coalesce.py): run now, or - when
+    another builder of U runs - left to its follow-up (unit <tier>_<run>_coalesced, no-input: exit 3); each follow-up makes
+    the plan again (_fresh_plan). The deep tier's versioned publish takes the same slot (lib/serve/deep.py)."""
+    from exopipe.phase3.lib.serve import coalesce
     versions._guard(plan.U, 'the coalescing slot of')
     slot = coalesce.slot_for(plan.U)
     plans, failed = [plan], []
 
     def build():
         try:
-            build_and_serve(args, run, plans.pop() if plans else _fresh_plan(args, run), stages)
+            body(args, run, plans.pop() if plans else _fresh_plan(args, run), stages)
         except Exception as e:                         # re-raised below once the slot is released (drain records it)
             failed.append(e)
             raise
         return 0
-    res = slot.submit(build, note=f'serve --tier sublst {run.run_id}')
+    res = slot.submit(build, note=f'serve --tier {plan.tier} {run.run_id}')
     builds = res.get('builds') or []
     if len(builds) > 1:
         print(f'serve: coalescing builder of {plan.U}: {len(builds)} builds (this invocation\'s and {len(builds) - 1} '
@@ -1062,7 +1094,7 @@ def run(args, run, plan, stages):
     if failed:
         raise failed[0]
     if res['status'] in ('coalesced', 'covered'):
-        with run.unit(f'sublst_{plan.run_name}_coalesced', stage='coalesce', tier='sublst', slot=slot.d) as u:
+        with run.unit(f'{plan.tier}_{plan.run_name}_coalesced', stage='coalesce', tier=plan.tier, slot=slot.d) as u:
             b = res.get('builder') or {}
             u.meta['coalesce'] = {'status': res['status'], 'builder': b}
             raise NoInput(f'COALESCED ({res["status"]}): ' + (

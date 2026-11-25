@@ -438,7 +438,7 @@ def test_sublst_switch():
     out = f'{d}/out'
     rels = {'queue': 'judgements/queue_V.txt', 'catalog': 'source_catalogs_V'}
     page = types.SimpleNamespace(key='V', at=lambda f, root=None: os.path.join(root, rels[f]) if f in rels else None)
-    plan = types.SimpleNamespace(U=U, U_src=U, run_name='Run_SLSTB', parity=False, pages=[page])
+    plan = types.SimpleNamespace(U=U, U_src=U, run_name='Run_SLSTB', parity=False, pages=[page], tier='sublst')
     J = CFG.serve.SUBLST_JOURNALS[0]
     write(f'{U}/{J}/judgements.jsonl', '{"a": 1}\n')                       # the served legacy run with a journal
     write(f'{U}/candidates/V/x.txt', 'old')
@@ -903,7 +903,7 @@ def test_coalescer_wired():
     U = f'{d}/Run_SLSTB'
     os.makedirs(d)
     out = f'{d}/out'
-    plan = types.SimpleNamespace(U=U, U_src=U, run_name='Run_SLSTB', parity=False, pages=[], tag='first')
+    plan = types.SimpleNamespace(U=U, U_src=U, run_name='Run_SLSTB', parity=False, pages=[], tag='first', tier='sublst')
     args = types.SimpleNamespace()
     calls = []
     real = (sublst_build.build_and_serve, sublst_build._fresh_plan)
@@ -1004,7 +1004,7 @@ def test_review_round2():
         build(B, 'new')
         write(f'{B}/{J}/judgements.jsonl', '{"a": 1}\n')
         return U, B, types.SimpleNamespace(U=U, U_src=U, run_name='Run_SLSTB', parity=False, pages=[page], family='review',
-                                           refused={})
+                                           refused={}, tier='sublst')
 
     def new_run():
         return Run('serve', ['test'], f'{d}/out', CFG, config_sections=None)
