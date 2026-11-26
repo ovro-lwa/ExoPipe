@@ -3,9 +3,10 @@
 Classes: snapshot_run (a chain run directory: R1-R5 and R7 of ops/snapshot_rechain_content_test.py recomputed from the run's
 own files, plus no refusal marker, the per-Stokes views agreeing with the union catalogues, Card 2 per frame (card2) and the
 restore-only 3-D gate (restore) read back from the per-detection record), restore_wave_diff (the restore-only wave's per-batch
-test, restore_wave_served_diff.json + .csv, read back against both runs' records), tie_cache (one cell's tie
-cache file), snapshot_tie_summary (the chain_summary.json a per-cell --stop-after-tie writes). The run content test's
-operating points are config (catalog_snapshot.TEST_GATE3D_PCT, TEST_MEMBER_ORDER, GHOST_DATES). R6 (missing panels) is the
+test, restore_wave_served_diff.json + .csv, read back against both runs' records), served_tiers (the run's per-tier serving
+table, stage tierserve: production's columns, its per-row and per-source rules, the served sources = the chain's), tie_cache
+(one cell's tie cache file), snapshot_tie_summary (the chain_summary.json a per-cell --stop-after-tie writes). The run content
+test's operating points are config (catalog_snapshot.TEST_GATE3D_PCT, TEST_MEMBER_ORDER, GHOST_DATES). R6 (missing panels) is the
 pages step's class snapshot_page_run. Every test reads content and returns (passed, value, detail).
 """
 import calendar
@@ -542,3 +543,85 @@ def restore_wave_rows(path, **ctx):
         '; '.join(msgs) if msgs else
         f'{j.get("tag_new")} against {j.get("tag_old")}: {len(prev)} previously served, {n_served} served again, {len(rows)} listed '
         f'({dict(sorted(by.items()))}); restored {n_tag} ({served_tag} served); status {str(j.get("status"))[:200]}')
+
+
+# served_tiers.csv of a chain run (clv15 phase3_snapshot_tierserve.evaluate's rows, in its column order; TIERS, OUTCOMES)
+SERVED_TIERS_COLUMNS = ('src_index', 'identity_jname', 'chain_outcome', 'tier', 'n_members_tier', 'n_stripped_tier',
+                        'best_det_uid_tier', 'best_snr_tier', 'best_stokes_tier', 'best_verdict_tier', 'singleton_floor_tier',
+                        'n_inst_tier', 'multi_integration_tier', 'routes_tier', 'qualifies', 'fail_reason',
+                        'tier_holds_source_best', 'snr_at_floor_rounding', 'add_without_products', 'identity_qualifies_tiers',
+                        'n_members_10s', 'best_snr_10s', 'n_members_1min', 'best_snr_1min', 'identity_note')
+SERVED_TIERS_TIERS = ('10s', '1min')
+SERVED_TIERS_OUTCOMES = ('served', 'no-route', 'not-designated', 'fit-pending')
+
+
+@content_test('served_tiers')
+def served_tiers_rows(path, **ctx):
+    """served_tiers.csv, the per-tier serving table of a chain run (clv15 phase3_snapshot_tierserve, the chain's stage
+    tierserve, P-G27), on its content: production's columns in its order; at least one row; one row per (source, tier), the
+    tier 10s or 1min and the chain outcome one of production's four; qualifies 0 or 1, and 1 exactly when the tier has a route
+    and no failure reason; add_without_products 1 exactly when the tier qualifies a source the chain did not serve; one chain
+    outcome and identity per source, and every row's identity columns equal to its source's rows (the tiers it qualifies in, in
+    row order; members per tier); every served source has an identity and no identity is two served sources; the served sources
+    are as many as the chain served (n_served of the chain_summary.json beside the table)."""
+    with open(path, newline='') as f:
+        rd = csv.DictReader(f)
+        cols = tuple(rd.fieldnames or ())
+        rows = list(rd)
+    if cols != SERVED_TIERS_COLUMNS:
+        return False, len(rows), 'columns %s, not phase3_snapshot_tierserve\'s %s' % (list(cols), list(SERVED_TIERS_COLUMNS))
+    if not rows:
+        return False, 0, 'no rows: a chain run that served sources has its per-tier table'
+    bad = collections.Counter()
+    by = collections.OrderedDict()
+    for r in rows:
+        q = r['qualifies']
+        if r['tier'] not in SERVED_TIERS_TIERS or r['chain_outcome'] not in SERVED_TIERS_OUTCOMES or q not in ('0', '1'):
+            bad['tier, chain outcome or qualifies not a value of tierserve'] += 1
+            continue
+        if (q == '1') != bool(r['routes_tier']) or (q == '1') != (r['fail_reason'] == ''):
+            bad['qualifies without a route, or with a failure reason (or the reverse)'] += 1
+        if r['add_without_products'] != str(int(q == '1' and r['chain_outcome'] != 'served')):
+            bad['add_without_products not (qualifies and not served by the chain)'] += 1
+        by.setdefault(r['src_index'], []).append(r)
+    ident = collections.Counter()
+    for k, rr in by.items():
+        tiers = [r['tier'] for r in rr]
+        if len(set(tiers)) != len(tiers):
+            bad['a (source, tier) on two rows'] += 1
+        if len({(r['chain_outcome'], r['identity_jname']) for r in rr}) != 1:
+            bad['a source with two chain outcomes or identities'] += 1
+        per = {r['tier']: r for r in rr}
+        q = ';'.join(r['tier'] for r in rr if r['qualifies'] == '1')
+        for r in rr:
+            if r['identity_qualifies_tiers'] != q or any(
+                    r['n_members_%s' % t] != (per[t]['n_members_tier'] if t in per else '0') for t in SERVED_TIERS_TIERS):
+                bad['identity columns differ from the source\'s rows'] += 1
+                break
+        if rr[0]['chain_outcome'] == 'served':
+            ident[rr[0]['identity_jname']] += 1
+    if ident.get(''):
+        bad['served sources without an identity'] += ident['']
+    two = sum(1 for j, n in ident.items() if j and n > 1)
+    if two:
+        bad['identities on two served sources'] += two
+    n_srv = sum(ident.values())
+    sp = os.path.join(os.path.dirname(os.path.abspath(path)), 'chain_summary.json')
+    try:
+        with open(sp) as f:
+            n_chain = json.load(f).get('n_served')
+    except (OSError, ValueError, AttributeError) as e:
+        return False, len(rows), 'no readable chain_summary.json beside it (%s): the served sources cannot be compared' % e
+    try:
+        same = n_chain is not None and int(n_chain) == n_srv
+    except (TypeError, ValueError):
+        same = False
+    if not same:
+        bad['served sources %d, the chain served %s' % (n_srv, n_chain)] += 1
+    qual = collections.Counter((r['tier'], r['qualifies']) for r in rows if r['chain_outcome'] == 'served')
+    return not bad, len(rows), ('%d rows, %d sources (%d served; the chain summary n_served %s); served (source, tier) '
+                                'qualifying: 10s %d of %d, 1min %d of %d%s' % (
+                                    len(rows), len(by), n_srv, n_chain,
+                                    qual[('10s', '1')], qual[('10s', '1')] + qual[('10s', '0')],
+                                    qual[('1min', '1')], qual[('1min', '1')] + qual[('1min', '0')],
+                                    ('; FAIL ' + '; '.join('%s: %d' % kv for kv in bad.items())) if bad else ''))
