@@ -4,7 +4,7 @@ this module). Each test reads the file's CONTENT; ``ctx`` (passed by the step wh
 directory allow (`exopipe3 verify <class> <path>`).
 
 Classes: review_page, page_index, review_queue, pages_input, astrometry_figure, tess_coverage, survivors_review_dir,
-sublst_page_run, snapshot_page_run, filter_catalog, strat_queue; tenmin_frame_times (serve's 10-minute TESS step writes it). (localization_table is catalog's class: catalog --stages localize
+sublst_page_run, snapshot_page_run, snapshot_card2, filter_catalog, strat_queue; tenmin_frame_times (serve's 10-minute TESS step writes it). (localization_table is catalog's class: catalog --stages localize
 writes the tables, crosscheck decision 6.)
 """
 import csv
@@ -651,6 +651,124 @@ def snapshot_run(path, **ctx):
         bad.append(f'views: {n_count} identities whose n_det_tier differs from the detections.csv rows of their page '
                    f'directories')
     return not bad, len(dfiles), '; '.join(bad) or f'{len(dfiles)} page directories; R2 R6 R7 and the views pass'
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# snapshot_card2: the Card 2 back-fill of a snapshot chain run (clv15 phase3_snapshot_card2.py, the per-tier hook's last step)
+# ---------------------------------------------------------------------------------------------------------------------
+
+CARD2_FILTER_COLUMNS = ('cand_id', 'ra', 'dec', 'v_over_i_here', 'card2_would_remove')     # phase3_snapshot_card2.py backfill
+CARD2_FILTER_FIRST = '# Card 2 '                     # card2_filter.csv's comment line (the review filter skips it)
+CARD2_RECORD_KEY = ('det_uid', 'cand_id', 'tier', 'served', 'identity_jname')   # copied from the record row by row
+# the columns its readers use (lib/catalog/deep_omission.card2_removed, lib/serve/snapshot_view, the review filter)
+CARD2_READ = ('det_uid', 'cand_id', 'ra_peak', 'dec_peak', 'ra', 'dec', 'tier', 'peak_jyb', 'served', 'identity_jname',
+              'i_here_jy', 'v_over_i_here', 'card2_would_remove', 'card2_ratio')
+
+
+@content_test('snapshot_card2')
+def card2_backfill(path, **ctx):
+    """The Card 2 back-fill's files, each tested with the others beside it (phase3_snapshot_card2.py backfill):
+    card2_vleak.csv - its columns are the names of card2_vleak_columns.csv, in order, and hold every column its readers use;
+      its rows are, in order, the Stokes V rows of the detection_record.csv.gz beside it that reached the association pool
+      (in_assoc_pool 1), each with the record's det_uid, cand_id, tier, served and identity_jname; one ratio on every row; a
+      row with a ratio v_over_i_here has |peak_jyb| / i_here_jy equal to it (within 1e-4, or 1e-3 of it) and the flag
+      card2_would_remove 1 exactly when the ratio is at or below card2_ratio (a ratio within half a unit of its fifth decimal
+      of the threshold is counted, not judged); a row without a ratio has no flag (Card 2 cannot act there);
+    card2_vleak_columns.csv - columns name, unit, meaning; the names are card2_vleak.csv's columns;
+    card2_filter.csv - its comment line, then cand_id, ra, dec, v_over_i_here, card2_would_remove of exactly the served rows
+      of card2_vleak.csv (served 1), in its order."""
+    import gzip
+    d, base = os.path.dirname(os.path.abspath(path)), os.path.basename(path)
+    vp, cp, fp = (os.path.join(d, n) for n in ('card2_vleak.csv', 'card2_vleak_columns.csv', 'card2_filter.csv'))
+    if base not in ('card2_vleak.csv', 'card2_vleak_columns.csv', 'card2_filter.csv'):
+        return False, None, f'{base} is not a file of the Card 2 back-fill'
+    for p in (vp, cp, fp):
+        if not os.path.isfile(p):
+            return False, None, f'no {os.path.basename(p)} beside it: the back-fill writes the three files together'
+    csv.field_size_limit(10 ** 9)
+    with open(vp, newline='') as f:
+        rd = csv.reader(f)
+        head = next(rd, [])
+        raw = list(rd)
+    if any(len(r) != len(head) for r in raw):
+        return False, len(raw), f'{sum(1 for r in raw if len(r) != len(head))} rows of card2_vleak.csv without {len(head)} fields'
+    rows = [dict(zip(head, r)) for r in raw]
+    with open(cp, newline='') as f:
+        crows = list(csv.reader(f))
+    names = [r[0] for r in crows[1:] if r]
+    if base == 'card2_vleak_columns.csv':
+        ok = bool(crows) and crows[0] == ['name', 'unit', 'meaning'] and names == head
+        return ok, len(names), (f'{len(names)} column definitions, the columns of card2_vleak.csv' if ok else
+                                f'header {crows[0] if crows else None}; names {names} vs card2_vleak.csv {head}')
+    served = [r for r in rows if r.get('served') == '1']
+    if base == 'card2_filter.csv':
+        with open(fp, newline='') as f:
+            first = f.readline()
+            frows = list(csv.reader(f))
+        want = [list(CARD2_FILTER_COLUMNS)] + [[r.get(k, '') for k in CARD2_FILTER_COLUMNS] for r in served]
+        if not first.startswith(CARD2_FILTER_FIRST):
+            return False, len(frows) - 1, f'first line {first[:60]!r}, not the back-fill\'s comment line'
+        if frows != want:
+            n = sum(1 for a, b in zip(frows, want) if a != b) + abs(len(frows) - len(want))
+            return False, len(frows) - 1, f'{n} lines differ from the {len(served)} served rows of card2_vleak.csv'
+        return True, len(served), f'= the {len(served)} served rows of card2_vleak.csv, in its order'
+    bad = []
+    if head != names:
+        bad.append(f'columns {head} are not card2_vleak_columns.csv\'s {names}')
+    miss = [k for k in CARD2_READ if k not in head]
+    if miss:
+        return False, len(rows), f'lacks the column(s) {miss} its readers use'
+    ratios = {r['card2_ratio'] for r in rows}
+    if len(ratios) > 1:
+        bad.append(f'{len(ratios)} ratios {sorted(ratios)[:3]}')
+    n_ratio = n_self = n_flag = n_blank = n_at = 0
+    for r in rows:
+        v, ih, fl = r['v_over_i_here'], r['i_here_jy'], r['card2_would_remove']
+        if v == '':
+            n_blank += 1
+            if fl != '':
+                n_flag += 1
+            continue
+        n_ratio += 1
+        vf, pk, ihf, rt = _f(v), _f(r['peak_jyb']), _f(ih), _f(r['card2_ratio'])
+        if None in (vf, pk, ihf, rt) or ihf <= 0:
+            n_self += 1
+            continue
+        vv = abs(pk) / ihf
+        if abs(vv - vf) > max(1e-4, 1e-3 * vv):
+            n_self += 1
+        if abs(vf - rt) <= 0.5e-5:
+            n_at += 1
+        elif fl != ('1' if vf <= rt else '0'):
+            n_flag += 1
+    if n_self:
+        bad.append(f'{n_self} rows whose ratio is not |peak_jyb| / i_here_jy')
+    if n_flag:
+        bad.append(f'{n_flag} rows whose flag disagrees with their ratio (or is set without one)')
+    rec = os.path.join(d, 'detection_record.csv.gz')
+    try:
+        want = []
+        with gzip.open(rec, 'rt', newline='') as f:
+            rd = csv.reader(f)
+            rh = next(rd, None) or []
+            ix = [rh.index(k) for k in CARD2_RECORD_KEY]
+            ist, ipool = rh.index('stokes'), rh.index('in_assoc_pool')
+            for r in rd:
+                if r[ist] == 'V' and r[ipool] == '1':
+                    want.append(tuple(r[i] for i in ix))
+    except (OSError, EOFError, ValueError, csv.Error) as e:
+        return False, len(rows), f'no readable detection_record.csv.gz beside it ({type(e).__name__}: {e}): its rows cannot ' \
+                                 f'be compared with the record\'s Stokes V association-pool rows'
+    got = [tuple(r[k] for k in CARD2_RECORD_KEY) for r in rows]
+    if got != want:
+        n = sum(1 for a, b in zip(got, want) if a != b) + abs(len(got) - len(want))
+        bad.append(f'{n} rows differ from the record\'s {len(want)} Stokes V association-pool rows '
+                   f'({", ".join(CARD2_RECORD_KEY)}, in record order)')
+    nfl = sum(1 for r in served if r['card2_would_remove'] == '1')
+    return not bad, len(rows), ('; '.join(bad) if bad else
+                                f'{len(rows)} rows = the record\'s Stokes V association-pool rows ({len(served)} served); '
+                                f'{n_ratio} with a ratio, {n_blank} without (no flag); {nfl} served rows flagged at ratio '
+                                f'{next(iter(ratios), "-")}; {n_at} within rounding of the threshold')
 
 
 FILTER_COLUMNS = ('cand_id', 'stokes', 'lst', 'band', 'date', 'snr', 'ra', 'dec', 'size_beams', 'axis_ratio',
