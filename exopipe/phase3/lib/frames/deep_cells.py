@@ -345,12 +345,14 @@ def preview(c, stokes, excl, included=None, tier='deep'):
             else:
                 loo[d] = 'central' + ('' if inm.get(d, False) else ' (non-member night: no LOO)')
         else:
+            from exopipe.phase3.lib.masters import loo_link as LL     # the engine's LOO rule, shared with T3 and G-R5
             lh = c.header(lp)
             mh = c.header(mp)
-            pd, cd = str(lh.get('PARENTDG', '') or ''), str(mh.get('CONSTDIG', '') or '')
-            if pd and cd and pd != cd:
+            stale = LL.digest_stale(lh, mh)
+            if stale and stale[0] == 'PARENTDG':
+                pd, cd = stale[1], stale[2]
                 loo[d] = f'LOO STALE (PARENTDG {pd[:8]} != CONSTDIG {cd[:8]}): the engine REFUSES (D-G16)'
-            elif not pd and lh.get('COADDOP') != mh.get('COADDOP'):
+            elif stale:
                 loo[d] = 'LOO STALE (legacy, COADDOP differs): the engine REFUSES (D-G16)'
             else:
                 loo[d] = 'loo'
