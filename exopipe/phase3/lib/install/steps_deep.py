@@ -380,7 +380,8 @@ def mdw_source_gate(u, cell, roots, gen, rels, omit_vclean, gates):
     """Gate MDW-REC: where the cell's MDWSTAT card value comes from (lib/install/mdwstat) - the cell's dewarp record when
     one exists (its newest done attempt that recorded MDWSTAT: the apply of an accepted cell or the record stage of a
     not-accepted one), and then only if it is CURRENT for the generation's masters (coadd_final top level,
-    coadd._MASTER_RE, among ``rels``, generation-relative): pre-checked here by name, size and mtime against the record,
+    coadd._MASTER_RE, among ``rels``, generation-relative) and leave-one-out masters (coadd_final/loo, coadd._LOO_RE;
+    the record's loo_files): pre-checked here by name, size and mtime against the record,
     reading none of their bytes (mdwstat.stat_problems: a rewrite of the same size is left to the md5); the md5 of the
     staged copies decides (phase3_install, before b's trial copy). A stale record refuses, never falling back to the
     table. Without a dewarp record: install.MDWSTAT_TABLE, and a table that cannot be used refuses that cell here (an
@@ -400,18 +401,22 @@ def mdw_source_gate(u, cell, roots, gen, rels, omit_vclean, gates):
     omitted, probs = [], []
     if ch.source == MW.RECORD:
         u.add_input(ch.record)
-        stats = {}
-        for r in MW.master_names(rels):
-            try:
-                st = os.stat(os.path.join(gen, r))
-            except FileNotFoundError:
-                continue                          # absent: 'stamped by the record but not in the generation'
-            stats[os.path.basename(r)] = (st.st_size, st.st_mtime_ns)
+        def stats_of(rs):
+            out = {}
+            for r in rs:
+                try:
+                    st = os.stat(os.path.join(gen, r))
+                except FileNotFoundError:
+                    continue                      # absent: 'stamped by the record but not in the generation'
+                out[os.path.basename(r)] = (st.st_size, st.st_mtime_ns)
+            return out
+        stats, lstats = stats_of(MW.master_names(rels)), stats_of(MW.loo_names(rels))
         omitted = MW.omitted_masters(ch.files) if omit_vclean else []
-        probs, deferred = MW.stat_problems(ch, stats, omitted)
-        same = len(stats) - len(deferred)
+        probs, deferred = MW.stat_problems(ch, stats, omitted, lstats)
+        same = len(stats) + len(lstats) - len(deferred)
         detail = ((f'MDWSTAT from the dewarp record {ch.record} ({ch.entry}): {ch.value!r}; {same} of the {len(stats)} '
-                   f'masters of {gen}/coadd_final have the size and mtime the record stamped'
+                   f'masters and {len(lstats)} leave-one-out masters of {gen}/coadd_final have the size and mtime the '
+                   f'record stamped'
                    + (f'; {len(deferred)} left to the md5: ' + '; '.join(f'{n} {w}' for n, w in sorted(deferred.items())[:3])
                       + (' ...' if len(deferred) > 3 else '') if deferred else '')
                    + (f'; {len(omitted)} left out by --omit-vclean' if omitted else '')

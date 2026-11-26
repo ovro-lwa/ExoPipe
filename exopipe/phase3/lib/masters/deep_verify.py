@@ -118,26 +118,27 @@ def t2(gen_dir):
 
 def t3(gen_dir):
     """T3 LOO: every LOO master's PARENTDG = the master's CONSTDIG and NCOADD = master's - 1; one per in-master night when
-    2 <= N <= 20 (per Stokes: I and V)."""
+    2 <= N <= 20 (per Stokes: I and V). The link and the N range are lib/masters/loo_link's (the rule the search's D-G16
+    and the dewarp step's G-R5 share): digest_problem in T3's own form (legacy=False), ncoadd_problem, needed."""
     from astropy.io import fits
+    from exopipe.phase3.lib.masters import loo_link as LL
     c = _ctx(gen_dir)
     R, G, sc = c['R'], c['G'], c['sc']
     vs = _cfg().masters_verify
-    lo, hi = _cfg().masters_build.LOO_N_RANGE
     w = _weights(R)
     inm = sorted(d for d, x in w.items() if x.get('in_master') == '1')
     parts, ok = [], True
     for st in vs.T3_STOKES:
-        mvar = 'I_deep_Taper_R075' if st == 'I' else 'V_deep_Taper_R0'
+        mvar = LL.PARENTS[st]
         mh = fits.getheader(f'{G}/coadd_final/{sname(f"{mvar}_{sc}.fits", sc)}')
-        n, cdig = mh.get('NCOADD'), mh.get('CONSTDIG')
+        n = mh.get('NCOADD')
         loos = sorted(glob.glob(f'{G}/coadd_final/loo/*_{st}_loo_*.fits'))
         lbad = []
         for p in loos:
             hh = fits.getheader(p)
-            if hh.get('PARENTDG') != cdig or hh.get('NCOADD') != n - 1:
+            if LL.digest_problem(hh, mh, legacy=False) or LL.ncoadd_problem(hh, mh):
                 lbad.append(os.path.basename(p))
-        need = (lo <= n <= hi)
+        need = LL.needed(n)
         # I: production's rule (check_rebuild.py:77) - one LOO per in-master night = NCOADD; V (added, pure): each master
         # its own NCOADD (R-LOO-PER-STOKES-RATIFIED: a V frame dropped on grid mismatch leaves V with fewer constituents)
         if st == 'I':

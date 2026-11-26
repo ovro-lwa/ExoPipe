@@ -44,9 +44,10 @@ Stages (--stages, pipeline order; default all):
            meta.install {kind mdewarp, gen}
   record   routed cell NOT accepted: MDWSTAT = 'refused: <reason>' (steps_common.mdwstat_not_accepted of the final row:
            install.MDWSTAT_TABLE's forms) on the cell's masters in <REBUILD_ROOT>/<cell>/coadd_final (coadd._MASTER_RE;
-           not the PB maps), each then verified from its header (card read back, standard header valid); then the
-           applied=0 row in mdewarp_screens.csv (written last: it ends the cell's routing); meta.install {kind rebuild,
-           gen <promoted>}. An accepted cell's products carry MDWSTAT 'applied' from the apply (phase3_master_dewarp._apply)
+           not the PB maps) and on their leave-one-out masters in coadd_final/loo (coadd._LOO_RE; the same value, as
+           production's header repair stamped the archived ones; G-R5), each then verified from its header (card read
+           back, standard header valid); then the applied=0 row in mdewarp_screens.csv (written last: it ends the cell's
+           routing); meta.install {kind rebuild, gen <promoted>}. An accepted cell's products carry MDWSTAT 'applied' from the apply (phase3_master_dewarp._apply)
 
 Inputs:  the 19 x 2 measured masters of the LST (dewarp.REBUILD_ROOT before the working tree paths.COADD_SB_ROOT, per
          file); the generation of each routed accepted cell (<REBUILD_ROOT>/<cell>/{coadd_final/**,subtracted/} when that
@@ -69,7 +70,9 @@ Outputs (product classes):
                                applied=0 rows only (the applied=1 row and the published screen are the install's) and
                                checks its own cell's row inline ('dewarp.record_row')
          mdwstat_master        record stage, not-accepted cell: each promoted master after its MDWSTAT card (the masters
-                               of <REBUILD_ROOT>/<cell>/coadd_final the install takes), with the value and md5 as context;
+                               of <REBUILD_ROOT>/<cell>/coadd_final the install takes, and their leave-one-out masters
+                               in coadd_final/loo; the apply records an accepted cell's the same way), with the value
+                               and md5 as context;
                                checked inline from the header ('dewarp.mdwstat'), re-tested by --resume (card + md5);
                                the value each held before in meta.mdwstat. REBUILD_ROOT is not re-rooted by --out: a
                                test run sets it with --set (G-W refuses a production one while PRODUCTION_WRITES is False)
@@ -106,6 +109,15 @@ Failure modes (exit 2 = refused, with the gate named; 3 = no routed promoted cel
         measured on another master - refused before any write, naming both files and md5; the cell needs a re-measure. A
         measurement with no key for the scope records no identity: the value is stamped on G-A11 alone, with a note.
         A refusal of the LST unit refuses its cells ('measurement unit <LST> not done').
+  G-R5  a leave-one-out master of the cell's coadd_final/loo is not its parent master's by lib/masters/loo_link (the one
+        rule of the masters' T3 and the search's D-G16): the parent is missing, the parent digest is stale by the search's
+        rule (PARENTDG not the parent's CONSTDIG; without PARENTDG, COADDOP not the parent's), NCOADD is not the parent's
+        - 1, or LOOEXCL is not the night its name leaves out; or the value disagrees with its MDWARP ('applied' <=> MDWARP
+        T; LSWBSB without MDWARP takes none; on the apply's source: MDWARP not the parent's); or a parent the masters
+        build writes LOO masters of has another number of them in coadd_final/loo than the masters' count test wants
+        (loo_link.expected: NCOADD when it is in masters_build.LOO_N_RANGE, else none). Refused before any write: in the
+        record stage (no card, no applied=0 row) and, for an accepted cell, on the apply's source before the resample (no
+        generation written); then again in the apply's MDWSTAT record. The dry run previews both.
   G-W   (also) the promoted rebuild root, when a not-accepted cell will be stamped: up front when a --measurement shows
         one, else in that cell's record stage (the message names --set dewarp.REBUILD_ROOT).
   Per-scope measurement outcomes (REFUSED ..., REFERENCE ONLY, NOT ATTEMPTED) are table rows, not refusals.
@@ -315,16 +327,22 @@ def _dry_run(args, run, roots, stages, gate_bad, gw, staging, plan, refused, rou
                 if why:
                     pr(f'      WOULD REFUSE - {why}')
                     would.append(why)
-                if not acc and 'record' in stages:   # the record stage's MDWSTAT card (steps_cell.stamp_mdwstat, G-R3)
+                if not acc and 'record' in stages:   # the record stage's MDWSTAT card (steps_cell.stamp_mdwstat, G-R3, G-R5)
                     nmd = len(SC.mdwstat_files(roots, cell))
                     try:
                         v, vbad = SC.mdwstat_not_accepted(row), None
                     except ValueError as e:
                         v, vbad = None, str(e)
-                    pr(f'      record: MDWSTAT {v!r} on {nmd} promoted master(s)'
-                       + ('' if nmd and not vbad else f' - WOULD REFUSE (G-R3: {vbad or "no master"})'))
+                    fd = os.path.join(roots.rebuild, cell, 'coadd_final')
+                    loo = SC.loo_files(fd)
+                    lbad = SC.loo_problems(fd, v, loo)[0] if v is not None else []
+                    pr(f'      record: MDWSTAT {v!r} on {nmd} promoted master(s) and {len(loo)} leave-one-out master(s)'
+                       + ('' if nmd and not vbad else f' - WOULD REFUSE (G-R3: {vbad or "no master"})')
+                       + (f' - WOULD REFUSE ({SC.LOO_GATE}: {"; ".join(lbad[:2])})' if lbad else ''))
                     if not nmd or vbad:
                         would.append(f'G-R3: {cell}: {vbad or "no master in the promoted coadd_final"}')
+                    if lbad:
+                        would.append(f'{SC.LOO_GATE}: {cell}: {lbad[0]}')
                 if acc and groot and 'apply' in stages:    # G-A12 (the apply's gate): the screen and the master, by content
                     key = meas.screen_key(scope)
                     plain, pbc = SC.measured_files(os.path.join(groot, 'coadd_final'), scope)
@@ -340,6 +358,14 @@ def _dry_run(args, run, roots, stages, gate_bad, gw, staging, plan, refused, rou
                             would.append(f'G-A12: {cell}: {probs[0]}')
                         else:
                             pr(f'      G-A12: screen and master md5 equal the key (master md5 {key["master_md5"]})')
+                if acc and groot and 'apply' in stages:    # G-R5 on the apply's source (steps_cell.loo_source_gate)
+                    lbad, lchk = SC.loo_problems(os.path.join(groot, 'coadd_final'), None)
+                    if lbad:
+                        pr(f'      WOULD REFUSE - {SC.LOO_GATE} (the apply\'s source, before any write): '
+                           f'{"; ".join(lbad[:2])}')
+                        would.append(f'{SC.LOO_GATE}: {cell}: {lbad[0]}')
+                    else:
+                        pr(f'      {SC.LOO_GATE} (the apply\'s source): {lchk}')
             try:
                 cmg = SC.content_check_script()
             except Exception as e:

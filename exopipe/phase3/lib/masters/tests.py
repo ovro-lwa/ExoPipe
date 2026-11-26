@@ -489,13 +489,13 @@ def count_per_stokes(path, **ctx):
     parent, m = _loo_parent(path, loc)
     if parent is None or not os.path.exists(parent):
         return False, None, 'parent master missing'
-    lo, hi = _cfg().masters_build.LOO_N_RANGE
+    from exopipe.phase3.lib.masters import loo_link as LL     # the one count rule (G-R5 applies it too)
 
     def f():
         n = int(_hdr(parent).get('NCOADD') or 0)
         g = m.groupdict()
         have = glob.glob(os.path.join(loc['final'], 'loo', f"*_{g['st']}_loo_{g['taper']}_{g['rob']}{loc['token']}_{loc['scope']}.fits"))
-        want = n if lo <= n <= hi else 0
+        want = LL.expected(n)                                   # n when lo <= n <= hi (masters_build.LOO_N_RANGE), else 0
         return len(have) == want, len(have), f"Stokes {g['st']}: {len(have)} LOO masters, parent NCOADD {n} -> {want} expected"
     return _cached(('loocount', parent) + _dirstate(os.path.join(loc['final'], 'loo')), f)
 

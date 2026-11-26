@@ -832,8 +832,108 @@ def master_files(d):
 
 
 def mdwstat_files(roots, cell):
-    """The files the record stage writes MDWSTAT on: master_files of <REBUILD_ROOT>/<cell>/coadd_final."""
+    """The masters the record stage writes MDWSTAT on: master_files of <REBUILD_ROOT>/<cell>/coadd_final (its leave-one-out
+    masters, loo_files, take the same value: loo_problems)."""
     return master_files(os.path.join(roots.rebuild, cell, 'coadd_final'))
+
+
+def loo_files(d):
+    """The leave-one-out (LOO) masters of a coadd_final directory ``d``, sorted: the files of <d>/loo whose names match
+    lib/masters/coadd._LOO_RE - the set the archive publish copies to <LST>/<date>/<run>/<band>/<I|V>/deep/
+    (coadd._archive_publish_cell)."""
+    from exopipe.phase3.lib.masters.coadd import _LOO_RE
+    ld = os.path.join(d, 'loo')
+    try:
+        names = os.listdir(ld)
+    except (FileNotFoundError, NotADirectoryError):
+        return []
+    return sorted(os.path.join(ld, f) for f in names if _LOO_RE.match(f) and os.path.isfile(os.path.join(ld, f)))
+
+
+LOO_GATE = 'G-R5'
+
+
+def loo_problems(d, value=None, files=None):
+    """Gate G-R5 on the coadd_final directory ``d`` and its leave-one-out masters ``files`` (default loo_files(d)): whether
+    each takes ``value``, the MDWSTAT of the cell's masters, as production's Release 1 header repair gave every archived
+    LOO master its cell's value (exopipe_ops/header_repair_release1.py:1077-1090, mdw_cards :830-863; apply d of 2026-11-14,
+    DONE-20261114-HEADER-REPAIR-LATE-DEEP-CLASSES-449-CELLS) - when it is its parent's. ``value`` None: the source of an
+    apply (no card yet). Header reads only (core.record.fits_primary_cards). The checks:
+      link    the parent master (lib/masters/loo_link.parent_name) is in ``d`` and loo_link.link_problems is empty - the
+              one LOO-to-parent rule of the masters' T3 and the search's D-G16: the parent digest by the search's rule
+              (PARENTDG = the parent's CONSTDIG; without PARENTDG, COADDOP = the parent's), NCOADD = the parent's - 1 (T3),
+              LOOEXCL = the night the name leaves out;
+      MDWARP  with ``value``: 'applied' <=> MDWARP T, and a combination of subband products (LSWBSB without MDWARP) takes
+              no master's value (mdw_cards :857-861); without (an apply's source): MDWARP is the parent's;
+      count   each parent the masters build writes LOO masters of (loo_link.PARENTS) has exactly the number of LOO masters
+              in <d>/loo the masters' own count test wants (loo_link.expected, as lib/masters/tests.py
+              loo_master.count_per_stokes): its NCOADD when NCOADD is in masters_build.LOO_N_RANGE, else none - one too
+              few, one too many, a missing or empty loo/ all refuse; a parent without an integer NCOADD refuses (the
+              rule cannot be decided).
+    Returns (problems, checked): one line per problem (the stage refuses before any write: a LOO master is never stamped
+    with a guessed value and never skipped), and what was checked, in words."""
+    from exopipe.phase3.core.record import fits_primary_cards
+    from exopipe.phase3.lib.masters import loo_link as LL
+    from exopipe.phase3.lib.masters.coadd import _MASTER_RE
+    files = loo_files(d) if files is None else list(files)
+    out, hdrs, kids, nst = [], {}, {}, {}
+
+    def parent(pn):
+        if pn not in hdrs:
+            pp = os.path.join(d, pn)
+            hdrs[pn] = fits_primary_cards(pp) if os.path.isfile(pp) else None
+        return hdrs[pn]
+    for p in files:
+        n = os.path.basename(p)
+        g = LL.parse(n)
+        if g is None:
+            out.append(f'{n}: not a leave-one-out master name (coadd._LOO_RE)')
+            continue
+        nst[g['st']] = nst.get(g['st'], 0) + 1
+        pn = LL.parent_name(n)
+        kids.setdefault(pn, []).append(n)
+        ph = parent(pn)
+        if ph is None:
+            out.append(f'{n}: its parent master {pn} is not in {d}')
+            continue
+        h = fits_primary_cards(p)
+        out += [f'{n}: {x} ({pn})' for x in LL.link_problems(h, ph, g['date'])]
+        mdwarp = h.get('MDWARP')
+        if value is None:
+            if (mdwarp is True) != (ph.get('MDWARP') is True):
+                out.append(f'{n}: MDWARP {mdwarp!r} is not its parent\'s {ph.get("MDWARP")!r} ({pn})')
+        elif 'LSWBSB' in h and 'MDWARP' not in h:
+            out.append(f'{n}: a combination of subband products (LSWBSB, no MDWARP): never master-dewarped itself, it takes '
+                       f'no master\'s MDWSTAT')
+        elif value.startswith('applied') != (mdwarp is True):
+            out.append(f'{n}: MDWSTAT {value!r} disagrees with the file\'s MDWARP {mdwarp!r}')
+    lo, hi = LL.n_range()
+    need = []
+    for m in master_files(d):
+        pn = os.path.basename(m)
+        g = _MASTER_RE.match(pn).groupdict()
+        if g['clean'] or g['pb'] or f"{g['st']}_deep_{g['taper']}_{g['rob']}" != LL.PARENTS.get(g['st']):
+            continue
+        nco = (parent(pn) or {}).get('NCOADD')
+        k = len(kids.get(pn, []))
+        if not isinstance(nco, int) or isinstance(nco, bool):
+            out.append(f'{pn}: no integer NCOADD ({nco!r}), so whether the masters build writes its leave-one-out masters '
+                       f'(masters_build.LOO_N_RANGE [{lo}, {hi}]) cannot be decided')
+        else:
+            want = LL.expected(nco)
+            need.append(f'{pn} NCOADD {nco}: {k} of {want} present')
+            if k != want:
+                out.append(f'{pn}: NCOADD {nco} ' + (f'is in masters_build.LOO_N_RANGE [{lo}, {hi}]' if LL.needed(nco) else
+                                                     f'is outside masters_build.LOO_N_RANGE [{lo}, {hi}]')
+                           + f', so the masters\' count rule (loo_master.count_per_stokes) wants {want} leave-one-out '
+                           f'master(s) of it, and {d}/loo holds {k}' + (' (none)' if not k else ''))
+    checked = (f'{len(files)} leave-one-out master(s) checked (' + (', '.join(f'{v} {k}' for k, v in sorted(nst.items()))
+                                                                     or 'none') + ')'
+               + (f' against {len(kids)} parent(s): parent digest (the search\'s rule), NCOADD, LOOEXCL, MDWARP' if files
+                  else '')
+               + f'; the masters\' count rule (NCOADD in LOO_N_RANGE [{lo}, {hi}], else none): '
+               + ('; '.join(need) or 'no parent master in the directory'))
+    return out, checked
 
 
 def _gain_text(g, threshold, most=3):
