@@ -865,9 +865,11 @@ def loo_problems(d, value=None, files=None):
               LOOEXCL = the night the name leaves out;
       MDWARP  with ``value``: 'applied' <=> MDWARP T, and a combination of subband products (LSWBSB without MDWARP) takes
               no master's value (mdw_cards :857-861); without (an apply's source): MDWARP is the parent's;
-      need    each parent the masters build writes LOO masters of (loo_link.PARENTS) with NCOADD in
-              masters_build.LOO_N_RANGE (loo_link.needed; coadd.write_loo_masters) has at least one in <d>/loo (a missing
-              or empty loo/ refuses); a parent without an integer NCOADD refuses (the rule cannot be decided).
+      count   each parent the masters build writes LOO masters of (loo_link.PARENTS) has exactly the number of LOO masters
+              in <d>/loo the masters' own count test wants (loo_link.expected, as lib/masters/tests.py
+              loo_master.count_per_stokes): its NCOADD when NCOADD is in masters_build.LOO_N_RANGE, else none - one too
+              few, one too many, a missing or empty loo/ all refuse; a parent without an integer NCOADD refuses (the
+              rule cannot be decided).
     Returns (problems, checked): one line per problem (the stage refuses before any write: a LOO master is never stamped
     with a guessed value and never skipped), and what was checked, in words."""
     from exopipe.phase3.core.record import fits_primary_cards
@@ -917,18 +919,20 @@ def loo_problems(d, value=None, files=None):
         if not isinstance(nco, int) or isinstance(nco, bool):
             out.append(f'{pn}: no integer NCOADD ({nco!r}), so whether the masters build writes its leave-one-out masters '
                        f'(masters_build.LOO_N_RANGE [{lo}, {hi}]) cannot be decided')
-        elif LL.needed(nco):
-            need.append(f'{pn} NCOADD {nco}: {k} present')
-            if not k:
-                out.append(f'{pn}: NCOADD {nco} is in masters_build.LOO_N_RANGE [{lo}, {hi}], so the masters build writes '
-                           f'its leave-one-out masters (coadd.write_loo_masters), and {d}/loo holds none')
         else:
-            need.append(f'{pn} NCOADD {nco}: none needed, {k} present')
+            want = LL.expected(nco)
+            need.append(f'{pn} NCOADD {nco}: {k} of {want} present')
+            if k != want:
+                out.append(f'{pn}: NCOADD {nco} ' + (f'is in masters_build.LOO_N_RANGE [{lo}, {hi}]' if LL.needed(nco) else
+                                                     f'is outside masters_build.LOO_N_RANGE [{lo}, {hi}]')
+                           + f', so the masters\' count rule (loo_master.count_per_stokes) wants {want} leave-one-out '
+                           f'master(s) of it, and {d}/loo holds {k}' + (' (none)' if not k else ''))
     checked = (f'{len(files)} leave-one-out master(s) checked (' + (', '.join(f'{v} {k}' for k, v in sorted(nst.items()))
                                                                      or 'none') + ')'
                + (f' against {len(kids)} parent(s): parent digest (the search\'s rule), NCOADD, LOOEXCL, MDWARP' if files
                   else '')
-               + f'; the masters\' rule (LOO_N_RANGE [{lo}, {hi}]): ' + ('; '.join(need) or 'no parent master in the directory'))
+               + f'; the masters\' count rule (NCOADD in LOO_N_RANGE [{lo}, {hi}], else none): '
+               + ('; '.join(need) or 'no parent master in the directory'))
     return out, checked
 
 

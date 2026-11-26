@@ -147,11 +147,11 @@ def write(path, data, hdr):
 
 
 def make_generation(base, cell, seed, bad_shape=False, mdwarp=False):
-    """A cell generation like a promoted rebuild: coadd_final (4 I + 1 V plains, 2 PB maps, 5 pbcorr siblings, one LOO
-    master) and subtracted (one I and one V residual). The masters carry the constituent digest CONSTDIG and NCOADD (I 2
-    nights, V 1: a V stack the masters build writes no LOO master of, masters_build.LOO_N_RANGE); the LOO master is its
-    parent's as coadd.py writes it (PARENTDG = CONSTDIG = the parent's, NCOADD the parent's - 1, LOOEXCL = the night it
-    leaves out)."""
+    """A cell generation like a promoted rebuild: coadd_final (4 I + 1 V plains, 2 PB maps, 5 pbcorr siblings, two LOO
+    masters) and subtracted (one I and one V residual). The masters carry the constituent digest CONSTDIG and NCOADD (I 2
+    nights, V 1: a V stack the masters build writes no LOO master of, masters_build.LOO_N_RANGE); the I parent has its 2
+    LOO masters, one per night (the masters' count rule, loo_link.expected), each its parent's as coadd.py writes it
+    (PARENTDG = CONSTDIG = the parent's, NCOADD the parent's - 1, LOOEXCL = the night it leaves out)."""
     lst, s = cell.split('_', 1)
     cf = os.path.join(base, cell, 'coadd_final')
     pb = pb_map()
@@ -170,8 +170,9 @@ def make_generation(base, cell, seed, bad_shape=False, mdwarp=False):
         sib = np.where(pb > 0.1, d / pb, np.nan).astype(np.float32)
         write(os.path.join(cf, name.replace(f'_{s}', f'_pbcorr_{s}', 1) + '.fits'), sib,
               header(s, NCOADD=1 if name.startswith('V_') else 2, **extra))
-    write(os.path.join(cf, 'loo', f'2025-01-01_I_loo_Taper_R075_{s}.fits'), sky(seed + 10),
-          header(s, PARENTDG=dig, LOOEXCL='2025-01-01', NCOADD=1, **extra))
+    for k, night in enumerate(('2025-01-01', '2025-01-02')):
+        write(os.path.join(cf, 'loo', f'{night}_I_loo_Taper_R075_{s}.fits'), sky(seed + 10 + 4 * k),
+              header(s, PARENTDG=dig, LOOEXCL=night, NCOADD=1, **extra))
     sub = os.path.join(base, cell, 'subtracted')
     write(os.path.join(sub, f'2025-01-01_I_sub_{s}.fits'), sky(seed + 11), header(s))
     write(os.path.join(sub, f'2025-01-01_V_sub_{s}.fits'), sky(seed + 12), header(s))
@@ -644,9 +645,10 @@ def test_end_to_end(tmp):
     check('not-accepted cell: the PB maps are never stamped (masters only, as release1_cards)',
           len(pbs) == 2 and not any('MDWSTAT' in fits.getheader(p) for p in pbs), str(pbs))
     loo32 = sorted(glob.glob(os.path.join(cf32, 'loo', '*.fits')))
-    check('not-accepted cell: its leave-one-out master carries the same MDWSTAT (as the header repair stamped the archived '
-          'ones), standard header valid', len(loo32) == 1 and fits.getheader(loo32[0]).get('MDWSTAT') == want
-          and validate_header(loo32[0], level='standard').ok, str(loo32))
+    check('not-accepted cell: its leave-one-out masters (2) carry the same MDWSTAT (as the header repair stamped the '
+          'archived ones), standard header valid', len(loo32) == 2
+          and all(fits.getheader(q).get('MDWSTAT') == want and validate_header(q, level='standard').ok for q in loo32),
+          str(loo32))
     others = glob.glob(os.path.join(r['promoted'], f'{LST}_32MHz', 'subtracted', '*.fits'))
     others += glob.glob(os.path.join(r['promoted'], f'{LST}_27MHz', 'coadd_final', '*.fits'))
     others += glob.glob(os.path.join(r['promoted'], f'{LST}_27MHz', 'coadd_final', 'loo', '*.fits'))
@@ -654,12 +656,12 @@ def test_end_to_end(tmp):
           others and not any('MDWSTAT' in fits.getheader(p) for p in others), f'{len(others)} files')
     md = (c32 or {}).get('meta', {}).get('mdwstat') or {}
     outs = [o for o in (c32 or {}).get('outputs', []) if o['class'] == 'mdwstat_master']
-    check("not-accepted cell: the record keeps the value, the masters (files) and the LOO master (loo_files); "
-          "'dewarp.mdwstat' passed per file (11); G-R5 passed",
+    check("not-accepted cell: the record keeps the value, the masters (files) and the LOO masters (loo_files); "
+          "'dewarp.mdwstat' passed per file (12); G-R5 passed",
           md.get('value') == want and sorted(x['path'] for x in md.get('files', [])) == masters
           and [x['path'] for x in md.get('loo_files', [])] == loo32
           and all(x['before'] is None for x in md['files'] + md['loo_files'])
-          and sum(1 for t in c32['tests'] if t['name'] == 'dewarp.mdwstat' and t['passed']) == 11
+          and sum(1 for t in c32['tests'] if t['name'] == 'dewarp.mdwstat' and t['passed']) == 12
           and [t['passed'] for t in c32['tests'] if t['name'] == 'dewarp.loo_mdwstat'] == [True], str(md)[:200])
     check('not-accepted cell: each stamped master and LOO master is an output (mdwstat_master) with its value and md5, and '
           'passes its test',
@@ -867,6 +869,30 @@ def test_end_to_end(tmp):
           and 'no generation written' in c0['reason']
           and not os.path.exists(os.path.join(outB0, 'gen', f'{LST}_27MHz', 'gen_mdewarp_rbf')),
           (c0['reason'][:300] if c0 else txt0[-400:]))
+    # --- B0b: the masters' count rule (G-R5, loo_link.expected) in the dry-run preview: one LOO master too few on the
+    #     accepted cell's apply source, one too many (correctly linked) on the not-accepted cell's promoted coadd_final -
+    #     each previewed WOULD REFUSE, naming the parent, the want and the count
+    l27 = SC.loo_files(os.path.join(r['promoted'], f'{LST}_27MHz', 'coadd_final'))
+    hold27 = os.path.join(tmp, 'hold_loo27.fits')
+    shutil.move(l27[-1], hold27)
+    l32 = SC.loo_files(cf32)
+    x32 = os.path.join(os.path.dirname(l32[0]), '2025-01-03_I_loo_Taper_R075_32MHz.fits')
+    shutil.copy2(l32[0], x32)
+    with fits.open(x32, mode='update', memmap=False) as hl:
+        hl[0].header['LOOEXCL'] = '2025-01-03'
+    outB0b = os.path.join(tmp, 'outB0b')
+    seed_record(outB0b, ('27MHz', '32MHz'))
+    try:
+        rcc, txtc, _s = cli('dewarp', '--cells', f'{LST}_27MHz,{LST}_32MHz', '--stages', 'apply,verify,record',
+                            '--measurement', r['meas'], '--out', outB0b, '--work', work, '--dry-run', *common_sets(r))
+    finally:
+        shutil.move(hold27, l27[-1])
+        os.remove(x32)
+    check('G-R5 count rule in the dry run: one LOO master too few on the apply source (I NCOADD 2, 1 present) and one too '
+          'many in the promoted coadd_final (3 present) each preview WOULD REFUSE (exit 2)',
+          rcc == 2 and "WOULD REFUSE - G-R5 (the apply's source" in txtc
+          and 'wants 2 leave-one-out master(s) of it' in txtc and 'holds 1' in txtc and 'holds 3' in txtc
+          and txtc.count('WOULD REFUSE (G-R5') == 1, txtc[-900:])
     # --- B: apply, verify, record on five cells (parity guard on)
     outB = os.path.join(tmp, 'outB')
     seed_record(outB, ('27MHz', '32MHz', '36MHz', '46MHz'))       # routing (default 'screen_record'): 41 MHz not routed
@@ -913,10 +939,10 @@ def test_end_to_end(tmp):
               == sorted(gm + SC.loo_files(os.path.join(gen, 'coadd_final'))),
               f'{len(gm)} masters; {str(md27)[:200]}')
         gl = SC.loo_files(os.path.join(gen, 'coadd_final'))
-        check("accepted cell: its leave-one-out master carries 'applied' and MDWARP T, recorded in meta.mdwstat.loo_files "
-              "(G-R5 passed)", len(gl) == 1 and [x['path'] for x in md27.get('loo_files', [])] == gl
-              and fits.getheader(gl[0]).get('MDWSTAT') == 'applied' and fits.getheader(gl[0]).get('MDWARP') is True
-              and md27['loo_files'][0]['md5'] == SC.md5(gl[0])
+        check("accepted cell: its leave-one-out masters (2) carry 'applied' and MDWARP T, recorded in "
+              "meta.mdwstat.loo_files (G-R5 passed)", len(gl) == 2 and [x['path'] for x in md27.get('loo_files', [])] == gl
+              and all(fits.getheader(q).get('MDWSTAT') == 'applied' and fits.getheader(q).get('MDWARP') is True for q in gl)
+              and [x['md5'] for x in md27['loo_files']] == [SC.md5(q) for q in gl]
               and [t['passed'] for t in c27['tests'] if t['name'] == 'dewarp.loo_mdwstat'] == [True], str(md27)[:200])
     csvp = os.path.join(outB, 'archive', 'mdewarp_screens', CFG.paths.ARCHIVE_RUN, 'mdewarp_screens.csv')
     rows = SC.read_table(csvp) if os.path.isfile(csvp) else []

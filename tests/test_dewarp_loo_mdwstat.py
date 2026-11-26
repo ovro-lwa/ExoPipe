@@ -13,9 +13,11 @@ stamp_mdwstat, applied_mdwstat, loo_source_gate, loo_gate). Checked here on smal
      parent digest, a wrong NCOADD, a wrong LOOEXCL, a missing parent master, an MDWARP disagreeing with the value (or, on
      an apply's source, with the parent's), a subband combination (LSWBSB without MDWARP) and a name that is not a LOO
      master each give one problem naming the file
-  3. the need rule (masters_build.LOO_N_RANGE, read from the config): a parent in the range with no LOO master, or a
-     coadd_final without loo/, refuses; a parent outside the range needs none; a parent without NCOADD refuses; the record
-     stage refuses before any write; the PASS detail counts what was checked
+  3. the masters' count rule (loo_link.expected, the want of lib/masters/tests.py loo_master.count_per_stokes; the range
+     masters_build.LOO_N_RANGE from the config): one LOO master too few, one too many, LOO masters of a parent outside
+     the range, a parent in the range with none, a coadd_final without loo/ - each refuses; a parent outside the range
+     with none passes; a parent without NCOADD refuses; the record stage refuses before any write; the PASS detail counts
+     what was checked
   4. one LOO-to-parent rule (loo_link): on every combination of the cards, T3's per-LOO verdict and the D-G16 preview's
      verdict are those of their code before the helper (kept verbatim here), and whole T3 runs give the same result; G-R5's
      digest verdict is the search's on every combination
@@ -172,10 +174,10 @@ def test_rule(tmp):
         return SC.loo_problems(fd, value, files)[0]
     p, chk = SC.loo_problems(fd, WANT)
     check('G-R5 rule: a clean cell - every LOO master its parent\'s, no MDWARP, a refused value - no problem; the PASS '
-          'detail counts the LOO masters checked (2 I, 2 V) and each parent of the need rule',
+          'detail counts the LOO masters checked (2 I, 2 V) and each parent of the count rule',
           p == [] and chk.startswith('4 leave-one-out master(s) checked (2 I, 2 V) against 2 parent(s)')
-          and f'I_deep_Taper_R075_{SCOPE}.fits NCOADD 2: 2 present' in chk
-          and f'V_deep_Taper_R0_{SCOPE}.fits NCOADD 2: 2 present' in chk, f'{p} {chk}')
+          and f'I_deep_Taper_R075_{SCOPE}.fits NCOADD 2: 2 of 2 present' in chk
+          and f'V_deep_Taper_R0_{SCOPE}.fits NCOADD 2: 2 of 2 present' in chk, f'{p} {chk}')
     setcards(i1, PARENTDG=None)
     check('G-R5 rule: a build before PARENTDG with its parent\'s COADDOP is linked (the search\'s rule, D-G16)', P() == [],
           str(P()))
@@ -223,35 +225,72 @@ def test_rule(tmp):
 
 
 def test_need(tmp):
-    """The masters' own rule for which parents have LOO masters (masters_build.LOO_N_RANGE via loo_link.needed)."""
+    """The masters' own count rule (lib/masters/tests.py loo_master.count_per_stokes, via loo_link.expected): a parent of
+    NCOADD n in masters_build.LOO_N_RANGE has exactly n LOO masters, any other parent none."""
     from exopipe.phase3.lib.masters import loo_link as LL
     lo, hi = CFG.masters_build.LOO_N_RANGE
-    check('need rule: the range is the masters config\'s (masters_build.LOO_N_RANGE), read by loo_link',
+    check('count rule: the range is the masters config\'s (masters_build.LOO_N_RANGE), read by loo_link',
           LL.n_range() == (lo, hi) and LL.needed(lo) and LL.needed(hi) and not LL.needed(lo - 1) and not LL.needed(hi + 1),
           str((lo, hi)))
+    check('count rule: loo_link.expected is NCOADD in the range, else 0 (count_per_stokes\'s want)',
+          [LL.expected(n) for n in (lo - 1, lo, hi, hi + 1)] == [0, lo, hi, 0])
+    import inspect
+    from exopipe.phase3.lib.masters import tests as MT
+    check('count rule: the masters\' count test (loo_master.count_per_stokes) takes its want from loo_link.expected',
+          'LL.expected(n)' in inspect.getsource(MT.count_per_stokes))
+    p0, chk0 = SC.loo_problems(make_cell(os.path.join(tmp, 'need_ok')), WANT)
+    check(f'count rule: {len(NIGHTS)} LOO masters per parent of NCOADD {len(NIGHTS)} pass, the detail counting them',
+          p0 == [] and f'I_deep_Taper_R075_{SCOPE}.fits NCOADD {len(NIGHTS)}: {len(NIGHTS)} of {len(NIGHTS)} present'
+          in chk0, f'{p0} {chk0}')
+    # one too few: the V parent (NCOADD 2) keeps 1 of its 2
+    fd = make_cell(os.path.join(tmp, 'need_few'))
+    os.remove([p for p in SC.loo_files(fd) if '_V_loo_' in p][0])
+    p = SC.loo_problems(fd, WANT)[0]
+    check('count rule: ONE LOO master too few (V parent NCOADD 2, 1 present) refuses, naming the parent, the want and the count',
+          len(p) == 1 and p[0].startswith(f'V_deep_Taper_R0_{SCOPE}.fits: NCOADD 2 is in masters_build.LOO_N_RANGE')
+          and 'wants 2 leave-one-out master(s)' in p[0] and p[0].endswith('holds 1'), str(p))
+    # one too many: a third I LOO master, linked correctly (its own night as LOOEXCL), beside a parent of NCOADD 2
+    fd = make_cell(os.path.join(tmp, 'need_many'))
+    src = [p for p in SC.loo_files(fd) if '_I_loo_' in p][0]
+    extra = os.path.join(os.path.dirname(src), f'2025-01-03_I_loo_Taper_R075_{SCOPE}.fits')
+    shutil.copy2(src, extra)
+    setcards(extra, LOOEXCL='2025-01-03')
+    p = SC.loo_problems(fd, WANT)[0]
+    check('count rule: ONE LOO master too many (I parent NCOADD 2, 3 present, each linked) refuses',
+          len(p) == 1 and p[0].startswith(f'I_deep_Taper_R075_{SCOPE}.fits: NCOADD 2') and p[0].endswith('holds 3'), str(p))
+    # a parent outside the range keeps no LOO master: its LOO masters (linked: NCOADD = the parent's - 1) refuse
+    fd = make_cell(os.path.join(tmp, 'need_out'))
+    for m in SC.master_files(fd):
+        setcards(m, NCOADD=hi + 1)
+    for q in SC.loo_files(fd):
+        setcards(q, NCOADD=hi)
+    p = SC.loo_problems(fd, WANT)[0]
+    check(f'count rule: parents above the range (NCOADD {hi + 1}) with {len(NIGHTS)} LOO masters each refuse (want 0)',
+          len(p) == 2 and all('is outside masters_build.LOO_N_RANGE' in x and 'wants 0' in x for x in p), str(p))
+    # none present: one parent, then both (no loo/)
     fd = make_cell(os.path.join(tmp, 'need'))
     vl = [p for p in SC.loo_files(fd) if '_V_loo_' in p]
     for p in vl:
         os.remove(p)
     p, chk = SC.loo_problems(fd, WANT)
-    check('need rule: a parent in the range (V NCOADD 2) with no LOO master refuses, naming the parent and the range',
-          len(p) == 1 and f'V_deep_Taper_R0_{SCOPE}.fits' in p[0] and 'LOO_N_RANGE' in p[0] and 'holds none' in p[0], str(p))
+    check('count rule: a parent in the range (V NCOADD 2) with no LOO master refuses, naming the parent and the range',
+          len(p) == 1 and f'V_deep_Taper_R0_{SCOPE}.fits' in p[0] and 'LOO_N_RANGE' in p[0] and 'holds 0 (none)' in p[0], str(p))
     shutil.rmtree(os.path.join(fd, 'loo'))
     p = SC.loo_problems(fd, WANT)[0]
-    check('need rule: a coadd_final without loo/ refuses for both parents (I and V)', len(p) == 2, str(p))
+    check('count rule: a coadd_final without loo/ refuses for both parents (I and V)', len(p) == 2, str(p))
     for m in SC.master_files(fd):
         setcards(m, NCOADD=lo - 1)
     p, chk = SC.loo_problems(fd, WANT)
-    check(f'need rule: parents below the range (NCOADD {lo - 1}) need no LOO master - passes, the detail says so',
-          p == [] and 'none needed, 0 present' in chk and chk.startswith('0 leave-one-out master(s) checked'), f'{p} {chk}')
+    check(f'count rule: parents below the range (NCOADD {lo - 1}) with no LOO master pass, the detail says so',
+          p == [] and '0 of 0 present' in chk and chk.startswith('0 leave-one-out master(s) checked'), f'{p} {chk}')
     for m in SC.master_files(fd):
         setcards(m, NCOADD=hi + 1)
-    check(f'need rule: parents above the range (NCOADD {hi + 1}) need none', SC.loo_problems(fd, WANT)[0] == [])
+    check(f'count rule: parents above the range (NCOADD {hi + 1}) with no LOO master pass', SC.loo_problems(fd, WANT)[0] == [])
     setcards(os.path.join(fd, f'I_deep_Taper_R075_{SCOPE}.fits'), NCOADD=None)
     p = SC.loo_problems(fd, WANT)[0]
-    check('need rule: a parent without NCOADD refuses (whether it needs LOO masters cannot be decided)',
+    check('count rule: a parent without NCOADD refuses (its count cannot be decided)',
           len(p) == 1 and 'no integer NCOADD' in p[0], str(p))
-    # the record stage refuses on the need rule before any write
+    # the record stage refuses on the count rule before any write
     out = os.path.join(tmp, 'out_need')
     csvp = seed_record(out)
     before = open(csvp).read()
@@ -262,8 +301,8 @@ def test_need(tmp):
     md5s = {p: SC.md5(p) for p in _all_files(fd)}
     with R.Run('dewarp', ['test'], out, CFG, dry_run=True).unit(CELL) as u:
         SCL.record(u, roots_for(out, rebuild), CELL, ROW, None)
-    check('need rule: the record stage of a cell whose I parent lost its LOO masters refuses G-R5 before any write',
-          u.status == 'refused' and (u.reason or '').startswith(f'G-R5: {CELL}:') and 'holds none' in u.reason
+    check('count rule: the record stage of a cell whose I parent lost its LOO masters refuses G-R5 before any write',
+          u.status == 'refused' and (u.reason or '').startswith(f'G-R5: {CELL}:') and 'holds 0 (none)' in u.reason
           and all(SC.md5(p) == m for p, m in md5s.items()) and open(csvp).read() == before,
           f'{u.status}: {(u.reason or "")[:300]}')
 

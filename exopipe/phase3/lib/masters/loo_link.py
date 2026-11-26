@@ -4,8 +4,10 @@ search's LOO gate as frames previews it (deep_cells.preview, D-G16) and the dewa
 A LOO master <date>_<S>_loo_<taper>_<robust><tokens>_<band>.fits (coadd._LOO_RE) is the parent master
 <S>_deep_<taper>_<robust><tokens>_<band>.fits with the night <date> left out. The masters build writes LOO masters of two
 parents only, I Taper R-0.75 and V Taper R0 (coadd.py write_loo_masters calls), and only for a stack of N nights with
-N in masters_build.LOO_N_RANGE (R-LOO-THRESHOLD-CORRECTED, R-LOO-PER-STOKES-RATIFIED): ``needed``. Each carries
-LOOEXCL = the night left out, NCOADD = the parent's - 1 and PARENTDG = the parent's CONSTDIG (coadd.py, since 2026-09-09).
+N in masters_build.LOO_N_RANGE (R-LOO-THRESHOLD-CORRECTED, R-LOO-PER-STOKES-RATIFIED): ``needed``; the masters' count test
+(lib/masters/tests.py loo_master.count_per_stokes) wants exactly N of them per Stokes then and none otherwise: ``expected``
+(G-R5 applies the same count). Each carries LOOEXCL = the night left out, NCOADD = the parent's - 1 and PARENTDG = the
+parent's CONSTDIG (coadd.py, since 2026-09-09).
 
 The parts of the rule, each a function of the two primary headers (any mapping with .get):
   digest_stale    the search engine's rule (lib/search/deep_search.py, the LOO gate of _loo_masters; D-G16): a LOO
@@ -38,6 +40,12 @@ def needed(n):
     masters' count test compare it - a non-number raises, as there)."""
     lo, hi = n_range()
     return lo <= n <= hi
+
+
+def expected(n):
+    """The number of LOO masters a parent of NCOADD ``n`` (an int) must have: ``n`` when ``needed(n)``, else 0 - the masters'
+    count test (lib/masters/tests.py loo_master.count_per_stokes, R-LOO-PER-STOKES-RATIFIED), which calls this."""
+    return n if needed(n) else 0
 
 
 def parse(name):

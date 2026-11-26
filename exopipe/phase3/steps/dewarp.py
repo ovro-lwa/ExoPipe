@@ -114,9 +114,10 @@ Failure modes (exit 2 = refused, with the gate named; 3 = no routed promoted cel
         rule (PARENTDG not the parent's CONSTDIG; without PARENTDG, COADDOP not the parent's), NCOADD is not the parent's
         - 1, or LOOEXCL is not the night its name leaves out; or the value disagrees with its MDWARP ('applied' <=> MDWARP
         T; LSWBSB without MDWARP takes none; on the apply's source: MDWARP not the parent's); or a parent the masters
-        build writes LOO masters of (NCOADD in masters_build.LOO_N_RANGE) has none in coadd_final/loo. Refused before any
-        write: in the record stage (no card, no applied=0 row) and, for an accepted cell, on the apply's source before
-        the resample (no generation written); then again in the apply's MDWSTAT record. The dry run previews both.
+        build writes LOO masters of has another number of them in coadd_final/loo than the masters' count test wants
+        (loo_link.expected: NCOADD when it is in masters_build.LOO_N_RANGE, else none). Refused before any write: in the
+        record stage (no card, no applied=0 row) and, for an accepted cell, on the apply's source before the resample (no
+        generation written); then again in the apply's MDWSTAT record. The dry run previews both.
   G-W   (also) the promoted rebuild root, when a not-accepted cell will be stamped: up front when a --measurement shows
         one, else in that cell's record stage (the message names --set dewarp.REBUILD_ROOT).
   Per-scope measurement outcomes (REFUSED ..., REFERENCE ONLY, NOT ATTEMPTED) are table rows, not refusals.

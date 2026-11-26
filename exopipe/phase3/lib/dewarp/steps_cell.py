@@ -207,9 +207,9 @@ def applied_mdwstat(u, cell, gen):
 def loo_source_gate(u, cell, groot):
     """Gate G-R5 on an accepted cell's apply source <groot>/coadd_final, before the apply writes anything: each
     leave-one-out master is its parent master's (lib/masters/loo_link, the search's D-G16 rule; NCOADD; LOOEXCL) with its
-    parent's MDWARP, and a parent that needs LOO masters has some (steps_common.loo_problems, ``value`` None). The apply
-    resamples coadd_final/loo with the masters, so a stale LOO master here would become a dewarped stale one: refused
-    before the resample - no generation written, the previous one (--fresh) kept."""
+    parent's MDWARP, and each parent has the number of LOO masters the masters' count test wants (steps_common.loo_problems,
+    ``value`` None). The apply resamples coadd_final/loo with the masters, so a stale LOO master here would become a
+    dewarped stale one: refused before the resample - no generation written, the previous one (--fresh) kept."""
     fd = os.path.join(groot, 'coadd_final')
     loo_gate(u, cell, fd, None, SC.loo_files(fd), 'refused before the apply: no generation written, the previous one kept')
 
@@ -217,9 +217,9 @@ def loo_source_gate(u, cell, groot):
 def loo_gate(u, cell, fd, value, loo, when):
     """Gate G-R5 (steps_common.loo_problems): every leave-one-out master ``loo`` of the coadd_final directory ``fd`` is its
     parent master's (lib/masters/loo_link) and takes ``value``, its masters' MDWSTAT, by the rule production's header
-    repair stamped the archived ones with (check 'dewarp.loo_mdwstat'), and each parent that needs LOO masters has some;
-    ``value`` None: an apply's source (check 'dewarp.loo_source': MDWARP as the parent's). Else the unit refuses, naming
-    each file. ``when``: what the refusal leaves behind."""
+    repair stamped the archived ones with (check 'dewarp.loo_mdwstat'), and each parent has the number of LOO masters the
+    masters' count test wants (loo_link.expected); ``value`` None: an apply's source (check 'dewarp.loo_source': MDWARP as
+    the parent's). Else the unit refuses, naming each file. ``when``: what the refusal leaves behind."""
     probs, checked = SC.loo_problems(fd, value, loo)
     u.check('dewarp.loo_mdwstat' if value is not None else 'dewarp.loo_source', not probs, value=f'{len(loo)} LOO master(s)',
             path=fd, detail=('; '.join(probs[:6]) + (f'; ... {len(probs) - 6} more' if len(probs) > 6 else '')) if probs
