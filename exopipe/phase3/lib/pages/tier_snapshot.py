@@ -13,12 +13,13 @@ Stages (core.legacy.run, site PYTHON['py36'] = the production development Python
              R-GREGG-20261017-SNAPSHOT-MEANS-10S-ONLY-FOUR-TIERS: a source is served in a tier only on that tier's own
              detections). Then clv15/phase3_snapshot_pages.py --run RUN --proto-root <CFG.paths.SNAPSHOT_FLEET_OUT>
              --masters-root <pages_snapshot.MASTERS_ROOT> --fit-store <store> --nproc N [--resume] --served-tiers
-             RUN/served_tiers.csv with PYTHONPATH=<ops root> and SNAP_SCALE_MODE (:607-611, :632); then production's per-tier
+             RUN/served_tiers.csv with PYTHONPATH=<ops root> and SNAP_SCALE_MODE (:607-612, :632); then production's per-tier
              hook `pertier_hook full` (:639; pt_fail :565-569, pertier_hook :570-587), in place and in its order:
              ops/apply_served_check.py backup RUN W/pertier/pre_full,
              the views-only rewrite (the builder again with --nproc pages_snapshot.VIEWS_NPROC --served-tiers ... --views-only),
              ops/pertier_views_content_test.py RUN RUN/served_tiers.csv W/pertier/pre_full requiring PERTIER-VIEWS-OK (P24: on
-             a failure the views are restored from the backup, apply_served_check.py restore, and the stage refuses), then the
+             a failure the views are restored from the backup, apply_served_check.py restore, and the stage refuses; P24 also,
+             before the pass, when W/pertier or its pre_full is a symbolic link - never removed, never followed), then the
              Card 2 back-fill clv15/phase3_snapshot_card2.py --run RUN (P25; card2_vleak.csv, card2_vleak_columns.csv,
              card2_filter.csv: an annotation and a page filter off by default, removing nothing); then
              ops/snapshot_rechain_content_test.py RUN --pages (:640): gates P18 (flow mode), P19 (duplicate panel), P20
@@ -89,7 +90,8 @@ def served_tiers_gate(c, u):
     columns, the per-row and per-source rules, and the rows equal to the detection_record.csv.gz beside it by tierserve's own
     definition; ExoPipe PR 185), checked BEFORE anything is written. Production passes the table to every pages pass of a chain
     run (snapshot_rechain_batch.sh:607-613, computed first by pertier_prepare :557-564), so a run without a valid table is
-    refused here, never built unfiltered. Returns the table's path (an input of the unit; its test results recorded on it)."""
+    refused here, never built unfiltered. A failed test refuses unless --waive covers it, as at every gate (u.failed_tests()).
+    Returns the table's path (an input of the unit; its test results recorded on it, a waived one with its ruling)."""
     from exopipe.phase3.core import validate
     from exopipe.phase3.lib.catalog import run_samples as RS
     p = os.path.join(c.RUN, RS.SERVED_TIERS)
@@ -100,10 +102,13 @@ def served_tiers_gate(c, u):
     tests = validate.run('served_tiers', p)
     for t in tests:
         u.check(t['name'], t['passed'], t['value'], t['detail'], cls='served_tiers', path=p)
-    failed = [t for t in tests if not t['passed']]
+    failed = [t for t in u.failed_tests() if t.get('cls') == 'served_tiers']      # not passed and not waived
     if failed:
         raise common.Refusal('P23: %s fails its content test (%s) - nothing built' % (
             p, '; '.join(('%s: %s' % (t['name'], t['detail']))[:600] for t in failed)))
+    waived = [t for t in u.tests if t.get('cls') == 'served_tiers' and t.get('waived')]
+    if waived:
+        u.note('P23: %s - failed test(s) waived: %s' % (p, '; '.join('%s (%s)' % (t['name'], t['waived']) for t in waived)))
     u.add_input(p)
     return p
 
@@ -149,11 +154,26 @@ def own_output(log):
     return lines[hdr[-1] + 1:] if hdr else lines
 
 
+def pertier_backup_dir(c):
+    """W/pertier/pre_full, the hook's backup of the views (production `rm -rf $PT/pre_$tag` then the backup, :573-574). P24 when
+    W/pertier or pre_full is a symbolic link, or pre_full is not a directory: never removed, never followed (the removal
+    would act on what the link points at); checked before the pages pass and again before the removal."""
+    PT = os.path.join(c.W, PERTIER)
+    pre = os.path.join(PT, f'pre_{PERTIER_TAG}')
+    for p in (PT, pre):
+        if os.path.islink(p):
+            raise common.Refusal(f'P24 per-tier {PERTIER_TAG}: {p} is a symbolic link (to {os.readlink(p)}) - not removed, '
+                                 f'not followed; remove the link by hand')
+    if os.path.lexists(pre) and not os.path.isdir(pre):
+        raise common.Refusal(f'P24 per-tier {PERTIER_TAG}: {pre} is not a directory - not removed; remove it by hand')
+    return pre
+
+
 def pertier_hook(c, u, script, hook, st):
     """Production's per-tier hook after the pages pass (snapshot_rechain_batch.sh:570-587 `pertier_hook full`; pt_fail
     :565-569), in place and in its order:
-      1 rm -rf W/pertier/pre_full; apply_served_check.py backup RUN W/pertier/pre_full (the views: queue_<S>[_<tier>].txt and
-        the source_catalogs_<S>[_<tier>]/ catalogs)
+      1 rm -rf W/pertier/pre_full (P24 when it or W/pertier is a symbolic link: pertier_backup_dir); apply_served_check.py
+        backup RUN W/pertier/pre_full (the views: queue_<S>[_<tier>].txt and the source_catalogs_<S>[_<tier>]/ catalogs)
       2 phase3_snapshot_pages.py ... --served-tiers RUN/served_tiers.csv --views-only (catalogs, detections.csv and queues
         rebuilt, nothing rendered; refuses when a kept panel is not on disk)
       3 pertier_views_content_test.py RUN RUN/served_tiers.csv W/pertier/pre_full: exit 0 and a PERTIER-VIEWS-OK line (T1 no
@@ -166,7 +186,7 @@ def pertier_hook(c, u, script, hook, st):
     from exopipe.phase3.config import CFG
     S = CFG.pages_snapshot
     PT = os.path.join(c.W, PERTIER)
-    pre = os.path.join(PT, f'pre_{PERTIER_TAG}')
+    pre = pertier_backup_dir(c)
     blog, vlog = os.path.join(PT, f'backup_{PERTIER_TAG}.log'), os.path.join(PT, f'views_{PERTIER_TAG}.log')
     tlog, clog = os.path.join(PT, f'test_{PERTIER_TAG}.log'), os.path.join(PT, 'card2.log')
     os.makedirs(PT, exist_ok=True)
@@ -238,8 +258,15 @@ def stage_build(c, run, done):
             u.add_input(tpl)
         for p in sorted(glob.glob(os.path.join(c.RUN, 'source_catalogs', '*_sources_survivors.csv'))):
             u.add_input(p)
+        # the record (the Card 2 back-fill's rows and the served_tiers test's reference) and the back-fill's roots (the
+        # Masters, the chain's light curves and Master catalogs, card2_argv): a root is fingerprinted as a directory (size +
+        # modification time: an entry added, removed or renamed at its top level), its files are not walked
+        K = CFG.catalog_snapshot
+        for p in (os.path.join(c.RUN, 'detection_record.csv.gz'), S.MASTERS_ROOT, K.LIGHTCURVES_ROOT, K.MASTER_CATALOGS):
+            u.add_input(p)
         script = common.legacy_script(c.roots, 'clv15', 'phase3_snapshot_pages.py')
         hook = pertier_scripts(c)               # every in-place script of the hook found before the pass starts
+        pertier_backup_dir(c)                   # P24 on a linked backup directory, before the pass
         res = common.lrun(u, script, build_argv(c, st), python=S.PYTHON_KEY, env=env_for(c), cwd=c.W,
                           log=os.path.join(c.W, 'pages.log'))
         if not res.ok:
@@ -322,11 +349,13 @@ def dry_run(c):
     if 'build' in c.stages:
         from exopipe.phase3.lib.catalog import run_samples as RS
         st = os.path.join(c.RUN, RS.SERVED_TIERS)
-        has = os.path.isfile(st)
-        print(f'  build: P23 {st} ' + ('present (its content test, class served_tiers, runs before the pass)' if has else
-                                       'MISSING' + (' (--from-run copies it when the source run has one)' if c.from_run else '')))
-        if not has and not c.from_run:
-            refuse.append(f'P23 no {RS.SERVED_TIERS} in {c.RUN}: the pages are never built without it')
+        src = os.path.join(os.path.abspath(c.from_run), RS.SERVED_TIERS) if c.from_run else st   # stagein copies the source run
+        has = os.path.isfile(src)
+        print(f'  build: P23 {st} ' + (f'from {src} (stagein) ' if c.from_run else '') +
+              ('present (its content test, class served_tiers, runs before the pass)' if has else 'MISSING'))
+        if not has:
+            refuse.append(f'P23 no {RS.SERVED_TIERS} in {os.path.dirname(src)}: the pages are never built without it'
+                          + (' (nothing is copied)' if c.from_run else ''))
         pt = os.path.join(c.W, PERTIER)
         print(f'  build: phase3_snapshot_pages.py {" ".join(map(str, build_argv(c, st)))}; env {env_for(c)}')
         print(f'  build: per-tier hook ({PERTIER_TAG}): apply_served_check.py backup {c.RUN} {pt}/pre_{PERTIER_TAG}; '
@@ -334,10 +363,12 @@ def dry_run(c):
               f'pertier_views_content_test.py {c.RUN} {st} {pt}/pre_{PERTIER_TAG} (requires {PERTIER_OK}; restore on a '
               f'failure); phase3_snapshot_card2.py {" ".join(card2_argv(c))} -> {", ".join(CARD2_FILES)} [snapshot_card2]')
         print(f'  build: then snapshot_rechain_content_test.py {c.RUN} --pages')
-        try:
-            pertier_scripts(c)
-        except common.Refusal as e:
-            refuse.append(f'build: {e}')
+        from exopipe.phase3.core.record import Refusal      # the class (common.Refusal builds an instance)
+        for chk in (pertier_scripts, pertier_backup_dir):
+            try:
+                chk(c)
+            except Refusal as e:
+                refuse.append(f'build: {e}')
     if 'filtercat' in c.stages:
         print(f'  filtercat: snapshot_filter_catalog.py {c.RUN} {c.store} (SNAPCAT_PROCS={common.CFG().pages_snapshot.FILTERCAT_PROCS}) '
               f'-> master_catalog.csv, coadd_root.txt [filter_catalog]')

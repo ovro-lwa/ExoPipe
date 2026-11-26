@@ -663,88 +663,120 @@ CARD2_RECORD_KEY = ('det_uid', 'cand_id', 'tier', 'served', 'identity_jname')   
 # the columns its readers use (lib/catalog/deep_omission.card2_removed, lib/serve/snapshot_view, the review filter)
 CARD2_READ = ('det_uid', 'cand_id', 'ra_peak', 'dec_peak', 'ra', 'dec', 'tier', 'peak_jyb', 'served', 'identity_jname',
               'i_here_jy', 'v_over_i_here', 'card2_would_remove', 'card2_ratio')
+# the last card2_vleak.csv parsed, {(path, inode, size, mtime_ns, ctime_ns): (header, rows)}: validate.run calls the test once per
+# file of the back-fill, and the card2_vleak.csv and card2_filter.csv branches of one build share one read of it. The key is the
+# file's stat: a rewrite of the same size within one tick of the filesystem clock, in this process, is not seen (the back-fill
+# writes the file once per build, in a child process)
+_CARD2_VLEAK = {}
+
+
+def _card2_names():
+    """(card2_vleak.csv, card2_vleak_columns.csv, card2_filter.csv): the first is catalog_omission.SNAPSHOT_CARD2 (the file G8
+    and the combined view read), the others the back-fill's (lib/pages/tier_snapshot.CARD2_FILES)."""
+    from exopipe.phase3.config import CFG
+    from exopipe.phase3.lib.pages import tier_snapshot as TSN
+    return (CFG.catalog_omission.SNAPSHOT_CARD2,) + tuple(TSN.CARD2_FILES[1:])
+
+
+def _card2_key(vp):
+    st = os.stat(vp)
+    return (vp, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+
+
+def _card2_vleak(vp):
+    """(header, rows as lists) of card2_vleak.csv, parsed once while the file is unchanged (_CARD2_VLEAK)."""
+    key = _card2_key(vp)
+    if key not in _CARD2_VLEAK:
+        _CARD2_VLEAK.clear()
+        csv.field_size_limit(10 ** 9)
+        with open(vp, newline='') as f:
+            rd = csv.reader(f)
+            head = next(rd, [])
+            _CARD2_VLEAK[key] = (head, list(rd))
+    return _CARD2_VLEAK[key]
+
+
+def _card2_head(vp):
+    """card2_vleak.csv's header: from the parse already held, else its first line only."""
+    held = _CARD2_VLEAK.get(_card2_key(vp))
+    if held:
+        return held[0]
+    with open(vp, newline='') as f:
+        return next(csv.reader(f), [])
 
 
 @content_test('snapshot_card2')
 def card2_backfill(path, **ctx):
-    """The Card 2 back-fill's files, each tested with the others beside it (phase3_snapshot_card2.py backfill):
-    card2_vleak.csv - its columns are the names of card2_vleak_columns.csv, in order, and hold every column its readers use;
-      its rows are, in order, the Stokes V rows of the detection_record.csv.gz beside it that reached the association pool
-      (in_assoc_pool 1), each with the record's det_uid, cand_id, tier, served and identity_jname; one ratio on every row; a
-      row with a ratio v_over_i_here has |peak_jyb| / i_here_jy equal to it (within 1e-4, or 1e-3 of it) and the flag
-      card2_would_remove 1 exactly when the ratio is at or below card2_ratio (a ratio within half a unit of its fifth decimal
-      of the threshold is counted, not judged); a row without a ratio has no flag (Card 2 cannot act there);
-    card2_vleak_columns.csv - columns name, unit, meaning; the names are card2_vleak.csv's columns;
+    """The Card 2 back-fill's files, each tested with the others beside it (phase3_snapshot_card2.py backfill); each file of a
+    build is read once (card2_vleak.csv's parse shared by its own branch and card2_filter.csv's; the columns branch reads only
+    its header):
+    card2_vleak.csv - every row holds its header's fields and the header every column its readers use; its rows are, in order,
+      the Stokes V rows of the detection_record.csv.gz beside it that reached the association pool (in_assoc_pool 1), each
+      with the record's det_uid, cand_id, tier, served and identity_jname; card2_ratio on every row is
+      catalog_omission.CARD2_RATIO (the ratio G8 and the combined view apply); every row passes G8's own rule,
+      deep_omission.card2_row_check, the one rule of its readers (|peak_jyb| / i_here_jy equal to v_over_i_here within 1e-4
+      or 1e-3 of it; the flag card2_would_remove 1 exactly when the rounded ratio is at or below the threshold, except within
+      half a unit of its fifth decimal of the threshold, where the file's own flag stands - counted; a row without a ratio
+      never flagged), so a file that passes here passes G8;
+    card2_vleak_columns.csv - columns name, unit, meaning; the names are card2_vleak.csv's columns, in order;
     card2_filter.csv - its comment line, then cand_id, ra, dec, v_over_i_here, card2_would_remove of exactly the served rows
       of card2_vleak.csv (served 1), in its order."""
     import gzip
+    from exopipe.phase3.config import CFG
+    from exopipe.phase3.lib.catalog import deep_omission as DO
+    names = _card2_names()
     d, base = os.path.dirname(os.path.abspath(path)), os.path.basename(path)
-    vp, cp, fp = (os.path.join(d, n) for n in ('card2_vleak.csv', 'card2_vleak_columns.csv', 'card2_filter.csv'))
-    if base not in ('card2_vleak.csv', 'card2_vleak_columns.csv', 'card2_filter.csv'):
-        return False, None, f'{base} is not a file of the Card 2 back-fill'
+    vp, cp, fp = (os.path.join(d, n) for n in names)
+    if base not in names:
+        return False, None, f'{base} is not a file of the Card 2 back-fill ({", ".join(names)})'
     for p in (vp, cp, fp):
         if not os.path.isfile(p):
             return False, None, f'no {os.path.basename(p)} beside it: the back-fill writes the three files together'
-    csv.field_size_limit(10 ** 9)
-    with open(vp, newline='') as f:
-        rd = csv.reader(f)
-        head = next(rd, [])
-        raw = list(rd)
+    if base == names[1]:
+        head = _card2_head(vp)
+        with open(cp, newline='') as f:
+            crows = list(csv.reader(f))
+        cnames = [r[0] for r in crows[1:] if r]
+        ok = bool(crows) and crows[0] == ['name', 'unit', 'meaning'] and cnames == head
+        return ok, len(cnames), (f'{len(cnames)} column definitions, the columns of {names[0]}' if ok else
+                                 f'header {crows[0] if crows else None}; names {cnames} vs {names[0]} {head}')
+    head, raw = _card2_vleak(vp)
     if any(len(r) != len(head) for r in raw):
-        return False, len(raw), f'{sum(1 for r in raw if len(r) != len(head))} rows of card2_vleak.csv without {len(head)} fields'
+        return False, len(raw), f'{sum(1 for r in raw if len(r) != len(head))} rows of {names[0]} without {len(head)} fields'
     rows = [dict(zip(head, r)) for r in raw]
-    with open(cp, newline='') as f:
-        crows = list(csv.reader(f))
-    names = [r[0] for r in crows[1:] if r]
-    if base == 'card2_vleak_columns.csv':
-        ok = bool(crows) and crows[0] == ['name', 'unit', 'meaning'] and names == head
-        return ok, len(names), (f'{len(names)} column definitions, the columns of card2_vleak.csv' if ok else
-                                f'header {crows[0] if crows else None}; names {names} vs card2_vleak.csv {head}')
     served = [r for r in rows if r.get('served') == '1']
-    if base == 'card2_filter.csv':
+    if base == names[2]:
         with open(fp, newline='') as f:
             first = f.readline()
             frows = list(csv.reader(f))
+        n_rows = max(len(frows) - 1, 0)
         want = [list(CARD2_FILTER_COLUMNS)] + [[r.get(k, '') for k in CARD2_FILTER_COLUMNS] for r in served]
         if not first.startswith(CARD2_FILTER_FIRST):
-            return False, len(frows) - 1, f'first line {first[:60]!r}, not the back-fill\'s comment line'
+            return False, n_rows, f'first line {first[:60]!r}, not the back-fill\'s comment line'
         if frows != want:
             n = sum(1 for a, b in zip(frows, want) if a != b) + abs(len(frows) - len(want))
-            return False, len(frows) - 1, f'{n} lines differ from the {len(served)} served rows of card2_vleak.csv'
-        return True, len(served), f'= the {len(served)} served rows of card2_vleak.csv, in its order'
-    bad = []
-    if head != names:
-        bad.append(f'columns {head} are not card2_vleak_columns.csv\'s {names}')
+            return False, n_rows, f'{n} lines differ from the {len(served)} served rows of {names[0]}'
+        return True, len(served), f'= the {len(served)} served rows of {names[0]}, in its order'
     miss = [k for k in CARD2_READ if k not in head]
     if miss:
         return False, len(rows), f'lacks the column(s) {miss} its readers use'
-    ratios = {r['card2_ratio'] for r in rows}
-    if len(ratios) > 1:
-        bad.append(f'{len(ratios)} ratios {sorted(ratios)[:3]}')
-    n_ratio = n_self = n_flag = n_blank = n_at = 0
+    bad = []
+    ratio = float(CFG.catalog_omission.CARD2_RATIO)
+    off = sorted({r['card2_ratio'] for r in rows if _f(r['card2_ratio']) != ratio})
+    if off:
+        bad.append(f'card2_ratio {off[:3]} on {sum(1 for r in rows if r["card2_ratio"] in off)} rows, not '
+                   f'catalog_omission.CARD2_RATIO {ratio:g}')
+    n_ratio = n_at = 0
+    fails = []
     for r in rows:
-        v, ih, fl = r['v_over_i_here'], r['i_here_jy'], r['card2_would_remove']
-        if v == '':
-            n_blank += 1
-            if fl != '':
-                n_flag += 1
-            continue
-        n_ratio += 1
-        vf, pk, ihf, rt = _f(v), _f(r['peak_jyb']), _f(ih), _f(r['card2_ratio'])
-        if None in (vf, pk, ihf, rt) or ihf <= 0:
-            n_self += 1
-            continue
-        vv = abs(pk) / ihf
-        if abs(vv - vf) > max(1e-4, 1e-3 * vv):
-            n_self += 1
-        if abs(vf - rt) <= 0.5e-5:
-            n_at += 1
-        elif fl != ('1' if vf <= rt else '0'):
-            n_flag += 1
-    if n_self:
-        bad.append(f'{n_self} rows whose ratio is not |peak_jyb| / i_here_jy')
-    if n_flag:
-        bad.append(f'{n_flag} rows whose flag disagrees with their ratio (or is set without one)')
+        n_ratio += r['v_over_i_here'] != ''
+        why, at = DO.card2_row_check(r, ratio)
+        n_at += at
+        if why:
+            fails.append(f'row {r["det_uid"]}: {why}')
+    if fails:
+        bad.append(f'{len(fails)} rows fail G8\'s row rule (deep_omission.card2_row_check at {ratio:g}), e.g. '
+                   + '; '.join(fails[:3]))
     rec = os.path.join(d, 'detection_record.csv.gz')
     try:
         want = []
@@ -767,8 +799,9 @@ def card2_backfill(path, **ctx):
     nfl = sum(1 for r in served if r['card2_would_remove'] == '1')
     return not bad, len(rows), ('; '.join(bad) if bad else
                                 f'{len(rows)} rows = the record\'s Stokes V association-pool rows ({len(served)} served); '
-                                f'{n_ratio} with a ratio, {n_blank} without (no flag); {nfl} served rows flagged at ratio '
-                                f'{next(iter(ratios), "-")}; {n_at} within rounding of the threshold')
+                                f'{n_ratio} with a ratio, {len(rows) - n_ratio} without; every row passes G8\'s rule at '
+                                f'{ratio:g}; {nfl} served rows flagged; {n_at} within half a unit of the fifth decimal of the '
+                                f'threshold (their own flag stands)')
 
 
 FILTER_COLUMNS = ('cand_id', 'stokes', 'lst', 'band', 'date', 'snr', 'ra', 'dec', 'size_beams', 'axis_ratio',

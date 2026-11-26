@@ -139,6 +139,7 @@ import hashlib
 import io
 import itertools
 import json
+import math
 import os
 import re
 import shutil
@@ -1027,11 +1028,42 @@ class Omission:
 # it AFTER the chain, from each batch's card2_vleak.csv (phase3_snapshot_card2.py's back-fill), checked against itself.
 # =====================================================================================================================
 
+def card2_row_check(r, ratio):
+    """G8's rule for one row of card2_vleak.csv (a dict of its columns; snapshot_rejudge.card2_removed), the one rule of its
+    readers: card2_removed applies it and the content test snapshot_card2 (lib/pages/tests.py card2_backfill) applies it to
+    every row, so a file that passes the test passes G8. Returns (why, at): why None when the row agrees with itself, else what
+    is wrong; at True for a ratio within half a unit of its fifth decimal of the threshold. A row with a ratio v_over_i_here
+    (the back-fill's %.5f of |peak_jyb| / i_here_jy): finite numbers with i_here_jy > 0; |peak_jyb| / i_here_jy equal to it
+    within 1e-4 (or 1e-3 of it); card2_ratio equal to ratio; card2_would_remove 1 exactly when that ROUNDED ratio is at or
+    below ratio - except within half a unit of its fifth decimal of the threshold, where the file's own flag stands (the
+    back-fill flags the unrounded ratio; counted by the caller). A row without a ratio is never flagged."""
+    v, fl = r['v_over_i_here'], r['card2_would_remove']
+    if v == '':
+        return ('flagged without a ratio' if fl == '1' else None), False
+    try:
+        vf, rt, pk, ih = (float(r[k]) for k in ('v_over_i_here', 'card2_ratio', 'peak_jyb', 'i_here_jy'))
+    except ValueError:
+        vf = rt = pk = ih = float('nan')
+    if not all(math.isfinite(x) for x in (vf, rt, pk, ih)) or ih <= 0:
+        return ('v_over_i_here %s, card2_ratio %s, peak_jyb %s, i_here_jy %s: not finite numbers with i_here_jy > 0'
+                % (v, r['card2_ratio'], r['peak_jyb'], r['i_here_jy'])), False
+    vv = abs(pk) / ih
+    if abs(vv - vf) > max(1e-4, 1e-3 * vv):
+        return 'v_over_i_here %s but |peak|/i_here = %.5f' % (v, vv), False
+    at = abs(vf - ratio) <= 0.5e-5
+    if rt != ratio:
+        return 'ratio %s, not %s' % (r['card2_ratio'], ratio), at
+    if not at and (fl == '1') != (vf <= ratio):
+        return 'card2_would_remove %s disagrees with its ratio %s at %s' % (fl, v, r['card2_ratio']), at
+    return None, at
+
+
 def card2_removed(run, reader=None, ratio=0.05, name='card2_vleak.csv'):
     """(set of det_uid, {det_uid: (cand_id, ra_peak, dec_peak, identity_jname)}, counts) of the batch's 10-s Stokes V detections
-    Card 2 rejects, from <run>/card2_vleak.csv after checking the file against itself (snapshot_rejudge.card2_removed): every
-    row's ratio recomputed from its own peak_jyb and i_here_jy, the flag from the ratio (within half a unit of the file's 5
-    decimals of the threshold the file's own flag stands, counted). G8 refuses a file that disagrees with itself, or none."""
+    Card 2 rejects, from <run>/card2_vleak.csv after checking every row against itself by card2_row_check
+    (snapshot_rejudge.card2_removed): its ratio recomputed from its own peak_jyb and i_here_jy, the flag from the ratio
+    (within half a unit of the file's 5 decimals of the threshold the file's own flag stands, counted). G8 refuses a file
+    that disagrees with itself, or none."""
     p = os.path.join(run, name)
     if reader is not None:
         text = reader.text(p, 'card2', missing_ok=True)
@@ -1046,20 +1078,12 @@ def card2_removed(run, reader=None, ratio=0.05, name='card2_vleak.csv'):
     rem, info, n = set(), {}, collections.Counter()
     for r in csv.DictReader(io.StringIO(text, newline='')):
         n['rows'] += 1
-        v, ih = r['v_over_i_here'], r['i_here_jy']
-        if v != '':
-            vv = abs(float(r['peak_jyb'])) / float(ih)
-            if abs(vv - float(v)) > max(1e-4, 1e-3 * vv):
-                refuse('G8 Card 2: %s row %s: v_over_i_here %s but |peak|/i_here = %.5f' % (p, r['det_uid'], v, vv))
-            if abs(float(v) - ratio) <= 0.5e-5:
-                n['at_threshold_within_rounding'] += 1
-            elif float(r['card2_ratio']) != ratio or (r['card2_would_remove'] == '1') != (float(v) <= ratio):
-                refuse('G8 Card 2: %s row %s: card2_would_remove %s disagrees with its ratio %s at %s'
-                       % (p, r['det_uid'], r['card2_would_remove'], v, r['card2_ratio']))
-            if float(r['card2_ratio']) != ratio:
-                refuse('G8 Card 2: %s row %s: ratio %s, not %s' % (p, r['det_uid'], r['card2_ratio'], ratio))
-        elif r['card2_would_remove'] == '1':
-            refuse('G8 Card 2: %s row %s: flagged without a ratio' % (p, r['det_uid']))
+        why, at = card2_row_check(r, ratio)
+        if why:
+            refuse('G8 Card 2: %s row %s: %s' % (p, r['det_uid'], why))
+        if at:
+            n['at_threshold_within_rounding'] += 1
+        v = r['v_over_i_here']
         if r['tier'] == '10s' and r['card2_would_remove'] == '1':
             rem.add(r['det_uid'])
             info[r['det_uid']] = (r['cand_id'], r['ra_peak'], r['dec_peak'], r['identity_jname'], r['served'] == '1')

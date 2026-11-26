@@ -41,9 +41,9 @@ Failure modes (exit 2 = refused, the gate named in the record): P1 no --run; P2 
   done / its outputs changed; P3 MIRROR drift (a constant inside an in-place module differs from config); P4 localization tables
   missing; P6 pages input failed; P7 a page shard failed; P9 another pages job holds the run directory; P10 review_dir merge
   refused; P11-P17 sub-LST (localizations, tie table, rejected record, selection, index, frozen code, place); P18-P25 snapshot
-  (flow mode, duplicate or missing panel, run content test, filter catalogue; P23 no served_tiers.csv or one failing its content
-  test, before anything is written; P24 the per-tier views rewrite or its test failed, views restored; P25 the Card 2
-  back-fill failed); a content test failing. Exit 3 = every unit had
+  (flow mode, duplicate or missing panel, run content test, filter catalog; P23 no served_tiers.csv or one failing its content
+  test, before anything is written; P24 the per-tier views rewrite or its test failed, views restored, or the hook's backup
+  directory a symbolic link; P25 the Card 2 back-fill failed); a content test failing. Exit 3 = every unit had
   nothing to do (e.g. a set with no pages-input row). TESS never refuses (recorded NO-INPUT: 'coverage not computed').
 Per-hour vs intermittent: per hour (DESIGN 12.1, chain 'epoch'): --epochs <LST>_<date> after catalog --incremental; the deep
   build is incremental by construction (build_i14 keeps every page whose fingerprint is unchanged and renders new/changed pages),

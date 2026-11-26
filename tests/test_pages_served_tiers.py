@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Data-free tests of the snapshot pages' per-tier serving (cutover row 72; lib/pages/tier_snapshot.stage_build): the pages
-step passes the run's served_tiers.csv to the page builder exactly as production does (ops snapshot_rechain_batch.sh:607-611,
+step passes the run's served_tiers.csv to the page builder exactly as production does (ops snapshot_rechain_batch.sh:607-612,
 then `pertier_hook full` :570-587, :639), and refuses before anything is written when the table is missing or fails its
-content test (class served_tiers, ExoPipe PR 185) - gate P23. Also the content test of the Card 2 back-fill's files (class
-snapshot_card2, lib/pages/tests.card2_backfill).
+content test (class served_tiers, ExoPipe PR 185) - gate P23, which honors --waive like every gate; P24 on a linked backup
+directory; the build's inputs (the record and the Card 2 back-fill's roots); the dry run's P23 prediction with --from-run; the
+pages pass's default process count (production's 12). Also the content test of the Card 2 back-fill's files (class
+snapshot_card2, lib/pages/tests.card2_backfill): G8's own row rule (deep_omission.card2_row_check), each file read once.
 
 The in-place scripts are stubs in a temporary code tree (ops and clv15 legacy roots), each appending its argv to a calls file:
 the page builder (a pass writes two identities' views; the views-only rewrite keeps the identities the table qualifies in the
@@ -13,6 +15,7 @@ detection_record.csv.gz are those of tests/test_served_tiers.py (the record with
 
 Run: python tests/test_pages_served_tiers.py [test names]   (exit 0 = all passed, 1 = a failure, 2 = imports missing)
 """
+import collections
 import csv
 import gzip
 import hashlib
@@ -34,7 +37,7 @@ _IMPORT_ERROR = None
 try:
     from exopipe.phase3.config import CFG
     from exopipe.phase3.core import record, validate
-    from exopipe.phase3.lib.catalog import run_samples as RS
+    from exopipe.phase3.lib.catalog import deep_omission as DO, run_samples as RS
     from exopipe.phase3.lib.pages import mirror, tests as PT, tier_snapshot as TSN
     import test_served_tiers as TS
 except Exception as e:  # noqa: BLE001
@@ -211,6 +214,15 @@ class World(object):
         self.store = os.path.join(self.W, 'fits_store.csv')
         with open(self.store, 'w') as f:
             f.write('cand_id\n')
+        # the Card 2 back-fill's roots (pages_snapshot.MASTERS_ROOT, catalog_snapshot.LIGHTCURVES_ROOT, MASTER_CATALOGS):
+        # empty directories of the world, inputs of the build unit
+        self.card2_roots = [os.path.join(self.root, d) for d in ('masters', 'lightcurves', 'master_catalogs')]
+        for d in self.card2_roots:
+            os.makedirs(d)
+        self._roots = (CFG.pages_snapshot.MASTERS_ROOT, CFG.catalog_snapshot.LIGHTCURVES_ROOT,
+                       CFG.catalog_snapshot.MASTER_CATALOGS)
+        (CFG.pages_snapshot.MASTERS_ROOT, CFG.catalog_snapshot.LIGHTCURVES_ROOT,
+         CFG.catalog_snapshot.MASTER_CATALOGS) = self.card2_roots
         self._py = dict(CFG.site.PYTHON)
         CFG.site.PYTHON['py36'] = sys.executable
         self._env = {k: os.environ.get(k) for k in ('PSTUB_MODE', 'PSTUB_CALLS', 'PSTUB_CARD2_COLS', 'PSTUB_IHERE')}
@@ -228,6 +240,7 @@ class World(object):
 
     def __exit__(self, *a):
         mirror.gate, mirror.plan_lines = self._gate, self._plan
+        CFG.pages_snapshot.MASTERS_ROOT, CFG.catalog_snapshot.LIGHTCURVES_ROOT, CFG.catalog_snapshot.MASTER_CATALOGS = self._roots
         CFG.site.PYTHON.clear()
         CFG.site.PYTHON.update(self._py)
         for k, v in self._env.items():
@@ -241,12 +254,12 @@ class World(object):
     def table(self):
         return os.path.join(self.run, RS.SERVED_TIERS)
 
-    def ctx(self, keep=False):
+    def ctx(self, keep=False, from_run=None):
         return types.SimpleNamespace(name=NAME, out=self.W, RUN=self.run, W=self.W, roots={'ops': self.ops, 'clv15': self.clv},
-                                     stages=['build'], store=self.store, keep=keep, nproc=3, from_run=None, epochs=None)
+                                     stages=['build'], store=self.store, keep=keep, nproc=3, from_run=from_run, epochs=None)
 
-    def build(self, keep=False):
-        rr = record.Run('pages', ['test_pages_served_tiers'], self.W, CFG)
+    def build(self, keep=False, waivers=None):
+        rr = record.Run('pages', ['test_pages_served_tiers'], self.W, CFG, waivers=waivers)
         done = {}
         TSN.stage_build(self.ctx(keep), rr, done)
         u = rr.units[-1]
@@ -257,6 +270,12 @@ class World(object):
         if not os.path.exists(self.calls):
             return []
         return [ln.split(' ', 1) for ln in open(self.calls).read().splitlines()]
+
+    def dry(self, **kw):
+        f = io.StringIO()
+        with redirect_stdout(f):
+            rc = TSN.dry_run(self.ctx(**kw))
+        return rc, f.getvalue()
 
     def pages_left(self):
         """Every page product of the run: page directories, the Stokes queues, the views, the Card 2 files."""
@@ -295,6 +314,7 @@ def test_registration_and_config():
     arguments are production's defaults (clv15 phase3_snapshot_card2.py:43-48) taken from config."""
     assert [n for n, _f in validate.tests_for('snapshot_card2')] == ['card2_backfill']
     assert CFG.pages_snapshot.VIEWS_NPROC == 2
+    assert PT._card2_names() == TSN.CARD2_FILES, (PT._card2_names(), TSN.CARD2_FILES)
     assert TSN.CARD2_FILES[0] == CFG.catalog_omission.SNAPSHOT_CARD2, CFG.catalog_omission.SNAPSHOT_CARD2
     assert set(PT.CARD2_READ) <= set(CARD2_COLS)
     c = types.SimpleNamespace(RUN='/x/' + NAME)
@@ -303,6 +323,21 @@ def test_registration_and_config():
                  '--lightcurves-root', '/lustre/gh/main/exopipe_ops/snapshot_lightcurves',
                  '--master-catalogs', '/lustre/gh/main/exopipe_ops/snapshot_master_catalogs',
                  '--proto-root', '/lustre/gh/main/exopipe_ops/snapshot_fleet_out'], a
+
+
+def test_page_workers_default_is_productions():
+    """The pages pass's process count defaults to production's 12 (snapshot_rechain_batch.sh:610 --nproc
+    ${RECHAIN_PAGES_NPROC:-12}; :635-637: 24 workers reached the 400 GiB /user.slice limit and were OOM-killed); --shards
+    overrides it."""
+    assert CFG.pages.SNAP_PAGES_NPROC == 12, CFG.pages.SNAP_PAGES_NPROC
+    with World() as w:
+        for shards, want in ((None, 12), (5, 5)):
+            args = types.SimpleNamespace(run_label=NAME, legacy_root=None, snap_fit_store=w.store, snap_keep_panels=False,
+                                         shards=shards, from_run=None, epochs=None, stages=None, from_stage=None,
+                                         until_stage=None)
+            c = TSN.context(args, types.SimpleNamespace(out_root=w.W))
+            a = TSN.build_argv(c, w.table)
+            assert c.nproc == want and a[a.index('--nproc') + 1] == want, (c.nproc, a)
 
 
 def test_missing_table_refuses_before_anything():
@@ -330,6 +365,27 @@ def test_failing_table_refuses_before_anything():
             t = [x for x in u.tests if x['cls'] == 'served_tiers']
             assert t and not all(x['passed'] for x in t), t
             assert w.pages_left() == [], w.pages_left()
+
+
+def test_waived_table_failure_builds():
+    """P23 honors --waive like every gate: a table failing its content test builds when --waive covers each failed test (the
+    failures recorded with the ruling, a note naming them); a waiver of another test does not cover it."""
+    rows = TS.good_rows()
+    rows[0]['routes_tier'] = ''
+    with World() as w:
+        TS.write_table(w.table, rows)
+        failed = [t['name'] for t in validate.run('served_tiers', w.table) if not t['passed']]
+        assert failed, 'the damaged table passes its content test'
+        u = w.build(waivers=[(n, 'R-TEST-WAIVER') for n in failed])
+        assert u.status == 'done', (u.status, u.reason)
+        t = [x for x in u.tests if x['cls'] == 'served_tiers' and not x['passed']]
+        assert sorted(x['name'] for x in t) == sorted(failed) and all(x.get('waived') == 'R-TEST-WAIVER' for x in t), t
+        assert [c[0] for c in w.calls_made()] == ['pages', 'check', 'pages', 'vtest', 'card2', 'ct'], w.calls_made()
+        assert any('waived' in n for n in u.notes), u.notes
+    with World() as w:
+        TS.write_table(w.table, rows)
+        u = w.build(waivers=[('served_tiers.another_test', 'R-TEST-WAIVER')])
+        assert_refused_nothing_built(w, u, 'P23', 'fails its content test', [])
 
 
 def test_success_passes_the_table_as_production():
@@ -361,6 +417,59 @@ def test_success_passes_the_table_as_production():
             m = u.meta['pertier']
             assert m['verdict'] == 'PERTIER-VIEWS-OK' and m['views'][0].startswith('V 10s') and m['card2'][0].startswith('CARD2'), m
             assert m['backup'] == pre
+            DO.card2_removed(w.run, None, CFG.catalog_omission.CARD2_RATIO, CFG.catalog_omission.SNAPSHOT_CARD2)   # G8 passes
+
+
+def test_inputs_hold_the_record_and_card2_roots():
+    """The build unit's recorded inputs include detection_record.csv.gz and the Card 2 back-fill's roots (the Masters, the
+    light curves, the Master catalogs), so the record's input check (core.record.resume_check: every recorded input's
+    fingerprint) sees a change of any of them."""
+    with World() as w:
+        u = w.build()
+        assert u.status == 'done', (u.status, u.reason)
+        rec = record.load_record(w.W, 'pages', f'{NAME}:build')
+        want = [os.path.join(w.run, 'detection_record.csv.gz')] + w.card2_roots
+        for p in want:
+            assert p in rec['inputs'] and record.same_fingerprint(rec['inputs'][p], record.fingerprint(p)), p
+        write_record(w.run, TS.RECORD[:-1])
+        for d in w.card2_roots:
+            open(os.path.join(d, 'added'), 'w').close()
+        for p in want:
+            assert not record.same_fingerprint(rec['inputs'][p], record.fingerprint(p)), p
+
+
+def test_linked_backup_dir_refuses():
+    """P24: W/pertier/pre_full a symbolic link, W/pertier a symbolic link, or pre_full not a directory - refused before the
+    pages pass (nothing called, nothing built), the link and what it points at left as they are; the dry run predicts it; the
+    hook's own check (before its removal) refuses the same way."""
+    for kind in ('pre', 'pertier', 'file'):
+        with World() as w:
+            target = os.path.join(w.root, 'elsewhere')
+            os.makedirs(os.path.join(target, 'pre_full'))
+            keep = os.path.join(target, 'pre_full', 'keep.txt')
+            open(keep, 'w').write('x')
+            ptd = os.path.join(w.W, TSN.PERTIER)
+            pre = os.path.join(ptd, 'pre_full')
+            if kind == 'pertier':
+                os.symlink(target, ptd)
+            else:
+                os.makedirs(ptd)
+                if kind == 'pre':
+                    os.symlink(os.path.join(target, 'pre_full'), pre)
+                else:
+                    open(pre, 'w').write('x')
+            text = 'not a directory' if kind == 'file' else 'is a symbolic link'
+            u = w.build()
+            assert_refused_nothing_built(w, u, 'P24', text, [])
+            assert w.pages_left() == [] and os.path.isfile(keep)
+            assert os.path.islink(ptd if kind == 'pertier' else pre) or kind == 'file'
+            rc, out = w.dry()
+            assert rc == 2 and 'WOULD REFUSE: build: P24' in out and text in out, out
+            try:
+                TSN.pertier_backup_dir(w.ctx())
+                raise AssertionError('pertier_backup_dir accepted ' + kind)
+            except record.Refusal as e:
+                assert str(e).startswith('P24') and text in str(e), e
 
 
 def test_views_rewrite_failure_restores_the_views():
@@ -415,16 +524,28 @@ def test_dry_run():
     hook's commands. Nothing is called or written."""
     for table in (False, True):
         with World(table=table) as w:
-            f = io.StringIO()
-            with redirect_stdout(f):
-                rc = TSN.dry_run(w.ctx())
-            out = f.getvalue()
+            rc, out = w.dry()
             assert w.calls_made() == [] and w.pages_left() == []
             if table:
                 assert rc == 0, out
                 assert ' '.join(expected_argv(w, w.table)) in out and '--views-only' in out and 'PERTIER-VIEWS-OK' in out, out
             else:
                 assert rc == 2 and 'WOULD REFUSE: P23' in out, out
+    # --from-run: the table the build will read is the source run's (stagein copies it) - P23 predicted from it, nothing copied
+    for run_table, src_table in ((False, True), (True, False), (False, False)):
+        with World(table=run_table) as w:
+            src = os.path.join(w.root, 'source', NAME)
+            os.makedirs(src)
+            shutil.copy(os.path.join(w.run, 'chain_summary.json'), src)
+            if src_table:
+                TS.write_table(os.path.join(src, RS.SERVED_TIERS), TS.good_rows())
+            before = sorted(os.listdir(w.run))
+            rc, out = w.dry(from_run=src)
+            assert sorted(os.listdir(w.run)) == before and w.calls_made() == [], out
+            if src_table:
+                assert rc == 0 and 'WOULD REFUSE' not in out, out
+            else:
+                assert rc == 2 and f'WOULD REFUSE: P23 no {RS.SERVED_TIERS} in {src}' in out and 'nothing is copied' in out, out
 
 
 def _card2_world(w):
@@ -433,56 +554,143 @@ def _card2_world(w):
     return {f: os.path.join(w.run, f) for f in TSN.CARD2_FILES}
 
 
+_TICK = [0]
+
+
+def _stamp(p):
+    """A distinct modification time after each write: the content test holds card2_vleak.csv's parse by the file's stat, and
+    two same-size writes in one tick of the filesystem clock would share one."""
+    _TICK[0] += 1
+    t = 1700000000 * 10 ** 9 + _TICK[0] * 10 ** 6
+    os.utime(p, ns=(t, t))
+
+
 def _rewrite(p, fn):
     with open(p, newline='') as f:
         rows = list(csv.reader(f))
     rows = fn(rows)
     with open(p, 'w', newline='') as f:
         csv.writer(f).writerows(rows)
+    _stamp(p)
+
+
+def _g8(w):
+    """G8 (deep_omission.card2_removed) on the run: None when it accepts the file, else its refusal."""
+    co = CFG.catalog_omission
+    try:
+        return None, DO.card2_removed(w.run, None, co.CARD2_RATIO, co.SNAPSHOT_CARD2)[2]
+    except Exception as e:  # noqa: BLE001
+        return str(e), None
 
 
 def test_card2_content_test():
-    """snapshot_card2 on the stub back-fill's files: all three pass; each damage fails its file - a flag that disagrees with the
-    ratio, a ratio that is not |peak_jyb| / i_here_jy, a flag without a ratio, a row the record does not give (or one dropped),
-    card2_filter.csv not the served rows, a column dictionary that differs, a file missing beside it."""
+    """snapshot_card2 on the stub back-fill's files: all three pass, and G8 accepts card2_vleak.csv. Each damage fails its
+    file; a damage of G8's row rule (deep_omission.card2_row_check, shared) is refused by G8 too - a flag that disagrees with
+    the rounded ratio, a ratio that is not |peak_jyb| / i_here_jy, a flag without a ratio, a number that is not one, a ratio
+    other than catalog_omission.CARD2_RATIO on every row (one consistent ratio is not enough). The test's own checks: a row the
+    record does not give (or one dropped), card2_filter.csv not the served rows (an empty one counts 0 rows), a column
+    dictionary that differs, a file missing beside it. The threshold's half unit: a rounded ratio at 0.05000 passes with either
+    flag, counted; 0.04999 is judged."""
     with World() as w:
         p = _card2_world(w)
         for f in TSN.CARD2_FILES:
             r = validate.run('snapshot_card2', p[f])
             assert r and all(x['passed'] for x in r), (f, r)
+        assert _g8(w)[0] is None, _g8(w)
         good = {f: open(p[f]).read() for f in TSN.CARD2_FILES}
         H = CARD2_COLS
+        vl = TSN.CARD2_FILES[0]
 
-        def damaged(fname, fn, want):
+        def restore():
+            for f in TSN.CARD2_FILES:
+                with open(p[f], 'w') as fh:
+                    fh.write(good[f])
+                _stamp(p[f])
+
+        def damaged(fname, fn, want, g8=None):
             _rewrite(p[fname], fn)
             r = validate.run('snapshot_card2', p[fname])[0]
-            for f in TSN.CARD2_FILES:
-                open(p[f], 'w').write(good[f])
+            g8r = _g8(w)[0]
+            restore()
             assert not r['passed'] and want in r['detail'], (fname, want, r)
+            if g8 is not None:
+                assert g8r is not None and g8 in g8r, (want, g8r)
+            return r, g8r
 
         def setcol(i, col, val):
             def fn(rows):
-                rows[i][H.index(col)] = val
+                for j in ([i] if isinstance(i, int) else i):
+                    rows[j][H.index(col)] = val
                 return rows
             return fn
-        damaged('card2_vleak.csv', setcol(1, 'card2_would_remove', '0'), 'flag disagrees')      # u1: 0.9/30 = 0.03 -> 1
-        damaged('card2_vleak.csv', setcol(2, 'card2_would_remove', '1'), 'flag disagrees')      # u2: 0.2/2 = 0.1 -> 0
-        damaged('card2_vleak.csv', setcol(2, 'v_over_i_here', '0.03000'), 'not |peak_jyb| / i_here_jy')
-        damaged('card2_vleak.csv', setcol(3, 'card2_would_remove', '0'), 'set without one')      # u3: no ratio
-        damaged('card2_vleak.csv', setcol(1, 'served', '0'), "record's 4 Stokes V association-pool rows")
-        damaged('card2_vleak.csv', lambda rows: rows[:-1], "record's 4 Stokes V association-pool rows")
-        damaged('card2_vleak.csv', setcol(1, 'card2_ratio', '0.1'), 'ratios')
-        damaged('card2_filter.csv', lambda rows: rows[:-1], 'served rows of card2_vleak.csv')
-        damaged('card2_vleak_columns.csv', lambda rows: rows[:-1], 'names')
-        os.remove(p['card2_filter.csv'])
-        r = validate.run('snapshot_card2', p['card2_vleak.csv'])[0]
+        # rows 1-4: u1 (0.9/30 = 0.03, flagged), u2 (0.2/2 = 0.1), u3 and u8 (no ratio)
+        damaged(vl, setcol(1, 'card2_would_remove', '0'), 'disagrees with its ratio', 'disagrees with its ratio')
+        damaged(vl, setcol(2, 'card2_would_remove', '1'), 'disagrees with its ratio', 'disagrees with its ratio')
+        damaged(vl, setcol(2, 'v_over_i_here', '0.03000'), 'but |peak|/i_here', 'but |peak|/i_here')
+        damaged(vl, setcol(3, 'card2_would_remove', '1'), 'flagged without a ratio', 'flagged without a ratio')
+        damaged(vl, setcol(1, 'i_here_jy', 'nan'), 'not finite numbers', 'not finite numbers')
+        damaged(vl, setcol([1, 2, 3, 4], 'card2_ratio', '0.1'), 'not catalog_omission.CARD2_RATIO 0.05', 'ratio 0.1, not 0.05')
+        r, g8r = damaged(vl, setcol(3, 'card2_ratio', '0.1'), 'not catalog_omission.CARD2_RATIO 0.05')
+        assert g8r is None, g8r                  # G8 judges the ratio only where there is one; the test, on every row
+        damaged(vl, setcol(1, 'served', '0'), "record's 4 Stokes V association-pool rows")
+        damaged(vl, lambda rows: rows[:-1], "record's 4 Stokes V association-pool rows")
+        damaged(vl, lambda rows: rows[:2] + [rows[2] + ['extra']] + rows[3:], 'without 23 fields')
+        damaged(TSN.CARD2_FILES[2], lambda rows: rows[:-1], 'served rows of card2_vleak.csv')
+        damaged(TSN.CARD2_FILES[1], lambda rows: rows[:-1], 'names')
+        # the columns branch reads card2_vleak.csv's header only: a damaged body does not fail card2_vleak_columns.csv
+        _rewrite(p[vl], lambda rows: rows[:2] + [rows[2] + ['extra']] + rows[3:])
+        r = validate.run('snapshot_card2', p[TSN.CARD2_FILES[1]])[0]
+        restore()
+        assert r['passed'], r
+        # an empty card2_filter.csv: 0 rows
+        with open(p[TSN.CARD2_FILES[2]], 'w'):
+            pass
+        _stamp(p[TSN.CARD2_FILES[2]])
+        r = validate.run('snapshot_card2', p[TSN.CARD2_FILES[2]])[0]
+        restore()
+        assert not r['passed'] and r['value'] == 0, r
+        # the threshold's half unit (G8's rule): u1 at 0.9/18 = 0.05000 stands with either flag, counted; 0.04999 is judged
+        for v, flag, ok in (('0.05000', '0', True), ('0.05000', '1', True), ('0.04999', '0', False)):
+            _rewrite(p[vl], lambda rows: setcol(1, 'card2_would_remove', flag)(setcol(1, 'v_over_i_here', v)(
+                setcol(1, 'i_here_jy', '18')(rows))))
+            r = validate.run('snapshot_card2', p[vl])[0]
+            g8r, n = _g8(w)
+            restore()
+            assert r['passed'] == ok and (g8r is None) == ok, (v, flag, r, g8r)
+            if ok:
+                assert '1 within half a unit' in r['detail'] and n['at_threshold_within_rounding'] == 1, (r, n)
+        os.remove(p[TSN.CARD2_FILES[2]])
+        r = validate.run('snapshot_card2', p[vl])[0]
         assert not r['passed'] and 'no card2_filter.csv beside it' in r['detail'], r
+
+
+def test_card2_files_read_once_per_build():
+    """Each Card 2 file is opened once by the build's content tests (validate.run per file): card2_vleak.csv's parse is shared
+    by its own test and card2_filter.csv's, the columns test takes its header from it."""
+    with World() as w:
+        names = {os.path.join(w.run, f): f for f in TSN.CARD2_FILES}
+        seen = collections.Counter()
+        real = open
+
+        def counting(path, *a, **kw):
+            if isinstance(path, str) and os.path.abspath(path) in names:
+                seen[names[os.path.abspath(path)]] += 1
+            return real(path, *a, **kw)
+        PT.open = counting
+        try:
+            u = w.build()
+        finally:
+            del PT.open
+        assert u.status == 'done', (u.status, u.reason)
+        assert seen == {f: 1 for f in TSN.CARD2_FILES}, seen
 
 
 ALL = [test_registration_and_config, test_missing_table_refuses_before_anything, test_failing_table_refuses_before_anything,
        test_success_passes_the_table_as_production, test_views_rewrite_failure_restores_the_views,
        test_views_test_failure_restores_the_views, test_failed_restore_is_named, test_card2_failure_refuses,
-       test_pages_pass_failure_is_not_hooked, test_dry_run, test_card2_content_test]
+       test_pages_pass_failure_is_not_hooked, test_dry_run, test_card2_content_test, test_page_workers_default_is_productions,
+       test_waived_table_failure_builds, test_inputs_hold_the_record_and_card2_roots, test_linked_backup_dir_refuses,
+       test_card2_files_read_once_per_build]
 
 
 if __name__ == '__main__':
