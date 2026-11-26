@@ -156,3 +156,5 @@ jobs:
         run: python tests/test_dewarp_child_pins.py
       - name: the sample catalogs a snapshot chain run read (cutover row 70) - copies and md5s recorded in the run, the re-judging reads only them and refuses a missing record, a missing copy or another md5; the chain's --samples-dir
         run: python tests/test_run_samples.py
+      - name: the snapshot chain's per-tier serving stage (cutover row 71) - production's tierserve on the run's recorded sample catalogs only, served_tiers.csv placed after its self-check and content test, refused with no record, another md5 or a changed record, nothing left behind
+        run: python tests/test_served_tiers.py
