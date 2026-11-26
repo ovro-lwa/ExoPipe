@@ -15,6 +15,9 @@ self-check against what the chain would have written. It writes, into the batch 
                             rows)
   chain_summary.json        {'cells': [...]} (the chain's floors are its defaults; no footprint / pool-size checks)
   served_tiers.csv          per (identity, tier with members): chain_outcome served, qualifies by the chain's per-tier rule
+  sample_catalogs/ (+ its sample_catalogs.json)   the sample catalogs, copied from ``clv15`` BEFORE the child reads them and read from
+                            the copies - as the chain stage does (lib/catalog/run_samples.py, cutover row 70): the re-judging
+                            reads this record and refuses a run without it
 and returns {(identity, tier): qualifies} - the batch's per-tier catalogues hold exactly the qualifying ones (G4b).
 """
 import json
@@ -57,7 +60,7 @@ for i, (J, dets) in enumerate(spec['sources']):
     by_src.append((J, rr))
 C.CELLS_GLOBAL.clear()
 C.CELLS_GLOBAL.update({c: C.cell_centre(c) for c in spec['cells']})
-cats = C.load_samples(spec['clv15'])
+cats = C.load_samples(spec['samples_dir'])
 area = C.footprint_area_deg2(C.CELLS_GLOBAL)
 pool = [dict(st=r['stokes'], tier=r['tier'], band=r['band'], snr=float(r['snr']), det_uid=r['det_uid']) for r in rows]
 
@@ -123,12 +126,14 @@ def write_chain(run, sources, cells, tag=None, py36=PY36, clv15=CLV15):
     dicts with lst, date, subband, band, stokes, tier, ts, snr, ra, dec, ra_peak, dec_peak, cand_id; elev_bin optional])], in the
     record's order; cells: the cells the batch searched. Returns {(identity, tier): qualifies}."""
     os.makedirs(run, exist_ok=True)
+    from exopipe.phase3.lib.catalog import run_samples as RS
+    RS.write(run, clv15, RS.chain_names(), 'chain')            # the chain stage's copies, read below as the chain reads them
     spec_p, res_p, child_p = (os.path.join(run, '.chain_fixture.%s' % x) for x in ('spec.json', 'result.json', 'child.py'))
     with open(child_p, 'w') as f:
         f.write(CHILD)
     with open(spec_p, 'w') as f:
         json.dump(dict(run=run, tag=tag or os.path.basename(run), sources=sources, cells=sorted(cells), clv15=clv15,
-                       result=res_p), f)
+                       samples_dir=RS.copy_dir(run), result=res_p), f)
     r = subprocess.run([py36, child_p, spec_p], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True,
                        timeout=900, cwd=run)
     for p in (spec_p, child_p):

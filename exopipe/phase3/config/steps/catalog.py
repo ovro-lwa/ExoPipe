@@ -608,9 +608,10 @@ class catalog_snapshot(_Section):
                       'REJECT_NO_SOURCE_FIT', 'REJECT_UNCONSTRAINED_FIT', 'CLUSTER', 'GATE3D', 'GATE3D_NTHR', 'LC_CACHE_DEFAULT',
                       'VETO_PROCS_DEFAULT', 'REFASTRO_SHARDS_DEFAULT', 'REF_MAX_SEP_DEG', 'TEST_GATE3D_PCT', 'TEST_MEMBER_ORDER',
                       'TEST_GHOST_LEAK_DEG', 'PRE_BUNDLE_TIE_MODEL', 'CARD2', 'RESTORED_BY', 'RESTORE_TOL_BEAMS',
-                      'RESTORE_MARKER_KEY')
+                      'RESTORE_MARKER_KEY', 'SAMPLES')
     # ---- driver (snapshot_rechain_batch.sh). Shared roots: paths.SNAPSHOT_FLEET_OUT (the chain's --proto-root,
-    # snapshot_rechain_batch.sh:280), paths.CLV15_ROOT (--samples-dir, phase3_snapshot_chain.py:3329), paths.SNAPSHOT_REVIEW_ROOT
+    # snapshot_rechain_batch.sh:280), paths.CLV15_ROOT (--samples-dir, phase3_snapshot_chain.py:3329: of the prefit and tie passes;
+    # the full chain reads the run's copies of SAMPLES below, --samples-dir RUN/sample_catalogs), paths.SNAPSHOT_REVIEW_ROOT
     # (the served run, :56), paths.OPS_ROOT
     RUN_PREFIX = 'Run_SNAP'                               # snapshot_rechain_batch.sh:49 [step]
     REVIEW_MIN_FREE_GB = 100      # P-G25: a production chain refuses BEFORE its build when the review disk (site REVIEW_HOST,
@@ -627,6 +628,13 @@ class catalog_snapshot(_Section):
     VETO_RECORD_ROOT = '{run}/vetoed'                     # snapshot_rechain_batch.sh:354 [arg:--veto-record-root] (chain default /lustre/pipeline/exopipe/phase3/snapshot_vetoed, phase3_snapshot_chain.py:3356)
     DIRTY_CELLS = '/lustre/gh/main/exopipe_ops/snapshot_fleet_worklist_dirtyI_20260918.txt'   # phase3_snapshot_chain.py:3343 [arg:--dirty-cells] (B-77 open)
     DIRTY_I_FLOOR = 0.0                                   # sigma; 0 = a dirty cell refuses; phase3_snapshot_chain.py:3346 [arg:--dirty-i-floor]
+    # THE RUN'S SAMPLE CATALOGS (cutover row 70; FIX-20261125-SNAPCOMB-REJUDGE-PER-RUN-SAMPLE-CATALOGS): the chain stage copies
+    # these files of paths.CLV15_ROOT into <run>/sample_catalogs/ with their md5s in its sample_catalogs.json and passes
+    # --samples-dir <run>/sample_catalogs; the re-judging reads that record (lib/catalog/run_samples.py). (tag, file) as the
+    # chain's load_samples reads them
+    SAMPLES = (('Hot_Warm_Jupiters', 'Hot_Warm_Jupiters.csv'), ('10pc', '10pc.csv'), ('25pc', '25pc.csv'), ('LPTs', 'LPTs.csv'),
+               ('flare_ucd', 'flare_ucd.csv'), ('sydney_stars', 'sydney_stars.csv'), ('pulsars_atnf', 'pulsars_atnf.csv'))
+                                                          # phase3_snapshot_chain.py:485-488 SAMPLES [lit]
     LIMIT_H = 1000                                        # h runaway guard (Gregg: no time stop); snapshot_rechain_batch.sh:68 [step]
     FAST_FREE_MIN_GB = 400                                # GB free on the chain host's /fast; snapshot_rechain_batch.sh:170 [step]
     PRE_BUNDLE_TIE_MODEL = 'stat0.42floor5_refh10'        # refused tie-cache model; snapshot_rechain_batch.sh:65 [step]
@@ -1033,8 +1041,8 @@ class catalog_omission(_Section):
     REJUDGE_PROCS = 6                                     # re-judging children at a time (production SNAPCOMB_REJUDGE_PROCS 8 in fork workers
                                                           # on lwacalim07's disk; the Lustre rule: at most 6 readers) [step]
     REJUDGE_TIMEOUT_S = 86400                             # s, one batch's re-judging (production: no limit) [step]
-    REJUDGE_SAMPLES_DIR = ''                              # the catalogs of the catalog route (clv15 load_samples); '' = the clv15 root
-                                                          # (production's default samples_dir="/lustre/gh/main/clv15") [step]
+    # the catalogs of the catalog route: each run's OWN record (lib/catalog/run_samples.py, cutover row 70), never a directory
+    # set here - production's samples_dir default "/lustre/gh/main/clv15" + its per-run map SNAPCOMB_REJUDGE_SAMPLES (352ef13)
     TENMIN_REJUDGE_APPROVED = '/lustre/gh/main/exopipe_ops/sublst_rejudge_APPROVED'   # Gregg's go on the 10-minute re-judging count:
                                                           # a 10-minute stage whose re-judging removes a source refuses without it
                                                           # (sublst_deep_omission_drop.py:52, exopipe_ops 35aad1a; written 2026-11-04T15:30Z)

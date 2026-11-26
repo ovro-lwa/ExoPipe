@@ -50,7 +50,8 @@ Failure modes (exit 2 = refused, with the gate named; item refusals are recorded
                  'done'); G2 data_decisions.csv missing; G4 (staged frames only) stage missing or incomplete (subband directory, leftovers, count
                  != .filelist); G12 publish conflict (a differing table already published, no --supersede); G13 the in-place
                  module's literals differ from config (protected keys: no override exists); G14 CHAIN_RUN_DIR into a
-                 production root without a ruling; G16 --stokes V alone; LC8 a published table of an excluded (LST,
+                 production root without a ruling; G19 CHAIN_RUN_DIR names a run without a valid sample-catalog record
+                 (the extractor reads that run's own catalogs, <run>/sample_catalogs, cutover row 70); G16 --stokes V alone; LC8 a published table of an excluded (LST,
                  subband, date); a table failing a content test; --out under a production tree while
                  paths.PRODUCTION_WRITES is False; site PYTHON['py36'] or the clv15 legacy root missing.
   pair refused   G4 (staged frames only) a frame of the table was not staged (archive copy read); G6 no Master catalogue; G7 no row inside the
@@ -245,6 +246,12 @@ def _config_gates(CFG, out):
         if not CFG.paths.PRODUCTION_WRITES:
             problems.append(f'--out {out} is under the production tree {prod} and paths.PRODUCTION_WRITES is False '
                             f'(refactor window): write parity/scratch output to your own root')
+    if C.CHAIN_RUN_DIR:                         # G19 (cutover row 70): the run's own sample catalogs, never the live ones
+        from exopipe.phase3.lib.catalog import run_samples as RS
+        try:
+            RS.verified(C.CHAIN_RUN_DIR, [fn for _tag, fn in C.SAMPLES])
+        except RS.SamplesRefusal as e:
+            problems.append(f'G19: curves.CHAIN_RUN_DIR {C.CHAIN_RUN_DIR}: {e}')
     return problems
 
 
@@ -614,7 +621,7 @@ def _run_unit(u, args, run, pl, stokes, stages, ex, E, stage_root):
                                                              if r.get('traceback') else ''))
                 continue
             facts = W.table_facts(r['path'], st, os.path.join(stage_root, sb) if stage_root else None,
-                                  os.path.join(pl['search_dir'], f'admission_{sb}.csv'), CFG.paths.CLV15_ROOT, C.SAMPLES,
+                                  os.path.join(pl['search_dir'], f'admission_{sb}.csv'), W.samples_dir(C, CFG.paths), C.SAMPLES,
                                   cell=cell, sb=sb)
             ent['fallbacks'] = {k: facts[k] for k in ('frames_absent_from_admission', 'admission_table_missing',
                                                       'scale_from_all_frames', 'zero_vis_frames_kept',
