@@ -13,8 +13,8 @@ it, the apply/verify/record run with --parity):
     never used when no anchor master exists (the real load is NOT covered here)
   - `exopipe3 dewarp --stages apply,verify,record --measurement M --parity` on five synthetic cells: accepted (cubic apply in
     place, D1-D6 by check_mdewarp_gen.py through core.legacy.run, the child's code checked), not accepted (applied=0 row,
-    install's class screen_table + inline row check, MDWSTAT on its promoted masters, not the PB maps), accepted-but-apply-refused
-    (G-R2), not routed (G-D2), input carries MDWARP (G-D7). The not-accepted cell's MDWSTAT card is also tested on its own
+    install's class screen_table + inline row check, MDWSTAT on its promoted masters and their leave-one-out masters
+    (gate G-R5), not the PB maps), accepted-but-apply-refused (G-R2), not routed (G-D2), input carries MDWARP (G-D7). The not-accepted cell's MDWSTAT card is also tested on its own
     `--stages record` run (no verify stage, so no content-test child and no G-D0b). The accepted cell's apply records
     MDWSTAT 'applied' with each new master's md5, size and mtime (meta.mdwstat); a rerun of the record stage interrupted by a
     master it cannot write keeps the last done record (meta.last_done), which the install's source takes while current
@@ -29,6 +29,7 @@ Run standalone:  python tests/test_dewarp.py      (py38_orca_nkosogor; EXOPIPE3_
 """
 import csv
 import glob
+import hashlib
 import json
 import logging
 import os
@@ -147,11 +148,14 @@ def write(path, data, hdr):
 
 def make_generation(base, cell, seed, bad_shape=False, mdwarp=False):
     """A cell generation like a promoted rebuild: coadd_final (4 I + 1 V plains, 2 PB maps, 5 pbcorr siblings, one LOO
-    master) and subtracted (one I and one V residual)."""
+    master) and subtracted (one I and one V residual). The masters carry the constituent digest CONSTDIG; the LOO master is
+    its parent's as coadd.py writes it (PARENTDG = CONSTDIG = the parent's, LOOEXCL = the night it leaves out)."""
     lst, s = cell.split('_', 1)
     cf = os.path.join(base, cell, 'coadd_final')
     pb = pb_map()
+    dig = hashlib.md5(f'constituents of {cell}'.encode()).hexdigest()
     extra = {'MDWARP': True} if mdwarp else {}
+    extra['CONSTDIG'] = dig
     plains = {}
     for i, name in enumerate((f'I_deep_Taper_R075_{s}', f'I_deep_Taper_R0_{s}', f'I_deep_NoTaper_R075_{s}',
                               f'I_deep_NoTaper_R0_{s}', f'V_deep_Taper_R0_{s}')):
@@ -163,7 +167,8 @@ def make_generation(base, cell, seed, bad_shape=False, mdwarp=False):
     for name, d in plains.items():
         sib = np.where(pb > 0.1, d / pb, np.nan).astype(np.float32)
         write(os.path.join(cf, name.replace(f'_{s}', f'_pbcorr_{s}', 1) + '.fits'), sib, header(s, **extra))
-    write(os.path.join(cf, 'loo', f'2025-01-01_I_loo_Taper_R075_{s}.fits'), sky(seed + 10), header(s))
+    write(os.path.join(cf, 'loo', f'2025-01-01_I_loo_Taper_R075_{s}.fits'), sky(seed + 10),
+          header(s, PARENTDG=dig, LOOEXCL='2025-01-01', **extra))
     sub = os.path.join(base, cell, 'subtracted')
     write(os.path.join(sub, f'2025-01-01_I_sub_{s}.fits'), sky(seed + 11), header(s))
     write(os.path.join(sub, f'2025-01-01_V_sub_{s}.fits'), sky(seed + 12), header(s))
@@ -634,19 +639,27 @@ def test_end_to_end(tmp):
           and all(validate_header(p, level='standard').ok for p in masters), str(with_card)[:300])
     check('not-accepted cell: the PB maps are never stamped (masters only, as release1_cards)',
           len(pbs) == 2 and not any('MDWSTAT' in fits.getheader(p) for p in pbs), str(pbs))
-    others = glob.glob(os.path.join(cf32, 'loo', '*.fits')) + glob.glob(os.path.join(r['promoted'], f'{LST}_32MHz',
-                                                                                    'subtracted', '*.fits'))
+    loo32 = sorted(glob.glob(os.path.join(cf32, 'loo', '*.fits')))
+    check('not-accepted cell: its leave-one-out master carries the same MDWSTAT (as the header repair stamped the archived '
+          'ones), standard header valid', len(loo32) == 1 and fits.getheader(loo32[0]).get('MDWSTAT') == want
+          and validate_header(loo32[0], level='standard').ok, str(loo32))
+    others = glob.glob(os.path.join(r['promoted'], f'{LST}_32MHz', 'subtracted', '*.fits'))
     others += glob.glob(os.path.join(r['promoted'], f'{LST}_27MHz', 'coadd_final', '*.fits'))
-    check('not-accepted cell: loo/, subtracted/ and the other cells\' promoted files carry no MDWSTAT',
+    others += glob.glob(os.path.join(r['promoted'], f'{LST}_27MHz', 'coadd_final', 'loo', '*.fits'))
+    check('not-accepted cell: subtracted/ and the other cells\' promoted files (their loo/ too) carry no MDWSTAT',
           others and not any('MDWSTAT' in fits.getheader(p) for p in others), f'{len(others)} files')
     md = (c32 or {}).get('meta', {}).get('mdwstat') or {}
     outs = [o for o in (c32 or {}).get('outputs', []) if o['class'] == 'mdwstat_master']
-    check("not-accepted cell: the record keeps the value and the files; 'dewarp.mdwstat' passed per master",
+    check("not-accepted cell: the record keeps the value, the masters (files) and the LOO master (loo_files); "
+          "'dewarp.mdwstat' passed per file (11); G-R5 passed",
           md.get('value') == want and sorted(x['path'] for x in md.get('files', [])) == masters
-          and all(x['before'] is None for x in md['files'])
-          and sum(1 for t in c32['tests'] if t['name'] == 'dewarp.mdwstat' and t['passed']) == 10, str(md)[:200])
-    check('not-accepted cell: each stamped master is an output (mdwstat_master) with its value and md5, and passes its test',
-          sorted(o['path'] for o in outs) == masters
+          and [x['path'] for x in md.get('loo_files', [])] == loo32
+          and all(x['before'] is None for x in md['files'] + md['loo_files'])
+          and sum(1 for t in c32['tests'] if t['name'] == 'dewarp.mdwstat' and t['passed']) == 11
+          and [t['passed'] for t in c32['tests'] if t['name'] == 'dewarp.loo_mdwstat'] == [True], str(md)[:200])
+    check('not-accepted cell: each stamped master and LOO master is an output (mdwstat_master) with its value and md5, and '
+          'passes its test',
+          sorted(o['path'] for o in outs) == sorted(masters + loo32)
           and all(o['ctx'] == {'mdwstat': want, 'md5': SC.md5(o['path'])} for o in outs)
           and all(t['passed'] for o in outs for t in _validate.run('mdwstat_master', o['path'], **o['ctx'])), str(outs)[:200])
     glog = os.path.join(outR, '_records', '_parity_guard_refusals.log')
@@ -853,8 +866,15 @@ def test_end_to_end(tmp):
               and all(x['md5'] == SC.md5(x['path']) and x['size'] == os.stat(x['path']).st_size
                       and x['mtime_ns'] == os.stat(x['path']).st_mtime_ns
                       and fits.getheader(x['path']).get('MDWSTAT') == 'applied' for x in md27['files'])
-              and sorted(o['path'] for o in c27['outputs'] if o['class'] == 'mdwstat_master') == gm,
+              and sorted(o['path'] for o in c27['outputs'] if o['class'] == 'mdwstat_master')
+              == sorted(gm + SC.loo_files(os.path.join(gen, 'coadd_final'))),
               f'{len(gm)} masters; {str(md27)[:200]}')
+        gl = SC.loo_files(os.path.join(gen, 'coadd_final'))
+        check("accepted cell: its leave-one-out master carries 'applied' and MDWARP T, recorded in meta.mdwstat.loo_files "
+              "(G-R5 passed)", len(gl) == 1 and [x['path'] for x in md27.get('loo_files', [])] == gl
+              and fits.getheader(gl[0]).get('MDWSTAT') == 'applied' and fits.getheader(gl[0]).get('MDWARP') is True
+              and md27['loo_files'][0]['md5'] == SC.md5(gl[0])
+              and [t['passed'] for t in c27['tests'] if t['name'] == 'dewarp.loo_mdwstat'] == [True], str(md27)[:200])
     csvp = os.path.join(outB, 'archive', 'mdewarp_screens', CFG.paths.ARCHIVE_RUN, 'mdewarp_screens.csv')
     rows = SC.read_table(csvp) if os.path.isfile(csvp) else []
     check('not-accepted cell: done, install kind rebuild',
