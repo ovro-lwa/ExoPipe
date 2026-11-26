@@ -293,14 +293,16 @@ def inputs(plan, C, phase1_root, code_files):
     if plan['planned']:
         out.append((flowdir, {'n_flow_files': {sb: plan['subbands'][sb]['flow_files'] for sb in plan['planned']}}))
         missing = []
+        from exopipe.phase3.lib.curves import workers as W
+        sdir = W.samples_dir(C, _paths())          # CHAIN_RUN_DIR's own set (cutover row 70), else paths.CLV15_ROOT
         for _tag, fn in C.SAMPLES:
-            p = os.path.join(_paths().CLV15_ROOT, fn)
+            p = os.path.join(sdir, fn)
             if os.path.exists(p):
                 out.append((p, None))
             else:
                 missing.append(fn)
         if missing:                             # skipped as today (B-58); the directory identifies the absence
-            out.append((_paths().CLV15_ROOT, {'absent': missing}))
+            out.append((sdir, {'absent': missing}))
         out.append((C.PB_LIBRARY, None))
         if C.SEARCH_DONE_EVIDENCE == 'fleet-claim-done':
             out.append((os.path.join(C.FLEET_CLAIMS_ROOT, plan['cell'], 'done'), None))

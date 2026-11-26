@@ -629,7 +629,7 @@ class catalog_snapshot(_Section):
     DIRTY_CELLS = '/lustre/gh/main/exopipe_ops/snapshot_fleet_worklist_dirtyI_20260918.txt'   # phase3_snapshot_chain.py:3343 [arg:--dirty-cells] (B-77 open)
     DIRTY_I_FLOOR = 0.0                                   # sigma; 0 = a dirty cell refuses; phase3_snapshot_chain.py:3346 [arg:--dirty-i-floor]
     # THE RUN'S SAMPLE CATALOGS (cutover row 70; FIX-20261125-SNAPCOMB-REJUDGE-PER-RUN-SAMPLE-CATALOGS): the chain stage copies
-    # these files of paths.CLV15_ROOT into <run>/sample_catalogs/ with their md5s in <run>/sample_catalogs.json and passes
+    # these files of paths.CLV15_ROOT into <run>/sample_catalogs/ with their md5s in its sample_catalogs.json and passes
     # --samples-dir <run>/sample_catalogs; the re-judging reads that record (lib/catalog/run_samples.py). (tag, file) as the
     # chain's load_samples reads them
     SAMPLES = (('Hot_Warm_Jupiters', 'Hot_Warm_Jupiters.csv'), ('10pc', '10pc.csv'), ('25pc', '25pc.csv'), ('LPTs', 'LPTs.csv'),

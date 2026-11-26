@@ -18,9 +18,11 @@ the per-tier evaluation without removals reproduces the batch's served_tiers.csv
 
 THE SAMPLE CATALOGS (cutover row 70; clv15 fix_ledger FIX-20261125-SNAPCOMB-REJUDGE-PER-RUN-SAMPLE-CATALOGS): the catalog route
 is reconstructed on the catalogs the run's chain READ, from the run's own record (lib/catalog/run_samples.py, loaded from its
-file: <run>/sample_catalogs.json and the verified copies <run>/sample_catalogs/) - recorded_samples below. A run without the
-record, a recorded copy missing or with another md5, or a record whose files are not the chain's SAMPLES REFUSES; there is no
-samples directory argument and no fallback to the live catalogs. Production passes a directory per run by hand instead
+file: <run>/sample_catalogs/, the verified copies with their record sample_catalogs.json) - recorded_samples below. A run without
+the record, a recorded copy missing or with another md5, or a record whose files are not the chain's SAMPLES REFUSES; there is no
+samples directory argument and no fallback to the live catalogs. The record is hashed three times per run: once by the parent
+(deep_omission.samples_gate, before anything is built), once by the child before the read (child_main: the parent's md5s) and
+once after it (recorded_samples). Production passes a directory per run by hand instead
 (exopipe_ops 352ef13, snapshot_combined_view.py SNAPCOMB_REJUDGE_SAMPLES into run_inputs' samples_dir; unlisted runs read the
 live clv15 directory).
 
@@ -31,9 +33,9 @@ python rejudge.py JOB.json
   clv15 (the chain's root), samples_md5 (the run's recorded {file: md5} the parent verified: the child refuses another record),
   deep_omission_py, result (the JSON written: the touched (source, tier) rows in production's order, the counts, the removed
   detections by reason in first-seen order, the 3-D-gate neighbours). REFUSING + exit 2 on a gate.
-Reproduction check alone: python rejudge.py --reproduce RUN CLV15 - rejudge(RUN) with no removals (the self-checks above on the
-  recorded catalogs); prints REPRODUCE-OK (the counts compared and the catalogs' md5s) or REFUSING + exit 2 (the one-time backfill,
-  run_samples.backfill_main, runs it on the record it wrote).
+Reproduction check alone: python rejudge.py --reproduce RUN CLV15 [STAGING] - rejudge(RUN) with no removals (the self-checks above
+  on the run's recorded catalogs, or on its staging STAGING: the one-time backfill, run_samples.backfill_main, runs it on the set it
+  staged, before any record exists); prints REPRODUCE-OK (the counts compared and the catalogs' md5s) or REFUSING + exit 2.
 """
 import csv
 import gzip
@@ -63,16 +65,18 @@ def run_samples_module():
     return sys.modules[name]
 
 
-def recorded_samples(run, C):
-    """The sample catalogs of ``run``'s chain, as C.load_samples reads them, from the run's record: run_samples.verified (the
-    record lists exactly the chain's SAMPLES, every copy present with its recorded md5 and size, no other file beside them) before
-    and after the read. RejudgeRefusal otherwise - never the live catalogs."""
+def recorded_samples(run, C, samples):
+    """The sample catalogs of ``run``'s chain, as C.load_samples reads them, from ``samples`` = (directory, record) as
+    run_samples.verified returned them to the caller (the run's set, or its staging); after the read the set is verified again
+    (the record lists exactly the chain's SAMPLES, every copy present with its recorded md5 and size, no other file beside them)
+    and must hold the same md5s. RejudgeRefusal otherwise - never the live catalogs."""
     RS = run_samples_module()
     names = [fn for _tag, fn in C.SAMPLES]
+    d, rec = samples
+    staged = os.path.abspath(d) != os.path.abspath(RS.copy_dir(run))
     try:
-        d, rec = RS.verified(run, names)
         cats = C.load_samples(d)
-        _d, rec2 = RS.verified(run, names)
+        _d, rec2 = RS.verified(run, names, at=d if staged else None)
     except RS.SamplesRefusal as e:
         raise RejudgeRefusal(str(e))
     if RS.md5_map(rec2) != RS.md5_map(rec):
@@ -80,10 +84,11 @@ def recorded_samples(run, C):
     return cats
 
 
-def rejudge(run, removed, log=print):
+def rejudge(run, removed, samples, log=print):
     """removed(record_row) -> '' or the removal reason. Returns (touched {(identity_jname, tier): row}, counts, removed_uids
     {det_uid: reason}, g3d_neighbours) - snapshot_rejudge.rejudge (dbc40a6), verbatim in effect, but the sample catalogs: the
-    run's recorded set (recorded_samples), never a directory passed in (production's samples_dir argument)."""
+    run's recorded set (``samples``: run_samples.verified's (directory, record) of the run's set or staging; recorded_samples),
+    never a directory passed in (production's samples_dir argument)."""
     import phase3_snapshot_chain as C
     import phase3_snapshot_tierserve as TS
     summ = json.load(open(os.path.join(run, "chain_summary.json")))
@@ -126,7 +131,7 @@ def rejudge(run, removed, log=print):
     cells = summ["cells"] if isinstance(summ["cells"], list) else list(summ["cells"])
     C.CELLS_GLOBAL.clear()
     C.CELLS_GLOBAL.update({c: C.cell_centre(c) for c in cells})
-    cats = recorded_samples(run, C)
+    cats = recorded_samples(run, C, samples)
     area = C.footprint_area_deg2(C.CELLS_GLOBAL)
     if summ.get("footprint_deg2") is not None and abs(round(area, 1) - float(summ["footprint_deg2"])) > 0.05:
         raise RejudgeRefusal("%s footprint %.1f deg2 differs from the chain's %s" % (run, area, summ["footprint_deg2"]))
@@ -305,14 +310,14 @@ def child_main(job_path):
     RS = run_samples_module()
     try:
         try:                                   # the record the parent verified (samples_md5) is the one read here
-            _d, rec = RS.verified(job["run"])
+            samples = RS.verified(job["run"])
         except RS.SamplesRefusal as e:
             raise RejudgeRefusal(str(e))
-        if dict(RS.md5_map(rec)) != dict(job.get("samples_md5") or {}):
+        if dict(RS.md5_map(samples[1])) != dict(job.get("samples_md5") or {}):
             raise RejudgeRefusal("%s %s holds %s; the parent verified %s" % (
-                os.path.basename(job["run"]), RS.RECORD, dict(RS.md5_map(rec)), job.get("samples_md5")))
+                os.path.basename(job["run"]), RS.RECORD, dict(RS.md5_map(samples[1])), job.get("samples_md5")))
         removed, om = removed_fn(DO, dec, recs, c2, el)
-        out, n, rem_uid, g3d = rejudge(job["run"], removed, log=lambda *a: None)
+        out, n, rem_uid, g3d = rejudge(job["run"], removed, samples, log=lambda *a: None)
     except (RejudgeRefusal, DO.OmissionRefusal) as e:
         print("REFUSING: re-judging %s: %s" % (os.path.basename(job["run"]), e), flush=True)
         return 2
@@ -328,20 +333,21 @@ def child_main(job_path):
     return 0
 
 
-def reproduce_main(run, clv15):
-    """python rejudge.py --reproduce RUN CLV15: the reproduction check alone - rejudge(RUN) with no removals, i.e. its two
-    self-checks on the run's recorded catalogs: the full-member reconstruction reproduces the chain's mi_tiers, catalog promotion,
-    routes and best member on every served source, and the per-tier evaluation reproduces served_tiers.csv on every (served
-    source, tier). Prints REPRODUCE-OK with the counts and the catalogs' md5s, or REFUSING (exit 2)."""
+def reproduce_main(run, clv15, staging=None):
+    """python rejudge.py --reproduce RUN CLV15 [STAGING]: the reproduction check alone - rejudge(RUN) with no removals, i.e. its
+    two self-checks on the run's recorded catalogs (or on its staging STAGING, the backfill's set before it is placed): the
+    full-member reconstruction reproduces the chain's mi_tiers, catalog promotion, routes and best member on every served source,
+    and the per-tier evaluation reproduces served_tiers.csv on every (served source, tier). Prints REPRODUCE-OK with the counts
+    and the catalogs' md5s, or REFUSING (exit 2)."""
     import gc
     gc.disable()
     if clv15 not in sys.path:
         sys.path.insert(0, clv15)
     RS = run_samples_module()
     try:
-        RS.verified(run)                       # before the record is read: a run without its set refuses at once
-        out, n, rem_uid, g3d = rejudge(run, lambda r: "", log=print)
-        _d, rec = RS.verified(run)
+        samples = RS.verified(run, at=staging)  # before anything is read: a run without its set refuses at once
+        out, n, rem_uid, g3d = rejudge(run, lambda r: "", samples, log=print)
+        rec = samples[1]
     except (RejudgeRefusal, RS.SamplesRefusal) as e:
         print("REFUSING: reproduction of %s: %s" % (os.path.basename(run), e), flush=True)
         return 2
@@ -351,12 +357,12 @@ def reproduce_main(run, clv15):
         return 2
     print("REPRODUCE-OK %s: %d served sources reproduced (mi_tiers, catalog promotion, routes, best member) and served_tiers.csv "
           "reproduced, on the recorded sample catalogs (%s, %s): %s" % (
-              os.path.basename(run), n["served sources"], RS.RECORD, rec.get("how"),
+              os.path.basename(run), n["served sources"], os.path.basename(samples[0]) + "/" + RS.RECORD, rec.get("how"),
               ", ".join("%s %s" % kv for kv in RS.md5_map(rec).items())), flush=True)
     return 0
 
 
 if __name__ == "__main__":
     if sys.argv[1:2] == ["--reproduce"]:
-        sys.exit(reproduce_main(sys.argv[2], sys.argv[3]))
+        sys.exit(reproduce_main(sys.argv[2], sys.argv[3], *sys.argv[4:5]))
     sys.exit(child_main(sys.argv[1]))

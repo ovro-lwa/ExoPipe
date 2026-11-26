@@ -85,11 +85,14 @@ Deep omission of the short tiers (lib/catalog/deep_omission.py; Gregg 2026-10-24
   lib/serve/snapshot_view.py: --view-omit takes this stage's --out, or its own omit stage writes the same products).
   --omit-refusals is an override of the RULED catalog_omission.REFUSALS (--ruling-for or a non-production --out).
 The sample catalogs of a snapshot run (cutover row 70, lib/catalog/run_samples.py): the chain stage copies them into the run
-  (sample_catalogs/ + sample_catalogs.json, class sample_catalogs) and the omit stage's re-judging reads that record (G9b without
-  it). A run chained before the record existed gets it ONCE, on purpose: `--tier snapshot --stages samples-backfill --samples-run
-  RUN --samples-from DIR --samples-why TEXT [--samples-ledger ID]` (--out = RUN; unit '<run>.samples-backfill'): SB1 not a chain
-  run, SB2 a record already there / a catalog missing / a copy not verified, SB3 the recorded set does not reproduce the chain
-  (rejudge.py --reproduce, no removals: the record and copies are moved aside).
+  (sample_catalogs/ with its sample_catalogs.json, class sample_catalogs) and the omit stage's re-judging reads that record (G9b
+  at the start of the omit stage without it, or when catalog_snapshot.SAMPLES is not the chain's). A run chained before the record
+  existed gets it ONCE, on purpose: `--tier snapshot --stages samples-backfill --samples-run RUN --samples-from DIR --samples-why
+  TEXT [--samples-ledger ID]` (--out = RUN; unit '<run>.samples-backfill'): the set is staged in the run, re-judged with no
+  removals (rejudge.py --reproduce on the staging) and renamed into place only when that reproduces the chain. SB1 not a chain
+  run, SB2 a record already there / a catalog missing / a copy not verified, SB3 the staged set does not reproduce the chain (the
+  staging removed, no record). The worklist (read-only): `exopipe3 verify sample_catalogs --glob '<root>/Run_SNAP*/'
+  --emit-failing FILE` names every run under <root> without a valid record.
 """
 import importlib
 import sys

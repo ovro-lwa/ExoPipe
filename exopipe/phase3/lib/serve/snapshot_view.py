@@ -116,10 +116,12 @@ summary's card2 / rejudge keys - production's view byte for byte (tests/test_sna
 the cells (the rate population) and the re-judging / Card 2 inputs (size, mtime) against the omit product; G-V9 a partial source
 whose own detection is absent from its page; G-V10 an image absent from a member table.
 Cutover row 70 (exopipe_ops 352ef13 ported by design, not by its switch): the omit stage re-judges each batch run on the sample
-catalogs ITS chain read, from the run's own record (lib/catalog/run_samples.py: <run>/sample_catalogs.json + the verified copies;
-G9b a run without it or with a copy that differs) - production's SNAPCOMB_REJUDGE_SAMPLES map (CSV run,samples_dir passed by hand,
-unlisted runs on the live clv15 catalogs) has no counterpart; the record is one of the re-judging inputs G-V8 re-checks, and the
-omit summary names each run's catalogs (rejudge_samples: file -> md5).
+catalogs ITS chain read, from the run's own record (lib/catalog/run_samples.py: <run>/sample_catalogs/ = the verified copies and
+their sample_catalogs.json; G9b a run without it or with a copy that differs) - production's SNAPCOMB_REJUDGE_SAMPLES map (CSV
+run,samples_dir passed by hand, unlisted runs on the live clv15 catalogs) has no counterpart; the record is one of the re-judging
+inputs G-V8 re-checks, and the omit summary names each run's catalogs (rejudge_samples: file -> md5). An omit product written
+before the record existed (no rejudge_samples, or no record among a run's inputs) refuses G-V8 by that name: backfill the member
+runs and re-run the omit stage.
 G-V12 (exopipe_ops 5c49199) a batch without FLUXSCAL_APPLIED.json, or an hour-band it scaled that no longer has status ok and that
 factor (snapshot_fluxscal.band_factors, in place); the files it reads are inputs of the build unit (fluxscal_inputs), so a serve
 stage's require_done (G28) refuses once one changed. The 1-minute elevation floor (b114ff3; R-GREGG-20261112-1MIN-ELEVATION-POSTHOC-
@@ -1222,6 +1224,11 @@ def check_decisions_current(u, plan, summ, recs):
     inputs. Also N1's injected-run guard on the record."""
     import filecmp
     from exopipe.phase3.lib.catalog import deep_omission as DO
+    rec_key = DO.samples_record_key()        # cutover row 70: an omit product re-judged before the runs' records existed
+    if 'rejudge_samples' not in summ or not summ.get('rejudge_inputs') \
+            or not all(rec_key in (v or {}) for v in summ['rejudge_inputs'].values()):
+        u.refuse(f'G-V8 omit product predates sample-catalog records; backfill the member runs and re-run the omit stage '
+                 f'({plan.omit_dir}: its summary has no rejudge_samples or no {rec_key} among a run\'s re-judging inputs)')
     CFG = _CFG()
     rdir = os.path.abspath(CFG.catalog_omission.REFUSALS)
     proto = os.path.abspath(CFG.paths.SNAPSHOT_FLEET_OUT)

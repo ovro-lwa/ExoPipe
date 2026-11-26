@@ -9,34 +9,52 @@ needs the catalogs the chain read, not today's: clv15 LPTs.csv gained 8 rows on 
 longer reproduced on the live catalogs (2 served sources) and production passed a per-run directory by hand (exopipe_ops 352ef13,
 SNAPCOMB_REJUDGE_SAMPLES, a CSV run,samples_dir).
 
-Here every run carries its own set:
-  <run>/sample_catalogs/<file>   a verified copy of each catalog file (core/placement.copy: the copy's size and md5 equal the bytes
-                                 read from the source, else nothing is placed)
-  <run>/sample_catalogs.json     the record: format, how the set was written ('chain' = by the chain stage before the chain read it;
-                                 'backfill' = written once afterwards from a named directory, with the operator's reason), when,
-                                 the source directory, and per file its name, md5, size in bytes, the path it was copied from and
-                                 that file's modification time (UTC)
-The chain stage copies the catalogs BEFORE the chain runs and passes --samples-dir <run>/sample_catalogs, so the record names
-exactly the bytes the chain read. The re-judging reads the record itself (verified): it refuses when the record is missing or
-malformed, a recorded copy is missing, a copy's md5 or size differs from the record, the copy directory holds a file the record
-does not list, or the record's file names are not the chain's SAMPLES. It never falls back to the live catalogs.
+Here every run carries its own set, in one directory:
+  <run>/sample_catalogs/<file>                a verified copy of each catalog file (core/placement.copy: the copy's size and md5
+                                              equal the bytes read from the source, else nothing is placed)
+  <run>/sample_catalogs/sample_catalogs.json  the record: format, how the set was written ('chain' = by the chain stage before the
+                                              chain read it; 'backfill' = written once afterwards from a named directory, with the
+                                              operator's reason), when, the source directory, and per file its name, md5, size in
+                                              bytes, the path it was copied from and that file's modification time (UTC)
+A set is written under a staging name in the run (<run>/sample_catalogs.staging.<UTC>.<pid>.<8 hex digits>/: the copies, then the
+record, then read back with verified()) and renamed into place in one rename, so the record appears with its copies or not at all.
+A write that fails in any way removes the staging it made (nothing else) and re-raises; a staging left by a killed writer is removed
+by the next write into that run, by its name alone. Only <run>/sample_catalogs/sample_catalogs.json is a record (verified(), the
+re-judging's gate G9b, the content test sample_catalogs); a staging never is.
 
-A run chained before the record existed has none. `exopipe3 catalog --tier snapshot --stages samples-backfill` (backfill_main
-below) writes it once for a named run from a named directory - refused when the run already has a record - then re-judges the run
-with no removals on the recorded set (rejudge.py --reproduce: the re-judging's own reproduction check) and, unless that
-reproduces the chain, moves the record and its copies aside and refuses.
+The chain stage writes the set BEFORE the chain runs and passes --samples-dir <run>/sample_catalogs, so the record names exactly the
+bytes the chain read. The re-judging reads the record itself (verified): it refuses when the record is missing or malformed, a
+recorded copy is missing, a copy's md5 or size differs from the record, the directory holds a file the record does not list (a
+temporary file of placement's own naming, core/tempnames.py, is not counted), or the record's file names are not the chain's
+SAMPLES. It never falls back to the live catalogs.
+
+A run chained before the record existed has none. The one-time backfill (backfill / backfill_main: `exopipe3 catalog --tier snapshot
+--stages samples-backfill`) stages the set for a named run from a named directory - refused when the run has a set already - then
+re-judges the run with no removals on the STAGED set (rejudge.py --reproduce RUN CLV15 STAGING: the re-judging's own reproduction
+check) and renames it into place only when that reproduces the chain; otherwise the staging is removed and the stage refuses. No
+record exists before its reproduction passed.
+
+The runs that need it: `exopipe3 verify sample_catalogs --glob '<root>/Run_SNAP*/' --emit-failing <list>` (read-only: verify
+writes no records) names every run directory under <root> without a valid record (the content test takes a run directory as well
+as the record).
 
 The re-judging child (Python 3.6, the standard library and clv15) loads this file by its path: only the standard library is
-imported at module level; the writers import core/placement when called (in the step's own interpreter).
+imported at module level, core/tempnames.py is loaded by its path too, and the writers import core/placement when called (in the
+step's own interpreter).
 """
 import collections
 import hashlib
 import json
 import os
+import re
+import shutil
+import sys
 import time
 
-RECORD = 'sample_catalogs.json'          # the record, in the run directory
-COPY_DIR = 'sample_catalogs'             # the copies, in the run directory (not 'source_catalogs*': the run's own catalogues)
+RECORD = 'sample_catalogs.json'          # the record, inside the set's directory
+COPY_DIR = 'sample_catalogs'             # the set (copies + record), in the run directory (not 'source_catalogs*': the run's own
+STAGING = COPY_DIR + '.staging'          # catalogues); <run>/sample_catalogs.staging.<UTC>.<pid>.<8 hex digits>/: a set being written
+_STAGING_RE = re.compile(r'^%s\.\d{8}T\d{6}Z\.\d+\.[0-9a-f]{8}$' % re.escape(STAGING))
 FORMAT = 1
 HOWS = ('chain', 'backfill')
 STAGE = 'samples-backfill'
@@ -46,12 +64,29 @@ class SamplesRefusal(Exception):
     """A run's sample-catalog record is missing, malformed or does not match its copies; or a write is refused."""
 
 
-def record_path(run):
-    return os.path.join(run, RECORD)
+class NotReproduced(SamplesRefusal):
+    """The backfill's staged set does not reproduce the run's chain (the staging removed, no record written)."""
 
 
 def copy_dir(run):
     return os.path.join(run, COPY_DIR)
+
+
+def record_path(run):
+    """The run's record - the only name read as one."""
+    return os.path.join(copy_dir(run), RECORD)
+
+
+def is_staging(name):
+    return bool(_STAGING_RE.match(name))
+
+
+def stagings(run):
+    """The staging names in ``run``, sorted (none when it cannot be listed)."""
+    try:
+        return sorted(n for n in os.listdir(run) if is_staging(n))
+    except OSError:
+        return []
 
 
 def md5_file(path):
@@ -66,6 +101,19 @@ def _utc(t):
     return time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(t))
 
 
+def _tempnames():
+    """core/tempnames.py (placement's temporary names), loaded from its file: the re-judging child cannot import the package."""
+    name = 'exopipe3_tempnames_run_samples'
+    if name not in sys.modules:
+        import importlib.util
+        p = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'core', 'tempnames.py')
+        spec = importlib.util.spec_from_file_location(name, p)
+        m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m)
+        sys.modules[name] = m
+    return sys.modules[name]
+
+
 def chain_names(c=None):
     """The file names the chain's load_samples reads (catalog_snapshot.SAMPLES = clv15 phase3_snapshot_chain.SAMPLES, bound by
     tier_snapshot's binding check), in its order."""
@@ -75,50 +123,63 @@ def chain_names(c=None):
     return [fn for _tag, fn in c.SAMPLES]
 
 
-def verified(run, names=None):
-    """(copy directory, record) of ``run``'s sample catalogs, every recorded copy checked against the record (md5 and size).
-    ``names``: the file names the reader will read (the chain's SAMPLES) - the record must list exactly these. SamplesRefusal
-    when the record is missing or malformed, a copy is missing or differs, the copy directory holds a file the record does not
-    list, or the names differ. Never a fallback to another directory."""
+def verified(run, names=None, at=None):
+    """(directory, record) of ``run``'s sample catalogs, every recorded copy checked against the record (md5 and size).
+    ``names``: the file names the reader will read (the chain's SAMPLES) - the record must list exactly these. ``at``: a staging
+    of ``run`` (the backfill's reproduction reads the staged set) - nothing else; default the run's own set. SamplesRefusal when
+    the record is missing or malformed, a copy is missing or differs, the directory holds a file the record does not list (a
+    temporary file of placement's naming for one of its files excepted), or the names differ. Never a fallback to another
+    directory."""
     tag = os.path.basename(os.path.normpath(run))
-    rp = record_path(run)
+    if at is None:
+        d = copy_dir(run)
+    else:
+        d = os.path.abspath(at)
+        if os.path.dirname(d) != os.path.abspath(run) or not is_staging(os.path.basename(d)):
+            raise SamplesRefusal('%s is not a staging of %s (%s.<UTC>.<pid>.<hex> in the run): no other directory is read'
+                                 % (at, tag, STAGING))
+    where = os.path.basename(d)
+    rp = os.path.join(d, RECORD)
     if not os.path.isfile(rp):
-        raise SamplesRefusal('%s has no %s: the sample catalogs its chain read are not recorded, so its catalog route cannot be '
-                             'reconstructed (a run chained before the record existed needs the one-time backfill, '
-                             '`exopipe3 catalog --tier snapshot --stages %s`)' % (tag, RECORD, STAGE))
+        if at is None:
+            raise SamplesRefusal('%s has no %s/%s: the sample catalogs its chain read are not recorded, so its catalog route '
+                                 'cannot be reconstructed (a run chained before the record existed needs the one-time backfill, '
+                                 '`exopipe3 catalog --tier snapshot --stages %s`)' % (tag, COPY_DIR, RECORD, STAGE))
+        raise SamplesRefusal('%s staging %s has no %s' % (tag, where, RECORD))
     try:
         with open(rp) as f:
             rec = json.load(f, object_pairs_hook=collections.OrderedDict)
     except (OSError, ValueError) as e:
-        raise SamplesRefusal('%s %s cannot be read: %s' % (tag, RECORD, e))
+        raise SamplesRefusal('%s %s/%s cannot be read: %s' % (tag, where, RECORD, e))
     files = rec.get('files') if isinstance(rec, dict) else None
     if not isinstance(rec, dict) or rec.get('format') != FORMAT or rec.get('how') not in HOWS or not isinstance(files, list) \
             or not files or not all(isinstance(x, dict) and x.get('name') and x.get('md5') and isinstance(x.get('bytes'), int)
                                     for x in files):
-        raise SamplesRefusal('%s %s is malformed (format %s, how %s): it needs format %d, how in %s and a non-empty list of '
-                             'files with name, md5 and bytes' % (tag, RECORD, rec.get('format') if isinstance(rec, dict) else None,
+        raise SamplesRefusal('%s %s/%s is malformed (format %s, how %s): it needs format %d, how in %s and a non-empty list of '
+                             'files with name, md5 and bytes' % (tag, where, RECORD,
+                                                                rec.get('format') if isinstance(rec, dict) else None,
                                                                 rec.get('how') if isinstance(rec, dict) else None, FORMAT,
                                                                 '/'.join(HOWS)))
     listed = [x['name'] for x in files]
-    if len(set(listed)) != len(listed) or any(n != os.path.basename(n) or n.startswith('.') for n in listed):
-        raise SamplesRefusal('%s %s lists a file twice or a name that is not a plain file name: %s' % (tag, RECORD, listed))
+    if len(set(listed)) != len(listed) or any(n != os.path.basename(n) or n.startswith('.') or n == RECORD for n in listed):
+        raise SamplesRefusal('%s %s/%s lists a file twice or a name that is not a plain catalog file name: %s'
+                             % (tag, where, RECORD, listed))
     if names is not None and sorted(listed) != sorted(names):
-        raise SamplesRefusal('%s %s lists %s; the chain reads %s (missing %s, extra %s)' % (
-            tag, RECORD, sorted(listed), sorted(names), sorted(set(names) - set(listed)), sorted(set(listed) - set(names))))
-    d = copy_dir(run)
-    if not os.path.isdir(d):
-        raise SamplesRefusal('%s has %s but no %s/ (the recorded copies)' % (tag, RECORD, COPY_DIR))
-    extra = sorted(set(os.listdir(d)) - set(listed))
+        raise SamplesRefusal('%s %s/%s lists %s; the chain reads %s (missing %s, extra %s)' % (
+            tag, where, RECORD, sorted(listed), sorted(names), sorted(set(names) - set(listed)), sorted(set(listed) - set(names))))
+    own = set(listed) | {RECORD}
+    T = _tempnames()
+    extra = sorted(n for n in os.listdir(d) if n not in own and T.product_of(n) not in own)
     if extra:
-        raise SamplesRefusal('%s %s/ holds files its record does not list: %s' % (tag, COPY_DIR, extra))
+        raise SamplesRefusal('%s %s/ holds files its record does not list: %s' % (tag, where, extra))
     for x in files:
         p = os.path.join(d, x['name'])
         if not os.path.isfile(p):
-            raise SamplesRefusal('%s recorded sample catalog %s/%s is missing' % (tag, COPY_DIR, x['name']))
+            raise SamplesRefusal('%s recorded sample catalog %s/%s is missing' % (tag, where, x['name']))
         n, m = os.path.getsize(p), md5_file(p)
         if (n, m) != (x['bytes'], x['md5']):
             raise SamplesRefusal('%s recorded sample catalog %s/%s differs from its record: %d bytes, md5 %s; recorded %d bytes, '
-                                 'md5 %s' % (tag, COPY_DIR, x['name'], n, m, x['bytes'], x['md5']))
+                                 'md5 %s' % (tag, where, x['name'], n, m, x['bytes'], x['md5']))
     return d, rec
 
 
@@ -127,12 +188,13 @@ def md5_map(rec):
     return collections.OrderedDict((x['name'], x['md5']) for x in rec['files'])
 
 
-def write(run, src_dir, names, how, why=None, ledger=None):
-    """Copy ``names`` from ``src_dir`` into <run>/sample_catalogs/ (core/placement.copy, verified) and write <run>/
-    sample_catalogs.json, then read it back with verified(). ``how``: 'chain' (the chain stage, before the chain reads the copies)
-    or 'backfill' (needs ``why``; ``ledger`` optional). SamplesRefusal when the run already has a record or a copy directory (a
-    record is written once), a named file is missing from ``src_dir`` (the chain would skip it silently), or a copy cannot be
-    verified. Returns the record."""
+def stage(run, src_dir, names, how, why=None, ledger=None):
+    """Copy ``names`` from ``src_dir`` into a new staging of ``run`` (core/placement.copy, verified), write its record and read it
+    back (verified(at=staging)). ``how``: 'chain' or 'backfill' (needs ``why``; ``ledger`` optional). Refused (SamplesRefusal,
+    nothing changed) when the run has a set already (written once), a named file is missing from ``src_dir`` (the chain would skip
+    it silently) or no names are given. A staging left in ``run`` by a killed writer is removed first, by its name alone. On ANY
+    exception afterwards the staging this call made is removed (nothing else) and the exception re-raised (a placement refusal as
+    SamplesRefusal). Returns (staging directory, record)."""
     from exopipe.phase3.core import placement
     tag = os.path.basename(os.path.normpath(run))
     if how not in HOWS:
@@ -141,57 +203,100 @@ def write(run, src_dir, names, how, why=None, ledger=None):
         raise SamplesRefusal('a backfill records why the named directory holds the catalogs the chain read: give the reason')
     if not os.path.isdir(run):
         raise SamplesRefusal('%s is not a directory' % run)
-    for p in (record_path(run), copy_dir(run)):
-        if os.path.lexists(p):
-            raise SamplesRefusal('%s already has %s: a run\'s sample-catalog record is written once (nothing changed)'
-                                 % (tag, os.path.basename(p)))
+    if os.path.lexists(copy_dir(run)):
+        raise SamplesRefusal('%s already has %s/: a run\'s sample-catalog record is written once (nothing changed)'
+                             % (tag, COPY_DIR))
     if not names:
         raise SamplesRefusal('no sample catalog names given')
     missing = [n for n in names if not os.path.isfile(os.path.join(src_dir, n))]
     if missing:
         raise SamplesRefusal('%s lacks %s: the chain would skip a missing catalog silently - refused, nothing written'
                              % (src_dir, missing))
-    placement.make_dirs(copy_dir(run))
-    files = []
+    for n in stagings(run):                     # a killed writer's leftover (the name alone decides; no other name is touched)
+        p = os.path.join(run, n)
+        if os.path.isdir(p) and not os.path.islink(p):
+            shutil.rmtree(p)
+        else:
+            os.remove(p)
+    sd = os.path.join(run, '%s.%s.%d.%s' % (STAGING, time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()), os.getpid(),
+                                            os.urandom(4).hex()))
+    if os.path.lexists(sd):
+        raise SamplesRefusal('%s exists already (nothing changed)' % sd)
     try:
+        placement.make_dirs(sd)
+        files = []
         for n in names:
             src = os.path.join(src_dir, n)
-            dst = os.path.join(copy_dir(run), n)
+            dst = os.path.join(sd, n)
             m = placement.copy(src, dst, times=True)
             st = os.stat(dst)
             files.append(collections.OrderedDict([('name', n), ('md5', m), ('bytes', st.st_size),
                                                   ('source', os.path.abspath(src)), ('source_mtime_utc', _utc(st.st_mtime))]))
-    except placement.PlacementRefusal as e:                 # this call's partial copies go: no half-written set remains
-        import shutil
-        shutil.rmtree(copy_dir(run), ignore_errors=True)
-        raise SamplesRefusal('%s: a sample catalog copy was not placed (the partial copies removed): %s' % (tag, e))
-    rec = collections.OrderedDict([
-        ('format', FORMAT),
-        ('what', 'the sample catalogs the snapshot chain read (phase3_snapshot_chain.load_samples, --samples-dir %s/)' % COPY_DIR),
-        ('how', how), ('written_utc', _utc(time.time())), ('source_dir', os.path.abspath(src_dir)), ('copy_dir', COPY_DIR),
-        ('files', files)])
-    if how == 'backfill':
-        rec['why'] = why.strip()
-        if ledger:
-            rec['ledger'] = ledger
-    with placement.atomic(record_path(run)) as tmp:
-        with open(tmp, 'w') as f:
-            json.dump(rec, f, indent=1)
-            f.write('\n')
-    verified(run, names)
-    return rec
+        rec = collections.OrderedDict([
+            ('format', FORMAT),
+            ('what', 'the sample catalogs the snapshot chain read (phase3_snapshot_chain.load_samples, --samples-dir %s/)'
+             % COPY_DIR),
+            ('how', how), ('written_utc', _utc(time.time())), ('source_dir', os.path.abspath(src_dir)), ('copy_dir', COPY_DIR),
+            ('files', files)])
+        if how == 'backfill':
+            rec['why'] = why.strip()
+            if ledger:
+                rec['ledger'] = ledger
+        with placement.atomic(os.path.join(sd, RECORD)) as tmp:
+            with open(tmp, 'w') as f:
+                json.dump(rec, f, indent=1)
+                f.write('\n')
+        verified(run, names, at=sd)
+    except BaseException as e:
+        shutil.rmtree(sd, ignore_errors=True)   # this call's staging (a new name: nothing else is in it)
+        if isinstance(e, placement.PlacementRefusal):
+            raise SamplesRefusal('%s: a sample catalog copy was not placed (the staging removed): %s' % (tag, e)) from e
+        raise
+    return sd, rec
 
 
-def set_aside(run, dest):
-    """Move the run's record and copies into ``dest`` (a new directory): a backfill whose set did not reproduce the chain leaves
-    no record behind. Returns the paths moved."""
-    os.makedirs(dest)
-    moved = []
-    for p in (record_path(run), copy_dir(run)):
-        if os.path.lexists(p):
-            os.rename(p, os.path.join(dest, os.path.basename(p)))
-            moved.append(p)
-    return moved
+def commit(run, sd, names):
+    """Rename the staging ``sd`` into place as <run>/sample_catalogs/ (one rename: the record appears with its copies) and read it
+    back (verified). Refused when the run has a set already. A read-back refusal removes the set this call placed. Returns the
+    record."""
+    final = copy_dir(run)
+    if os.path.lexists(final):
+        raise SamplesRefusal('%s already has %s/: a run\'s sample-catalog record is written once'
+                             % (os.path.basename(os.path.normpath(run)), COPY_DIR))
+    os.rename(sd, final)
+    try:
+        return verified(run, names)[1]
+    except BaseException:
+        shutil.rmtree(final, ignore_errors=True)
+        raise
+
+
+def write(run, src_dir, names, how, why=None, ledger=None):
+    """stage() then commit(): the run's set, written once. Any exception leaves nothing of this call behind. Returns the
+    record."""
+    sd, _rec = stage(run, src_dir, names, how, why=why, ledger=ledger)
+    try:
+        return commit(run, sd, names)
+    except BaseException:
+        shutil.rmtree(sd, ignore_errors=True)   # still staged when the rename did not happen
+        raise
+
+
+def backfill(run, src_dir, names, why, reproduce, ledger=None):
+    """The one-time backfill of ``run``: stage(how='backfill'), then ``reproduce(staging)`` -> (ok, line) - the re-judging with
+    no removals on the staged set - and commit() only when ok. Not ok: NotReproduced, the staging removed, no record. Any
+    exception: the staging removed, re-raised. Returns (record, line)."""
+    sd, _rec = stage(run, src_dir, names, 'backfill', why=why, ledger=ledger)
+    try:
+        ok, line = reproduce(sd)
+        if not ok:
+            raise NotReproduced('the catalogs of %s do not reproduce the chain of %s (%s) - the staged set removed, no record '
+                                'written' % (src_dir, os.path.basename(os.path.normpath(run)), line))
+        rec = commit(run, sd, names)
+    except BaseException:
+        shutil.rmtree(sd, ignore_errors=True)
+        raise
+    return rec, line
 
 
 # =====================================================================================================================
@@ -232,9 +337,10 @@ def default_out(args):
 
 def backfill_main(args, run):
     """`exopipe3 catalog --tier snapshot --stages samples-backfill --samples-run RUN --samples-from DIR --samples-why TEXT
-    [--samples-ledger ID] --out RUN` - one unit '<run>.samples-backfill': write the record (write(how='backfill')), then the
-    reproduction check (rejudge.py --reproduce under catalog_omission.REJUDGE_PYTHON); a refusal of the check moves the record
-    and copies to <RUN>/_records/catalog/<run>/samples_refused_<UTC>/ and refuses the unit (exit 2)."""
+    [--samples-ledger ID] --out RUN` - one unit '<run>.samples-backfill': backfill() with the reproduction check rejudge.py
+    --reproduce RUN CLV15 STAGING under catalog_omission.REJUDGE_PYTHON (log <RUN>/_records/catalog/<run>/
+    samples_reproduce_<UTC>.log). SB1 not a chain run; SB2 the set cannot be written (a set exists, a catalog is missing, a copy
+    is not verified); SB3 the staged set does not reproduce the chain (the staging removed, no record)."""
     from exopipe.phase3.config import CFG
     from exopipe.phase3.core import legacy
     from exopipe.phase3.core.record import Refusal
@@ -254,34 +360,36 @@ def backfill_main(args, run):
     script = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'rejudge.py')
     clv = legacy_clv15()
     if run.dry_run:
-        print('[%s.%s] copy %s from %s into %s/%s/ and write %s/%s; then %s %s --reproduce %s %s (no removals)'
-              % (tag, STAGE, ', '.join(names), src, rd, COPY_DIR, rd, RECORD, CFG.catalog_omission.REJUDGE_PYTHON, script, rd, clv))
+        print('[%s.%s] copy %s from %s into a staging %s/%s.<UTC>.<pid>.<hex>/ with its %s; then %s %s --reproduce %s %s '
+              '<staging> (no removals); renamed to %s/%s/ only when that reproduces the chain'
+              % (tag, STAGE, ', '.join(names), src, rd, STAGING, RECORD, CFG.catalog_omission.REJUDGE_PYTHON, script, rd, clv,
+                 rd, COPY_DIR))
         return 0
     with run.unit('%s.%s' % (tag, STAGE), tier='snapshot', stage=STAGE) as u:
         if not os.path.isfile(os.path.join(rd, 'chain_summary.json')):
             raise Refusal('SB1: %s has no chain_summary.json - not a snapshot chain run' % rd)
+        log = os.path.join(rd, '_records', 'catalog', tag, 'samples_reproduce_%s.log' % time.strftime('%Y%m%dT%H%M%SZ',
+                                                                                                        time.gmtime()))
+
+        def reproduce(sd):
+            os.makedirs(os.path.dirname(log), exist_ok=True)
+            lr = legacy.run(script, ['--reproduce', rd, clv, sd], python=CFG.catalog_omission.REJUDGE_PYTHON, log=log, unit=u,
+                            timeout=CFG.catalog_omission.REJUDGE_TIMEOUT_S, refusal_codes=(2,))
+            line = ''
+            if os.path.exists(log):
+                with open(log) as f:
+                    line = ([ln.strip() for ln in f if ln.startswith(('REPRODUCE-OK', 'REFUSING'))] or [''])[-1]
+            ok = bool(lr.ok) and line.startswith('REPRODUCE-OK')
+            u.check('SB3.reproduces-chain', ok, detail=(line or lr.reason or '')[:500])
+            return ok, line or lr.reason
         try:
-            rec = write(rd, src, names, 'backfill', why=why, ledger=getattr(args, 'samples_ledger', None))
+            rec, line = backfill(rd, src, names, why, reproduce, ledger=getattr(args, 'samples_ledger', None))
+        except NotReproduced as e:
+            raise Refusal('SB3: %s (log %s)' % (e, log))
         except SamplesRefusal as e:
             raise Refusal('SB2: %s' % e)
         for x in rec['files']:
             u.add_input(x['source'])
-        log = os.path.join(rd, '_records', 'catalog', tag, 'samples_reproduce_%s.log' % time.strftime('%Y%m%dT%H%M%SZ',
-                                                                                                        time.gmtime()))
-        os.makedirs(os.path.dirname(log), exist_ok=True)
-        lr = legacy.run(script, ['--reproduce', rd, clv], python=CFG.catalog_omission.REJUDGE_PYTHON, log=log, unit=u,
-                        timeout=CFG.catalog_omission.REJUDGE_TIMEOUT_S, refusal_codes=(2,))
-        line = ''
-        if os.path.exists(log):
-            with open(log) as f:
-                line = ([ln.strip() for ln in f if ln.startswith(('REPRODUCE-OK', 'REFUSING'))] or [''])[-1]
-        u.check('SB3.reproduces-chain', bool(lr.ok) and line.startswith('REPRODUCE-OK'), detail=line[:500])
-        if not (lr.ok and line.startswith('REPRODUCE-OK')):
-            dest = os.path.join(rd, '_records', 'catalog', tag, 'samples_refused_%s' % time.strftime('%Y%m%dT%H%M%SZ',
-                                                                                                     time.gmtime()))
-            set_aside(rd, dest)
-            raise Refusal('SB3: the catalogs of %s do not reproduce the chain of %s (%s; log %s) - the record and its copies '
-                          'moved to %s' % (src, tag, line or lr.reason, log, dest))
         u.note('%s: %d sample catalogs recorded from %s (%s); %s' % (
             tag, len(rec['files']), src, ', '.join('%s %s' % kv for kv in md5_map(rec).items()), line))
         u.meta['samples'] = dict(md5_map(rec))

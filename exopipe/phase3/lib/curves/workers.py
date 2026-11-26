@@ -11,7 +11,8 @@ the I table exists before V starts). --search-frames (clv15 55469ba: the 2026-11
 plan.pair_plan gives it - curves.SEARCH_FRAMES and the search wrote the pair's frame list: the table holds exactly that list
 (<proto-root>/<cell>/noise_<sb>_<S>_median.csv); production's fleet and backfill call (the default) samples every discovered
 frame. --run-dir is passed only when curves.CHAIN_RUN_DIR is set (production passes none); --samples-dir only when
-paths.CLV15_ROOT differs from the script's own directory (its default, LC:257). The core affinity is
+samples_dir() differs from the script's own directory (its default, LC:257): with CHAIN_RUN_DIR that run's own sample catalogs
+(<run>/sample_catalogs, cutover row 70), else paths.CLV15_ROOT. The core affinity is
 inherited from `exopipe3 --cores`. core.legacy.run clears inherited P3_* variables, applies runner.ENV_DEFAULTS
 (NUMPY_MADVISE_HUGEPAGE=0, which the backfill lacked), installs the parity guard in the child under --parity, and records the
 sha1 of every legacy module the child imported (res.fingerprint; added to the unit record as meta 'legacy_code').
@@ -60,9 +61,20 @@ def argv(C, paths_cfg, script, cell, sb, st, stage_sb, out_dir, search_frames=Fa
         a += ['--search-frames']
     if C.CHAIN_RUN_DIR:
         a += ['--run-dir', C.CHAIN_RUN_DIR]
-    if os.path.realpath(paths_cfg.CLV15_ROOT) != os.path.realpath(os.path.dirname(script)):
-        a += ['--samples-dir', paths_cfg.CLV15_ROOT]
+    sd = samples_dir(C, paths_cfg)
+    if os.path.realpath(sd) != os.path.realpath(os.path.dirname(script)):
+        a += ['--samples-dir', sd]
     return a
+
+
+def samples_dir(C, paths_cfg):
+    """The directory the extractor reads the sample catalogs from: with curves.CHAIN_RUN_DIR, that chain run's own verified set
+    (<run>/sample_catalogs, cutover row 70: a reader of a snapshot run reads the catalogs the run's chain read; G19 refuses a run
+    without it); else paths.CLV15_ROOT (no run context - production's per-cell extraction, which passes no --run-dir)."""
+    if C.CHAIN_RUN_DIR:
+        from exopipe.phase3.lib.catalog import run_samples as RS
+        return RS.copy_dir(C.CHAIN_RUN_DIR)
+    return paths_cfg.CLV15_ROOT
 
 
 def child_env(C, paths_cfg):

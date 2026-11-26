@@ -54,7 +54,6 @@ import errno
 import grp
 import hashlib
 import os
-import re
 import shutil
 import stat
 import struct
@@ -62,6 +61,7 @@ import sys
 import time
 
 from exopipe.phase3.core.record import Refusal
+from exopipe.phase3.core import tempnames
 
 ACL_ACCESS = 'system.posix_acl_access'
 ACL_DEFAULT = 'system.posix_acl_default'
@@ -239,15 +239,12 @@ def _remove(path):
         pass
 
 
-_HEX8 = '[0-9a-f]' * 8
-
-
 def temp_glob(dst, tag=None):
     """The glob of the temporary files ``atomic(dst, tag=tag)`` writes (``<dst>[.<tag>].<pid>.<8 hex digits>.tmp``): what a
     killed writer leaves, for its next run's cleanup. ``dst`` is a glob itself (glob.escape a literal path; ``<dir>/*`` for
     every file of a directory). Without ``tag`` it does not match a tagged name whose tag starts with a letter, and a tag's
     glob matches only that tag's names."""
-    return f'{dst}.{tag + "." if tag else ""}[0-9]*.{_HEX8}.tmp'
+    return tempnames.glob(dst, tag)          # the names live in core/tempnames.py (a child without the package loads it)
 
 
 STALE_TEMP_S = 3600                     # sweep: a temporary file whose inode has not changed for an hour is a leftover
@@ -274,7 +271,7 @@ def sweep(dsts, tag=None, older_than_s=STALE_TEMP_S, log=None):
     if isinstance(dsts, (str, bytes, os.PathLike)):
         dsts = [dsts]
     now, out, listed = time.time(), [], {}
-    tail = re.compile((re.escape('.' + tag) if tag else '') + r'\.\d+\.[0-9a-f]{8}\.tmp$')
+    tail = tempnames.tail(tag)
     for dst in dsts:
         dst = os.fspath(dst)
         d, b = os.path.split(dst)
@@ -477,9 +474,7 @@ def copy_tree(src, dst, times=False, merge=False):
 
 
 def _temp_name(dst, tag=None):
-    if tag is not None and not (tag[:1].isalpha() and tag.replace('_', '').isalnum()):
-        raise ValueError(f'placement.atomic: tag {tag!r} is not letters, digits and \'_\' starting with a letter')
-    return f'{dst}.{tag + "." if tag else ""}{os.getpid()}.{os.urandom(4).hex()}.tmp'
+    return tempnames.name(dst, tag)
 
 
 @contextlib.contextmanager

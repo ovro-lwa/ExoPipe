@@ -1263,8 +1263,14 @@ def test_gates():
     with open(os.path.join(bad, '05h_46MHz_beam_excluded.csv'), 'a') as f:
         f.write('06h,46MHz,2025-01-05,1,1,%s\n' % TAG)
     refused(lambda: DO.run_snapshot(runs, os.path.join(root, 'o3'), rdir=bad, proto=proto), 'not of its LST 05h')
-    refused(lambda: DO.run_snapshot(runs + [os.path.join(root, 'nothing')], os.path.join(root, 'o4'), rdir=rdir, proto=proto),
-            'G2:')
+    nothing = os.path.join(root, 'nothing')
+    refused(lambda: DO.run_snapshot(runs + [nothing], os.path.join(root, 'o4'), rdir=rdir, proto=proto),
+            'G9b: nothing: nothing has no sample_catalogs/')     # cutover row 70: the record gate comes first of all
+    assert not os.path.exists(os.path.join(root, 'o4.rejudge')), 'nothing built before G9b'
+    from exopipe.phase3.lib.catalog import run_samples as RS
+    os.makedirs(nothing)
+    RS.write(nothing, snapshot_chain_fixture.CLV15, RS.chain_names(), 'chain')
+    refused(lambda: DO.run_snapshot(runs + [nothing], os.path.join(root, 'o4'), rdir=rdir, proto=proto), 'G2:')
     p = os.path.join(runs[0], 'candidates', '_identity', 'J0000+0003', 'detections.csv')
     os.rename(p, p + '.x')
     refused(lambda: DO.run_snapshot(runs, os.path.join(root, 'o5'), rdir=rdir, proto=proto), 'G3: T1A identity J0000+0003')

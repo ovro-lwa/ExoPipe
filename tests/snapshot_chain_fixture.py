@@ -15,7 +15,7 @@ self-check against what the chain would have written. It writes, into the batch 
                             rows)
   chain_summary.json        {'cells': [...]} (the chain's floors are its defaults; no footprint / pool-size checks)
   served_tiers.csv          per (identity, tier with members): chain_outcome served, qualifies by the chain's per-tier rule
-  sample_catalogs.json + sample_catalogs/   the sample catalogs, copied from ``clv15`` BEFORE the child reads them and read from
+  sample_catalogs/ (+ its sample_catalogs.json)   the sample catalogs, copied from ``clv15`` BEFORE the child reads them and read from
                             the copies - as the chain stage does (lib/catalog/run_samples.py, cutover row 70): the re-judging
                             reads this record and refuses a run without it
 and returns {(identity, tier): qualifies} - the batch's per-tier catalogues hold exactly the qualifying ones (G4b).

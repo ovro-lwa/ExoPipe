@@ -34,7 +34,8 @@ Stages (--stages / --from / --until; default all, in this order):
              --curve-constants-restore <table> to every chain call (prefit lists, tie items, the chain); P-G21 (preflight) refuses
              a named table that is missing or empty. THE RUN'S SAMPLE CATALOGS (cutover row 70, lib/catalog/run_samples.py):
              before the chain, catalog_snapshot.SAMPLES of paths.CLV15_ROOT are copied (verified) into RUN/sample_catalogs/ with
-             RUN/sample_catalogs.json (each file's md5, size, source; class sample_catalogs) and the chain reads --samples-dir
+             its record sample_catalogs.json (each file's md5, size, source; class sample_catalogs; staged, then renamed into
+             place) and the chain reads --samples-dir
              RUN/sample_catalogs - the set the combined view's re-judging reads back (P-G26: a missing catalog, an unverified
              copy, SAMPLES not the chain's)
   wavediff   (only when named; after the pages) THE RESTORE-ONLY WAVE'S PER-BATCH TEST (lib/catalog/restore_wave, port of
@@ -59,7 +60,7 @@ Inputs:  the cells file; paths.SNAPSHOT_FLEET_OUT/<cell>/ (search products, runi
          (paths.SNAPSHOT_REVIEW_ROOT, or --snap-served-run); data_decisions.csv is applied inside the chain (in place).
 Outputs (product classes): RUN = --out (production catalog_snapshot.WORK_ROOT/snapshot_rechain_<NAME>/<NAME>):
          chain_summary.json, candidates/, source_catalogs*/, queue*.txt, rejected.csv, vetoed/, ... (snapshot_run);
-         sample_catalogs.json + sample_catalogs/ (sample_catalogs: the catalogs the chain read); the
+         sample_catalogs/ with its sample_catalogs.json (sample_catalogs: the catalogs the chain read); the
          combined store L/fits_store.csv (csv_table + the in-place store content test; fit_store is search's class, not
          registered yet); the tie cache rows of the run's cells (tie_cache); prefit and repair lists (csv_table); the
          preflight report (catalog_preflight). Non-production runs keep every side file under RUN/_side/ (fit-store and
@@ -1219,7 +1220,8 @@ def st_tie(ctx, s, plan):
 def record_samples(ctx, s):
     """P-G26 THE RUN'S SAMPLE CATALOGS (cutover row 70; lib/catalog/run_samples.py): catalog_snapshot.SAMPLES (bound to the
     chain's SAMPLES here too: --from chain skips the preflight's binding check) copied from paths.CLV15_ROOT into
-    RUN/sample_catalogs/ (verified copies) with RUN/sample_catalogs.json (file, md5, size, source, its mtime) - written BEFORE the
+    RUN/sample_catalogs/ (verified copies) with its sample_catalogs.json (file, md5, size, source, its mtime; staged under a
+    staging name and renamed into place, run_samples.write) - written BEFORE the
     chain, which then reads exactly those copies (--samples-dir). Refuses: a binding mismatch, a missing catalog (the chain would
     skip it silently), a copy that is not verified, a record already in RUN (the previous pass's files were moved aside)."""
     from exopipe.phase3.lib.catalog import run_samples as RS
