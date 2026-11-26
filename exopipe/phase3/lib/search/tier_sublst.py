@@ -346,15 +346,20 @@ def log_tail(path, n=5):
 
 
 def copy_tree(src, dst):
-    """rsync -a semantics for one item: a directory is merged into dst (files replaced, extra files kept), a file
-    replaced; mtimes preserved."""
+    """rsync -a semantics for one item: a directory is merged into dst (files replaced, extra files kept), a file replaced;
+    file mtimes preserved. Every file goes through core/placement: copied to a temporary file beside its destination, its
+    size and md5 checked against its source, then placed with the replaced file's group, mode and ACL or the directory's
+    rule for a new one (not src's mode, as rsync -a would keep it); a new directory takes its parent's rule
+    (placement.copy_tree). A copy that differs (CopyNotVerified) or a placement refusal (PlacementRefusal) leaves no
+    temporary file; in a directory it removes what the copy made (new directories and files) and names the files it had
+    already replaced."""
+    from exopipe.phase3.core import placement
     if os.path.isdir(src):
-        shutil.copytree(src, dst, symlinks=True, dirs_exist_ok=True)
+        placement.copy_tree(src, dst, times=True, merge=True)
     else:
         os.makedirs(os.path.dirname(dst), exist_ok=True)
-        tmp = f'{dst}.tmp.{os.getpid()}'
-        shutil.copy2(src, tmp)
-        os.replace(tmp, dst)
+        placement.sweep([dst])          # a killed earlier copy's temporary file (not modified for an hour)
+        placement.copy(src, dst, times=True)
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -1107,6 +1112,17 @@ def _short_copies(src, dst):
     return [b for a, b in pairs if not os.path.isfile(b) or os.path.getsize(a) != os.path.getsize(b)]
 
 
+def _seed_copy(a, b):
+    """copy_tree(a, b); returns the files of the copy that are short (_short_copies) - a file whose copy core/placement found
+    not verified (CopyNotVerified: not placed) is short."""
+    from exopipe.phase3.core import placement
+    try:
+        copy_tree(a, b)
+    except placement.CopyNotVerified:
+        return [b]
+    return _short_copies(a, b)
+
+
 def seed_attempt(src, dst):
     """Copy the items of per_hour_seed_names() that exist under the published run directory ``src`` into the new attempt's
     run directory ``dst`` (copy_tree: a file replaced, a directory merged). Every copy is checked against its source's
@@ -1118,10 +1134,8 @@ def seed_attempt(src, dst):
         a, b = os.path.join(src, name), os.path.join(dst, name)
         if not os.path.exists(a):
             continue
-        copy_tree(a, b)
-        if _short_copies(a, b):
-            copy_tree(a, b)
-            short = _short_copies(a, b)
+        if _seed_copy(a, b):
+            short = _seed_copy(a, b)
             if short:
                 raise refusal(f'per-hour seed: {len(short)} file(s) of {a} copied short twice (e.g. {short[0]}): the published '
                               f'records are not appended to from a partial copy - run the unit again')
@@ -1630,20 +1644,13 @@ def _publish_files(plan, attempt):
 def publish(u, run, plan, attempt):
     """Copy the attempt's products to <out>/search_<arm>/<cell>_<S>/ (SP:53-55). Returns (pub, rollback) - rollback()
     restores the published dir as it was before this publish (per-hour mode: the published cumulative files are backed up
-    under <out>/_superseded/<unit>_<UTC>/ first; new files are removed)."""
+    under <out>/_superseded/<unit>_<UTC>/ first; new files are removed). A file that cannot be placed (copy_tree:
+    PlacementRefusal) rolls the publish back here and refuses, saying whether the rollback succeeded."""
+    from exopipe.phase3.core import placement
     pub = plan['publish']
     pairs = _publish_files(plan, attempt)
     backup = os.path.join(run.out_root, '_superseded', f'{plan["unit"]}_{utc_stamp()}')
     saved, created = [], []
-    for src, dst in pairs:
-        if os.path.exists(dst):
-            b = os.path.join(backup, os.path.relpath(dst, pub))
-            os.makedirs(os.path.dirname(b), exist_ok=True)
-            shutil.copy2(dst, b)
-            saved.append((b, dst))
-        else:
-            created.append(dst)
-        copy_tree(src, dst)
 
     def rollback():
         for b, dst in saved:
@@ -1653,6 +1660,29 @@ def publish(u, run, plan, attempt):
                 os.remove(dst)
             except OSError:
                 pass
+    try:
+        for src, dst in pairs:
+            if os.path.exists(dst):             # the published file kept first: a verified copy, placed by the
+                b = os.path.join(backup, os.path.relpath(dst, pub))     # backup directory's rule (core/placement.copy)
+                os.makedirs(os.path.dirname(b), exist_ok=True)
+                placement.copy(dst, b, times=True)
+                saved.append((b, dst))
+            else:
+                created.append(dst)
+            copy_tree(src, dst)
+    except placement.PlacementRefusal as e:     # a file not placed (it is as it was): the publish is undone, not left partial
+        if saved and saved[-1][1] == dst:       # the refused file itself is as it was: not restored, not removed
+            saved.pop()
+        elif created and created[-1] == dst:
+            created.pop()
+        n = len(saved) + len(created)
+        try:
+            rollback()
+            what = f'the {n} file(s) published before it rolled back (replaced ones restored from {backup}, new ones removed)'
+        except Exception as e2:                 # noqa: B902 - the refusal says what is on disk either way
+            what = (f'the rollback of the {n} file(s) published before it FAILED ({type(e2).__name__}: {e2}) - {pub} may hold '
+                    f'a partial publish; the replaced files are in {backup}')
+        raise placement.PlacementRefusal(f'publish: {e} - {what}; attempt kept: {attempt}') from e
     u.meta['published'] = dict(dir=pub, files=len(pairs), replaced=len(saved), backup=backup if saved else None)
     return pub, rollback
 

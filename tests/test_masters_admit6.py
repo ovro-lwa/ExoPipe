@@ -416,6 +416,8 @@ def _run_admit(wt, out):
 #   cosmetic  a header comment / a message's text / a derived MJD-MID card (the products' header test compares cards)
 #   cleanup   removing a temporary file while an error propagates     infra  the fallback record's own spool file
 #   validation  a check of a product already written turns an unparsable WCS into a warning (no value, row or verdict)
+#   guard     the parity write guard's own work (core/guard, reached through core/placement): a descriptor path it cannot
+#             resolve is checked as given; a refusal message it cannot print or log - the refusal itself is still raised
 #   (problem also: a content test that raises is a failed test; a test module that does not import is named by the
 #   refusal that follows - validate.tests_for raises for a class without tests)
 LOOP_CALLS = {'coadd': ('prep_night', '_epoch_content_arrays', '_flow_freshness', '_product_mapping', 'beam_area',
@@ -425,7 +427,10 @@ LOOP_CALLS = {'coadd': ('prep_night', '_epoch_content_arrays', '_flow_freshness'
                                '_sha1'),
               'shflux': ('bake',),
               'record': ('utcnow', 'UnitRecord.refuse_item', 'UnitRecord.plan', 'UnitRecord.add_output', 'UnitRecord.note')}
-LOOP_SKIP = ('validate.run',)   # the flow's content test: an exception there is a failed test, the night refused (no row)
+LOOP_SKIP = ('validate.run',    # the flow's content test: an exception there is a failed test, the night refused (no row)
+             'placement.sweep', 'placement.atomic_many')   # the night's products placed together: a PlacementRefusal refuses
+                                                           # the night (admit.placement), no row; sweep removes only an
+                                                           # hour-old temporary file of those products
 _PK = 'exopipe.phase3.'
 MODS = {'coadd': _PK + 'lib.masters.coadd', 'admit_stages': _PK + 'lib.masters.admit_stages', 'shflux': _PK + 'lib.masters.shflux',
         'record': _PK + 'core.record'}
@@ -456,9 +461,20 @@ PATH_EXCEPTS = {
     'coadd.save_epoch_residual': [('BaseException', 'try:', '009ae275e3', 'raise'),
                                   ('OSError', 'pass', '494e0399d8', 'cleanup')],
     'fallback._record': [('OSError', 'pass', '494e0399d8', 'infra')],
+    'guard._norm': [('OSError', 'pass', '494e0399d8', 'guard')],
+    'guard._refuse': [('Exception', 'pass', 'cc1c7f4635', 'guard'), ('Exception', 'pass', '8be86bc4cf', 'guard')],
     'fallback.site': [('Refusal', "_record('refuse', key, 1, f'{detail} [{e}]')", 'bedd84c8b0', 'raise')],
     'inputs.is_subband': [('(ValueError, TypeError)', 'return False', 'd2287f88ed', 'parse')],
     'membership.qa3_inside': [('(TypeError, ValueError)', 'return False', '02ef154300', 'parse')],
+    'placement._group': [('KeyError', 'return str(gid)', '0243feb332', 'cosmetic')],   # a group's name in a refusal's text
+    'placement._remove': [('FileNotFoundError', 'pass', '03f3da67cd', 'cleanup')],
+    'placement.apply': [('OSError', 'raise PlacementRefusal(f\'placement: {dst or src} cannot be given the group '
+                                    '{_group(want["gid"])} / ACL of the \'', '418b532865', 'raise')],
+    'placement.atomic': [('BaseException', '_remove(tmp)', '1c255a37b3', 'raise')],
+    'placement.get_acl': [('OSError', 'if e.errno in _NO_ACL:', '33c0e3ec78', 'raise')],   # a file system without ACLs: none
+    'placement.replace': [('BaseException', 'if drop and os.path.lexists(src):       # any failure before the rename, '
+                                            'wherever dst is: the temporary file goes', '2c384e7908', 'raise'),
+                          ('OSError', 'pass', 'a96fff7db6', 'cleanup')],
     'phase2_science_agg.get_inner_rms': [('Exception', 'logger.warning(f"RMS failed for {os.path.basename(fits_path)}: {e}")', '776f4a0109',
                                           'cosmetic')],  # writers step 1: Phase 2's own measurement; its NaN is thermnoi.measure's
                                                          # 'does not measure' - a derived card left off (no pixel, value, row or

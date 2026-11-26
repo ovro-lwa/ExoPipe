@@ -26,7 +26,8 @@ anything changes.
 the caller's own writer (open + csv, json.dump, writeto, ...), and a clean exit places it (``replace(tmp, dst, drop=True)``);
 ANY exception inside the block removes the temporary file and propagates. Only a killed process leaves one behind:
 ``temp_glob(dst, tag)`` is the glob of those names, for the cleanup of the writer's next run, and ``sweep(dsts)`` removes
-them (the ones not modified for an hour) - each name is unique, so no later write replaces it.
+them (the ones whose inode has not changed for an hour: ctime, which a copy of the source's times cannot set back) - each
+name is unique, so no later write replaces it.
 
 ``atomic_many(dsts)`` is the form for a set of products installed together: ``with placement.atomic_many(dsts) as tmps:``
 yields {dst: tmp}; a clean exit first gives EVERY temporary file its product's attributes (apply: where a refusal happens),
@@ -37,13 +38,24 @@ files cannot be made atomic together).
 ``replace_many(pairs)`` installs a set the same way when the writer chose the files' names itself (an engine's output
 directory, a worker's temporary directory, a temporary name of its own) in the products' file system: every file is given
 its product's attributes where it lies, then each is renamed once to its product, in order - with the same two outcomes.
+
+``copy(src, dst)`` places a copy of a file that may lie on another file system (node-local scratch, a work tree): the source
+is read once, each block written to atomic's temporary file beside ``dst`` and added to an md5; the temporary file is then
+hashed on its own and must equal the bytes read (size and md5), which must be at least the source's size (Lustre has made
+silent short copies, 2 of 828 shutil copies on 2026-11-09); only then is it placed - with the replaced product's or the
+directory's attributes, never the source's (a shutil.copy2 into the archive carried the work file's mode, and with it the
+ACL mask). ``copy_verified(src, tmp)`` is that copy and check alone, for the temporary files of an atomic / atomic_many
+block; a copy that is not verified refuses (CopyNotVerified, a PlacementRefusal) with its temporary file removed.
+``copy_tree(src, dst)`` copies a directory tree that way: every file placed by copy, every new directory made by make_dirs
+(the parent directory's rule, never the source directory's mode or ACL); a failure removes what the call made and refuses.
 """
 import contextlib
 import errno
-import glob
 import grp
+import hashlib
 import os
 import re
+import shutil
 import stat
 import struct
 import sys
@@ -59,7 +71,18 @@ _NO_ACL = (errno.ENODATA, errno.ENOTSUP, errno.EOPNOTSUPP)
 
 
 class PlacementRefusal(Refusal):
-    """The file could not be given the product's group or ACL; nothing was renamed."""
+    """The file could not be given the product's group or ACL (or, CopyNotVerified, its copy is not the source's bytes);
+    nothing was renamed."""
+
+
+class CopyNotVerified(PlacementRefusal):
+    """copy_verified: the copy beside the product is not the bytes read from its source (size or md5), or fewer bytes were
+    read than the source holds; the copy was removed, nothing placed. ``copy_size`` / ``copy_md5``: the copy as written;
+    ``src_size`` / ``src_md5``: the source as it is when the copy was refused (read again; None when unreadable)."""
+
+    def __init__(self, msg, src_md5=None, copy_md5=None, src_size=None, copy_size=None):
+        super().__init__(msg)
+        self.src_md5, self.copy_md5, self.src_size, self.copy_size = src_md5, copy_md5, src_size, copy_size
 
 
 def get_acl(path, name=ACL_ACCESS):
@@ -110,6 +133,13 @@ def directory_mode(dmode):
     write only when the directory grants it; other read only when the directory grants it. The source's mode is never kept
     (a copy2 or a scratch umask would otherwise carry group write or its absence into the archive)."""
     return 0o640 | (dmode & 0o020) | (dmode & 0o004)
+
+
+def subdirectory_mode(dmode):
+    """The permission bits of a new directory in a directory without a default ACL: directory_mode's read and write bits,
+    with search (x) wherever read is granted."""
+    m = directory_mode(dmode)
+    return m | 0o110 | (0o001 if m & 0o004 else 0)
 
 
 def target_attrs(dst, like=None):
@@ -220,37 +250,56 @@ def temp_glob(dst, tag=None):
     return f'{dst}.{tag + "." if tag else ""}[0-9]*.{_HEX8}.tmp'
 
 
-STALE_TEMP_S = 3600                     # sweep: a temporary file not modified for an hour is a leftover
+STALE_TEMP_S = 3600                     # sweep: a temporary file whose inode has not changed for an hour is a leftover
+
+
+def _changed(st):
+    """The time a temporary file last changed, for sweep: its ctime. A copy that keeps its source's times (copy_verified
+    times=True, as shutil.copy2) sets the mtime back, never the ctime (utime itself changes it), so a temporary file being
+    written or waiting to be placed is always young."""
+    return st.st_ctime
 
 
 def sweep(dsts, tag=None, older_than_s=STALE_TEMP_S, log=None):
     """Remove the temporary files of the products ``dsts`` (literal paths) that a writer killed between writing and placing
     left behind: exactly the names atomic / atomic_many give them (``<dst>[.<tag>].<pid>.<8 hex digits>.tmp``), and only
-    those not modified for ``older_than_s`` seconds (default STALE_TEMP_S, one hour). A younger one may be a concurrent
-    writer's (the V and I searches of one cell write the same generation stamp) and stays; so do ``dst`` itself, another
+    those whose inode has not changed for ``older_than_s`` seconds (_changed: ctime; default STALE_TEMP_S, one hour). A
+    younger one may be a concurrent writer's (the V and I searches of one cell write the same generation stamp) - also one
+    carrying an old source's mtime - and stays; so do ``dst`` itself, another
     product's temporary files and every other name. A writer calls it before it writes (each temporary name is unique, so no
-    later write replaces a leftover). Each removal is reported through ``log`` (default: a line on stderr). Returns the paths
-    removed."""
+    later write replaces a leftover). Each directory is listed once, however many of its products ``dsts`` names (a writer of
+    many files in one directory sweeps them all in one call). Each removal is reported through ``log`` (default: a line on
+    stderr). Returns the paths removed, in the order of ``dsts`` (each product's sorted by name)."""
     log = log or (lambda m: print(m, file=sys.stderr, flush=True))
     if isinstance(dsts, (str, bytes, os.PathLike)):
         dsts = [dsts]
-    now, out = time.time(), []
+    now, out, listed = time.time(), [], {}
+    tail = re.compile((re.escape('.' + tag) if tag else '') + r'\.\d+\.[0-9a-f]{8}\.tmp$')
     for dst in dsts:
         dst = os.fspath(dst)
-        name = re.compile(re.escape(os.path.basename(dst)) + (re.escape('.' + tag) if tag else '') + r'\.\d+\.[0-9a-f]{8}\.tmp')
-        for q in sorted(glob.glob(temp_glob(glob.escape(dst), tag))):
-            if not name.fullmatch(os.path.basename(q)):
-                continue                        # e.g. <dst>.1.<pid>.<hex>.tmp: the temporary file of the product <dst>.1
+        d, b = os.path.split(dst)
+        if d not in listed:                     # {product name: [its temporary names]} of the directory, listed once
+            listed[d] = {}
+            try:
+                names = os.listdir(d or os.curdir)
+            except OSError:                     # no such directory: nothing to sweep
+                names = []
+            for n in names:
+                m = tail.search(n)              # <product>[.<tag>].<pid>.<8 hex digits>.tmp, filed under <product> - so
+                if m:                           # <dst>.1.<pid>.<hex>.tmp is the product <dst>.1's, never <dst>'s
+                    listed[d].setdefault(n[:m.start()], []).append(n)
+        for n in sorted(listed[d].pop(b, [])):  # (pop: a product named twice is swept once)
+            q = os.path.join(d, n)
             try:
                 st = os.lstat(q)
-                if stat.S_ISDIR(st.st_mode) or now - st.st_mtime < older_than_s:
+                if stat.S_ISDIR(st.st_mode) or now - _changed(st) < older_than_s:
                     continue
                 os.remove(q)
             except FileNotFoundError:          # removed meanwhile (placed by its writer, or another sweep)
                 continue
             out.append(q)
-            log(f'placement: removed {q}, a temporary file of {dst} left by a writer that did not finish (not modified for '
-                f'{(now - st.st_mtime) / 3600:.1f} h)')
+            log(f'placement: removed {q}, a temporary file of {dst} left by a writer that did not finish (not changed for '
+                f'{(now - _changed(st)) / 3600:.1f} h)')
     return out
 
 
@@ -272,6 +321,159 @@ def atomic(dst, like=None, tag=None):
     if not os.path.lexists(tmp):
         raise PlacementRefusal(f'placement: {tmp} was not written - {dst} not placed')
     replace(tmp, dst, like=like, drop=True)
+
+
+COPY_BLOCK = 1 << 22                    # copy_verified: bytes per read of the source
+
+
+def _md5_now(path):
+    """(size, md5) of ``path`` as it is now, for a refusal's text; (None, None) when it cannot be read."""
+    from exopipe.phase3.core import manifest    # (here: core/manifest imports this module)
+    try:
+        return os.path.getsize(path), manifest.md5_file(path)
+    except OSError:
+        return None, None
+
+
+def copy_verified(src, tmp, times=False):
+    """Copy the bytes of ``src`` to ``tmp`` in one read of the source: each block read is written to ``tmp`` (a new file,
+    created here: it takes what its directory gives any new file - never src's mode, ACL or other extended attributes) and
+    added to an md5 of the bytes read. ``tmp`` is then hashed on its own (core/manifest.md5_file) and checked: its size and
+    md5 must equal the bytes read, and the bytes read must be at least src's size before the copy (a short read is refused;
+    a source that grows while it is read - a log being flushed - is copied as read). Otherwise CopyNotVerified (a
+    PlacementRefusal) with ``tmp`` removed; it carries the copy's size and md5 and the source's as it is then (read again).
+    Any other failure (an OSError of the read or the write) removes ``tmp`` and propagates. ``times``: after the check
+    ``tmp`` takes src's access and modification times as they were at the end of the read, as shutil.copy2 gives them
+    (sweep ages a temporary file by its ctime, which this does not set back). Returns the md5 (hex) of the bytes placed.
+    ``tmp`` is a temporary file of an atomic / atomic_many block: the block places it on a clean exit."""
+    from exopipe.phase3.core import manifest    # (here: core/manifest imports this module)
+    h, n = hashlib.md5(), 0
+    try:
+        with open(src, 'rb') as fi, open(tmp, 'xb') as fo:
+            n0 = os.fstat(fi.fileno()).st_size
+            for blk in iter(lambda: fi.read(COPY_BLOCK), b''):
+                fo.write(blk)
+                h.update(blk)
+                n += len(blk)
+            st = os.fstat(fi.fileno())
+        m = h.hexdigest()
+        n1, m1 = os.path.getsize(tmp), manifest.md5_file(tmp)
+    except BaseException:
+        _remove(tmp)
+        raise
+    if (n1, m1) != (n, m) or n < n0:
+        _remove(tmp)
+        ns, ms = _md5_now(src)
+        why = (f'{n} bytes read of the {n0} it held before the copy (a short read)' if n < n0 else
+               f'the copy holds {n1} bytes, md5 {m1}; the {n} bytes read have md5 {m}')
+        raise CopyNotVerified(f'placement: the copy {tmp} of {src} is not verified: {why}; the source now {ns} bytes, md5 {ms} '
+                              f'- the copy removed, nothing placed', src_md5=ms, copy_md5=m1, src_size=ns, copy_size=n1)
+    if times:
+        os.utime(tmp, ns=(st.st_atime_ns, st.st_mtime_ns))
+    return m
+
+
+def copy(src, dst, times=False):
+    """Place a copy of ``src`` (on any file system) at ``dst``: copy_verified into atomic(dst)'s temporary file beside ``dst``,
+    then replace(tmp, dst, drop=True) - the replaced product's group, mode and ACL, or the directory's rule for a new one,
+    never src's. A copy that is not verified (CopyNotVerified) or cannot be given the attributes (PlacementRefusal) leaves
+    ``dst`` as it was and no temporary file. ``times``: the placed file has src's access and modification times (as
+    shutil.copy2). The caller sweeps its products' leftovers (sweep) before it writes. Returns the md5 (hex) of the bytes
+    placed."""
+    with atomic(dst) as tmp:
+        m = copy_verified(src, tmp, times=times)
+    return m
+
+
+def make_dirs(path):
+    """os.makedirs(path, exist_ok=True) by the directory rule: each directory made here takes what its parent gives a new
+    directory - the kernel's set-group-ID group and bit and the inherited default ACL - and, under a parent without a
+    default ACL, the permission bits of subdirectory_mode (never a source directory's mode or ACL, never the umask's).
+    Refuses (PlacementRefusal) when those bits cannot be set without losing the set-group-ID bit (chmod clears it for a
+    group the process is not in). Returns the directories made, outermost first."""
+    path = os.path.abspath(path)
+    todo = []
+    while not os.path.isdir(path):
+        todo.append(path)
+        path = os.path.dirname(path)
+    made = []
+    for d in reversed(todo):
+        try:
+            os.mkdir(d)
+        except FileExistsError:
+            if os.path.isdir(d):
+                continue                        # made meanwhile by another writer
+            raise
+        made.append(d)
+        pst = os.stat(os.path.dirname(d))
+        if get_acl(os.path.dirname(d), ACL_DEFAULT) is None:
+            st = os.stat(d)
+            want = subdirectory_mode(pst.st_mode)
+            if stat.S_IMODE(st.st_mode) & 0o777 != want:
+                os.chmod(d, want | (st.st_mode & stat.S_ISGID))
+                if st.st_mode & stat.S_ISGID and not os.stat(d).st_mode & stat.S_ISGID:
+                    raise PlacementRefusal(f'placement: the new directory {d} lost its set-group-ID bit when given mode '
+                                           f'{oct(want)} (group {_group(st.st_gid)}: the process is not a member)')
+    return made
+
+
+def copy_tree(src, dst, times=False, merge=False):
+    """Place a copy of the directory tree ``src`` at ``dst`` (as shutil.copytree(symlinks=True), without copy2's
+    attributes): every directory made by make_dirs (its parent's rule), every file copied with copy_verified into atomic's
+    temporary file beside its product and placed (a replaced file's group, mode and ACL, or the directory's rule), every
+    symbolic link made anew with its target as it is. ``merge`` False: ``dst`` must not exist (refused before anything is
+    written); True: the tree is merged into ``dst`` (rsync -a: files replaced, other files kept; an existing link with the
+    same target kept). ``times``: each file has its source's times (shutil.copy2); directories have the time they were made.
+    Any failure - a copy not verified, a placement refusal, an OSError - removes what this call made (every directory it
+    created, with all in it, and every file it placed where none was) and refuses: CopyNotVerified for a copy that differs,
+    else PlacementRefusal, naming the file, what was removed, and in a merge the files already replaced (they stay).
+    Returns {placed file: md5}."""
+    src, dst = os.path.abspath(src), os.path.abspath(dst)
+    if not os.path.isdir(src):
+        raise PlacementRefusal(f'placement: copy_tree source {src} is not a directory - nothing written')
+    if not merge and os.path.lexists(dst):
+        raise PlacementRefusal(f'placement: copy_tree destination {dst} exists - nothing written')
+    made, new, replaced, md5s, cur = [], [], [], {}, src
+    try:
+        made += make_dirs(dst)
+        for root, dirs, files in os.walk(src):     # (followlinks False: a link to a directory is copied as a link)
+            rel = os.path.relpath(root, src)
+            droot = dst if rel == '.' else os.path.join(dst, rel)
+            if droot not in made:                  # an existing directory (a merge): a killed earlier copy's leftovers
+                sweep([os.path.join(droot, n) for n in files])
+            for n in sorted(dirs) + sorted(files):
+                a, b = os.path.join(root, n), os.path.join(droot, n)
+                cur = a
+                if os.path.islink(a):
+                    if os.path.lexists(b):
+                        if os.path.islink(b) and os.readlink(b) == os.readlink(a):
+                            continue
+                        raise PlacementRefusal(f'placement: {b} exists and is not the link {a} -> {os.readlink(a)}')
+                    os.symlink(os.readlink(a), b)
+                    new.append(b)
+                elif os.path.isdir(a):
+                    made += make_dirs(b)
+                else:
+                    existed = os.path.lexists(b)
+                    md5s[b] = copy(a, b, times=times)
+                    (replaced if existed else new).append(b)
+    except BaseException as e:
+        top = [d for d in made if not any(d.startswith(o + os.sep) for o in made if o != d)]
+        for d in top:
+            shutil.rmtree(d, ignore_errors=True)
+        loose = [b for b in new if not any(b.startswith(d + os.sep) for d in top)]
+        for b in loose:
+            _remove(b)
+        if not isinstance(e, (PlacementRefusal, OSError)):
+            raise
+        what = (f'{cur} not copied ({type(e).__name__}: {e}); removed what this copy made: {len(top)} new director(ies) '
+                f'{top}, {len(loose)} new file(s) outside them' + (f'; replaced before it (they stay): {replaced}'
+                                                                   if replaced else ''))
+        if isinstance(e, CopyNotVerified):
+            raise CopyNotVerified(f'placement: copy_tree {src} -> {dst}: {what}', src_md5=e.src_md5, copy_md5=e.copy_md5,
+                                  src_size=e.src_size, copy_size=e.copy_size) from e
+        raise PlacementRefusal(f'placement: copy_tree {src} -> {dst}: {what}') from e
+    return md5s
 
 
 def _temp_name(dst, tag=None):

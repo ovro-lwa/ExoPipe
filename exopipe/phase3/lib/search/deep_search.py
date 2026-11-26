@@ -1377,7 +1377,9 @@ def _archive_frame_publish(path, lst, scope, d, stokes, cadence, cell_tag):
     """Write a deep search frame (or its pbcorr sibling) into the ratified archive tree
     {LST}/{date}/{RUN}/{band}/{Stokes}/deep/<PRODNAME>.fits (Gregg 2026-09-09, contract
     steps 0.4/51). Deep cadence only; P3_ARCHIVE_RUN names the generation; P3_ARCHIVE_WRITE=0
-    is the only way to search without archiving (scratch, never production)."""
+    is the only way to search without archiving (scratch, never production). The copy is checked and
+    placed by core/placement.copy (a copy that differs, or a placement refusal: PlacementRefusal,
+    the archive frame left as it was)."""
     if os.environ.get('P3_ARCHIVE_WRITE') == '0':
         return None
     # 2026-09-12 (contract step 66, Gregg "other recommendations approved"): the 10-minute cadence archives its
@@ -1394,22 +1396,29 @@ def _archive_frame_publish(path, lst, scope, d, stokes, cadence, cell_tag):
     _night = d[:10]
     dst = f'{_archive_root()}/{lst}/{_night}/{run}/{scope}/{stokes}/{cadence}/{name if name.endswith(".fits") else name + ".fits"}'
     os.makedirs(os.path.dirname(dst), exist_ok=True)
-    import shutil as _sh
-    _sh.copy2(path, dst + '.part'); os.replace(dst + '.part', dst)
+    # core/placement.copy: the work frame copied to a temporary file beside the archive frame, its size and md5 checked
+    # against the work frame, then placed with the replaced frame's group, mode and ACL, or the archive directory's group
+    # and inherited ACL for a new one - never the work frame's mode and ACL mask (shutil.copy2 carried them); the times are
+    # the work frame's, as copy2 gave them. A refusal (PlacementRefusal) leaves the archive frame as it was
+    placement.sweep([dst])              # a killed earlier copy's temporary file (not modified for an hour)
+    placement.copy(path, dst, times=True)
     return dst
 
 
 def _write_archive_frame(path, data, hdr, cell_tag, d):
-    """Atomic write + write-time validation gate (refuses, never warns)."""
+    """Atomic write + write-time validation gate (refuses, never warns): the frame is written to a temporary
+    file beside ``path`` and its header validated there; only a valid frame is placed (core/placement.atomic:
+    the replaced frame's group, mode and ACL, or the directory's rule for a new one). A header that fails
+    (RuntimeError, REFUSING) or a placement refusal (PlacementRefusal) leaves ``path`` as it was and no
+    temporary file."""
     from exopipe.common.validate_fits_headers import validate_header
-    _tmp = path + '.part'
-    fits.writeto(_tmp, data.astype(np.float32), hdr, overwrite=True)
-    rep = validate_header(_tmp, level='standard')
-    if not rep.ok:
-        os.remove(_tmp)
-        raise RuntimeError(f'{cell_tag} {d}: archive frame header validation FAILED '
-                           f'({"; ".join(rep.errors)[:300]}) - REFUSING to archive')
-    os.replace(_tmp, path)
+    placement.sweep([path])             # a killed earlier write's temporary file (not modified for an hour)
+    with placement.atomic(path) as _tmp:
+        fits.writeto(_tmp, data.astype(np.float32), hdr)
+        rep = validate_header(_tmp, level='standard')
+        if not rep.ok:
+            raise RuntimeError(f'{cell_tag} {d}: archive frame header validation FAILED '
+                               f'({"; ".join(rep.errors)[:300]}) - REFUSING to archive')
 
 
 def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',

@@ -1055,6 +1055,9 @@ def cpv(src, dst):
     if md5_file(part) != ms:
         os.remove(part)
         raise Refusal(f'G-S08: REFUSING: copy/md5 failed {src}')
+    # a bare rename on purpose (placement P6): the copy keeps the source's mode and ACL, as cp -p does. placement.replace(
+    # like=src) would also give it the source's GROUP - pipeline for the frozen masters, which this user is not in - and
+    # refuse every master copy; without like= it would take the directory's rule instead of the source's mode
     os.replace(part, dst)
     return ms, 'copied'
 

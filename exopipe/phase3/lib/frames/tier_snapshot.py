@@ -28,16 +28,19 @@ DESIGN 12.1; the same item kind in bulk).
           <scratch>/cube_pass/<cell>/cubes; shipped by copy + md5 to <cubes root>/<cell>/ with MANIFEST.txt (one line per cube:
           md5, copy-OK, its VERIFY line; last line COMPLETE <cell> cubes=N subbands=M node=... code=...), cube_write.log,
           cube_verify.log [snapshot_cube]. Gates: N-G4 broken link, N-G6 a staged subband without Master, no flow fields,
-          N-G7 cubes != 2 x staged subbands or a verify not OK (nothing shipped), N-G8 shipped md5 != local md5, N-G9 the
-          writer's astropy (the engine refuses). The flow fields are read from --snap-flow-dir, else the flow step's
-          node-local <scratch>/<cell>/flow, else its shipped copy <paths.SNAPSHOT_FLOW_ROOT>/<cell>; copying the fields to
-          the flow tree is the flow step's `ship` (not done here).
+          N-G7 cubes != 2 x staged subbands or a verify not OK (nothing shipped), N-G8 a copy's md5 != local md5 (that
+          cube not placed: each copy is checked beside its destination before core/placement places it) or a placement
+          refused, N-G9 the writer's astropy (the engine refuses). The flow fields are read from --snap-flow-dir, else
+          the flow step's node-local <scratch>/<cell>/flow, else its shipped copy <paths.SNAPSHOT_FLOW_ROOT>/<cell>;
+          copying the fields to the flow tree is the flow step's `ship` (not done here).
   movies  unit <cell>_movies: with frames_snapshot.FLOW_MOVIES first (v9:277), per staged subband the flow movie + series
           (clv15/phase3_snapshot_flow_movie.py, FLOW_MOVIE_PROCS at a time, header = the first flowed Stokes I frame, whose
           |CDELT2| is the arcmin scale - M31; a subband without one gets no movie, item refused) shipped as production does
           (cp -n) to <paths.SNAPSHOT_FLEET_OUT>/<cell>/flow/ [flow_movie] - an earlier shipped file is kept and the item
-          refused by name unless --fresh; then the 19 frame movies (clv15/phase3_snapshot_frame_movie.py in place, flow
-          interpreter) from the staged flowed frames (--snap-movie-source staged) or the shipped cubes (cube) into
+          refused by name unless --fresh; a subband's files are copied, checked (size, md5) and placed together
+          (core/placement), and a copy that differs or a placement refusal refuses the item by name (N-G10 flow movie
+          ship); then the 19 frame movies (clv15/phase3_snapshot_frame_movie.py in place, flow interpreter) from the
+          staged flowed frames (--snap-movie-source staged) or the shipped cubes (cube) into
           <movies root>/<cell>/ (frames_<cell>_<band>_I.mp4, movies.log; MOVIES_DONE touched as today for its current
           readers) [frame_movie]. N-G10: a frame-movie failure refuses this unit only.
 Engine arguments: a config value equal to the in-place engine's own default is not passed (a default run has the
@@ -67,6 +70,7 @@ import subprocess
 import sys
 import time
 
+from exopipe.phase3.core import placement
 from exopipe.phase3.lib.frames.tier_sublst import (cfg, plan, say, split_list, requested_stages, refuse_production_writes,
                                                    check_overrides, interpreter_key, legacy_script, check_interpreter,
                                                    engine, refusal_line, try_resume, parallel, exclusions, report,
@@ -815,20 +819,45 @@ def stage_cube(ctx, cell, lst, date, sbs):
                 raise RuntimeError(f'cube write/verify failed for {cell}: ' + '; '.join(bad[:4]) + f' (logs in {work})')
             u.refuse(f'N-G7 cubes={ncube} of {S.CUBES_PER_SUBBAND * len(staged)}, not OK: ' + '; '.join(bad[:4])
                      + f' - NOT shipped (logs in {work})')
-        # ship: copy (tmp + rename), md5 of the shipped copy against the local one, MANIFEST lines as cube pass :118-132
+        # ship: each cube copied to a temporary file beside its destination, the copy's size and md5 checked against the
+        # local cube BEFORE it is placed (core/placement.copy: the archive's group and inherited ACL, or a replaced cube's -
+        # never the scratch file's); a copy that differs is not placed (COPY-MISMATCH). MANIFEST lines as cube pass :118-132.
+        # The cell is never COMPLETE over a mix of two generations: an earlier MANIFEST.txt (--fresh) is removed BEFORE any
+        # cube is placed (its lines kept in this unit's record), and the new one is placed LAST, only when every cube is
+        # verified and placed - a refusal leaves the cell without a MANIFEST.txt, i.e. not complete
         os.makedirs(dest, exist_ok=True)
-        lines, nbad, md5s = [], 0, {}
-        for sb, st in jobs:
-            b = f'{cell}_{sb}_{st}_flowcube.fits'
+        names = [f'{cell}_{sb}_{st}_flowcube.fits' for sb, st in jobs]
+        extra = ['cube_write.log', 'cube_verify.log', 'MANIFEST.txt']          # placed after the cubes, MANIFEST.txt last
+        placement.sweep([os.path.join(dest, b) for b in names + extra])     # a killed earlier ship's temporary files
+        old_man = os.path.join(dest, 'MANIFEST.txt')
+        gone = ''
+        if os.path.lexists(old_man):
+            with open(old_man, errors='replace') as fh:
+                u.meta['replaced_manifest'] = fh.read().splitlines()
+            os.remove(old_man)
+            gone = f'; the earlier {old_man} was removed before any cube was placed (its lines in meta.replaced_manifest)'
+            u.note(f'cube ship {cell}: the earlier MANIFEST.txt removed before any cube was placed - the cell is not '
+                   f'complete until the new one is placed (its lines in meta.replaced_manifest)')
+        lines, mismatch, md5s = [], [], {}
+        for i, ((sb, st), b) in enumerate(zip(jobs, names)):
             src, dst = os.path.join(cub, b), os.path.join(dest, b)
-            shutil.copyfile(src, dst + '.part')
-            os.replace(dst + '.part', dst)
-            m1, m2 = md5_file(src), md5_file(dst)
-            md5s[dst] = m2
-            nbad += m1 != m2
-            lines.append(f'{b} md5={m2} {"copy-OK" if m1 == m2 else "COPY-MISMATCH"} | {results[(sb, st)][2]}')
-        if nbad:
-            u.refuse(f'N-G8 SHIP-FAILED {cell}: {nbad} cube(s) differ on the destination')
+            try:
+                md5s[dst] = placement.copy(src, dst)
+            except placement.CopyNotVerified as e:     # the copy as written and the local cube as read again
+                mismatch.append(b)
+                lines.append(f'{b} md5={e.copy_md5} COPY-MISMATCH copy_size={e.copy_size} source_size={e.src_size} '
+                             f'source_md5={e.src_md5} | {results[(sb, st)][2]}')
+                continue
+            except placement.PlacementRefusal as e:
+                u.refuse(f'N-G8 SHIP-FAILED {cell}: {e}; placed in {dest} before it: '
+                         f'{[os.path.basename(p) for p in md5s] or "none"}; not copied: {names[i + 1:] or "none"}; no '
+                         f'MANIFEST.txt written - the cell is not complete{gone} (logs in {work})')
+            lines.append(f'{b} md5={md5s[dst]} copy-OK | {results[(sb, st)][2]}')
+        if mismatch:
+            u.meta['copy_mismatch'] = [l for l in lines if ' COPY-MISMATCH ' in l]
+            u.refuse(f'N-G8 SHIP-FAILED {cell}: {len(mismatch)} cube(s) differ on the destination - not placed: {mismatch} '
+                     f'(the copy\'s and the local cube\'s sizes and md5s in meta.copy_mismatch); the other {len(md5s)} '
+                     f'placed in {dest}; no MANIFEST.txt written - the cell is not complete{gone} (logs in {work})')
         size = subprocess.run(['du', '-sh', dest], capture_output=True, text=True).stdout.split('\t')[0].strip()
         code = subprocess.run(['git', '-C', os.path.dirname(script), 'rev-parse', '--short', 'HEAD'], capture_output=True,
                               text=True).stdout.strip() or 'unknown'
@@ -837,8 +866,14 @@ def stage_cube(ctx, cell, lst, date, sbs):
         man = os.path.join(work, 'MANIFEST.txt')
         with open(man, 'w') as f:
             f.write(''.join(l + '\n' for l in lines))
-        for fn in ('MANIFEST.txt', 'cube_write.log', 'cube_verify.log'):
-            shutil.copyfile(os.path.join(work, fn), os.path.join(dest, fn))
+        done = []
+        try:                                    # the two logs, then MANIFEST.txt last: verified copies, placed
+            for fn in extra:
+                placement.copy(os.path.join(work, fn), os.path.join(dest, fn))
+                done.append(fn)
+        except placement.PlacementRefusal as e:
+            u.refuse(f'N-G8 SHIP-FAILED {cell}: {e}; every cube placed in {dest}, and {done or "nothing"} of {extra}; no '
+                     f'MANIFEST.txt placed - the cell is not complete{gone} (logs in {work})')
         for dst, m in md5s.items():
             u.add_output(dst, 'snapshot_cube', md5=m)
         u.add_output(os.path.join(dest, 'MANIFEST.txt'), 'snapshot_cube', staged_subbands=len(staged))
@@ -907,7 +942,10 @@ def flow_movies(ctx, u, cell, d, staged, ship):
     header frame = the first flowed Stokes I frame, whose |CDELT2| sets the arcmin scale - M31, clv15 98595b3), rendered
     in node-local scratch and shipped as production does (cp -n, v9:346). A subband without a flowed I frame gets no movie
     (production's call fails without --header-fits; the engine would otherwise assume the 18 MHz pixel). A shipped file of
-    an earlier run is not overwritten (cp -n) and the item is refused by name unless --fresh replaces it."""
+    an earlier run is not overwritten (cp -n) and the item is refused by name unless --fresh replaces it. A subband's other
+    files are copied beside their destinations, each copy checked (size, md5) against the scratch file, and placed together
+    (core/placement.atomic_many); a copy that differs or a placement refusal places none of them and refuses the item by
+    name (N-G10 flow movie ship), the text saying what is placed (a failed later rename leaves the earlier files live)."""
     S = ctx.S
     fd, how = flow_dir(ctx, cell)
     mwork = os.path.join(ctx.scratch(), 'snapshot_movies_work', cell)
@@ -928,6 +966,8 @@ def flow_movies(ctx, u, cell, d, staged, ship):
     parallel(fm, [sb for sb in order if hdrs[sb]], S.FLOW_MOVIE_PROCS)
     os.makedirs(ship, exist_ok=True)
     fresh = bool(getattr(ctx.args, 'fresh', False))
+    shipped = {sb: (f'flow_{sb}.mp4', f'flow_{sb}_series.png', f'flow_{sb}_series.csv', f'movie_{sb}.log') for sb in order}
+    placement.sweep([os.path.join(ship, fn) for sb in order for fn in shipped[sb]])   # a killed earlier ship's temporaries
     for sb in order:
         target = os.path.join(ship, f'flow_{sb}.mp4')
         mp4 = os.path.join(mwork, f'flow_{sb}.mp4')
@@ -940,16 +980,25 @@ def flow_movies(ctx, u, cell, d, staged, ship):
                                   f'(log {mwork}/movie_{sb}.log)', gate='N-G10 flow movie')
             continue
         strip_legacy_header(os.path.join(mwork, f'movie_{sb}.log'))
-        kept = []
-        for fn in (f'flow_{sb}.mp4', f'flow_{sb}_series.png', f'flow_{sb}_series.csv', f'movie_{sb}.log'):
+        kept, todo = [], []
+        for fn in shipped[sb]:
             s_, t_ = os.path.join(mwork, fn), os.path.join(ship, fn)
             if not os.path.exists(s_):
                 continue
             if os.path.exists(t_) and not fresh:
                 kept.append(fn)                                    # cp -n keeps the earlier file (v9:346)
                 continue
-            shutil.copyfile(s_, t_ + '.part')
-            os.replace(t_ + '.part', t_)
+            todo.append((s_, t_))
+        # the subband's files placed together (core/placement.atomic_many: the replaced files' group, mode and ACL, or the
+        # directory's rule for new ones), each copy's size and md5 checked against the scratch file first: a copy that
+        # differs, or an attribute refusal, places none of them and refuses the item by name
+        try:
+            with placement.atomic_many([t_ for _s, t_ in todo]) as tmps:
+                for s_, t_ in todo:
+                    placement.copy_verified(s_, tmps[t_])
+        except placement.PlacementRefusal as e:
+            u.refuse_item(target, f'flow movie {sb}: not shipped - {e}', gate='N-G10 flow movie ship')
+            continue
         if kept:
             u.refuse_item(target, f'flow movie {sb}: earlier file(s) {kept} in {ship} not overwritten (cp -n, v9:346) - '
                                   f'move them aside or pass --fresh', gate='N-G10 flow movie ship')

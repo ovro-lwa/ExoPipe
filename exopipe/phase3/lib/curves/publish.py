@@ -14,7 +14,6 @@ needs --supersede.
 import csv
 import hashlib
 import os
-import shutil
 import time
 
 
@@ -31,12 +30,13 @@ def same_bytes(a, b):
 
 
 def _atomic_copy(src, dst):
-    d = os.path.dirname(os.path.abspath(dst))
-    os.makedirs(d, exist_ok=True)
-    tmp = os.path.join(d, f'.{os.path.basename(dst)}.tmp.{os.getpid()}')
-    shutil.copyfile(src, tmp)
+    """core/placement.copy: the table read once into a temporary file beside ``dst``, checked against the bytes read (size,
+    md5; a short read refused - placement.CopyNotVerified, nothing placed), then placed with the product's group and ACL
+    (the replaced table's, or the directory's rule). A killed earlier copy's temporary file is swept first."""
     from exopipe.phase3.core import placement
-    placement.replace(tmp, dst, drop=True)      # the product's group and ACL (core/placement.py)
+    os.makedirs(os.path.dirname(os.path.abspath(dst)), exist_ok=True)
+    placement.sweep([dst])
+    placement.copy(src, dst)
 
 
 def _supersede(dst, out_root, tag, cell, reason):

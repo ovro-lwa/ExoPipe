@@ -532,8 +532,9 @@ def admit_stage(cell, args, run, out, ran_now):
     against the installed master in native units (the admission reference), the V night as the build's V loop aligns it,
     coadd.measure_scale2 against the same master, coadd.subtract_night with the guard median, each product baked with
     shflux.bake (the pinned tables' factor = the installed one, checked), the epoch products stamped as the archive
-    publish stamps a member's (coadd.epoch_standard_header), written to <cell>/subtracted/ with ADMITTED cards, and each
-    night's row appended to coadd_final/admissions.csv as soon as its outcome is final.
+    publish stamps a member's (coadd.epoch_standard_header), written to <cell>/subtracted/ with ADMITTED cards (the night's
+    products placed together, core/placement.atomic_many: a refusal refuses the night by name, gate admit.placement, with no
+    row), and each night's row appended to coadd_final/admissions.csv as soon as its outcome is final.
     Refuses before any night: a production tree before cutover; another admit run on the cell (its lock); the population
     gate; no done admit-prep / flow admit record (admit_inputs); admit-prep's inputs changed since it ran (prep_changed); a
     master-dewarped cell (DECISIONS_PENDING item 7); no guard median (item 10); no pinned flux scale or one that is not the
@@ -765,20 +766,27 @@ def admit_stage(cell, args, run, out, ran_now):
                         n_ref += 1
                         decided.append(d)
                         continue
-                    parts = {}
-                    for k, (dest, dd, hd) in baked.items():
-                        tmp = f'{dest}.part{os.getpid()}'
-                        fits.writeto(tmp, dd, hd)
-                        if k[1] == 'epoch':                            # the members' epoch stamp (the archive publish's)
-                            co.epoch_standard_header(tmp, fl, k[0], lst)
-                        parts[k] = tmp
-                    for k, tmp in parts.items():
-                        os.replace(tmp, dests[k])
+                    # the night's products placed together (core/placement.atomic_many: a new product takes the
+                    # directory's rule - an earlier one was moved aside or refused above). A placement refusal places none
+                    # of them (a failed later rename leaves the earlier ones live, and the reason names them) and refuses
+                    # the night by name with no admissions.csv row: the next run admits it again (ADMITTED products without
+                    # a row are moved aside first). A killed earlier write's temporary files go first
+                    placement.sweep([dests[k] for k in baked])
+                    try:
+                        with placement.atomic_many([dests[k] for k in baked]) as tmps:
+                            for k, (dest, dd, hd) in baked.items():
+                                fits.writeto(tmps[dest], dd, hd)
+                                if k[1] == 'epoch':                    # the members' epoch stamp (the archive publish's)
+                                    co.epoch_standard_header(tmps[dest], fl, k[0], lst)
+                    except placement.PlacementRefusal as e:
+                        refuse_night(f'its products were not placed ({e}) - no admissions.csv row: admitted again at the '
+                                     f'next run', 'admit.placement')
+                        continue
                     rowd.update(verdict='admitted')
                     write_admissions(cd, [rowd])                       # the row as soon as the products are in place
                     n_adm += 1
                     decided.append(d)
-                    for k in parts:
+                    for k in baked:
                         u.add_output(dests[k], 'admitted_epoch', source=(img if k[0] == 'I' else v_img))
             u.set_admitted(sorted(decided))     # a night refused as an item (no row) is not finished: --resume retries it
             if n_adm or n_ref:
