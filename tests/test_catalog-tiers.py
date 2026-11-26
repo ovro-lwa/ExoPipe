@@ -756,7 +756,8 @@ open(os.path.join(out, "ghost_removed.csv"), "w").write("cand_id\n")
 import gzip
 with gzip.open(os.path.join(out, "detection_record.csv.gz"), "wt") as f:      # read by stage tierserve (cutover row 71)
     f.write("cand_id,cell,subband,stokes,tier,ts,instant_key,gate_neg_lobe,gate_asymmetry,neg_member,asym_member,"
-            "first_removed_by,served\nc1,%s,18MHz,I,10s,t1,%s 10s t1,,,,,,1\n" % (cells[0], cells[0]))
+            "first_removed_by,served,src_index,src_outcome\nc1,%s,18MHz,I,10s,t1,%s 10s t1,,,,,,1,0,served\n"
+            % (cells[0], cells[0]))
 # the veto records the chain writes since clv15 99fe3ea (content test snapshot_run.per_instant): none removed here
 open(os.path.join(out, "vetoed_sources.csv"), "w").write("veto,cell,subband,stokes,tier,ts,ra_deg,dec_deg,snr,n_members,"
                                                           "n_instants,bands,routes,pos_err_arcsec,detail\n")
@@ -773,6 +774,8 @@ print("chain done")
     'clv15/phase3_snapshot_tierserve.py': r'''
 import csv, json, os, sys
 SAMPLES = ["Hot_Warm_Jupiters.csv", "10pc.csv", "25pc.csv", "LPTs.csv", "flare_ucd.csv", "sydney_stars.csv", "pulsars_atnf.csv"]
+TIERS = ("10s", "1min")
+OUTCOMES = ("served", "no-route", "not-designated", "fit-pending")
 a = sys.argv[1:]
 def opt(k):
     return a[a.index(k) + 1]
@@ -787,8 +790,8 @@ cols = ["src_index", "identity_jname", "chain_outcome", "tier", "n_members_tier"
         "best_snr_tier", "best_stokes_tier", "best_verdict_tier", "singleton_floor_tier", "n_inst_tier", "multi_integration_tier",
         "routes_tier", "qualifies", "fail_reason", "tier_holds_source_best", "snr_at_floor_rounding", "add_without_products",
         "identity_qualifies_tiers", "n_members_10s", "best_snr_10s", "n_members_1min", "best_snr_1min", "identity_note"]
-vals = ["0", "J0000+0000", "served", "10s", "2", "0", "c1", "9.0", "I", "ok", "7.0", "2", "1", "Red", "1", "", "1", "0", "0",
-        "10s", "2", "9.0", "0", "", ""]
+vals = ["0", "J0000+0000", "served", "10s", "1", "0", "c1", "9.0", "I", "ok", "7.0", "1", "0", "Red", "1", "", "1", "0", "0",
+        "10s", "1", "9.0", "0", "", ""]
 with open(out, "w", newline="") as f:
     w = csv.writer(f)
     w.writerow(cols)

@@ -608,7 +608,7 @@ class catalog_snapshot(_Section):
                       'REJECT_NO_SOURCE_FIT', 'REJECT_UNCONSTRAINED_FIT', 'CLUSTER', 'GATE3D', 'GATE3D_NTHR', 'LC_CACHE_DEFAULT',
                       'VETO_PROCS_DEFAULT', 'REFASTRO_SHARDS_DEFAULT', 'REF_MAX_SEP_DEG', 'TEST_GATE3D_PCT', 'TEST_MEMBER_ORDER',
                       'TEST_GHOST_LEAK_DEG', 'PRE_BUNDLE_TIE_MODEL', 'CARD2', 'RESTORED_BY', 'RESTORE_TOL_BEAMS',
-                      'RESTORE_MARKER_KEY', 'SAMPLES')
+                      'RESTORE_MARKER_KEY', 'SAMPLES', 'TIERSERVE_TIERS', 'TIERSERVE_OUTCOMES')
     # ---- driver (snapshot_rechain_batch.sh). Shared roots: paths.SNAPSHOT_FLEET_OUT (the chain's --proto-root,
     # snapshot_rechain_batch.sh:280), paths.CLV15_ROOT (--samples-dir, phase3_snapshot_chain.py:3329: of the prefit and tie passes;
     # the full chain reads the run's copies of SAMPLES below, --samples-dir RUN/sample_catalogs), paths.SNAPSHOT_REVIEW_ROOT
@@ -635,6 +635,11 @@ class catalog_snapshot(_Section):
     SAMPLES = (('Hot_Warm_Jupiters', 'Hot_Warm_Jupiters.csv'), ('10pc', '10pc.csv'), ('25pc', '25pc.csv'), ('LPTs', 'LPTs.csv'),
                ('flare_ucd', 'flare_ucd.csv'), ('sydney_stars', 'sydney_stars.csv'), ('pulsars_atnf', 'pulsars_atnf.csv'))
                                                           # phase3_snapshot_chain.py:485-488 SAMPLES [lit]
+    # THE PER-TIER SERVING TABLE (cutover row 71): the tiers phase3_snapshot_tierserve.py writes rows for and the chain outcomes
+    # it reads, as the content test served_tiers (lib/catalog/tests_snapshot.py) checks the table; the stage tierserve refuses
+    # while they differ from the module's
+    TIERSERVE_TIERS = ('10s', '1min')                     # phase3_snapshot_tierserve.py:46 TIERS [lit]
+    TIERSERVE_OUTCOMES = ('served', 'no-route', 'not-designated', 'fit-pending')   # phase3_snapshot_tierserve.py:47 OUTCOMES [lit]
     LIMIT_H = 1000                                        # h runaway guard (Gregg: no time stop); snapshot_rechain_batch.sh:68 [step]
     FAST_FREE_MIN_GB = 400                                # GB free on the chain host's /fast; snapshot_rechain_batch.sh:170 [step]
     PRE_BUNDLE_TIE_MODEL = 'stat0.42floor5_refh10'        # refused tie-cache model; snapshot_rechain_batch.sh:65 [step]

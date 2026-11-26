@@ -283,13 +283,15 @@ def last_line(text, pattern):
     return hits[-1] if hits else ''
 
 
-def call(ctx, s, target, args, python='default', env=None, log=None, cwd=None, timeout=None, nice=None):
+def call(ctx, s, target, args, python='default', env=None, log=None, cwd=None, timeout=None, nice=None, tail_lines=40):
     """core/legacy.run of one in-place script (the ONE child runner, refactor chat decision 1); the call is recorded on the
     stage's unit. ``timeout`` (s): the call's limit (production's `timeout`), none by default; ``nice``: the child's niceness
-    increment (production's `nice -n`), none by default. Returns the LegacyResult."""
+    increment (production's `nice -n`), none by default; ``tail_lines``: the lines of the log's end returned in the result's
+    tail (legacy.run's). Returns the LegacyResult."""
     from exopipe.phase3.core import legacy
     os.makedirs(os.path.dirname(log), exist_ok=True)
-    return legacy.run(target, args, python=python, env=env or {}, cwd=cwd, log=log, unit=s.u, timeout=timeout, nice=nice)
+    return legacy.run(target, args, python=python, env=env or {}, cwd=cwd, log=log, unit=s.u, timeout=timeout, nice=nice,
+                      tail_lines=tail_lines)
 
 
 def need_ok(res, what, pattern=None, say=None):

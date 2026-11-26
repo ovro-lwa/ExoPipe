@@ -7,7 +7,10 @@ the environment variable TSTUB_MODE) with --samples-dir = the run's recorded cop
 their record before the call and again after it. The table is written to a temporary name beside RUN/served_tiers.csv and placed
 only after the call's self-check line, the row count it reported and the content test; any refusal leaves no table and no
 temporary file, and an existing table is kept. No record, a copy with another md5, the chain's outputs missing: refused before
-the call (the stub is never run). Nothing falls back to the live catalogs.
+the call (the stub is never run). Nothing falls back to the live catalogs. The content test compares the table with the chain's
+record beside it by tierserve's own definition (a served source with no kept member has no row); its tiers and outcomes are
+bound to the module's TIERS / OUTCOMES ([lit]). The call's log is replaced by each call (production's `>`), and the recorded
+summary is exactly the lines production's grep keeps.
 
 Run: python tests/test_served_tiers.py [test names]   (exit 0 = all passed, 1 = a failure, 2 = imports missing)
 """
@@ -48,15 +51,37 @@ COLS = ['src_index', 'identity_jname', 'chain_outcome', 'tier', 'n_members_tier'
 
 
 def good_rows():
-    """Three rows of a consistent table: source 0 served (10s qualifies, 1min does not), source 1 not designated (10s, does not
-    qualify) - one served source, as the chain summary of the World says."""
-    def row(src, jn, outcome, tier, nm, routes, q, reason, qt, n10, n1):
-        return dict(zip(COLS, [src, jn, outcome, tier, nm, '0', 'c%s%s' % (src, tier), '9.5', 'I', 'ok', '7.0', nm, '1',
+    """Three rows of a consistent table, the rows tierserve gives for RECORD: source 0 served (10s qualifies, 1min does not;
+    one 1min member stripped by the reflection-band floor), source 1 not designated (10s, does not qualify); source 2, served
+    by the chain with no kept member, has no row (production deletes it)."""
+    def row(src, jn, outcome, tier, nm, ns, routes, q, reason, qt, n10, n1):
+        return dict(zip(COLS, [src, jn, outcome, tier, nm, ns, 'c%s%s' % (src, tier), '9.5', 'I', 'ok', '7.0', nm, '1',
                                routes, q, reason, '1', '0', str(int(q == '1' and outcome != 'served')), qt, n10, '9.5', n1,
                                '9.5' if n1 != '0' else '', '']))
-    return [row('0', 'J0101+0101', 'served', '10s', '3', 'Red;Blue', '1', '', '10s', '3', '2'),
-            row('0', 'J0101+0101', 'served', '1min', '2', '', '0', 'singleton: snr 6.1 < 7.0', '10s', '3', '2'),
-            row('1', 'J0202+0202', 'not-designated', '10s', '1', '', '0', 'singleton: snr 5.0 < 7.0', '', '1', '0')]
+    return [row('0', 'J0101+0101', 'served', '10s', '3', '0', 'Red;Blue', '1', '', '10s', '3', '2'),
+            row('0', 'J0101+0101', 'served', '1min', '2', '1', '', '0', 'singleton: snr 6.1 < 7.0', '10s', '3', '2'),
+            row('1', 'J0202+0202', 'not-designated', '10s', '1', '0', '', '0', 'singleton: snr 5.0 < 7.0', '', '1', '0')]
+
+
+# the chain's record (detection_record.csv.gz) whose rows by tierserve's definition are good_rows(): (cand_id, src_index,
+# src_outcome, served, first_removed_by, tier)
+RECORD_COLS = ['cand_id', 'src_index', 'src_outcome', 'served', 'first_removed_by', 'tier']
+RECORD = [['c1', '0', 'served', '1', '', '10s'], ['c2', '0', 'served', '1', '', '10s'], ['c3', '0', 'served', '1', '', '10s'],
+          ['c4', '0', 'served', '1', '', '1min'], ['c5', '0', 'served', '1', '', '1min'],
+          ['c6', '0', 'served', '0', 'refl-floor', '1min'],          # stripped by the floor: n_stripped_tier
+          ['c7', '0', 'served', '0', 'ghost', '10s'],               # neither kept nor stripped
+          ['c8', '1', 'not-designated', '0', 'not-designated', '10s'],     # kept: removed by its own outcome
+          ['c9', '2', 'served', '0', 'refl-floor', '10s'],          # a served source with no kept member: no row
+          ['c10', '2', 'served', '0', 'vhf', '1min'],
+          ['c11', '', '', '0', 'refl-floor', '10s'],                # no source
+          ['c12', '3', 'merged', '1', '', '10s']]                   # an outcome tierserve does not read
+
+
+def write_record(run, rows=None):
+    with gzip.open(os.path.join(run, 'detection_record.csv.gz'), 'wt', newline='') as f:
+        w = csv.writer(f)
+        w.writerow(RECORD_COLS)
+        w.writerows(RECORD if rows is None else rows)
 
 
 def write_table(path, rows, cols=COLS):
@@ -69,6 +94,8 @@ def write_table(path, rows, cols=COLS):
 
 STUB = r'''
 import csv, json, os, sys
+TIERS = ("10s", "1min")
+OUTCOMES = ("served", "no-route", "not-designated", "fit-pending")
 mode = os.environ.get("TSTUB_MODE", "ok")
 a = sys.argv[1:]
 def opt(k):
@@ -97,15 +124,28 @@ if mode == "refuse":                          # production: sys.exit("REFUSED: .
     sys.exit("REFUSED: the reconstruction does not reproduce the chain on 1 served sources")
 if mode != "noselfcheck":
     print("self-check: 1 of 1 served sources reproduced (mi_tiers, catalog, routes, best member)")
-print("served identities 1: qualify in 10s only 1, 1min only 0, both 0, NEITHER 0")
+for ln in REPORT:                              # production's report(): the summary keeps 4 of these lines
+    print(ln)
 print("wrote %s (%d rows)" % (out, len(rows) + (2 if mode == "rowcount" else 0)))
 '''
+REPORT = ["served identities 1: qualify in 10s only 1, 1min only 0, both 0, NEITHER 0",
+          "  tier 10s: 1 served identities hold members, 1 qualify, 0 do not",
+          "  tier 1min: 1 served identities hold members, 0 qualify, 1 do not",
+          "served identities qualifying in NO tier (dropped from every tier page; identity_note): 0 {}",
+          "CANNOT ADD (qualify in a tier, not served by the chain, no review products): 0 sources ()",
+          "(source, tier) rows whose decisive comparison is at a floor within the record's 3-decimal SNR rounding and not the "
+          "chain's own: 0",
+          "  not-designated  10s   qualifies=0 singleton        1"]
+STUB = STUB.replace('for ln in REPORT:', 'REPORT = %r\nfor ln in REPORT:' % REPORT)
+SELF_CHECK = 'self-check: 1 of 1 served sources reproduced (mi_tiers, catalog, routes, best member)'
+SUMMARY = [SELF_CHECK, REPORT[0], REPORT[3], REPORT[4]]      # snapshot_rechain_batch.sh:562 grep -hE keeps these
 
 
 class World(object):
-    """A live samples directory, a code tree holding the stub tierserve, and a chain run (chain_summary.json with n_served 1,
-    detection_record.csv.gz, the sample-catalog record of the chain). The work directory and the records lie outside the run,
-    so the run's listing shows exactly what the stage placed there."""
+    """A live samples directory, a code tree holding the stub tierserve (the site's clv15 root while the World lasts), and a
+    chain run (chain_summary.json with n_served 2 - source 2 served without a kept member - , detection_record.csv.gz =
+    RECORD, the sample-catalog record of the chain). The work directory and the records lie outside the run, so the run's
+    listing shows exactly what the stage placed there."""
 
     def __init__(self, record_samples=True):
         self.root = tempfile.mkdtemp(prefix='served_tiers_')
@@ -123,13 +163,14 @@ class World(object):
         with open(os.path.join(self.clv, P.TIERSERVE), 'w') as f:
             f.write(STUB)
         with open(os.path.join(self.run, 'chain_summary.json'), 'w') as f:
-            json.dump({'n_served': 1, 'cells': ['14h_2025-03-09']}, f)
-        with gzip.open(os.path.join(self.run, 'detection_record.csv.gz'), 'wt') as f:
-            f.write('cand_id,served,src_index\nc1,1,0\n')
+            json.dump({'n_served': 2, 'cells': ['14h_2025-03-09']}, f)
+        write_record(self.run)
         if record_samples:
             RS.write(self.run, self.src, NAMES, 'chain')
         self._py = dict(CFG.site.PYTHON)
         CFG.site.PYTHON['py36'] = sys.executable
+        self._roots = CFG.site.LEGACY_CODE_ROOTS        # the [lit] binding reads TIERS / OUTCOMES from the stub's tree
+        CFG.site.LEGACY_CODE_ROOTS = [self.clv] + [r for r in self._roots if not r.rstrip('/').endswith('/clv15')]
         self._env = {k: os.environ.get(k) for k in ('TSTUB_MODE', 'TSTUB_ROWS', 'TSTUB_COLS', 'TSTUB_CALLS')}
         self.mode('ok')
 
@@ -143,6 +184,7 @@ class World(object):
     def __exit__(self, *a):
         CFG.site.PYTHON.clear()
         CFG.site.PYTHON.update(self._py)
+        CFG.site.LEGACY_CODE_ROOTS = self._roots
         for k, v in self._env.items():
             if v is None:
                 os.environ.pop(k, None)
@@ -183,7 +225,11 @@ class World(object):
 
     @property
     def table(self):
-        return os.path.join(self.run, P.SERVED_TIERS)
+        return os.path.join(self.run, RS.SERVED_TIERS)
+
+    @property
+    def log(self):
+        return os.path.join(self.work, P.TIERSERVE_LOG)
 
 
 def md5(p):
@@ -241,7 +287,8 @@ def test_success_places_the_table():
         m = u.meta['tierserve']
         assert m['rows'] == 3 and m['md5'] == md5(w.table) and m['replaced_md5'] is None and m['samples_how'] == 'chain', m
         assert m['samples'] == {n: md5(os.path.join(w.src, n)) for n in NAMES}, m
-        assert any(x.startswith('self-check: 1 of 1') for x in m['report']), m['report']
+        assert m['report'] == SUMMARY and m['log'] == w.log, m      # exactly production's grep's lines
+        assert u.meta['legacy_calls'][0]['log'] == w.log, u.meta['legacy_calls']
         assert RS.record_path(w.run) in u.inputs and os.path.join(RS.copy_dir(w.run), 'LPTs.csv') in u.inputs
         argv = u.meta['legacy_calls'][0]['argv']
         assert argv[argv.index('--samples-dir') + 1] == RS.copy_dir(w.run), argv
@@ -340,23 +387,63 @@ def test_refuses_a_table_failing_the_content_test():
         assert_refused_untouched(w, u, before, 'content test', 1)
 
 
-def _content(rows, n_served=1, cols=COLS, summary=True):
+def _content(rows, cols=COLS, record=None, record_cols=None):
+    """The content test on ``rows`` with the chain's record beside the table (RECORD by default; False: none)."""
     d = tempfile.mkdtemp(prefix='served_tiers_ct_')
     try:
-        p = os.path.join(d, 'served_tiers.csv')
+        p = os.path.join(d, RS.SERVED_TIERS)
         write_table(p, rows, cols)
-        if summary:
-            with open(os.path.join(d, 'chain_summary.json'), 'w') as f:
-                json.dump({'n_served': n_served}, f)
+        if record is not False:
+            write_record(d, record)
+            if record_cols:
+                with gzip.open(os.path.join(d, 'detection_record.csv.gz'), 'wt', newline='') as f:
+                    csv.writer(f).writerow(record_cols)
         return TP.served_tiers_rows(p)
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
 
 def test_content_test_passes_a_consistent_table():
+    """The table equals the record's rows by tierserve's definition - source 2, served by the chain with no kept member, has
+    no row and is accepted (the chain summary's n_served is not compared: production deletes such a source)."""
     ok, n, detail = _content(good_rows())
     assert ok and n == 3, detail
-    assert '10s 1 of 1, 1min 0 of 1' in detail, detail
+    assert '10s 1 of 1, 1min 0 of 1' in detail and '3 (source, tier) rows of 2 sources with a kept member (sources with ' \
+        'no kept member, no row: 1), equal to the table' in detail, detail
+
+
+def test_content_test_rows_by_the_record():
+    """served_tiers_expected is production's load + evaluate definition; a served source with no kept member is accepted
+    without a row, while a (source, tier) of the record without a row, a row the record does not give, and a row whose
+    outcome or member counts differ are refused, each named."""
+    d = tempfile.mkdtemp(prefix='served_tiers_exp_')
+    try:
+        write_record(d)
+        exp, n_with, n_none = TP.served_tiers_expected(os.path.join(d, 'detection_record.csv.gz'), ('10s', '1min'),
+                                                       ('served', 'no-route', 'not-designated', 'fit-pending'))
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+    assert exp == {('0', '10s'): ('served', '3', '0'), ('0', '1min'): ('served', '2', '1'),
+                   ('1', '10s'): ('not-designated', '1', '0')} and (n_with, n_none) == (2, 1), (exp, n_with, n_none)
+    # a served source with only stripped members, and one whose kept members lie in no written tier: no row, accepted
+    more = RECORD + [['c13', '4', 'served', '0', 'refl-floor', '1min'], ['c14', '5', 'served', '1', '', '10min']]
+    ok, _n, detail = _content(good_rows(), record=more)
+    assert ok, detail
+    # a missing row: the record gives (6, 10s), the table lacks it
+    ok, _n, detail = _content(good_rows(), record=RECORD + [['c15', '6', 'no-route', '0', 'no-route', '10s']])
+    assert not ok and "of the record without a row (e.g. [('6', '10s')])" in detail, detail
+    # an extra row: the record no longer gives source 1
+    ok, _n, detail = _content(good_rows(), record=[r for r in RECORD if r[1] != '1'])
+    assert not ok and "rows the record does not give (e.g. [('1', '10s')])" in detail, detail
+    # member counts: a fourth kept 10s member of source 0; a stripped one that is not
+    ok, _n, detail = _content(good_rows(), record=RECORD + [['c16', '0', 'served', '1', '', '10s']])
+    assert not ok and "0 10s: table ('served', '3', '0'), record ('served', '4', '0')" in detail, detail
+    ok, _n, detail = _content(good_rows(), record=[r if r[0] != 'c6' else r[:4] + ['ghost', '1min'] for r in RECORD])
+    assert not ok and "0 1min: table ('served', '2', '1'), record ('served', '2', '0')" in detail, detail
+    # the chain outcome of a source
+    ok, _n, detail = _content(good_rows(), record=[r if r[1] != '1' else [r[0], '1', 'no-route', '0', 'no-route', '10s']
+                                                   for r in RECORD])
+    assert not ok and "1 10s: table ('not-designated', '1', '0'), record ('no-route', '1', '0')" in detail, detail
 
 
 def test_content_test_failures():
@@ -382,9 +469,10 @@ def test_content_test_failures():
         'n_members per tier': (broken(set_(0, n_members_1min='5')), {}),
         'no identity on a served source': (broken(lambda rows: [r.update(identity_jname='') for r in rows[:2]]), {}),
         'one identity on two served sources': (
-            broken(lambda rows: rows[2].update(chain_outcome='served', identity_jname='J0101+0101')), dict(n_served=2)),
-        'n_served': (good_rows(), dict(n_served=2)),
-        'no chain summary': (good_rows(), dict(summary=False)),
+            broken(lambda rows: rows[2].update(chain_outcome='served', identity_jname='J0101+0101')), {}),
+        'no record beside the table': (good_rows(), dict(record=False)),
+        'a record without src_outcome': (good_rows(), dict(record_cols=['cand_id', 'src_index', 'served',
+                                                                        'first_removed_by', 'tier'])),
         'no rows': ([], {}),
     }
     for name, (rows, kw) in cases.items():
@@ -392,17 +480,103 @@ def test_content_test_failures():
         assert not ok, (name, detail)
 
 
-def test_production_wrapper_of_the_last_call():
-    """_last_call_lines reads only the last call's section of a log that holds several calls."""
-    d = tempfile.mkdtemp(prefix='served_tiers_log_')
+def test_log_replaced_per_call():
+    """WORK/tierserve.log holds the last call's output alone (production's `>`, placed through core/placement: no temporary
+    file left), also when that call refused; the summary is read from the call's own output, exactly the lines production's
+    grep keeps."""
+    with World() as w:
+        u, _plan = w.stage()
+        assert u.status == 'done', u.reason
+        first = open(w.log).read()
+        u, _plan = w.stage()
+        assert u.status == 'done', u.reason
+        text = open(w.log).read()
+        assert text.count('===== ') == 1 and text.count(SELF_CHECK) == 1 and text != first, text
+        assert u.meta['tierserve']['report'] == SUMMARY, u.meta['tierserve']['report']
+        assert [ln for ln in text.splitlines() if P.TIERSERVE_SUMMARY.search(ln)] == SUMMARY
+        w.mode('refuse')
+        u, _plan = w.stage()
+        assert u.status == 'refused', u.reason
+        text = open(w.log).read()
+        assert text.count('===== ') == 1 and 'REFUSED: the reconstruction' in text and SELF_CHECK not in text, text
+        assert sorted(os.listdir(w.work)) == [P.TIERSERVE_LOG], os.listdir(w.work)
+
+
+def test_binding_of_tiers_and_outcomes():
+    """catalog_snapshot.TIERSERVE_TIERS / _OUTCOMES (the content test's) are bound [lit] to tierserve's TIERS / OUTCOMES:
+    in tier_snapshot.LIT and PROTECTED_KEYS, equal on the stub; a module whose TIERS differ, or that lacks OUTCOMES, is
+    refused by the stage before the call (nothing written, the stub never run)."""
+    for k in P.TIERSERVE_LIT:
+        assert P.LIT[k] == ('clv15', P.TIERSERVE, {'catalog_snapshot.TIERSERVE_TIERS': 'TIERS',
+                                                   'catalog_snapshot.TIERSERVE_OUTCOMES': 'OUTCOMES'}[k]), P.LIT[k]
+        assert k.split('.')[1] in CFG.catalog_snapshot.PROTECTED_KEYS, k
+    for old, new, key, status in (('TIERS = ("10s", "1min")', 'TIERS = ("10s", "1min", "10min")', 'TIERSERVE_TIERS', 'MISMATCH'),
+                                  ('OUTCOMES = (', 'OUTCOMES_RENAMED = (', 'TIERSERVE_OUTCOMES', 'unbound')):
+        with World() as w:
+            rows = tier_sublst.binding_check({k: P.LIT[k] for k in P.TIERSERVE_LIT})
+            assert [r[1] for r in rows] == ['ok', 'ok'], rows
+            stub = os.path.join(w.clv, P.TIERSERVE)
+            txt = open(stub).read()
+            assert txt.count(old) == 1
+            open(stub, 'w').write(txt.replace(old, new))
+            before = w.listing()
+            u, _plan = w.stage()
+            assert_refused_untouched(w, u, before, 'catalog_snapshot.%s %s' % (key, status), 0)
+            assert not os.path.exists(w.table)
+
+
+def test_active_list_kept_until_tierserve_ran():
+    """The production active list (BATCH_DIR/rechain_active/<NAME>.cells) is removed when the chain's LAST stage, tierserve,
+    ran in the pass (or a unit did not finish): `--until test` keeps it, `--from tierserve` removes it. The stage functions
+    are stand-ins that write one output each."""
+    root = tempfile.mkdtemp(prefix='served_tiers_active_')
+    prod, batch, name = os.path.join(root, 'prodroot'), os.path.join(root, 'pbatch'), 'Run_SNAPZ'
+    os.makedirs(prod)
+    cf = os.path.join(root, 'cells.txt')
+    with open(cf, 'w') as f:
+        f.write('14h_2025-03-09\n')
+
+    def stand_in(stage):
+        def f(ctx, s, plan):
+            p = os.path.join(ctx.RUN, 'stand_in_%s.txt' % stage)
+            os.makedirs(ctx.RUN, exist_ok=True)
+            with open(p, 'w') as g:
+                g.write(stage + '\n')
+            s.u.add_output(p, 'stand_in', test=False)
+        return f
+    c, paths = CFG.catalog_snapshot, CFG.paths
+    saved = (paths.PRODUCTION_ROOTS, c.BATCH_DIR, paths.OPS_ROOT, dict(CFG.site.PYTHON), dict(P.FUNCS),
+             tier_sublst.check_from, CFG.site.LEGACY_CODE_ROOTS)
     try:
-        p = os.path.join(d, 'tierserve.log')
-        with open(p, 'w') as f:
-            f.write('\n===== t0 py a\nself-check: 1 of 1\nwrote x (3 rows)\n\n===== t1 py b\nREFUSED: no\n')
-        assert P._last_call_lines(p) == ['REFUSED: no']
-        assert P._last_call_lines(os.path.join(d, 'none.log')) == []
+        CFG.site.LEGACY_CODE_ROOTS = [os.path.join(root, 'code', 'clv15'), os.path.join(root, 'code', 'exopipe_ops')]
+        paths.PRODUCTION_ROOTS = tuple(saved[0]) + (prod,)
+        c.BATCH_DIR, paths.OPS_ROOT = batch, os.path.join(root, 'ops')       # the driver log of a production run: here
+        CFG.site.PYTHON['py36'] = sys.executable
+        P.FUNCS.update({st: stand_in(st) for st in P.STAGES})
+        tier_sublst.check_from = lambda *a, **k: []          # --from: the earlier stages' records are not the point here
+        active = os.path.join(batch, 'rechain_active', '%s.cells' % name)
+        got = {}
+        for frm, until in ((None, 'test'), ('tierserve', None), (None, 'chain')):
+            os.makedirs(os.path.dirname(active), exist_ok=True)
+            shutil.copy(cf, active)
+            args = types.SimpleNamespace(run_label=name, cells='@' + cf, snap_analysis=None, stages=None, from_stage=frm,
+                                         until_stage=until, snap_item=None)
+            rr = record.Run('catalog', ['test_served_tiers'], os.path.join(prod, name), CFG)
+            P.run(args, rr)
+            assert [u.status for u in rr.units] == ['done'] * len(rr.units) and rr.units, [(u.name, u.status, u.reason)
+                                                                                           for u in rr.units]
+            got[(frm, until)] = (os.path.exists(active), rr.units[-1].meta['stage'])
+        assert got == {(None, 'test'): (True, 'test'), ('tierserve', None): (False, 'tierserve'),
+                       (None, 'chain'): (True, 'chain')}, got
     finally:
-        shutil.rmtree(d, ignore_errors=True)
+        (paths.PRODUCTION_ROOTS, c.BATCH_DIR, paths.OPS_ROOT) = saved[:3]
+        CFG.site.PYTHON.clear()
+        CFG.site.PYTHON.update(saved[3])
+        P.FUNCS.clear()
+        P.FUNCS.update(saved[4])
+        tier_sublst.check_from = saved[5]
+        CFG.site.LEGACY_CODE_ROOTS = saved[6]
+        shutil.rmtree(root, ignore_errors=True)
 
 
 def main(argv):

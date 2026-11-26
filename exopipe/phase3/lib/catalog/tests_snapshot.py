@@ -20,6 +20,7 @@ import re
 import time
 
 from exopipe.phase3.core.validate import content_test
+from exopipe.phase3.lib.catalog import run_samples as RS
 
 csv.field_size_limit(10 ** 9)
 
@@ -117,7 +118,7 @@ def run_checks(run):
     # that QUALIFIES IN NO TIER (served_tiers.csv: chain_outcome served, qualifies 0 in every tier row - its seed is in the other
     # tier) is dropped from the per-Stokes views and the tier pages, recorded there; it is the only union row a view may lack
     notier = set()
-    stp = os.path.join(run, 'served_tiers.csv')
+    stp = os.path.join(run, RS.SERVED_TIERS)
     if os.path.exists(stp):
         q = {}
         for r in csv.DictReader(open(stp, newline='')):
@@ -545,25 +546,69 @@ def restore_wave_rows(path, **ctx):
         f'({dict(sorted(by.items()))}); restored {n_tag} ({served_tag} served); status {str(j.get("status"))[:200]}')
 
 
-# served_tiers.csv of a chain run (clv15 phase3_snapshot_tierserve.evaluate's rows, in its column order; TIERS, OUTCOMES)
+# served_tiers.csv of a chain run (clv15 phase3_snapshot_tierserve.evaluate's rows, in its column order; its TIERS and OUTCOMES
+# are config catalog_snapshot.TIERSERVE_TIERS / TIERSERVE_OUTCOMES, bound [lit] to the module: tier_snapshot.LIT)
 SERVED_TIERS_COLUMNS = ('src_index', 'identity_jname', 'chain_outcome', 'tier', 'n_members_tier', 'n_stripped_tier',
                         'best_det_uid_tier', 'best_snr_tier', 'best_stokes_tier', 'best_verdict_tier', 'singleton_floor_tier',
                         'n_inst_tier', 'multi_integration_tier', 'routes_tier', 'qualifies', 'fail_reason',
                         'tier_holds_source_best', 'snr_at_floor_rounding', 'add_without_products', 'identity_qualifies_tiers',
                         'n_members_10s', 'best_snr_10s', 'n_members_1min', 'best_snr_1min', 'identity_note')
-SERVED_TIERS_TIERS = ('10s', '1min')
-SERVED_TIERS_OUTCOMES = ('served', 'no-route', 'not-designated', 'fit-pending')
+SERVED_TIERS_RECORD = 'detection_record.csv.gz'          # the chain's record beside the table: what tierserve evaluates
+SERVED_TIERS_RECORD_COLS = ('src_index', 'src_outcome', 'served', 'first_removed_by', 'tier')
+
+
+def served_tiers_expected(record, tiers, outcomes):
+    """The (source, tier) rows clv15 phase3_snapshot_tierserve writes from a chain's record, by its own definition (load +
+    evaluate): the rows with a source index and a chain outcome in OUTCOMES; a member is KEPT when (outcome 'served') the chain
+    served it, or (any other outcome) the chain removed it by that outcome, and STRIPPED when not kept and removed by the
+    reflection-band floor ('refl-floor'); a source with no kept member is deleted (`del src[k]`); every other source has one
+    row per tier of TIERS holding a kept or stripped member. Returns ({(source, tier): (chain outcome = the source's first
+    row's, kept members in the tier, stripped members in the tier)}, sources with a kept member, sources deleted for none)."""
+    import gzip
+    src = collections.OrderedDict()                  # (this module raises the csv field limit, as the chain does)
+    with gzip.open(record, 'rt', newline='') as f:
+        rd = csv.reader(f)
+        head = next(rd, None) or []
+        miss = [c for c in SERVED_TIERS_RECORD_COLS if c not in head]
+        if miss:
+            raise ValueError('%s lacks the column(s) %s that tierserve reads' % (record, ', '.join(miss)))
+        ik, io_, isv, ifr, it = (head.index(c) for c in SERVED_TIERS_RECORD_COLS)
+        for r in rd:
+            k = r[ik]
+            if k == '' or r[io_] not in outcomes:
+                continue
+            o = r[io_]
+            e = src.get(k)
+            if e is None:
+                e = src[k] = [o, 0, collections.Counter(), collections.Counter()]
+            if (r[isv] == '1') if o == 'served' else (r[ifr] == o):
+                e[1] += 1
+                e[2][r[it]] += 1
+            elif r[ifr] == 'refl-floor':
+                e[3][r[it]] += 1
+    exp = collections.OrderedDict()
+    for k, (o, n_kept, kept, stripped) in src.items():
+        if n_kept:
+            for t in tiers:
+                if kept[t] or stripped[t]:
+                    exp[(k, t)] = (o, str(kept[t]), str(stripped[t]))
+    n_with = sum(1 for e in src.values() if e[1])
+    return exp, n_with, len(src) - n_with
 
 
 @content_test('served_tiers')
 def served_tiers_rows(path, **ctx):
     """served_tiers.csv, the per-tier serving table of a chain run (clv15 phase3_snapshot_tierserve, the chain's stage
     tierserve, P-G27), on its content: production's columns in its order; at least one row; one row per (source, tier), the
-    tier 10s or 1min and the chain outcome one of production's four; qualifies 0 or 1, and 1 exactly when the tier has a route
-    and no failure reason; add_without_products 1 exactly when the tier qualifies a source the chain did not serve; one chain
-    outcome and identity per source, and every row's identity columns equal to its source's rows (the tiers it qualifies in, in
-    row order; members per tier); every served source has an identity and no identity is two served sources; the served sources
-    are as many as the chain served (n_served of the chain_summary.json beside the table)."""
+    tier one of tierserve's TIERS and the chain outcome one of its OUTCOMES; qualifies 0 or 1, and 1 exactly when the tier has a
+    route and no failure reason; add_without_products 1 exactly when the tier qualifies a source the chain did not serve; one
+    chain outcome and identity per source, and every row's identity columns equal to its source's rows (the tiers it qualifies
+    in, in row order; members per tier); every served source has an identity and no identity is two served sources; and the
+    rows are exactly those of the detection_record.csv.gz beside the table by tierserve's own definition
+    (served_tiers_expected: the same (source, tier) set, each with its source's chain outcome and the tier's kept and stripped
+    members) - a served source with no kept member has no row, as in production."""
+    c = _cfg().catalog_snapshot
+    tiers, outcomes = tuple(c.TIERSERVE_TIERS), tuple(c.TIERSERVE_OUTCOMES)
     with open(path, newline='') as f:
         rd = csv.DictReader(f)
         cols = tuple(rd.fieldnames or ())
@@ -576,7 +621,7 @@ def served_tiers_rows(path, **ctx):
     by = collections.OrderedDict()
     for r in rows:
         q = r['qualifies']
-        if r['tier'] not in SERVED_TIERS_TIERS or r['chain_outcome'] not in SERVED_TIERS_OUTCOMES or q not in ('0', '1'):
+        if r['tier'] not in tiers or r['chain_outcome'] not in outcomes or q not in ('0', '1'):
             bad['tier, chain outcome or qualifies not a value of tierserve'] += 1
             continue
         if (q == '1') != bool(r['routes_tier']) or (q == '1') != (r['fail_reason'] == ''):
@@ -586,8 +631,8 @@ def served_tiers_rows(path, **ctx):
         by.setdefault(r['src_index'], []).append(r)
     ident = collections.Counter()
     for k, rr in by.items():
-        tiers = [r['tier'] for r in rr]
-        if len(set(tiers)) != len(tiers):
+        tt = [r['tier'] for r in rr]
+        if len(set(tt)) != len(tt):
             bad['a (source, tier) on two rows'] += 1
         if len({(r['chain_outcome'], r['identity_jname']) for r in rr}) != 1:
             bad['a source with two chain outcomes or identities'] += 1
@@ -595,7 +640,7 @@ def served_tiers_rows(path, **ctx):
         q = ';'.join(r['tier'] for r in rr if r['qualifies'] == '1')
         for r in rr:
             if r['identity_qualifies_tiers'] != q or any(
-                    r['n_members_%s' % t] != (per[t]['n_members_tier'] if t in per else '0') for t in SERVED_TIERS_TIERS):
+                    r['n_members_%s' % t] != (per[t]['n_members_tier'] if t in per else '0') for t in tiers):
                 bad['identity columns differ from the source\'s rows'] += 1
                 break
         if rr[0]['chain_outcome'] == 'served':
@@ -606,22 +651,29 @@ def served_tiers_rows(path, **ctx):
     if two:
         bad['identities on two served sources'] += two
     n_srv = sum(ident.values())
-    sp = os.path.join(os.path.dirname(os.path.abspath(path)), 'chain_summary.json')
+    rec = os.path.join(os.path.dirname(os.path.abspath(path)), SERVED_TIERS_RECORD)
     try:
-        with open(sp) as f:
-            n_chain = json.load(f).get('n_served')
-    except (OSError, ValueError, AttributeError) as e:
-        return False, len(rows), 'no readable chain_summary.json beside it (%s): the served sources cannot be compared' % e
-    try:
-        same = n_chain is not None and int(n_chain) == n_srv
-    except (TypeError, ValueError):
-        same = False
-    if not same:
-        bad['served sources %d, the chain served %s' % (n_srv, n_chain)] += 1
+        exp, n_with, n_none = served_tiers_expected(rec, tiers, outcomes)
+    except (OSError, EOFError, ValueError, csv.Error) as e:
+        return False, len(rows), 'no readable %s beside it (%s): its rows cannot be compared with the chain\'s' % (
+            SERVED_TIERS_RECORD, e)
+    got = collections.OrderedDict(((r['src_index'], r['tier']), (r['chain_outcome'], r['n_members_tier'], r['n_stripped_tier']))
+                                  for r in rows)
+    miss = [k for k in exp if k not in got]
+    extra = [k for k in got if k not in exp]
+    diff = [k for k in exp if k in got and got[k] != exp[k]]
+    if miss:
+        bad['(source, tier) of the record without a row (e.g. %s)' % miss[:3]] = len(miss)
+    if extra:
+        bad['(source, tier) rows the record does not give (e.g. %s)' % extra[:3]] = len(extra)
+    if diff:
+        bad['rows whose (chain outcome, kept members, stripped members) differ from the record (e.g. %s)' % [
+            '%s %s: table %s, record %s' % (k[0], k[1], got[k], exp[k]) for k in diff[:3]]] = len(diff)
     qual = collections.Counter((r['tier'], r['qualifies']) for r in rows if r['chain_outcome'] == 'served')
-    return not bad, len(rows), ('%d rows, %d sources (%d served; the chain summary n_served %s); served (source, tier) '
-                                'qualifying: 10s %d of %d, 1min %d of %d%s' % (
-                                    len(rows), len(by), n_srv, n_chain,
-                                    qual[('10s', '1')], qual[('10s', '1')] + qual[('10s', '0')],
-                                    qual[('1min', '1')], qual[('1min', '1')] + qual[('1min', '0')],
+    return not bad, len(rows), ('%d rows, %d sources (%d served); the record: %d (source, tier) rows of %d sources with a kept '
+                                'member (sources with no kept member, no row: %d)%s; served (source, tier) qualifying: %s%s' % (
+                                    len(rows), len(by), n_srv, len(exp), n_with, n_none,
+                                    '' if (miss or extra or diff) else ', equal to the table',
+                                    ', '.join('%s %d of %d' % (t, qual[(t, '1')], qual[(t, '1')] + qual[(t, '0')])
+                                              for t in tiers),
                                     ('; FAIL ' + '; '.join('%s: %d' % kv for kv in bad.items())) if bad else ''))

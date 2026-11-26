@@ -42,17 +42,23 @@ Stages (--stages / --from / --until; default all, in this order):
   test       the run content test (snapshot_rechain_content_test.py, P-G19; class snapshot_run)
   tierserve  THE PER-TIER SERVING TABLE (cutover row 71; production snapshot_rechain_batch.sh:557-564 pertier_prepare, after the
              run content test and before the first pages pass - the same order here, so the content test reads the run as
-             production's did: its views check reads served_tiers.csv when present): clv15 phase3_snapshot_tierserve.py, production's method in place and unchanged, --run RUN
-             --samples-dir RUN/sample_catalogs - the run's recorded copies, verified against their record before the call and
-             again after it (the same md5s), never the live catalogs - writes RUN/served_tiers.csv (class served_tiers: chain
-             outcome and qualifies per (source, tier), the table the pages' per-tier views, the deep omission's G4b, the
-             combined view's G-V7 and the re-judging's reproduction check read). The table is written to a temporary name
-             beside it (core/placement.atomic) and placed only after the call's own self-check, the record's second
-             verification and the content test passed; any refusal leaves no table and no temporary file (an existing table is
-             kept). P-G27: no detection_record.csv.gz / chain_summary.json (the chain not run), no valid sample-catalog record
-             (missing, malformed, a copy missing or with another md5 or size, an unlisted file, names not the chain's SAMPLES),
-             the record changed during the call, tierserve refusing (its self-check: the reconstruction does not reproduce
-             the chain) or failing, a table with no rows or other than the rows it reported, the content test failing
+             production's did: its views check reads served_tiers.csv when present): clv15 phase3_snapshot_tierserve.py,
+             production's method in place and unchanged, --run RUN --samples-dir RUN/sample_catalogs - the run's recorded
+             copies, verified against their record before the call and again after it (the same md5s), never the live
+             catalogs - writes RUN/served_tiers.csv (run_samples.SERVED_TIERS; class served_tiers: chain outcome and qualifies
+             per (source, tier), the table the pages' per-tier views, the deep omission's G4b, the combined view's G-V7 and the
+             re-judging's reproduction check read). The table is written to a temporary name beside it (core/placement.atomic)
+             and placed only after the call's own self-check, the record's second verification and the content test (run once,
+             its results recorded on the placed table) passed; any refusal leaves no table and no temporary file (an existing
+             table is kept). The call's output is WORK/tierserve.log, replaced by each call (production's `>`, placed through
+             core/placement); the self-check and the summary are read from that call's own output, the summary being exactly
+             the lines production's grep keeps (TIERSERVE_SUMMARY). P-G27: catalog_snapshot.TIERSERVE_TIERS / _OUTCOMES (the
+             content test's) not tierserve's TIERS / OUTCOMES (the [lit] binding), no detection_record.csv.gz /
+             chain_summary.json (the chain not run), no valid sample-catalog record (missing, malformed, a copy missing or with
+             another md5 or size, an unlisted file, names not the chain's SAMPLES), the record changed during the call,
+             tierserve refusing (its self-check: the reconstruction does not reproduce the chain) or failing, a table with no
+             rows or other than the rows it reported, the content test failing (its rows not those of the record by
+             tierserve's definition, among its rules)
   wavediff   (only when named; after the pages) THE RESTORE-ONLY WAVE'S PER-BATCH TEST (lib/catalog/restore_wave, port of
              exopipe_ops snapshot_restore_wave_diff.py 8ff3fc8 + 9cfcca4..0904351): every detection the run this run REPLACES
              served, classified in this run's record (served / card2 / secondary / secondary-pool / 3d-gate / other-later /
@@ -116,10 +122,14 @@ ANALYSIS = ('no-neg-lobe', 'no-tie', 'allow-fit-pending', 'allow-missing-models'
             'no-identity-merge', 'no-anchor-assoc', 'rotate-parents')
 # module switches the snapshot scripts read that core/legacy.run does not clear (it clears P3_* only)
 LEAKY_ENV = ('RECHAIN_HOST', 'RECHAIN_NODES', 'RECHAIN_CHAIN_NEED_GB', 'RECHAIN_LC_CACHE_MAX', 'RECHAIN_FITS_DIR')
-# stage tierserve (cutover row 71): production's per-tier serving step, in place (snapshot_rechain_batch.sh:560)
+# stage tierserve (cutover row 71): production's per-tier serving step, in place (snapshot_rechain_batch.sh:560); its table is
+# RUN/run_samples.SERVED_TIERS
 TIERSERVE = 'phase3_snapshot_tierserve.py'           # clv15
-SERVED_TIERS = 'served_tiers.csv'                    # its table in the run (tierserve's --out default; = deep_omission's)
 TIERSERVE_INPUTS = ('detection_record.csv.gz', 'chain_summary.json')   # what tierserve reads from the run (load, evaluate)
+TIERSERVE_LOG = 'tierserve.log'                      # in the work directory: the call's output, replaced by each call (`>`)
+# production's summary of the call (snapshot_rechain_batch.sh:562 grep -hE): the lines recorded and said, no others
+TIERSERVE_SUMMARY = re.compile(r'^self-check|^served identities [0-9]|NO tier|^CANNOT ADD')
+TIERSERVE_LIT = ('catalog_snapshot.TIERSERVE_TIERS', 'catalog_snapshot.TIERSERVE_OUTCOMES')   # the content test's, bound [lit]
 
 
 def _T():
@@ -635,6 +645,8 @@ LIT = {
     'catalog_snapshot.RESTORE_TOL_BEAMS': ('clv15', CH, 'RESTORE_TOL_BEAMS'),
     'catalog_snapshot.REFASTRO_SHARDS_DEFAULT': ('clv15', RA, 'REFASTRO_SHARDS'),
     'catalog_snapshot.REF_MAX_SEP_DEG': ('clv15', RA, 'REF_MAX_SEP_DEG'),
+    'catalog_snapshot.TIERSERVE_TIERS': ('clv15', TIERSERVE, 'TIERS'),     # the served_tiers content test's (cutover row 71)
+    'catalog_snapshot.TIERSERVE_OUTCOMES': ('clv15', TIERSERVE, 'OUTCOMES'),
 }
 
 
@@ -1326,29 +1338,15 @@ def st_chain(ctx, s, plan):
     s.out(ctx.RUN, 'snapshot_run')
 
 
-def _last_call_lines(log):
-    """The output lines of the last core.legacy.run call written to ``log`` (after its last '===== ' header line)."""
-    try:
-        with open(log, errors='replace') as f:
-            lines = f.read().splitlines()
-    except OSError:
-        return []
-    for i in range(len(lines) - 1, -1, -1):
-        if lines[i].startswith('===== '):
-            return lines[i + 1:]
-    return lines
-
-
 def st_tierserve(ctx, s, plan):
     """P-G27 THE PER-TIER SERVING TABLE (module docstring, stage tierserve; cutover row 71): production's
     phase3_snapshot_tierserve.py in place on the run's recorded sample catalogs, its table placed as RUN/served_tiers.csv."""
-    from exopipe.phase3.core import placement
+    from exopipe.phase3.core import placement, validate
     from exopipe.phase3.lib.catalog import run_samples as RS
-    from exopipe.phase3.lib.catalog import tests_snapshot as TP
     T = ctx.T
     script = os.path.join(ctx.clv, TIERSERVE)
-    out = os.path.join(ctx.RUN, SERVED_TIERS)
-    log = os.path.join(ctx.W, 'tierserve.log')
+    out = os.path.join(ctx.RUN, RS.SERVED_TIERS)
+    log = os.path.join(ctx.W, TIERSERVE_LOG)
     names = RS.chain_names(ctx.c)
     plan.append('P-G27 per-tier serving table: %s %s --run %s --samples-dir %s --out <temporary name beside %s>   env '
                 'P3_TIERSERVE_CODE=%s > %s; the samples directory is the run\'s record %s, verified before the call and after '
@@ -1356,6 +1354,10 @@ def st_tierserve(ctx, s, plan):
                 % (ctx.py36, script, ctx.RUN, RS.copy_dir(ctx.RUN), out, ctx.clv, log, RS.record_path(ctx.RUN)))
     if ctx.dry:
         return
+    bad = [r for r in T.binding_check({k: LIT[k] for k in TIERSERVE_LIT}) if r[1] != 'ok']
+    if bad:                                     # --from tierserve skips the preflight's binding check: bound here too
+        refuse('P-G27: [lit] binding %s %s: config %r, %s %r - the content test checks the table by tierserve\'s own tiers '
+               'and outcomes' % (bad[0][0], bad[0][1], bad[0][2], bad[0][4], bad[0][3]))
     need = [os.path.join(ctx.RUN, f) for f in TIERSERVE_INPUTS]
     miss = [os.path.basename(p) for p in need if not os.path.isfile(p)]
     if miss:
@@ -1368,10 +1370,15 @@ def st_tierserve(ctx, s, plan):
     s.inp(*need)
     s.inp(RS.record_path(ctx.RUN), *[os.path.join(d, n) for n in names])
     old = RS.md5_file(out) if os.path.isfile(out) else None
+    os.makedirs(ctx.W, exist_ok=True)
     with placement.atomic(out) as tmp:          # any refusal below removes the temporary file; the table is placed at the end
-        res = T.call(ctx, s, script, ['--run', ctx.RUN, '--samples-dir', d, '--out', tmp], 'py36',
-                     env={'P3_TIERSERVE_CODE': ctx.clv}, log=log, cwd=ctx.W)
-        lines = _last_call_lines(log)
+        with placement.atomic(log) as ltmp:     # this call's output alone, placed over the last call's (production's `>`)
+            res = T.call(ctx, s, script, ['--run', ctx.RUN, '--samples-dir', d, '--out', tmp], 'py36',
+                         env={'P3_TIERSERVE_CODE': ctx.clv}, log=ltmp, cwd=ctx.W, tail_lines=10 ** 6)
+        s.u.meta['legacy_calls'][-1]['log'] = log
+        lines = res.tail.splitlines()           # the call's own output (its log's last 64 KB: legacy.run's tail), after the
+        hdr = [i for i, ln in enumerate(lines) if ln.startswith('===== ')]        # header line legacy.run writes first
+        lines = lines[hdr[-1] + 1:] if hdr else lines
         if not res.ok:
             tail = [ln for ln in lines if ln.strip() and 'warn' not in ln.lower()]   # production: grep -v -i warn | tail -1
             refuse('P-G27: %s exit %s (%s)' % (TIERSERVE, res.rc, (tail[-1] if tail else res.reason)[:300]))
@@ -1385,27 +1392,29 @@ def st_tierserve(ctx, s, plan):
         selfc = [ln for ln in lines if ln.startswith('self-check:')]
         wrote = [ln for ln in lines if ln.startswith('wrote ')]
         m = re.search(r'\((\d+) rows\)\s*$', wrote[-1]) if wrote else None
-        n = None
-        if os.path.isfile(tmp):
-            with open(tmp, newline='') as f:
-                n = sum(1 for _ in csv.DictReader(f))
-        if not selfc or m is None or n is None or n != int(m.group(1)):
-            refuse('P-G27: %s ended without its self-check line or a table of the rows it reported (self-check %r; %r; table '
-                   '%s rows)' % (TIERSERVE, selfc[-1:], wrote[-1:], n))
-        ok, _n, detail = TP.served_tiers_rows(tmp)
-        if not ok:
-            refuse('P-G27: the per-tier serving table fails its content test: %s' % detail)
-    s.out(out, 'served_tiers')
+        if not selfc or m is None or not os.path.isfile(tmp):
+            refuse('P-G27: %s ended without its self-check line or a table of the rows it reported (self-check %r; %r)'
+                   % (TIERSERVE, selfc[-1:], wrote[-1:]))
+        tests = validate.run('served_tiers', tmp, tier=s.tier)     # the content test, once (its one read of the table)
+        n = next((t['value'] for t in tests if t['name'] == 'served_tiers.served_tiers_rows'), None)
+        if n != int(m.group(1)):
+            refuse('P-G27: %s reported %r; the table holds %s rows' % (TIERSERVE, wrote[-1], n))
+        failed = [t for t in tests if not t['passed']]
+        if failed:
+            refuse('P-G27: the per-tier serving table fails its content test: %s' % '; '.join(
+                '%s: %s' % (t['name'], t['detail']) for t in failed))
+    s.out(out, 'served_tiers', test=False)      # placed: the content test's results above are recorded on it
+    for t in tests:
+        s.u.check(t['name'], t['passed'], t['value'], t['detail'], cls='served_tiers', path=out)
     new = RS.md5_file(out)
-    keep = ('self-check', 'served identities', 'tier ', 'CANNOT ADD', '(source, tier) rows')
-    summary = [ln.strip() for ln in lines if ln.strip().startswith(keep)]
+    summary = [ln for ln in lines if TIERSERVE_SUMMARY.search(ln)]
     s.u.meta['tierserve'] = dict(rows=n, md5=new, replaced_md5=old, samples_how=rec.get('how'),
-                                 samples=dict(RS.md5_map(rec)), report=summary)
+                                 samples=dict(RS.md5_map(rec)), report=summary, log=log)
     s.u.note('%s: %d rows (md5 %s)%s; read the run\'s recorded sample catalogs (%s, written by %s): %s' % (
-        SERVED_TIERS, n, new, '' if old is None else ('; replaced a table with %s' % (
+        RS.SERVED_TIERS, n, new, '' if old is None else ('; replaced a table with %s' % (
             'the same bytes' if old == new else 'md5 %s' % old)),
         RS.RECORD, rec.get('how'), ', '.join('%s %s' % kv for kv in RS.md5_map(rec).items())))
-    ctx.log.say('step tierserve: %s' % '; '.join(summary)[:600])
+    ctx.log.say('step tierserve: %s' % ''.join(ln + ';' for ln in summary)[:500])   # production: tr '\n' ';' | cut -c1-500
 
 
 def st_test(ctx, s, plan):
@@ -1585,7 +1594,7 @@ def run(args, run):
                     ctx.log.say('REFUSING: %s %s: %s' % (name, u.status, u.reason))
                 break
         else:
-            finished = 'test' in sel
+            finished = STAGES[-1] in sel      # the chain's last stage (tierserve) ran in this pass: the run is complete
     finally:
         if ctx.active and not item and (finished or any(x.status != 'done' for x in run.units)):
             try:

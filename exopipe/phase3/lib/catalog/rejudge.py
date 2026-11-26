@@ -233,7 +233,7 @@ def rejudge(run, removed, samples, log=print):
         raise RejudgeRefusal("%s the reconstruction does not reproduce the chain on %d served sources (e.g. %s)"
                              % (run, len(bad), bad[:3]))
     st_old = {}
-    for r in csv.DictReader(open(os.path.join(run, "served_tiers.csv"))):
+    for r in csv.DictReader(open(os.path.join(run, run_samples_module().SERVED_TIERS))):
         if r["chain_outcome"] == "served":
             st_old[(r["identity_jname"], r["tier"])] = r["qualifies"]
     mism = [(e["jn"], t) for (k, t), r_ in t0.items() for e in (src[k],) if str(finish(r_, e)["qualifies"]) != st_old.get((e["jn"], t))]
