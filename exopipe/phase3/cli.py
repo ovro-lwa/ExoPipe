@@ -16,8 +16,7 @@ invocation (archive: push and sync only, on the archive root too; photometry: a 
 space_gate_of.
 While a step runs, SIGTERM interrupts it as Ctrl-C does (Terminated, a KeyboardInterrupt: every rollback runs, the unit is
 recorded 'interrupted'); a second SIGTERM terminates at once. A process forked from the step (a pool worker) takes SIGTERM's
-default action, and every child process of the step in its session ends before an interrupted step exits
-(_sigterm_interrupts).
+default action, and the step's descendants are ended before its rollbacks run (_sigterm_interrupts).
 """
 import contextlib
 import os
@@ -269,12 +268,16 @@ class Terminated(KeyboardInterrupt):
     summary is written - and the process then ends as after Ctrl-C (fix verification N2, 2026-11-03)."""
 
 
-_FORK_RESET = set()           # handlers of _sigterm_interrupts now installed: the at-fork hooks act only while one is
-_FORK_HOOK = []               # once registered: [signal the last after_in_parent hooks send (0: none), step pid] (ctypes)
-_FORK_TLS = threading.local()  # per thread: .mask, the mask the before hook saved for the after hooks (None: it did nothing)
-_CHILD_TERM_S = 5.0            # s: an interrupted step's remaining child processes get SIGTERM for this long (_end_children)
-_CHILD_KILL_S = 5.0            # s: then SIGKILL, repeated for this long, before the ones still there are named
-_CHILD_POLL_S = 0.02           # s: between two looks at them
+_FORK_RESET = set()           # handlers of _sigterm_interrupts now installed: the at-fork hooks and wrappers act only while one is
+_FORK_HOOKS = []              # [True] once the at-fork hooks are registered (once per process)
+_FORK_TLS = threading.local()  # per thread: .mask, the mask the before hook saved for the after hooks (None: it did nothing);
+#                                .in_fork, inside a wrapped fork call (_forked); .deferred, a SIGTERM the handler deferred there
+_REAL_FORKS = {}              # os.fork, os.forkpty and _posixsubprocess.fork_exec as they were before the wrappers (_forked)
+_CHILD_TERM_S = 5.0           # s: an interrupted step's descendants get SIGTERM for this long (_end_descendants)
+_CHILD_KILL_S = 5.0           # s: then SIGKILL, and this long to end, before the ones still there are named
+_CHILD_POLL_S = 0.1           # s: between two looks at them (only the step's descendants are read)
+_PR_SET_CHILD_SUBREAPER = 36  # prctl(2) options (linux/prctl.h)
+_PR_GET_CHILD_SUBREAPER = 37
 
 
 def _block_sigterm_for_fork():
@@ -299,22 +302,11 @@ def _restore_mask_after_fork():
     signal.pthread_sigmask(signal.SIG_SETMASK, mask)
 
 
-def _reset_inherited_sigterm():
-    """os.register_at_fork(after_in_child=...), in a child forked while _sigterm_interrupts' handler is installed (nothing
-    otherwise). The CLI's handler gives way to SIGTERM's default disposition, so the kernel ends the child at once even inside
-    a long C call (numpy, I/O), where a Python handler would only run when the call returns. Then the forking thread's mask is
-    set again (SIG_SETMASK): a SIGTERM sent to the child since the fork - blocked until here (_block_sigterm_for_fork) - ends
-    it here by the default action, unless that thread had SIGTERM blocked before the fork (then it stays blocked and pending).
-    A foreign Python handler (one the step's code installed over the CLI's) is set again after the mask, for the SIGTERMs that
-    come later; a SIGTERM pending here still ends the child by the default action. Run here, the foreign handler would raise
-    inside an at-fork hook, where Python drops the exception (sys.exit, Terminated), and the child would run on. (A SIGTERM
-    that arrives after the foreign handler is set again and before the at-fork hooks have returned still runs it there.)"""
-    if _FORK_HOOK:
-        _FORK_HOOK[0].value = 0         # the parent's deferred SIGTERM is the parent's (_sigterm_interrupts)
-    mask = getattr(_FORK_TLS, 'mask', None)
-    if mask is None:
-        return
-    _FORK_TLS.mask = None
+def _sigterm_reset_in_child(mask):
+    """In a child forked while a handler of _sigterm_interrupts is installed: the CLI's handler gives way to SIGTERM's default
+    disposition, then ``mask`` (the forking thread's, saved before the fork) is set again (SIG_SETMASK). A foreign Python
+    handler (one the step's code installed over the CLI's) gives way to the default disposition while the mask is set and is
+    set again after it (_reset_inherited_sigterm)."""
     import signal
     handler = signal.getsignal(signal.SIGTERM)
     if any(handler is h for h in _FORK_RESET):
@@ -328,139 +320,271 @@ def _reset_inherited_sigterm():
         signal.pthread_sigmask(signal.SIG_SETMASK, mask)
 
 
-_HOOK_CODES = frozenset(f.__code__ for f in (_block_sigterm_for_fork, _restore_mask_after_fork, _reset_inherited_sigterm))
-
-
-def _in_fork_hooks(frame):
-    """True while the (main) thread that runs the handler runs at-fork hooks: between the CLI's before hook and its
-    after_in_parent hook (its saved mask is set; logging's hooks run there), or inside one of the CLI's hooks (before they
-    set or after they cleared that mask). ``frame``: the one the handler interrupted."""
-    if getattr(_FORK_TLS, 'mask', None) is not None:
-        return True
-    while frame is not None:
-        if frame.f_code in _HOOK_CODES:
-            return True
-        frame = frame.f_back
-    return False
+def _reset_inherited_sigterm():
+    """os.register_at_fork(after_in_child=...), in a child forked while _sigterm_interrupts' handler is installed (nothing
+    otherwise). The CLI's handler gives way to SIGTERM's default disposition, so the kernel ends the child at once even inside
+    a long C call (numpy, I/O), where a Python handler would only run when the call returns. Then the forking thread's mask is
+    set again (SIG_SETMASK): a SIGTERM sent to the child since the fork - blocked until here (_block_sigterm_for_fork) - ends
+    it here by the default action, unless that thread had SIGTERM blocked before the fork (then it stays blocked and pending).
+    A foreign Python handler (one the step's code installed over the CLI's) is set again after the mask, for the SIGTERMs that
+    come later; a SIGTERM pending here still ends the child by the default action. Run here, the foreign handler would raise
+    inside an at-fork hook, where Python drops the exception (sys.exit, Terminated), and the child would run on. (A SIGTERM
+    that arrives after the foreign handler is set again and before the at-fork hooks have returned still runs it there.)"""
+    mask = getattr(_FORK_TLS, 'mask', None)
+    if mask is None:
+        return
+    _FORK_TLS.mask = None
+    _sigterm_reset_in_child(mask)
 
 
 def _register_fork_hooks():
-    """Once per process, the at-fork hooks of _sigterm_interrupts. logging is imported first, so its hooks (the only other
-    before and after_in_parent hooks in the environment) run inside the CLI's: Python runs before hooks in the reverse order of
-    registration and after hooks in the order. The last after_in_parent hooks are C functions with no Python frame of their
-    own (ctypes, libc's kill; setattr): kill(pid, n) sends the SIGTERM the handler deferred (n = 15; n = 0 sends nothing), and
-    n goes back to 0. Python runs no handler inside them, so the handler runs at the step's own next instruction after
-    os.fork() returns."""
-    import ctypes
-    import functools
+    """Once per process, the at-fork hooks of _sigterm_interrupts. logging is imported first, so its hooks run inside the
+    CLI's: Python runs before hooks in the reverse order of registration and after hooks in the order."""
     import logging  # noqa: F401 - its at-fork hooks registered before the CLI's (docstring)
-    libc = ctypes.PyDLL(None)           # PyDLL: the GIL is held through the call and no pending signal is handled in it
-    kill = libc.kill
-    kill.argtypes = (ctypes.c_int, ctypes.c_int)
-    kill.restype = ctypes.c_int
-    pid, sig = ctypes.c_int(os.getpid()), ctypes.c_int(0)     # read at each call
     os.register_at_fork(before=_block_sigterm_for_fork, after_in_parent=_restore_mask_after_fork,
                         after_in_child=_reset_inherited_sigterm)
-    os.register_at_fork(after_in_parent=functools.partial(kill, pid, sig))
-    os.register_at_fork(after_in_parent=functools.partial(setattr, sig, 'value', 0))
-    _FORK_HOOK[:] = [sig, pid]
+    _FORK_HOOKS.append(True)
 
 
-def _step_processes(known):
-    """{pid: (state, parent pid, start time)} of the processes the step started that are still in its session
-    (/proc/<pid>/stat): its descendants there; the processes of ``known`` ({pid: start time}, seen before) still there - a
-    descendant whose parent ended since; and, when the step leads its session (the driver starts each step in a session of
-    its own), every other process in it - only the step's descendants can be, including one orphaned before the first look
-    (subprocess.run, interrupted, kills its script with SIGKILL and leaves the script's own children running). A child given a
-    session of its own (start_new_session: a detached server, an engine run as its own process group) and its descendants
-    belong to the code that started it."""
-    me, sid = os.getpid(), os.getsid(0)
-    procs, kids = {}, {}
-    for d in os.listdir('/proc'):
-        if not d.isdigit():
-            continue
-        try:
-            with open('/proc/%s/stat' % d, 'rb') as f:
-                st = f.read()
-        except OSError:
-            continue
-        x = st[st.rindex(b')') + 2:].split()      # state ppid pgrp session ... starttime (the name before may hold spaces)
-        procs[int(d)] = (x[0].decode(), int(x[1]), int(x[3]), int(x[19]))
-        kids.setdefault(int(x[1]), []).append(int(d))
-    out, todo = {}, [me]
-    while todo:
-        for c in kids.get(todo.pop(), ()):
-            if procs[c][2] == sid and c not in out:
-                out[c] = procs[c]
-                todo.append(c)
-    for pid, start in known.items():
-        if pid not in out and pid in procs and procs[pid][3] == start:
-            out[pid] = procs[pid]
-    if sid == me:
-        out.update((pid, p) for pid, p in procs.items() if p[2] == sid and pid != me)
-    return {pid: (state, ppid, start) for pid, (state, ppid, _, start) in out.items()}
-
-
-def _program(pid):
-    """What the process runs now - (executable, argument vector); it changes when the process execs - or None."""
+def _forked(real, args, block):
+    """``real(*args)``, a fork of the step's process (os.fork, os.forkpty, subprocess's _posixsubprocess.fork_exec), made
+    while a handler of _sigterm_interrupts is installed (_sigterm_interrupts, "The fork window"). The calling thread is
+    marked as forking (thread-local) through the call: a SIGTERM the handler takes in it meanwhile (inside an at-fork hook,
+    whoever registered it) is deferred, and raised here once ``real`` has returned, in this ordinary code, so Terminated
+    reaches the caller. With ``block``, SIGTERM is also blocked in the thread through the call: in the child the CLI's handler
+    then gives way to the default disposition and the thread's mask is set again; in the parent the mask is set again, and a
+    SIGTERM that came meanwhile is taken there and raised (Terminated). fork_exec is not blocked: without preexec_fn it runs no
+    Python code, and the program it execs would start with SIGTERM blocked; with preexec_fn the CLI's at-fork hooks block it
+    (_block_sigterm_for_fork)."""
+    import signal
+    mask = signal.pthread_sigmask(signal.SIG_BLOCK, ()) if block else None     # the mask as it is (no change)
+    _FORK_TLS.in_fork, _FORK_TLS.deferred = True, False
+    child = False
     try:
-        with open('/proc/%d/cmdline' % pid, 'rb') as f:
-            return os.readlink('/proc/%d/exe' % pid), f.read()
+        if block:
+            signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM})
+        r = real(*args)
+        child = block and (r if isinstance(r, int) else r[0]) == 0
+    finally:
+        _FORK_TLS.in_fork = False
+        if child:
+            _FORK_TLS.deferred = False                  # the parent's
+            _sigterm_reset_in_child(mask)
+        else:
+            if mask is not None:
+                signal.pthread_sigmask(signal.SIG_SETMASK, mask)    # a SIGTERM blocked through the fork: raised in here
+            _raise_deferred()
+    return r
+
+
+def _raise_deferred():
+    """A SIGTERM the handler deferred in this thread's wrapped fork call (_forked): the handler now takes it (Terminated)."""
+    if not getattr(_FORK_TLS, 'deferred', False):
+        return
+    _FORK_TLS.deferred = False
+    import signal
+    handler = signal.getsignal(signal.SIGTERM)
+    if any(handler is h for h in _FORK_RESET):
+        handler(signal.SIGTERM, None)
+
+
+def _fork_in_step():
+    """os.fork while a handler of _sigterm_interrupts is installed (_forked)."""
+    return _forked(_REAL_FORKS['fork'], (), True)
+
+
+def _forkpty_in_step():
+    """os.forkpty while a handler of _sigterm_interrupts is installed (_forked)."""
+    return _forked(_REAL_FORKS['forkpty'], (), True)
+
+
+def _fork_exec_in_step(*args):
+    """_posixsubprocess.fork_exec (subprocess's start of a child) while a handler of _sigterm_interrupts is installed
+    (_forked; SIGTERM is not blocked)."""
+    return _forked(_REAL_FORKS['fork_exec'], args, False)
+
+
+def _swap_forks(new):
+    """Sets os.fork, os.forkpty and _posixsubprocess.fork_exec to ``new`` (a triple; None: the wrappers) and returns the
+    triple they were. The wrappers are installed over the real functions only (_REAL_FORKS keeps those)."""
+    import _posixsubprocess
+    was = (os.fork, os.forkpty, _posixsubprocess.fork_exec)
+    if new is None:
+        if was[0] is not _fork_in_step:
+            _REAL_FORKS.update(fork=was[0], forkpty=was[1], fork_exec=was[2])
+        new = (_fork_in_step, _forkpty_in_step, _fork_exec_in_step)
+    os.fork, os.forkpty, _posixsubprocess.fork_exec = new
+    return was
+
+
+def _child_subreaper(on):
+    """prctl(PR_SET_CHILD_SUBREAPER, on) for this process (Linux >= 3.4): a process orphaned below it is re-parented to it,
+    not to init. Returns the setting it had; OSError when the kernel refuses."""
+    import ctypes
+    libc = ctypes.CDLL(None, use_errno=True)
+    prctl = libc.prctl
+    prctl.argtypes = (ctypes.c_int, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong)
+    prctl.restype = ctypes.c_int
+    was = ctypes.c_int(0)
+    if prctl(_PR_GET_CHILD_SUBREAPER, ctypes.addressof(was), 0, 0, 0) != 0 \
+            or prctl(_PR_SET_CHILD_SUBREAPER, 1 if on else 0, 0, 0, 0) != 0:
+        e = ctypes.get_errno()
+        raise OSError(e, 'prctl(PR_SET_CHILD_SUBREAPER): ' + os.strerror(e))
+    return was.value
+
+
+def _proc_stat(pid):
+    """(state, parent pid, session, start time in clock ticks after boot - stat field 22 -, command name) of process ``pid``
+    from /proc/<pid>/stat, or None when it is gone."""
+    try:
+        with open('/proc/%d/stat' % pid, 'rb') as f:
+            st = f.read()
+    except OSError:
+        return None
+    j = st.rindex(b')')
+    x = st[j + 2:].split()                      # state ppid pgrp session ... (the name before may hold spaces)
+    return x[0].decode(), int(x[1]), int(x[3]), int(x[19]), st[st.index(b'(') + 1:j].decode('utf-8', 'replace')
+
+
+def _exe(pid):
+    """The executable process ``pid`` runs (/proc/<pid>/exe; it changes when the process execs), or None."""
+    try:
+        return os.readlink('/proc/%d/exe' % pid)
     except OSError:
         return None
 
 
-def _end_children(name):
-    """At an interrupted step's exit: every process the step started that is still there in its session ends before the step
-    does (_sigterm_interrupts, "Children at an interrupted exit"). SIGTERM goes to each, and again to one whose program has
-    changed since (a subprocess child forked in C holds the step's handler until it execs: a SIGTERM that reaches it there is
-    dropped), for _CHILD_TERM_S; then SIGKILL, repeated for _CHILD_KILL_S. An ended child is not reaped here (its exit status
-    is read with WNOWAIT): it stays for the code that started it (a Popen, a pool) to reap, or ends with the step. How the
-    step's own children ended, and any process still there after SIGKILL (one in uninterruptible sleep), go to stderr.
-    Returns those."""
+def _descendants(root, sid):
+    """{pid: _proc_stat(pid)} of the descendants of process ``root`` in session ``sid``, found by descent only: the children
+    lists of root's threads (/proc/<root>/task/<tid>/children) and, in turn, of each descendant found; no other process is
+    read. A descendant in another session (it called setsid: start_new_session, a daemon) is left out with its whole tree. A
+    descendant in a process group of its own in session ``sid`` is a descendant like any other."""
+    out, todo = {}, [root]
+    while todo:
+        p = todo.pop()
+        try:
+            tids = os.listdir('/proc/%d/task' % p)
+        except OSError:
+            continue
+        for t in tids:
+            try:
+                with open('/proc/%d/task/%s/children' % (p, t), 'rb') as f:
+                    kids = f.read().split()
+            except OSError:
+                continue
+            for k in map(int, kids):
+                if k in out or k == root:
+                    continue
+                st = _proc_stat(k)
+                if st is not None and st[2] == sid:
+                    out[k] = st
+                    todo.append(k)
+    return out
+
+
+def _pool_workers():
+    """The pids of this process's multiprocessing Pool workers: the processes multiprocessing records as started here
+    (multiprocessing.process._children) that multiprocessing.pool named as its workers (ForkPoolWorker-N and the like; a
+    started Process no longer holds its target, bpo-30775)."""
+    proc = sys.modules.get('multiprocessing.process')
+    if proc is None or 'multiprocessing.pool' not in sys.modules:
+        return set()
+    return {p.pid for p in list(getattr(proc, '_children', ())) if 'PoolWorker-' in (p.name or '') and p.pid}
+
+
+def _how_ended(pid):
+    """How the step's own child ``pid`` (ended, not yet reaped) ended, read without reaping it (WNOWAIT)."""
+    try:
+        i = os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+    except ChildProcessError:
+        return 'ended'
+    if i is None:
+        return 'ended'
+    return ('exit %d' if i.si_code == os.CLD_EXITED else 'signal %d') % i.si_status
+
+
+def _signal_checked(name, pid, sig, rec, sid, termed, killed):
+    """Sends ``sig`` to ``pid`` only if it is still the process the look recorded (``rec``: [start time, name, executable]):
+    its start time (stat field 22) is read again and must be the recorded one (a pid freed and taken again has another), and
+    it must still be in the step's session ``sid``. A changed name or executable with the same start time is an exec of that
+    process since the look: accepted, recorded in ``rec`` and said. SIGTERM goes once per program (``termed``: pid -> the
+    (name, executable) it went to; again after an exec, which a SIGTERM caught before it may not survive), SIGKILL once
+    (``killed``). Each signal sent and each one withheld is a line on stderr: pid, name, and the check."""
+    import signal
+    st = _proc_stat(pid)
+    if st is None or st[0] in 'ZX':
+        return                                          # ended since the look: nothing to send
+    sname = signal.Signals(sig).name
+    if st[3] != rec[0] or st[2] != sid:
+        print(f'SIGTERM: exopipe3 {name}: {sname} not sent to {pid} ({st[4]}): start time {st[3]} ticks after boot in session '
+              f'{st[2]}, at the look {rec[0]} in session {sid}: not the process found', file=sys.stderr, flush=True)
+        return
+    exe = _exe(pid)
+    prog = (st[4], exe)
+    if (termed.get(pid) == prog) if sig == signal.SIGTERM else (pid in killed):
+        return
+    note = '' if prog == (rec[1], rec[2]) else f'; exec since the look (was {rec[1]}, {rec[2]})'
+    rec[1], rec[2] = prog
+    try:
+        os.kill(pid, sig)
+    except ProcessLookupError:
+        return
+    if sig == signal.SIGTERM:
+        termed[pid] = prog
+    else:
+        killed.add(pid)
+    print(f'SIGTERM: exopipe3 {name}: {sname} to {pid} ({st[4]}, {exe}): start time {st[3]} ticks after boot, as at the '
+          f'look{note}', file=sys.stderr, flush=True)
+
+
+def _end_descendants(name, when):
+    """Ends the descendants of the interrupted step's process (_sigterm_interrupts, "Descendants of an interrupted step"):
+    they are found by descent (_descendants; every _CHILD_POLL_S), each gets SIGTERM (again after an exec) for _CHILD_TERM_S,
+    then SIGKILL, and has _CHILD_KILL_S more to end; every signal is checked first (_signal_checked). The step's own Pool
+    workers are left to their pool; their descendants are not. The step's own children are not reaped here (how they ended is
+    read with WNOWAIT): their pids cannot be taken by another process before their last signal, and they stay for the code
+    that started them (a Popen) to reap. One stderr line names every descendant found alive and how it ended (``when``:
+    before or after the rollbacks; one already ended when first found, such as an orphan's zombie the step has not reaped,
+    is not named), the pool workers left, and any process still there after SIGKILL. Returns the pids of those."""
     import signal
     import time
-    me = os.getpid()
-    known, sent, ended = {}, {}, {}
+    me, sid = os.getpid(), os.getsid(0)
+    seen, how, termed, killed, pool_left, alive = {}, {}, {}, set(), set(), set()
     t_kill = time.monotonic() + _CHILD_TERM_S
     t_end = t_kill + _CHILD_KILL_S
     while True:
+        pool = _pool_workers()
+        cur = _descendants(me, sid)
         live = []
-        for pid, (state, ppid, start) in _step_processes(known).items():
-            known[pid] = start
-            if state in 'ZX':
-                if pid in ended:
-                    continue
-                info = None
-                if ppid == me:                              # how it ended, read without reaping it (WNOWAIT)
-                    try:
-                        info = os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
-                    except ChildProcessError:
-                        pass
-                ended[pid] = 'ended' if info is None else ('exit %d' if info.si_code == os.CLD_EXITED else 'signal %d') \
-                    % info.si_status
+        for pid, st in cur.items():
+            if pid in pool:
+                pool_left.add(pid)
+                continue
+            if pid not in seen or seen[pid][0] != st[3]:        # first found, or its pid now another descendant's
+                seen[pid] = [st[3], st[4], _exe(pid)]
+                how.pop(pid, None)
+                termed.pop(pid, None)
+                killed.discard(pid)
+            if st[0] in 'ZX':
+                if pid not in how:
+                    how[pid] = _how_ended(pid) if st[1] == me else 'ended'
             else:
                 live.append(pid)
+                alive.add(pid)
+        for pid in seen:
+            if pid not in cur and pid not in how:
+                st = _proc_stat(pid)
+                how[pid] = 'left the session' if st is not None and st[3] == seen[pid][0] else 'ended'
         now = time.monotonic()
         if not live or now >= t_end:
             break
         for pid in live:
-            if now < t_kill:
-                prog = _program(pid)
-                if pid in sent and sent[pid] == prog:
-                    continue
-                sent[pid] = prog
-            try:
-                os.kill(pid, signal.SIGTERM if now < t_kill else signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+            _signal_checked(name, pid, signal.SIGTERM if now < t_kill else signal.SIGKILL, seen[pid], sid, termed, killed)
         time.sleep(_CHILD_POLL_S)
-    for pid in known:
-        if pid not in live:
-            ended.setdefault(pid, 'ended')
-    if known:
-        print(f'SIGTERM: exopipe3 {name}: processes of the step ended at its interrupted exit: '
-              + ', '.join(f'{pid} ({how})' for pid, how in sorted(ended.items()))
+    if alive or pool_left:
+        print(f"SIGTERM: exopipe3 {name}: the step's descendants, {when}: "
+              + (', '.join(f'{pid} ({seen[pid][1]}: {how.get(pid, "still there")})' for pid in sorted(alive)) or 'none')
+              + (f'; Pool workers left to their pool: {", ".join(map(str, sorted(pool_left)))}' if pool_left else '')
               + (f'; still there {_CHILD_KILL_S:g} s after SIGKILL: {", ".join(map(str, sorted(live)))}' if live else ''),
               file=sys.stderr, flush=True)
     return live
@@ -471,7 +595,9 @@ def _sigterm_interrupts(name):
     """While the step ``name`` runs: SIGTERM raises Terminated in the main thread, once - the first SIGTERM restores the
     default action, so a second one terminates at once (as before). Installed only over the default disposition, in the main
     thread, and never for `exopipe3 run` (its supervisor and worker loops keep the default; each step they launch is a
-    process of its own and gets it); the previous disposition is restored when the step returns.
+    process of its own and gets it); the previous disposition is restored when the step returns. In this order, a SIGTERM:
+    the handler ends the step's descendants, then raises Terminated, so every rollback runs after they have ended, and the
+    unit is then recorded 'interrupted'.
 
     Only the step's own process (the one that installed the handler) is interrupted. A process forked from it - every pool
     worker of the step and of the in-place modules it calls, which v2 cannot give an initializer; Pool.terminate(), i.e. every
@@ -484,29 +610,53 @@ def _sigterm_interrupts(name):
     multiprocessing's own try block, whose pool then signaled the whole process group (os.kill(0, ...)), interrupted the step
     process itself and left it hanging at exit (tests/test_cli_sigterm_children.py).
 
-    The fork window. While the handler is installed, SIGTERM is blocked in the forking thread through every os.fork() (at-fork
-    hooks: the before hook saves the thread's mask, thread-local, and blocks SIGTERM; after_in_parent sets the saved mask
-    again; in the child, _reset_inherited_sigterm sets the default disposition, then the saved mask). Without the block the
-    child holds the handler's C-level signal catcher from the fork until the reset, and CPython drops a SIGTERM caught there:
-    one caught before the child clears its pending-signal flags (PyOS_AfterFork_Child, issue9535) is lost silently, and one
-    caught inside the reset's own signal.signal() call, after that call's check for pending signals, is lost with "Signal 15
-    ignored due to race condition" (bpo-43406). Pool.terminate() signals workers that may have been forked a moment before (a
-    maxtasksperchild replacement, a pool exited right after it was made); such a worker lived on, waiting for a task, and the
-    pool's join of it never returned (tests/test_cli_sigterm_children.py hung on lwacalim07, 2026-11-26).
-    In the step's own process, Python runs the at-fork hooks (logging's, the CLI's) in the forking thread and drops an
-    exception raised in one: a Terminated raised there was lost, and the handler had already given way to the default action.
-    So the handler never raises inside them. While the main thread is in its fork window (from the CLI's before hook, the
-    first to run, to its after_in_parent hook) or inside one of the CLI's hooks, it only defers the SIGTERM; the last
-    after_in_parent hooks, C functions, send it again, and Terminated is raised at the step's own next instruction after
-    os.fork() returns (_in_fork_hooks, _register_fork_hooks; tests/test_cli_sigterm_fork_window.py).
+    The fork window. While the handler is installed, os.fork and os.forkpty are wrapped (_fork_in_step, _forked): SIGTERM is
+    blocked in the forking thread from before the at-fork hooks to after them. In the child the CLI's handler then gives way
+    to the default disposition (_reset_inherited_sigterm, at-fork, and again in the wrapper) before the thread's mask is set
+    again. Without the block the child holds the handler's C-level signal catcher from the fork until that reset, and CPython
+    drops a SIGTERM caught there: one caught before the child clears its pending-signal flags (PyOS_AfterFork_Child,
+    issue9535) is lost silently, and one caught inside the reset's own signal.signal() call, after that call's check for
+    pending signals, is lost with "Signal 15 ignored due to race condition" (bpo-43406). Pool.terminate() signals workers that
+    may have been forked a moment before (a maxtasksperchild replacement, a pool exited right after it was made); such a
+    worker lived on, waiting for a task, and the pool's join of it never returned (tests/test_cli_sigterm_children.py hung on
+    lwacalim07, 2026-11-26). In the parent the wrapper sets the mask again once the fork has returned; a SIGTERM that came
+    meanwhile is taken there and raises Terminated in the wrapper, which is ordinary code, so it reaches the caller (the
+    step's own os.fork(), multiprocessing's start of a worker). Python runs the at-fork hooks in the forking thread and drops
+    an exception raised in one, so the handler must not raise there, whichever hooks there are and in whatever order they
+    were registered. Blocking alone does not ensure that: it is per thread, and in a step with other threads a SIGTERM to the
+    process is caught by one of them, after which Python runs the handler in the main thread at its next instruction, which
+    may be inside an at-fork hook. So the wrapper also marks the forking thread (thread-local), and the handler, taken while
+    the main thread is inside a wrapped fork call, only defers the SIGTERM; the wrapper raises it once the fork has returned
+    (_raise_deferred). subprocess's fork (_posixsubprocess.fork_exec) is wrapped the same way, marked but not blocked: without
+    preexec_fn it runs no Python code and the program it execs would start with SIGTERM blocked; with preexec_fn its at-fork
+    hooks block SIGTERM (_block_sigterm_for_fork; the child is reset by _reset_inherited_sigterm). A fork made otherwise (by a
+    C extension, or through a reference to os.fork taken before the step started) still blocks SIGTERM through the CLI's
+    at-fork hooks, but a SIGTERM the handler takes inside an at-fork hook there raises in the hook, and Python drops it: the
+    step's descendants have been ended, and the step runs on with SIGTERM's default action (a second SIGTERM ends it).
+    (tests/test_cli_sigterm_fork_window.py)
 
-    Children at an interrupted exit. A subprocess child is forked in C without the at-fork hooks (subprocess without
-    preexec_fn: core/legacy.run's in-place scripts) and holds the handler's catcher until it execs: a SIGTERM that reaches it
-    between its fork and its exec is dropped, and the program it execs never sees it. And Terminated raised in the step while
-    such a child is starting (inside Popen's own start-up) leaves it without the Popen object that would have killed it. So
-    once the step has unwound after Terminated, every process it started that is still there in its session is ended
-    (_end_children: SIGTERM, again after an exec, SIGKILL after _CHILD_TERM_S) before the step process exits. A child the
-    handler itself runs in (one forked by C code that then runs Python without the at-fork hooks) ends by the default action."""
+    Descendants of an interrupted step. While the handler is installed the step's process is a child subreaper
+    (prctl PR_SET_CHILD_SUBREAPER; set back when the step returns), so a process orphaned below it - a script's child left
+    running when subprocess.run, interrupted, killed the script with SIGKILL; a double-forked helper - is re-parented to the
+    step, not to init, however the step was started (the driver, an operator's shell). (Such an orphan that ends while the
+    step runs stays a zombie until the step exits.) When the handler takes SIGTERM it ends the step's descendants before it
+    raises Terminated (_end_descendants): SIGTERM to each (again after an exec: a subprocess child forked in C holds the
+    handler's catcher until it execs, and a SIGTERM caught there is dropped), SIGKILL after _CHILD_TERM_S. They are found by
+    descent only, every _CHILD_POLL_S (the children lists of the step's threads and, in turn, of each descendant; no other
+    process is read), so a process the step did not start (a wrapper's monitor, the shell's log tee) is never signaled. A
+    descendant that called setsid (start_new_session: a detached server) is left alone with its tree; a descendant in a
+    process group of its own in the step's session is ended. Before each signal the target's start time (stat field 22) is
+    read again and must match the look's; a changed name or executable is accepted as an exec of the same process; each
+    signal is logged with pid, name and that check (_signal_checked). pidfd_open, which would close the moment between that
+    check and kill(2), is not in this kernel (syscall 434: ENOSYS on 4.18.0-477, lwacalim07, 2026-11-26). The step's own
+    children are not reaped until their last signal is sent (here not at all), so their pids cannot be taken by another
+    process meanwhile. The step's multiprocessing Pool workers are left to their pool: Pool.terminate() (every
+    `with Pool(...)` exit; multiprocessing's exit handler for a pool never terminated) takes the pool's task-queue lock before
+    it signals them, and a worker ended from outside while it waited for a task holds that lock for good, so terminate()
+    never returns (an idle fork pool, lwacalim07, 2026-11-26). Their own descendants are ended. After the rollbacks a second
+    pass ends what is left (a descendant a rollback started; a pool worker's child orphaned when the pool ended the worker).
+    A child the handler itself runs in (one forked by C code that then runs Python without the at-fork hooks) ends by the
+    default action."""
     import signal
     if name == 'run' or threading.current_thread() is not threading.main_thread() \
             or signal.getsignal(signal.SIGTERM) != signal.SIG_DFL:
@@ -520,28 +670,37 @@ def _sigterm_interrupts(name):
             signal.signal(signal.SIGTERM, signal.SIG_DFL)
             os.kill(os.getpid(), signal.SIGTERM)
             os._exit(128 + signal.SIGTERM)          # should the signal be blocked in this thread: end all the same
-        if _in_fork_hooks(frame):                   # deferred: sent again by the last after_in_parent hook (docstring)
-            _FORK_HOOK[0].value = signal.SIGTERM
+        if getattr(_FORK_TLS, 'in_fork', False):    # inside a wrapped fork call: raised once it has returned (_forked)
+            _FORK_TLS.deferred = True
             return
         signal.signal(signal.SIGTERM, signal.SIG_DFL)
         if not fired:
             print(f'SIGTERM: exopipe3 {name} interrupted as for Ctrl-C (a placement in progress is undone); a second SIGTERM '
                   f'terminates at once', file=sys.stderr, flush=True)
         fired.append(True)
+        try:
+            _end_descendants(name, 'ended before the rollbacks')
+        except Exception as e:                      # never in the way of the interruption itself
+            print(f"SIGTERM: exopipe3 {name}: ending the step's descendants failed: {e!r}", file=sys.stderr, flush=True)
         raise Terminated('SIGTERM')
 
-    if not _FORK_HOOK:
+    if not _FORK_HOOKS:
         _register_fork_hooks()
-    _FORK_HOOK[1].value = owner
+    subreaper_was = _child_subreaper(True)
     _FORK_RESET.add(_on_sigterm)
+    forks_were = _swap_forks(None)
     signal.signal(signal.SIGTERM, _on_sigterm)
     try:
         yield
     finally:
         signal.signal(signal.SIGTERM, signal.SIG_DFL)
+        _swap_forks(forks_were)
         _FORK_RESET.discard(_on_sigterm)
-        if fired:
-            _end_children(name)
+        try:
+            if fired:
+                _end_descendants(name, 'still there after the rollbacks')
+        finally:
+            _child_subreaper(subreaper_was)
 
 
 def build_parser():

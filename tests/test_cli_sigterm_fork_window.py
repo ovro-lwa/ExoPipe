@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""STANDING TEST: SIGTERM and the step's forks (cli._sigterm_interrupts and its at-fork hooks, cli._reset_inherited_sigterm,
-cli._end_children). A SIGTERM sent to a process forked from a step ends it, whenever after the fork it arrives; a SIGTERM
-sent to the step while it forks interrupts it after the fork returns; the hooks keep each thread's signal mask; and no
-process the step started outlives an interrupted step.
+"""STANDING TEST: SIGTERM and the step's forks (cli._sigterm_interrupts, its fork wrappers and at-fork hooks,
+cli._reset_inherited_sigterm, cli._end_descendants). A SIGTERM sent to a process forked from a step ends it, whenever after
+the fork it arrives; a SIGTERM sent to the step while it forks interrupts it after the fork returns; the hooks keep each
+thread's signal mask; an interrupted step ends its descendants, and only them, before its rollbacks run.
 
 From the fork until the CLI's at-fork reset gives the child SIGTERM's default disposition, the child still holds the step's
 C-level signal catcher, and CPython drops a SIGTERM caught there: silently before the child clears its pending-signal flags
@@ -26,12 +26,15 @@ Checks (each in a fresh interpreter, so the signal dispositions and at-fork hook
     completes it lost a SIGTERM sent while it was alive, whichever process the scheduler runs first (GitHub's ubuntu-24.04
     runner ran a child first, 2026-11-26: without that wait 1 of 40 had exited before the kill and counted as lost).
     Before the fix all 80 lived on (lwacalim07, 2026-11-26).
- 4. the step itself, sent SIGTERM inside its fork window (an at-fork hook registered before the CLI's sends it, in the before
-    hooks or in the after_in_parent hooks; fork from the main thread with and without another thread, and from another
-    thread): Python drops an exception raised in an at-fork hook, so before the 2026-11-26 fix round the step's Terminated was
-    lost ("Exception ignored in ...") and the step ran on with the handler already gone. Now Terminated is raised in the
-    step's own code (for a fork from the main thread: at the os.fork() line, its last traceback frame), once; the unit is
-    recorded as interrupted; the child runs its own code (exit 7); a second SIGTERM ends the step at once (signal 15).
+ 4. the step itself, sent SIGTERM inside its fork window (an at-fork hook sends it, in the before hooks or in the
+    after_in_parent hooks, registered before the CLI's hooks or after them; fork from the main thread with and without
+    another thread, and from another thread; with another thread, the hook waits until that thread has taken the signal):
+    Python drops an exception raised in an at-fork hook, so before the first 2026-11-26 fix round the step's Terminated was
+    lost ("Exception ignored in ...") and the step ran on with the handler already gone; with that round's design (a C
+    after_in_parent hook re-sent the signal) a hook registered after the CLI's still dropped it. Now Terminated is raised in
+    the step's own code (for a fork from the main thread: at the os.fork() line, then only the CLI's fork wrapper and the
+    handler), once; the unit is recorded as interrupted; the child exits 7 by itself or is ended by the step (signal 15,
+    its SIGTERM logged); a second SIGTERM ends the step at once (signal 15).
  5. masks: in a thread that had SIGTERM blocked before the fork, it is still blocked after it, in the parent and in the child
     (main thread and another thread; the hooks used to unblock it unconditionally); inside the step SIGTERM is blocked in
     the window (the forking thread's before hooks, the child before the CLI's reset); outside the step (the CLI's handler
@@ -42,14 +45,28 @@ Checks (each in a fresh interpreter, so the signal dispositions and at-fork hook
     SystemExit was dropped and the child ran on: exit 7); a SIGTERM the child's own code receives later runs it (exit 3).
  7. a subprocess child of an interrupted step: Terminated raised inside Popen's start-up (the child, between its fork and its
     exec, sends the step SIGTERM and waits until the step has taken it) leaves the child with no Popen object to kill it;
-    nothing of the step's session outlives the step (a session scan once it has exited; before: bash, then sleep 60, ran
-    on).
- 8. the interrupted step's exit ends its remaining processes (cli._end_children): a child that drops the first SIGTERM and
-    then execs (a subprocess child forked in C drops one that reaches it before its exec; here bash ignores it, then execs
-    sleep 60) is sent SIGTERM again and ends by signal 15; a child that ignores SIGTERM ends by SIGKILL after the grace
-    period (signal 9; the test sets cli._CHILD_TERM_S to 1 s); a child with a session of its own (start_new_session) is
-    left alone; the child of a script killed with SIGKILL (as subprocess.run does when interrupted), orphaned before the
-    step's exit, is ended too (the step leads its session); nothing else of the step's session outlives it.
+    the step ends it before its rollbacks, and nothing of the step's session outlives the step (a session scan once it has
+    exited; before: bash, then sleep 60, ran on).
+ 8. an interrupted step ends its descendants before its rollbacks (cli._end_descendants), leading its session and as the
+    child of a wrapper that leads it: a child that drops the first SIGTERM and then execs (a subprocess child forked in C
+    drops one that reaches it before its exec; here bash ignores it, then execs sleep 60) is sent SIGTERM again (logged as
+    an exec since the look) and ends by signal 15; a child that ignores SIGTERM ends by SIGKILL after the grace period
+    (signal 9; the test sets cli._CHILD_TERM_S to 1 s); a child in a process group of its own ends by signal 15; a child
+    with a session of its own (start_new_session) is left alone; the child of a script killed with SIGKILL (as
+    subprocess.run does when interrupted) is re-parented to the step (a child subreaper) and ends by signal 15 (with
+    the 59b5998 design it outlived a step that did not lead its session); the wrapper's monitor, in the step's session but
+    not its descendant, is never signaled; nothing else of the step's session outlives it.
+ 9. the order at a SIGTERM: a child that keeps writing a file (every 10 ms) which the rollback removes has ended before the
+    rollback (signal 15), the file is still absent 0.5 s after the rollback, and the unit is recorded interrupted (with the
+    59b5998 design, which ended the children after the rollbacks, the file was there again and the writer still running).
+ 10. a step interrupted inside `with Pool(3)` (one worker busy with a child of its own, two idle): the worker's child is
+    ended; the workers are not signaled by the step but left to their pool, whose exit ends them, and the step exits. An
+    idle worker ended from outside can hold the pool's task-queue lock, and Pool.terminate() then never returns: with the
+    workers not left to their pool this test ran into its 120 s timeout (lwacalim07, 2026-11-26).
+ 11. each signal is checked first (cli._signal_checked): not sent to a pid whose start time differs from the one recorded
+    at the look (a pid taken again by another process) or that has left the step's session, and each withheld signal is
+    logged; sent to the same process after an exec (name and executable changed, start time the same), the exec recorded
+    and logged.
 
 Run standalone: python tests/test_cli_sigterm_fork_window.py    Under pytest: pytest tests/test_cli_sigterm_fork_window.py
 """
@@ -148,19 +165,33 @@ for where in ('main', 'thread'):
 '''
 
 PARENT = r'''
-import os, shutil, signal, sys, tempfile, threading, traceback
+import os, shutil, signal, sys, tempfile, threading, time, traceback
 sys.path.insert(0, sys.argv[1])
-phase, where, helper = sys.argv[2], sys.argv[3], sys.argv[4] == 'helper'
+phase, where, helper, reg = sys.argv[2], sys.argv[3], sys.argv[4] == 'helper', sys.argv[5]
 armed = []
+other = helper or where == 'thread'    # another thread has SIGTERM unblocked: it takes the signal while the hook runs
 
 
-def send():                            # registered before the CLI's hooks: runs inside the CLI's fork window
+def pending():                         # SIGTERM pending in the process: not yet taken by any of its threads
+    with open('/proc/self/status') as f:
+        for ln in f:
+            if ln.startswith('ShdPnd:'):
+                return int(ln.split()[1], 16) >> (signal.SIGTERM - 1) & 1
+
+
+def send():                            # an at-fork hook: runs inside the step's fork call
     if armed:
         armed.clear()
         os.kill(os.getpid(), signal.SIGTERM)
+        t = time.monotonic() + 10
+        while other and pending() and time.monotonic() < t:   # taken by another thread before this hook returns
+            time.sleep(0.001)
+        if other:
+            time.sleep(0.002)
 
 
-os.register_at_fork(**{phase: send})
+if reg == 'first':                     # registered before the CLI's hooks
+    os.register_at_fork(**{phase: send})
 from exopipe.phase3 import cli
 from exopipe.phase3.config import CFG
 from exopipe.phase3.core import record
@@ -178,6 +209,8 @@ def fork_child():
 
 
 with cli._sigterm_interrupts('photometry'):
+    if reg == 'last':                  # registered after the CLI's hooks (entering the step registered them)
+        os.register_at_fork(**{phase: send})
     run = record.Run('t7s', ['x'], d, CFG, config_sections=())
     t = threading.Thread(target=fork_child)
     try:
@@ -193,8 +226,8 @@ with cli._sigterm_interrupts('photometry'):
     if where == 'thread':
         t.join()
     out.append('unit %s %s' % (u.status, u.reason))
-    _, st = os.waitpid(-1, 0)
-    out.append('child %s' % ('exit %d' % os.WEXITSTATUS(st) if os.WIFEXITED(st) else 'signal %d' % os.WTERMSIG(st)))
+    wpid, st = os.waitpid(-1, 0)
+    out.append('child %d %s' % (wpid, 'exit %d' % os.WEXITSTATUS(st) if os.WIFEXITED(st) else 'signal %d' % os.WTERMSIG(st)))
     out.append('default after Terminated %s' % (signal.getsignal(signal.SIGTERM) == signal.SIG_DFL))
     shutil.rmtree(d)
     print('\n'.join(out), flush=True)
@@ -414,6 +447,7 @@ with cli._sigterm_interrupts('photometry'):
     b = subprocess.Popen(['sleep', '60'], preexec_fn=lambda: signal.signal(signal.SIGTERM, signal.SIG_IGN), stdin=dn,
                          stdout=dn, stderr=dn)
     c = subprocess.Popen(['sleep', '30'], start_new_session=True, stdin=dn, stdout=dn, stderr=dn)
+    e = subprocess.Popen(['sleep', '60'], preexec_fn=os.setpgrp, stdin=dn, stdout=dn, stderr=dn)   # its own process group
     g = subprocess.Popen(['bash', '-c', 'sleep 60 & echo $! > %s/g.tmp; mv %s/g.tmp %s/g; wait' % (tmp, tmp, tmp)], stdin=dn,
                          stdout=dn, stderr=dn)
     while not (os.path.exists(os.path.join(tmp, 'a')) and os.path.exists(os.path.join(tmp, 'g'))):
@@ -422,7 +456,7 @@ with cli._sigterm_interrupts('photometry'):
         orphan = int(f.read())
     g.kill()                           # as subprocess.run does to its script when interrupted: the script's child lives on
     g.wait()
-    print('pids lost %d ignores %d detached %d orphan %d' % (a.pid, b.pid, c.pid, orphan), flush=True)
+    print('pids lost %d ignores %d detached %d group %d orphan %d' % (a.pid, b.pid, c.pid, e.pid, orphan), flush=True)
     t0 = time.monotonic()
     try:
         real_kill(os.getpid(), signal.SIGTERM)
@@ -433,7 +467,108 @@ with cli._sigterm_interrupts('photometry'):
 print('ended in %.2f s' % (time.monotonic() - t0), flush=True)
 '''
 
+ROLLBACK = r'''
+import os, signal, subprocess, sys, time
+sys.path.insert(0, sys.argv[1])
+from exopipe.phase3 import cli
+from exopipe.phase3.config import CFG
+from exopipe.phase3.core import record
+tmp = sys.argv[2]
+part = os.path.join(tmp, 'partial')
+dn = subprocess.DEVNULL
+with cli._sigterm_interrupts('photometry'):
+    run = record.Run('t7s', ['x'], os.path.join(tmp, 'out'), CFG, config_sections=())
+    w = None
+    try:
+        with run.unit('u') as u:
+            w = subprocess.Popen(['bash', '-c', 'while :; do echo x >> %s; sleep 0.01; done' % part], stdin=dn, stdout=dn,
+                                 stderr=dn)   # a child that keeps writing the unit's partial product
+            while not os.path.exists(part):
+                time.sleep(0.01)
+            try:
+                os.kill(os.getpid(), signal.SIGTERM)
+                time.sleep(30)
+                print('not interrupted', flush=True)
+            finally:                   # the rollback: the partial product is removed
+                if os.path.exists(part):
+                    os.remove(part)
+                print('rollback done', flush=True)
+    except cli.Terminated:
+        print('terminated', flush=True)
+    time.sleep(0.5)                    # a writer still running writes the file again within 10 ms
+    print('partial product after the rollback %s' % os.path.exists(part), flush=True)
+    print('unit %s %s' % (u.status, u.reason), flush=True)
+    print('writer %s' % w.poll(), flush=True)
+'''
+
+POOL = r'''
+import multiprocessing, os, signal, subprocess, sys, time
+sys.path.insert(0, sys.argv[1])
+from exopipe.phase3 import cli
+tmp = sys.argv[2]
+mark = os.path.join(tmp, 'grandchild')
+
+
+def task():                            # a pool worker's own child, then wait for it
+    p = subprocess.Popen(['sleep', '60'], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    with open(mark + '.tmp', 'w') as f:
+        f.write(str(p.pid))
+    os.replace(mark + '.tmp', mark)
+    return p.wait()
+
+
+t0 = None
+with cli._sigterm_interrupts('photometry'):
+    try:
+        with multiprocessing.get_context('fork').Pool(3) as pool:   # one worker busy, two idle: one waits for a task
+            r = pool.apply_async(task)                                # holding the task queue's lock
+            while not os.path.exists(mark):
+                time.sleep(0.01)
+            with open(mark) as f:
+                gc = int(f.read())
+            print('workers %s grandchild %d' % (' '.join(str(p.pid) for p in pool._pool), gc), flush=True)
+            t0 = time.monotonic()
+            os.kill(os.getpid(), signal.SIGTERM)
+            r.get(60)
+            print('not interrupted', flush=True)
+    except cli.Terminated:
+        print('terminated; the pool exited %.1f s after the SIGTERM' % (time.monotonic() - t0), flush=True)
+print('step done', flush=True)
+'''
+
+IDENTITY = r'''
+import os, signal, subprocess, sys
+sys.path.insert(0, sys.argv[1])
+from exopipe.phase3 import cli
+p = subprocess.Popen(['sleep', '60'], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+st = cli._proc_stat(p.pid)
+while st[4] != 'sleep':                # until it has exec'd
+    st = cli._proc_stat(p.pid)
+sid, exe = os.getsid(0), cli._exe(p.pid)
+print('child %d start %d exe %s' % (p.pid, st[3], exe), flush=True)
+termed, killed = {}, set()
+cli._signal_checked('photometry', p.pid, signal.SIGTERM, [st[3] + 1, 'sleep', exe], sid, termed, killed)
+print('another start time: alive %s' % (p.poll() is None), flush=True)
+cli._signal_checked('photometry', p.pid, signal.SIGTERM, [st[3], 'sleep', exe], sid + 1, termed, killed)
+print('another session: alive %s' % (p.poll() is None), flush=True)
+rec = [st[3], 'bash', '/usr/bin/bash']
+cli._signal_checked('photometry', p.pid, signal.SIGTERM, rec, sid, termed, killed)
+print('exec since the look: rc %s recorded %s %s' % (p.wait(), rec[1], rec[2] == exe), flush=True)
+'''
+
+WRAPPER = r'''
+import os, subprocess, sys
+dn = subprocess.DEVNULL
+mon = subprocess.Popen(['sleep', '60'], stdin=dn, stdout=dn, stderr=dn)   # in the step's session, not its descendant
+print('monitor %d' % mon.pid, flush=True)
+rc = subprocess.call([sys.executable, '-c', os.environ['STEP_CODE']] + sys.argv[1:])
+print('step rc %d; monitor alive after the step %s' % (rc, mon.poll() is None), flush=True)
+mon.kill()
+mon.wait()
+'''
+
 FORK_LINE = PARENT.split('\n').index('    pid = os.fork()') + 1      # line numbers of the snippet run with -c
+CLI_FRAMES = {'_fork_in_step', '_forked', 'pthread_sigmask', '_raise_deferred', '_on_sigterm'}   # the wrapper's raise
 HOOKS = {'send', 'fork_child', '_block_sigterm_for_fork', '_restore_mask_after_fork', '_reset_inherited_sigterm',
          '_acquireLock', '_releaseLock', '_after_at_fork_child_reinit_locks'}
 FAILED = []
@@ -462,12 +597,15 @@ def session_processes(sid):
     return out
 
 
-def run(code, *args, timeout=120, env=None, left=None):
+def run(code, *args, timeout=120, env=None, left=None, wrapped=False):
     """(returncode or 'timeout', stdout, stderr) of ``code`` in a fresh interpreter, in a session of its own. Once it has
     exited, the processes still in that session (its own and nothing else) are appended to ``left`` ([(pid, name)]) and
-    killed (SIGKILL, by pid; also on a timeout), so none outlives the test."""
+    killed (SIGKILL, by pid; also on a timeout), so none outlives the test. ``wrapped``: the session's leader is WRAPPER,
+    which starts a monitor process and then ``code`` as its child (so the step leads no session)."""
     import signal
     env = dict(os.environ, NUMPY_MADVISE_HUGEPAGE='0', **(env or {}))
+    if wrapped:
+        code, env['STEP_CODE'] = WRAPPER, code
     p = subprocess.Popen([sys.executable, '-c', code, REPO] + list(args), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                          env=env, start_new_session=True)
     try:
@@ -532,24 +670,29 @@ def test_sigterm_at_fork_return():
 
 
 def test_sigterm_to_step_in_fork_window():
+    import re
     one = dict(OPENBLAS_NUM_THREADS='1', OMP_NUM_THREADS='1', MKL_NUM_THREADS='1')
-    for phase in ('before', 'after_in_parent'):
+    for reg, phase in (('first', 'before'), ('first', 'after_in_parent'), ('last', 'before'), ('last', 'after_in_parent')):
         for where, helper, threads in (('main', 'none', 1), ('main', 'helper', 2), ('thread', 'none', 1)):
-            rc, so, se = run(PARENT, phase, where, helper, env=one)
+            rc, so, se = run(PARENT, phase, where, helper, reg, env=one)
             ln = so.split('\n')
             term = [x[len('terminated in '):].split(' > ') for x in ln if x.startswith('terminated in ')]
             names = [f.split(':')[0] for f in term[0]] if len(term) == 1 else []
-            if where == 'main':     # <module> > fork_child at its os.fork() line > the handler's raise
-                at = names == ['<module>', 'fork_child', '_on_sigterm'] and term[0][1] == 'fork_child:%d' % FORK_LINE
+            if where == 'main':     # <module> > fork_child at its os.fork() line > the wrapper > the handler's raise
+                at = names[:2] == ['<module>', 'fork_child'] and term[0][1] == 'fork_child:%d' % FORK_LINE \
+                    and names[-1] == '_on_sigterm' and set(names[2:]) <= CLI_FRAMES
             else:                   # the main thread's own code, wherever it was: no at-fork hook, not the forking thread
                 at = names[:1] == ['<module>'] and names[-1:] == ['_on_sigterm'] and not set(names) & HOOKS
-            check('a SIGTERM to the step in its fork window (%s hooks; fork from %s, %d thread(s) when the step '
-                  'starts) raises Terminated in the step\'s own code (%s), once, after the fork; the unit is recorded '
-                  'interrupted; the child exits 7; a second SIGTERM ends the step at once'
-                  % (phase, 'the main thread' if where == 'main' else 'another thread', threads,
-                     'at the os.fork() line' if where == 'main' else 'in the main thread'),
+            child = re.search(r'^child (\d+) (exit 7|signal 15)$', so, re.M)
+            child_ok = child is not None and (child.group(2) == 'exit 7' or 'SIGTERM to %s (' % child.group(1) in se)
+            check('a SIGTERM to the step in its fork window (a %s hook registered %s the CLI\'s; fork from %s, %d '
+                  'thread(s) when the step starts) raises Terminated in the step\'s own code (%s), once, after the fork; '
+                  'the unit is recorded interrupted; the child exits 7 by itself or is ended by the step (signal 15, its '
+                  'SIGTERM logged); a second SIGTERM ends the step at once'
+                  % (phase, 'before' if reg == 'first' else 'after', 'the main thread' if where == 'main' else
+                     'another thread', threads, 'at the os.fork() line' if where == 'main' else 'in the main thread'),
                   rc == -15 and 'threads %d' % threads in ln and at and 'not interrupted' not in ln
-                  and 'unit error interrupted' in ln and 'child exit 7' in ln and 'default after Terminated True' in ln
+                  and 'unit error interrupted' in ln and child_ok and 'default after Terminated True' in ln
                   and 'survived a second SIGTERM' not in so and se.count('interrupted as for Ctrl-C') == 1
                   and 'Exception ignored' not in se, (rc, so, se[-600:]))
     assert not FAILED, FAILED
@@ -605,43 +748,121 @@ def test_subprocess_child_of_interrupted_step():
         rc, so, se = run(ORPHAN, tmp, timeout=120, left=left)
         term = [x for x in so.split('\n') if x.startswith('terminated in ')]
         check('Terminated raised inside Popen\'s start-up (the child, before its exec, has the step take a SIGTERM): the '
-              'child is ended at the step\'s interrupted exit; nothing of the step\'s session outlives the step',
+              'child is ended before the step\'s rollbacks; nothing of the step\'s session outlives the step',
               rc == 0 and len(term) == 1 and '_execute_child' in term[0] and 'step done' in so and not left
-              and 'processes of the step ended at its interrupted exit' in se, (rc, left, so, se[-600:]))
-        left = []
-        rc, so, se = run(REAP, tmp, timeout=120, left=left)
-        ln = so.split('\n')
-        pids = [x.split() for x in ln if x.startswith('pids ')]
-        ended = [x for x in se.split('\n') if 'processes of the step ended at its interrupted exit' in x]
-        ok = rc == 0 and len(pids) == 1 and len(ended) == 1 and not left and 'not interrupted' not in so
-        detached_alive = False
-        if len(pids) == 1:
-            a, b, c, g = int(pids[0][2]), int(pids[0][4]), int(pids[0][6]), int(pids[0][8])
-            named = dict(re.findall(r'\b(\d+) \(([^)]*)\)', ended[0])) if len(ended) == 1 else {}
-            ok = ok and named.get(str(a)) == 'signal 15' and named.get(str(b)) == 'signal 9' and str(c) not in named \
-                and str(g) in named
-            try:
-                with open('/proc/%d/stat' % c, 'rb') as f:
-                    st = f.read()
-                x = st[st.rindex(b')') + 2:].split()
-                detached_alive = x[0] not in (b'Z', b'X') and int(x[3]) == c and b'(sleep)' in st
-            except OSError:
-                pass
-            if detached_alive:          # the test's own detached child (its session, its name checked above)
-                os.kill(c, signal.SIGKILL)
-        check('the interrupted step\'s exit: a child that dropped the first SIGTERM and then exec\'d is sent SIGTERM again '
-              '(signal 15); one that ignores SIGTERM ends by SIGKILL after the grace period (signal 9); a script\'s child '
-              'orphaned when the script was killed is ended; one with a session of its own is left running; nothing else of '
-              'the step\'s session outlives the step',
-              ok and detached_alive, (rc, left, so, se[-800:]))
+              and "the step's descendants, ended before the rollbacks" in se, (rc, left, so, se[-600:]))
+        for wrapped in (False, True):
+            for f in ('a', 'g', 'go'):
+                if os.path.exists(os.path.join(tmp, f)):
+                    os.remove(os.path.join(tmp, f))
+            left = []
+            rc, so, se = run(REAP, tmp, timeout=120, left=left, wrapped=wrapped)
+            ln = so.split('\n')
+            pids = [x.split() for x in ln if x.startswith('pids ')]
+            ended = [x for x in se.split('\n') if "the step's descendants, ended before the rollbacks" in x]
+            ok = rc == 0 and len(pids) == 1 and len(ended) == 1 and not left and 'not interrupted' not in so
+            mon = [x.split()[1] for x in ln if x.startswith('monitor ')]
+            if wrapped:                 # the monitor, in the step's session but not its descendant, is never signaled
+                ok = ok and 'step rc 0; monitor alive after the step True' in ln and len(mon) == 1 \
+                    and ' %s (' % mon[0] not in se
+            detached_alive = False
+            if len(pids) == 1:
+                a, b, c, e, g = (int(pids[0][i]) for i in (2, 4, 6, 8, 10))
+                named = dict(re.findall(r'\b(\d+) \(([^()]*)\)', ended[0])) if len(ended) == 1 else {}
+                ok = ok and named.get(str(a)) == 'sleep: signal 15' and named.get(str(b)) == 'sleep: signal 9' \
+                    and str(c) not in named and named.get(str(e)) == 'sleep: signal 15' \
+                    and named.get(str(g)) == 'sleep: signal 15' \
+                    and re.search(r'SIGTERM to %d \(sleep, [^)]*\): .*exec since the look \(was bash, ' % a, se) is not None
+                try:
+                    with open('/proc/%d/stat' % c, 'rb') as f:
+                        st = f.read()
+                    x = st[st.rindex(b')') + 2:].split()
+                    detached_alive = x[0] not in (b'Z', b'X') and int(x[3]) == c and b'(sleep)' in st
+                except OSError:
+                    pass
+                if detached_alive:      # the test's own detached child (its session, its name checked above)
+                    os.kill(c, signal.SIGKILL)
+            check('the interrupted step (%s) ends its descendants before its rollbacks: a child that dropped the first '
+                  'SIGTERM and then exec\'d is sent SIGTERM again (signal 15); one that ignores SIGTERM ends by SIGKILL '
+                  'after the grace period (signal 9); one in a process group of its own ends (signal 15); a script\'s '
+                  'child orphaned when the script was killed is re-parented to the step and ended (signal 15); one with '
+                  'a session of its own is left running; %snothing else of the step\'s session outlives the step'
+                  % ('a child of a wrapper that leads the session' if wrapped else 'leading its session',
+                     'the wrapper\'s monitor, not a descendant, is never signaled; ' if wrapped else ''),
+                  ok and detached_alive, (rc, left, so, se[-1200:]))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     assert not FAILED, FAILED
 
 
+def test_rollback_after_descendants_end():
+    import shutil
+    import tempfile
+    tmp = tempfile.mkdtemp(prefix='test_cli_sigterm_fork_window_')
+    try:
+        left = []
+        rc, so, se = run(ROLLBACK, tmp, timeout=120, left=left)
+        ln = so.split('\n')
+        check('the order at a SIGTERM: the step\'s children end, then the rollbacks run, then the unit is recorded '
+              'interrupted - a child that keeps writing the partial product the rollback removes has ended before it '
+              '(signal 15), and the file is still absent 0.5 s after the rollback',
+              rc == 0 and 'terminated' in ln and 'rollback done' in ln and 'not interrupted' not in ln
+              and 'partial product after the rollback False' in ln and 'unit error interrupted' in ln
+              and 'writer -15' in ln and not left
+              and se.find("the step's descendants, ended before the rollbacks") > se.find('interrupted as for Ctrl-C') >= 0,
+              (rc, left, so, se[-800:]))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    assert not FAILED, FAILED
+
+
+def test_pool_workers_left_to_their_pool():
+    import re
+    import shutil
+    import tempfile
+    tmp = tempfile.mkdtemp(prefix='test_cli_sigterm_fork_window_')
+    try:
+        left = []
+        rc, so, se = run(POOL, tmp, timeout=120, left=left)
+        ln = so.split('\n')
+        w = [x.split() for x in ln if x.startswith('workers ')]
+        workers, gc = (w[0][1:4], w[0][5]) if len(w) == 1 and len(w[0]) == 6 else ([], None)
+        took = [float(m) for m in re.findall(r'^terminated; the pool exited ([\d.]+) s after the SIGTERM$', so, re.M)]
+        pool_line = re.search(r'Pool workers left to their pool: ([\d, ]+)', se)
+        check('a step interrupted inside `with Pool(3)` (one worker busy with a child of its own, two idle): the worker\'s '
+              'child is ended (SIGTERM, logged); the workers are never signaled by the step but left to their pool, whose '
+              'exit ends them (an idle worker ended from outside can hold the task queue\'s lock and hang that exit); the '
+              'step exits; nothing of its session outlives it',
+              rc == 0 and len(workers) == 3 and gc is not None and 'SIGTERM to %s (sleep, ' % gc in se
+              and not any(' to %s (' % p in se for p in workers) and pool_line is not None
+              and sorted(pool_line.group(1).replace(' ', '').split(',')) == sorted(workers)
+              and len(took) == 1 and took[0] < 10 and 'step done' in ln and 'not interrupted' not in ln and not left,
+              (rc, left, so, se[-800:]))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    assert not FAILED, FAILED
+
+
+def test_signal_identity_check():
+    rc, so, se = run(IDENTITY)
+    ln = so.split('\n')
+    c = [x.split() for x in ln if x.startswith('child ')]
+    pid = c[0][1] if len(c) == 1 else None
+    check('each signal is checked first: not sent to a pid whose start time differs from the look\'s (a pid taken again) '
+          'or that is in another session (each withheld signal logged); sent to the same process after an exec (changed '
+          'name and executable, same start time), the exec recorded and logged',
+          rc == 0 and pid is not None and 'another start time: alive True' in ln and 'another session: alive True' in ln
+          and 'exec since the look: rc -15 recorded sleep True' in ln
+          and se.count('SIGTERM not sent to %s (sleep)' % pid) == 2
+          and 'exec since the look (was bash, /usr/bin/bash)' in se and se.count('SIGTERM to %s (' % pid) == 1,
+          (rc, so, se[-800:]))
+    assert not FAILED, FAILED
+
+
 if __name__ == '__main__':
     for t in (test_window_closed, test_sigterm_in_window, test_sigterm_at_fork_return, test_sigterm_to_step_in_fork_window,
-              test_masks_kept, test_foreign_handler_in_child, test_subprocess_child_of_interrupted_step):
+              test_masks_kept, test_foreign_handler_in_child, test_subprocess_child_of_interrupted_step,
+              test_rollback_after_descendants_end, test_pool_workers_left_to_their_pool, test_signal_identity_check):
         try:
             t()
         except AssertionError:

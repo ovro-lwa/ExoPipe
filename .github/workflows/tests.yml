@@ -60,7 +60,7 @@ jobs:
         run: python tests/test_guard_reentry.py
       - name: SIGTERM interrupts only the step's own process (forked pool workers take the default action)
         run: python tests/test_cli_sigterm_children.py
-      - name: SIGTERM and the step's forks (fork window, the step's own interruption, signal masks, children at an interrupted exit)
+      - name: SIGTERM and the step's forks (fork window, the step's own interruption, signal masks, descendants ended before the rollbacks)
         run: python tests/test_cli_sigterm_fork_window.py
       - name: grammar sync with production
         run: python tests/test_products_grammar_sync.py
