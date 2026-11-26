@@ -597,8 +597,17 @@ def test_staging(tmp):
 
 
 def test_source_gate(tmp):
-    """G-R5 on an accepted cell's apply source, before the resample (steps_cell.apply -> loo_source_gate)."""
-    from exopipe.phase3.lib.dewarp import master_dewarp as MD
+    """G-R5 on an accepted cell's apply source, before the resample (steps_cell.apply -> loo_source_gate). The apply imports
+    lib/dewarp/master_dewarp, whose import needs PyBDSF (phase2.cascade_dewarp), absent from the CI image: a stand-in module
+    with the two names the apply reaches before the gate (_gen_root, and apply_saved, which must never be called) takes its
+    place for this test, and the real entry (if any) is put back after."""
+    import exopipe.phase3.lib.dewarp as pkg
+    name = 'exopipe.phase3.lib.dewarp.master_dewarp'
+    MD = types.ModuleType(name)
+    MD.NO_RESIDUALS = False
+    held = (sys.modules.get(name), getattr(pkg, 'master_dewarp', None))
+    sys.modules[name] = MD
+    pkg.master_dewarp = MD
     src = os.path.join(tmp, 'source')
     fd = make_cell(src)
     stale = SC.loo_files(fd)[2]
@@ -610,7 +619,7 @@ def test_source_gate(tmp):
     meas = types.SimpleNamespace(screen=lambda scope: scr, table=os.path.join(tmp, 'table.csv'), dir=tmp)
     run = types.SimpleNamespace(fresh=False)
     called = []
-    keep = (MD.apply_saved, MD._gen_root, SCL.screen_key_gate, SCL.pb_weights_gate, SCL._screen_nanchor)
+    keep = (SCL.screen_key_gate, SCL.pb_weights_gate, SCL._screen_nanchor)
     MD.apply_saved = lambda *a, **k: called.append(a) or 0
     MD._gen_root = lambda working, rebuild, lst, scope: os.path.join(src, CELL)
     SCL.screen_key_gate = lambda *a: (None, None, None)     # G-A2's screen, G-A12 and the PB weights: tested in test_dewarp
@@ -620,7 +629,15 @@ def test_source_gate(tmp):
         with R.Run('dewarp', ['test'], out, CFG, dry_run=True).unit(CELL) as u:
             SCL.apply(u, run, roots, CELL, meas, dict(ROW, n_anchors='40'))
     finally:
-        MD.apply_saved, MD._gen_root, SCL.screen_key_gate, SCL.pb_weights_gate, SCL._screen_nanchor = keep
+        SCL.screen_key_gate, SCL.pb_weights_gate, SCL._screen_nanchor = keep
+        if held[0] is None:
+            sys.modules.pop(name, None)
+        else:
+            sys.modules[name] = held[0]
+        if held[1] is not None:
+            pkg.master_dewarp = held[1]
+        elif getattr(pkg, 'master_dewarp', None) is MD:
+            del pkg.master_dewarp
     gen = roots.gen_of(CELL)
     check('G-R5 on the apply source: an accepted cell with a stale LOO master refuses before the resample - the apply never '
           'called, no gen_mdewarp_rbf on disk, the gate and the file named',
