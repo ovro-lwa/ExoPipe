@@ -1343,6 +1343,7 @@ class Rejudged:
         self.N, self.RM = collections.Counter(), collections.Counter()
         self.G3D = 0
         self.absent = collections.Counter()  # images absent from a member table the re-judging's omission met (T2)
+        self.samples = collections.OrderedDict()   # batch tag -> {file: md5} of its recorded sample catalogs (rejudge_runs)
 
     def add(self, run, res):
         tag = batch_tag(run)
@@ -1937,11 +1938,17 @@ def rejudge_runs(runs, dec_path, proto, card2, work, u=None, elev=None):
     time (production 8 in fork workers on lwacalim07's disk; the Lustre rule: 6 readers; separate processes, so no fork of a
     large parent - V_combview review T6), each with the decisions (per image), the fleet root, its run's Card 2 det_uids and
     (b114ff3) its 1-minute elevation-floor det_uids;
-    job, result and log under ``work``. Returns Rejudged (in the runs' order). G9 a child that refused (a self-check: the chain
-    not reproduced, served_tiers.csv not reproduced, the record incomplete) or failed."""
+    job, result and log under ``work``. Returns Rejudged (in the runs' order; .samples = {batch tag: {file: md5}} of the sample
+    catalogs each run was re-judged on). G9 a child that refused (a self-check: the chain not reproduced, served_tiers.csv not
+    reproduced, the record incomplete) or failed. G9b (cutover row 70) a run without its verified sample-catalog record
+    (lib/catalog/run_samples.py: the catalogs its chain read, copied into the run with their md5s) - refused here by name before
+    any child runs; each child re-judges on that record (rejudge.recorded_samples), never on the live catalogs."""
     from concurrent.futures import ThreadPoolExecutor
     from exopipe.phase3.core import legacy
+    from exopipe.phase3.lib.catalog import run_samples as RS
     c = _c()
+    sample_names = RS.chain_names()
+    samples = collections.OrderedDict()
     for r in runs:                   # the inputs each child reads: refused here, before any child runs, by name
         if not os.path.isfile(os.path.join(r, SERVED_TIERS)):
             refuse(f'G4b: {batch_tag(r)} has no {SERVED_TIERS}: its per-tier catalogues cannot be shown complete (nor its sources '
@@ -1949,6 +1956,10 @@ def rejudge_runs(runs, dec_path, proto, card2, work, u=None, elev=None):
         miss = [f for f in ('detection_record.csv.gz', 'chain_summary.json') if not os.path.isfile(os.path.join(r, f))]
         if miss:
             refuse(f'G9: {batch_tag(r)} has no {", ".join(miss)}: its served sources cannot be re-judged')
+        try:
+            samples[r] = RS.md5_map(RS.verified(r, sample_names)[1])
+        except RS.SamplesRefusal as e:
+            refuse(f'G9b: {batch_tag(r)}: {e}')
     os.makedirs(work, exist_ok=True)
     names = dict(noise=dict(c.SNAPSHOT_NOISE), members=c.SNAPSHOT_MEMBERS, admission=c.SNAPSHOT_ADMISSION)
     script = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'rejudge.py')
@@ -1960,8 +1971,7 @@ def rejudge_runs(runs, dec_path, proto, card2, work, u=None, elev=None):
             os.remove(res)
         job = dict(run=os.path.abspath(r), decisions=os.path.abspath(dec_path), proto=os.path.abspath(proto), names=names,
                    card2=sorted(card2.uids[r]), elev1min=sorted(elev.uids[r]) if elev is not None else [],
-                   clv15=_legacy_clv15(), samples_dir=c.REJUDGE_SAMPLES_DIR or _legacy_clv15(),
-                   deep_omission_py=os.path.abspath(__file__), result=res)
+                   clv15=_legacy_clv15(), samples_md5=samples[r], deep_omission_py=os.path.abspath(__file__), result=res)
         jp = os.path.join(work, f'{tag}.job.json')
         with open(jp, 'w') as f:
             json.dump(job, f, indent=1)
@@ -1974,6 +1984,7 @@ def rejudge_runs(runs, dec_path, proto, card2, work, u=None, elev=None):
     with ThreadPoolExecutor(max(1, min(int(c.REJUDGE_PROCS), len(jobs) or 1))) as ex:
         results = list(ex.map(one, jobs))
     rej = Rejudged()
+    rej.samples = collections.OrderedDict((batch_tag(r), samples[r]) for r in runs)
     for (r, jp, res, log), lr in zip(jobs, results):
         if not lr.ok or not os.path.exists(res):
             refuse(f'G9: the re-judging of {batch_tag(r)} {"refused" if lr.refused else "failed"}: {lr.reason} (log {log})')
@@ -2070,6 +2081,7 @@ def run_snapshot(runs, out, rdir=None, proto=None, u=None, label='omit'):
                     ('below_floor_records', elev.n['removed_1min']), ('below_floor_served', elev.n['removed_1min_served']),
                     ('removed_from_view', n_el)]),
                 rejudge=rej.summary(n_rej_rows), rejudge_counts=dict(rej.N),
+                rejudge_samples=rej.samples,       # cutover row 70: the sample catalogs (file: md5) each run was re-judged on
                 rejudge_inputs=rejudge_inputs(runs), card2_vintage=card2_vintage(runs, reader),
                 absent_images=sum(absent_images.values()), seconds=round(time.time() - t0, 1))
     _write_summary(out, summ, n_om, 'served detections %d, kept %d; decisions %d (%d OMIT keys + %d wideband per image); %s' % (
@@ -2081,23 +2093,29 @@ def run_snapshot(runs, out, rdir=None, proto=None, u=None, label='omit'):
                           'served_detections': os.path.commonpath([os.path.abspath(r) for r in runs]),
                           'card2': os.path.commonpath([os.path.abspath(r) for r in runs]),
                           'chain_summary': os.path.commonpath([os.path.abspath(r) for r in runs])})
+        from exopipe.phase3.lib.catalog import run_samples as RS
         for r in runs:
-            for f in ('detection_record.csv.gz', 'served_tiers.csv'):
+            for f in ('detection_record.csv.gz', 'served_tiers.csv', RS.RECORD):
                 u.add_input(os.path.join(r, f))
+            for f in rej.samples[batch_tag(r)]:
+                u.add_input(os.path.join(RS.copy_dir(r), f))
     return summ
 
 
-REJUDGE_INPUT_FILES = ('detection_record.csv.gz', 'chain_summary.json', 'served_tiers.csv', 'card2_vleak.csv')
+REJUDGE_INPUT_FILES = ('detection_record.csv.gz', 'chain_summary.json', 'served_tiers.csv', 'card2_vleak.csv',
+                       'sample_catalogs.json')       # the last: run_samples.RECORD (cutover row 70)
 
 
 def rejudge_inputs(runs):
     """{batch tag: {file: [size, mtime_ns]}} of each run's re-judging and Card 2 inputs - recorded in the omit summary, so the
     cumulative step refuses an omit product whose re-judging inputs changed since (V_combview review T5 / F5: the build cannot
-    re-derive the re-judging)."""
+    re-derive the re-judging). The inputs include the run's sample-catalog record and each recorded copy (cutover row 70)."""
+    from exopipe.phase3.lib.catalog import run_samples as RS
+    files = REJUDGE_INPUT_FILES + tuple(os.path.join(RS.COPY_DIR, f) for f in RS.chain_names())
     out = collections.OrderedDict()
     for r in runs:
         d = collections.OrderedDict()
-        for f in REJUDGE_INPUT_FILES:
+        for f in files:
             try:
                 st = os.stat(os.path.join(r, f))
                 d[f] = [st.st_size, st.st_mtime_ns]

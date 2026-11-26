@@ -84,6 +84,12 @@ Deep omission of the short tiers (lib/catalog/deep_omission.py; Gregg 2026-10-24
   APPLIED by the snapshot tier's cumulative step, the combined snapshot view (`serve --tier snapshot --family comb`,
   lib/serve/snapshot_view.py: --view-omit takes this stage's --out, or its own omit stage writes the same products).
   --omit-refusals is an override of the RULED catalog_omission.REFUSALS (--ruling-for or a non-production --out).
+The sample catalogs of a snapshot run (cutover row 70, lib/catalog/run_samples.py): the chain stage copies them into the run
+  (sample_catalogs/ + sample_catalogs.json, class sample_catalogs) and the omit stage's re-judging reads that record (G9b without
+  it). A run chained before the record existed gets it ONCE, on purpose: `--tier snapshot --stages samples-backfill --samples-run
+  RUN --samples-from DIR --samples-why TEXT [--samples-ledger ID]` (--out = RUN; unit '<run>.samples-backfill'): SB1 not a chain
+  run, SB2 a record already there / a catalog missing / a copy not verified, SB3 the recorded set does not reproduce the chain
+  (rejudge.py --reproduce, no removals: the record and copies are moved aside).
 """
 import importlib
 import sys
@@ -182,6 +188,9 @@ def add_arguments(p):
             _TIER_ERRORS[tier] = f'add_arguments: {type(e).__name__}: {e}'
     from exopipe.phase3.lib.catalog import deep_omission
     deep_omission.add_arguments(p.add_argument_group('--stages omit, tiers snapshot and sublst (lib/catalog/deep_omission.py)'))
+    from exopipe.phase3.lib.catalog import run_samples
+    run_samples.add_arguments(p.add_argument_group('--stages samples-backfill, tier snapshot: the one-time sample-catalog record '
+                                                   'of a run chained before it (lib/catalog/run_samples.py)'))
     from exopipe.phase3.lib.catalog import grouping_stage
     grouping_stage.add_arguments(p.add_argument_group('grouping (item F.3): deep stage group; --tier sublst --stages group '
                                                       '(lib/catalog/grouping_stage.py)'))
@@ -212,9 +221,11 @@ def default_out(args):
             return inc.default_out(args)
     if args.tier == 'deep' or getattr(args, 'incremental', False):
         return f'{CFG.paths.TRANSIENTS_ROOT}/Run_{args.run_label or CFG.catalog.DEEP_RUN_LABEL}'
-    from exopipe.phase3.lib.catalog import deep_omission, grouping_stage
+    from exopipe.phase3.lib.catalog import deep_omission, grouping_stage, run_samples
     if deep_omission.wants(args):
         return deep_omission.default_out(args)
+    if run_samples.wants(args):
+        return run_samples.default_out(args)
     if grouping_stage.wants(args):
         return grouping_stage.default_out(args)
     mod = _tier_module(args.tier)
@@ -263,9 +274,11 @@ def run(args, run):
         except ValueError as e:
             print(f'error: {e}', file=sys.stderr)
             return record.EXIT_ERROR
-    from exopipe.phase3.lib.catalog import deep_omission, grouping_stage
+    from exopipe.phase3.lib.catalog import deep_omission, grouping_stage, run_samples
     if deep_omission.wants(args):
         return deep_omission.run(args, run)
+    if run_samples.wants(args):
+        return run_samples.backfill_main(args, run)
     if grouping_stage.wants(args):
         return grouping_stage.run(args, run)
     mod = _tier_module(args.tier)

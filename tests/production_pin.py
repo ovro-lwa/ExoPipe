@@ -41,9 +41,15 @@ OPS_REPO = '/lustre/gh/main/exopipe_ops'
 # commit touching a pinned file; the other pinned files unchanged since fba778e) with the port of the served-difference test's
 # changes for the Release 1 view: 9cfcca4 (first version, OLD none), 3ca5efc (cause 'excluded'), 3000328 (FAIL: served on an
 # excluded cell-band), 236ce9e + 0904351 (cause 'reprocessed', re-found within 2 px and one frame interval).
-PIN_COMMIT = '0904351efe3ec0e9e65688ae72fb4484935bf887'
+# Moved from 0904351 to exopipe_ops 352ef13 (2026-11-25 17:34, the newest commit touching a pinned file; the other pinned files
+# unchanged since 0904351) with cutover row 70 (FIX-20261125-SNAPCOMB-REJUDGE-PER-RUN-SAMPLE-CATALOGS): 352ef13 re-judges each
+# member on the sample catalogs its chain read, from a by-hand CSV run,samples_dir (SNAPCOMB_REJUDGE_SAMPLES; unlisted members on
+# the live clv15 directory). The port is by design, not by that switch: each run's own record (lib/catalog/run_samples.py) - the
+# tests' production side runs with no SNAPCOMB_REJUDGE_SAMPLES (prod_view clears SNAP*), i.e. on the live clv15 catalogs, which
+# are the bytes the synthetic runs recorded (tests/snapshot_chain_fixture.py copies them before its chain child reads them).
+PIN_COMMIT = '352ef1346f7e84a02ff9f6da6ee12ee3619d0f46'
 PIN_BLOBS = {
-    'snapshot_combined_view.py': '9f14e919c6ae0dfd9fdc3d60fcb615d70c2a02d6',        # fba778e (b114ff3, 5c49199, dbc40a6)
+    'snapshot_combined_view.py': 'f92c307d38c6025a61a3e5c1967eb994c5f21f53',        # 352ef13 (fba778e, b114ff3, 5c49199, dbc40a6)
     'snapshot_deep_omission.py': 'b55e6d76d64ed2d289834edce963119a2e48fdb1',        # dbc40a6
     'snapshot_rejudge.py': 'f6f3c620c8618c2f8f0f4a9571bb0dcbe788e5e9',              # b114ff3 (dbc40a6 new)
     'sublst_deep_omission.py': 'a031a978422129f40fc83285169ccde89ec3f2f9',          # dde1760

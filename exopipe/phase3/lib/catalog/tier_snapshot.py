@@ -32,7 +32,11 @@ Stages (--stages / --from / --until; default all, in this order):
   chain      memory model + node_mem_gate.sh (P-G17); the multi-cell chain over every cell (P-G18). THE RESTORE-ONLY 3-D GATE
              (clv15 b8d1989, exopipe_ops fa90670): the marker's CURVE_CONSTANTS_RESTORE=<table> line passes
              --curve-constants-restore <table> to every chain call (prefit lists, tie items, the chain); P-G21 (preflight) refuses
-             a named table that is missing or empty
+             a named table that is missing or empty. THE RUN'S SAMPLE CATALOGS (cutover row 70, lib/catalog/run_samples.py):
+             before the chain, catalog_snapshot.SAMPLES of paths.CLV15_ROOT are copied (verified) into RUN/sample_catalogs/ with
+             RUN/sample_catalogs.json (each file's md5, size, source; class sample_catalogs) and the chain reads --samples-dir
+             RUN/sample_catalogs - the set the combined view's re-judging reads back (P-G26: a missing catalog, an unverified
+             copy, SAMPLES not the chain's)
   wavediff   (only when named; after the pages) THE RESTORE-ONLY WAVE'S PER-BATCH TEST (lib/catalog/restore_wave, port of
              exopipe_ops snapshot_restore_wave_diff.py 8ff3fc8 + 9cfcca4..0904351): every detection the run this run REPLACES
              served, classified in this run's record (served / card2 / secondary / secondary-pool / 3d-gate / other-later /
@@ -54,13 +58,15 @@ Inputs:  the cells file; paths.SNAPSHOT_FLEET_OUT/<cell>/ (search products, runi
          (+ _template.csv) and the batch-1 store; the tie cache BATCH_DIR/tiecache; the served run on SERVED_PORT_CHECK
          (paths.SNAPSHOT_REVIEW_ROOT, or --snap-served-run); data_decisions.csv is applied inside the chain (in place).
 Outputs (product classes): RUN = --out (production catalog_snapshot.WORK_ROOT/snapshot_rechain_<NAME>/<NAME>):
-         chain_summary.json, candidates/, source_catalogs*/, queue*.txt, rejected.csv, vetoed/, ... (snapshot_run); the
+         chain_summary.json, candidates/, source_catalogs*/, queue*.txt, rejected.csv, vetoed/, ... (snapshot_run);
+         sample_catalogs.json + sample_catalogs/ (sample_catalogs: the catalogs the chain read); the
          combined store L/fits_store.csv (csv_table + the in-place store content test; fit_store is search's class, not
          registered yet); the tie cache rows of the run's cells (tie_cache); prefit and repair lists (csv_table); the
          preflight report (catalog_preflight). Non-production runs keep every side file under RUN/_side/ (fit-store and
          tie-cache COPIES, L, W); production writes the production paths of the batch driver.
-Failure modes (exit 2, gate named in the record): P-G1..P-G20 of spec section 5.3, P-G21 (the restore table); any in-place
-         script exiting non-zero;
+Failure modes (exit 2, gate named in the record): P-G1..P-G20 of spec section 5.3, P-G21 (the restore table), P-G26 (the
+         run's sample catalogs: SAMPLES not the chain's, a catalog missing, a copy not verified before or after the chain); any
+         in-place script exiting non-zero;
          a non-production store stage that needed repair rows (snapshot_store_ready.py reads only the production store
          directory: refused until the test is absorbed); a [lit] key differing from its module literal. Exit 1 = error.
 Per-hour vs intermittent: the chain associates over EVERY cell of the cumulative run at once (2 d 18 h on batch 2), so it is
@@ -377,18 +383,20 @@ def argparse_defaults(path):
 # the snapshot context
 # =====================================================================================================================
 
-def chain_args(cfg, c, store, chain_py, restore=None, analysis=(), defaults=None):
+def chain_args(cfg, c, store, chain_py, restore=None, analysis=(), defaults=None, samples_dir=None):
     """CHAINARGS of snapshot_rechain_batch.sh:280 plus every [arg] key whose config value differs from the script's own
     default (production passes none of those) and the analysis switches. Module level so the per-hour cell phase
     (lib/catalog/incremental_snapshot.py) passes the batch chain's own arguments, with its cell's store. ``defaults``: the
-    chain's argparse_defaults when the caller cached them (read here otherwise)."""
+    chain's argparse_defaults when the caller cached them (read here otherwise). ``samples_dir``: the chain's --samples-dir -
+    the run's own copies (<run>/sample_catalogs, cutover row 70) for the chain that reads them (st_chain); default
+    paths.CLV15_ROOT (the prefit-list and tie passes stop before the chain reads any sample catalog)."""
     T = _T()
     a = ['--proto-root', cfg.paths.SNAPSHOT_FLEET_OUT, '--master-catalogs', c.MASTER_CATALOGS,
          '--curve-constants', c.CURVE_CONSTANTS, '--fit-store', store, '--lightcurves-root', c.LIGHTCURVES_ROOT]
     if restore:                              # THE RESTORE-ONLY 3-D GATE: every chain call of the run (exopipe_ops fa90670)
         a += ['--curve-constants-restore', restore]
     d = defaults if defaults is not None else (argparse_defaults(chain_py) if os.path.exists(chain_py) else {})
-    for flag, val in (('--samples-dir', cfg.paths.CLV15_ROOT), ('--store-floor', c.STORE_FLOOR),
+    for flag, val in (('--samples-dir', samples_dir or cfg.paths.CLV15_ROOT), ('--store-floor', c.STORE_FLOOR),
                       ('--seed-floor', c.SEED_FLOOR), ('--assoc-floor', c.ASSOC_FLOOR),
                       ('--repeat-floor', c.REPEAT_FLOOR), ('--singleton-floor', c.SINGLETON_FLOOR['I']),
                       ('--singleton-floor-v', c.SINGLETON_FLOOR['V']), ('--struct-k', c.STRUCT['k']),
@@ -518,10 +526,11 @@ class Ctx:
                 raise
             return '<node-local scratch>/rechain_%s' % self.name
 
-    def chainargs(self):
+    def chainargs(self, samples_dir=None):
         if not hasattr(self, '_chain_defaults'):         # the chain's argparse defaults, read once per run
             self._chain_defaults = argparse_defaults(self.chain_py) if os.path.exists(self.chain_py) else {}
-        return chain_args(self.cfg, self.c, self.S, self.chain_py, self.restore, self.analysis, self._chain_defaults)
+        return chain_args(self.cfg, self.c, self.S, self.chain_py, self.restore, self.analysis, self._chain_defaults,
+                          samples_dir=samples_dir)
 
     def chain_env(self, **extra):
         refastro = None
@@ -567,6 +576,7 @@ def arg_list(args, name):
 
 CH, RA = 'phase3_snapshot_chain.py', 'phase3_snapshot_refastro.py'
 LIT = {
+    'catalog_snapshot.SAMPLES': ('clv15', CH, 'SAMPLES'),          # the files the run copies and records (cutover row 70)
     'catalog_snapshot.MIN_ELEVATION_DEG': ('clv15', CH, 'MIN_ELEVATION_DEG'),
     'catalog_snapshot.ATEAM_ANCHOR_DEG': ('clv15', CH, 'ATEAM_ANCHOR_DEG'),
     'catalog_snapshot.ATEAM_MIN_DEG': ('clv15', CH, 'ATEAM_MIN_DEG'),
@@ -1206,7 +1216,30 @@ def st_tie(ctx, s, plan):
                   .get('tie_model'))
 
 
+def record_samples(ctx, s):
+    """P-G26 THE RUN'S SAMPLE CATALOGS (cutover row 70; lib/catalog/run_samples.py): catalog_snapshot.SAMPLES (bound to the
+    chain's SAMPLES here too: --from chain skips the preflight's binding check) copied from paths.CLV15_ROOT into
+    RUN/sample_catalogs/ (verified copies) with RUN/sample_catalogs.json (file, md5, size, source, its mtime) - written BEFORE the
+    chain, which then reads exactly those copies (--samples-dir). Refuses: a binding mismatch, a missing catalog (the chain would
+    skip it silently), a copy that is not verified, a record already in RUN (the previous pass's files were moved aside)."""
+    from exopipe.phase3.lib.catalog import run_samples as RS
+    os.makedirs(ctx.RUN, exist_ok=True)
+    bad = [r for r in ctx.T.binding_check({'catalog_snapshot.SAMPLES': LIT['catalog_snapshot.SAMPLES']}) if r[1] != 'ok']
+    if bad:
+        refuse('P-G26 sample catalogs: catalog_snapshot.SAMPLES %s the chain\'s (%s: %r)' % (bad[0][1], bad[0][4], bad[0][3]))
+    try:
+        rec = RS.write(ctx.RUN, ctx.cfg.paths.CLV15_ROOT, RS.chain_names(ctx.c), 'chain')
+    except RS.SamplesRefusal as e:
+        refuse('P-G26 sample catalogs: %s' % e)
+    s.inp(*[x['source'] for x in rec['files']])
+    s.out(RS.record_path(ctx.RUN), 'sample_catalogs')
+    ctx.log.say('sample catalogs: %d files of %s copied into %s/ (%s)' % (
+        len(rec['files']), ctx.cfg.paths.CLV15_ROOT, RS.COPY_DIR, ', '.join('%s %s' % kv for kv in RS.md5_map(rec).items())))
+    return rec
+
+
 def st_chain(ctx, s, plan):
+    from exopipe.phase3.lib.catalog import run_samples as RS
     T, c = ctx.T, ctx.c
     pr = T.stage_record(ctx.RUN, '%s.prefit' % ctx.name) or {}
     meta = pr.get('meta') or {}
@@ -1214,10 +1247,13 @@ def st_chain(ctx, s, plan):
     need = arg_val(ctx.args, 'snap_chain_need_gb') or memory_need(c.MEM_MODEL, nload, ndet, len(ctx.cells), c.LC_CACHE_MAX)
     env = ctx.chain_env(P3_TIE_CACHE_DIR=ctx.tiecache, P3_REFASTRO_SHARDS=c.CHAIN_REFASTRO_SHARDS,
                         P3_VETO_PROCS=c.VETO_PROCS, P3_LC_CACHE_MAX=c.LC_CACHE_MAX)
-    a = ctx.chainargs() + ['--cells'] + ctx.cells + ['--out', ctx.RUN, '--veto-record-root',
-                                                     c.VETO_RECORD_ROOT.format(run=ctx.RUN)]
+    a = ctx.chainargs(samples_dir=RS.copy_dir(ctx.RUN)) + ['--cells'] + ctx.cells + ['--out', ctx.RUN, '--veto-record-root',
+                                                                                   c.VETO_RECORD_ROOT.format(run=ctx.RUN)]
     plan.append('memory model: %d loaded, %d at the fit step, %d cells -> %s GB (max %d)' % (
         nload, ndet, len(ctx.cells), need, c.MEM_MODEL['max_gb']))
+    plan.append('P-G26 sample catalogs: %s of %s copied into %s with %s; the chain reads --samples-dir %s' % (
+        ', '.join(RS.chain_names(c)), ctx.cfg.paths.CLV15_ROOT, RS.copy_dir(ctx.RUN), RS.record_path(ctx.RUN),
+        RS.copy_dir(ctx.RUN)))
     plan.append('chain: %s %s %s   env %s > %s/chain.log' % (ctx.py36, ctx.chain_py, ' '.join(a[:12]) + ' ...',
                                                             ' '.join('%s=%s' % kv for kv in sorted(env.items())), ctx.W))
     if ctx.dry:
@@ -1245,6 +1281,7 @@ def st_chain(ctx, s, plan):
     os.makedirs(ctx.W, exist_ok=True)
     s.code(ctx.chain_py)
     s.inp(ctx.S, ctx.cells_file)
+    record_samples(ctx, s)
     if ctx.restore:
         if not (os.path.isfile(ctx.restore) and os.path.getsize(ctx.restore) > 0):
             refuse('P-G21 CURVE_CONSTANTS_RESTORE: no table %s (named by %s)' % (ctx.restore, ctx.marker))
@@ -1255,6 +1292,10 @@ def st_chain(ctx, s, plan):
     if not res.ok:
         tail = [ln for ln in (res.tail or '').splitlines() if 'warn' not in ln.lower() and ln.strip() and not ln[0].isspace()]
         refuse('P-G18: chain rc=%s (%s)' % (res.rc, (tail[-1] if tail else '')[:160]))
+    try:                                     # the copies the chain read are still the recorded bytes after it
+        RS.verified(ctx.RUN, RS.chain_names(c))
+    except RS.SamplesRefusal as e:
+        refuse('P-G26 sample catalogs after the chain: %s' % e)
     summ = json.load(open(os.path.join(ctx.RUN, 'chain_summary.json')))
     ctx.log.say('chain: served %s prefit %s ghost %s checksources_missing %s; tied in the multi-cell chain: %s; peak memory '
                 '%.1f GB (model %s GB)' % (summ.get('n_served'), summ.get('prefit'), (summ.get('ghost_gate_removed') or {}).get('n'),

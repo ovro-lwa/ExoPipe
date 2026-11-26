@@ -708,6 +708,8 @@ if __name__ == "__main__":
 ''',
     'clv15/phase3_snapshot_chain.py': r'''
 import csv, json, os, sys
+SAMPLES = [("Hot_Warm_Jupiters", "Hot_Warm_Jupiters.csv"), ("10pc", "10pc.csv"), ("25pc", "25pc.csv"), ("LPTs", "LPTs.csv"),
+           ("flare_ucd", "flare_ucd.csv"), ("sydney_stars", "sydney_stars.csv"), ("pulsars_atnf", "pulsars_atnf.csv")]
 a = sys.argv[1:]
 def opt(k, n=1):
     i = a.index(k); return a[i + 1] if n == 1 else a[i + 1:]
@@ -741,6 +743,10 @@ if "--stop-after-tie" in a:
               open(os.path.join(out, "chain_summary.json"), "w"))
     print("STOP-AFTER-TIE"); sys.exit(0)
 assert os.environ.get("P3_VETO_PROCS") == "24" and os.environ.get("P3_REFASTRO_SHARDS") == "24"
+# cutover row 70: the full chain reads the run's own copies of its sample catalogs (tier_snapshot P-G26), every one present
+sd = opt("--samples-dir")
+assert sd == os.path.join(out, "sample_catalogs"), sd
+assert all(os.path.isfile(os.path.join(sd, fn)) for _t, fn in SAMPLES), os.listdir(sd)
 os.makedirs(os.path.join(out, "candidates/Red/rank0001_Red_J0000+0000"))
 json.dump({"cells": cells, "prefit": {"n_without_fit": 0, "n_at_per_frame_fit_step": 3}, "n_served_with_unfitted_frames": 0,
            "n_unfitted_frames_under_served": 0, "domain_dropped": {"ghost": 0}, "tie_cache": {"from_cache": 3, "tied_now": 0},
@@ -1239,6 +1245,14 @@ def test_e2e_snapshot(site):
        out[-900:])
     ok('nothing written to the production batch dir copies source (stores unchanged)',
        open(f'{T}/batch/fits/fits_14h_2025-03-09.csv').read().count('\n') == 2)
+    from exopipe.phase3.lib.catalog import run_samples as RS
+    srec = json.load(open(RS.record_path(RUN)))
+    tests = [t for t in rc_rec.get('tests', []) if t.get('cls') == 'sample_catalogs']
+    ok('chain: the sample catalogs copied into the run before the chain (sample_catalogs.json, md5 of each = its source in '
+       'paths.CLV15_ROOT), the content test sample_catalogs passed, the chain read --samples-dir RUN/sample_catalogs',
+       srec['how'] == 'chain' and [x['name'] for x in srec['files']] == RS.chain_names()
+       and all(x['md5'] == RS.md5_file(x['source']) for x in srec['files']) and tests and all(t['passed'] for t in tests),
+       (srec.get('how'), tests))
 
 
 # =====================================================================================================================

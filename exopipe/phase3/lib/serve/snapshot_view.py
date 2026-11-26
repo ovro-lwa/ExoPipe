@@ -115,6 +115,11 @@ partial source by its own (ts, subband) detection (the review's defect RP fixed)
 summary's card2 / rejudge keys - production's view byte for byte (tests/test_snapshot_view.py test_parity). G-V8 also re-checks
 the cells (the rate population) and the re-judging / Card 2 inputs (size, mtime) against the omit product; G-V9 a partial source
 whose own detection is absent from its page; G-V10 an image absent from a member table.
+Cutover row 70 (exopipe_ops 352ef13 ported by design, not by its switch): the omit stage re-judges each batch run on the sample
+catalogs ITS chain read, from the run's own record (lib/catalog/run_samples.py: <run>/sample_catalogs.json + the verified copies;
+G9b a run without it or with a copy that differs) - production's SNAPCOMB_REJUDGE_SAMPLES map (CSV run,samples_dir passed by hand,
+unlisted runs on the live clv15 catalogs) has no counterpart; the record is one of the re-judging inputs G-V8 re-checks, and the
+omit summary names each run's catalogs (rejudge_samples: file -> md5).
 G-V12 (exopipe_ops 5c49199) a batch without FLUXSCAL_APPLIED.json, or an hour-band it scaled that no longer has status ok and that
 factor (snapshot_fluxscal.band_factors, in place); the files it reads are inputs of the build unit (fluxscal_inputs), so a serve
 stage's require_done (G28) refuses once one changed. The 1-minute elevation floor (b114ff3; R-GREGG-20261112-1MIN-ELEVATION-POSTHOC-
@@ -1237,7 +1242,8 @@ def check_decisions_current(u, plan, summ, recs):
     inp_now = DO.rejudge_inputs(plan.runs)
     if json.loads(json.dumps(inp_now)) != summ.get('rejudge_inputs'):
         bad = [t for t in inp_now if json.loads(json.dumps(inp_now[t])) != (summ.get('rejudge_inputs') or {}).get(t)]
-        u.refuse(f'G-V8 the re-judging / Card 2 inputs (detection record, chain summary, served_tiers.csv, card2_vleak.csv) of '
+        u.refuse(f'G-V8 the re-judging / Card 2 inputs (detection record, chain summary, served_tiers.csv, card2_vleak.csv, '
+                 f'sample-catalog record) of '
                  f'{", ".join(bad) or "the runs"} changed since the omit stage - its re-judging is stale; run the omit stage again')
     rows = DO.decide_snapshot(summ.get('lsts') or [], served, rdir=rdir, proto=proto, cells=set(summ['cells']))
     DO.write_decisions(now, rows, DO.TIER_SNAPSHOT)
