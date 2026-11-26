@@ -18,9 +18,12 @@ Checks (each in a fresh interpreter, so the signal dispositions and at-fork hook
  2. a SIGTERM delivered in that window: the same hook sends SIGTERM to the child itself; the child ends by signal 15 and its
     own code never runs.
  3. the race as Pool.terminate() meets it: on one CPU, the step sends SIGTERM to each child the moment os.fork() returns, so
-    the signal is there before the child has run; 40 children forked from the main thread and 40 from another thread all end
-    by signal 15, none runs its own code, and none prints the race-condition message. Before the fix all 80 lived on
-    (lwacalim07, 2026-11-26).
+    on lwacalim07 the signal is there before the child has run; 40 children forked from the main thread and 40 from another
+    thread all end by signal 15, none completes its own code, and none prints the race-condition message. The child's own
+    code first waits until the step has sent the signal (EOF on a pipe the step closes after the kill), so a child that
+    completes it lost a SIGTERM sent while it was alive, whichever process the scheduler runs first (GitHub's ubuntu-24.04
+    runner ran a child first, 2026-11-26: without that wait 1 of 40 had exited before the kill and counted as lost).
+    Before the fix all 80 lived on (lwacalim07, 2026-11-26).
 
 Run standalone: python tests/test_cli_sigterm_fork_window.py    Under pytest: pytest tests/test_cli_sigterm_fork_window.py
 """
@@ -89,10 +92,15 @@ counts = {}
 def forks(where):
     k = {'signal15': 0, 'ran': 0, 'other': 0}
     for _ in range(n):
+        r, w = os.pipe()
         pid = os.fork()
-        if pid == 0:
-            os._exit(7)                # the child's own code: reached only by a child whose SIGTERM was lost
+        if pid == 0:                   # the child's own code: completed only by a child whose SIGTERM was lost
+            os.close(w)
+            os.read(r, 1)              # EOF once the step has sent SIGTERM and closed its end
+            os._exit(7)
+        os.close(r)
         os.kill(pid, signal.SIGTERM)
+        os.close(w)
         _, st = os.waitpid(pid, 0)
         if os.WIFSIGNALED(st) and os.WTERMSIG(st) == signal.SIGTERM:
             k['signal15'] += 1
@@ -176,7 +184,7 @@ def test_sigterm_at_fork_return():
     rc, so, se = run(RACE, str(n), timeout=300)
     want = ['main signal15 %d ran 0 other 0' % n, 'thread signal15 %d ran 0 other 0' % n]
     check('SIGTERM sent the moment os.fork() returns, on one CPU (before the child has run): all %d children from the main '
-          'thread and all %d from another thread end by signal 15, none runs its own code' % (n, n),
+          'thread and all %d from another thread end by signal 15, none completes its own code' % (n, n),
           rc == 0 and all(x in so for x in want) and 'race condition' not in se and 'Terminated' not in se,
           (rc, so, se[-400:]))
     assert not FAILED, FAILED
