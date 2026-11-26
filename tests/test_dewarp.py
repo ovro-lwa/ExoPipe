@@ -148,8 +148,10 @@ def write(path, data, hdr):
 
 def make_generation(base, cell, seed, bad_shape=False, mdwarp=False):
     """A cell generation like a promoted rebuild: coadd_final (4 I + 1 V plains, 2 PB maps, 5 pbcorr siblings, one LOO
-    master) and subtracted (one I and one V residual). The masters carry the constituent digest CONSTDIG; the LOO master is
-    its parent's as coadd.py writes it (PARENTDG = CONSTDIG = the parent's, LOOEXCL = the night it leaves out)."""
+    master) and subtracted (one I and one V residual). The masters carry the constituent digest CONSTDIG and NCOADD (I 2
+    nights, V 1: a V stack the masters build writes no LOO master of, masters_build.LOO_N_RANGE); the LOO master is its
+    parent's as coadd.py writes it (PARENTDG = CONSTDIG = the parent's, NCOADD the parent's - 1, LOOEXCL = the night it
+    leaves out)."""
     lst, s = cell.split('_', 1)
     cf = os.path.join(base, cell, 'coadd_final')
     pb = pb_map()
@@ -161,14 +163,15 @@ def make_generation(base, cell, seed, bad_shape=False, mdwarp=False):
                               f'I_deep_NoTaper_R0_{s}', f'V_deep_Taper_R0_{s}')):
         d = sky(seed + i)
         plains[name] = d
-        write(os.path.join(cf, name + '.fits'), d, header(s, **extra))
+        write(os.path.join(cf, name + '.fits'), d, header(s, NCOADD=1 if name.startswith('V_') else 2, **extra))
     write(os.path.join(cf, f'PB_deep_{s}.fits'), pb, header(s))
     write(os.path.join(cf, f'PB_deep_R075_{s}.fits'), pb, header(s))
     for name, d in plains.items():
         sib = np.where(pb > 0.1, d / pb, np.nan).astype(np.float32)
-        write(os.path.join(cf, name.replace(f'_{s}', f'_pbcorr_{s}', 1) + '.fits'), sib, header(s, **extra))
+        write(os.path.join(cf, name.replace(f'_{s}', f'_pbcorr_{s}', 1) + '.fits'), sib,
+              header(s, NCOADD=1 if name.startswith('V_') else 2, **extra))
     write(os.path.join(cf, 'loo', f'2025-01-01_I_loo_Taper_R075_{s}.fits'), sky(seed + 10),
-          header(s, PARENTDG=dig, LOOEXCL='2025-01-01', **extra))
+          header(s, PARENTDG=dig, LOOEXCL='2025-01-01', NCOADD=1, **extra))
     sub = os.path.join(base, cell, 'subtracted')
     write(os.path.join(sub, f'2025-01-01_I_sub_{s}.fits'), sky(seed + 11), header(s))
     write(os.path.join(sub, f'2025-01-01_V_sub_{s}.fits'), sky(seed + 12), header(s))
@@ -608,7 +611,7 @@ def test_end_to_end(tmp):
               and sorted(r['scope'] for r in krows) == sorted(ra['meta'].get('screen_keys', {}))
               and all(not r['screen'] and not r['screen_md5'] and r['master_md5'] == SC.md5(r['master'])
                       and r['pbcorr_md5'] == SC.md5(r['pbcorr']) for r in krows), str(kt)[:200] + str(krows)[:200])
-    # unstamped copies of the not-accepted cell's promoted coadd_final (top level) for the direct record() cases below
+    # unstamped copies of the not-accepted cell's promoted coadd_final (top level, loo/) for the record() cases below
     from exopipe.phase3.core import record as _record, validate as _validate
     from exopipe.phase3.lib.dewarp import steps_cell as SCL
     cf32 = os.path.join(r['promoted'], f'{LST}_32MHz', 'coadd_final')
@@ -617,6 +620,7 @@ def test_end_to_end(tmp):
         os.makedirs(dst)
         for f in glob.glob(os.path.join(cf32, '*.fits')):
             shutil.copy(f, dst)
+        shutil.copytree(os.path.join(cf32, 'loo'), os.path.join(dst, 'loo'))
     # --- R: the not-accepted cell alone, record stage only (parity guard on): MDWSTAT (R-GREGG-20261111-MDWSTAT-CARD) on its
     #     promoted masters; the final row is REFERENCE ONLY (anchor offset 12.0 - held-out 9.0 arcsec): the table's form
     outR = os.path.join(tmp, 'outR')
@@ -669,6 +673,12 @@ def test_end_to_end(tmp):
     #     the install takes it while the masters keep its md5 (lib/install/mdwstat): an interrupted stamp (a master it
     #     cannot write), then a master rewritten with another value as an interrupted stamp of a new value would leave it
     from exopipe.phase3.lib.install import mdwstat as MW
+
+    def lmd5(ps):                                  # the LOO masters as the install takes them (the record's loo_files)
+        return {os.path.basename(p): SC.md5(p) for p in ps}
+
+    def lstat(ps):
+        return {os.path.basename(p): (os.stat(p).st_size, os.stat(p).st_mtime_ns) for p in ps}
     out8 = os.path.join(tmp, 'outR8')
     seed_record(out8, ('32MHz',))
     a8 = ('dewarp', '--cells', f'{LST}_32MHz', '--stages', 'record', '--measurement', r['meas'], '--out', out8, '--work',
@@ -676,11 +686,12 @@ def test_end_to_end(tmp):
     rc8, txt, s = cli(*a8)
     d8 = rec(out8, f'{LST}_32MHz')
     seed_record(out8, ('32MHz',))                  # routed again for the rerun
-    os.chmod(masters[5], 0o444)
+    md5s8 = {p: SC.md5(p) for p in masters}
+    os.chmod(cf32, 0o555)                          # no stamped copy can be made beside the masters (none is rewritten in place)
     try:
         rc9, txt, s = cli(*a8)
     finally:
-        os.chmod(masters[5], 0o644)
+        os.chmod(cf32, 0o755)
     e8 = rec(out8, f'{LST}_32MHz')
     last8 = ((e8 or {}).get('meta') or {}).get('last_done') or {}
     ch8 = MW.choose(f'{LST}_32MHz', {}, 'no table', out8)
@@ -690,16 +701,18 @@ def test_end_to_end(tmp):
           and 'dewarp.mdwstat' in e8['reason'] and last8.get('run_id') == d8['run_id']
           and last8.get('mdwstat') == d8['meta']['mdwstat'] and ch8.source == MW.RECORD and ch8.value == want
           and ch8.entry == 'meta.last_done.mdwstat' and "'refused'" in ch8.notes[0]
-          and MW.problems(ch8, {os.path.basename(p): SC.md5(p) for p in masters}) == []
+          and MW.problems(ch8, {os.path.basename(p): SC.md5(p) for p in masters}, (), lmd5(loo32)) == []
           and MW.stat_problems(ch8, {os.path.basename(p): (os.stat(p).st_size, os.stat(p).st_mtime_ns)
-                                     for p in masters})[0] == [],
+                                     for p in masters}, (), lstat(loo32))[0] == []
+          and all(SC.md5(p) == m for p, m in md5s8.items()) and not glob.glob(os.path.join(cf32, '*.tmp')),
           f'rc {rc8}/{rc9}; {(e8 or {}).get("reason", "")[:160]}; {ch8.notes[:1]}')
     keep8 = os.path.join(tmp, 'keep_master0.fits')
     shutil.copy2(masters[0], keep8)
     with fits.open(masters[0], mode='update', memmap=False) as hl:
         hl[0].header['MDWSTAT'] = 'refused: another value (interrupted)'
-    pr8 = MW.problems(ch8, {os.path.basename(p): SC.md5(p) for p in masters})
-    sp8 = MW.stat_problems(ch8, {os.path.basename(p): (os.stat(p).st_size, os.stat(p).st_mtime_ns) for p in masters})
+    pr8 = MW.problems(ch8, {os.path.basename(p): SC.md5(p) for p in masters}, (), lmd5(loo32))
+    sp8 = MW.stat_problems(ch8, {os.path.basename(p): (os.stat(p).st_size, os.stat(p).st_mtime_ns) for p in masters}, (),
+                           lstat(loo32))
     shutil.copy2(keep8, masters[0])
     check('interrupted stamp of another value: the master it rewrote (same size) is left to the md5 by the plan\'s '
           'pre-check and makes the last done record STALE at the md5, naming the master', len(pr8) == 1
@@ -748,16 +761,20 @@ def test_end_to_end(tmp):
     # --- R4: a failed stamp refuses BEFORE the applied=0 row (the cell stays routed); the rerun stamps every master
     roots3.rebuild = os.path.join(tmp, 'promoted_fail')
     fm = sorted(glob.glob(os.path.join(roots3.rebuild, f'{LST}_32MHz', 'coadd_final', '[IV]_deep_*.fits')))
-    os.chmod(fm[3], 0o444)
+    md5s4 = {p: SC.md5(p) for p in fm}
+    os.chmod(fm[3], 0o000)                         # its stamped copy cannot be made (the file cannot be read)
     try:
         with run3.unit(f'{LST}_32MHz') as u4:
             SCL.record(u4, roots3, f'{LST}_32MHz', row32, meas32)
     finally:
         os.chmod(fm[3], 0o644)
     routed = SC.routing_row(roots3, f'{LST}_32MHz')
-    check('a failed MDWSTAT write refuses before the applied=0 row: the record file unchanged, the cell still routed',
+    check('a failed MDWSTAT stamp refuses before the applied=0 row: the record file unchanged, the cell still routed; no '
+          'master changed (none half-stamped), no temporary copy left',
           u4.status == 'refused' and 'dewarp.mdwstat' in (u4.reason or '') and os.path.basename(fm[3]) in u4.reason
-          and open(csv3).read() == before3 and routed and routed[0].get('applied') == '1',
+          and open(csv3).read() == before3 and routed and routed[0].get('applied') == '1'
+          and all(SC.md5(p) == m for p, m in md5s4.items())
+          and not glob.glob(os.path.join(os.path.dirname(fm[0]), '*.tmp')),
           f'{u4.status}: {(u4.reason or "")[:160]}')
     with run3.unit(f'{LST}_32MHz') as u5:
         SCL.record(u5, roots3, f'{LST}_32MHz', row32, meas32)
@@ -824,6 +841,32 @@ def test_end_to_end(tmp):
     check('G-W up front: a --measurement shows the not-accepted cell to stamp; an accepted one stamps nothing',
           STEP_stamp(a, {LST: [f'{LST}_32MHz', f'{LST}_27MHz']}) == [f'{LST}_32MHz']
           and STEP_stamp(a, {LST: [f'{LST}_27MHz']}) == [], '')
+    # --- B0: G-R5 on an accepted cell's apply source, before the resample (steps_cell.loo_source_gate): a stale leave-one-out
+    #     master (another parent's digest, the search's D-G16 rule) refuses the apply with no generation written; the dry run
+    #     previews it as WOULD REFUSE
+    loo27 = SC.loo_files(os.path.join(r['promoted'], f'{LST}_27MHz', 'coadd_final'))[0]
+    keep27 = os.path.join(tmp, 'keep_loo27.fits')
+    shutil.copy2(loo27, keep27)
+    with fits.open(loo27, mode='update', memmap=False) as hl:
+        hl[0].header['PARENTDG'] = 'f' * 32
+    outB0 = os.path.join(tmp, 'outB0')
+    seed_record(outB0, ('27MHz',))
+    try:
+        rcd, txtd, _s = cli('dewarp', '--cells', f'{LST}_27MHz', '--stages', 'apply', '--measurement', r['meas'], '--out', outB0,
+                            '--work', work, '--dry-run', *common_sets(r))
+        rc0, txt0, _s = cli('dewarp', '--cells', f'{LST}_27MHz', '--stages', 'apply', '--measurement', r['meas'], '--out', outB0,
+                            '--work', work, *common_sets(r))
+    finally:
+        shutil.copy2(keep27, loo27)
+    c0 = rec(outB0, f'{LST}_27MHz')
+    check('G-R5 dry run: an accepted cell whose source holds a stale LOO master previews WOULD REFUSE (exit 2), the file named',
+          rcd == 2 and 'WOULD REFUSE - G-R5 (the apply\'s source' in txtd and os.path.basename(loo27) in txtd, txtd[-600:])
+    check('G-R5 on the apply source: an accepted cell with a stale LOO master refuses before the resample - the gate and the '
+          'file named, no gen_mdewarp_rbf on disk', rc0 == 2 and c0 and c0['status'] == 'refused'
+          and c0['reason'].startswith(f'G-R5: {LST}_27MHz:') and os.path.basename(loo27) in c0['reason']
+          and 'no generation written' in c0['reason']
+          and not os.path.exists(os.path.join(outB0, 'gen', f'{LST}_27MHz', 'gen_mdewarp_rbf')),
+          (c0['reason'][:300] if c0 else txt0[-400:]))
     # --- B: apply, verify, record on five cells (parity guard on)
     outB = os.path.join(tmp, 'outB')
     seed_record(outB, ('27MHz', '32MHz', '36MHz', '46MHz'))       # routing (default 'screen_record'): 41 MHz not routed
@@ -943,7 +986,9 @@ def test_end_to_end(tmp):
           last27.get('mdwstat') == c27['meta'].get('mdwstat') and ch27.source == MW.RECORD and ch27.value == 'applied'
           and ch27.entry == 'meta.last_done.mdwstat' and 'G-A3' in ch27.notes[0]
           and MW.problems(ch27, {os.path.basename(p): SC.md5(p)
-                                 for p in SC.master_files(os.path.join(gen, 'coadd_final'))}) == [], ch27.notes[:1])
+                                 for p in SC.master_files(os.path.join(gen, 'coadd_final'))}, (),
+                          {os.path.basename(p): SC.md5(p) for p in SC.loo_files(os.path.join(gen, 'coadd_final'))}) == [],
+          ch27.notes[:1])
     rc, txt, s = cli('dewarp', '--cells', f'{LST}_27MHz', '--stages', 'apply', '--measurement', r['meas'], '--out', outB,
                      '--fresh', *common_sets(r))
     c = rec(outB, f'{LST}_27MHz')
@@ -979,6 +1024,7 @@ def _stub_master(lst, scope):
     os.makedirs(d, exist_ok=True)
     h = fits.Header()
     h['MDWSTAT'] = 'applied'
+    h['NCOADD'] = 1                    # a one-night stack: no leave-one-out master needed (G-R5, masters_build.LOO_N_RANGE)
     fits.writeto(os.path.join(d, f'I_deep_Taper_R075_mdewarp_{scope}.fits'), np.zeros((2, 2), np.float32), h)
     return 1
 
@@ -1218,7 +1264,8 @@ def test_pb_weights(tmp):
             base = os.path.join(tmp, f'pbw_{name}')
             fd = os.path.join(base, 'working', cell, 'coadd_final')
             os.makedirs(fd)
-            fits.writeto(os.path.join(fd, 'I_deep_Taper_R075_Blue.fits'), np.zeros((2, 2), np.float32))
+            fits.writeto(os.path.join(fd, 'I_deep_Taper_R075_Blue.fits'), np.zeros((2, 2), np.float32),
+                         fits.Header([('NCOADD', 1)]))     # one night: no LOO master needed (G-R5 on the source)
             h = fits.Header()
             h['PBNDATE'], h['PBMISS'] = nd, nm
             fits.writeto(os.path.join(fd, 'I_deep_Taper_R075_pbcorr_Blue.fits'), np.zeros((2, 2), np.float32), h)
