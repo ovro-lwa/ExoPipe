@@ -406,8 +406,8 @@ def _mdw_record_check(cell, gen, staged, omit_vclean):
     """v2 gate MDW-REC on the STAGED masters, before b's trial copy and before any move: when RELEASE1_MDW_TABLE is the
     install's MDWSTAT source (lib/install/mdwstat.Source) and the cell's value comes from its dewarp record, every master
     staged from the generation must be one the record stamped, with the record's md5 (the md5 taken at staging, before b's
-    stamp), and every master the record stamped must be staged (unless --omit-vclean left it out). A table path: nothing
-    to check."""
+    stamp), and every master the record stamped must be staged (unless --omit-vclean left it out); the same for the
+    leave-one-out masters staged from <gen>/coadd_final/loo (the record's loo_files). A table path: nothing to check."""
     chk = getattr(RELEASE1_MDW_TABLE, 'staged_problems', None)
     if chk is None:
         return
