@@ -367,9 +367,12 @@ def _register_fork_hooks():
 
 
 def _step_processes(known):
-    """{pid: (state, parent pid, start time)} of this process's descendants in its own session (/proc/<pid>/stat), and of the
-    processes of ``known`` ({pid: start time}, seen before) still there - a descendant whose parent ended since. A child given
-    a session of its own (start_new_session: a detached server, an engine run as its own process group) and its descendants
+    """{pid: (state, parent pid, start time)} of the processes the step started that are still in its session
+    (/proc/<pid>/stat): its descendants there; the processes of ``known`` ({pid: start time}, seen before) still there - a
+    descendant whose parent ended since; and, when the step leads its session (the driver starts each step in a session of
+    its own), every other process in it - only the step's descendants can be, including one orphaned before the first look
+    (subprocess.run, interrupted, kills its script with SIGKILL and leaves the script's own children running). A child given a
+    session of its own (start_new_session: a detached server, an engine run as its own process group) and its descendants
     belong to the code that started it."""
     me, sid = os.getpid(), os.getsid(0)
     procs, kids = {}, {}
@@ -393,6 +396,8 @@ def _step_processes(known):
     for pid, start in known.items():
         if pid not in out and pid in procs and procs[pid][3] == start:
             out[pid] = procs[pid]
+    if sid == me:
+        out.update((pid, p) for pid, p in procs.items() if p[2] == sid and pid != me)
     return {pid: (state, ppid, start) for pid, (state, ppid, _, start) in out.items()}
 
 

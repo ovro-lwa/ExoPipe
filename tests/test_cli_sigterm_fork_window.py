@@ -48,7 +48,8 @@ Checks (each in a fresh interpreter, so the signal dispositions and at-fork hook
     then execs (a subprocess child forked in C drops one that reaches it before its exec; here bash ignores it, then execs
     sleep 60) is sent SIGTERM again and ends by signal 15; a child that ignores SIGTERM ends by SIGKILL after the grace
     period (signal 9; the test sets cli._CHILD_TERM_S to 1 s); a child with a session of its own (start_new_session) is
-    left alone; nothing else of the step's session outlives it.
+    left alone; the child of a script killed with SIGKILL (as subprocess.run does when interrupted), orphaned before the
+    step's exit, is ended too (the step leads its session); nothing else of the step's session outlives it.
 
 Run standalone: python tests/test_cli_sigterm_fork_window.py    Under pytest: pytest tests/test_cli_sigterm_fork_window.py
 """
@@ -413,9 +414,15 @@ with cli._sigterm_interrupts('photometry'):
     b = subprocess.Popen(['sleep', '60'], preexec_fn=lambda: signal.signal(signal.SIGTERM, signal.SIG_IGN), stdin=dn,
                          stdout=dn, stderr=dn)
     c = subprocess.Popen(['sleep', '30'], start_new_session=True, stdin=dn, stdout=dn, stderr=dn)
-    while not os.path.exists(os.path.join(tmp, 'a')):
+    g = subprocess.Popen(['bash', '-c', 'sleep 60 & echo $! > %s/g.tmp; mv %s/g.tmp %s/g; wait' % (tmp, tmp, tmp)], stdin=dn,
+                         stdout=dn, stderr=dn)
+    while not (os.path.exists(os.path.join(tmp, 'a')) and os.path.exists(os.path.join(tmp, 'g'))):
         time.sleep(0.01)
-    print('pids lost %d ignores %d detached %d' % (a.pid, b.pid, c.pid), flush=True)
+    with open(os.path.join(tmp, 'g')) as f:
+        orphan = int(f.read())
+    g.kill()                           # as subprocess.run does to its script when interrupted: the script's child lives on
+    g.wait()
+    print('pids lost %d ignores %d detached %d orphan %d' % (a.pid, b.pid, c.pid, orphan), flush=True)
     t0 = time.monotonic()
     try:
         real_kill(os.getpid(), signal.SIGTERM)
@@ -609,9 +616,10 @@ def test_subprocess_child_of_interrupted_step():
         ok = rc == 0 and len(pids) == 1 and len(ended) == 1 and not left and 'not interrupted' not in so
         detached_alive = False
         if len(pids) == 1:
-            a, b, c = int(pids[0][2]), int(pids[0][4]), int(pids[0][6])
+            a, b, c, g = int(pids[0][2]), int(pids[0][4]), int(pids[0][6]), int(pids[0][8])
             named = dict(re.findall(r'\b(\d+) \(([^)]*)\)', ended[0])) if len(ended) == 1 else {}
-            ok = ok and named.get(str(a)) == 'signal 15' and named.get(str(b)) == 'signal 9' and str(c) not in named
+            ok = ok and named.get(str(a)) == 'signal 15' and named.get(str(b)) == 'signal 9' and str(c) not in named \
+                and str(g) in named
             try:
                 with open('/proc/%d/stat' % c, 'rb') as f:
                     st = f.read()
@@ -622,8 +630,9 @@ def test_subprocess_child_of_interrupted_step():
             if detached_alive:          # the test's own detached child (its session, its name checked above)
                 os.kill(c, signal.SIGKILL)
         check('the interrupted step\'s exit: a child that dropped the first SIGTERM and then exec\'d is sent SIGTERM again '
-              '(signal 15); one that ignores SIGTERM ends by SIGKILL after the grace period (signal 9); one with a session of '
-              'its own is left running; nothing else of the step\'s session outlives the step',
+              '(signal 15); one that ignores SIGTERM ends by SIGKILL after the grace period (signal 9); a script\'s child '
+              'orphaned when the script was killed is ended; one with a session of its own is left running; nothing else of '
+              'the step\'s session outlives the step',
               ok and detached_alive, (rc, left, so, se[-800:]))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
