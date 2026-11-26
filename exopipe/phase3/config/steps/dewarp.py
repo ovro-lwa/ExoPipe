@@ -96,8 +96,11 @@ class dewarp(_Section):
     #      (master_dewarp._apply, production 52e9ee1). The value is steps_common.mdwstat_not_accepted(final row); the files
     #      are the cell's masters (steps_common.mdwstat_files: coadd._MASTER_RE, as release1_cards; never the PB maps) and
     #      their leave-one-out masters (steps_common.loo_files, gate G-R5: the same value, as the header repair) ----
-    MDWSTAT_COMMENT = 'master dewarp status (Gregg 2026-11-11)'   # card comment (protected); dewarp_lst.sh:130; cut to what
-    #                                  the 80-character card holds after the value, as fits.setval cuts it
+    MDWSTAT_COMMENT = 'Master dewarp status'   # card comment (protected): the archive's text, release1_cards.COMMENTS
+    #                                  ['MDWSTAT'] (header_repair_release1.py:214-219; every archived master and LOO master
+    #                                  carries it), so a stamped card is byte-identical to the archived one (production's
+    #                                  dewarp_lst.sh:130 wrote 'master dewarp status (Gregg 2026-11-11)'); cut to what the
+    #                                  80-character card holds after the value, as fits.setval cuts it
     MDWSTAT_MAX_CHARS = 68           # characters of the card value as FITS writes it, a quote counting twice (one card, no
     #                                  CONTINUE); dewarp_lst.sh:127 [:68]; release1_cards.plan_file's one-card check
 

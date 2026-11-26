@@ -833,7 +833,7 @@ def master_files(d):
 
 def mdwstat_files(roots, cell):
     """The masters the record stage writes MDWSTAT on: master_files of <REBUILD_ROOT>/<cell>/coadd_final (its leave-one-out
-    masters, loo_files, take the same value: loo_mdwstat_problems)."""
+    masters, loo_files, take the same value: loo_problems)."""
     return master_files(os.path.join(roots.rebuild, cell, 'coadd_final'))
 
 
@@ -853,53 +853,83 @@ def loo_files(d):
 LOO_GATE = 'G-R5'
 
 
-def loo_mdwstat_problems(d, value, files=None):
-    """Gate G-R5: [] when every leave-one-out master of the coadd_final directory ``d`` (``files``, default loo_files(d))
-    takes ``value``, the MDWSTAT of the cell's masters, by the rule of production's Release 1 header repair, which wrote
-    MDWSTAT on every archived LOO master (exopipe_ops/header_repair_release1.py:1077-1090 and mdw_cards :830-863; apply d of
-    2026-11-14, DONE-20261114-HEADER-REPAIR-LATE-DEEP-CLASSES-449-CELLS: 7,403 LOO masters, each the table value of its
-    cell, the value its central masters carry). A LOO master takes its parent's value only when it is that parent's:
-      link    the parent master <S>_deep_<taper>_<robust><tokens>_<band>.fits (same Stokes, taper, robust weighting and
-              tokens; the repair's I Taper R-0.75 / V Taper R0 master, the parents of the LOO masters built) is in ``d``,
-              the LOO's parent digest (PARENTDG; CONSTDIG on builds before PARENTDG) equals the parent's CONSTDIG, and
-              LOOEXCL is the night its name excludes (:1080-1086; the file refused whole there);
-      MDWARP  the value agrees with the file's own MDWARP card ('applied' <=> MDWARP = T); a combination of subband
-              products (LSWBSB without MDWARP) takes no master's value (mdw_cards :857-861; the card refused there).
-    Header reads only (core.record.fits_primary_cards). Else one line per problem: the stage refuses before any write - a
-    LOO master is never stamped with a guessed value and never skipped."""
+def loo_problems(d, value=None, files=None):
+    """Gate G-R5 on the coadd_final directory ``d`` and its leave-one-out masters ``files`` (default loo_files(d)): whether
+    each takes ``value``, the MDWSTAT of the cell's masters, as production's Release 1 header repair gave every archived
+    LOO master its cell's value (exopipe_ops/header_repair_release1.py:1077-1090, mdw_cards :830-863; apply d of 2026-11-14,
+    DONE-20261114-HEADER-REPAIR-LATE-DEEP-CLASSES-449-CELLS) - when it is its parent's. ``value`` None: the source of an
+    apply (no card yet). Header reads only (core.record.fits_primary_cards). The checks:
+      link    the parent master (lib/masters/loo_link.parent_name) is in ``d`` and loo_link.link_problems is empty - the
+              one LOO-to-parent rule of the masters' T3 and the search's D-G16: the parent digest by the search's rule
+              (PARENTDG = the parent's CONSTDIG; without PARENTDG, COADDOP = the parent's), NCOADD = the parent's - 1 (T3),
+              LOOEXCL = the night the name leaves out;
+      MDWARP  with ``value``: 'applied' <=> MDWARP T, and a combination of subband products (LSWBSB without MDWARP) takes
+              no master's value (mdw_cards :857-861); without (an apply's source): MDWARP is the parent's;
+      need    each parent the masters build writes LOO masters of (loo_link.PARENTS) with NCOADD in
+              masters_build.LOO_N_RANGE (loo_link.needed; coadd.write_loo_masters) has at least one in <d>/loo (a missing
+              or empty loo/ refuses); a parent without an integer NCOADD refuses (the rule cannot be decided).
+    Returns (problems, checked): one line per problem (the stage refuses before any write: a LOO master is never stamped
+    with a guessed value and never skipped), and what was checked, in words."""
     from exopipe.phase3.core.record import fits_primary_cards
-    from exopipe.phase3.lib.masters.coadd import _LOO_RE
-    out, parents = [], {}
-    for p in (loo_files(d) if files is None else files):
+    from exopipe.phase3.lib.masters import loo_link as LL
+    from exopipe.phase3.lib.masters.coadd import _MASTER_RE
+    files = loo_files(d) if files is None else list(files)
+    out, hdrs, kids, nst = [], {}, {}, {}
+
+    def parent(pn):
+        if pn not in hdrs:
+            pp = os.path.join(d, pn)
+            hdrs[pn] = fits_primary_cards(pp) if os.path.isfile(pp) else None
+        return hdrs[pn]
+    for p in files:
         n = os.path.basename(p)
-        g = _LOO_RE.match(n)
-        if not g:
+        g = LL.parse(n)
+        if g is None:
             out.append(f'{n}: not a leave-one-out master name (coadd._LOO_RE)')
             continue
-        g = g.groupdict()
-        pn = f"{g['st']}_deep_{g['taper']}_{g['rob']}{g['sh'] or ''}{g['md'] or ''}_{g['fl']}.fits"
-        pp = os.path.join(d, pn)
-        if pn not in parents:
-            parents[pn] = fits_primary_cards(pp) if os.path.isfile(pp) else None
-        ph = parents[pn]
+        nst[g['st']] = nst.get(g['st'], 0) + 1
+        pn = LL.parent_name(n)
+        kids.setdefault(pn, []).append(n)
+        ph = parent(pn)
         if ph is None:
             out.append(f'{n}: its parent master {pn} is not in {d}')
             continue
         h = fits_primary_cards(p)
-        want = str(ph.get('CONSTDIG') or '')
-        got = str(h.get('PARENTDG') or h.get('CONSTDIG') or '')
-        if not want or got != want:
-            out.append(f'{n}: parent digest {got!r} (PARENTDG, else CONSTDIG) is not the CONSTDIG {want!r} of {pn}: a '
-                       f'leave-one-out master of another master')
-        if str(h.get('LOOEXCL', '')) != g['date']:
-            out.append(f"{n}: LOOEXCL {h.get('LOOEXCL')!r} is not the night {g['date']} its name excludes")
+        out += [f'{n}: {x} ({pn})' for x in LL.link_problems(h, ph, g['date'])]
         mdwarp = h.get('MDWARP')
-        if 'LSWBSB' in h and 'MDWARP' not in h:
+        if value is None:
+            if (mdwarp is True) != (ph.get('MDWARP') is True):
+                out.append(f'{n}: MDWARP {mdwarp!r} is not its parent\'s {ph.get("MDWARP")!r} ({pn})')
+        elif 'LSWBSB' in h and 'MDWARP' not in h:
             out.append(f'{n}: a combination of subband products (LSWBSB, no MDWARP): never master-dewarped itself, it takes '
                        f'no master\'s MDWSTAT')
         elif value.startswith('applied') != (mdwarp is True):
             out.append(f'{n}: MDWSTAT {value!r} disagrees with the file\'s MDWARP {mdwarp!r}')
-    return out
+    lo, hi = LL.n_range()
+    need = []
+    for m in master_files(d):
+        pn = os.path.basename(m)
+        g = _MASTER_RE.match(pn).groupdict()
+        if g['clean'] or g['pb'] or f"{g['st']}_deep_{g['taper']}_{g['rob']}" != LL.PARENTS.get(g['st']):
+            continue
+        nco = (parent(pn) or {}).get('NCOADD')
+        k = len(kids.get(pn, []))
+        if not isinstance(nco, int) or isinstance(nco, bool):
+            out.append(f'{pn}: no integer NCOADD ({nco!r}), so whether the masters build writes its leave-one-out masters '
+                       f'(masters_build.LOO_N_RANGE [{lo}, {hi}]) cannot be decided')
+        elif LL.needed(nco):
+            need.append(f'{pn} NCOADD {nco}: {k} present')
+            if not k:
+                out.append(f'{pn}: NCOADD {nco} is in masters_build.LOO_N_RANGE [{lo}, {hi}], so the masters build writes '
+                           f'its leave-one-out masters (coadd.write_loo_masters), and {d}/loo holds none')
+        else:
+            need.append(f'{pn} NCOADD {nco}: none needed, {k} present')
+    checked = (f'{len(files)} leave-one-out master(s) checked (' + (', '.join(f'{v} {k}' for k, v in sorted(nst.items()))
+                                                                     or 'none') + ')'
+               + (f' against {len(kids)} parent(s): parent digest (the search\'s rule), NCOADD, LOOEXCL, MDWARP' if files
+                  else '')
+               + f'; the masters\' rule (LOO_N_RANGE [{lo}, {hi}]): ' + ('; '.join(need) or 'no parent master in the directory'))
+    return out, checked
 
 
 def _gain_text(g, threshold, most=3):
