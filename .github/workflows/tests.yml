@@ -154,3 +154,5 @@ jobs:
         run: python tests/test_publish_versions_deep_lst.py
       - name: dewarp gate G-D0b CI pins (each content-test child module's production-equivalent text hashes to its pin; on a change re-run G-D0b on a node and update the pin)
         run: python tests/test_dewarp_child_pins.py
+      - name: the sample catalogs a snapshot chain run read (cutover row 70) - copies and md5s recorded in the run, the re-judging reads only them and refuses a missing record, a missing copy or another md5; the chain's --samples-dir
+        run: python tests/test_run_samples.py
