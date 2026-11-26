@@ -268,7 +268,7 @@ class Terminated(KeyboardInterrupt):
     summary is written - and the process then ends as after Ctrl-C (fix verification N2, 2026-11-03)."""
 
 
-_FORK_RESET = set()           # handlers of _sigterm_interrupts now installed: the at-fork hooks and wrappers act only while one is
+_FORK_RESET = set()           # handlers of _sigterm_interrupts installed: the at-fork hooks and wrappers act only while one is
 _FORK_HOOKS = []              # [True] once the at-fork hooks are registered (once per process)
 _FORK_TLS = threading.local()  # per thread: .mask, the mask the before hook saved for the after hooks (None: it did nothing);
 #                                .in_fork, inside a wrapped fork call (_forked); .deferred, a SIGTERM the handler deferred there

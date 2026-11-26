@@ -454,6 +454,15 @@ with cli._sigterm_interrupts('photometry'):
         time.sleep(0.01)
     with open(os.path.join(tmp, 'g')) as f:
         orphan = int(f.read())
+    t_w = time.monotonic() + 10        # bash forks the orphan and writes its pid before the orphan has exec'd sleep
+    while time.monotonic() < t_w:
+        try:
+            with open('/proc/%d/comm' % orphan) as f:
+                if f.read().strip() == 'sleep':
+                    break
+        except OSError:
+            break
+        time.sleep(0.01)
     g.kill()                           # as subprocess.run does to its script when interrupted: the script's child lives on
     g.wait()
     print('pids lost %d ignores %d detached %d group %d orphan %d' % (a.pid, b.pid, c.pid, e.pid, orphan), flush=True)
@@ -575,7 +584,7 @@ FAILED = []
 
 
 def check(label, ok, detail=''):
-    print('%s %s%s' % ('ok  ' if ok else 'FAIL', label, '' if ok else '  [%s]' % str(detail)[:800]))
+    print('%s %s%s' % ('ok  ' if ok else 'FAIL', label, '' if ok else '  [%s]' % str(detail)[:4000]))
     if not ok:
         FAILED.append(label)
 
