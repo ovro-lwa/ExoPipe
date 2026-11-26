@@ -22,8 +22,9 @@ module). Each test checks the file's CONTENT; a test that needs context and has 
                         products           membership.verify_products(gen, '_mdewarp', cell) is empty (install G-PRODUCTS)
                         D4_tested_pixels   every recomputed pbcorr sibling has >= D4_MIN_TESTED_PIXELS tested pixels (pure fix
                                            of pkg-masters-post defect D3: sibling_check passes at 0 tested pixels)
-  mdwstat_master        card               a not-accepted cell's promoted master still carries the MDWSTAT value the record
-                                           stage wrote (header only) and the md5 the stamp left (steps_cell.stamp_mdwstat)
+  mdwstat_master        card               a not-accepted cell's promoted master or leave-one-out master still carries the
+                                           MDWSTAT value the record stage wrote (header only) and the md5 the stamp left
+                                           (steps_cell.stamp_mdwstat; an accepted cell's: steps_cell.applied_mdwstat)
   (the archived screen record mdewarp_screens.csv is install's class 'screen_table' - crosscheck 4.2: one class owned by
    install (rows + install_cell_row in lib/install/tests.py); this step writes its applied=0 rows as that class and checks
    its own cell's row inline, check 'dewarp.record_row')
@@ -313,7 +314,7 @@ def screen_key_rows(path, lst=None, **ctx):
 
 
 # ---------------------------------------------------------------------------------------------------------------------
-# mdwstat_master (a not-accepted cell's promoted master after the record stage's MDWSTAT card, steps_cell.stamp_mdwstat)
+# mdwstat_master (a not-accepted cell's promoted master or leave-one-out master after the record stage's MDWSTAT card)
 # ---------------------------------------------------------------------------------------------------------------------
 
 @content_test('mdwstat_master', name='card')

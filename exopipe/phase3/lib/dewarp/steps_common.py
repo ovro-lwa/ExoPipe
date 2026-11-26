@@ -832,8 +832,74 @@ def master_files(d):
 
 
 def mdwstat_files(roots, cell):
-    """The files the record stage writes MDWSTAT on: master_files of <REBUILD_ROOT>/<cell>/coadd_final."""
+    """The masters the record stage writes MDWSTAT on: master_files of <REBUILD_ROOT>/<cell>/coadd_final (its leave-one-out
+    masters, loo_files, take the same value: loo_mdwstat_problems)."""
     return master_files(os.path.join(roots.rebuild, cell, 'coadd_final'))
+
+
+def loo_files(d):
+    """The leave-one-out (LOO) masters of a coadd_final directory ``d``, sorted: the files of <d>/loo whose names match
+    lib/masters/coadd._LOO_RE - the set the archive publish copies to <LST>/<date>/<run>/<band>/<I|V>/deep/
+    (coadd._archive_publish_cell)."""
+    from exopipe.phase3.lib.masters.coadd import _LOO_RE
+    ld = os.path.join(d, 'loo')
+    try:
+        names = os.listdir(ld)
+    except (FileNotFoundError, NotADirectoryError):
+        return []
+    return sorted(os.path.join(ld, f) for f in names if _LOO_RE.match(f) and os.path.isfile(os.path.join(ld, f)))
+
+
+LOO_GATE = 'G-R5'
+
+
+def loo_mdwstat_problems(d, value, files=None):
+    """Gate G-R5: [] when every leave-one-out master of the coadd_final directory ``d`` (``files``, default loo_files(d))
+    takes ``value``, the MDWSTAT of the cell's masters, by the rule of production's Release 1 header repair, which wrote
+    MDWSTAT on every archived LOO master (exopipe_ops/header_repair_release1.py:1077-1090 and mdw_cards :830-863; apply d of
+    2026-11-14, DONE-20261114-HEADER-REPAIR-LATE-DEEP-CLASSES-449-CELLS: 7,403 LOO masters, each the table value of its
+    cell, the value its central masters carry). A LOO master takes its parent's value only when it is that parent's:
+      link    the parent master <S>_deep_<taper>_<robust><tokens>_<band>.fits (same Stokes, taper, robust weighting and
+              tokens; the repair's I Taper R-0.75 / V Taper R0 master, the parents of the LOO masters built) is in ``d``,
+              the LOO's parent digest (PARENTDG; CONSTDIG on builds before PARENTDG) equals the parent's CONSTDIG, and
+              LOOEXCL is the night its name excludes (:1080-1086; the file refused whole there);
+      MDWARP  the value agrees with the file's own MDWARP card ('applied' <=> MDWARP = T); a combination of subband
+              products (LSWBSB without MDWARP) takes no master's value (mdw_cards :857-861; the card refused there).
+    Header reads only (core.record.fits_primary_cards). Else one line per problem: the stage refuses before any write - a
+    LOO master is never stamped with a guessed value and never skipped."""
+    from exopipe.phase3.core.record import fits_primary_cards
+    from exopipe.phase3.lib.masters.coadd import _LOO_RE
+    out, parents = [], {}
+    for p in (loo_files(d) if files is None else files):
+        n = os.path.basename(p)
+        g = _LOO_RE.match(n)
+        if not g:
+            out.append(f'{n}: not a leave-one-out master name (coadd._LOO_RE)')
+            continue
+        g = g.groupdict()
+        pn = f"{g['st']}_deep_{g['taper']}_{g['rob']}{g['sh'] or ''}{g['md'] or ''}_{g['fl']}.fits"
+        pp = os.path.join(d, pn)
+        if pn not in parents:
+            parents[pn] = fits_primary_cards(pp) if os.path.isfile(pp) else None
+        ph = parents[pn]
+        if ph is None:
+            out.append(f'{n}: its parent master {pn} is not in {d}')
+            continue
+        h = fits_primary_cards(p)
+        want = str(ph.get('CONSTDIG') or '')
+        got = str(h.get('PARENTDG') or h.get('CONSTDIG') or '')
+        if not want or got != want:
+            out.append(f'{n}: parent digest {got!r} (PARENTDG, else CONSTDIG) is not the CONSTDIG {want!r} of {pn}: a '
+                       f'leave-one-out master of another master')
+        if str(h.get('LOOEXCL', '')) != g['date']:
+            out.append(f"{n}: LOOEXCL {h.get('LOOEXCL')!r} is not the night {g['date']} its name excludes")
+        mdwarp = h.get('MDWARP')
+        if 'LSWBSB' in h and 'MDWARP' not in h:
+            out.append(f'{n}: a combination of subband products (LSWBSB, no MDWARP): never master-dewarped itself, it takes '
+                       f'no master\'s MDWSTAT')
+        elif value.startswith('applied') != (mdwarp is True):
+            out.append(f'{n}: MDWSTAT {value!r} disagrees with the file\'s MDWARP {mdwarp!r}')
+    return out
 
 
 def _gain_text(g, threshold, most=3):

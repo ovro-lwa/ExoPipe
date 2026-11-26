@@ -12,9 +12,10 @@ Ports dewarp_lst.sh:36-94 for ONE routed cell, after its LST's measurement:
               INSTALL_CONTENT_OK / APPLIED_SCREEN.json land where the install reads them, plus the install's cubic,
               applied-screen and product gates and the tested-pixel count (G-A6..G-A10); pass -> meta.install
               {kind 'mdewarp', gen} (dewarp_lst.sh:66-68 -> install_cell.sh <cell> mdewarp <gen>)
-  record      not accepted: G-R4 (measured on these masters), MDWSTAT on the promoted masters, verified (dewarp_lst.sh:
-              119-131; G-W, G-R3), then the applied=0 row of the archived screen record through
-              phase3_install._screen_row IN PLACE (dewarp_lst.sh:72-90; G-R1)
+  record      not accepted: G-R4 (measured on these masters), G-R5 (each leave-one-out master is its parent's), MDWSTAT
+              on the promoted masters and their leave-one-out masters, verified (dewarp_lst.sh:119-131; G-W, G-R3; the
+              LOO masters as production's header repair stamped them), then the applied=0 row of the archived screen
+              record through phase3_install._screen_row IN PLACE (dewarp_lst.sh:72-90; G-R1)
               -> meta.install {kind 'rebuild', gen <REBUILD_ROOT>/<cell>} (dewarp_lst.sh:92)
 The promoted marker removal (dewarp_lst.sh:94) is replaced by the unit record. Each attempt keeps the cell's last done
 record that recorded MDWSTAT as meta.last_done (keep_last_done), so a rerun that refuses or fails does not erase it.
@@ -167,19 +168,24 @@ def apply(u, run, roots, cell, meas, row):
 
 def applied_mdwstat(u, cell, gen):
     """The apply's MDWSTAT record (2026-11-25, PR 176 decision 1: one rule for accepted and not-accepted cells): every
-    master of the new generation (steps_common.master_files of <gen>/coadd_final - the masters the install takes) must
-    carry MDWSTAT 'applied' as master_dewarp._apply wrote it (header only, check 'dewarp.mdwstat'); then meta.mdwstat =
-    {value 'applied', files [{path, before None, md5, size, mtime_ns}]}, as the record stage records its stamp, and each
-    master is an output of class 'mdwstat_master', so --resume re-tests it. The install takes MDWSTAT from here and the md5
-    is its currency rule (lib/install/mdwstat). A generation without a master, or a master without the card, refuses."""
+    master of the new generation (steps_common.master_files of <gen>/coadd_final - the masters the install takes) and
+    every leave-one-out master (steps_common.loo_files: <gen>/coadd_final/loo, gate G-R5 as the record stage) must carry
+    MDWSTAT 'applied' as master_dewarp._apply wrote it (header only, check 'dewarp.mdwstat'); then meta.mdwstat =
+    {value 'applied', files [{path, before None, md5, size, mtime_ns}] of the masters, loo_files [the same] of the LOO
+    masters}, as the record stage records its stamp, and each is an output of class 'mdwstat_master', so --resume
+    re-tests it. The install takes MDWSTAT from here and the md5 of ``files`` is its currency rule (lib/install/mdwstat).
+    A generation without a master, a LOO master that is not its parent's, or a file without the card, refuses."""
     from exopipe.phase3.core.record import fits_primary_cards
     value = 'applied'
-    files = SC.master_files(os.path.join(gen, 'coadd_final'))
+    fd = os.path.join(gen, 'coadd_final')
+    files = SC.master_files(fd)
     if not files:
         u.refuse(f'dewarp.mdwstat: {cell}: the apply wrote no master (coadd._MASTER_RE) into {gen}/coadd_final: the '
                  f'install would take no MDWSTAT')
+    loo = SC.loo_files(fd)
+    loo_gate(u, cell, fd, value, loo, 'the generation is written, but this unit is refused, so the install takes none of it')
     done = []
-    for p in files:
+    for p in files + loo:
         got = fits_primary_cards(p).get('MDWSTAT')
         u.check('dewarp.mdwstat', got == value, value=got, path=p,
                 detail=f'{os.path.basename(p)}: MDWSTAT {got!r}' + ('' if got == value else f' (the apply writes {value!r})'))
@@ -187,9 +193,23 @@ def applied_mdwstat(u, cell, gen):
             u.refuse(f'dewarp.mdwstat: {cell}: {p} carries MDWSTAT {got!r} after the apply, not {value!r}')
         st = os.stat(p)
         done.append({'path': p, 'before': None, 'md5': SC.md5(p), 'size': st.st_size, 'mtime_ns': st.st_mtime_ns})
-    u.meta['mdwstat'] = {'value': value, 'files': done}
+    u.meta['mdwstat'] = {'value': value, 'files': done[:len(files)], 'loo_files': done[len(files):]}
     for d in done:
         u.add_output(d['path'], 'mdwstat_master', test=False, mdwstat=value, md5=d['md5'])
+
+
+def loo_gate(u, cell, fd, value, loo, when):
+    """Gate G-R5 (steps_common.loo_mdwstat_problems): every leave-one-out master ``loo`` of the coadd_final directory
+    ``fd`` takes ``value``, its masters' MDWSTAT, by the rule production's header repair stamped the archived ones with
+    (check 'dewarp.loo_mdwstat'); else the unit refuses, naming each file. ``when``: what the refusal leaves behind."""
+    probs = SC.loo_mdwstat_problems(fd, value, loo)
+    u.check('dewarp.loo_mdwstat', not probs, value=f'{len(loo)} LOO master(s)', path=fd,
+            detail=('; '.join(probs[:6]) + (f'; ... {len(probs) - 6} more' if len(probs) > 6 else '')) if probs else
+            f'{len(loo)} leave-one-out master(s) take {value!r}: each its parent master\'s (parent digest, LOOEXCL), '
+            f'MDWARP agreeing')
+    if probs:
+        u.refuse(f'{SC.LOO_GATE}: {cell}: {len(probs)} leave-one-out master problem(s) in {fd}/loo, so MDWSTAT {value!r} '
+                 f'cannot be the value of every one ({"; ".join(probs[:3])}): {when}')
 
 
 def keep_last_done(run, u, cell):
@@ -281,7 +301,9 @@ def verify(u, run, args, roots, cell, meas, gen):
 
 def record(u, roots, cell, row, meas=None):
     """G-R1, G-W of the promoted rebuild, G-R3 and G-R4 (the final row was measured on these masters: steps_common.
-    measured_master_identity), then MDWSTAT on the cell's promoted masters, each verified (stamp_mdwstat),
+    measured_master_identity), G-R5 (every leave-one-out master of the promoted coadd_final/loo is its parent master's,
+    steps_common.loo_mdwstat_problems), then MDWSTAT on the cell's promoted masters and their leave-one-out masters (the
+    same value, as production's header repair stamped the archived LOO masters), each verified (stamp_mdwstat),
     then the applied=0 row (phase3_install._screen_row in place, flock-guarded). The row ends the cell's routing (G-D2), so
     it is written only after every master carries a verified card: a refusal or failure before it leaves the cell routed
     for a rerun (dewarp_lst.sh:119-131 writes the row first, then the card). The record file is install's class
@@ -326,8 +348,11 @@ def record(u, roots, cell, row, meas=None):
                 detail='; '.join(f'{k} {os.path.basename(v["path"])} = the measured bytes ({v["matched_by"]})'
                                  for k, v in ident.items()))
     u.meta['measured_master'] = ident
-    done = stamp_mdwstat(u, cell, value, files)
-    u.meta['mdwstat'] = {'value': value, 'files': done}
+    fd = os.path.join(roots.rebuild, cell, 'coadd_final')
+    loo = SC.loo_files(fd)
+    loo_gate(u, cell, fd, value, loo, 'no MDWSTAT written, no applied=0 row')
+    done = stamp_mdwstat(u, cell, value, files + loo)
+    u.meta['mdwstat'] = {'value': value, 'files': done[:len(files)], 'loo_files': done[len(files):]}
     # the record file is this stage's OUTPUT (one row replaced, INS._screen_row): it is not fingerprinted as an input (it
     # would make the unit stale the moment it is written); the row it replaces is kept in the record instead
     u.meta['screen_row_replaced'] = SC.routing_row(roots, cell)
@@ -354,7 +379,8 @@ def record(u, roots, cell, row, meas=None):
 
 def stamp_mdwstat(u, cell, value, files):
     """MDWSTAT = ``value`` (steps_common.mdwstat_not_accepted of the final row), comment dewarp.MDWSTAT_COMMENT, on each of
-    ``files`` (steps_common.mdwstat_files: the masters of the promoted rebuild of a routed cell that is NOT accepted), before
+    ``files`` (steps_common.mdwstat_files: the masters of the promoted rebuild of a routed cell that is NOT accepted, then
+    steps_common.loo_files: their leave-one-out masters, which gate G-R5 cleared), before
     the install takes them (R-GREGG-20261111-MDWSTAT-CARD; dewarp_lst.sh:119-131). Set as fits.setval sets it (Header.set: a
     card already there takes the new value in place, else it is appended; the comment cut to what the card holds). Each file
     is then verified from its header alone (check 'dewarp.mdwstat'): the card reads back as written (one card: a CONTINUE
@@ -396,7 +422,9 @@ def stamp_mdwstat(u, cell, value, files):
                      f'header errors {list(rep.errors)[:2]}; size {size} -> {size2} bytes); no applied=0 row written: '
                      f'the cell stays routed')
         done.append({'path': p, 'before': before, 'md5': SC.md5(p), 'size': size2, 'mtime_ns': st.st_mtime_ns})
-    print(f'{cell}: MDWSTAT = {value!r} on {len(done)} master(s) of the promoted rebuild', flush=True)
+    nl = sum(os.path.basename(os.path.dirname(d['path'])) == 'loo' for d in done)
+    print(f'{cell}: MDWSTAT = {value!r} on {len(done) - nl} master(s) and {nl} leave-one-out master(s) of the promoted '
+          f'rebuild', flush=True)
     return done
 
 
