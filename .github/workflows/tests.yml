@@ -158,3 +158,5 @@ jobs:
         run: python tests/test_run_samples.py
       - name: the snapshot chain's per-tier serving stage (cutover row 71) - production's tierserve on the run's recorded sample catalogs only, served_tiers.csv placed after its self-check and content test, refused with no record, another md5 or a changed record, nothing left behind
         run: python tests/test_served_tiers.py
+      - name: the snapshot pages' per-tier serving (cutover row 72) - the pages step passes the run's served_tiers.csv to the page builder as production does, then production's per-tier hook (views backup, views-only rewrite, views test with restore on failure, Card 2 back-fill); refused with no table or one failing its content test before anything is written; the Card 2 files' content test
+        run: python tests/test_pages_served_tiers.py

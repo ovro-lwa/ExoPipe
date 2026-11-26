@@ -64,7 +64,11 @@ class pages(_Section):
     # ---- processes ------------------------------------------------------------------------------------------------
     DEEP_PAGE_SHARDS = 12        # processes per page set; fork_serve_p3s5_20261008.sh:32 (production); p3s3_pass.sh:182 default 6
     SUBLST_PAGE_SHARDS = {'I_sb': 10, 'V_sb': 3, 'I_wb': 2, 'V_wb': 2}   # processes; sublst_publish_lst.sh:31 (10, 3); sublst_pages_build.sh:14 (wb 2)
-    SNAP_PAGES_NPROC = 24        # processes; snapshot_rechain_batch.sh:363 (module default 12, snap_pages:391)
+    SNAP_PAGES_NPROC = 12        # processes of the snapshot pages pass; snapshot_rechain_batch.sh:610 (--nproc ${RECHAIN_PAGES_NPROC:-12})
+                                 # and :635-637: "12 panel workers, was 24 (2026-10-17): each worker holds 9-14 GB, so 24 (~300 GB)
+                                 # plus the node's other jobs reached the 400 GiB /user.slice limit and the kernel OOM-killed
+                                 # workers ... the cause of the 3F, 3D and 3H page-pool hangs. Same panels; only the pace
+                                 # changes." (module default 12, snap_pages:391)
     # ---- page content, layout, merge -------------------------------------------------------------------------------
     PAGE_SORT_KEY = 'snr'        # |snr| descending; P3_SORT_SNR=1 p3s3_pass.sh:184 (builder default peak_jy, build_i14:55)
     PAGE_CTX_IN_TEXT = True      # run-level lines in <png>.page.json, not in the image; build_i14:818 (P3_PAGES_CTX_IN_TEXT default '1')
@@ -273,6 +277,9 @@ class pages_snapshot(_Section):
     FILTERCAT_PROCS = 6          # readers of the filter catalogue's detections.csv pass, passed as SNAPCAT_PROCS (exopipe_ops 1b9475c;
                                  # 1 = serial; under 1000 files always serial). Production's default 16; the refactor's 6 is the
                                  # Lustre rule (at most 6 readers). Speed only: the catalogue is byte-identical for every value [step]
+    VIEWS_NPROC = 2              # processes of the per-tier hook's views-only rewrite (phase3_snapshot_pages.py
+                                 # --served-tiers ... --views-only, snapshot_rechain_batch.sh:575-576 --nproc 2); it renders
+                                 # nothing: speed only [step]
     RULED = {'FLOW_FRAMES': 'R-FORCED-PANEL-FITTED-POSITION-AND-RETICLE',
              'SCALE_MODE': 'R-SNAP-PANEL-SCALES-TIED-TO-THE-RESIDUALS',
              'PANELS_TOP_N': 'SNAP-INTERFACE-PANELS-TOP10-PER-BAND',
