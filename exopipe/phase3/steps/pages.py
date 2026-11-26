@@ -22,8 +22,10 @@ Inputs (written by catalog, search, masters; read in place, never renamed):
             masters through pages.MASTER_ROOTS_MAP; the parent snapshot of the pass (--deep-parent-dir); XM sample CSVs.
   sublst    <CFG.paths.SUBLST_ROOT>/compare_<LST>/new_B/catalog/ (catalogues, localizations_noveto, pertie, rejected record),
             window stacks and arm-A residuals, search_B residuals, parent_catalogs_<LST>.
-  snapshot  the chain run (source_catalogs, detections, queue.txt, chain_summary.json), the fit store, the snapshot fleet outputs
-            (CFG.paths.SNAPSHOT_FLEET_OUT), the frozen masters (pages_snapshot.MASTERS_ROOT).
+  snapshot  the chain run (source_catalogs, detections, queue.txt, chain_summary.json, detection_record.csv.gz, served_tiers.csv
+            - the per-tier serving table of catalog's stage tierserve, required: P23), the fit store, the snapshot fleet outputs
+            (CFG.paths.SNAPSHOT_FLEET_OUT), the frozen masters (pages_snapshot.MASTERS_ROOT), the chain's light-curve and
+            Master-catalog roots (catalog_snapshot.LIGHTCURVES_ROOT, MASTER_CATALOGS; the Card 2 back-fill's scale).
 Outputs (product classes; content tests in lib/pages/tests.py):
   review_page           candidates/<I|K|S>/<page id>/rank<N>_<LST>_<date>_<band>.png (+ .page.json sidecar, deep)
   page_index            source_catalogs/<band>_pages_index_<S>.csv (singles), <band>_pages_index_<K>.csv (fork sets)
@@ -33,12 +35,15 @@ Outputs (product classes; content tests in lib/pages/tests.py):
   astrometry_figure     localization_figs/<identity>.png (deep; drawn inside build_i14)
   tess_coverage         tess_coverage.csv (deep)
   survivors_review_dir  the review_dir column of source_catalogs/<band>_sources_survivors.csv (deep merge; serve reads it)
+  snapshot_card2        card2_vleak.csv, card2_vleak_columns.csv, card2_filter.csv (the snapshot run's Card 2 back-fill)
   sublst_page_run, snapshot_page_run, filter_catalog, strat_queue, pages_run_copy (--from-run stage-in)
 Failure modes (exit 2 = refused, the gate named in the record): P1 no --run; P2 a stage's previous-stage record missing / not
   done / its outputs changed; P3 MIRROR drift (a constant inside an in-place module differs from config); P4 localization tables
   missing; P6 pages input failed; P7 a page shard failed; P9 another pages job holds the run directory; P10 review_dir merge
-  refused; P11-P17 sub-LST (localizations, tie table, rejected record, selection, index, frozen code, place); P18-P22 snapshot
-  (flow mode, duplicate or missing panel, run content test, filter catalogue); a content test failing. Exit 3 = every unit had
+  refused; P11-P17 sub-LST (localizations, tie table, rejected record, selection, index, frozen code, place); P18-P25 snapshot
+  (flow mode, duplicate or missing panel, run content test, filter catalogue; P23 no served_tiers.csv or one failing its content
+  test, before anything is written; P24 the per-tier views rewrite or its test failed, views restored; P25 the Card 2
+  back-fill failed); a content test failing. Exit 3 = every unit had
   nothing to do (e.g. a set with no pages-input row). TESS never refuses (recorded NO-INPUT: 'coverage not computed').
 Per-hour vs intermittent: per hour (DESIGN 12.1, chain 'epoch'): --epochs <LST>_<date> after catalog --incremental; the deep
   build is incremental by construction (build_i14 keeps every page whose fingerprint is unchanged and renders new/changed pages),
@@ -47,8 +52,9 @@ Per-hour vs intermittent: per hour (DESIGN 12.1, chain 'epoch'): --epochs <LST>_
   rebuilt catalogue (--full forces every page).
 Production code runs IN PLACE during the refactor window through core.legacy.run (build_i14_pages_std7.py, std7_panel.py,
   p3s3_tier_pages_input.py, p3s3_merge_review_dir.py, tess_coverage.py, deep_stratified_queue.py, sublst_pages_prep.py,
-  p3t_pages_input.py, build_tenmin_pages.py, p3t_pages_index.py, phase3_snapshot_pages.py, snapshot_rechain_content_test.py,
-  snapshot_filter_catalog.py); the deep singles pages input is a port of the p3s3_pass.sh heredoc. M14 (per-set panel
+  p3t_pages_input.py, build_tenmin_pages.py, p3t_pages_index.py, phase3_snapshot_pages.py, apply_served_check.py,
+  pertier_views_content_test.py, phase3_snapshot_card2.py, snapshot_rechain_content_test.py, snapshot_filter_catalog.py); the
+  deep singles pages input is a port of the p3s3_pass.sh heredoc. M14 (per-set panel
   directories, keyed review_dir merge, fork-index names) is carried behind pages.PANEL_DIR_LAYOUT / pages.DEEP_MERGE (default:
   today's shared layout). Interface: exopipe_ops/INTERFACE_REQUIREMENTS.md (pages/judging sections).
 """

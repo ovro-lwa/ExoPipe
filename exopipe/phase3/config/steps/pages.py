@@ -273,6 +273,9 @@ class pages_snapshot(_Section):
     FILTERCAT_PROCS = 6          # readers of the filter catalogue's detections.csv pass, passed as SNAPCAT_PROCS (exopipe_ops 1b9475c;
                                  # 1 = serial; under 1000 files always serial). Production's default 16; the refactor's 6 is the
                                  # Lustre rule (at most 6 readers). Speed only: the catalogue is byte-identical for every value [step]
+    VIEWS_NPROC = 2              # processes of the per-tier hook's views-only rewrite (phase3_snapshot_pages.py
+                                 # --served-tiers ... --views-only, snapshot_rechain_batch.sh:575-576 --nproc 2); it renders
+                                 # nothing: speed only [step]
     RULED = {'FLOW_FRAMES': 'R-FORCED-PANEL-FITTED-POSITION-AND-RETICLE',
              'SCALE_MODE': 'R-SNAP-PANEL-SCALES-TIED-TO-THE-RESIDUALS',
              'PANELS_TOP_N': 'SNAP-INTERFACE-PANELS-TOP10-PER-BAND',
