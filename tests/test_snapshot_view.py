@@ -793,8 +793,9 @@ def _build_job(W, omit_dir, out, runs=None, copy_fallback=False):
     S = _cfg().serve
     co = _cfg().catalog_omission
     proto = json.load(open(os.path.join(omit_dir, 'deep_omission_summary.json')))['proto']
+    from exopipe.phase3.lib.catalog import run_samples as RS
     job = dict(out=out, runs=runs or W['runs'], kept_dir=omit_dir, tiers=list(S.SNAPVIEW_TIERS), stokes=list(S.SNAPVIEW_STOKES),
-               suffix=dict(S.SNAPVIEW_PAGE_SUFFIX), clv15='/lustre/gh/main/clv15', ops=OPS,
+               suffix=dict(S.SNAPVIEW_PAGE_SUFFIX), served_tiers=RS.SERVED_TIERS, clv15='/lustre/gh/main/clv15', ops=OPS,
                deep_omission_py=os.path.abspath(deep_omission.__file__), result=out + '.result.json',
                copy_fallback=copy_fallback, proto=proto,
                names=dict(noise=dict(co.SNAPSHOT_NOISE), members=co.SNAPSHOT_MEMBERS, admission=co.SNAPSHOT_ADMISSION),

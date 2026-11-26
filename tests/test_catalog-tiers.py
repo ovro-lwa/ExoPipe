@@ -13,7 +13,7 @@
 4. content tests on synthetic files (pass and fail cases);
 5. end-to-end through the real CLI on STUB in-place modules (a temporary site file whose LEGACY_CODE_ROOTS are stub trees):
    sub-LST preflight (incl. the pcheck child on synthetic FITS masters) + tier-rules + `--from` restore; snapshot preflight,
-   store, prefit with a fit round run by core/runner on localhost, tie pass as runner items, chain, test;
+   store, prefit with a fit round run by core/runner on localhost, tie pass as runner items, chain, test, tierserve;
 6. dry-runs on real items (sub-LST 14h, snapshot 2 cells of batch 2) and content tests on real production products
    (read-only; results printed).
 Synthetic data in /tmp/exopipe3_tests_catalog-tiers/ (removed at the end). Nothing is written under a production root.
@@ -753,6 +753,11 @@ json.dump({"cells": cells, "prefit": {"n_without_fit": 0, "n_at_per_frame_fit_st
            "gate3d_match_percentile": 95.0, "member_order": "time, subband, Stokes", "ghost_gate": {"dates": ["2024-12-28"]},
            "n_served": 1, "per_instant_vetoes": {"rule": "per instant (stub)"}}, open(os.path.join(out, "chain_summary.json"), "w"))
 open(os.path.join(out, "ghost_removed.csv"), "w").write("cand_id\n")
+import gzip
+with gzip.open(os.path.join(out, "detection_record.csv.gz"), "wt") as f:      # read by stage tierserve (cutover row 71)
+    f.write("cand_id,cell,subband,stokes,tier,ts,instant_key,gate_neg_lobe,gate_asymmetry,neg_member,asym_member,"
+            "first_removed_by,served,src_index,src_outcome\nc1,%s,18MHz,I,10s,t1,%s 10s t1,,,,,,1,0,served\n"
+            % (cells[0], cells[0]))
 # the veto records the chain writes since clv15 99fe3ea (content test snapshot_run.per_instant): none removed here
 open(os.path.join(out, "vetoed_sources.csv"), "w").write("veto,cell,subband,stokes,tier,ts,ra_deg,dec_deg,snr,n_members,"
                                                           "n_instants,bands,routes,pos_err_arcsec,detail\n")
@@ -765,6 +770,35 @@ open(os.path.join(out, "source_catalogs/Red_sources_survivors.csv"), "w").write(
 open(os.path.join(out, "source_catalogs_V/18MHz_sources_survivors.csv"), "w").write(
     "source_id,identity_id,ra\nJ0000+0000_18MHz,J0000+0000,10.0\n")
 print("chain done")
+''',
+    'clv15/phase3_snapshot_tierserve.py': r'''
+import csv, json, os, sys
+SAMPLES = ["Hot_Warm_Jupiters.csv", "10pc.csv", "25pc.csv", "LPTs.csv", "flare_ucd.csv", "sydney_stars.csv", "pulsars_atnf.csv"]
+TIERS = ("10s", "1min")
+OUTCOMES = ("served", "no-route", "not-designated", "fit-pending")
+a = sys.argv[1:]
+def opt(k):
+    return a[a.index(k) + 1]
+run, sd, out = opt("--run"), opt("--samples-dir"), opt("--out")
+# cutover row 71: the run's recorded copies (never the live catalogs), the chain's code tree, a temporary name beside the table
+assert sd == os.path.join(run, "sample_catalogs"), sd
+assert all(os.path.isfile(os.path.join(sd, fn)) for fn in SAMPLES), os.listdir(sd)
+assert os.environ.get("P3_TIERSERVE_CODE") == os.path.dirname(os.path.abspath(__file__))
+assert os.path.dirname(out) == run and out != os.path.join(run, "served_tiers.csv"), out
+assert json.load(open(os.path.join(run, "chain_summary.json")))["n_served"] == 1
+cols = ["src_index", "identity_jname", "chain_outcome", "tier", "n_members_tier", "n_stripped_tier", "best_det_uid_tier",
+        "best_snr_tier", "best_stokes_tier", "best_verdict_tier", "singleton_floor_tier", "n_inst_tier", "multi_integration_tier",
+        "routes_tier", "qualifies", "fail_reason", "tier_holds_source_best", "snr_at_floor_rounding", "add_without_products",
+        "identity_qualifies_tiers", "n_members_10s", "best_snr_10s", "n_members_1min", "best_snr_1min", "identity_note"]
+vals = ["0", "J0000+0000", "served", "10s", "1", "0", "c1", "9.0", "I", "ok", "7.0", "1", "0", "Red", "1", "", "1", "0", "0",
+        "10s", "1", "9.0", "0", "", ""]
+with open(out, "w", newline="") as f:
+    w = csv.writer(f)
+    w.writerow(cols)
+    w.writerow(vals)
+print("self-check: 1 of 1 served sources reproduced (mi_tiers, catalog, routes, best member)")
+print("served identities 1: qualify in 10s only 1, 1min only 0, both 0, NEITHER 0")
+print("wrote %s (1 rows)" % out)
 ''',
     'exopipe_ops/p3s3_astrom.py': 'def band_class(b):\n    return {"41MHz": "Green", "64MHz": "Blue"}.get(b, "Red")\n',
     'exopipe_ops/snapshot_batch_audit.py': r'''
@@ -1237,12 +1271,20 @@ def test_e2e_snapshot(site):
     ok('tie: one runner item per cell (--stop-after-tie into the tie-cache COPY), tie_cache outputs pass',
        rc == 0 and rec['status'] == 'done' and len(titems) == 2 and rec['meta'].get('tie_tied_now') == 2
        and os.path.exists(f'{RUN}/_side/tiecache/tie_20h_2025-05-03.csv'), (rc, out[-900:]))
-    rc, out = cli(common + ['--stages', 'chain,test'], site)
+    rc, out = cli(common + ['--stages', 'chain,test,tierserve'], site)
     rc_rec = json.load(open(f'{RUN}/_records/catalog/{name}.chain.json'))
     t_rec = json.load(open(f'{RUN}/_records/catalog/{name}.test.json'))
     ok('chain (memory model 250 GB, env 24/24/4000) and the run content test: snapshot_run passes',
        rc == 0 and rc_rec['status'] == 'done' and t_rec['status'] == 'done' and rc_rec['meta'].get('mem_need_gb') == 250,
        out[-900:])
+    ts_rec = json.load(open(f'{RUN}/_records/catalog/{name}.tierserve.json'))
+    ts_tests = [t for t in ts_rec.get('tests', []) if t.get('cls') == 'served_tiers']
+    ok('tierserve (cutover row 71): served_tiers.csv placed in the run from tierserve on --samples-dir RUN/sample_catalogs '
+       '(P3_TIERSERVE_CODE = the clv15 tree), the content test served_tiers passed, no temporary file left',
+       ts_rec['status'] == 'done' and [o['class'] for o in ts_rec['outputs']] == ['served_tiers']
+       and os.path.isfile(f'{RUN}/served_tiers.csv') and ts_tests and all(t['passed'] for t in ts_tests)
+       and ts_rec['meta']['tierserve']['rows'] == 1 and not glob.glob(f'{RUN}/served_tiers.csv.*'),
+       (ts_rec.get('status'), ts_rec.get('reason'), ts_tests))
     ok('nothing written to the production batch dir copies source (stores unchanged)',
        open(f'{T}/batch/fits/fits_14h_2025-03-09.csv').read().count('\n') == 2)
     from exopipe.phase3.lib.catalog import run_samples as RS

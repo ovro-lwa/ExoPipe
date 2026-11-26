@@ -1554,13 +1554,11 @@ def per_tier_snapshot(runs, pending, dropped, om, why, reader, card2, rej, elev=
     return rec, drops, n_rej_rows
 
 
-SERVED_TIERS = 'served_tiers.csv'          # a batch run's per-tier serving table (the chain's phase3_snapshot_tierserve)
-
-
 def served_tiers(run, reader):
-    """{tier: {identity}} that the batch run's served_tiers.csv serves in each tier (chain_outcome 'served', qualifies 1), or
-    None without the file."""
-    t = reader.text(os.path.join(run, SERVED_TIERS), 'served_catalogs', missing_ok=True)
+    """{tier: {identity}} that the batch run's served_tiers.csv (run_samples.SERVED_TIERS: the chain's per-tier serving
+    table, phase3_snapshot_tierserve) serves in each tier (chain_outcome 'served', qualifies 1), or None without the file."""
+    from exopipe.phase3.lib.catalog import run_samples as RS
+    t = reader.text(os.path.join(run, RS.SERVED_TIERS), 'served_catalogs', missing_ok=True)
     if t is None:
         return None
     out = collections.defaultdict(set)
@@ -1575,18 +1573,19 @@ def complete_batch_runs(runs, cats, reader):
     that tier - so a per-tier catalogue lost or cut short (an interrupted copy, a re-serve that stopped halfway) refuses instead of
     a source vanishing from the view unrecorded. Held exactly on all 36 batches of Run_SNAPCOMB_20261102 (2026-11-04).
     ``cats``: per_tier_snapshot's (S, T, cdir, run, kind, band, rows)."""
+    from exopipe.phase3.lib.catalog import run_samples as RS
     for r in runs:
         st = served_tiers(r, reader)
         if st is None:
-            refuse(f'G4b: {batch_tag(r)} has no {SERVED_TIERS}: its per-tier catalogues cannot be shown complete')
+            refuse(f'G4b: {batch_tag(r)} has no {RS.SERVED_TIERS}: its per-tier catalogues cannot be shown complete')
         for T in _c().SNAPSHOT_TIERS:
             have = {row['identity_id'] for S, T2, cdir, r2, kind, band, rows in cats if r2 == r and T2 == T and kind == 'sources'
                     for row in rows}
             want = st.get(T, set())
             if have != want:
-                refuse(f'G4b: {batch_tag(r)} tier {T}: its per-tier survivors hold {len(have - want)} identities {SERVED_TIERS} does '
-                       f'not serve (e.g. {sorted(have - want)[:2]}) and lack {len(want - have)} it serves (e.g. '
-                       f'{sorted(want - have)[:2]}) - an incomplete or inconsistent batch run')
+                refuse(f'G4b: {batch_tag(r)} tier {T}: its per-tier survivors hold {len(have - want)} identities '
+                       f'{RS.SERVED_TIERS} does not serve (e.g. {sorted(have - want)[:2]}) and lack {len(want - have)} it '
+                       f'serves (e.g. {sorted(want - have)[:2]}) - an incomplete or inconsistent batch run')
 
 
 SERVED_COLS = ['lst', 'night', 'band', 'stokes', 'tier', 'n']
@@ -1972,13 +1971,14 @@ def rejudge_runs(runs, dec_path, proto, card2, work, u=None, elev=None, samples=
     without it the gate runs here, before any child."""
     from concurrent.futures import ThreadPoolExecutor
     from exopipe.phase3.core import legacy
+    from exopipe.phase3.lib.catalog import run_samples as RS
     c = _c()
     if samples is None:
         samples = samples_gate(runs)
     for r in runs:                   # the inputs each child reads: refused here, before any child runs, by name
-        if not os.path.isfile(os.path.join(r, SERVED_TIERS)):
-            refuse(f'G4b: {batch_tag(r)} has no {SERVED_TIERS}: its per-tier catalogues cannot be shown complete (nor its sources '
-                   f're-judged)')
+        if not os.path.isfile(os.path.join(r, RS.SERVED_TIERS)):
+            refuse(f'G4b: {batch_tag(r)} has no {RS.SERVED_TIERS}: its per-tier catalogues cannot be shown complete (nor its '
+                   f'sources re-judged)')
         miss = [f for f in ('detection_record.csv.gz', 'chain_summary.json') if not os.path.isfile(os.path.join(r, f))]
         if miss:
             refuse(f'G9: {batch_tag(r)} has no {", ".join(miss)}: its served sources cannot be re-judged')
@@ -2118,14 +2118,17 @@ def run_snapshot(runs, out, rdir=None, proto=None, u=None, label='omit'):
                           'chain_summary': os.path.commonpath([os.path.abspath(r) for r in runs])})
         from exopipe.phase3.lib.catalog import run_samples as RS
         for r in runs:
-            for f in ('detection_record.csv.gz', 'served_tiers.csv', samples_record_key()):
+            for f in ('detection_record.csv.gz', RS.SERVED_TIERS, samples_record_key()):
                 u.add_input(os.path.join(r, f))
             for f in rej.samples[batch_tag(r)]:
                 u.add_input(os.path.join(RS.copy_dir(r), f))
     return summ
 
 
-REJUDGE_INPUT_FILES = ('detection_record.csv.gz', 'chain_summary.json', 'served_tiers.csv', 'card2_vleak.csv')
+def rejudge_input_files():
+    """A run's re-judging and Card 2 input files, in their recorded order (rejudge_inputs)."""
+    from exopipe.phase3.lib.catalog import run_samples as RS
+    return ('detection_record.csv.gz', 'chain_summary.json', RS.SERVED_TIERS, 'card2_vleak.csv')
 
 
 def rejudge_inputs(runs):
@@ -2133,7 +2136,7 @@ def rejudge_inputs(runs):
     cumulative step refuses an omit product whose re-judging inputs changed since (V_combview review T5 / F5: the build cannot
     re-derive the re-judging). The inputs include the run's sample-catalog record and each recorded copy (cutover row 70)."""
     from exopipe.phase3.lib.catalog import run_samples as RS
-    files = REJUDGE_INPUT_FILES + (samples_record_key(),) + tuple(os.path.join(RS.COPY_DIR, f) for f in RS.chain_names())
+    files = rejudge_input_files() + (samples_record_key(),) + tuple(os.path.join(RS.COPY_DIR, f) for f in RS.chain_names())
     out = collections.OrderedDict()
     for r in runs:
         d = collections.OrderedDict()

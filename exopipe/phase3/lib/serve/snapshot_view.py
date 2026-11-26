@@ -470,7 +470,7 @@ def build(job):
         bad = sorted(k for k in set(now) | set(rec_counts) if now.get(k) != rec_counts.get(k))
         raise ViewRefusal('G-V4 the omit product\'s served counts (deep_omission_served.csv) are not the served set\'s: %d keys '
                           'differ (e.g. %s)' % (len(bad), bad[:2]))
-    complete_runs(RUNS, TAG, TIERS)       # G-V7 (V_combview review F4)
+    complete_runs(RUNS, TAG, TIERS, job['served_tiers'])       # G-V7 (V_combview review F4)
 
     # ---- 0. THE KEPT PRODUCT APPLIED (production's step 0 and section 0b decided here; the omit stage's product is read)
     DROPPED = set()
@@ -956,13 +956,14 @@ def build(job):
     return stats
 
 
-def complete_runs(runs, tag, tiers):
+def complete_runs(runs, tag, tiers, name):
     """G-V7 (V_combview review F4), the build's own re-check of the omit stage's G4b: each batch run's per-tier survivors hold
-    exactly the identities its served_tiers.csv serves in each tier (chain_outcome 'served', qualifies 1)."""
+    exactly the identities its served_tiers.csv serves in each tier (chain_outcome 'served', qualifies 1). ``name``: the
+    table's name in the run (run_samples.SERVED_TIERS, handed in the job: the child loads no exopipe module)."""
     for r in runs:
-        st = os.path.join(r, 'served_tiers.csv')
+        st = os.path.join(r, name)
         if not os.path.isfile(st):
-            raise ViewRefusal('G-V7 %s has no served_tiers.csv: its per-tier catalogues cannot be shown complete' % tag[r])
+            raise ViewRefusal('G-V7 %s has no %s: its per-tier catalogues cannot be shown complete' % (tag[r], name))
         want = collections.defaultdict(set)
         for x in rows(st):
             if x.get('chain_outcome') == 'served' and str(x.get('qualifies')) == '1':
@@ -971,9 +972,9 @@ def complete_runs(runs, tag, tiers):
             have = {x['identity_id'] for p in glob.glob(os.path.join(r, 'source_catalogs_[IV]_%s' % T, '*_sources_survivors.csv'))
                     for x in rows(p)}
             if have != want.get(T, set()):
-                raise ViewRefusal('G-V7 %s tier %s: its per-tier survivors hold %d identities served_tiers.csv does not serve and '
+                raise ViewRefusal('G-V7 %s tier %s: its per-tier survivors hold %d identities %s does not serve and '
                                   'lack %d it serves - an incomplete or inconsistent batch run'
-                                  % (tag[r], T, len(have - want.get(T, set())), len(want.get(T, set()) - have)))
+                                  % (tag[r], T, len(have - want.get(T, set())), name, len(want.get(T, set()) - have)))
 
 
 def child_main(job_path):
@@ -1358,8 +1359,9 @@ def build_stage(run, plan):
         os.makedirs(recs, exist_ok=True)
         check_decisions_current(u, plan, summ, recs)        # G-V8 (F5)
         co = CFG.catalog_omission
+        from exopipe.phase3.lib.catalog import run_samples as RS
         job = dict(out=plan.U, runs=plan.runs, kept_dir=plan.omit_dir, tiers=list(S.SNAPVIEW_TIERS),
-                   stokes=list(S.SNAPVIEW_STOKES), suffix=dict(S.SNAPVIEW_PAGE_SUFFIX),
+                   stokes=list(S.SNAPVIEW_STOKES), suffix=dict(S.SNAPVIEW_PAGE_SUFFIX), served_tiers=RS.SERVED_TIERS,
                    clv15=_legacy_root('clv15'), ops=_legacy_root('exopipe_ops'), deep_omission_py=_deep_omission_py(),
                    proto=summ['proto'], names=dict(noise=dict(co.SNAPSHOT_NOISE), members=co.SNAPSHOT_MEMBERS,
                                                    admission=co.SNAPSHOT_ADMISSION),

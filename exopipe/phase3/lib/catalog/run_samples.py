@@ -58,6 +58,9 @@ _STAGING_RE = re.compile(r'^%s\.\d{8}T\d{6}Z\.\d+\.[0-9a-f]{8}$' % re.escape(STA
 FORMAT = 1
 HOWS = ('chain', 'backfill')
 STAGE = 'samples-backfill'
+SERVED_TIERS = 'served_tiers.csv'        # a chain run's per-tier serving table, RUN/<this> (clv15 phase3_snapshot_tierserve
+                                         # on the recorded copies: tier_snapshot stage tierserve); the one name its writer and
+                                         # its readers use
 
 
 class SamplesRefusal(Exception):
