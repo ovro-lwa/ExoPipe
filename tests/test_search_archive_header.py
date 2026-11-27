@@ -235,11 +235,15 @@ def test_step():
         os.makedirs(os.path.join(a, 'Run_SEARCH_QUARANTINE_' + r), exist_ok=True)
     open(os.path.join(parch, 'Run_SEARCH_QUARANTINE_20261201'), 'w').close()       # a file, not a round
     CFG.paths.PHASE3_ARCHIVE_ROOT = parch
+    from exopipe.phase3.core import legacy
+    real = legacy.interpreter
+    legacy.interpreter = lambda name: sys.executable      # data-free: no site file names the engine's interpreters
     try:
         win = DS.archive_predecessor_roots(dict(archive_root=mirror))
         live = DS.archive_predecessor_roots(dict(archive_root=parch))
         env = DS.engine_env('/x', '/x', '/x', 'X', '/x/arch', '/x/tmp', pred_roots=win)
     finally:
+        legacy.interpreter = real
         CFG.reset()
     q = lambda a, r: os.path.join(a, 'Run_SEARCH_QUARANTINE_' + r)                  # noqa: E731
     check('the deep step\'s predecessor roots: the run\'s archive root, then its quarantine rounds newest first (this launch\'s '
