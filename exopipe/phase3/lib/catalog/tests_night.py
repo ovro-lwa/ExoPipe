@@ -162,10 +162,6 @@ def night_frozen_state(path, **ctx):
             omission = BG.Omission(om['path'], om['sha256'], om['cells_sha256'])
         except BG.Refused as e:
             msgs.append(f'the deep-omission decision table the gate read: {e} (I-G8)')
-        else:
-            why = omission.night_refusal(st['lst'], st['night'])
-            if why:
-                msgs.append(f'{why} (I-G9)')
     n = 0
     for H, keys in sorted((st.get('frozen_records') or {}).items()):
         for k, fp in sorted(keys.items()):
@@ -177,8 +173,10 @@ def night_frozen_state(path, **ctx):
                     have = _json(fp).get('omission') or {}
                 except (OSError, ValueError):
                     have = {}
-                if not omission.same(have):
-                    msgs.append(f'{H} {k}: the frozen record {fp} names another deep-omission decision table (I-G8)')
+                why = omission.extends(have)
+                if why:
+                    msgs.append(f'{H} {k}: the frozen record {fp} names a deep-omission decision table the gate\'s is not '
+                                f'nor appends to: {why} (I-G8)')
     c = st['conform']
     paths = [c.get('noise'), c.get('evidence')]
     if not all(paths):
@@ -190,14 +188,15 @@ def night_frozen_state(path, **ctx):
             msgs.append(f'the conformance records the night is judged by: {why}')
     return (not msgs, n, '; '.join(msgs) if msgs else
             f'{st["lst"]} {st["night"]}: frozen from {st["frozen_from"]}; {n} frozen builder record(s) present, each '
-            f'naming the unchanged deep-omission decision table; both grouping runs named; I-G6 holds')
+            f'naming the unchanged deep-omission decision table or one it appends to; both grouping runs named; I-G6 holds')
 
 
 @content_test('night_grouping_record')
 def night_grouping_record(path, **ctx):
     """The per-hour item's grouping record, tested for its own claims: an incremental run whose night list holds this night
     directory (the record's own directory) once; both Stokes' tables named with their sha1; the run's record named (a later
-    run of the same unit name rewrites that file, so its present content is not this record's claim)."""
+    run of the same unit name rewrites that file, so its present content is not this record's claim); the deep-omission
+    decision table the night was grouped under, unchanged, decides the night (I-G9)."""
     try:
         g = _json(path)
     except (OSError, ValueError) as e:
@@ -217,5 +216,17 @@ def night_grouping_record(path, **ctx):
             msgs.append(f'the Stokes {S} table is not named with its sha1')
     if not g.get('record'):
         msgs.append('the grouping run\'s record is not named')
+    om = g.get('omission') or {}           # I-G9: the night was grouped under a table that decides it
+    if not (om.get('path') and om.get('sha256') and om.get('cells_sha256')):
+        msgs.append('no deep-omission decision table named with its coverage record (I-G9)')
+    else:
+        from exopipe.phase3.lib.catalog.wraps import builder_grouping as BG
+        try:
+            why = BG.Omission(om['path'], om['sha256'], om['cells_sha256']).night_refusal(g.get('lst'), g.get('night'))
+        except BG.Refused as e:
+            why = str(e)
+        if why:
+            msgs.append(f'{why} (I-G9)')
     return (not msgs, len(g.get('nights') or []), '; '.join(msgs) if msgs else
-            f'incremental grouping with {len(g.get("nights") or [])} night director(ies), this one once; both tables named')
+            f'incremental grouping with {len(g.get("nights") or [])} night director(ies), this one once; both tables named; '
+            f'the night decided by the deep-omission decision table it was grouped under')

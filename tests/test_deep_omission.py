@@ -754,6 +754,119 @@ def test_tenmin():
             assert t['passed'], t
 
 
+_REFUSED = object()                  # deep_omission.refuse raises core.record.Refusal in the package
+
+
+def test_tenmin_append_night():
+    """append_night (the per-hour item's omit unit): a table that predates one night of an LST - the full table without the
+    night's rows, its coverage record without the night's cells - with that night appended (rated on an all-nights directory
+    without the night plus the night's own directory) holds production's rows of the night (the full table's: run_tenmin =
+    production's decide, test_tenmin), after the predating table's bytes, unchanged; its coverage record holds the night's
+    cells as the full one does; a second append appends nothing. Refusals: a parent changed since recorded, a night decided in
+    part, detections of another night, an ABSENT verdict over detections (G6)."""
+    DO, C = _DO(), _cfg()
+    from exopipe.phase3.core import validate
+    from exopipe.phase3.lib.catalog.wraps import builder_grouping as BG
+    root, rdir, sl, tr, frms = tenmin_world('tenmin_append')
+    with Patch((C.paths, 'SUBLST_ROOT', sl), (C.paths, 'TRANSIENTS_ROOT', tr)):
+        DO.run_tenmin(['05h', '06h'], os.path.join(root, 'full'), rdir=rdir, seed_dir='', frame_rms=frms)
+        full = os.path.join(root, 'full', 'deep_omission.csv')
+        frows, fcov = _rows(full), _rows(BG.cells_path(full))
+        per = collections.Counter((r['lst'], r['night']) for r in frows)
+        L, N = max(sorted(per), key=lambda k: per[k])                       # the (LST, night) with the most decisions
+
+        def predating(name, lst, night, extra=()):
+            """the full table without the night's rows and its coverage record without the night's cells (+ extra)"""
+            d = os.path.join(root, name)
+            os.makedirs(d, exist_ok=True)
+            p = os.path.join(d, 'deep_omission.csv')
+            with open(p, 'w', newline='') as f:
+                w = csv.DictWriter(f, fieldnames=list(frows[0]))
+                w.writeheader()
+                w.writerows(r for r in frows if (r['lst'], r['night']) != (lst, night))
+            cells = {(r['lst'], r['band'], r['night'], r['stokes']): int(r['detections']) for r in fcov
+                     if (r['lst'], r['night']) != (lst, night)}
+            cells.update(extra)
+            BG.write_cells(p, cells)
+            return BG.Omission(p).ref()
+
+        def split(lst, night, name):
+            """the LST's all-nights directory without the night, and the night's own directory"""
+            mc = _rows(os.path.join(tr, f'Run_SLST{lst[:2]}B', 'master_catalog.csv'))
+            F, D = os.path.join(root, name, 'F'), os.path.join(root, name, 'night')
+            _wcsv(os.path.join(F, 'master_catalog.csv'), list(mc[0]), [r for r in mc if r['date'][:10] != night])
+            _wcsv(os.path.join(D, 'master_catalog.csv'), list(mc[0]), [r for r in mc if r['date'][:10] == night])
+            return F, D
+
+        par = predating('pred', L, N)
+        F, D = split(L, N, 'split')
+        out = os.path.join(root, 'split', 'night', DO.APPEND_DIR)
+        summ = DO.append_night(par, L, N, D, out, rdir=rdir, lst_dirs={L: F}, seed_dir='', frame_rms=frms)
+        new = os.path.join(out, 'deep_omission.csv')
+        want = [r for r in frows if (r['lst'], r['night']) == (L, N)]
+        got = _rows(new)
+        with open(par['path'], 'rb') as f, open(new, 'rb') as g:
+            pb, nb = f.read(), g.read()
+        assert summ['status'] == 'appended' and summ['appended_rows'] == len(want) == per[(L, N)] > 2, summ
+        assert nb.startswith(pb) and got[len(got) - len(want):] == want, 'the night\'s rows are not production\'s'
+        assert {r['verdict'] for r in want} >= {'OMIT'}, want
+        V = BG.Omission(new)
+        assert V.extends(par) == '' and V.night_refusal(L, N) == ''
+        cov = lambda rows: {(r['lst'], r['band'], r['night'], r['stokes']): (r['verdict'], r['detections']) for r in rows
+                            if (r['lst'], r['night']) == (L, N)}
+        assert cov(_rows(BG.cells_path(new))) == cov(fcov), 'the night\'s cells differ from the full coverage record'
+        for t in validate.run('omission_append', os.path.join(out, DO.APPEND_RECORD), tier='sublst'):
+            assert t['passed'], t
+        # a second append: nothing (the table already decides the night)
+        again = DO.append_night(V.ref(), L, N, D, os.path.join(root, 'again'), rdir=rdir, lst_dirs={L: F}, seed_dir='',
+                                frame_rms=frms)
+        assert again['status'] == 'covered' and again['table'] == V.ref() and not os.path.exists(os.path.join(root, 'again'))
+        with open(new, 'rb') as g:
+            assert g.read() == nb
+        # refusals
+        msg = _raises(_REFUSED, DO.append_night, dict(par, sha256='0' * 64), L, N, D, os.path.join(root, 'r1'),
+                      rdir=rdir, lst_dirs={L: F}, seed_dir='', frame_rms=frms)
+        assert 'changed since' in msg, msg                                    # the parent changed since recorded
+        mine = sorted({(r['lst'], r['band'], r['night'], r['stokes']) for r in fcov if (r['lst'], r['night']) == (L, N)
+                       and int(r['detections'])})
+        assert len(mine) >= 2, mine
+        part = predating('part', L, N, extra={mine[0]: 1})
+        msg = _raises(_REFUSED, DO.append_night, part, L, N, D, os.path.join(root, 'r2'), rdir=rdir,
+                      lst_dirs={L: F}, seed_dir='', frame_rms=frms)
+        assert msg.startswith('G15') and 'only in part' in msg and '/'.join(mine[1]) in msg, msg
+        D2, O = os.path.join(root, 'other_night'), [n for n in NIGHTS if n != N][0]
+        mc = _rows(os.path.join(D, 'master_catalog.csv'))
+        _wcsv(os.path.join(D2, 'master_catalog.csv'), list(mc[0]),
+              mc + [dict(mc[0], cand_id=f'I1_{L}_{O}T00_46MHz_9999', date=f'{O}T00', band='46MHz', stokes='I')])
+        msg = _raises(_REFUSED, DO.append_night, par, L, N, D2, os.path.join(root, 'r3'), rdir=rdir,
+                      lst_dirs={L: F}, seed_dir='', frame_rms=frms)
+        assert msg.startswith('G14') and f'outside the night {N} of {L}' in msg, msg
+        # G6: 05h 55 MHz night 8 is refused by the deep search with no window in the tier (ABSENT); detections there refuse
+        N7 = NIGHTS[7]
+        p7 = predating('pred7', '05h', N7)
+        F7, D7 = split('05h', N7, 'split7')
+        mc = _rows(os.path.join(D7, 'master_catalog.csv'))
+        _wcsv(os.path.join(D7, 'master_catalog.csv'), list(mc[0]),
+              mc + [dict(mc[0], cand_id=f'I1_05h_{N7}T00_55MHz_9999', date=f'{N7}T00', band='55MHz', stokes='I')])
+        msg = _raises(_REFUSED, DO.append_night, p7, '05h', N7, D7, os.path.join(root, 'r4'), rdir=rdir,
+                      lst_dirs={'05h': F7}, seed_dir='', frame_rms=frms)
+        assert msg.startswith('G6') and 'hold served detections' in msg, msg
+
+
+def _refused():
+    from exopipe.phase3.core.record import Refusal
+    return Refusal
+
+
+def _raises(exc, fn, *a, **k):
+    exc = _refused() if exc is _REFUSED else exc
+    try:
+        fn(*a, **k)
+    except exc as e:
+        return str(e)
+    raise AssertionError(f'{fn.__name__} did not raise {exc.__name__}')
+
+
 def test_tenmin_window_status():
     """SPEED (design 2.3a stage 4): the cached windows' status (size, mtime) is read ONCE per path and on threads
     (TenminRecords.stats; catalog_omission.TENMIN_STAT_THREADS) - the decision table and the window-rms cache files are the
@@ -1890,7 +2003,7 @@ def test_real_one_lst():
     print(f'    07h on B6H ({n} served detections): {len(port)} decisions identical to production ({time.time() - t0:.0f} s)')
 
 
-TESTS = [test_production_pin, test_drift, test_snapshot, test_tenmin, test_tenmin_window_status, test_tenmin_rejudge, test_serve_build, test_serve_build_merge,
+TESTS = [test_production_pin, test_drift, test_snapshot, test_tenmin, test_tenmin_append_night, test_tenmin_window_status, test_tenmin_rejudge, test_serve_build, test_serve_build_merge,
          test_gates, test_content,
          test_kept_product, test_stage, test_refusals_override, test_pending_values, test_production_bugs_pinned,
          test_injected_record, test_real_one_lst]

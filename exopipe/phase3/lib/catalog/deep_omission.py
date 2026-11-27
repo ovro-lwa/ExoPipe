@@ -739,11 +739,13 @@ class TenminRecords:
     the wideband windows' WBMEMB cards. Window-rms caches are per LST, window_rms_<LST>.csv (production's layout): the stage's
     own under ``cache_dir`` (written), production's under ``seed_dir`` (read only)."""
 
-    def __init__(self, reader, cache_dir=None, seed_dir=None, frame_rms=None, lst_dirs=None):
+    def __init__(self, reader, cache_dir=None, seed_dir=None, frame_rms=None, lst_dirs=None, night_dirs=None):
         cfg = _cfg()
         cs = cfg.catalog_sublst
         self.reader = reader
         self.lst_dirs = {k: os.path.abspath(v) for k, v in (lst_dirs or {}).items()}   # --omit-lst-dir: rated instead of the run
+        # append_night: the night directories appended to an LST's all-nights directory ({LST: [dir]}), counted with it
+        self.night_dirs = {k: [os.path.abspath(d) for d in v] for k, v in (night_dirs or {}).items()}
         self.root = cfg.paths.SUBLST_ROOT
         self.arm = cs.ARM
         self.tree = cs.TENMIN_TREE.format(root=self.root, tree=cs.ARM_TREES[self.arm])
@@ -879,14 +881,17 @@ class TenminRecords:
         return v
 
     def served(self, lst):
-        """({(band, window key, S): n served detections} of the published LST run's master_catalog.csv, run exists)."""
+        """({(band, window key, S): n served detections} of the published LST run's master_catalog.csv, run exists); with
+        night_dirs, also the master_catalog.csv of each night directory appended to the LST (what the published run holds
+        when production recomputes the table: every night)."""
         if lst not in self._served:
             f = os.path.join(self.run_dir(lst), 'master_catalog.csv')
             n = collections.defaultdict(int)
             ok = os.path.exists(f)
             if ok:
-                for r in self.reader.rows(f, 'tenmin_served', missing_ok=False):
-                    n[(r['band'], r['date'], r['stokes'])] += 1
+                for p in [f] + [os.path.join(d, 'master_catalog.csv') for d in self.night_dirs.get(lst, [])]:
+                    for r in self.reader.rows(p, 'tenmin_served', missing_ok=False):
+                        n[(r['band'], r['date'], r['stokes'])] += 1
             self._served[lst] = (n, ok)
         return self._served[lst]
 
@@ -913,14 +918,18 @@ class TenminRecords:
         return self._wbm[path]
 
 
-def decide_tenmin(lst, rdir=None, recs=None, reader=None):
-    """The 10-minute decisions of one LST (sublst_deep_omission.decide): rows in production's order and formats."""
+def decide_tenmin(lst, rdir=None, recs=None, reader=None, nights=None):
+    """The 10-minute decisions of one LST (sublst_deep_omission.decide): rows in production's order and formats. nights: the
+    refused cells of those nights only (append_night), each decided as production decides it - the thresholds over every
+    night of its band and Stokes - with the wideband consequences of those nights."""
     import numpy as np
     c = _c()
     reader = reader or (recs.reader if recs else Reader())
     recs = recs or TenminRecords(reader)
     G = groups()
     refs = load_refusals(rdir or c.REFUSALS, lst, reader)
+    if nights is not None:
+        refs = {k: v for k, v in refs.items() if k[1] in nights}
     if not refs:
         return []
     served, have_run = recs.served(lst)
@@ -2209,23 +2218,32 @@ def tenmin_cells(lsts, recs, reader):
     second input, grouping_stage.assemble_tenmin_input: a cell only it holds is covered too; a run without it is refused by
     the grouping) in recs.run_dir(LST). G13: a cand_id that does not name its cell (production's key,
     sublst_deep_omission_drop.py:43) REFUSES - a cell the coverage record cannot hold is never kept by default."""
-    from exopipe.phase3.lib.catalog.wraps import builder_grouping as BG
     n, bad = collections.Counter(), []
     for L in lsts:
-        R = recs.run_dir(L)
-        pt = [p for p in (os.path.join(R, 'pertie_detections.csv'), os.path.join(R, 'pertie', 'pertie_detections.csv'))
-              if os.path.exists(p)]
-        for p, g in [(os.path.join(R, 'master_catalog.csv'), 'tenmin_served')] + [(q, 'tenmin_pertie') for q in pt[:1]]:
-            for r in reader.rows(p, g, missing_ok=False):
-                k = BG.cell_of(r.get('cand_id'), r.get('stokes'))
-                if k is None:
-                    bad.append(f'{r.get("cand_id")!r} ({p})')
-                else:
-                    n[k] += 1
+        m, b = dir_cells(recs.run_dir(L), reader)
+        n.update(m)
+        bad += b
     if bad:
         refuse(f'G13: {len(bad)} detection(s) whose cand_id does not name its (LST, night, band) cell - the coverage record '
                f'cannot hold them: {", ".join(bad[:5])}')
     return n
+
+
+def dir_cells(D, reader):
+    """({(lst, band, night, Stokes): number of detections}, [the cand_ids that do not name their cell]) of one catalog
+    directory's detections: master_catalog.csv and its pertie_detections.csv where present (tenmin_cells)."""
+    from exopipe.phase3.lib.catalog.wraps import builder_grouping as BG
+    n, bad = collections.Counter(), []
+    pt = [p for p in (os.path.join(D, 'pertie_detections.csv'), os.path.join(D, 'pertie', 'pertie_detections.csv'))
+          if os.path.exists(p)]
+    for p, g in [(os.path.join(D, 'master_catalog.csv'), 'tenmin_served')] + [(q, 'tenmin_pertie') for q in pt[:1]]:
+        for r in reader.rows(p, g, missing_ok=False):
+            k = BG.cell_of(r.get('cand_id'), r.get('stokes'))
+            if k is None:
+                bad.append(f'{r.get("cand_id")!r} ({p})')
+            else:
+                n[k] += 1
+    return n, bad
 
 
 def tenmin_table(lsts, out_csv, rdir=None, cache_dir=None, seed_dir=None, reader=None, frame_rms=None, lst_dirs=None,
@@ -2303,6 +2321,109 @@ def run_tenmin(lsts, out, rdir=None, seed_dir=None, u=None, label='omit', frame_
         root = None if recs.lst_dirs else _cfg().paths.TRANSIENTS_ROOT      # None: the files' common path
         reader.record(u, {'refusals': rdir, 'tenmin_frames': recs.tree, 'tenmin_searched': recs.search,
                           'tenmin_served': root, 'tenmin_members': root, 'tenmin_pertie': root})
+    return summ
+
+
+APPEND_DIR = 'deep_omission'                    # in the per-hour item's night directory: the table version with the night
+APPEND_RECORD = 'deep_omission_append.json'     # beside that table: what was appended to which table, rated on what
+EARLIER_VERDICTS_RULING = ('R-GREGG-20261112-PER-HOUR-STEPS-SIX-RULINGS (1): "no for earlier verdicts (a detection removed by '
+                           'a gate stays removed until the periodic audit pass)"; Gregg: "Agreed."')
+
+
+def append_night(parent, lst, night, night_dir, out, rdir=None, lst_dirs=None, night_dirs=None, seed_dir=None,
+                 frame_rms=None, reader=None):
+    """THE VERDICTS OF AN APPENDED NIGHT (the per-hour 10-minute item's omit unit, lib/catalog/incremental_sublst.py): the
+    night ``night`` of ``lst``, its detections in ``night_dir`` (master_catalog.csv, pertie_detections.csv), rated as
+    production rates a night (sublst_deep_omission.decide :134-225): the deep search's refusals of the night (load_refusals
+    :45-75, the latest attempt of each LST-band), the windows the tier searched (tier_windows :76-98), their central rms
+    (window_rms :99-123) and the served rate (served_counts :124-131: here the detections of the LST's all-nights directory
+    ``lst_dirs[lst]``, of every night appended to it before, ``night_dirs[lst]``, and of this night - what the published run
+    holds when production recomputes the table), each threshold over every night of the band and Stokes, as in production.
+    The night's rows are APPENDED to the decision table ``parent`` (a ref {path, sha256, cells_sha256} or a path) as a new
+    version <out>/deep_omission.csv: the parent's bytes unchanged, then the night's rows in production's order and format;
+    its coverage record holds the parent's cells unchanged plus every cell of the night's detections and decisions; <out>/
+    APPEND_RECORD says what was appended to which table. EARLIER VERDICTS ARE KEPT, never recomputed (EARLIER_VERDICTS_RULING),
+    even where the night moves a threshold. A night the parent already decides appends nothing: the parent is the night's
+    table, nothing is written. REFUSES (OmissionRefusal): the parent's own refusals (wraps/builder_grouping.Omission: changed
+    since recorded, coverage record of another table, ...); G14 no detection in night_dir, or one outside the night of lst,
+    or one whose cand_id does not name its cell; G15 a night the parent decides in part only (rated before on other
+    detections); G2 no all-nights detections of lst; G1 the refusal record; G6 (absent_gate) an ABSENT verdict over served
+    detections; G17 a row the parent's columns cannot hold. Returns the summary (status 'appended' or 'covered'; 'table' =
+    the ref of the night's table)."""
+    from exopipe.phase3.lib.catalog.wraps import builder_grouping as BG
+    from exopipe.phase3.core import placement
+    c = _c()
+    rdir = rdir or c.REFUSALS
+    reader = reader or Reader()
+    ref = parent if isinstance(parent, dict) else dict(path=parent)
+    try:
+        P = BG.Omission(ref.get('path'), ref.get('sha256'), ref.get('cells_sha256'))
+    except BG.Refused as e:
+        refuse(f'the decision table the night is appended to: {e}')
+    night_dir = os.path.abspath(night_dir)
+    mine, bad = dir_cells(night_dir, reader)
+    other = sorted(k for k in mine if (k[0], k[2]) != (lst, night))
+    if bad or other or not mine:
+        refuse(f'G14 {night_dir}: ' + ('no detection of the night' if not (bad or other or mine) else
+                                       f'{len(bad) + len(other)} detection cell(s) outside the night {night} of {lst} or not '
+                                       f'named by their cand_id: ' + ', '.join(bad[:3] + ['/'.join(k) for k in other[:5]])))
+    held = {k for k in P.cells if (k[0], k[2]) == (lst, night)}
+    base = dict(lst=lst, night=night, night_dir=night_dir, parent=P.ref())
+    if held:
+        miss = sorted(set(mine) - held)
+        if miss:
+            refuse(f'G15 the table {P.path} decides the night {night} of {lst} only in part: {len(miss)} cell(s) of the '
+                   f'night\'s detections are not in its coverage record ({", ".join("/".join(k) for k in miss[:8])}) - the '
+                   f'night was rated before on other detections; an earlier verdict is never recomputed '
+                   f'({EARLIER_VERDICTS_RULING})')
+        return dict(base, status='covered', table=P.ref(), appended_rows=0, appended_cells=0)
+    _record_gate(rdir)
+    t0 = time.time()
+    seed_dir = c.TENMIN_RMS_CACHE_SEED if seed_dir is None else (seed_dir or None)
+    nd = [os.path.abspath(d) for d in (night_dirs or {}).get(lst, []) if os.path.abspath(d) != night_dir] + [night_dir]
+    recs = TenminRecords(reader, cache_dir=os.path.join(out, 'cache'), seed_dir=seed_dir, frame_rms=frame_rms,
+                         lst_dirs=lst_dirs, night_dirs={lst: nd})
+    if not os.path.exists(os.path.join(recs.run_dir(lst), 'master_catalog.csv')):
+        refuse(f'G2: no 10-minute detections {recs.run_dir(lst)}/master_catalog.csv for {lst} (the all-nights directory the '
+               f'night\'s rate is judged among)')
+    rows = decide_tenmin(lst, rdir=rdir, recs=recs, reader=reader, nights={night})
+    absent = absent_gate(rows, tenmin_served_of(recs))
+    dec = {(r['lst'], r['band'], r['night'], r['stokes']) for r in rows}
+    if any((k[0], k[2]) != (lst, night) for k in dec):           # decide_tenmin(nights=) returns the night's rows only
+        refuse(f'G14 rows of another night rated for the night {night} of {lst}: {sorted(dec)[:3]}')
+    data = P.data
+    hdr = next(csv.reader(io.StringIO(data.decode('utf-8'), newline='')))
+    buf = io.StringIO(newline='')
+    w = csv.DictWriter(buf, fieldnames=hdr)
+    for r in rows:
+        r = dict(r, rate_definition=TENMIN_RATE_DEF)
+        if set(r) != set(hdr):
+            refuse(f'G17 the table {P.path} has the columns {hdr}; the night\'s rows have {list(r)} - they cannot be appended '
+                   f'byte for byte')
+        w.writerow(r)
+    if not data.endswith(b'\n'):
+        refuse(f'G17 the table {P.path} does not end with a whole row: the night\'s rows cannot be appended to it')
+    os.makedirs(out, exist_ok=True)
+    table = os.path.join(out, 'deep_omission.csv')
+    with placement.atomic(table) as tmp, open(tmp, 'wb') as fh:
+        fh.write(data + buf.getvalue().encode('utf-8'))
+    counts = {k: int(v or 0) for k, v in P.detections.items()}
+    counts.update(mine)
+    BG.write_cells(table, counts)
+    try:
+        V = BG.Omission(table)
+    except BG.Refused as e:
+        refuse(f'the appended table {table}: {e}')
+    why = V.extends(P.ref()) or V.night_refusal(lst, night)
+    if why:
+        refuse(f'the appended table {table} does not extend {P.path} with the night: {why}')
+    summ = dict(base, status='appended', table=V.ref(), appended_rows=len(rows), appended_cells=len(V.cells - P.cells),
+                verdicts=dict(collections.Counter(r['verdict'] for r in rows)), omit_keys=len(V.keys - P.keys),
+                detections=sum(mine.values()), absent_with_served=len(absent), refusals=os.path.abspath(rdir),
+                rated_on=dict(lst_dir=recs.run_dir(lst), night_dirs=nd), window_rms=dict(sorted(recs.n.items())),
+                rms_cache_seed=seed_dir, earlier_verdicts=EARLIER_VERDICTS_RULING, seconds=round(time.time() - t0, 1))
+    with placement.atomic(os.path.join(out, APPEND_RECORD)) as tmp, open(tmp, 'w') as fh:
+        json.dump(dict(summ, version=1), fh, indent=1, sort_keys=True)
     return summ
 
 

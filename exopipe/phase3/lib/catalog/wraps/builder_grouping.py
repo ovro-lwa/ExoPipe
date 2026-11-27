@@ -318,8 +318,10 @@ class Omission:
             raise Refused(f'the coverage record {self.cells_path} belongs to another decision table (sha256 '
                           f'{sorted(other)[0][:12]}; {self.path} has {self.sha256[:12]}): the table changed after the omit stage '
                           f'wrote both - run the omit stage again - REFUSING')
-        self.rows = rows
+        self.data, self.rows = data, rows
         self.cells = set(cov)
+        self._cov = cov
+        self.detections = {(r['lst'], r['band'], r['night'], r['stokes']): r['detections'] for r in crows}
         self.keys = {k for k, v in ver.items() if 'OMIT' in v.split(';')}
         self.lsts = sorted({k[0] for k in self.cells})
         self.decisions = len(rows)
@@ -348,6 +350,34 @@ class Omission:
         rec = rec or {}
         return (rec.get('sha256'), rec.get('cells_sha256')) == (self.sha256, self.cells_sha256)
 
+    def extends(self, rec):
+        """'' when the record ``rec`` names this table and coverage record, or a table this one APPENDS to (the verdicts of
+        an appended night, deep_omission.append_night): the recorded table, unchanged (its recorded sha256 and that of its
+        coverage record), is a byte-for-byte prefix of this one; every cell of its coverage record is in this one with the same
+        verdicts and detections; and the rows after the prefix decide only cells it does not hold. Earlier verdicts never
+        change (ruling (1) of R-GREGG-20261112-PER-HOUR-STEPS-SIX-RULINGS). Else the reason it is neither."""
+        rec = rec or {}
+        if self.same(rec):
+            return ''
+        if not (rec.get('path') and rec.get('sha256') and rec.get('cells_sha256')):
+            return 'the record names no deep-omission decision table with its coverage record'
+        try:
+            A = Omission(rec['path'], rec['sha256'], rec['cells_sha256'])
+        except Refused as e:
+            return f'the recorded table cannot be read as it was recorded: {e}'
+        if not (A.data.endswith(b'\n') and self.data.startswith(A.data)):
+            return (f'{self.path} (sha256 {self.sha256[:12]}) does not begin with the recorded table {A.path} (sha256 '
+                    f'{A.sha256[:12]}) byte for byte: an earlier decision row changed')
+        changed = sorted(k for k in A.cells if (self._cov.get(k), self.detections.get(k)) != (A._cov[k], A.detections[k]))
+        if changed:
+            return (f'{len(changed)} cell(s) of the recorded coverage record {A.cells_path} are missing or changed in '
+                    f'{self.cells_path}: ' + ', '.join('/'.join(k) for k in changed[:8]) + (' ...' if len(changed) > 8 else ''))
+        late = sorted(k for k in _cell_verdicts(self.rows[A.decisions:]) if k in A.cells)
+        if late:
+            return (f'{len(late)} row(s) appended to the recorded table {A.path} decide cells it already decided (an earlier '
+                    f'verdict changed): ' + ', '.join('/'.join(k) for k in late[:8]) + (' ...' if len(late) > 8 else ''))
+        return ''
+
     def omitted(self, cand_id, stokes=None, lst=None):
         """The OMIT cell of a detection, or None (kept) - production's omitted(cand_id, stokes) of the merge's drop. A cand_id
         that does not name its cell REFUSES; a cell the coverage record does not hold raises Uncovered (fail closed)."""
@@ -375,8 +405,8 @@ class Omission:
         if any(k[0] == lst and k[2] == night for k in self.cells):
             return ''
         return (f'night {night} of {lst} has no verdict: the deep-omission decision table {self.path} (sha256 {self.sha256[:12]}) '
-                f'predates it - its coverage record {self.cells_path} holds no cell of the night (verdicts for appended nights '
-                f'are a follow-up; until then a night is taken only by a new all-nights pass) - REFUSING')
+                f'predates it - its coverage record {self.cells_path} holds no cell of the night (the per-hour item\'s omit unit '
+                f'appends a night\'s verdicts before its grouping, deep_omission.append_night) - REFUSING')
 
     def split(self, rows, what='the input', lst_of=lambda r: r.get('lst', '')):
         """(kept rows, dropped rows) of ``rows`` (dicts with cand_id; Stokes from the row's 'stokes'). Rows of cells the
@@ -776,12 +806,14 @@ class Frozen:
         if self.rec.get('version') != FROZEN_VERSION:
             raise Refused(f'{record}: record version {self.rec.get("version")!r}, this runner reads {FROZEN_VERSION} - REFUSING')
         want = self.rec.get('omission') or {}
-        if not (g.omission.same(want) if g.omission is not None else not want):
+        why = (g.omission.extends(want) if g.omission is not None else ('' if not want else 'no table'))
+        if why:
             raise Refused(f'{record}: the all-nights build dropped the OMIT cells of the deep-omission decision table with sha256 '
                           f'{str(want.get("sha256") or "none")[:12]} (coverage record {str(want.get("cells_sha256") or "none")[:12]}'
                           f'), this delta build those of '
                           + (f'{g.omission.sha256[:12]} (coverage record {g.omission.cells_sha256[:12]})' if g.omission is not None
-                             else 'none') + ' - a delta build stands on the table its all-nights build was made under - REFUSING')
+                             else 'none') + f' ({why}) - a delta build stands on the table its all-nights build was made under, '
+                          f'or an append to it (an appended night\'s verdicts) - REFUSING')
 
     # ---- what a delta build knows once the builder has read its rows ---------------------------------------------------------
     def _prepare(self):

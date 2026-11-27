@@ -719,3 +719,37 @@ def coverage_matches_the_table(path, **ctx):
         return _fail([f'the coverage record of {table} is {om.cells_path}, not {path}'], 0, '')
     return _fail([], len(om.cells), f'{len(om.cells)} (LST, band, night, Stokes) cells, {len(om.keys)} OMIT, '
                                     f'{om.decisions} decision rows of {table}')
+
+
+@content_test('omission_append')
+def appended_night_extends_its_parent(path, **ctx):
+    """deep_omission_append.json (deep_omission.append_night): the table beside it is the one the record names, unchanged; it
+    APPENDS to the parent table the record names (wraps/builder_grouping.Omission.extends: the parent, unchanged, a byte prefix;
+    every parent cell unchanged in the coverage record; the appended rows decide no parent cell - earlier verdicts kept,
+    ruling (1) of R-GREGG-20261112-PER-HOUR-STEPS-SIX-RULINGS); every appended row is of the record's night and LST, as many
+    as recorded; and the coverage record holds the night (I-G9)."""
+    from exopipe.phase3.lib.catalog.wraps import builder_grouping as BG
+    try:
+        with open(path) as f:
+            rec = json.load(f)
+        t = rec['table']
+        om = BG.Omission(t['path'], t['sha256'], t['cells_sha256'])
+    except (OSError, ValueError, KeyError, TypeError, BG.Refused) as e:
+        return _fail([f'{path}: {e}'], 0, '')
+    msgs = []
+    if os.path.dirname(os.path.abspath(om.path)) != os.path.dirname(os.path.abspath(path)):
+        msgs.append(f'the record names {om.path}, not the table beside it')
+    why = om.extends(rec.get('parent'))
+    if why:
+        msgs.append(f'the table does not append to its parent: {why}')
+    n_par = len(om.rows) - int(rec.get('appended_rows', -1))
+    tail = om.rows[n_par:] if 0 <= n_par <= len(om.rows) else None
+    if tail is None or any((r['lst'], r['night']) != (rec.get('lst'), rec.get('night')) for r in tail):
+        msgs.append(f'the rows after the parent are not {rec.get("appended_rows")} row(s) of the night {rec.get("night")} of '
+                    f'{rec.get("lst")}')
+    why = om.night_refusal(rec.get('lst'), rec.get('night'))
+    if why:
+        msgs.append(why)
+    return _fail(msgs, len(tail or ()), f'{rec.get("lst")} {rec.get("night")}: {rec.get("appended_rows")} decision row(s) and '
+                                         f'{rec.get("appended_cells")} cell(s) appended to {rec["parent"]["path"]} '
+                                         f'(sha256 {rec["parent"]["sha256"][:12]}); earlier rows byte-identical')
