@@ -228,17 +228,17 @@ def test_branches():
     # a predecessor holding coordinate cards the search's frame lacks
     w6, _ = work_frame('2024-12-23', 6.5)
     q6, dst6 = archived(os.path.join(ARCH, QRUN), '2024-12-23', 6.5,
-                        extra={'EQUINOX': (2000.0, 'equinox'), 'LONPOLE': (180.0, 'native longitude of the pole')})
+                        extra={'EQUINOX': (2000.0, 'equinox'), 'SPECSYS': ('TOPOCENT', 'spectral reference frame')})
     with fits.open(w6, memmap=False) as h:
-        lacks = 'EQUINOX' not in h[0].header and 'LONPOLE' not in h[0].header
+        lacks = 'EQUINOX' not in h[0].header and 'SPECSYS' not in h[0].header   # (WCS.to_header writes LONPOLE in some astropy versions)
     try:
         publish(w6)
         r6 = 'not refused'
     except RuntimeError as e:
         r6 = str(e)
-    check('a predecessor holding coordinate cards (EQUINOX, LONPOLE) the search\'s frame lacks: refused, every card and the '
+    check('a predecessor holding coordinate cards (EQUINOX, SPECSYS) the search\'s frame lacks: refused, every card and the '
           'cell named, with REFUSING (the engine child refuses this (cell, Stokes) unit only), nothing placed',
-          lacks and 'coordinate card(s) EQUINOX LONPOLE' in r6 and r6.startswith('03h 18MHz 2024-12-23 ') and 'REFUSING' in r6
+          lacks and 'coordinate card(s) EQUINOX SPECSYS' in r6 and r6.startswith('03h 18MHz 2024-12-23 ') and 'REFUSING' in r6
           and not os.path.exists(dst6) and dst6 not in record_rows(), r6[:200])
     # a frame only in an older quarantine round: never a predecessor (the engine reads only the roots the deep step gives)
     w7, h7 = work_frame('2024-12-24', 7.5)

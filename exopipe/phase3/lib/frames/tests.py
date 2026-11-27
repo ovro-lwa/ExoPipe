@@ -229,7 +229,6 @@ def pixels(path, **ctx):
     return True, round(frac, 4), f'finite fraction {frac:.4f}'
 
 
-@content_test('search_frame')
 def _archive_record_row(record, path):
     """The engine's last row for archive frame ``path`` in its archive record (deep_search.ARCHIVE_RECORD_COLS), or None."""
     if not record or not os.path.exists(record):
@@ -242,6 +241,7 @@ def _archive_record_row(record, path):
     return row
 
 
+@content_test('search_frame')
 def copy_identical(path, copy_of=None, predecessor=None, archive_record=None, **ctx):
     """An archive copy holds the attempt frame it was made from: the same pixels, bit for bit, every card of the attempt frame
     with its value (phase3_deep.py:850-873 made a byte-identical copy2), and its COMMENT and HISTORY lines; and every card of
