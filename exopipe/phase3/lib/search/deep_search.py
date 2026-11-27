@@ -1406,24 +1406,35 @@ def _archive_frame_publish(path, lst, scope, d, stokes, cadence, cell_tag):
 
 # the cards a header carries for its data layout and checksums, never carried from another file
 _STRUCT_CARD = re.compile(r'^(SIMPLE|XTENSION|BITPIX|NAXIS\d*|EXTEND|PCOUNT|GCOUNT|BSCALE|BZERO|BLANK|CHECKSUM|DATASUM|END)$')
-# the world coordinate cards: a predecessor's WCS card the search's frame lacks would mix two coordinate systems
+# the world coordinate cards, the observer's place and the time reference (fix round 2 item (9) added RADECSYS, OBSGEO-*,
+# MJD-OBS and the DATE-OBS / MJDREF time family): a predecessor's card of these the search's frame lacks would mix two coordinate
+# systems or two time blocks - never carried, never silently dropped (the merge refuses, naming them)
 _WCS_CARD = re.compile(r'^(WCSAXES\w?|WCSNAME\w?|CTYPE\d+\w?|CRVAL\d+\w?|CRPIX\d+\w?|CDELT\d+\w?|CUNIT\d+\w?|CROTA\d+|'
-                       r'PC\d+_\d+\w?|CD\d+_\d+\w?|PV\d+_\d+\w?|PS\d+_\d+\w?|LONPOLE\w?|LATPOLE\w?|RADESYS\w?|EQUINOX\w?|'
-                       r'EPOCH|MJDREF\w*|DATEREF|RESTFRQ\w?|RESTFREQ|RESTWAV\w?|SPECSYS\w?|SSYSOBS\w?|VELREF)$')
+                       r'PC\d+_\d+\w?|CD\d+_\d+\w?|PV\d+_\d+\w?|PS\d+_\d+\w?|LONPOLE\w?|LATPOLE\w?|RADESYS\w?|RADECSYS|'
+                       r'EQUINOX\w?|EPOCH|MJDREF\w*|JDREF\w*|DATEREF|RESTFRQ\w?|RESTFREQ|RESTWAV\w?|SPECSYS\w?|SSYSOBS\w?|VELREF|'
+                       r'OBSGEO-[XYZBLH]|DATE-OBS|DATE-BEG|DATE-AVG|DATE-END|MJD-OBS|MJD-BEG|MJD-AVG|MJD-END|MJD-MID|TIMESYS|'
+                       r'TREFPOS|TREFDIR|TIMEUNIT|PLEPHEM|TSTART|TSTOP)$')
 
 
-# WAVE2 ARCHIVE-HEADER (the refactor chat's decision (6b) of 2026-11-27): the SEARCH-OWNED cards - the cards a deep-search
-# engine writes on a search frame from its own measurements, rules and gate values. Never carried from the frame an archive
-# frame supersedes: a value the new search does not write is the earlier search's (dropped, named in a HISTORY line). The
-# union of the two writers of archived search frames, re-derived from their source by tests/test_search_archive_header.py:
-#   - the literal cards of the frame writers, this module's _archive_frame_header and _write_pbcorr_sibling and production's
-#     (exopipe phase3/phase3_deep.py:707-791, 877-908; every version of that file in its history writes these names, and
-#     THERMNOI before the standard header took it);
-#   - the standard header's cards (core.products.write_standard_header = phase3_products.write_standard_header) of the
-#     arguments the frame writer computes itself: ebeam, imgrms, thermnoi, pbcorr, dewarped, aligned / alignref, msub / msubfile,
-#     ssub - not those it reads from the epoch's Stage-1 product (time block, beam, P1RUN, P2RUN, CALBP, LSTBIN), not the cards
-#     it copies from that product (SH*, FLUX*, MDW*, BIN*), not the coordinate cards;
+# WAVE2 ARCHIVE-HEADER (the refactor chat's decision (6b) of 2026-11-27, fix round 2 item (8)): the SEARCH-OWNED cards - the
+# cards a deep-search engine writes on a search frame from its own measurements, rules and gate values. Never carried from the
+# frame an archive frame supersedes: a value the new search does not write is the earlier search's (dropped, named in a HISTORY
+# line). Derived from source, checked in as tests/fixtures/search_owned_cards.json (its sources list every commit scanned) and
+# re-derived by tests/test_search_archive_header.py. What was scanned:
+#   - every committed version of production's deep frame writer: each tracked file named *phase3_deep.py in the repositories
+#     /lustre/gh/main/exopipe (exopipe/phase3/phase3_deep.py, 79 commits 2026-08-12 .. 2026-11-17, 68 of them with an archive
+#     frame writer, from 2026-09-04) and /lustre/gh/main/exopipe_ops (its 4 copies: the two 2026-11-08 patches, the 2026-09-08
+#     staged gate, publish_staging - 7 commits), read with git log --follow and git show per commit; plus v2's writer, this
+#     module;
+#   - in each version, the archive frame writers _archive_frame_header, _write_pbcorr_sibling and _write_archive_frame: their
+#     literal card names, and the write_standard_header arguments _archive_frame_header computes itself (ebeam, imgrms,
+#     thermnoi, pbcorr, dewarped, aligned / alignref, msub / msubfile, ssub) - not those it reads from the epoch's Stage-1
+#     product (time block, beam, P1RUN, P2RUN, CALBP, LSTBIN), not the cards it copies from that product (SH*, FLUX*, MDW*,
+#     BIN*), not the coordinate cards;
+#   - those arguments' cards in the standard header (core.products.write_standard_header = phase3_products.write_standard_header;
+#     none of its 11 committed versions names a card the newest lacks);
 #   less THERMNOI, the frame's noise card (decision (1) of 2026-10-16: "THERMNOI stays the frame's noise card").
+# The history adds no card beyond these 26.
 SEARCH_OWNED_CARDS = frozenset((
     'BUNIT', 'TELESCOP', 'LOOMSTR', 'LOOEXCL', 'MSTRFILE', 'MSTRNSTK', 'MSTRCOOP', 'MSTRMJD', 'MSTRDIG', 'STRIWIN', 'CADENCE',
     'RUNLABEL', 'ORIGIN', 'PRODNAME', 'PBCORR', 'PBFILE',                                      # the frame writers' literals
@@ -1454,8 +1465,9 @@ def merged_archive_header(new, old, old_name):
     and comment; COMMENT and HISTORY lines of ``new`` the old header lacks appended), the cards carried from ``old`` named in
     a HISTORY line. A search-owned card of ``old`` (SEARCH_OWNED_CARDS) the search's frame does not write is dropped, each
     named in a HISTORY line (dropped_history): its value is the earlier search's. Returns (header, carried keywords, dropped
-    keywords). Refuses (RuntimeError, naming every one) the world-coordinate cards of ``old`` the search's frame lacks: the
-    merged header would mix two coordinate systems."""
+    keywords). Refuses (RuntimeError, naming every one) the cards of ``old`` in _WCS_CARD the search's frame lacks - the world
+    coordinate cards, RADECSYS, the observer's place (OBSGEO-*) and the time family (DATE-OBS, MJD-OBS, MJDREF, TIMESYS, ...):
+    never carried and never silently dropped, the merged header would mix two coordinate systems or two time blocks."""
     out = fits.Header()
     newkeys = {c.keyword for c in new.cards if c.keyword not in ('COMMENT', 'HISTORY', '')}
     carried, dropped, wcs = [], [], []
@@ -1474,7 +1486,7 @@ def merged_archive_header(new, old, old_name):
         out.append(c, end=True)
     if wcs:
         raise RuntimeError(f'{old_name}: the superseded frame carries the coordinate card(s) {" ".join(wcs)} the search\'s '
-                           f'frame lacks - the merged header would mix two coordinate systems; REFUSING')
+                           f'frame lacks - the merged header would mix two coordinate systems or time blocks; REFUSING')
     oldtxt = {kw: ({str(v) for v in old.get(kw, [])} if kw in old else set()) for kw in ('COMMENT', 'HISTORY')}
     for c in new.cards:
         k = c.keyword

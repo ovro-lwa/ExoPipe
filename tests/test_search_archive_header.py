@@ -19,9 +19,11 @@ Checks, data-free (a scratch archive root; frames 16 x 16 px with a standard hea
   search-owned  a predecessor's search-owned cards the search does not write (LOOEXCL, PBFILE) dropped and named in a HISTORY
                 line, its stale IMGRMS replaced; THERMNOI, the frame's noise card (ruling (1) of 2026-10-16), carried when the
                 search writes none (its I frames) (decision (6b))
-  owned set     SEARCH_OWNED_CARDS re-derived from the writers' source: the literal cards of the frame writers (v2's and, when
-                present, production's phase3_deep.py) and the standard header's cards of the arguments the frame writer computes
-                itself (not those read from the epoch's Stage-1 product), less THERMNOI
+  owned set     SEARCH_OWNED_CARDS derived from the writers' source: the literal cards of the frame writers and the standard
+                header's cards of the arguments the frame writer computes itself (not those read from the epoch's Stage-1
+                product), less THERMNOI - over every committed version of production's deep frame writer and v2's writer, checked
+                in as tests/fixtures/search_owned_cards.json (fix round 2 (8)); CI checks the constant and v2's writer against
+                the fixture, a run beside production's repositories re-derives the history and compares it, commit for commit
   record        the engine's archive record (P3_ARCHIVE_RECORD): each archive frame with the predecessor it merged, its cards,
                 the carried and dropped cards (decision (7)); the content test reads it - a frame replaced in place by its
                 recorded cards, a frame without a row fails, a predecessor other than the recorded one fails
@@ -33,15 +35,19 @@ Checks, data-free (a scratch archive root; frames 16 x 16 px with a standard hea
   case (a)      not taken: the readers of archived copies' cards (the deep step's content tests, the removal rules' beam)
   step          the deep step hands the engine the predecessor roots - the archive root, this launch's quarantine round only,
                 and in the window the production archive in place - and the record's path; the engine no longer copies the work
-                frame as is
+                frame as is; the round from the run's fixed launch (run_launch), never per-stage state
+  separate run  --stages quarantine in one run, --stages detect in another (fix round 2 (2)): the second run finds the frame
+                the first moved into the launch's round and carries its repair cards
   register      the deep step registers each archive frame for the content tests: the attempt frame's PRODNAME (over CONTINUE
                 cards) read whole, the archive frame found, with the attempt frame and the engine's record
 Run: python tests/test_search_archive_header.py
 """
 import inspect
+import json
 import os
 import shutil
 import sys
+import time
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
@@ -104,8 +110,16 @@ def header(date, imgrms, gittag, stokes='V', thermnoi=0.2, extra=None):
 
 COMMENT = 'search frame: a COMMENT line of the work frame, kept on the archive copy'
 REC = os.path.join(T, 'archive_record.csv')
-PROD_DEEP = '/lustre/gh/main/exopipe/exopipe/phase3/phase3_deep.py'            # production's writer of the archived frames
-PROD_PRODUCTS = '/lustre/gh/main/exopipe/exopipe/common/phase3_products.py'
+PROD_REPO = '/lustre/gh/main/exopipe'                                          # production's code (git; read only)
+PROD_DEEP = PROD_REPO + '/exopipe/phase3/phase3_deep.py'                       # production's writer of the archived frames
+PROD_PRODUCTS = PROD_REPO + '/exopipe/common/phase3_products.py'
+# decision (8) of fix round 2: the search-owned set is derived from every committed version of production's deep frame writer -
+# each tracked file named *phase3_deep.py of these repositories (production's code and the ops tree's copies of it), each commit
+# of its history (git log --follow, then git show per commit; no directory walk) - plus v2's writer; checked in as a fixture
+WRITER_REPOS = (PROD_REPO, '/lustre/gh/main/exopipe_ops')
+WRITER_NAME = 'phase3_deep.py'
+WRITER_FNS = ('_archive_frame_header', '_write_pbcorr_sibling', '_write_archive_frame')     # the archive frame writers
+FIXTURE = os.path.join(REPO, 'tests', 'fixtures', 'search_owned_cards.json')
 
 
 def work_frame(date, value, **k):
@@ -240,6 +254,28 @@ def test_branches():
           'cell named, with REFUSING (the engine child refuses this (cell, Stokes) unit only), nothing placed',
           lacks and 'coordinate card(s) EQUINOX SPECSYS' in r6 and r6.startswith('03h 18MHz 2024-12-23 ') and 'REFUSING' in r6
           and not os.path.exists(dst6) and dst6 not in record_rows(), r6[:200])
+    # fix round 2 (9): RADECSYS, the observer's place (OBSGEO-*) and the time family (DATE-OBS / MJD-OBS / MJDREF ...) are
+    # never carried and never silently dropped
+    w6b, _ = work_frame('2024-12-28', 6.75)
+    new_only = {'RADECSYS': ('FK5', 'old name of RADESYS'), 'OBSGEO-X': (-2409261.7339, '[m]'),
+                'OBSGEO-Y': (-4477916.6, '[m]'), 'OBSGEO-Z': (3839351.6, '[m]'), 'DATE-AVG': ('2024-12-28T05:00:00', ''),
+                'MJD-AVG': (60672.208, ''), 'TIMEUNIT': ('s', '')}
+    q6b, dst6b = archived(os.path.join(ARCH, QRUN), '2024-12-28', 6.75, extra=new_only)
+    try:
+        publish(w6b)
+        r6b = 'not refused'
+    except RuntimeError as e:
+        r6b = str(e)
+    fam = ('DATE-OBS', 'DATE-BEG', 'DATE-AVG', 'DATE-END', 'MJD-OBS', 'MJD-BEG', 'MJD-AVG', 'MJD-END', 'MJD-MID', 'MJDREF',
+           'MJDREFI', 'MJDREFF', 'JDREF', 'DATEREF', 'TIMESYS', 'TREFPOS', 'TIMEUNIT', 'RADECSYS', 'RADESYS', 'OBSGEO-X',
+           'OBSGEO-Y', 'OBSGEO-Z', 'OBSGEO-B', 'OBSGEO-L', 'OBSGEO-H')
+    check('fix round 2 (9): a predecessor holding RADECSYS, OBSGEO-X/Y/Z and time cards (DATE-AVG, MJD-AVG, TIMEUNIT) the '
+          'search\'s frame lacks: refused, each named, nothing placed; the refused set covers RADECSYS, OBSGEO-*, MJD-OBS and '
+          'the DATE-OBS / MJDREF time family (and not a search card such as IMGRMS or MSTRMJD)',
+          all(k in r6b for k in new_only) and 'REFUSING' in r6b and not os.path.exists(dst6b)
+          and all(DSE._WCS_CARD.match(k) for k in fam) and not any(DSE._WCS_CARD.match(k) for k in ('IMGRMS', 'MSTRMJD',
+                                                                                                    'DATE', 'MJDOBS')),
+          (r6b[:300], [k for k in fam if not DSE._WCS_CARD.match(k)]))
     # a frame only in an older quarantine round: never a predecessor (the engine reads only the roots the deep step gives)
     w7, h7 = work_frame('2024-12-24', 7.5)
     archived(os.path.join(ARCH, 'Run_SEARCH_QUARANTINE_20261004'), '2024-12-24', 7.5,
@@ -325,23 +361,29 @@ def _key(sl):
     return sl.value if isinstance(sl, ast.Constant) and isinstance(sl.value, str) else None
 
 
-def _writer_scan(src):
-    """(literal cards, computed arguments) of a deep-search frame writer's source: every literal card name the frame writers
-    _archive_frame_header and _write_pbcorr_sibling assign (h['X'] = ..., extra['X'] = ..., dict literals' keys), and the
+def _writer_scan(src, present=None):
+    """(literal cards, computed arguments) of a deep-search frame writer's source: every literal card name the archive frame
+    writers (WRITER_FNS, those the version has) assign (h['X'] = ..., extra['X'] = ..., dict literals' keys), and the
     write_standard_header arguments whose value derives from nothing read from the epoch's Stage-1 product (hs: the names
-    assigned from it, to a fixed point) - but the frame's identity (scope, stokes), extra (scanned above) and validate."""
+    assigned from it, to a fixed point) - but the frame's identity (scope, stokes), extra (scanned above) and validate.
+    ``present``: a list that receives the writer functions the source has."""
     import ast
     body = ast.parse(src).body
     fns = {n.name: n for n in body if isinstance(n, ast.FunctionDef)}
     lit, computed = set(), set()
-    for name in ('_archive_frame_header', '_write_pbcorr_sibling'):
-        f = fns[name]
-        for n in ast.walk(f):
+    for name in WRITER_FNS:
+        if name not in fns:
+            continue
+        if present is not None:
+            present.append(name)
+        for n in ast.walk(fns[name]):
             if isinstance(n, ast.Assign):
                 lit.update(_key(t.slice) for t in n.targets if isinstance(t, ast.Subscript) and _key(t.slice))
             if isinstance(n, ast.Dict):
                 lit.update(k.value for k in n.keys if isinstance(k, ast.Constant) and isinstance(k.value, str))
-    f = fns['_archive_frame_header']
+    f = fns.get('_archive_frame_header')
+    if f is None:
+        return lit, computed
     names = lambda node: {x.id for x in ast.walk(node) if isinstance(x, ast.Name)}            # noqa: E731
     taint = {'hs'}
     while True:
@@ -358,6 +400,79 @@ def _writer_scan(src):
             computed |= {kw.arg for kw in n.keywords
                          if kw.arg not in ('scope', 'stokes', 'extra', 'validate') and not names(kw.value) & taint}
     return lit, computed
+
+
+def _git(repo, *a):
+    import subprocess
+    return subprocess.run(['git', '-C', repo] + list(a), capture_output=True, text=True, check=True).stdout
+
+
+def _history(repo, path):
+    """[(commit, date, path at that commit)] of a tracked file, newest first (git log --follow)."""
+    revs, cur = [], None
+    for ln in _git(repo, 'log', '--format=C %H %cs', '--follow', '--name-only', '--', path).splitlines():
+        if ln.startswith('C '):
+            cur = ln.split()[1:]
+        elif ln.strip():
+            revs.append((cur[0], cur[1], ln.strip()))
+    return revs
+
+
+def _writer_versions():
+    """Every committed version of production's deep frame writer (WRITER_REPOS, WRITER_NAME), scanned: one row per (repo,
+    file, commit) with the writer functions it has, its literal cards and its computed arguments."""
+    rows = []
+    for repo in WRITER_REPOS:
+        for path in sorted(f for f in _git(repo, 'ls-files').splitlines() if os.path.basename(f).endswith(WRITER_NAME)):
+            for h, d, at in _history(repo, path):
+                fns = []
+                lit, comp = _writer_scan(_git(repo, 'show', f'{h}:{at}'), present=fns)
+                rows.append(dict(repo=repo, path=path, commit=h, date=d, at=at, writers=fns, literal=sorted(lit),
+                                 computed=sorted(comp)))
+    return rows
+
+
+def _products_versions():
+    """Every committed version of production's standard header writer (phase3_products.write_standard_header): the card
+    names (string constants of FITS keyword form) in its body."""
+    import ast
+    import re
+    card = re.compile(r'^[A-Z][A-Z0-9_-]{1,7}$')
+    rel = os.path.relpath(PROD_PRODUCTS, PROD_REPO)
+    out = []
+    for h, d, at in _history(PROD_REPO, rel):
+        fns = {n.name: n for n in ast.parse(_git(PROD_REPO, 'show', f'{h}:{at}')).body if isinstance(n, ast.FunctionDef)}
+        w = fns.get('write_standard_header')
+        out.append(dict(commit=h, date=d, cards=sorted({n.value for n in ast.walk(w) if isinstance(n, ast.Constant)
+                                                        and isinstance(n.value, str) and card.match(n.value)}) if w else None))
+    return out
+
+
+def _derive(versions):
+    """The search-owned set of scanned writer versions (and v2's writer): their literal cards and the standard header's cards
+    of their computed arguments, less THERMNOI."""
+    lit, comp = _writer_scan(inspect.getsource(DSE))
+    for v in versions:
+        lit |= set(v['literal'])
+        comp |= set(v['computed'])
+    return (lit | _std_cards(comp)) - {'THERMNOI'}, lit, comp
+
+
+def write_fixture():
+    versions = _writer_versions()
+    owned, lit, comp = _derive(versions)
+    fx = dict(about='SEARCH_OWNED_CARDS (lib/search/deep_search.py), derived by tests/test_search_archive_header.py '
+                    '--write-fixture from every committed version of production\'s deep frame writer (sources) and v2\'s writer '
+                    '(v2_writer); the standard header\'s cards of the computed arguments from core.products.write_standard_header '
+                    '(= phase3_products.write_standard_header; products: its committed versions)',
+              set=sorted(owned), less={'THERMNOI': 'ruling (1) of 2026-10-16: "THERMNOI stays the frame\'s noise card"'},
+              literal=sorted(lit), computed=sorted(comp), v2_writer='exopipe/phase3/lib/search/deep_search.py',
+              writer_functions=list(WRITER_FNS), sources=versions, products=_products_versions())
+    os.makedirs(os.path.dirname(FIXTURE), exist_ok=True)
+    with open(FIXTURE, 'w') as fh:
+        json.dump(fx, fh, indent=1, sort_keys=True)
+        fh.write('\n')
+    print(f'wrote {FIXTURE}: {len(owned)} cards from {len(versions)} writer versions')
 
 
 def _std_cards(computed):
@@ -387,31 +502,52 @@ def _no_doc(fn):
 
 
 def test_search_owned_set():
-    """decision (6b): the search-owned cards are re-derived from the writers' source (not a hand list) and equal the constant."""
+    """decision (6b), fix round 2 (8): the search-owned cards are derived from the writers' source (not a hand list) - every
+    committed version of production's deep frame writer and v2's writer - checked in as tests/fixtures/search_owned_cards.json.
+    Data-free (CI): the constant equals the fixture, v2's writer and the fixture's recorded scans give the fixture's set. With
+    production's repositories here: the history is re-derived and equals the fixture, scan for scan."""
     import ast
+    with open(FIXTURE) as fh:
+        fx = json.load(fh)
+    fset = set(fx['set'])
     lit, comp = _writer_scan(inspect.getsource(DSE))
-    writers = ['v2 lib/search/deep_search.py']
-    prod_same = None
-    if os.path.isfile(PROD_DEEP) and os.path.isfile(PROD_PRODUCTS):
-        with open(PROD_DEEP) as fh:
-            pl, pc = _writer_scan(fh.read())
-        lit |= pl
-        comp |= pc
-        writers.append(PROD_DEEP)
-        with open(PROD_PRODUCTS) as fh:
-            pf = next(n for n in ast.parse(fh.read()).body if isinstance(n, ast.FunctionDef) and n.name == 'write_standard_header')
-        vf = next(n for n in ast.parse(inspect.getsource(prod)).body
-                  if isinstance(n, ast.FunctionDef) and n.name == 'write_standard_header')
-        prod_same = _no_doc(pf) == _no_doc(vf)
-    else:
-        print('UNTESTED production\'s writer (phase3_deep.py, phase3_products.py) absent here: v2\'s writer only')
-    derived = lit | _std_cards(comp)
-    check('SEARCH_OWNED_CARDS re-derived from the writers\' source (' + ', '.join(writers) + '): the frame writers\' literal '
-          'cards and the standard header\'s cards of the arguments the frame writer computes itself, less THERMNOI (the frame\'s '
-          'noise card, ruling (1) of 2026-10-16) - equal to the constant; production\'s write_standard_header is v2\'s',
-          derived - {'THERMNOI'} == DSE.SEARCH_OWNED_CARDS and 'THERMNOI' in derived and prod_same in (None, True)
-          and comp == {'ebeam', 'thermnoi', 'imgrms', 'pbcorr', 'dewarped', 'aligned', 'alignref', 'msub', 'msubfile', 'ssub'},
-          (sorted(derived ^ (DSE.SEARCH_OWNED_CARDS | {'THERMNOI'})), sorted(comp), prod_same))
+    v2 = (lit | _std_cards(comp)) - {'THERMNOI'}
+    rec, _, _ = _derive(fx['sources'])
+    check('SEARCH_OWNED_CARDS equals the fixture tests/fixtures/search_owned_cards.json; v2\'s writer alone gives that set; the '
+          'fixture\'s recorded scans of production\'s writer versions give it too (the frame writers\' literal cards and the '
+          'standard header\'s cards of the arguments the frame writer computes itself, less THERMNOI - the frame\'s noise card, '
+          'ruling (1) of 2026-10-16)',
+          fset == DSE.SEARCH_OWNED_CARDS and v2 == fset and rec == fset and 'thermnoi' in comp
+          and set(fx['less']) == {'THERMNOI'} and len(fx['sources']) > 0,
+          (sorted(fset ^ DSE.SEARCH_OWNED_CARDS), sorted(v2 ^ fset), sorted(rec ^ fset)))
+    if not all(os.path.isdir(os.path.join(r, '.git')) for r in WRITER_REPOS) or not os.path.isfile(PROD_PRODUCTS):
+        print('UNTESTED the re-derivation from production\'s history (' + ', '.join(WRITER_REPOS) + ' absent here): the '
+              'fixture\'s recorded scans only')
+        return
+    versions = _writer_versions()
+    owned, _, _ = _derive(versions)
+    key = lambda v: (v['repo'], v['path'], v['commit'])                       # noqa: E731
+    have, want = {key(v): v for v in versions}, {key(v): v for v in fx['sources']}
+    diff = sorted(set(have) ^ set(want)) + [k for k in have if k in want and have[k] != want[k]]
+    w = [v for v in versions if v['writers']]
+    extra = sorted(owned - DSE.SEARCH_OWNED_CARDS)
+    print(f'  history: {len(versions)} committed writer versions ({len(w)} with an archive frame writer, '
+          f'{min(v["date"] for v in w)} .. {max(v["date"] for v in w)}); cards beyond the constant: {extra or "none"}')
+    check('the search-owned set re-derived from every committed version of production\'s deep frame writer (git log --follow '
+          'and git show per commit of each *phase3_deep.py tracked in ' + ', '.join(WRITER_REPOS) + ') plus v2\'s writer equals '
+          'the fixture, version for version (a new commit refreshes the fixture: --write-fixture)',
+          owned == fset and not diff, (extra, sorted(fset - owned), diff[:5]))
+    pv = _products_versions()
+    newest = set(pv[0]['cards'] or ())
+    with open(PROD_PRODUCTS) as fh:
+        pf = next(n for n in ast.parse(fh.read()).body if isinstance(n, ast.FunctionDef) and n.name == 'write_standard_header')
+    vf = next(n for n in ast.parse(inspect.getsource(prod)).body
+              if isinstance(n, ast.FunctionDef) and n.name == 'write_standard_header')
+    check('production\'s write_standard_header is v2\'s (the standard header\'s cards of the computed arguments); no committed '
+          'version of it names a card the newest lacks; the fixture lists those versions',
+          _no_doc(pf) == _no_doc(vf) and all(set(v['cards'] or ()) <= newest for v in pv)
+          and [v['commit'] for v in pv] == [v['commit'] for v in fx['products']],
+          [(v['commit'][:7], sorted(set(v['cards'] or ()) - newest)) for v in pv if not set(v['cards'] or ()) <= newest])
 
 
 def test_case_a_does_not_apply():
@@ -442,24 +578,98 @@ def test_step():
     real = legacy.interpreter
     legacy.interpreter = lambda name: sys.executable      # data-free: no site file names the engine's interpreters
     try:
-        win = DS.archive_predecessor_roots(dict(archive_root=mirror), '20261127')
-        win0 = DS.archive_predecessor_roots(dict(archive_root=mirror))
-        live = DS.archive_predecessor_roots(dict(archive_root=parch), '20261127')
+        L = (1795737600.0, '20261127')                    # the run's launch (run_launch, fixed in ctx at the run's start)
+        win = DS.archive_predecessor_roots(dict(archive_root=mirror, launch=L))
+        live = DS.archive_predecessor_roots(dict(archive_root=parch, launch=L))
         env = DS.engine_env('/x', '/x', '/x', 'X', '/x/arch', '/x/tmp', pred_roots=win, archive_record='/x/a/archive_record.csv')
     finally:
         legacy.interpreter = real
         CFG.reset()
     q = lambda a, r: os.path.join(a, 'Run_SEARCH_QUARANTINE_' + r)                  # noqa: E731
     sd, sq = inspect.getsource(DS.stage_detect), inspect.getsource(DS.stage_quarantine)
-    check('the deep step\'s predecessor roots (decision (6a)): the run\'s archive root (the frame in place), then this launch\'s '
-          'own quarantine round only (never 20261004 .. 20261113), then - in the window\'s mirror only - the production archive '
-          'in place (read only); without a round (an append, no quarantine stage) the frame in place only; handed to the engine '
-          'with the record\'s path (P3_ARCHIVE_RECORD, decision (7))',
-          win == [mirror, q(mirror, '20261127'), parch] and win0 == [mirror, parch] and live == [parch, q(parch, '20261127')]
+    sp = inspect.getsource(DS.archive_predecessor_roots)
+    check('the deep step\'s predecessor roots (decision (6a), fix round 2 (2)): the run\'s archive root (the frame in place), '
+          'then this launch\'s own quarantine round only (never 20261004 .. 20261113), then - in the window\'s mirror only - the '
+          'production archive in place (read only); the round from the run\'s fixed launch (run_launch), never from a stage\'s '
+          'state (no f[\'quarantine_round\']); handed to the engine with the record\'s path (P3_ARCHIVE_RECORD, decision (7))',
+          win == [mirror, q(mirror, '20261127'), parch] and live == [parch, q(parch, '20261127')]
           and env.get('P3_ARCHIVE_PREDECESSOR_ROOTS') == os.pathsep.join(win)
           and env.get('P3_ARCHIVE_RECORD') == '/x/a/archive_record.csv'
-          and "archive_predecessor_roots(ctx, f.get('quarantine_round'))" in sd and "f['quarantine_round'] = rnd" in sq,
-          (win, win0, live))
+          and 'archive_predecessor_roots(ctx)' in sd and 'run_launch(ctx)' in sq and 'run_launch(ctx)' in sp
+          and "quarantine_round']" not in sd + sq + sp, (win, live))
+
+
+def test_separate_runs():
+    """Fix round 2 (2): the predecessor roots take this launch's round from the run's fixed launch (the launch file, read once
+    at the run's start), never from per-stage state. `--stages quarantine` in one run, then `--stages detect,...` in a separate
+    run: the second run finds the frame the first moved into the launch's round, and its repair cards are carried. Data-free:
+    the production branch of the quarantine stage on scratch roots (the archive, records and ops roots under the test
+    directory; the membership precheck, which runs production's code, stubbed)."""
+    import types
+    from exopipe.phase3.lib.archive import quarantine as Q
+    sa, srec, sops = (os.path.join(T, 'sep_' + x) for x in ('archive', 'records', 'ops'))
+    for d in (sa, srec, sops):
+        os.makedirs(d, exist_ok=True)
+    date = '2024-12-27'
+    real_pre = Q.membership_precheck
+    keep_env = {k: os.environ.get(k) for k in ('P3_ARCHIVE_ROOT', 'P3_ARCHIVE_PREDECESSOR_ROOTS')}
+    try:
+        CFG.paths.PHASE3_ARCHIVE_ROOT, CFG.paths.ARCHIVE_RUN, CFG.paths.OPS_ROOT = sa, RUN, sops
+        CFG.archive.RECORDS_ROOT = srec
+        CFG.paths.PRODUCTION_WRITES = True                   # the production branch of stage_quarantine: scratch roots only
+        CFG.search_run.PRODUCTION_WORK_ROOT = os.path.join(T, 'sep_work')
+        prev, _ = archived(sa, date, 1.5)                     # production's archive frame, from before the launch
+        os.utime(prev, (time.time() - 86400, time.time() - 86400))
+        launch = round(time.time(), 3)
+        Q.begin_launch(_Unit(), epoch=repr(launch), apply=True)
+        rnd = Q.round_for(launch, 'launch-date')
+        Q.membership_precheck = lambda cell, unit=None, log=None: (True, 'stubbed (data-free test)')
+        item = types.SimpleNamespace(cell='03h_18MHz', lst='03h', scope='18MHz', stokes='V', name='03h_18MHz_V', mode='fresh')
+        # run 1: --stages quarantine
+        ctx1 = dict(out=os.path.join(T, 'sep_out1'), t0=time.time(), archive_root=sa, production=True)
+        u1 = _Unit()
+        DS.stage_quarantine(u1, item, ctx1, {})
+        moved = os.path.join(sa, f'Run_SEARCH_QUARANTINE_{rnd}', os.path.relpath(prev, sa))
+        moved_ok = os.path.exists(moved) and not os.path.exists(prev)
+        # run 2: --stages detect,... - a new run, nothing carried over from run 1 but the launch file
+        ctx2 = dict(out=os.path.join(T, 'sep_out2'), t0=time.time() + 5, archive_root=sa, production=True)
+        roots = DS.archive_predecessor_roots(ctx2)
+        os.environ.update(P3_ARCHIVE_ROOT=sa, P3_ARCHIVE_PREDECESSOR_ROOTS=os.pathsep.join(roots))
+        w, _ = work_frame(date, 1.5)
+        dst = os.path.join(sa, os.path.relpath(prev, sa))
+        found = DSE._archive_predecessor(dst)
+        out = publish(w)
+        a = hdr(dst)
+    finally:
+        Q.membership_precheck = real_pre
+        for k, v in keep_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        CFG.reset()
+    hist = ' '.join(str(x) for x in a['HISTORY']) if 'HISTORY' in a else ''
+    check('a separate run (--stages quarantine, then --stages detect in a new run): the second run\'s predecessor roots name '
+          'the launch\'s round from the launch file; the frame the first run moved there is found and its repair cards (ASTREF '
+          'FLUXREF SCALE_A P1RUN P2RUN CALBP) are carried onto the archive frame, named in a HISTORY line',
+          moved_ok and ctx2['launch'] == (launch, rnd)
+          and roots == [sa, os.path.join(sa, f'Run_SEARCH_QUARANTINE_{rnd}')] and found == moved and out == dst
+          and all(a.get(k) == v for k, v in OLD_ONLY.items()) and 'carried from the superseded archive frame' in hist,
+          (u1.notes[-2:], roots, found, {k: a.get(k) for k in OLD_ONLY}))
+
+
+class _Unit:
+    def __init__(self):
+        self.meta, self.notes, self.outputs = {}, [], []
+
+    def check(self, *a, **k):
+        pass
+
+    def note(self, m):
+        self.notes.append(m)
+
+    def add_output(self, p, cls, **k):
+        self.outputs.append((p, cls))
 
 
 def test_registration():
@@ -499,6 +709,9 @@ def test_registration():
 
 
 def main():
+    if '--write-fixture' in sys.argv[1:]:
+        write_fixture()
+        return 0
     shutil.rmtree(T, ignore_errors=True)
     os.makedirs(T)
     keep = {k: os.environ.get(k) for k in ('P3_ARCHIVE_ROOT', 'P3_ARCHIVE_RUN', 'P3_ARCHIVE_PREDECESSOR_ROOTS', 'P3_ARCHIVE_WRITE',
@@ -509,6 +722,7 @@ def main():
         test_search_owned_set()
         test_case_a_does_not_apply()
         test_step()
+        test_separate_runs()
         test_registration()
     finally:
         for k, v in keep.items():

@@ -14,7 +14,9 @@ push --class epoch    per hour (DESIGN 12.1): one EPOCH item <LST>_<date> = ever
                       the search step's <out>/archive_mirror) -> <root>/<same relative path>. Per file: keep (equal md5, or
                       equal pixels by p3s5_archive_sync.same_data), publish (absent), replace (different: the old file is
                       renamed to <root>/Run_SEARCH_QUARANTINE_<round>/<rel> with a manifest row, then the new one renamed in -
-                      standing-approved, ledger 1677). A staged file of an excluded (LST, scope, date) or an intermediate name
+                      standing-approved, ledger 1677). The round is --round only (never the launch file's): it passes
+                      quarantine.round_gate (its ROUND.json written before the first move) and the rows go to that round's
+                      manifest of record, as every move into a search quarantine round. A staged file of an excluded (LST, scope, date) or an intermediate name
                       is a refused item, never pushed. Without a staging tree (archive_push.EPOCH_STAGING_ROOT None and no
                       --staging-root) the unit audits the hour's archive files (keep rows, each content-tested by its class).
                       Bulk (intermittent, DESIGN 12.2): --epochs @list, or --lsts/--nights over the staging tree.
@@ -24,6 +26,8 @@ push --class qa | run-tables   disabled (archive_push.CLASSES[...]['enabled'] Fa
 """
 import glob
 import os
+import re
+import time
 
 from exopipe.phase3.core.record import NoInput, Refusal
 from exopipe.phase3.lib.archive import common as K
@@ -294,15 +298,30 @@ def run_epoch(ctx, args, run, unit_fn):
                       f'by the fleet / `archive supersede`); nothing to push')
     staging = args.staging_root or _p().EPOCH_STAGING_ROOT
 
-    def qrun_of():
-        """The replaced files' quarantine Run: --round, else archive_quarantine.ROUND_DEFAULT, whose 'launch-date' is the
-        round of the launch epoch (the search quarantine's round; an unset launch epoch refuses, as the quarantine does).
-        Read at the apply only: a plan needs no launch."""
-        rnd = args.round or K.sec('archive_quarantine').ROUND_DEFAULT
-        if rnd == 'launch-date':
-            from exopipe.phase3.lib.archive import quarantine as Q
-            rnd = Q.round_for(Q.launch_epoch(getattr(args, 'launch_epoch', None)), rnd)
-        return f'{_p().EPOCH_REPLACE_QUARANTINE_PREFIX}{rnd}'
+    t_push = time.time()
+
+    def replace_round():
+        """(round, its launch epoch, its records directory) of this push's replace rows - one rule for every move into a
+        search quarantine round (the refactor chat's fix round 2 of 2026-11-27): the round --round names (never
+        ROUND_DEFAULT, never the launch file's round, read silently), through quarantine.round_gate with its manifest of
+        record. The round's epoch: --launch-epoch, else this push's start - a round of its own. A date-named round (YYYYMMDD)
+        is the round of the search launch of that UTC date: a push joins it only with --launch-epoch of that date, so a push
+        never takes a launch's round under another epoch (which would refuse the launch's first quarantine)."""
+        from exopipe.phase3.lib.archive import quarantine as Q
+        if _p().EPOCH_REPLACE_QUARANTINE_PREFIX != Q._q().RUN_PREFIX:
+            raise Refusal(f'archive_push.EPOCH_REPLACE_QUARANTINE_PREFIX {_p().EPOCH_REPLACE_QUARANTINE_PREFIX!r} is not '
+                          f'archive_quarantine.RUN_PREFIX {Q._q().RUN_PREFIX!r}, the Run the round gate checks - REFUSED')
+        if not args.round:
+            raise Refusal('push --class epoch: a replace row moves the archived file into a quarantine round; name the round '
+                          'with --round (the launch file\'s round is never taken silently) - REFUSED')
+        given = getattr(args, 'launch_epoch', None) not in (None, '')
+        epoch = Q.launch_epoch(args.launch_epoch) if given else t_push
+        rnd = Q.round_for(epoch, args.round)
+        if re.fullmatch(r'[0-9]{8}', rnd) and (not given or Q.round_for(epoch, 'launch-date') != rnd):
+            raise Refusal(f'push --class epoch --round {rnd}: a date-named round is the round of the search launch of that UTC '
+                          f'date; join it only with that launch\'s --launch-epoch, or name a round of this push\'s own - '
+                          f'REFUSED')
+        return rnd, epoch, Q.round_records_dir(ctx.archive_root, rnd, ctx.out)
     stages = args._stages
     for item in epoch_items(args, staging):
         def body(u, item=item):
@@ -321,6 +340,9 @@ def run_epoch(ctx, args, run, unit_fn):
             u.meta['counts'] = cnt
             if ctx.dry:
                 return rows
+            if cnt['replace'] and not args.round:
+                u.note(f"{cnt['replace']} replace row(s): the apply refuses without --round (the replaced files' quarantine "
+                       f"round)")
             man = os.path.join(ctx.manifest_dir('push_epoch'), f'{item}_{ctx.stamp}.csv')
             if not staging or not ctx.apply or 'transfer' not in stages:
                 K.write_csv(man, K.sec().PUBLISH_COLUMNS, rows)
@@ -332,10 +354,13 @@ def run_epoch(ctx, args, run, unit_fn):
                 return rows
             # ---- apply
             todo = [r for r in rows if r['action'] in ('publish', 'replace')]
-            qrun = qrun_of() if any(r['action'] == 'replace' for r in todo) else None     # only a replace quarantines
-            qdir = ctx.applied_manifest_dir('frame_quarantine', K.sec().FRAME_QUARANTINE_MANIFEST_DIR)
+            from exopipe.phase3.lib.archive import quarantine as Q
+            rnd, repoch, qdir = replace_round() if any(r['action'] == 'replace' for r in todo) else (None, None, None)
+            qrun = f'{_p().EPOCH_REPLACE_QUARANTINE_PREFIX}{rnd}' if rnd else None         # only a replace quarantines
             pdir = ctx.applied_manifest_dir('frame_publish', K.sec().FRAME_PUBLISH_MANIFEST_DIR)
-            ctx.guard_writes([ctx.archive_root, qdir, pdir, man], f'push --class epoch {item}')
+            ctx.guard_writes([ctx.archive_root, pdir, man] + ([qdir] if qdir else []), f'push --class epoch {item}')
+            if rnd:              # read only here: a round production used, another epoch's or a retired launch's refuses now
+                Q.round_gate(ctx.archive_root, rnd, repoch, qdir, create=False)
             for r in todo:
                 if r['action'] != 'replace':
                     continue
@@ -355,6 +380,15 @@ def run_epoch(ctx, args, run, unit_fn):
                         os.remove(part)
                 raise
             t0 = K.utc()
+            if rnd:              # the round's record, written before the first move (a concurrent writer's is compared)
+                try:
+                    rec = Q.round_gate(ctx.archive_root, rnd, repoch, qdir, create=True)
+                except Refusal:
+                    for part, _ in parts.values():
+                        if os.path.exists(part):
+                            os.remove(part)
+                    raise
+                u.note(f'replace quarantine round {rec["run"]} (epoch {rec["launch_epoch"]}); manifest of record under {qdir}')
             touched = set()
             for r in todo:
                 key = f"{r['cell']}_{r['stokes']}.csv"

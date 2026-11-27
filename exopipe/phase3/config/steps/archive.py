@@ -95,11 +95,12 @@ class archive_quarantine(_Section):
     HELPER = '{ops}/p3s5_quarantine_frames.py'   # the production helper (subprocess; an in-process import would resolve the worktree's exopipe)
     RUN_PREFIX = 'Run_SEARCH_QUARANTINE_'        # MIRROR; p3s5_quarantine_frames.py:17
     # Round name: files go to <root>/Run_SEARCH_QUARANTINE_<round>/. p3s5_quarantine_frames.py:17 and p3s5_launch.sh:22 default;
-    # production launches pass P3S5_QROUND (20261005 cubic round, R-MDEWARP-CUBIC-REAPPLY ledger 1834; 20261012 at the
-    # 2026-10-12 21:24 UTC launch, p3s5_state/launch.log). B-55 default (b): the operator names the round (--round).
-    # 'launch-date' (the refactor chat's decision (3) of 2026-11-27; was '20261004', a round production used, which round_gate
-    # refuses): Run_SEARCH_QUARANTINE_<UTC date of the launch epoch>, as search_run.QUARANTINE_ROUND - a NEW round per launch
-    # (begin_launch refuses a second launch on one UTC date); a literal names the round.
+    # production launches passed P3S5_QROUND per launch (20261005: the install round of the cubic re-apply of the master-dewarp
+    # screens that R-MDEWARP-CUBIC-REAPPLY, ledger 1834, chose - that ruling set no default for later rounds; 20261012 at the
+    # 2026-10-12 21:24 UTC launch, p3s5_state/launch.log). The default 'launch-date' is ruled by
+    # R-REFACTOR-20261127-SEARCH-QUARANTINE-ROUND-PER-LAUNCH-AND-ARCHIVE-HEADER-SUPERSET (was '20261004', a round production
+    # used, which round_gate refuses): Run_SEARCH_QUARANTINE_<UTC date of the launch epoch>, as search_run.QUARANTINE_ROUND - a
+    # NEW round per launch (begin_launch refuses a second launch on one UTC date); a literal names the round.
     ROUND_DEFAULT = 'launch-date'
     # Selection: archive '_msub' frames of the (cell, Stokes) with mtime < launch epoch (MIRROR; p3s5_quarantine_frames.py:50-51).
     # TODAY'S RULE (deep defect D2: a re-search leaves frames of nights it no longer searches). Only this value is implemented;
@@ -114,12 +115,15 @@ class archive_quarantine(_Section):
     # (--retire-launch). PROTECTED: no --set moves it.
     LAUNCH_EPOCH_FILE = '{records}/frame_quarantine/launch_epoch'
     ROUND_RECORD = 'ROUND.json'                  # in the round's SEARCH_QUARANTINE_RECORDS_DIR: {round, run, launch_epoch, created}
+    # begin-launch refuses a --launch-epoch later than now plus this (s), or earlier than the newest launch recorded (the
+    # refactor chat's fix round 2 of 2026-11-27); a non-finite epoch always refuses
+    LAUNCH_EPOCH_MAX_AHEAD_S = 60.0
     MEMBERSHIP_PRECHECK = True                   # p3s5_quarantine_frames.py:34-49 (2026-10-08 incident, R-RESTORE-REFUSED-CELL-FRAMES-APPROVED 2093)
     # MIRROR; p3s5_quarantine_frames.py:42-43: P3_COADD_ROOT default (the fleet runs the helper with it unset,
     # p3s5_search_fleet.sh:197-198) then the shipped inputs; a root holds the cell when <root>/<cell>/<marker> exists.
     PRECHECK_CELL_ROOTS = ('/data07/gh/phase3/coadd_sb', '/fast/gh/main/phase3/s2inputs_p3s5')
     PRECHECK_CELL_MARKER = 'coadd_final/weights.csv'
-    RULED = {'MEMBERSHIP_PRECHECK': 'R-RESTORE-REFUSED-CELL-FRAMES-APPROVED', 'ROUND_DEFAULT': 'R-MDEWARP-CUBIC-REAPPLY'}
+    RULED = {'MEMBERSHIP_PRECHECK': 'R-RESTORE-REFUSED-CELL-FRAMES-APPROVED', 'ROUND_DEFAULT': 'R-REFACTOR-20261127-SEARCH-QUARANTINE-ROUND-PER-LAUNCH-AND-ARCHIVE-HEADER-SUPERSET'}
 
 
 class archive_sync(_Section):
@@ -230,7 +234,9 @@ class archive_push(_Section):
     }
     EPOCH_STAGING_ROOT = None            # default --staging-root of push --class epoch; None = audit-only (the archive's own files of the hour)
     # Quarantine Run prefix of files a push --class epoch replaces (the search round's quarantine, like the fleet's
-    # pre-search quarantine: p3s5_quarantine_frames.py:17); the round is --round (archive_quarantine.ROUND_DEFAULT).
+    # pre-search quarantine: p3s5_quarantine_frames.py:17); the round is --round, required (no default: fix round 2 of
+    # 2026-11-27), through quarantine.round_gate. One rule for every move into a search round: the push refuses unless this
+    # equals archive_quarantine.RUN_PREFIX, the Run the round gate checks.
     EPOCH_REPLACE_QUARANTINE_PREFIX = 'Run_SEARCH_QUARANTINE_'
     # Quarantine Run of files a push --class hybrid replaces, relative to the archive root; the round is --round, default the UTC
     # date (production's 11-11 and 11-13 rounds: Coadd/Run_NOTAPER_HYBRID_QUARANTINE_20261111, _20261113). Its checksum manifest

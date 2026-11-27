@@ -177,7 +177,9 @@ def add_arguments(p):
     g.add_argument('--generation-run', metavar='RUN', help='archive generation Run (default paths.ARCHIVE_RUN)')
     g.add_argument('--round', help='quarantine round: Run_SEARCH_QUARANTINE_<round> (default archive_quarantine.ROUND_DEFAULT; '
                                    'launch-date = the UTC date of the launch epoch; a round production used refuses); '
-                                   'push --class hybrid: '
+                                   'push --class epoch: the replaced files\' round, required for a replace row (no default; '
+                                   'its epoch is --launch-epoch, else the push\'s start; a date-named round only with that '
+                                   'date\'s --launch-epoch); push --class hybrid: '
                                    'Coadd/Run_NOTAPER_HYBRID_QUARANTINE_<round> (default the UTC date)')
     g.add_argument('--launch-epoch', metavar='UTC_S',
                    help='quarantine: frames last modified before this are earlier frames (default: the content of '

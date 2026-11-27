@@ -920,46 +920,51 @@ def _image_rows(attempt, label, stokes):
 def quarantine_launch_round(ctx):
     """(launch epoch, round) of the pre-search quarantine: search_run.QUARANTINE_EPOCH 'launch-file' =
     archive_quarantine.LAUNCH_EPOCH_FILE (the v2 fleet's launch, written by `archive quarantine --begin-launch`; unset
-    refuses), 'job-created' = this run's start - for a window or scratch run only: refused whenever the run's writes would land
-    in production (paths.PRODUCTION_WRITES; a run a narrow allowance key opens - ctx 'production' when set, and its archive
-    root, the production archive; an archive root or --out under a production root), since two runs on one UTC date would
-    share the round 'launch-date' names (the refactor chat's decision (4) of 2026-11-27); the
-    round search_run.QUARANTINE_ROUND ('launch-date': Run_SEARCH_QUARANTINE_<launch date>, a NEW round - 2026-11-27)."""
+    refuses), 'job-created' = this run's start - for a window or scratch run only: refused whenever the run's archive root or
+    output root is a production path (production_tree, gate G3's test), whatever any allowance says, since two runs on one UTC
+    date would share the round 'launch-date' names (the refactor chat's decision (4) of 2026-11-27 and fix round 2); the round
+    search_run.QUARANTINE_ROUND ('launch-date': Run_SEARCH_QUARANTINE_<launch date>, a NEW round - 2026-11-27). Read through
+    run_launch, once per run."""
     from exopipe.phase3.core.record import Refusal
-    from exopipe.phase3.lib.archive import common as K
     from exopipe.phase3.lib.archive import quarantine as Q
-    c = _cfg()
-    sr = c.search_run
+    sr = _cfg().search_run
     if sr.QUARANTINE_EPOCH == 'launch-file':
         launch = Q.launch_epoch()
     elif sr.QUARANTINE_EPOCH == 'job-created':
-        # where this run's writes land, not whether an allowance exists in config: a run a narrow allowance opens writes the
-        # production archive (deep_step.run's archive root when it writes production) - a scratch run beside it stays free
-        hit = [f'{w} {p} (under {K.production_like(p)})' for w, p in (('the archive root', ctx.get('archive_root')),
-                                                                      ('--out', ctx.get('out'))) if p and K.production_like(p)]
-        if c.paths.PRODUCTION_WRITES or ctx.get('production') or hit:
-            why = ('paths.PRODUCTION_WRITES' if c.paths.PRODUCTION_WRITES else
-                   'a narrow production-write allowance opens it' if ctx.get('production') else '; '.join(hit))
+        hit = [f'{w} {p} (under {production_tree(p)})' for w, p in (('the archive root', ctx.get('archive_root')),
+                                                                    ('--out', ctx.get('out'))) if p and production_tree(p)]
+        if hit:
             raise Refusal(f"search_run.QUARANTINE_EPOCH 'job-created' is for a window or scratch run only: this run writes "
-                          f"production ({why}), where a second run on one UTC date would share the launch-date round - use "
-                          f"'launch-file' (archive quarantine --begin-launch); REFUSED")
+                          f"production ({'; '.join(hit)}), where a second run on one UTC date would share the launch-date "
+                          f"round - use 'launch-file' (archive quarantine --begin-launch); REFUSED")
         launch = ctx['t0']
     else:
         raise Refusal(f'search_run.QUARANTINE_EPOCH {sr.QUARANTINE_EPOCH!r}: launch-file or job-created')
     return launch, Q.round_for(launch, sr.QUARANTINE_ROUND)
 
 
-def archive_predecessor_roots(ctx, rnd=None):
+def run_launch(ctx):
+    """(launch epoch, round) of this run, read ONCE (the refactor chat's fix round 2 of 2026-11-27): the first call reads
+    quarantine_launch_round and fixes the pair in ctx['launch'], the run's state (deep_step.run calls it at its start, before
+    any unit, when a stage needs it); every unit's quarantine stage and predecessor roots take that pair. A launch file retired
+    or rewritten while the run goes on never switches its round; a separate run (--stages detect after --stages quarantine)
+    reads the same launch file and so names the same round."""
+    if ctx.get('launch') is None:
+        ctx['launch'] = tuple(quarantine_launch_round(ctx))
+    return ctx['launch']
+
+
+def archive_predecessor_roots(ctx):
     """WAVE2 ARCHIVE-HEADER (the refactor chat's decisions (3b) and (6a), 2026-11-27): where the engine finds the frame each
     archive copy supersedes, in order - the run's archive root (the frame in place: one written earlier in this launch,
-    replaced in place), then this launch's own quarantine round ``rnd`` (stage_quarantine's round, where the pre-search
-    quarantine moved the frames; None for an append or a run without the quarantine stage: the frame in place only) and, when
-    the run's archive root is the window's mirror, the production archive's frame in place (read only: the frame production's
-    launch would move into its round, never moved in the window). Never an older round (Run_SEARCH_QUARANTINE_20261004 ..
-    20261113): a frame with no predecessor validates on its own."""
+    replaced in place), then this launch's own quarantine round (run_launch: the run's fixed launch, never a stage's state -
+    where the pre-search quarantine moved the frames, in this run or an earlier run of the launch) and, when the run's archive
+    root is the window's mirror, the production archive's frame in place (read only: the frame production's launch would move
+    into its round, never moved in the window). Never an older round (Run_SEARCH_QUARANTINE_20261004 .. 20261113): a frame with
+    no predecessor validates on its own."""
     from exopipe.phase3.lib.archive import quarantine as Q
     arch, prod = ctx['archive_root'], _cfg().paths.PHASE3_ARCHIVE_ROOT
-    roots = [arch] + ([Q.quarantine_root(arch, rnd)] if rnd else [])
+    roots = [arch, Q.quarantine_root(arch, run_launch(ctx)[1])]
     if os.path.realpath(arch) != os.path.realpath(prod):
         roots.append(prod)
     return roots
@@ -972,8 +977,8 @@ def stage_quarantine(u, item, ctx, f):
     """Archive's frame quarantine before a FRESH attempt (decision 6, group 10). Window: plan only."""
     from exopipe.phase3.lib.archive import quarantine as Q
     c = _cfg()
-    launch, rnd = quarantine_launch_round(ctx)      # Run_SEARCH_QUARANTINE_<launch date>: a NEW round (2026-11-27)
-    f['quarantine_round'] = rnd                     # the only round the engine takes a predecessor from (decision (6a))
+    launch, rnd = run_launch(ctx)                   # the run's fixed launch: Run_SEARCH_QUARANTINE_<launch date>, a NEW round
+    u.meta.update(launch_epoch=launch, quarantine_round=rnd)
     if c.paths.PRODUCTION_WRITES:
         # the archive step's quarantine (lib/archive/quarantine.py): the port of production's move loop, recorded in this unit
         # with its gates (G2, G7 precheck, the round gate) and the round's manifest of record under archive.RECORDS_ROOT
@@ -1030,8 +1035,9 @@ def stage_detect(u, item, ctx, f):
     tmpd = os.path.join(ctx['tmp'], item.name + '_' + tag)
     os.makedirs(tmpd, exist_ok=True)
     etmp = engine_tmpdir(c.search_run.ENGINE_TMP_ROOT, f'{item.cell}_{item.stokes}')     # short: AF_UNIX socket paths
-    f['archive_pred_roots'] = (archive_predecessor_roots(ctx, f.get('quarantine_round')) if c.search_inputs.ARCHIVE_WRITE
-                               else None)
+    f['archive_pred_roots'] = archive_predecessor_roots(ctx) if c.search_inputs.ARCHIVE_WRITE else None
+    if c.search_inputs.ARCHIVE_WRITE:
+        u.meta.update(launch_epoch=run_launch(ctx)[0], quarantine_round=run_launch(ctx)[1])
     f['archive_record'] = os.path.join(attempt, ARCHIVE_RECORD) if c.search_inputs.ARCHIVE_WRITE else None
     env = engine_env(os.path.dirname(f['base']), attempt, ctx['flow_root'], label, ctx['archive_root'], etmp,
                      pred_roots=f['archive_pred_roots'], archive_record=f['archive_record'])
@@ -1512,6 +1518,8 @@ def run_unit(u, item, stages, ctx):
             u.note('quarantine skipped: an incremental attempt appends to its base (p3s4_incremental_fleet.sh does not quarantine)')
         else:
             stage_quarantine(u, item, ctx, f)
+    if 'detect' not in stages and 'quarantine' in stages and set(stages) <= {'preflight', 'quarantine'}:
+        return f                      # --stages quarantine alone: the launch's quarantine; a later run of it detects
     if 'detect' not in stages:
         raise Refusal('stages without detect operate on an existing attempt: give --replay-attempt DIR|published '
                       '(read-only replay of fit/verify)')
@@ -1631,6 +1639,11 @@ def run(args, run):
                attempts=attempts, flow_root=flow_root, tmp=tmp, archive_root=archive_root, dry_run=run.dry_run,
                flow_from=getattr(args, 'deep_flow_from', None), keep_work=getattr(args, 'deep_keep_work', False),
                label=args.run_label or c.search.RUN_LABEL, roots=roots_table(), t0=t0)
+    if not run.dry_run and stages != ['preflight'] and ('quarantine' in stages or
+                                                      ('detect' in stages and c.search_inputs.ARCHIVE_WRITE)):
+        launch, rnd = run_launch(ctx)              # ONCE, before any unit: every unit takes this launch and round
+        print(f'search deep: launch epoch {launch} ({time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(launch))}), quarantine '
+              f'round {rnd} - fixed for this run', flush=True)
     if not run.dry_run:
         for d in (attempts, flow_root, tmp):
             os.makedirs(d, exist_ok=True)
