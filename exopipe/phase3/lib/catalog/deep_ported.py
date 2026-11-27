@@ -274,6 +274,31 @@ def copy_state(src, dst, keep_cell=None):
     return n
 
 
+def resolved_state(src, dst, resolved, keep_cell=None):
+    """The chain's own search state (published_<S>.csv, markers_<S>/) that production's p3s3_sources.py / p3s3_merge.py read
+    (env P3S3_STATE_DIR) and the staleness gate edits, written under ``dst``; production's state ``src`` is only read. Each
+    published list is production's (copy_state: its history, which p3s3_merge.py's first-run refresh counts) with one row
+    `cell,node,att` appended for every cell whose published attempt by the shared resolver ``resolved`` {S: {cell: (node,
+    att)}} is not production's current (last) row, so p3s3_sources' last-row rule gives exactly the resolver's attempt; a
+    cell production lists that ``resolved`` lacks is refused by the caller. Returns ({'published_V': n, ...}, {S: appended})."""
+    n = copy_state(src, dst, keep_cell)
+    added = {}
+    for st, cells in resolved.items():
+        p = os.path.join(dst, f'published_{st}.csv')
+        cur = {}
+        if os.path.exists(p):
+            for line in open(p):
+                q = line.strip().split(',')
+                if len(q) >= 3:
+                    cur[q[0]] = (q[1], q[2])
+        rows = [f'{cell},{node},{att}\n' for cell, (node, att) in sorted(cells.items()) if cur.get(cell) != (node, att)]
+        with open(p, 'a') as f:
+            f.writelines(rows)
+        n[f'published_{st}'] = n.get(f'published_{st}', 0) + len(rows)
+        added[st] = len(rows)
+    return n, added
+
+
 # ---- preflight (ops/fork_serve_p3s5_20261008.sh:20-30) ---------------------------------------------------------------
 
 def parents_missing(par, coadd_root, reasons=None):

@@ -2409,12 +2409,16 @@ def search_roots(search_out=None):
     return sorted(glob.glob(_cfg().search_run.COLLECT_ROOT.format(host='*')))
 
 
+def production_register(S):
+    """Production's register of Stokes ``S`` (paths.OPS_ROOT / search_run.REGISTER): read, never written by v2."""
+    c = _cfg()
+    return os.path.join(c.paths.OPS_ROOT, c.search_run.REGISTER.format(stokes=S))
+
+
 def _registers(S, roots):
     """[(register, root or None)]: the registers of Stokes ``S`` - each root's own (<root>/published_<S>.csv, deep_step.
-    register_row) and production's (paths.OPS_ROOT / search_run.REGISTER, root None: resolved over search_run.COLLECT_ROOTS)."""
-    c = _cfg()
-    return ([(os.path.join(r, f'published_{S}.csv'), r) for r in roots]
-            + [(os.path.join(c.paths.OPS_ROOT, c.search_run.REGISTER.format(stokes=S)), None)])
+    register_row) and production's (production_register, root None: resolved over search_run.COLLECT_ROOTS)."""
+    return [(os.path.join(r, f'published_{S}.csv'), r) for r in roots] + [(production_register(S), None)]
 
 
 def lst_deep_cells(lst, roots):
@@ -2431,12 +2435,36 @@ def published_attempt(cell, S, roots):
     a root's row names <root>/attempts/<cell>_<S>_<tag>, production's is resolved over search_run.COLLECT_ROOTS as
     deep_step.resolve_published resolves it; of the registers' current attempts the NEWEST (its tag's UTC, the attempt
     p3s3_merge.py takes as newest) is the published one. Not settled: the newest named by two registers as different attempts,
-    or not on disk. (None, '') when no register lists the cell."""
-    from exopipe.phase3.lib.search import deep_step as DS
+    or not on disk. (None, '') when no register lists the cell. THE resolver of the deep omission and the deep catalog
+    chain's harvest and merge (deep_chain.DeepRun.published_by_resolver), so both take the same attempt."""
+    return _resolve(cell, S, _current_rows(S, roots))
+
+
+def published_attempts(S, roots):
+    """{cell: published_attempt(cell, S, roots)} for every cell any register of Stokes ``S`` lists (each register read once)."""
+    regs = _current_rows(S, roots)
+    return {cell: _resolve(cell, S, regs) for cell in sorted({c for _g, _r, cur in regs for c in cur})}
+
+
+def _current_rows(S, roots):
+    """[(register, root or None, {cell: (host, tag)})]: each register's current (last) row per cell, as
+    deep_step._last_register_row reads it (lib/search/attempts.register_lines, file order, the last row wins)."""
+    from exopipe.phase3.lib.search import attempts as AT
+    out = []
+    for reg, root in _registers(S, roots):
+        cur = {}
+        for c, h, t in AT.register_lines(reg):
+            cur[c] = (h, t)
+        out.append((reg, root, cur))
+    return out
+
+
+def _resolve(cell, S, regs):
+    """published_attempt's rule over the registers' current rows ``regs`` (_current_rows)."""
     sr = _cfg().search_run
     cand = []
-    for reg, root in _registers(S, roots):
-        row = DS._last_register_row(reg, cell)
+    for reg, root, cur in regs:
+        row = cur.get(cell)
         if not row:
             continue
         host, tag = row

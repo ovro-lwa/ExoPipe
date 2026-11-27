@@ -252,9 +252,47 @@ class DeepRun:
         return self.cfg.catalog.DEEP_STATE_DIR.format(ops_root=self.cfg.paths.OPS_ROOT, label_lower=self.low)
 
     def state_dir(self):
-        if self.prod:
-            return self.prod_state_dir()
+        """The chain's OWN search state (published lists by the shared resolver, markers the staleness gate drops), in
+        production too: v2 never writes production's state under paths.OPS_ROOT (prod_state_dir, read only), which no
+        production-writes allowance covers (config/shared.py PRODUCTION_WRITES_ALLOWED)."""
         return os.path.join(self.U, '_state', f'{self.low}_state')
+
+    def published_by_resolver(self):
+        """({S: {cell: (node, att, dir)}}, [why not settled]): the published attempt of every (cell, Stokes) by THE shared
+        resolver (deep_omission.published_attempts over every collect root's register, search_roots, and production's), the
+        resolver the deep omission uses, so the merge and the omission take the same attempt. The --cells filter applies.
+        Refuses (Refusal) when the resolver's production register is not this chain's search state, or an attempt is not
+        <R>/<label>_collect_<node>/attempts/<cell>_<S>_<att> under a catalog.COLLECT_ROOTS root R (production's
+        p3s3_sources.py could not name it)."""
+        from exopipe.phase3.lib.catalog import deep_omission as DO
+        c = self.cfg
+        roots = DO.search_roots(None)
+        coll = [os.path.normpath(r) for r in c.catalog.COLLECT_ROOTS]
+        out, bad = {}, []
+        for st in c.catalog_merge.HARVEST_STOKES:
+            reg, mine = DO.production_register(st), os.path.join(self.prod_state_dir(), f'published_{st}.csv')
+            if os.path.normpath(reg) != os.path.normpath(mine):
+                raise Refusal(f'the shared resolver reads production\'s register {reg} (paths.OPS_ROOT / search_run.REGISTER) but '
+                              f'this chain\'s search state is {mine} (catalog.DEEP_STATE_DIR, label {self.label}): the merge '
+                              f'and the omission would not take the same attempts')
+            m = out.setdefault(st, {})
+            for cell, (d, why) in DO.published_attempts(st, roots).items():
+                if self.filtered and not self.keep_cell(cell):
+                    continue
+                if d is None:
+                    bad.append(why)
+                    continue
+                d = os.path.normpath(d)
+                base, coll_node = os.path.basename(d), os.path.basename(os.path.dirname(os.path.dirname(d)))
+                pre, cpre = f'{cell}_{st}_', f'{self.low}_collect_'
+                if (not base.startswith(pre) or not coll_node.startswith(cpre)
+                        or os.path.basename(os.path.dirname(d)) != 'attempts'
+                        or os.path.dirname(os.path.dirname(os.path.dirname(d))) not in coll):
+                    raise Refusal(f'the published attempt {d} of {cell} Stokes {st} is not <root>/{cpre}<node>/attempts/'
+                                  f'{pre}<att> under a catalog.COLLECT_ROOTS root {list(c.catalog.COLLECT_ROOTS)}: '
+                                  f'production\'s p3s3_sources.py cannot name it')
+                m[cell] = (coll_node[len(cpre):], base[len(pre):], d)
+        return out, bad
 
     def parent_dir(self):
         return self.chain.meta(self.u('preflight'), 'parent_dir')
@@ -639,20 +677,39 @@ class DeepRun:
         with u:
             self.first_unit_gates(u)
             d = self.stage_dir(u, 'harvest')
+            if self.prod and self.filtered:
+                u.refuse('a cell filter is a test run: refused under the production roots')
+            # the published attempts by the shared resolver (every collect root's register and production's; newest wins, a
+            # tie or a missing attempt refuses), written into the chain's own state, which production's p3s3_sources.py /
+            # p3s3_merge.py read (P3S3_STATE_DIR); production's state is only read (state_dir)
+            from exopipe.phase3.lib.catalog import deep_omission as DO
             src_state = self.prod_state_dir()
             state = self.state_dir()
-            if state != src_state:
-                n = deep_ported.copy_state(src_state, state, self.keep_cell if self.filtered else None)
-                u.note(f'search state copied {src_state} -> {state} ({n}); the staleness gate edits the copy only')
-            elif self.filtered:
-                u.refuse('a cell filter needs a state copy (run outside the production roots)')
-            for st in ('V', 'I'):
-                p = os.path.join(state, f'published_{st}.csv')
-                if os.path.exists(p):
-                    u.add_input(p)
+            for st in c.catalog_merge.HARVEST_STOKES:
+                for p in [DO.production_register(st)] + [os.path.join(r, f'published_{st}.csv') for r in DO.search_roots(None)]:
+                    if os.path.exists(p):
+                        u.add_input(p)
+            try:
+                pub, bad = self.published_by_resolver()
+            except Refusal as e:
+                u.refuse(str(e))
+            if bad:
+                u.refuse(f'{len(bad)} published (cell, Stokes) not settled by the shared resolver: {bad[:4]}')
+            n, added = deep_ported.resolved_state(src_state, state, {st: {cell: v[:2] for cell, v in m.items()}
+                                                                     for st, m in pub.items()},
+                                                  self.keep_cell if self.filtered else None)
+            u.note(f'search state {state} written from {src_state} (read only) and the shared resolver ({n}; rows appended '
+                   f'for attempts newer than production\'s current row: {added}); the staleness gate edits this copy only')
+            u.meta['resolver_appended'] = added
             env = self.env(state_dir=state)
             slog = os.path.join(d, 'published_attempts.log')
             atts = self.attempts(state, u, slog)
+            want = {(cell, st): os.path.realpath(v[2]) for st, m in pub.items() for cell, v in m.items()}
+            got = {(a['cell'], a['stokes']): os.path.realpath(a['dir']) for a in atts}
+            if got != want:
+                diff = sorted(k for k in set(got) | set(want) if got.get(k) != want.get(k))
+                u.refuse(f'production\'s p3s3_sources.py and the shared resolver name different attempts for {len(diff)} '
+                         f'(cell, Stokes), e.g. ' + '; '.join(f'{k}: {got.get(k)} vs {want.get(k)}' for k in diff[:3]))
             leftover = [a for a in atts if os.path.isdir(os.path.join(a['dir'], 'parent_catalogs'))]
             if leftover:
                 u.refuse(f'{len(leftover)} published attempt(s) hold a parent_catalogs dir inside the attempt (the v3.4 layout '
@@ -733,6 +790,14 @@ class DeepRun:
             if now != rec:
                 u.refuse(f'the published attempts changed since the harvest ({len(now ^ rec)} differ, e.g. '
                          f'{sorted(now ^ rec)[:3]}): re-run from harvest')
+            try:                                    # the registers themselves (the state above is the harvest's copy)
+                pub, bad = self.published_by_resolver()
+            except Refusal as e:
+                u.refuse(str(e))
+            live = {(cell, st, v[0], v[1]) for st, m in pub.items() for cell, v in m.items()}
+            if bad or live != rec:
+                u.refuse(f'the published attempts by the shared resolver changed since the harvest ({len(live ^ rec)} differ, '
+                         f'e.g. {sorted(live ^ rec)[:3]}; {len(bad)} not settled {bad[:2]}): re-run from harvest')
             # the size / axis rule (R-GREGG-20261022-ALL-APPROVED-SIZE-GATE-READMISSION-SUBAGENTS): one rule per catalogue, read
             # from each attempt's record before the merge joins their ledgers (a mix would also join two ledger headers)
             from exopipe.phase3.lib.search import size_rule as SZ
@@ -1620,15 +1685,17 @@ class DeepRun:
                 p('    gates: D-G1 every installed cell has a catalogue on its current master; K5 masters on this host')
             elif stage == 'harvest':
                 src_state = self.prod_state_dir()
-                p(f'    unit {self.u("harvest")}; search state {src_state} [{ex(src_state)}]'
-                  + (f' -> copy {env_state}' if env_state != src_state else ''))
+                p(f'    unit {self.u("harvest")}; production search state {src_state} [{ex(src_state)}] (read only) -> the '
+                  f'chain\'s own state {env_state}')
                 try:
-                    atts = self.attempts(src_state)
-                    if self.filtered:
-                        atts = [a for a in atts if self.keep_cell(a['cell'])]
-                    n_un = sum(1 for a in atts if not a['harvested'])
-                    p(f'    published attempts: {len(atts)} ({sum(1 for a in atts if a["stokes"] == "V")} V, '
-                      f'{sum(1 for a in atts if a["stokes"] == "I")} I); not harvested: {n_un}'
+                    pub, bad = self.published_by_resolver()
+                    atts = [dict(cell=cell, stokes=st, dir=v[2]) for st, m in pub.items() for cell, v in m.items()]
+                    n_un = sum(1 for a in atts if not os.path.exists(os.path.join(
+                        a['dir'], 'transients', f'Run_{self.label}', 'v_deep_ledger.csv')))
+                    p(f'    published attempts by the shared resolver (deep_omission.published_attempts: every collect root\'s '
+                      f'register and production\'s; newest wins): {len(atts)} ({sum(1 for a in atts if a["stokes"] == "V")} V, '
+                      f'{sum(1 for a in atts if a["stokes"] == "I")} I); not settled: {len(bad)}'
+                      + (' - REFUSED' if bad else '') + f'; not harvested: {n_un}'
                       + (' - would be pulled by rsync' if n_un and self.prod else (' - REFUSED (D-G3) outside production' if n_un else '')))
                 except Exception as e:
                     p(f'    published attempts: not readable here ({e})')
@@ -1642,7 +1709,8 @@ class DeepRun:
                   'v_deep_images.csv, stale_attempts.csv (append), candidates/ refusals/ sigstack/ vresid/ iresid/ '
                   'v110_products/ parent_catalogs/; stage copies; class merged_record')
                 p('    gates: published attempts = the harvest manifest; D-G4 staleness (markers dropped in '
-                  + ('the production state' if self.prod else 'the state COPY') + '); D-G6 backing; D-G7 duplicates; D-G8 zero accepted')
+                  + 'the chain\'s own state, never production\'s); the published attempts by the shared resolver unchanged '
+                  'since the harvest; D-G6 backing; D-G7 duplicates; D-G8 zero accepted')
             elif stage == 'pulsars':
                 if c.catalog_conform.MODE == 'remove':
                     p("    no-input: catalog_conform.MODE='remove' (production's ops/p3s2_conform.py judges the pulsar groups)")
