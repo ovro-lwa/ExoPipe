@@ -223,6 +223,31 @@ def archive_equals_attempt(path, **ctx):
 
 
 # ---------------------------------------------------------------------------------------------------------------------
+# launch_epoch (archive quarantine --begin-launch)
+# ---------------------------------------------------------------------------------------------------------------------
+
+@content_test('launch_epoch')
+def launch_epoch_file(path, epoch=None, **ctx):
+    """A v2 deep-search launch file (lib/archive/quarantine.begin_launch; the one archive_quarantine.LAUNCH_EPOCH_FILE names, or
+    a retired one in its round's records directory): exactly one line, a positive finite UTC epoch (s), the epoch the unit
+    wrote (``epoch``)."""
+    import math
+    import time
+    from exopipe.phase3.lib.archive import quarantine as Q
+    try:
+        lines = open(path).read().splitlines()
+        v = float(lines[0]) if len(lines) == 1 else None
+    except (OSError, ValueError, IndexError) as e:
+        return False, None, f'unreadable as one epoch line: {e}'
+    if v is None or not math.isfinite(v) or v <= 0:
+        return False, v, f'not one positive finite epoch line: {lines[:2]}'
+    if epoch is not None and v != float(epoch):
+        return False, v, f'holds {v!r}, the unit wrote {epoch!r}'
+    return True, v, (f'launch epoch {v!r} ({time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(v))}), round '
+                     f'{Q.round_for(v, Q._q().ROUND_DEFAULT)}')
+
+
+# ---------------------------------------------------------------------------------------------------------------------
 # retirement_audit
 # ---------------------------------------------------------------------------------------------------------------------
 

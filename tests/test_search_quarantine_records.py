@@ -16,7 +16,7 @@ production branch of lib/archive/quarantine runs):
                date> (the only round the engine then takes a predecessor from), refuses production's launch epoch (an earlier
                round); it never names paths.OPS_ROOT
   begin-launch the operator step that writes the launch file (decision (1)): plan writes nothing; apply writes the epoch
-               atomically (no temporary file left); an existing file refuses, named; --retire-launch moves it first into its
+               atomically (no temporary file left), an output of the unit with its content test; an existing file refuses, named; --retire-launch moves it first into its
                own round's records directory beside ROUND.json; a second launch on one UTC date, an occupied retirement
                place, a production records root the allowance does not open (G2) and a records root under paths.OPS_ROOT
                refuse; the narrow allowance key 'archive:search_deep' opens it; the key is protected; through the CLI
@@ -330,10 +330,22 @@ def test_begin_launch(launch, rnd):
     urec = json.load(open(rp)) if os.path.exists(rp) else {'status': 'no record'}
     rc2 = cli.main(['archive', 'quarantine', '--begin-launch', '--cells', CELL, '--apply', '--out', co, '--cores', 'none'])
     rc3 = cli.main(['archive', 'quarantine', '--retire-launch', '--cells', CELL, '--out', co, '--cores', 'none'])
+    rc4 = cli.main(['archive', 'quarantine', '--begin-launch', '--retire-launch', '--launch-epoch', repr(new4 + 86400 * 2),
+                    '--apply', '--resume', '--out', co, '--cores', 'none'])
     check('the CLI: `exopipe3 archive quarantine --begin-launch --launch-epoch E --apply` writes the launch file (unit '
-          'begin_launch); --begin-launch with --cells and --retire-launch without --begin-launch refuse',
-          rc == 0 and urec['status'] == 'done' and Q.launch_epoch() == new4 and rc2 != 0 and rc3 != 0
-          and Q.launch_epoch() == new4, (rc, urec.get('status'), urec.get('reason'), rc2, rc3))
+          'begin_launch, its content test passed); --begin-launch with --cells, --retire-launch without --begin-launch and '
+          '--begin-launch with --resume (a done record would skip the new launch) refuse, the launch file as it was',
+          rc == 0 and urec['status'] == 'done' and Q.launch_epoch() == new4 and rc2 != 0 and rc3 != 0 and rc4 != 0
+          and Q.launch_epoch() == new4 and any(t['name'] == 'launch_epoch.launch_epoch_file' and t['passed']
+                                              for t in urec.get('tests', [])),
+          (rc, urec.get('status'), urec.get('reason'), urec.get('tests'), rc2, rc3, rc4))
+    from exopipe.phase3.lib.archive import tests as AT
+    bad = os.path.join(T, 'bad_launch')
+    open(bad, 'w').write('nan\n')
+    ct = (AT.launch_epoch_file(lf, epoch=new4), AT.launch_epoch_file(lf, epoch=new4 + 1), AT.launch_epoch_file(bad))
+    check('the launch file\'s content test (never waivable): one positive finite epoch line, the epoch the unit wrote; a '
+          'NaN and another epoch fail', ct[0][0] and not ct[1][0] and not ct[2][0]
+          and 'launch_epoch.launch_epoch_file' in CFG.archive.NEVER_WAIVABLE, ct)
 
 
 def test_job_created():

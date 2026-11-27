@@ -358,6 +358,8 @@ def _dispatch(args, run, ctx, tier, unit_fn):
         if args.begin_launch:
             if _cells(args, required=False):
                 raise ValueError('quarantine --begin-launch writes the launch of the whole fleet: no --cells')
+            if run.resume and not run.fresh:     # a done record of an earlier launch would skip this one, nothing written
+                raise ValueError('quarantine --begin-launch is never resumed: each launch writes its own epoch (no --resume)')
             return Q.run_begin_launch(ctx, args, unit_fn)
         return Q.run_action(ctx, _cells(args), K.stokes_list(args.stokes), args, unit_fn)
     if getattr(args, 'begin_launch', False):

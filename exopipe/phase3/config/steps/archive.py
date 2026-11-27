@@ -56,7 +56,7 @@ class archive(_Section):
     NEVER_WAIVABLE = ('retirement_audit.no_excluded_product_left', 'retirement_audit.no_refused_night_frame_left',
                       'quarantine_manifest.rows_quarantined', 'archive_manifest.rows_transferred',
                       'restore_manifest.rows_restored', 'row_quarantine_manifest.rows_moved_with_manifest',
-                      'archive_sync_record.archive_equals_attempt')
+                      'archive_sync_record.archive_equals_attempt', 'launch_epoch.launch_epoch_file')
     # Deep search-fleet state directory: the frame-quarantine / publish manifests live here today (untracked by git).
     # p3s5_archive_sync.py:26 (env P3S5_STATE); p3s5_quarantine_frames.py:18.
     STATE_DIR = '{ops}/p3s5_state'

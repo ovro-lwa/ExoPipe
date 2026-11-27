@@ -361,6 +361,7 @@ def begin_launch(u, epoch=None, retire=False, apply=False):
             raise Refusal(f'begin-launch: {plan["retired_to"]} appeared meanwhile - REFUSED (nothing moved)')
         os.unlink(p)
         u.note(f'begin-launch: the launch {old} retired to {plan["retired_to"]}')
+        u.add_output(plan['retired_to'], 'launch_epoch', epoch=old)
     os.makedirs(os.path.dirname(p), exist_ok=True)
     tmp = f'{p}.{os.uname()[1]}.{os.getpid()}.tmp'
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
@@ -377,6 +378,7 @@ def begin_launch(u, epoch=None, retire=False, apply=False):
         os.unlink(tmp)
     if launch_epoch() != new:
         raise Refusal(f'begin-launch: {p} reads back {launch_epoch()}, written {new}')
+    u.add_output(p, 'launch_epoch', epoch=new)           # its content test (lib/archive/tests.launch_epoch_file), never waivable
     u.note(f'begin-launch: {p} = {new} ({plan["launch_utc"]}); round Run_SEARCH_QUARANTINE_{rnd}')
     return plan
 
