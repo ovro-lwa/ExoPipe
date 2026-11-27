@@ -40,6 +40,10 @@ jobs:
         run: python tests/test_sublst_wideband_perhour.py
       - name: 10-minute catalog of one night in the per-hour chain (the frozen-state gate, the item's refusals, pages of the night)
         run: python tests/test_catalog_incremental_sublst.py
+      - name: deep catalog harvest pulls each attempt's rules record (required under the check; cutover row 64)
+        run: python tests/test_catalog_harvest_rules.py
+      - name: deep catalog takes each published attempt from the omission's shared resolver, through its own state (never production's register; cutover row 64)
+        run: python tests/test_catalog_deep_resolver.py
       - name: R1 epoch header gate
         run: python tests/test_r1_epoch_header_gate.py
       - name: no memory maps (R-GREGG-20261117-NO-MMAP-OF-LUSTRE-FILES-READ-OR-WRITE)
@@ -112,6 +116,8 @@ jobs:
         run: python tests/test_search_gate_population_tenmin.py
       - name: per-hour 10-minute catalog, the conformance table's noise recorded or frozen
         run: python tests/test_catalog_conform_noise.py
+      - name: deep search, the bright-source table's noise as derived (median |peak / global S/N| over the harvested ledger rows)
+        run: python tests/test_search_table_noise.py
       - name: deep search, the pre-search frame quarantine's records (a new round per launch date; its manifest of record under archive.RECORDS_ROOT, never paths.OPS_ROOT)
         run: python tests/test_search_quarantine_records.py
       - name: deep search, archive frames keep every card of the frames they supersede (the superseded header updated with the search's cards, validated)
