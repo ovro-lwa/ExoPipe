@@ -644,7 +644,7 @@ def product_key(path, strip_mdewarp=False):
 def dewarp_only_cards(path):
     """The card keys a not-dewarped product need not carry although its dewarped siblings do: the cards the master dewarp
     apply writes (DEWARP_APPLY_CARDS, lib/dewarp/master_dewarp._apply), less MDWSTAT on a master - the header repair writes
-    MDWSTAT on every master, dewarped or not (header_repair_release1.py:232 MDW_CLASSES, :1100 a name starting 'PB' is a PB
+    MDWSTAT on every master, dewarped or not (header_repair_release1.py:232 MDW_CLASSES, :1101 a name starting 'PB' is a PB
     map, :1113; RULING_MDWSTAT), so only a PB map's MDWSTAT comes from the apply alone."""
     pbmap = os.path.basename(path).startswith('PB')
     return frozenset(k for k in DEWARP_APPLY_CARDS if pbmap or k != 'MDWSTAT')
