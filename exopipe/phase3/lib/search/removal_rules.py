@@ -25,9 +25,11 @@ from exopipe.phase3.config import CFG
 ELEV_EPOCHS = ('mid-hour', 'frame-mid')
 SEARCH_RULES = ('once-in-search', 'production')   # search_detect.REMOVAL_RULES
 RULES_ENV = 'EXOPIPE3_REMOVAL_RULES'              # how the search step hands it to the engine child (deep_step.engine_env)
-RULES_VERSION = 'b02-3c'   # what a 'once-in-search' attempt applies: 3a - the daytime gate per frame, the Jupiter-track veto;
+RULES_VERSION = 'b02-3d'   # what a 'once-in-search' attempt applies: 3a - the daytime gate per frame, the Jupiter-track veto;
                            # 3b - one noise per frame, the elevation floor at the frame's mid-time, the table's derivation inputs;
-                           # 3c - the nights data_decisions excludes, recorded (refusals/<cell>_datadecisions_excluded.csv)
+                           # 3c - the nights data_decisions excludes, recorded (refusals/<cell>_datadecisions_excluded.csv);
+                           # 3d - the table's noise is the derivation's statistic (table_noise_rms: the median of |peak / global
+                           # S/N| over the harvested ledger rows), not the frame noise (2026-11-27, decision (3))
 AUDIT_ENV = 'EXOPIPE3_SOLAR_AUDIT'                # the solar audit the search's daytime gate reads (search_tables.SOLAR_AUDIT)
 RULES_RECORD = 'search_rules.json'                # in each attempt directory: the rules it was searched under (deep_step)
 ELEV_EPOCH_ENV = 'EXOPIPE3_DEEP_ELEV_EPOCH'         # the elevation convention the step hands the engine (catalog_conform)
@@ -559,44 +561,122 @@ def median_noise(values):
     return card_value(np.median(v)) if v else None
 
 
-def table_noise(noise, admitted, cell, base=None):
-    """The noise S of the bright-source table divides by, per frame (the table's derivation inputs, decision (3)): {Stokes:
-    {'population': [nights], 'n': count, 'median': Jy or None, 'night': {night: Jy or None}}}.
-    noise = {Stokes: {night: the frame's noise or None}} (every frame of the run); admitted = {Stokes: the nights every gate
-    before the search admitted to that Stokes' search - an image whose source extraction then fails stays in: the population
-    is fixed before any extraction runs}; cell = the cell's own nights (an admitted night is not one). The population is the
-    cell's admitted nights with a noise - or, for an append (``base`` = base_population of the attempt it appends to), the
-    base's. An admitted night outside the population is judged with the population plus itself; every other frame carries
-    the population's median. (The V noise rule's median, VSANMED, is the gate's own: the upper middle of the V frame noise
-    of the cell's nights, gate-refused frames included - deep_search's sanity gate.)"""
+def derivation_elevation(lst, ra, dec):
+    """Elevation (deg) at the LST hour's mid-point exactly as the table derivation computes it (ops/p3s3_curve_derive.py:72-76,
+    elevation(): 90 - the zenith angle from (15 x (LST + 0.5) deg, the site latitude of phase3_snapshot_chain.OVRO))."""
+    zra, zdec = 15.0 * (int(lst[:-1]) + 0.5), CFG.catalog.SITE_LAT_DEG['snapshot_chain']
+    c = (math.sin(math.radians(dec)) * math.sin(math.radians(zdec)) +
+         math.cos(math.radians(dec)) * math.cos(math.radians(zdec)) * math.cos(math.radians(ra - zra)))
+    return 90.0 - math.degrees(math.acos(max(-1.0, min(1.0, c))))
+
+
+def table_noise_rms(row, lst):
+    """|peak_jy / global_snr| of one gate-ledger row (a dict of ledger columns, values as the CSV holds them) when the bright-
+    source table's derivation harvests it, else None - ops/p3s3_curve_derive.py load_harvest (:77-112), the deep singles
+    tables' derivations (2026-10-01, 2026-10-06: every row of the published attempts' v_deep_ledger.csv, vetoed or not):
+    snr, ra and dec numbers; |snr| >= catalog_conform.DEEP_TABLE_NOISE_SNR_FLOOR (their --floor); ra, dec finite; elevation at
+    mid-hour (derivation_elevation) >= DEEP_TABLE_NOISE_ELEV_FLOOR_DEG (gate_inputs.DEEP_ELEV_FLOOR_DEG when they ran);
+    global_snr and peak_jy non-zero numbers. Decision (3) of R-REFACTOR-20261016-B02-CONVENTIONS: "The bright-source table is
+    applied with the inputs it was derived with". A row whose S/N, peak or global S/N is NaN is harvested as the derivation
+    harvests it (NaN is a non-zero number: its ratio is NaN, the cell's median NaN - load_harvest's d['g'] - and the
+    derivation leaves the cell out, derive's "not np.isfinite(d['g']) or d['g'] <= 0"); the search refuses such a frame
+    (table_noise_usable)."""
+    c = _cc()
+    try:
+        snr = float(row['snr']); ra = float(row['ra']); dec = float(row['dec'])
+    except (ValueError, KeyError, TypeError):
+        return None
+    if abs(snr) < c.DEEP_TABLE_NOISE_SNR_FLOOR or not (np.isfinite(ra) and np.isfinite(dec)):
+        return None
+    if derivation_elevation(lst, ra, dec) < c.DEEP_TABLE_NOISE_ELEV_FLOOR_DEG:
+        return None
+    try:
+        gs = float(row.get('global_snr') or 0); pk = abs(float(row.get('peak_jy') or 0))
+    except (ValueError, TypeError):
+        return None
+    return pk / abs(gs) if gs and pk else None
+
+
+def ledger_rms(rows, lst, scope):
+    """{Stokes: {night: [table_noise_rms of each harvested row]}} of gate-ledger rows (dicts) of the cell (lst, scope); a row of
+    another cell is left out (an attempt's ledger holds its own cell only)."""
     out = {}
-    for st, nz in noise.items():
-        adm = set(admitted.get(st, ()))
+    for r in rows:
+        if r.get('lst') != lst or r.get('scope') != scope:
+            continue
+        x = table_noise_rms(r, lst)
+        if x is not None:
+            out.setdefault(r['stokes'], {}).setdefault(r['date'], []).append(x)
+    return out
+
+
+def median_rms(values):
+    """The derivation's median (Jy): float(np.median) of the values (p3s3_curve_derive.py:112), None without one; NaN when a
+    value is NaN, as there."""
+    return float(np.median(values)) if len(values) else None
+
+
+def table_noise_usable(x):
+    """True when ``x`` (Jy) is a noise the bright-source table can divide by: a positive finite number - the derivation's own
+    condition on a cell's median (p3s3_curve_derive.py derive: "not np.isfinite(d['g']) or d['g'] <= 0" leaves the cell
+    out). The refactor chat's decision (2) of 2026-11-27: a NaN noise cuts nothing (every comparison with it is false), so the
+    engine refuses the frame instead and the frame_noise content test fails such a record."""
+    return x is not None and bool(np.isfinite(x)) and x > 0
+
+
+def table_noise(rms, nights, admitted, cell, base=None):
+    """The noise S of the bright-source table divides by, per frame (the table's derivation inputs, decision (3)): {Stokes:
+    {'population': [nights], 'n': rows, 'median': Jy or None, 'night': {night: Jy or None}}}.
+    rms = ledger_rms of every gate-ledger row the run writes ({Stokes: {night: [Jy]}}); nights = {Stokes: the frames of the
+    run}; admitted = {Stokes: the nights every gate before the search admitted to that Stokes' search - an image whose source
+    extraction then fails stays in: the population is fixed before any extraction runs}; cell = the cell's own nights (an
+    admitted night is not one). The population is the cell's admitted nights, its value the median over their harvested
+    rows (the derivation's statistic: the median over detections of |peak / global S/N|) - or, for an append (``base`` =
+    base_population of the attempt it appends to), the base's rows. An admitted night outside the population is judged with
+    the population's rows plus its own; every other frame carries the population's median. (The V noise rule's median,
+    VSANMED, is the gate's own, of the frame noise: the upper middle of the V frame noise of the cell's nights, gate-refused
+    frames included - deep_search's sanity gate.)"""
+    out = {}
+    for st, ns in nights.items():
+        adm, by = set(admitted.get(st, ())), rms.get(st, {})
         if base is not None:
-            pop_d, pop_v = [], [float(x) for x in base.get(st, []) if _pos(x)]
+            pop_d, pop_v = [], list(base.get(st, []))
         else:
-            pop_d = sorted(d for d in adm if d in cell and _pos(nz.get(d)))
-            pop_v = [float(nz[d]) for d in pop_d]
-        m = median_noise(pop_v)
-        night = {}
-        for d in nz:
-            night[d] = median_noise(pop_v + [nz[d]]) if (d in adm and d not in pop_d and _pos(nz[d])) else m
+            pop_d = sorted(d for d in adm if d in cell)
+            pop_v = [x for d in pop_d for x in by.get(d, ())]
+        m = median_rms(pop_v)
+        night = {d: (median_rms(pop_v + list(by.get(d, ()))) if (d in adm and d not in pop_d) else m) for d in ns}
         out[st] = {'population': pop_d, 'n': len(pop_v), 'median': m, 'night': night}
     return out
 
 
+def read_ledger(run_dir):
+    """The gate-ledger rows (dicts) of a run directory's v_deep_ledger.csv; [] without one."""
+    p = os.path.join(run_dir, 'v_deep_ledger.csv')
+    if not os.path.exists(p):
+        return []
+    with open(p, newline='') as fh:
+        return list(csv.DictReader(fh))
+
+
 def base_population(run_dir):
-    """{Stokes: [noise]} of the population rows of a run directory's FRAME_NOISE (the attempt an append is copied from), or
-    None when the run has no FRAME_NOISE (searched before step 3b: an append onto it refuses - deep_step.base_rules_refusal)."""
+    """{Stokes: [Jy]} of the attempt an append is copied from: the table_noise_rms of its gate-ledger rows of its population
+    nights (its FRAME_NOISE population rows; the rows its own table noise was the median of) - or None when the run has no
+    FRAME_NOISE (searched before step 3b: an append onto it refuses - deep_step.base_rules_refusal). A Stokes with population
+    nights is a key (its list may be empty)."""
     p = os.path.join(run_dir, FRAME_NOISE)
     if not os.path.exists(p):
         return None
-    out = {}
+    pop, cells = {}, set()
     with open(p, newline='') as fh:
         for r in csv.DictReader(fh):
+            cells.add((r['lst'], r['scope']))
             if r.get('population') == '1':
-                out.setdefault(r['stokes'], []).append(float(r['noise_jy']))
-    return out
+                pop.setdefault(r['stokes'], set()).add(r['date'])
+    if len(cells) > 1:
+        raise RuntimeError(f'{p}: rows of {len(cells)} cells - REFUSING')
+    by = ledger_rms(read_ledger(run_dir), *cells.pop()) if cells else {}
+    return {st: [x for d in sorted(ds) for x in by.get(st, {}).get(d, ())] for st, ds in pop.items()}
 
 
 def base_vsanmed(run_dir):
@@ -633,14 +713,17 @@ def frame_noise_rows(lst, scope, nights, noise, admitted, tbl, vsanmed, attempt,
 
 
 def frame_noise_summary(path, stokes):
-    """The unit record's summary of a FRAME_NOISE for one Stokes: rows, admitted, population, the population's median (Jy) and
-    the V noise rule's median (V)."""
+    """The unit record's summary of a FRAME_NOISE for one Stokes: rows, admitted, population (nights), the table's noise its
+    population rows carry (Jy; the population's median - table_noise) and the V noise rule's median (V)."""
     with open(path, newline='') as fh:
         R = [r for r in csv.DictReader(fh) if r['stokes'] == stokes]
-    pop = [float(r['noise_jy']) for r in R if r['population'] == '1']
+    pop = [r for r in R if r['population'] == '1']
+    tb = sorted({r['tblnoise_jy'] for r in pop if r['tblnoise_jy'] != ''})
+    if len(tb) > 1:
+        raise RuntimeError(f'{path}: {len(tb)} different table noises on the {stokes} population rows - REFUSING')
     vs = sorted({r['vsanmed_jy'] for r in R if r['vsanmed_jy']})
     return dict(rows=len(R), admitted=sum(r['admitted'] == '1' for r in R), population=len(pop),
-                tblnoise_median_jy=median_noise(pop), vsanmed_jy=[float(x) for x in vs])
+                tblnoise_median_jy=float(tb[0]) if tb else None, vsanmed_jy=[float(x) for x in vs])
 
 
 def frame_elevation(lst, ra, dec, header, epoch=None):

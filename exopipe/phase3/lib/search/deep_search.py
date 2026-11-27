@@ -2466,8 +2466,10 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                           f'unmeasured (no qa3 rms in weights.csv / no stage-1 {_st} rms)', n=len(_ds))
     # WAVE2 B-02 (step 3b, R-REFACTOR-20261016-B02-CONVENTIONS (1), (3)): ONE noise per frame - the search frame's uniform rms
     # (search_v.get_uniform_rms: the central 1024^2, below 25 deg masked; V: the gate's number above; I: the same statistic, the
-    # deep mask being the phase centre's, one per grid; the mask never reaches that box, so it is the frame's IMGRMS card) - and
-    # the bright-source table's noise: the median over the cell's admitted nights (an appended night: its base's, plus itself).
+    # deep mask being the phase centre's, one per grid; the mask never reaches that box, so it is the frame's IMGRMS card). The
+    # bright-source table's noise is NOT this frame noise (rules b02-3d, 2026-11-27): it is the derivation's statistic, the median
+    # of |peak / global S/N| over the gate-ledger rows of the cell's admitted nights (removal_rules.table_noise_rms; an appended
+    # night: its base's rows, plus its own), computed below once every night is extracted, before the table stage.
     # Recorded in FRAME_NOISE, with the ledgers, for the frames this run processed; the frames carry production's cards.
     _fnz, _tbn, _tpd, _b02s = {'I': {}, 'V': {}}, {}, [], {}          # WAVE2 B-02
     if _b02:                                                           # WAVE2 B-02
@@ -2490,19 +2492,18 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
             if _nb0:                                                   # WAVE2 B-02
                 raise RuntimeError(f'{lst} {scope}: INCREMENTAL under the B-02 rules and the attempt\'s {_RR.FRAME_NOISE} holds no '   # WAVE2 B-02
                                    f'population of Stokes {"/".join(_nb0)} (' + ('none: its base was searched before step 3b'   # WAVE2 B-02
-                                   if _nbase is None else 'its base admitted no frame of it') + ') - the table noise of the '   # WAVE2 B-02
-                                   f'cell\'s admitted nights is unknown - REFUSING')   # WAVE2 B-02
-        _tbn = _RR.table_noise(_fnz, _b02s, {d for d in dates if d not in _adm}, base=_nbase)   # WAVE2 B-02, WAVE2 D-ADMIT: the cell's own nights
-        for _st in ('I', 'V'):                                         # WAVE2 B-02
-            if _fnz[_st] and _tbn[_st]['median'] is not None:          # WAVE2 B-02
-                print(f'  {lst} {scope}: TABLE NOISE (B-02) {_st} - cell median {_tbn[_st]["median"]*1e3:.1f} mJy over '   # WAVE2 B-02
-                      f'{_tbn[_st]["n"]} admitted night(s)' + (' of the base' if _nbase is not None else ''))   # WAVE2 B-02
+                                   if _nbase is None else 'its base admitted no frame of it, or none with a harvested '   # WAVE2 B-02
+                                   'ledger row') + ') - the table noise of the cell\'s admitted nights is unknown - REFUSING')   # WAVE2 B-02
 
     def _b02_tnoise(st, d):                                            # WAVE2 B-02: the table's noise for a searched frame
         x = _tbn.get(st, {}).get('night', {}).get(d)                   # WAVE2 B-02
         if x is None:                                                  # WAVE2 B-02
             raise RuntimeError(f'{lst} {scope} {st} {d}: the bright-source table has no noise (no frame noise in the cell\'s '   # WAVE2 B-02
                                f'searched nights, nor its own) - REFUSING')   # WAVE2 B-02
+        if not _RR.table_noise_usable(x):                              # WAVE2 B-02 (decision (2) of 2026-11-27): a NaN would cut
+            raise RuntimeError(f'{lst} {scope} {st} {d}: the bright-source table\'s noise is {x!r} Jy, not a positive finite '   # WAVE2 B-02: nothing
+                               f'median of |peak / global S/N| (a harvested ledger row with a non-finite peak or global S/N; the '   # WAVE2 B-02
+                               f'derivation leaves such a cell out) - REFUSING')   # WAVE2 B-02
         return x                                                       # WAVE2 B-02
 
     def _b02_psr(st, d, cands, cuts, notes):                           # WAVE2 B-02: every table decision naming a pulsar
@@ -2890,6 +2891,18 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                 v_pending.append((d, keptv, vr_path, hdr, ot,
                                   1 if gate_ran else '', ))
     _ahead_id.close(f'{cell_work}/ident_ahead.json')
+    if _b02:                                                           # WAVE2 B-02 (step 3b, decision (3), rules b02-3d): the
+        _tbrows = [dict(zip(GLED_COLS, r)) for r in gled_rows]         # WAVE2 B-02: table's noise from every gate-ledger row this
+        _tbrows += [dict(zip(GLED_COLS, _gled_row(lst, scope, 'I', d_, c, 1))) for d_, front, *_x in i_pending for c in front]   # WAVE2 B-02: run
+        _tbrows += [dict(zip(GLED_COLS, _gled_row(lst, scope, 'V', d_, c, 1))) for d_, keptv, *_x in v_pending for c in keptv]   # WAVE2 B-02: writes
+        _tbrms = _RR.ledger_rms([{k: ('' if v is None else str(v)) for k, v in r.items()} for r in _tbrows], lst, scope)   # WAVE2 B-02: (the
+        _tbn = _RR.table_noise(_tbrms, {st: set(_fnz[st]) for st in ('I', 'V')}, _b02s,   # WAVE2 B-02: rows the I and V stages below
+                               {d for d in dates if d not in _adm}, base=_nbase)   # WAVE2 B-02, WAVE2 D-ADMIT: write: one per pending candidate)
+        for _st in ('I', 'V'):                                         # WAVE2 B-02
+            if _fnz[_st] and _tbn[_st]['median'] is not None:          # WAVE2 B-02
+                print(f'  {lst} {scope}: TABLE NOISE (B-02) {_st} - cell median {_tbn[_st]["median"]*1e3:.1f} mJy over '   # WAVE2 B-02
+                      f'{_tbn[_st]["n"]} ledger row(s) of ' + (f'the base' if _nbase is not None else   # WAVE2 B-02
+                      f'{len(_tbn[_st]["population"])} admitted night(s)'))   # WAVE2 B-02
     # ── I 2-D BRIGHT-PARENT STAGE. The ratified flood-night curve (R25 1.0 nominal / 1.4 on a flood
     # night) was SUPERSEDED on 2026-09-05/06 by the measured per-Stokes per-band table, and flood keying
     # was retired with it (see the table call below): nothing downstream has read a flood classification
@@ -3103,6 +3116,13 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                                 _te_v[d] if d in _te_v else _eph_time(ebase, d, scope, ot),   # WAVE2 B-30: labels at the
                                 frame_hdr=_fhV.get(d))                                        # vetoes' time
             nwr += len(finals)
+    if _b02:                                                           # WAVE2 B-02 (rules b02-3d): the rows the table's noise was
+        _tbchk = _RR.ledger_rms([{k: ('' if v is None else str(v)) for k, v in zip(GLED_COLS, r)} for r in gled_rows], lst, scope)   # WAVE2 B-02:
+        _tbdif = sorted((st, d) for st in set(_tbchk) | set(_tbrms) for d in set(_tbchk.get(st, {})) | set(_tbrms.get(st, {}))   # WAVE2 B-02:
+                        if sorted(_tbchk.get(st, {}).get(d, [])) != sorted(_tbrms.get(st, {}).get(d, [])))   # WAVE2 B-02: the median of
+        if _tbdif:                                                     # WAVE2 B-02: are the rows written (else the record lies)
+            raise RuntimeError(f'{lst} {scope}: the gate ledger this run writes differs from the rows its table noise was the median '   # WAVE2 B-02
+                               f'of, on {len(_tbdif)} (Stokes, night): {_tbdif[:4]} - REFUSING (nothing written)')   # WAVE2 B-02
     if _b02:                                                           # WAVE2 B-02 (step 3b): the frame noise record of the frames
         _append_locked(f'{run_root}/{_RR.FRAME_NOISE}', _RR.FRAME_NOISE_COLS, _RR.frame_noise_rows(   # WAVE2 B-02: this run
             lst, scope, dates, _fnz, _b02s, _tbn, _vmed, _attempt, framed={'I': set(_fhI), 'V': set(_fhV)},   # WAVE2 B-02: processed

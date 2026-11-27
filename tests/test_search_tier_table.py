@@ -464,7 +464,8 @@ def test_table_record():
                 w.writerow(cols_)
                 w.writerows(rows_)
         if rules:
-            json.dump(dict(rules=rules, version='b02-3c' if rules == 'once-in-search' else None),
+            from exopipe.phase3.lib.search import removal_rules as RR_
+            json.dump(dict(rules=rules, version=RR_.RULES_VERSION if rules == 'once-in-search' else None),
                       open(os.path.join(att, 'search_rules.json'), 'w'))
         return os.path.join(rd, 'search_table_record.csv')
     ok = {'deep, production\'s rules': ST.verdicts_applied_as_ruled(attempt('p', 'deep', False)),

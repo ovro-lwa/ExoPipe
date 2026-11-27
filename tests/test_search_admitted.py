@@ -300,17 +300,31 @@ def test_b02_3b_units():
     nz = {'I': {D[0]: 0.010, D[1]: 0.012, D[2]: 0.014, D[3]: 0.020, D[4]: None}, 'V': {D[0]: 0.005, D[1]: 0.007}}
     adm = {'I': set(D), 'V': {D[0]}}
     cell = {D[0], D[1], D[2], D[4]}                  # D[3] admitted (D-ADMIT)
-    t = RR.table_noise(nz, adm, cell)
-    check('table_noise: the population is the cell\'s admitted nights with a noise; they and every other frame carry its '
-          'median; an admitted night of D-ADMIT is judged with the population plus itself; a Stokes is its own population',
-          t['I']['population'] == D[:3] and t['I']['median'] == 0.012 and t['I']['night'][D[0]] == 0.012
-          and t['I']['night'][D[3]] == 0.013 and t['I']['night'][D[4]] == 0.012 and t['V']['population'] == [D[0]]
-          and t['V']['night'] == {D[0]: 0.005, D[1]: 0.005}, t)
-    tb = RR.table_noise({'I': {'2025-01-05': 0.030, '2025-01-06': 0.011}, 'V': {}}, {'I': {'2025-01-05'}}, set(),
-                        base={'I': [0.010, 0.012, 0.014]})
-    check('table_noise of an append: its base\'s population; the appended admitted night with it plus itself, a frame not '
+    # rules b02-3d: the table's noise is the median of |peak / global S/N| over the harvested gate-ledger rows (global S/N 8:
+    # exact quotients); D[4] has no row; the harvest leaves out |S/N| < 5, a mid-hour elevation < 20 deg, no global S/N, no peak
+    G = lambda st, d, x, **k: dict(dict.fromkeys(ST.GLED_COLS, ''), **dict(dict(lst='05h', scope='78MHz', stokes=st, date=d,
+                                   ra='82.5', dec='37.0', snr='6.0', peak_jy=repr(8 * x), global_snr='8.0'), **k))
+    lrows = [G('I', D[0], 0.010), G('I', D[1], 0.012), G('I', D[2], -0.014, snr='-6.0', global_snr='-8.0'), G('I', D[3], 0.020),
+             G('V', D[0], 0.005), G('V', D[1], 0.007), G('I', D[0], 0.5, snr='4.99'), G('I', D[0], 0.5, dec='-40.0'),
+             G('I', D[0], 0.5, global_snr=''), G('I', D[0], 0.5, peak_jy='0.0'), G('I', D[0], 0.5, ra=''),
+             G('I', D[0], 0.5, lst='06h')]
+    rms = RR.ledger_rms(lrows, '05h', '78MHz')
+    t = RR.table_noise(rms, {st: set(v) for st, v in nz.items()}, adm, cell)
+    check('table_noise (rules b02-3d): the population is the cell\'s admitted nights, its value the median of |peak / global '
+          'S/N| over their harvested gate-ledger rows; they and every other frame carry it; an admitted night of D-ADMIT is '
+          'judged with those rows plus its own; a Stokes is its own population; rows below the floors, without a global S/N or '
+          'a peak, without a position or of another cell are not harvested',
+          rms == {'I': {D[0]: [0.010], D[1]: [0.012], D[2]: [0.014], D[3]: [0.020]}, 'V': {D[0]: [0.005], D[1]: [0.007]}}
+          and t['I']['population'] == [D[0], D[1], D[2], D[4]] and t['I']['median'] == 0.012 and t['I']['n'] == 3
+          and t['I']['night'][D[0]] == 0.012 and t['I']['night'][D[3]] == float(np.median([0.010, 0.012, 0.014, 0.020]))
+          and t['I']['night'][D[4]] == 0.012 and t['V']['population'] == [D[0]]
+          and t['V']['night'] == {D[0]: 0.005, D[1]: 0.005}, (rms, t))
+    tb = RR.table_noise({'I': {'2025-01-05': [0.030]}}, {'I': {'2025-01-05', '2025-01-06'}, 'V': set()},
+                        {'I': {'2025-01-05'}}, set(), base={'I': [0.010, 0.012, 0.014]})
+    check('table_noise of an append: its base\'s rows; the appended admitted night with them plus its own, a frame not '
           'admitted with the base\'s median', tb['I']['population'] == [] and tb['I']['n'] == 3 and tb['I']['median'] == 0.012
-          and tb['I']['night'] == {'2025-01-05': 0.013, '2025-01-06': 0.012} and tb['V']['median'] is None, tb)
+          and tb['I']['night'] == {'2025-01-05': float(np.median([0.010, 0.012, 0.014, 0.030])), '2025-01-06': 0.012}
+          and tb['V']['median'] is None, tb)
     import random as _rnd
     rg = _rnd.Random(7)
     vals = [rg.uniform(1e-5, 1e-3) for _ in range(2000)] + [rg.uniform(1e-3, 10.0) for _ in range(2000)]
@@ -327,13 +341,17 @@ def test_b02_3b_units():
         w = csv.writer(fh)
         w.writerow(RR.FRAME_NOISE_COLS)
         w.writerows(rows)
+    with open(os.path.join(rd, 'v_deep_ledger.csv'), 'w', newline='') as fh:   # the rows the table's noise was taken over
+        w = csv.DictWriter(fh, fieldnames=ST.GLED_COLS)
+        w.writeheader()
+        w.writerows(lrows)
     base = RR.base_population(rd)
     summ = RR.frame_noise_summary(os.path.join(rd, RR.FRAME_NOISE), 'I')
     check('frame_noise_rows: one row per frame of the run\'s nights (with framed=, only the frames the run processed); '
           'base_population reads the population back (an append\'s base); no FRAME_NOISE is no base (None); the unit '
           'record\'s summary', len(rows) == 7 and [r[3] for r in rows_f] == [D[0]]
           and base == {'I': [0.010, 0.012, 0.014], 'V': [0.005]} and RR.base_population(os.path.join(T, 'b02_3b_units')) is None
-          and summ == dict(rows=5, admitted=5, population=3, tblnoise_median_jy=0.012, vsanmed_jy=[])
+          and summ == dict(rows=5, admitted=5, population=4, tblnoise_median_jy=0.012, vsanmed_jy=[])
           and RR.base_vsanmed(rd) == 0.006 and RR.base_vsanmed(os.path.join(T, 'b02_3b_units')) is None
           and np.isnan(RR.card_value(float('nan'))), (rows, base, summ, RR.base_vsanmed(rd)))
 
@@ -701,27 +719,17 @@ def seed_base_noise(label_root, exclude, stokes=None):
     admitted nights: the table's population) and its frames. A test attempt is fresh, so it is given the served search's frames
     of the cell (CFG.calibrate.SERVED_RUN) as that base: each night's archived IMGRMS (the same statistic: the 25 deg mask
     never reaches the central box on any deep grid; as a card gives it back) and the frame itself (a symlink, where the run
-    writes its frames) and its image-ledger rows (the run's Stokes), the nights of this run and the copy's admitted nights
-    left out. Returns {Stokes: {night: noise}}."""
+    writes its frames), its image-ledger rows (the run's Stokes) and its gate-ledger rows (rules b02-3d: the table's noise of
+    an append is the median of |peak / global S/N| over the base's harvested gate-ledger rows plus the night's own; the
+    served attempt's rows of the run's Stokes, under the header the engine writes, with its size-rule record and its finals'
+    catalogue rows, as a base attempt carries them), the nights of this run and the copy's admitted nights left out. The
+    base's recorded table noise is that statistic over its seeded rows (the frame_noise content test recomputes it).
+    Returns {Stokes: {night: noise}}."""
     from astropy.io import fits
     from exopipe.phase3.lib.search import removal_rules as RR
     pop = {st: {d: v for d, v in nz.items() if d not in exclude and d not in _SEED_EXCLUDE} for st, nz in served_noise().items()}
     rd = os.path.join(label_root, 'transients', 'Run_ADMITTEST')
     os.makedirs(rd, exist_ok=True)
-    with open(os.path.join(rd, RR.FRAME_NOISE), 'w', newline='') as fh:
-        w = csv.writer(fh)
-        w.writerow(RR.FRAME_NOISE_COLS)
-        for st, nz in sorted(pop.items()):
-            m = RR.median_noise([v for v, _f in nz.values()])
-            vv = sorted(v for v, _f in nz.values())
-            vm = repr(vv[len(vv) // 2]) if st == 'V' and len(vv) >= CFG.search_detect.SANITY_MIN_NIGHTS else ''   # the V gate's
-            vx = repr(float(CFG.search_detect.SANITY_X)) if vm else ''                                           # median, as run
-            fd = os.path.join(label_root, 'iresid' if st == 'I' else 'vresid', CELL)
-            os.makedirs(fd, exist_ok=True)
-            for d, (v, f_) in sorted(nz.items()):
-                w.writerow([LST, SC, st, d, repr(v), 1, 1, repr(m), vm, vx, 'served-base'])
-                if not os.path.lexists(os.path.join(fd, os.path.basename(f_))):
-                    os.symlink(f_, os.path.join(fd, os.path.basename(f_)))
     ip = os.path.join(rd, 'v_deep_images.csv')
     if not os.path.exists(ip):                    # the base's image rows come with its frames (an append's base has them)
         srv = os.path.join(CFG.calibrate.SERVED_RUN['deep'], 'v_deep_images.csv')
@@ -730,6 +738,47 @@ def seed_base_noise(label_root, exclude, stokes=None):
         with open(ip, 'w', newline='') as fh:
             w = csv.DictWriter(fh, fieldnames=list(keep[0]) if keep else ['lst'])
             w.writeheader(); w.writerows(keep)
+    lp = os.path.join(rd, 'v_deep_ledger.csv')
+    if not os.path.exists(lp):                    # the base's gate-ledger rows (its table noise's rows)
+        from exopipe.phase3.lib.search import deep_search as DSE, size_rule as SZ
+        szr = SZ.engine_rule('deep')
+        # the base was searched under the rule the append applies: its size-rule record goes beside its ledger, written by the
+        # engine's own writer before the ledger exists (a ledger without a record reads as production's: one rule per run)
+        SZ.write_run_record(rd, szr)
+        cols = DSE.GLED_COLS + (list(SZ.GLED_COLS_SIZE) if szr is not None else [])
+        srv = CFG.calibrate.SERVED_RUN['deep']
+        prov = {(r['cell'], r['stokes']): r['attempt_dir'] for r in csv.DictReader(open(os.path.join(srv, 'merge_provenance.csv')))}
+        keep, kcat, ccols = [], [], None
+        for st in sorted(s_ for s_ in pop if s_ in (stokes or 'IV')):   # the run's Stokes, as its image rows (an attempt's
+            sd = os.path.join(prov[(CELL, st)], 'transients', os.path.basename(srv))    # ledger is its own)
+            keep += [r for r in csv.DictReader(open(os.path.join(sd, 'v_deep_ledger.csv'))) if r['lst'] == LST
+                     and r['scope'] == SC and r['stokes'] == st and r['date'] in pop[st]]
+            with open(os.path.join(sd, 'master_catalog.csv'), newline='') as fh:   # ... and its finals' catalogue rows (a
+                cr = csv.DictReader(fh)                                            # base's finals are its catalogue rows)
+                ccols = cr.fieldnames
+                kcat += [r for r in cr if r['lst'] == LST and r['band'] == SC and r['stokes'] == st and r['date'] in pop[st]]
+        with open(lp, 'w', newline='') as fh:
+            w = csv.DictWriter(fh, fieldnames=cols, restval='', extrasaction='ignore')
+            w.writeheader(); w.writerows(keep)
+        if ccols and not os.path.exists(os.path.join(rd, 'master_catalog.csv')):
+            with open(os.path.join(rd, 'master_catalog.csv'), 'w', newline='') as fh:
+                w = csv.DictWriter(fh, fieldnames=ccols)
+                w.writeheader(); w.writerows(kcat)
+    lr = RR.ledger_rms(RR.read_ledger(rd), LST, SC)   # rules b02-3d: the base's table noise is the derivation's statistic
+    with open(os.path.join(rd, RR.FRAME_NOISE), 'w', newline='') as fh:   # over its harvested gate-ledger rows
+        w = csv.writer(fh)
+        w.writerow(RR.FRAME_NOISE_COLS)
+        for st, nz in sorted(pop.items()):
+            m = RR.median_rms([x for d in nz for x in lr.get(st, {}).get(d, ())])
+            vv = sorted(v for v, _f in nz.values())
+            vm = repr(vv[len(vv) // 2]) if st == 'V' and len(vv) >= CFG.search_detect.SANITY_MIN_NIGHTS else ''   # the V gate's
+            vx = repr(float(CFG.search_detect.SANITY_X)) if vm else ''                                           # median, as run
+            fd = os.path.join(label_root, 'iresid' if st == 'I' else 'vresid', CELL)
+            os.makedirs(fd, exist_ok=True)
+            for d, (v, f_) in sorted(nz.items()):
+                w.writerow([LST, SC, st, d, repr(v), 1, 1, repr(m) if m is not None else '', vm, vx, 'served-base'])
+                if not os.path.lexists(os.path.join(fd, os.path.basename(f_))):
+                    os.symlink(f_, os.path.join(fd, os.path.basename(f_)))
     return {st: {d: v for d, (v, _f) in nz.items()} for st, nz in pop.items()}
 
 
@@ -846,19 +895,22 @@ def test_end_to_end():
     check('ruled reading: the engine runs (incremental, one admitted night)', res['ok'], (res, log[-1500:]))
     from exopipe.phase3.lib.search import removal_rules as RR
     fnr = list(csv.DictReader(open(os.path.join(att, 'transients', 'Run_ADMITTEST', RR.FRAME_NOISE))))
-    base_ = {st: [float(r['noise_jy']) for r in fnr if r['stokes'] == st and r['population'] == '1'] for st in ('I', 'V')}
+    lrms = RR.ledger_rms(RR.read_ledger(os.path.join(att, 'transients', 'Run_ADMITTEST')), LST, SC)   # rules b02-3d
+    base_ = {st: [x for r in fnr if r['stokes'] == st and r['population'] == '1' for x in lrms.get(st, {}).get(r['date'], ())]
+             for st in ('I', 'V')}
     mine = {r['stokes']: r for r in fnr if r['date'] == nights[0]}
     bad3 = []
     for st, r in sorted(mine.items()):
         fp_ = os.path.join(att, 'iresid' if st == 'I' else 'vresid', CELL, f'{nights[0]}_{st}_redo_resid_{SC}.fits')
         h_ = fits.getheader(fp_) if os.path.exists(fp_) else {}
-        want_ = RR.median_noise(base_[st] + [float(r['noise_jy'])])
+        want_ = RR.median_rms(base_[st] + list(lrms.get(st, {}).get(nights[0], ())))
         vseed_ = {x['vsanmed_jy'] for x in fnr if x['stokes'] == 'V' and x['population'] == '1'}
         if not (r['admitted'] == '1' and r['population'] == '0' and float(r['tblnoise_jy']) == want_
                 and h_.get('IMGRMS') == float(r['noise_jy']) and 'TBLNOISE' not in h_ and 'VSANMED' not in h_
                 and (st != 'V' or (len(vseed_) == 1 and r['vsanmed_jy'] in vseed_ and r['vsanmed_jy'] != ''))):
             bad3.append((st, dict(r), want_, h_.get('IMGRMS')))
-    check("B-02 step 3b: the admitted night's frames (I and V) are judged with the base's population plus themselves - "
+    check("B-02 step 3b: the admitted night's frames (I and V) are judged with the base's population plus themselves (the "
+          "median of |peak / global S/N| over the base's harvested gate-ledger rows and the night's own) - "
           "recorded (admitted, not in the population; the medians in frame_noise.csv, not on the frames), each frame's "
           "IMGRMS its own noise", res['ok'] and sorted(mine) == ['I', 'V'] and not bad3
           and all(len(v) > 10 for v in base_.values()) and not set(nights) & {r['date'] for r in fnr if r['population'] == '1'},
@@ -1187,10 +1239,11 @@ def test_b02_end_to_end(wt, work, b3):
                 fdiff.append((d, kd[:5], same))
         check(f"B-02 step 3b ({st}): the search frames under 'once-in-search' are production's - the same pixels and every card "
               f"(IMGRMS and THERMNOI included; no new card){dev}", not fdiff, fdiff)
-        base_ = [float(r['noise_jy']) for r in r0[RR.FRAME_NOISE] if r['stokes'] == st and r['population'] == '1']
+        lrms_ = RR.ledger_rms(RR.read_ledger(r0['rd']), LST, SC).get(st, {})   # rules b02-3d: the table noise's rows
+        base_ = [x for r in r0[RR.FRAME_NOISE] if r['stokes'] == st and r['population'] == '1' for x in lrms_.get(r['date'], ())]
         mine = {r['date']: r for r in r0[RR.FRAME_NOISE] if r['stokes'] == st and r['attempt'] != 'served-base'}
         bad = [(d, mine.get(d)) for d in b3 if not (d in mine and mine[d]['admitted'] == '1' and mine[d]['population'] == '0'
-                                                       and float(mine[d]['tblnoise_jy']) == RR.median_noise(base_ + [float(mine[d]['noise_jy'])])
+                                                       and float(mine[d]['tblnoise_jy']) == RR.median_rms(base_ + list(lrms_.get(d, ())))
                                                        and float(fh[d]['IMGRMS']) == float(mine[d]['noise_jy']))]
         vseed = {r['vsanmed_jy'] for r in r0[RR.FRAME_NOISE] if r['stokes'] == 'V' and r['population'] == '1'}
         vx = repr(float(CFG.search_detect.SANITY_X))

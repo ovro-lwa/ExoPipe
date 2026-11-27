@@ -162,6 +162,14 @@ class catalog_conform(_Section):
     DEEP_ELEV_EPOCH = 'frame-mid'                         # the frame's own mid-time (B-02 step 3b: the search's floor and the check;
                                                           # R-REFACTOR-20261016-B02-CONVENTIONS (2)); production 'mid-hour' = LST + 0.5 h,
                                                           # ops/p3s2_conform.py:187-189 (the parity file)
+    DEEP_TABLE_NOISE_SNR_FLOOR = 5.0                      # |S/N| of a gate-ledger row the in-search table noise takes (removal_rules.
+                                                          # table_noise_rms); ops/p3s3_curve_derive.py:94 (--floor), the installed deep
+                                                          # singles tables' derivations (deep_tables_elev_20261006/derive.sh --floor 5;
+                                                          # meta floor 5.0 of 2026-10-01 and 2026-10-06) [arg]
+    DEEP_TABLE_NOISE_ELEV_FLOOR_DEG = 20.0                # deg at mid-hour, the same rows; ops/p3s3_curve_derive.py:100-101 (gate_inputs.
+                                                          # DEEP_ELEV_FLOOR_DEG when those derivations ran: 20 until exopipe_ops 0b91b6e of
+                                                          # 2026-10-07 set 25; meta elevation_floor_deg 20.0 of deep_elev_r3.json and
+                                                          # deep_elev_r2V.json) [lit]
     TABLE_MODE = {'deep': 'singles', 'sublst': 'singles', 'fork_validity': 'off', 'fork_table': 'multi'}   # ops/p3s2_conform.py:42 [lit: module default = deep], multiples_fork.py:133 [env:P3_CONFORM_TABLE]
     TABLE_ELEV = {'deep': True, 'sublst': True}           # elevation-band tables; ops/p3s2_conform.py:268 (deep on since 2026-10-07), fork_serve_p3s5_20261008.sh:31 and sublst_catalogs.sh:81 [env:P3_TABLE_ELEV=1] (Gregg 2026-10-04 "Yes on 1"; 2026-09-27 "1. go")
     TABLE_ELEV_BANDS = '25-35,35-50,50-90'                # deg; parent_curve_table.py:117 [env:P3_TABLE_ELEV_BANDS]
@@ -205,6 +213,8 @@ class catalog_conform(_Section):
              'PULSAR_ASSOC_K': 'R-ASSOCIATION-RADIUS-QUADRATURE', 'TABLE_XM_EXEMPT': 'R-TABLE-EXEMPTION-PULSARS-ONLY',
              'DEEP_ELEV_EPOCH': ('R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32',   # B-02 (a); the convention
                                  'R-REFACTOR-20261016-B02-CONVENTIONS'),                        # under the 2026-10-16 delegation
+             'DEEP_TABLE_NOISE_SNR_FLOOR': 'R-REFACTOR-20261016-B02-CONVENTIONS',          # decision (3): the table applied with
+             'DEEP_TABLE_NOISE_ELEV_FLOOR_DEG': 'R-REFACTOR-20261016-B02-CONVENTIONS',     # the inputs it was derived with
              'CONFORM_AXIS_UNDER_RULE': 'R-REFACTOR-20261104-AXIS-RULE-ALONE-FULLBAND-SIZE-OFF-FROM-PULSARS',   # (its comment)
              'TABLE_NOISE_RECORD': 'R-GREGG-20261112-PER-HOUR-STEPS-SIX-RULINGS'}   # ruling (2): frozen statistics
 
