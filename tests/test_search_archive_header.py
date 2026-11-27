@@ -19,6 +19,8 @@ Checks, data-free (a scratch archive root; frames 16 x 16 px with a standard hea
   case (a)      not taken: the readers of archived copies' cards (the deep step's content tests, the removal rules' beam)
   step          the deep step hands the engine the predecessor roots: the archive root, its quarantine rounds newest first, and
                 in the window the production archive and its rounds; the engine no longer copies the work frame as is
+  register      the deep step registers each archive frame for the content tests: the attempt frame's PRODNAME (over CONTINUE
+                cards) read whole, the archive frame found, with the attempt frame and the predecessor
 Run: python tests/test_search_archive_header.py
 """
 import inspect
@@ -254,6 +256,41 @@ def test_step():
           and env.get('P3_ARCHIVE_PREDECESSOR_ROOTS') == os.pathsep.join(win), (win, live))
 
 
+def test_registration():
+    """The deep step registers each archive frame its detect wrote for the content tests (side_outputs), found by the attempt
+    frame's PRODNAME. A deep PRODNAME is longer than one card holds: astropy writes it over CONTINUE cards, and the header-only
+    reader returned the first card's text ending in '&' - no archive frame was ever found, so the content tests (copy_identical
+    with the predecessor's cards) never ran on one (the row-64 parity runs: 0 of 288 archive frames registered)."""
+    import time
+    from exopipe.phase3.core.record import fits_primary_cards
+    from types import SimpleNamespace
+    att, mirror, pred = os.path.join(T, 'reg_attempt'), os.path.join(T, 'reg_mirror'), os.path.join(T, 'reg_prod')
+    date = '2024-12-21'
+    h = header(date, 0.21, 'e1a4e65')
+    wd = os.path.join(att, 'Run_T', 'vresid', '03h_18MHz')
+    os.makedirs(wd, exist_ok=True)
+    work = os.path.join(wd, f'{date}_V_redo_resid_18MHz.fits')
+    fits.writeto(work, np.zeros((16, 16), np.float32), h, overwrite=True)
+    name = h['PRODNAME']
+    raw, whole = fits_primary_cards(work).get('PRODNAME'), fits_primary_cards(work, continued=True).get('PRODNAME')
+    check('a deep PRODNAME spans CONTINUE cards: the header-only reader returns it whole with continued=True (as astropy reads '
+          'it) and, unchanged for every other caller, the first card\'s text ending in \'&\' without',
+          len(name) > 68 and whole == name and str(raw).endswith('&') and raw != name, (name, raw, whole))
+    t0 = time.time() - 60
+    rel = os.path.join('03h', date, DS._cfg().paths.ARCHIVE_RUN, '18MHz', 'V', 'deep', name)
+    for root in (mirror, pred):
+        os.makedirs(os.path.dirname(os.path.join(root, rel)), exist_ok=True)
+        shutil.copyfile(work, os.path.join(root, rel))
+    item = SimpleNamespace(cell='03h_18MHz', lst='03h', scope='18MHz', stokes='V', mode='full')
+    ctx = dict(flow_root=os.path.join(T, 'reg_flow'), out=os.path.join(T, 'reg_out'), archive_root=mirror)
+    f = dict(attempt=att, label='T', t_detect=t0, archive_pred_roots=[mirror, pred])
+    got = [(dst, cls, tc) for _p, cls, tc, dst in DS.side_outputs(item, ctx, f) if cls == 'search_frame']
+    check('the deep step registers the archive frame its detect wrote (found by the whole PRODNAME) for the content tests, '
+          'with the attempt frame it copies and the frame it superseded',
+          got == [(os.path.join(mirror, rel), 'search_frame', {'stokes': 'V', 'copy_of': work,
+                                                               'predecessor': os.path.join(pred, rel)})], got)
+
+
 def main():
     shutil.rmtree(T, ignore_errors=True)
     os.makedirs(T)
@@ -263,6 +300,7 @@ def main():
         test_content_test(w1, q1, dst1, w2)
         test_case_a_does_not_apply()
         test_step()
+        test_registration()
     finally:
         for k, v in keep.items():
             if v is None:

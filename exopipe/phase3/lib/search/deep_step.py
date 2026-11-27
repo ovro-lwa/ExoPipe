@@ -1261,7 +1261,7 @@ def side_outputs(item, ctx, f):
         pred_roots = f.get('archive_pred_roots')       # as the detect stage gave them to the engine
         sub = 'iresid' if item.stokes == 'I' else 'vresid'
         for p in sorted(glob.glob(os.path.join(f['attempt'], f'Run_{f["label"]}', sub, item.cell, '*_redo_resid_*.fits'))):
-            name = str(fits_primary_cards(p).get('PRODNAME', '') or '')
+            name = str(fits_primary_cards(p, continued=True).get('PRODNAME', '') or '')   # a deep PRODNAME spans CONTINUE cards
             d = os.path.basename(p)[:10]
             if not name:
                 continue
