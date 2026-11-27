@@ -318,10 +318,14 @@ class search_run(_Section):
     COLLECT_ROOTS = ('/lustre/gh/main/phase3_collect', '/data07/gh/phase3/transients')   # published-attempt resolution, newest first
                                                             # (p3s3_sources.py:26-41)
     COLLECT_LABEL = 'p3s5'                                  # <root>/<label>_collect_<node>/attempts/<cell>_<S>_<att> (p3s3_sources.py:17-18,38)
-    QUARANTINE_ROUND = '20261004'                           # P3S5_QROUND (p3s5_launch.sh:22; p3s5_quarantine_frames.py:17)
-    QUARANTINE_EPOCH = 'launch-file'                        # 'launch-file' = LAUNCH_EPOCH_FILE (p3s5_launch.sh:16, today); 'job-created' = this
-                                                            # run's start (fixes the reuse half of defect D2 - deep chat's call, spec Q7)
-    LAUNCH_EPOCH_FILE = 'p3s5_state/launch_epoch'           # under paths.OPS_ROOT: UTC epoch seconds, written once (p3s5_launch.sh:16)
+    QUARANTINE_ROUND = 'launch-date'                        # the pre-search quarantine's round: 'launch-date' = Run_SEARCH_QUARANTINE_<UTC date
+                                                            # of the launch epoch, YYYYMMDD> (production named its rounds so: P3S5_QROUND,
+                                                            # p3s5_launch.sh:22, 20261004 ... 20261113); a literal names the round. A round
+                                                            # production used refuses (lib/archive/quarantine.round_gate; the refactor
+                                                            # chat's decision of 2026-11-27: a NEW round, never 20261004)
+    QUARANTINE_EPOCH = 'launch-file'                        # 'launch-file' = archive_quarantine.LAUNCH_EPOCH_FILE (the v2 fleet's launch);
+                                                            # 'job-created' = this run's start (fixes the reuse half of defect D2 - deep
+                                                            # chat's call, spec Q7)
     QUARANTINE_SCRIPT = 'p3s5_quarantine_frames.py'         # in legacy_root('exopipe_ops'); owned by archive (decision 6, group 10)
     CACHE_CURRENT_SCRIPT = 'p3s3_cache_current.py'          # in legacy_root('exopipe_ops'): flow-cache currency (p3s5_search_fleet.sh:96,109;
                                                             # FIX-P3S3-CACHE-CURRENT-MD5-MATCHES-SEARCH-NAN-ZEROING)
@@ -336,7 +340,7 @@ class search_run(_Section):
                         '/lustre/gh/main/exopipe_ops/snapshot_batch', '/lustre/gh/main/exopipe_ops/sublst_search_state_A',
                         '/lustre/gh/main/exopipe_ops/sublst_search_state_B', '/fast/gh/main/phase3', '/data07/gh/phase3',
                         '/lustre/gh/main/phase3', '/lustre/pipeline/exopipe')
-    PROTECTED_KEYS = ('PRODUCTION_TREES', 'REGISTER', 'LAUNCH_EPOCH_FILE', 'QUARANTINE_SCRIPT', 'CACHE_CURRENT_SCRIPT')
+    PROTECTED_KEYS = ('PRODUCTION_TREES', 'REGISTER', 'QUARANTINE_SCRIPT', 'CACHE_CURRENT_SCRIPT')
 
 
 # =====================================================================================================================

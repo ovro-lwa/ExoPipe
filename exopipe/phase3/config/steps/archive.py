@@ -61,6 +61,12 @@ class archive(_Section):
     # p3s5_archive_sync.py:26 (env P3S5_STATE); p3s5_quarantine_frames.py:18.
     STATE_DIR = '{ops}/p3s5_state'
     FRAME_QUARANTINE_MANIFEST_DIR = '{state}/frame_quarantine'   # p3s5_quarantine_frames.py:18; restore_refused_frames.py:33; p3s5_archive_sync.py:74
+    # The pre-search frame quarantine's manifest of record of a NEW round (lib/archive/quarantine.quarantine_for_search, the
+    # search's quarantine stage and `archive quarantine`): one directory per round under RECORDS_ROOT, holding the round's
+    # record (archive_quarantine.ROUND_RECORD: its launch epoch) and one manifest per (cell, Stokes), <cell>_<S>.csv. Never
+    # under paths.OPS_ROOT: the manifests of production's rounds (FRAME_QUARANTINE_MANIFEST_DIR, p3s5_state/frame_quarantine/)
+    # stay there, read only (the refactor chat's decision of 2026-11-27, cutover row 64 step 2: v2 never writes p3s5_state).
+    SEARCH_QUARANTINE_RECORDS_DIR = '{records}/frame_quarantine/{run}'   # {run} = archive_quarantine.RUN_PREFIX + round
     FRAME_PUBLISH_MANIFEST_DIR = '{state}/frame_publish'         # p3s5_archive_sync.py:74 (never created: sync never applied)
     QUARANTINE_COLUMNS = ('path', 'dest', 'bytes', 'md5', 'cell', 'stokes', 'moved_at')   # p3s5_quarantine_frames.py:55; p3s5_archive_sync.py:78
     PUBLISH_COLUMNS = ('source', 'dest', 'bytes', 'md5', 'cell', 'stokes', 'action', 'written_at')   # p3s5_archive_sync.py:79
@@ -96,7 +102,12 @@ class archive_quarantine(_Section):
     # TODAY'S RULE (deep defect D2: a re-search leaves frames of nights it no longer searches). Only this value is implemented;
     # 'not-written-by-attempt' waits for the deep chat (search spec Q7).
     SELECT_RULE = 'mtime-before-launch'
-    LAUNCH_EPOCH_FILE = '{state}/launch_epoch'   # p3s5_launch.sh:16 (written once, reused; 1791427094 s = 2026-10-08T02:38:14Z)
+    # The launch epoch of the v2 search fleet: UTC epoch seconds, written once by the fleet's launch (as p3s5_launch.sh:16 wrote
+    # production's p3s5_state/launch_epoch - read only now; its last value 1794570845 s = 2026-11-13T11:54:05Z, the launch of
+    # production's round 20261113). The search's quarantine stage and `archive quarantine` read it (one resolver,
+    # launch_epoch); an unset epoch refuses (p3s5_search_fleet.sh:37). Under RECORDS_ROOT beside the rounds' records.
+    LAUNCH_EPOCH_FILE = '{records}/frame_quarantine/launch_epoch'
+    ROUND_RECORD = 'ROUND.json'                  # in the round's SEARCH_QUARANTINE_RECORDS_DIR: {round, run, launch_epoch, created}
     MEMBERSHIP_PRECHECK = True                   # p3s5_quarantine_frames.py:34-49 (2026-10-08 incident, R-RESTORE-REFUSED-CELL-FRAMES-APPROVED 2093)
     # MIRROR; p3s5_quarantine_frames.py:42-43: P3_COADD_ROOT default (the fleet runs the helper with it unset,
     # p3s5_search_fleet.sh:197-198) then the shipped inputs; a root holds the cell when <root>/<cell>/<marker> exists.

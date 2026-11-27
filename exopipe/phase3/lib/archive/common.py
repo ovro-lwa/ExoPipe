@@ -38,11 +38,13 @@ def stamp():
 
 def expand(template, **kw):
     """Expand a config template: {ops} paths.OPS_ROOT, {clv15} paths.CLV15_ROOT, {state} archive.STATE_DIR, {batch_root}
-    archive_snapshot.BATCH_ROOT, plus the keywords given ({root}, {run}, {round}, {cell}, {stokes}, ...)."""
+    archive_snapshot.BATCH_ROOT, {records} archive.RECORDS_ROOT, plus the keywords given ({root}, {run}, {round}, {cell},
+    {stokes}, ...)."""
     if template is None:
         return None
     C = cfg()
-    base = {'ops': C.paths.OPS_ROOT.rstrip('/'), 'clv15': C.paths.CLV15_ROOT.rstrip('/')}
+    base = {'ops': C.paths.OPS_ROOT.rstrip('/'), 'clv15': C.paths.CLV15_ROOT.rstrip('/'),
+            'records': C.archive.RECORDS_ROOT.rstrip('/')}
     if '{state}' in template:
         base['state'] = C.archive.STATE_DIR.format(**base)
     if '{batch_root}' in template:

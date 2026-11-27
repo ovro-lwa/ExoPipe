@@ -209,9 +209,10 @@ def test_quarantine_apply(cd):
     finally:
         Q._q = real
     src = inspect.getsource(Q.quarantine_for_search)
-    check('the quarantine apply: a cell holding an admitted night (ruled reading) takes the port, every other cell - and every '
-          'cell under production\'s reading - production\'s helper', got == [NEW] and prod == [] and none == []
-          and 'if production and not admitted:' in src and 'admitted = admitted_cell(cell)' in src, (got, prod, none))
+    check('admitted_cell reads the cell\'s admitted nights under the ruled reading (none under production\'s); the quarantine '
+          'apply takes the port of the helper\'s move loop for every cell (the helper writes its manifest under '
+          'paths.OPS_ROOT, never run since 2026-11-27)', got == [NEW] and prod == [] and none == []
+          and 'K.quarantine_move(' in src and '_apply_helper' not in inspect.getsource(Q), (got, prod, none))
 
 
 def test_no_other_caller():

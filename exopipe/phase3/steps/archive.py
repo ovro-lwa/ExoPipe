@@ -15,7 +15,9 @@ content audit -> quarantine of superseded files; retire-excluded; rollback. PLAN
 
 Actions and units of work (one run record per unit, <out>/_records/archive/<unit>.json):
   quarantine       deep; unit quarantine_<cell>_<S>. Earlier archive search frames ('_msub', mtime before the launch epoch) of
-                   the (cell, Stokes) -> <root>/Run_SEARCH_QUARANTINE_<round>/<same path>; membership precheck first (G7).
+                   the (cell, Stokes) -> <root>/Run_SEARCH_QUARANTINE_<round>/<same path>; membership precheck first (G7);
+                   a NEW round only (a round production used, or another launch's, refuses); the round's manifest of record
+                   under archive.RECORDS_ROOT (archive.SEARCH_QUARANTINE_RECORDS_DIR), never paths.OPS_ROOT.
                    The search step's quarantine stage calls the same function (lib.archive.quarantine.quarantine_for_search).
   sync             deep; unit sync_<cell>_<S>. Plan keep / replace / publish / retire of the archive frames against the
                    published attempt (ops/p3s5_archive_sync.py in place); apply = '.part' copies -> audit -> quarantine +
@@ -57,7 +59,9 @@ Outputs (product classes; content tests in lib/archive/tests.py):
            archive_plan             plan of an in-place script (supersede, quarantine-rows)
            archive_mosaic_copy      each pushed mosaic file (push_mosaic_v2 audit); pushed per-epoch files keep their own
                                     class (search_frame, search_frame_pbcorr, loo_master, epoch_image)
-         applied manifests of moves in the PRODUCTION archive go where production keeps them (p3s5_state/frame_quarantine/
+         applied manifests of moves in the PRODUCTION archive: a pre-search quarantine round's under archive.RECORDS_ROOT
+         (archive.SEARCH_QUARANTINE_RECORDS_DIR: <records>/frame_quarantine/Run_SEARCH_QUARANTINE_<round>/<cell>_<S>.csv and
+         ROUND.json); sync / retire-refused / push --class epoch where production keeps them (p3s5_state/frame_quarantine/
          <cell>_<S>.csv, frame_publish/) - only when paths.PRODUCTION_WRITES is True.
 Failure modes (exit 2 = refused, the gate named): G1 data_decisions.csv unreadable; G2 an apply under a production tree while
          paths.PRODUCTION_WRITES is False (the refactor window: plan only, or a mirror --archive-root); G3 cross-filesystem
@@ -74,8 +78,7 @@ Failure modes (exit 2 = refused, the gate named): G1 data_decisions.csv unreadab
          exit 1 = error (incl. --epochs on an action that has no per-hour items). Nothing is ever deleted
          (archive.NEVER_DELETE).
 
-Refactor window (DESIGN 11.1): production helpers are called IN PLACE - p3s5_quarantine_frames.py (subprocess), the membership
-precheck (production code in a child), p3s5_archive_sync.plan/same_data (in-process), snapshot_frametime_ship.sh and
+Refactor window (DESIGN 11.1): production helpers are called IN PLACE - the membership precheck (production code in a child), p3s5_archive_sync.plan/same_data (in-process), snapshot_frametime_ship.sh and
 snapshot_quarantine_wideband_fits.py (subprocesses via core.legacy.run). Gregg's go for an apply is --apply-ruling (the common
 --ruling is paired with --waive by cli.py).
 NOT YET: `audit --tree` (classification of a whole tree), header repair in place, clean/migrate subcommands; --workers is
@@ -162,7 +165,8 @@ def add_arguments(p):
                         'production tree lets an apply run in the refactor window (parity, tests)')
     g.add_argument('--generation-run', metavar='RUN', help='archive generation Run (default paths.ARCHIVE_RUN)')
     g.add_argument('--round', help='quarantine round: Run_SEARCH_QUARANTINE_<round> (default archive_quarantine.ROUND_DEFAULT; '
-                                   'production launches pass it, e.g. 20261012); push --class hybrid: '
+                                   'launch-date = the UTC date of the launch epoch; a round production used refuses); '
+                                   'push --class hybrid: '
                                    'Coadd/Run_NOTAPER_HYBRID_QUARANTINE_<round> (default the UTC date)')
     g.add_argument('--launch-epoch', metavar='UTC_S',
                    help='quarantine: frames last modified before this are earlier frames (default: the content of '

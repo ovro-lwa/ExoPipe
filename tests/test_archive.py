@@ -251,14 +251,23 @@ def test_deep(out, root, E, A):
     write_fits(blocker, 0.0)
     rc = main_cli(['quarantine'] + q[:-3] + ['--round', 'T2', '--out', out, '--no-membership-precheck', '--apply-ruling',
                                              RULING])
+    ok(rc == 2 and 'no v2 round record' in rec(out, 'quarantine_12h_27MHz_I')['reason'],
+       'a round whose quarantine Run exists without a v2 round record (an earlier round): refused before any move')
+    from exopipe.phase3.lib.archive import common as K
+    K.write_json(os.path.join(out, 'manifests', 'frame_quarantine', 'Run_SEARCH_QUARANTINE_T2', 'ROUND.json'),
+                 dict(round='T2', run='Run_SEARCH_QUARANTINE_T2', launch_epoch=float(launch), created=''))
+    rc = main_cli(['quarantine'] + q[:-3] + ['--round', 'T2', '--out', out, '--no-membership-precheck', '--apply-ruling',
+                                             RULING])
     ok(rc == 2 and 'G4' in rec(out, 'quarantine_12h_27MHz_I')['reason'], 'taken quarantine destination: G4 before any move')
     rc = main_cli(['quarantine', '--apply', '--apply-ruling', RULING] + q)
     qr = rec(out, 'quarantine_12h_27MHz_I')
     ok(rc == 0 and qr['status'] == 'done', 'quarantine apply on the mirror')
     ok(os.path.exists(newf) and not os.path.exists(archive_frame(root, a, '27MHz', 'I', frame_name('27MHz', 'I', a))),
        'old frames moved, the frame newer than the launch kept')
-    man = os.path.join(out, 'manifests', 'frame_quarantine', '12h_27MHz_I.csv')
+    man = os.path.join(out, 'manifests', 'frame_quarantine', 'Run_SEARCH_QUARANTINE_T1', '12h_27MHz_I.csv')
     ok(len(list(csv.DictReader(open(man)))) == 3, 'manifest of record: 3 rows (path,dest,bytes,md5,cell,stokes,moved_at)')
+    rr = json.load(open(os.path.join(os.path.dirname(man), 'ROUND.json')))
+    ok(rr['round'] == 'T1' and rr['launch_epoch'] == float(launch), f'the round\'s record names its launch epoch ({rr})')
     raw = open(man, 'rb').read()
     ok(raw.startswith(b','.join(c.encode() for c in CFG.archive.QUARANTINE_COLUMNS) + b'\r\n')
        and raw.count(b'\r\n') == 4 and raw.count(b'\n') == 4,

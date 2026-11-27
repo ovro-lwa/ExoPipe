@@ -13,12 +13,19 @@ from the launch (p3s5_launch.sh:22-23) and P3_COADD_ROOT unset (:197-198). It
 
 Here (refactor window, DESIGN 11.1): the PLAN (selection, destinations, G4, G3, md5) is evaluated in this process with the
 helper's literal rule; the membership precheck runs production's code in a child (core.legacy.run, '-c' with sys.path[0] =
-the production repo exactly as :37-39 - an in-process import would resolve the worktree's moved membership module); the
-APPLY on the production archive runs the helper itself in place (only when paths.PRODUCTION_WRITES is True); an apply on a
-mirror archive root (--archive-root) uses the same rename primitive (common.quarantine_move, the port of :58-67).
+the production repo exactly as :37-39 - an in-process import would resolve the worktree's moved membership module); every
+APPLY - on the production archive (paths.PRODUCTION_WRITES) as on a mirror archive root (--archive-root) - moves with the
+port of the helper's move loop (common.quarantine_move, :58-67). The helper itself is never run: it writes its manifest
+under paths.OPS_ROOT (p3s5_state/frame_quarantine, :18), which v2 never writes. A NEW round's manifest of record is
+<archive.SEARCH_QUARANTINE_RECORDS_DIR>/<cell>_<S>.csv, one directory per round under archive.RECORDS_ROOT, with the round's
+record (its launch epoch); a round production used, or a round of another launch epoch, refuses (round_gate). The old
+p3s5_state manifests stay where they are, read only (the refactor chat's decision of 2026-11-27, cutover row 64 step 2).
 """
 import glob
+import json
 import os
+import re
+import time
 
 from exopipe.phase3.core.record import NoInput, Refusal
 from exopipe.phase3.lib.archive import common as K
@@ -70,6 +77,71 @@ def launch_epoch(value=None):
 
 def quarantine_root(archive_root, round_name):
     return os.path.join(archive_root, f'{_q().RUN_PREFIX}{round_name}')
+
+
+def round_for(launch, configured):
+    """The quarantine round: 'launch-date' = the UTC date of the launch epoch (YYYYMMDD; production named its rounds so,
+    P3S5_QROUND 20261004 ... 20261113), else the literal round. A round that is not a plain name refuses."""
+    rnd = time.strftime('%Y%m%d', time.gmtime(float(launch))) if configured == 'launch-date' else str(configured or '')
+    if not re.fullmatch(r'[A-Za-z0-9_.-]+', rnd):
+        raise Refusal(f'quarantine round {rnd!r} (search_run.QUARANTINE_ROUND {configured!r}): a plain name, e.g. launch-date')
+    return rnd
+
+
+def round_records_dir(archive_root, round_name, out=None):
+    """Where a round's manifest of record and round record live: archive.SEARCH_QUARANTINE_RECORDS_DIR (under
+    archive.RECORDS_ROOT) for the production archive, <out>/manifests/frame_quarantine/<run> for a mirror archive root."""
+    run = f'{_q().RUN_PREFIX}{round_name}'
+    C = K.cfg()
+    if os.path.realpath(os.path.abspath(archive_root)) == os.path.realpath(C.paths.PHASE3_ARCHIVE_ROOT):
+        return K.expand(K.sec().SEARCH_QUARANTINE_RECORDS_DIR, run=run)
+    return os.path.join(out or '.', 'manifests', 'frame_quarantine', run)
+
+
+def under_ops_root(path):
+    """paths.OPS_ROOT when ``path`` is under it (production's state and manifests, never written by v2), else None."""
+    ops = os.path.realpath(K.cfg().paths.OPS_ROOT).rstrip('/')
+    real = os.path.realpath(os.path.abspath(path))
+    return ops if real == ops or real.startswith(ops + '/') else None
+
+
+def round_gate(archive_root, round_name, launch, rdir, create=False):
+    """A NEW round (the refactor chat's decision of 2026-11-27): the round's record in ``rdir`` names this launch epoch, or
+    there is no record and no quarantine Run of that name in the archive (a Run without a v2 record is a round production
+    used - 20261004, ..., 20261113 - whose manifests stay under p3s5_state, read only). ``create``: write the record (before
+    any move; a concurrent unit's record is read and compared). Refuses: an earlier round, another launch's round, a record
+    directory under paths.OPS_ROOT. Returns the record."""
+    if under_ops_root(rdir):
+        raise Refusal(f'quarantine round {round_name}: its records directory {rdir} is under paths.OPS_ROOT '
+                      f'({under_ops_root(rdir)}), which v2 never writes - REFUSED')
+    rec_path = os.path.join(rdir, _q().ROUND_RECORD)
+    want = {'round': round_name, 'run': f'{_q().RUN_PREFIX}{round_name}', 'launch_epoch': float(launch)}
+
+    def compare(rec):
+        if float(rec.get('launch_epoch', 'nan')) != float(launch):
+            raise Refusal(f'quarantine round {round_name}: its record {rec_path} names launch epoch {rec.get("launch_epoch")}, '
+                          f'this run {float(launch)} - one round per launch; a new launch needs a new round (launch date)')
+        return rec
+    if os.path.exists(rec_path):
+        return compare(K.read_json(rec_path))
+    qroot = quarantine_root(archive_root, round_name)
+    if os.path.lexists(qroot):
+        raise Refusal(f'quarantine round {round_name}: {qroot} exists with no v2 round record ({rec_path}) - an earlier '
+                      f'round (production\'s manifests: p3s5_state/frame_quarantine, read only); a NEW round is required '
+                      f'(search_run.QUARANTINE_ROUND launch-date with a new launch epoch, or --round)')
+    if not create:
+        return dict(want, created='')
+    os.makedirs(rdir, exist_ok=True)
+    rec = dict(want, created=K.utc(), host=os.uname()[1])
+    try:
+        fd = os.open(rec_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    except FileExistsError:                       # a concurrent unit of the same launch wrote it first
+        return compare(K.read_json(rec_path))
+    with os.fdopen(fd, 'w') as fh:
+        json.dump(rec, fh, indent=1)
+        fh.flush()
+        os.fsync(fh.fileno())
+    return rec
 
 
 def select_frames(archive_root, run_name, cell, stokes, launch):
@@ -142,10 +214,12 @@ def quarantine_for_search(u, cell, stokes, launch, round_name, apply=False, arch
                           out=None, precheck=True, checksum=True, check_writer=True, log=None, approved_manifest=None):
     """The whole pre-search quarantine of one (cell, Stokes), recorded in unit ``u`` (an archive or a search unit).
 
-    Plan (apply False): G7 precheck, plan rows, written to <out>/manifests/frame_quarantine/<cell>_<S>_plan_<UTC>.csv
-    (class quarantine_manifest; moved_at empty) when ``out`` is given. Apply: G2, G12 (concurrent writer), then the
-    production helper in place (production archive) or the rename primitive (mirror archive), rows appended to the
-    manifest of record (production: p3s5_state/frame_quarantine/<cell>_<S>.csv). Returns the rows."""
+    Plan (apply False): G7 precheck, the round gate (read only), plan rows, written to
+    <out>/manifests/frame_quarantine/<cell>_<S>_plan_<UTC>.csv (class quarantine_manifest; moved_at empty) when ``out`` is
+    given. Apply: G2, G12 (concurrent writer), the round gate (the round's record written), then the rename primitive, rows
+    appended to the round's manifest of record (production archive: archive.SEARCH_QUARANTINE_RECORDS_DIR/<cell>_<S>.csv
+    under archive.RECORDS_ROOT; mirror: <out>/manifests/frame_quarantine/<run>/<cell>_<S>.csv). Never under paths.OPS_ROOT.
+    Returns the rows."""
     C = K.cfg()
     archive_root = os.path.abspath(archive_root or C.paths.PHASE3_ARCHIVE_ROOT)
     run_name = run_name or C.paths.ARCHIVE_RUN
@@ -159,6 +233,9 @@ def quarantine_for_search(u, cell, stokes, launch, round_name, apply=False, arch
             raise Refusal(f'G7: {msg}')
     else:
         u.note('G7 membership precheck skipped (--no-membership-precheck with a ruling)')
+    rdir = round_records_dir(archive_root, round_name, out)
+    round_gate(archive_root, round_name, launch, rdir, create=False)      # an earlier round refuses at the plan already
+    u.meta.update(round_records=rdir)
     rows = plan_frame_quarantine(cell, stokes, launch, round_name, archive_root, run_name, checksum=checksum)
     u.meta['n_planned'] = len(rows)
     u.meta['bytes_planned'] = sum(int(r['bytes']) for r in rows)
@@ -179,11 +256,10 @@ def quarantine_for_search(u, cell, stokes, launch, round_name, apply=False, arch
                f'({u.meta["bytes_planned"] / 1e9:.2f} GB) to {quarantine_root(archive_root, round_name)}')
         return rows
     # ---- apply
-    if production:
-        mdir = K.expand(K.sec().FRAME_QUARANTINE_MANIFEST_DIR)
-    else:
-        mdir = os.path.join(out or '.', 'manifests', 'frame_quarantine')
-    manifest = os.path.join(mdir, f'{cell}_{stokes}.csv')
+    manifest = os.path.join(rdir, f'{cell}_{stokes}.csv')
+    if under_ops_root(manifest):
+        raise Refusal(f'G2: the quarantine manifest of record {manifest} is under paths.OPS_ROOT, which v2 never writes '
+                      f'(production\'s p3s5_state manifests are read only) - REFUSED')
     if not C.paths.PRODUCTION_WRITES:
         for p in (archive_root, manifest):
             if K.production_like(p):
@@ -194,20 +270,17 @@ def quarantine_for_search(u, cell, stokes, launch, round_name, apply=False, arch
         if live:
             raise Refusal(f'G12: the search fleet holds a live claim of {cell} {stokes} ({owner}) - a concurrent writer')
     t0 = K.utc()
-    admitted = admitted_cell(cell)
-    if admitted:
-        u.note(f'{cell}: holds night(s) admitted into its master ({admitted}): production\'s helper would refuse them as '
-               f'absent nights (its own membership check, p3s5_quarantine_frames.py:41-49) - its move loop is run by its port '
-               f'(D-ADMIT; the plan, G2 and G12 as above)')
-    if production and not admitted:
-        _apply_helper(u, cell, stokes, launch, round_name, rows, manifest, t0, log)
-    else:
-        with K.CsvAppender(manifest, K.sec().QUARANTINE_COLUMNS) as w:
-            for r in rows:
-                b, m, t = K.quarantine_move(r['path'], r['dest'], 'md5', what=f'{cell} {stokes}: quarantine')
-                if r['md5'] and m != r['md5']:
-                    u.note(f"{r['path']}: md5 changed between plan and move ({r['md5']} -> {m}); recorded value is the move's")
-                w.write(dict(r, bytes=b, md5=m, moved_at=t))
+    rec = round_gate(archive_root, round_name, launch, rdir, create=True)
+    u.note(f'quarantine round {rec["run"]} (launch epoch {rec["launch_epoch"]}); manifest of record {manifest}')
+    # the port of the helper's move loop (p3s5_quarantine_frames.py:52-67), for the production archive as for a mirror:
+    # the helper writes its manifest under paths.OPS_ROOT. Its membership check (:34-49) is G7 above (production's code in a
+    # child, read with the cell's admitted nights and the 18 MHz exception as the search judges the master)
+    with K.CsvAppender(manifest, K.sec().QUARANTINE_COLUMNS) as w:
+        for r in rows:
+            b, m, t = K.quarantine_move(r['path'], r['dest'], 'md5', what=f'{cell} {stokes}: quarantine')
+            if r['md5'] and m != r['md5']:
+                u.note(f"{r['path']}: md5 changed between plan and move ({r['md5']} -> {m}); recorded value is the move's")
+            w.write(dict(r, bytes=b, md5=m, moved_at=t))
     u.add_output(manifest, 'quarantine_manifest', since=t0)
     u.note(f'{cell} {stokes}: {len(rows)} earlier search frames quarantined')
     return rows
@@ -226,30 +299,10 @@ def admitted_cell(cell):
     return sorted(AD.admitted_rows(base)) if base else []
 
 
-def _apply_helper(u, cell, stokes, launch, round_name, rows, manifest, t0, log):
-    """The production helper in place (p3s5_search_fleet.sh:197 with p3s5_launch.sh:23); refused on any non-zero exit
-    ('frame quarantine FAILED - not searched'), and the rows it appended must be the planned paths."""
-    from exopipe.phase3.core import legacy
-    helper = K.expand(_q().HELPER)
-    res = legacy.run(helper, [cell, stokes, repr(launch) if not float(launch).is_integer() else str(int(launch))],
-                     python='default', env={'P3S5_QROUND': round_name}, cwd=K.sec().LEGACY_CWD, log=log, unit=u,
-                     refusal_codes=(1,), refusal_text=('STOPPED',))
-    if not res.ok:
-        raise Refusal(f'frame quarantine FAILED - not searched: {res.reason or res.tail[-200:]}')
-    got = []
-    if os.path.exists(manifest):
-        _, man = K.read_csv(manifest)
-        got = [r for r in man if (r.get('moved_at') or '') >= t0]
-    want, have = {r['path'] for r in rows}, {r['path'] for r in got}
-    u.check('archive.quarantine_rows_equal_plan', want == have, len(have),
-            f'{len(have)} rows appended, {len(want)} planned' + ('' if want == have else
-                                                               f'; differ by {len(want ^ have)}'))
-
-
 def run_action(ctx, items, stokes, args, unit_fn):
     """`archive quarantine --tier deep --cells C --stokes S`: one unit per (cell, Stokes)."""
     launch = launch_epoch(getattr(args, 'launch_epoch', None))
-    round_name = args.round or _q().ROUND_DEFAULT
+    round_name = round_for(launch, args.round or _q().ROUND_DEFAULT)
     precheck = _q().MEMBERSHIP_PRECHECK and not args.no_membership_precheck
     if args.no_membership_precheck:
         K.require_ruling(args.apply_ruling, '--no-membership-precheck')
@@ -273,4 +326,4 @@ def ctx_log(ctx, unit):
 
 
 __all__ = ['launch_epoch', 'select_frames', 'plan_frame_quarantine', 'membership_precheck', 'quarantine_for_search',
-           'quarantine_root', 'NoInput']
+           'quarantine_root', 'round_for', 'round_records_dir', 'round_gate', 'under_ops_root', 'NoInput']

@@ -112,6 +112,10 @@ jobs:
         run: python tests/test_search_gate_population_tenmin.py
       - name: per-hour 10-minute catalog, the conformance table's noise recorded or frozen
         run: python tests/test_catalog_conform_noise.py
+      - name: deep search, the pre-search frame quarantine's records (a new round per launch date; its manifest of record under archive.RECORDS_ROOT, never paths.OPS_ROOT)
+        run: python tests/test_search_quarantine_records.py
+      - name: deep search, archive frames keep every card of the frames they supersede (the superseded header updated with the search's cards, validated)
+        run: python tests/test_search_archive_header.py
       - name: per-hour 10-minute catalog, the night view of the published search jobs and the night pass's wiring
         run: python tests/test_catalog_night_view.py
       - name: follow-up 10-s light curve reads the search's frames and honors exclusion

@@ -229,20 +229,34 @@ def pixels(path, **ctx):
 
 
 @content_test('search_frame')
-def copy_identical(path, copy_of=None, **ctx):
-    """An archive copy is byte-identical to the attempt frame it was copied from (phase3_deep.py:850-873 copy2)."""
+def copy_identical(path, copy_of=None, predecessor=None, **ctx):
+    """An archive copy holds the attempt frame it was made from: the same pixels, bit for bit, and every card of the attempt
+    frame with its value (phase3_deep.py:850-873 made a byte-identical copy2); and every card of the archive frame it
+    superseded (``predecessor``, when known: the refactor chat's decision (3b) of 2026-11-27 - never an archive frame with
+    fewer standard cards than the frame it supersedes; the archive frame is the superseded frame's header updated with the
+    search's own cards)."""
     if not copy_of:
         return True, None, 'n/a (not an archive copy in this context)'
-    import hashlib
-
-    def md5(p):
-        h = hashlib.md5()
-        with open(p, 'rb') as f:
-            for blk in iter(lambda: f.read(1 << 22), b''):
-                h.update(blk)
-        return h.hexdigest()
-    a, b = md5(path), md5(copy_of)
-    return a == b, a[:12], ('identical to ' if a == b else 'DIFFERS from ') + os.path.basename(copy_of)
+    import numpy as np
+    ha, da = _header_data(path)
+    hb, db = _header_data(copy_of)
+    if da.shape != db.shape or da.dtype != db.dtype or not np.array_equal(np.ascontiguousarray(da).view(np.uint8),
+                                                                          np.ascontiguousarray(db).view(np.uint8)):
+        return False, None, f'pixels DIFFER from {os.path.basename(copy_of)}'
+    skip = ('COMMENT', 'HISTORY', '')
+    bad = [k for k in hb if k not in skip and (k not in ha or str(ha[k]) != str(hb[k]))]
+    if bad:
+        return False, len(bad), f'card(s) of {os.path.basename(copy_of)} absent or different: {bad[:6]}'
+    lost = []
+    if predecessor and os.path.exists(predecessor):
+        from astropy.io import fits
+        with fits.open(predecessor, memmap=False, lazy_load_hdus=True) as h:
+            hp = h[0].header
+        lost = [k for k in hp if k not in skip and k not in ha]
+    if lost:
+        return False, len(lost), f'lacks card(s) of the superseded frame {os.path.basename(predecessor)}: {lost[:6]}'
+    return True, len(ha), (f'pixels and cards of {os.path.basename(copy_of)}'
+                           + (f'; every card of the superseded {os.path.basename(predecessor)}' if predecessor else ''))
 
 
 def _resolve_pb(path, hdr, cell=None):
