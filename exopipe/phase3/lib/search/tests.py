@@ -668,17 +668,13 @@ def parses(path, **ctx):
 
 
 # ---- B-02 step 3b: the frame noise and the table's pulsar decisions ---------------------------------------------------------
-def _median9(v):
-    from exopipe.phase3.lib.search import removal_rules as RR      # the engine's own median (as a FITS card gives it back)
-    return RR.median_noise(v)
-
-
 @content_test('frame_noise')
 def medians_and_cards(path, **ctx):
     """frame_noise.csv (B-02 step 3b): FNOISE_COLS, one cell; one row per (Stokes, night); admitted and population 0/1, a
-    population night admitted with a positive noise; per Stokes a population night carries the population's median, an
-    admitted night outside it (an admitted or appended night) the median of the population and itself, any other the
-    population's median; no admitted V frame above the recorded factor (vsanity_x) times the V noise rule's median it was
+    population night admitted; per Stokes the table's noise (tblnoise_jy, rules b02-3d) recomputed from the run directory's
+    gate ledger (v_deep_ledger.csv) - the derivation's statistic, the median of |peak / global S/N| over the harvested rows
+    (removal_rules.table_noise_rms) of the population nights: a population night carries that median, an admitted night
+    outside it (an admitted or appended night) the median of those rows and its own, any other the population's median; no admitted V frame above the recorded factor (vsanity_x) times the V noise rule's median it was
     judged with, one median in the file (an append is judged with its base's); every row's archived search frame exists and
     carries IMGRMS = noise_jy (when measured); every image-ledger row of the run has its frame's row."""
     cols, rows = _rows(path)
@@ -694,8 +690,8 @@ def medians_and_cards(path, **ctx):
             probs.append(f'bad Stokes/date {r["stokes"]!r} {r["date"]!r}')
         if r['admitted'] not in ('0', '1') or r['population'] not in ('0', '1'):
             probs.append(f'{k[0]} {k[1]}: admitted/population {r["admitted"]!r}/{r["population"]!r}')
-        if r['population'] == '1' and not (r['admitted'] == '1' and _f(r['noise_jy']) > 0):
-            probs.append(f'{k[0]} {k[1]}: in the population, not admitted with a noise')
+        if r['population'] == '1' and r['admitted'] != '1':
+            probs.append(f'{k[0]} {k[1]}: in the population, not admitted')
         if r['vsanmed_jy'] and r['stokes'] != 'V':
             probs.append(f'{k[0]} {k[1]}: a V noise-rule median on an I row')
         if bool(r['vsanmed_jy']) != bool(r['vsanity_x']):
@@ -712,17 +708,22 @@ def medians_and_cards(path, **ctx):
         miss = sorted(r['date'] for r in rows if r['stokes'] == 'V' and r['admitted'] == '1' and not r['vsanmed_jy'])
         if miss:
             probs.append(f'{len(miss)} admitted V frame(s) without the V noise-rule median the attempt holds, e.g. {miss[:3]}')
+    from exopipe.phase3.lib.search import removal_rules as RR
+    cells = {(r['lst'], r['scope']) for r in rows}
+    led = RR.read_ledger(os.path.dirname(path))
+    by = RR.ledger_rms(led, *sorted(cells)[0]) if len(cells) == 1 else {}
     for st in ('I', 'V'):
         R = [r for r in rows if r['stokes'] == st]
-        pop = [_f(r['noise_jy']) for r in R if r['population'] == '1']
-        m = _median9(pop) if pop else None
+        B = by.get(st, {})
+        pop = [x for r in R if r['population'] == '1' for x in B.get(r['date'], ())]
+        m = RR.median_rms(pop)
         for r in R:
-            own = r['population'] == '0' and r['admitted'] == '1' and _f(r['noise_jy']) > 0
-            want = _median9(pop + [_f(r['noise_jy'])]) if own else m
+            own = r['population'] == '0' and r['admitted'] == '1'
+            want = RR.median_rms(pop + list(B.get(r['date'], ()))) if own else m
             got = _f(r['tblnoise_jy']) if r['tblnoise_jy'] != '' else None
             if want != got:
-                probs.append(f'{st} {r["date"]}: tblnoise {got} != {want} (the population of {len(pop)}'
-                             + (' and the night)' if own else ')'))
+                probs.append(f'{st} {r["date"]}: tblnoise {got} != {want} (the median of |peak / global S/N| over the {len(pop)} '
+                             f'harvested ledger rows of the population' + (' and the night\'s own)' if own else ')'))
     att, lab = attempt_of(path), label_of(path)
     nfr = 0
     if att and rows:
