@@ -674,7 +674,8 @@ def medians_and_cards(path, **ctx):
     population night admitted; per Stokes the table's noise (tblnoise_jy, rules b02-3d) recomputed from the run directory's
     gate ledger (v_deep_ledger.csv) - the derivation's statistic, the median of |peak / global S/N| over the harvested rows
     (removal_rules.table_noise_rms) of the population nights: a population night carries that median, an admitted night
-    outside it (an admitted or appended night) the median of those rows and its own, any other the population's median; no admitted V frame above the recorded factor (vsanity_x) times the V noise rule's median it was
+    outside it (an admitted or appended night) the median of those rows and its own, any other the population's median - a
+    positive finite value (removal_rules.table_noise_usable); no admitted V frame above the recorded factor (vsanity_x) times the V noise rule's median it was
     judged with, one median in the file (an append is judged with its base's); every row's archived search frame exists and
     carries IMGRMS = noise_jy (when measured); every image-ledger row of the run has its frame's row."""
     cols, rows = _rows(path)
@@ -721,7 +722,9 @@ def medians_and_cards(path, **ctx):
             own = r['population'] == '0' and r['admitted'] == '1'
             want = RR.median_rms(pop + list(B.get(r['date'], ()))) if own else m
             got = _f(r['tblnoise_jy']) if r['tblnoise_jy'] != '' else None
-            if want != got:
+            if got is not None and not RR.table_noise_usable(got):
+                probs.append(f'{st} {r["date"]}: tblnoise {got} is not a positive finite noise (the table would cut nothing)')
+            elif want != got:
                 probs.append(f'{st} {r["date"]}: tblnoise {got} != {want} (the median of |peak / global S/N| over the {len(pop)} '
                              f'harvested ledger rows of the population' + (' and the night\'s own)' if own else ')'))
     att, lab = attempt_of(path), label_of(path)

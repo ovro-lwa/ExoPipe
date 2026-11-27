@@ -2500,6 +2500,10 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
         if x is None:                                                  # WAVE2 B-02
             raise RuntimeError(f'{lst} {scope} {st} {d}: the bright-source table has no noise (no frame noise in the cell\'s '   # WAVE2 B-02
                                f'searched nights, nor its own) - REFUSING')   # WAVE2 B-02
+        if not _RR.table_noise_usable(x):                              # WAVE2 B-02 (decision (2) of 2026-11-27): a NaN would cut
+            raise RuntimeError(f'{lst} {scope} {st} {d}: the bright-source table\'s noise is {x!r} Jy, not a positive finite '   # WAVE2 B-02: nothing
+                               f'median of |peak / global S/N| (a harvested ledger row with a non-finite peak or global S/N; the '   # WAVE2 B-02
+                               f'derivation leaves such a cell out) - REFUSING')   # WAVE2 B-02
         return x                                                       # WAVE2 B-02
 
     def _b02_psr(st, d, cands, cuts, notes):                           # WAVE2 B-02: every table decision naming a pulsar

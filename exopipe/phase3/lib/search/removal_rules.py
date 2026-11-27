@@ -577,7 +577,10 @@ def table_noise_rms(row, lst):
     snr, ra and dec numbers; |snr| >= catalog_conform.DEEP_TABLE_NOISE_SNR_FLOOR (their --floor); ra, dec finite; elevation at
     mid-hour (derivation_elevation) >= DEEP_TABLE_NOISE_ELEV_FLOOR_DEG (gate_inputs.DEEP_ELEV_FLOOR_DEG when they ran);
     global_snr and peak_jy non-zero numbers. Decision (3) of R-REFACTOR-20261016-B02-CONVENTIONS: "The bright-source table is
-    applied with the inputs it was derived with"."""
+    applied with the inputs it was derived with". A row whose S/N, peak or global S/N is NaN is harvested as the derivation
+    harvests it (NaN is a non-zero number: its ratio is NaN, the cell's median NaN - load_harvest's d['g'] - and the
+    derivation leaves the cell out, derive's "not np.isfinite(d['g']) or d['g'] <= 0"); the search refuses such a frame
+    (table_noise_usable)."""
     c = _cc()
     try:
         snr = float(row['snr']); ra = float(row['ra']); dec = float(row['dec'])
@@ -608,8 +611,17 @@ def ledger_rms(rows, lst, scope):
 
 
 def median_rms(values):
-    """The derivation's median (Jy): float(np.median) of the values (p3s3_curve_derive.py:112), None without one."""
+    """The derivation's median (Jy): float(np.median) of the values (p3s3_curve_derive.py:112), None without one; NaN when a
+    value is NaN, as there."""
     return float(np.median(values)) if len(values) else None
+
+
+def table_noise_usable(x):
+    """True when ``x`` (Jy) is a noise the bright-source table can divide by: a positive finite number - the derivation's own
+    condition on a cell's median (p3s3_curve_derive.py derive: "not np.isfinite(d['g']) or d['g'] <= 0" leaves the cell
+    out). The refactor chat's decision (2) of 2026-11-27: a NaN noise cuts nothing (every comparison with it is false), so the
+    engine refuses the frame instead and the frame_noise content test fails such a record."""
+    return x is not None and bool(np.isfinite(x)) and x > 0
 
 
 def table_noise(rms, nights, admitted, cell, base=None):

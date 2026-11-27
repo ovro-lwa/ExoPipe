@@ -15,8 +15,13 @@ Checks, data-free:
                 changed and the old statistic (the frame noise median) are each refused
   engine        the engine computes the table's noise after every night is extracted and before the table stage, from the
                 rows its stages write, and refuses when the ledger it writes differs from those rows
+  not finite    (the refactor chat's decision (2) of 2026-11-27) a row with a NaN peak or global S/N is harvested as the
+                derivation harvests it (a NaN ratio; an infinite global S/N a zero ratio), so the cell's median is NaN - the
+                derivation leaves such a cell out; table_noise_usable admits a positive finite noise only; the engine refuses
+                a frame whose noise is not one (it would cut nothing) and the content test fails such a record
 Real derivation (read only; skipped where exopipe_ops is not mounted): ops/p3s3_curve_derive.load_harvest over the same
-ledger, with the floors its deep singles tables were derived with, gives the same median.
+ledger, with the floors its deep singles tables were derived with, gives the same median - and the same NaN median over a
+ledger with a NaN peak.
 Run: python tests/test_search_table_noise.py
 """
 import csv
@@ -201,6 +206,36 @@ def test_population_and_recompute():
           s['tblnoise_median_jy'] == float(np.median(pop)) and s['population'] == 3, s)
 
 
+def test_not_finite():
+    nan = {'a NaN peak': RR.table_noise_rms(row('I', D[0], 0.012, peak_jy='nan'), LST),
+           'a NaN global S/N': RR.table_noise_rms(row('I', D[0], 0.012, global_snr='nan'), LST)}
+    other = {'an infinite global S/N': RR.table_noise_rms(row('I', D[0], 0.012, global_snr='inf'), LST),
+             'a NaN S/N': RR.table_noise_rms(row('I', D[0], 0.012, snr='nan'), LST)}
+    check('table_noise_rms harvests a non-finite row as load_harvest does: a NaN peak or global S/N gives a NaN ratio (NaN is a '
+          'non-zero number there: "if gs and pk"), an infinite global S/N a zero ratio, a NaN S/N the row\'s ratio (|NaN| is not '
+          'below the floor)', all(isinstance(v, float) and math.isnan(v) for v in nan.values())
+          and other == {'an infinite global S/N': 0.0, 'a NaN S/N': 0.012}, (nan, other))
+    t = RR.table_noise(RR.ledger_rms([row('I', D[0], 0.010), row('I', D[0], 0.012, peak_jy='nan'), row('I', D[1], 0.014)],
+                                     LST, SC), {'I': {D[0], D[1]}}, {'I': {D[0], D[1]}}, {D[0], D[1]})
+    use = {repr(x): RR.table_noise_usable(x) for x in (None, float('nan'), float('inf'), 0.0, -0.012, 0.012)}
+    check('table_noise over a NaN row: the population median is NaN (load_harvest\'s d[\'g\'], np.median); table_noise_usable '
+          'admits a positive finite noise only (the derivation\'s condition on a cell: finite and above zero)',
+          math.isnan(t['I']['median']) and all(math.isnan(v) for v in t['I']['night'].values())
+          and use == {'None': False, 'nan': False, 'inf': False, '0.0': False, '-0.012': False, '0.012': True}, (t, use))
+    nz = {'I': {D[0]: 0.009, D[1]: 0.011}, 'V': {}}
+    rd, t2, rows = write_attempt(os.path.join(T, 'anan'), [row('I', D[0], 0.010), row('I', D[1], 0.012, global_snr='nan')],
+                                 nz, {'I': {D[0], D[1]}, 'V': set()}, {D[0], D[1]})
+    r_ = ST.medians_and_cards(os.path.join(rd, RR.FRAME_NOISE))
+    check('the frame_noise content test fails a record whose table noise is NaN (a frame the table would cut nothing on)',
+          not r_[0] and 'not a positive finite noise' in str(r_[2]), r_)
+    src = open(os.path.join(REPO, 'exopipe', 'phase3', 'lib', 'search', 'deep_search.py')).read()
+    body = src[src.find('    def _b02_tnoise(st, d):'):src.find('    def _b02_psr(')]
+    check('the engine refuses a frame whose table noise is not a positive finite number (no table call with a NaN noise): '
+          '_b02_tnoise checks table_noise_usable before it returns',
+          0 < body.find('if not _RR.table_noise_usable(x):') < body.find('REFUSING\')', body.find('table_noise_usable'))
+          < body.find('        return x'), body[:300])
+
+
 def test_engine_source():
     src = open(os.path.join(REPO, 'exopipe', 'phase3', 'lib', 'search', 'deep_search.py')).read()
     i_tn = [m.start() for m in re.finditer(r'_RR\.table_noise\(', src)]
@@ -228,12 +263,6 @@ def test_real_derivation():
     lrows = [row('I', D[0], 0.010), row('I', D[0], 0.016), row('I', D[1], -0.012, snr='-7.5', global_snr='-8.0'),
              row('I', D[2], 0.014, dec=repr(37.2398 - 70.0 + 1e-3)), row('I', D[2], 0.9, dec=repr(37.2398 - 70.0 - 1e-3)),
              row('I', D[2], 0.9, snr='4.9'), row('I', D[2], 0.9, global_snr=''), row('V', D[0], 0.005), row('V', D[1], 0.007)]
-    ad = os.path.join(T, 'deriv', 'att')
-    os.makedirs(os.path.join(ad, 'transients', 'Run_TNTEST'), exist_ok=True)
-    with open(os.path.join(ad, 'transients', 'Run_TNTEST', 'v_deep_ledger.csv'), 'w', newline='') as fh:
-        w = csv.DictWriter(fh, fieldnames=ST.GLED_COLS)
-        w.writeheader()
-        w.writerows(lrows)
     child = ("import json, sys\n"
              "sys.path[:0] = [sys.argv[3], '/lustre/gh/main/clv15']\n"
              "import p3s3_curve_derive as PCD\n"
@@ -245,13 +274,24 @@ def test_real_derivation():
     env.update(P3_DEEP_MIN_ELEVATION='20.0', P3S_LABEL='TNTEST')   # the floor the installed singles tables were derived with
     import json
     import subprocess
-    pr = subprocess.run([sys.executable, '-c', child, ad, f'{LST}_{SC}', OPS], cwd=T, env=env, capture_output=True, text=True,
-                        timeout=600)              # production's own package path (the derivation imports exopipe.phase3 of main)
-    out = [ln for ln in pr.stdout.splitlines() if ln.startswith('HARVEST ')]
-    if pr.returncode or not out:
-        check('the derivation\'s own load_harvest runs (read only)', False, (pr.returncode, pr.stderr[-800:]))
+
+    def harvest(name, rows_):
+        ad = os.path.join(T, 'deriv', name)
+        os.makedirs(os.path.join(ad, 'transients', 'Run_TNTEST'), exist_ok=True)
+        with open(os.path.join(ad, 'transients', 'Run_TNTEST', 'v_deep_ledger.csv'), 'w', newline='') as fh:
+            w = csv.DictWriter(fh, fieldnames=ST.GLED_COLS)
+            w.writeheader()
+            w.writerows(rows_)
+        pr = subprocess.run([sys.executable, '-c', child, ad, f'{LST}_{SC}', OPS], cwd=T, env=env, capture_output=True,
+                            text=True, timeout=600)   # production's own package path (the derivation imports exopipe.phase3 of main)
+        out = [ln for ln in pr.stdout.splitlines() if ln.startswith('HARVEST ')]
+        if pr.returncode or not out:
+            check('the derivation\'s own load_harvest runs (read only)', False, (pr.returncode, pr.stderr[-800:]))
+            return None
+        return json.loads(out[-1][8:])
+    H = harvest('att', lrows)
+    if H is None:
         return
-    H = json.loads(out[-1][8:])
     mine = RR.ledger_rms(lrows, LST, SC)
     got = {st: RR.median_rms([x for v in mine[st].values() for x in v]) for st in mine}
     want = {st: v['g'] for st, v in H.items()}
@@ -259,6 +299,21 @@ def test_real_derivation():
           'package) at its tables\' floors gives the median the search records, per Stokes, over the same rows',
           got == want and all(sorted(H[st]['rms']) == sorted(x for v in mine[st].values() for x in v) for st in ('I', 'V')),
           (got, want))
+    # decision (2) of 2026-11-27: a NaN peak or global S/N - the derivation's harvest and median, matched exactly
+    lnan = [row('I', D[0], 0.010), row('I', D[0], 0.016, peak_jy='nan'), row('I', D[1], 0.012, global_snr='nan'),
+            row('V', D[0], 0.005, global_snr='inf'), row('V', D[1], 0.007), row('V', D[1], 0.009)]
+    H2 = harvest('att_nan', lnan)
+    if H2 is None:
+        return
+    mine2 = RR.ledger_rms(lnan, LST, SC)
+    got2 = {st: RR.median_rms([x for v in mine2[st].values() for x in v]) for st in mine2}
+    key = lambda xs: sorted(repr(float(x)) for x in xs)
+    check('a NaN peak or global S/N: the derivation\'s own load_harvest harvests the rows the search harvests (NaN ratios, a '
+          'zero ratio for an infinite global S/N) and its median is NaN where the search\'s is - the cell the derivation '
+          'leaves out, the frames the search refuses (table_noise_usable false); a finite median equal',
+          all(key(H2[st]['rms']) == key(x for v in mine2[st].values() for x in v) for st in ('I', 'V'))
+          and math.isnan(H2['I']['g']) and math.isnan(got2['I']) and H2['V']['g'] == got2['V'] == 0.007
+          and not RR.table_noise_usable(got2['I']) and RR.table_noise_usable(got2['V']), (H2, got2))
 
 
 def main():
@@ -267,6 +322,7 @@ def main():
     try:
         test_harvest()
         test_population_and_recompute()
+        test_not_finite()
         test_engine_source()
         test_real_derivation()
     finally:
