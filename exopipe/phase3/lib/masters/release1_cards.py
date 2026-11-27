@@ -46,10 +46,11 @@ GATE  sibling_card_gate (sibling_card_gate.py, exopipe_ops 2421f36 + efc3608 val
       the repair HISTORY line; no repaired sibling of that name refuses (fail closed); MDWSTAT must equal the table row; an MDWMED1
       still holding the table's uncorrected value refuses. A cell whose dewarp status card says it was NOT dewarped
       (RULING_NOT_DEWARPED; dewarp_state: every MDWSTAT 'refused: ...' / 'not attempted...', and no file named '_mdewarp' or
-      carrying MDWARP T) need not carry the dewarp-only cards (dewarp_only_cards: the cards the master dewarp apply writes),
-      and a product of it with no repaired sibling of its own name is compared with the siblings of its name without
-      '_mdewarp'; every other card must still match (same-named siblings, where there are any, stay the reference). A
-      not-dewarped status that the names or MDWARP contradict refuses the cell; every other cell is compared as before.
+      carrying MDWARP T) need not carry the dewarp-only cards (dewarp_only_cards: the cards the master dewarp apply writes;
+      MDWSTAT only on a PB map whose siblings are all dewarped), and a product of it with no repaired sibling of its own name
+      is compared with the siblings of its name without '_mdewarp'; every other card must still match (same-named siblings,
+      where there are any, stay the reference). A not-dewarped status that the names or MDWARP contradict refuses the cell;
+      every other cell is compared as before.
 
 No import-time side effects; headers are read with memmap=False (R-GREGG-20261117-NO-MMAP-OF-LUSTRE-FILES-READ-OR-WRITE).
 """
@@ -641,30 +642,37 @@ def product_key(path, strip_mdewarp=False):
     return k.replace(MDEWARP_TOKEN, '') if strip_mdewarp else k
 
 
-def dewarp_only_cards(path):
-    """The card keys a not-dewarped product need not carry although its dewarped siblings do: the cards the master dewarp
-    apply writes (DEWARP_APPLY_CARDS, lib/dewarp/master_dewarp._apply), less MDWSTAT on a master - the header repair writes
-    MDWSTAT on every master, dewarped or not (header_repair_release1.py:232 MDW_CLASSES, :1101 a name starting 'PB' is a PB
-    map, :1113; RULING_MDWSTAT), so only a PB map's MDWSTAT comes from the apply alone."""
+def dewarp_only_cards(path, ref_dewarped):
+    """The card keys a product of a not-dewarped cell need not carry although its repaired siblings do: the cards the master
+    dewarp apply writes (DEWARP_APPLY_CARDS, lib/dewarp/master_dewarp._apply), less MDWSTAT unless ``path`` is a PB map and
+    ``ref_dewarped`` (every sibling of its reference carries MDWARP T). Other writers put MDWSTAT on not-dewarped files too:
+    the header repair on every master, dewarped or not (header_repair_release1.py:232 MDW_CLASSES, :1101 a name starting 'PB'
+    is a PB map, :1113; RULING_MDWSTAT), and a hybrid diffuse PB map inherits its reconstruction master's MDWSTAT (archive:
+    the Run_NOTAPER_HYBRID_20261028 PBdiffuse maps of not-dewarped LSTs carry MDWSTAT 'refused: ...'). Only on a PB map whose
+    siblings are all dewarped is MDWSTAT the apply's alone (its 'applied', master_dewarp.py:288)."""
     pbmap = os.path.basename(path).startswith('PB')
-    return frozenset(k for k in DEWARP_APPLY_CARDS if pbmap or k != 'MDWSTAT')
+    return frozenset(k for k in DEWARP_APPLY_CARDS if k != 'MDWSTAT' or (pbmap and ref_dewarped))
 
 
 def dewarp_state(heads, row):
     """(state, why) of a cell from its own archived files [(path, header)] and its MDWSTAT row (None = no row). The dewarp
-    status card is MDWSTAT ('applied' | 'refused: <reason>' | 'not attempted...', RULING_MDWSTAT); dewarped <=> the value
-    starts with 'applied' (the writers' rule: CellCards.plan_file and header_repair_release1.mdw_cards refuse MDWSTAT unless
-    'applied' <=> MDWARP T). States: 'not dewarped' - every MDWSTAT of the files and the row say not 'applied', no file name
-    carries MDEWARP_TOKEN and no file carries MDWARP T (both witnesses agree); 'disagree' (the gate refuses the cell, fail
+    status card is MDWSTAT ('applied' | 'refused: <reason>' | 'not attempted...', RULING_MDWSTAT); dewarped <=> the value starts
+    with 'applied' (the writers' rule: CellCards.plan_file and header_repair_release1.mdw_cards refuse MDWSTAT unless 'applied'
+    <=> MDWARP T). States: 'not dewarped' - every MDWSTAT of the files and the row say not 'applied', no file name carries
+    MDEWARP_TOKEN (a combination of subband products - LSWBSB, no MDWARP - is no witness: never master-dewarped itself, its name
+    carries its members' token) and no file carries MDWARP T (both witnesses agree); 'disagree' (the gate refuses the cell, fail
     closed) - the files' MDWSTAT and the row say not dewarped but a file name or MDWARP says dewarped; None - compared as
-    before, no waiver: no file carries MDWSTAT (no status card), a file's MDWSTAT says 'applied' (a dewarped cell), or the
-    row is missing or says 'applied' (value_problems then refuses every file whose MDWSTAT is not the row's)."""
+    before, no waiver: no file carries MDWSTAT (no status card), a file's MDWSTAT says 'applied' (a dewarped cell), or the row
+    is missing or says 'applied' (value_problems then refuses every file whose MDWSTAT is not the row's)."""
     vals = sorted({str(h['MDWSTAT']).strip() for _, h in heads if 'MDWSTAT' in h})
     if not vals:
         return None, 'no file of the cell carries MDWSTAT'
     if any(v.startswith('applied') for v in vals):
         return None, f'MDWSTAT {vals[0][:40]!r}: compared as before'
-    tok = [os.path.basename(p) for p, _ in heads if MDEWARP_TOKEN in os.path.basename(p)]
+    # a combination of subband products (LSWBSB, no MDWARP) was never master-dewarped itself (the writers' rule, mdw_cards /
+    # plan_file): its name carries its member masters' token, no witness of the cell's dewarp (hybrid wideband lsrecon masters)
+    tok = [os.path.basename(p) for p, h in heads if MDEWARP_TOKEN in os.path.basename(p)
+           and not ('LSWBSB' in h and 'MDWARP' not in h)]
     warp = [os.path.basename(p) for p, h in heads if h.get('MDWARP') is True]
     rv = str((row or {}).get('mdwstat') or '').strip()
     if row is None or rv.startswith('applied'):
@@ -723,11 +731,11 @@ def sibling_card_gate(cell, archive_run, mdw_table, sibling_run=None, refusals=(
     for f in sorted(glob.glob(f'{sibling_run}/[0-2][0-9]h/{band}/*.fits')):
         if f.split('/')[-3] == lst:
             continue
-        keys, repaired, _ = header_keys(f)
+        keys, repaired, h = header_keys(f)
         if repaired:
-            sib.setdefault(product_key(f), []).append(keys)
+            sib.setdefault(product_key(f), []).append((keys, h.get('MDWARP') is True))
             if strip:
-                sib_stripped.setdefault(product_key(f, True), []).append(keys)
+                sib_stripped.setdefault(product_key(f, True), []).append((keys, h.get('MDWARP') is True))
     exempt_of = whole_refusals(refusals)
     refused = exempt = n_waived = 0
     for f in mine:
@@ -746,8 +754,8 @@ def sibling_card_gate(cell, archive_run, mdw_table, sibling_run=None, refusals=(
                          + ''.join(f'; {v}' for v in vals))
             refused += 1
             continue
-        need = set.intersection(*ref)
-        waived = sorted((need & dewarp_only_cards(f)) - keys) if strip else []
+        need = set.intersection(*(k for k, _ in ref))
+        waived = sorted((need & dewarp_only_cards(f, all(w for _, w in ref))) - keys) if strip else []
         miss = sorted(need - keys - set(waived))
         if miss or not repaired or vals:
             lines.append(f'REFUSED {os.path.basename(f)}: missing {len(miss)} card keys held by all {len(ref)} repaired siblings: '

@@ -16,13 +16,14 @@ wiring in lib/install/). Data-free: synthetic FITS with the full standard header
              MDWSTAT other than the table's, an uncorrected MDWMED1 each REFUSE; an exempt whole refusal; siblings read
              from another root (the install under --out); the table read by the writer's loader under the writer's key (an
              unusable table refuses); excluded names left out
-  notdewarp  a not-dewarped cell (R-GREGG-20261127-PR157-AND-18MHZ-SIBLING-CHECK-RECOMMENDATIONS-APPROVED): the dewarp-only
-             cards equal the keys the dewarp apply writes (parsed from master_dewarp._apply), less MDWSTAT on a master; PASS
-             with the siblings' '_mdewarp' names and those cards waived (11 per master, 12 on the PB map); a missing FLUXREF
-             or master MDWSTAT, an MDWARP T file and an '_mdewarp' file name each REFUSE; a card held by every same-named
-             not-dewarped sibling stays required; one 'applied' master, a table saying applied or no MDWSTAT at all
-             compares as before (no waiver, refused); a dewarped cell compares with '_mdewarp' siblings only, a missing
-             dewarp card refusing it
+  notdewarp  a not-dewarped cell (R-GREGG-20261127-PR157-AND-18MHZ-SIBLING-CHECK-RECOMMENDATIONS-APPROVED): the dewarp-only cards
+             equal the keys the dewarp apply writes (parsed from master_dewarp._apply), MDWSTAT only on a PB map whose siblings are
+             all dewarped; PASS with the siblings' '_mdewarp' names and those cards waived (11 per master, 12 on the PB map); a
+             missing FLUXREF or master MDWSTAT, an MDWARP T file and an '_mdewarp' file name each REFUSE (an '_mdewarp' name on an
+             LSWBSB combination without MDWARP is no witness); a card held by every same-named not-dewarped sibling stays required,
+             and so does a PB map's MDWSTAT that a not-dewarped sibling carries; one 'applied' master, a table saying applied or no
+             MDWSTAT at all compares as before (no waiver, refused); a dewarped cell compares with '_mdewarp' siblings only, a
+             missing dewarp card refusing it
   vclean     vclean_source_check (current, no VCSRC, another VCSRC, another time block); build_vclean_cell refuses a stale
              pair; refresh_vclean_cell (the sv2 clean and the data_decisions gate stubbed): a check-only call on the stale pair
              runs and writes nothing; the refresh re-cleans it - old pair quarantined with md5, new pair stamped, carded,
@@ -482,9 +483,14 @@ def test_gate_not_dewarped(fd):
     out_name = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == '_out_name']
     ok('not-dewarped: MDEWARP_TOKEN is the apply\'s output-name token (master_dewarp._out_name)', R1.MDEWARP_TOKEN == TOKEN
        and out_name and R1.MDEWARP_TOKEN in ast.get_source_segment(src, out_name[0]))
-    m_only, pb_only = R1.dewarp_only_cards('/x/Red_I_deep_Taper_R0_Red.fits'), R1.dewarp_only_cards('/x/PB_deep_Red.fits')
-    ok('not-dewarped: dewarp-only cards - the apply\'s 12 on a PB map, 11 on a master (MDWSTAT: the repair writes it on every '
-       'master)', pb_only == set(R1.DEWARP_APPLY_CARDS) and m_only == set(R1.DEWARP_APPLY_CARDS) - {'MDWSTAT'}, sorted(m_only))
+    eleven = set(R1.DEWARP_APPLY_CARDS) - {'MDWSTAT'}
+    only = {(n, d): R1.dewarp_only_cards(f'/x/{n}', d) for n in ('Red_I_deep_Taper_R0_Red.fits', 'PB_deep_Red.fits',
+                                                                  'PBdiffuse_deep_Red.fits') for d in (True, False)}
+    ok('not-dewarped: dewarp-only cards - the apply\'s 12 on a PB map whose siblings are all dewarped, else 11 (MDWSTAT: the '
+       'repair writes it on every master; a hybrid diffuse PB map inherits its master\'s)',
+       only.pop(('PB_deep_Red.fits', True)) == set(R1.DEWARP_APPLY_CARDS)
+       and only.pop(('PBdiffuse_deep_Red.fits', True)) == set(R1.DEWARP_APPLY_CARDS)
+       and all(v == eleven for v in only.values()), {k: len(v) for k, v in only.items()})
     run, mine, dew, t = _nd_layout(fd)
     passed, lines = R1.sibling_card_gate(CELL, run, t)
     waived = {x.split(':')[0][len('WAIVED '):]: int(x.split(': ')[1].split()[0]) for x in lines if x.startswith('WAIVED')}
@@ -527,6 +533,16 @@ def test_gate_not_dewarped(fd):
     passed, lines = R1.sibling_card_gate(CELL, run, t)
     ok('not-dewarped: a file named with \'_mdewarp\' contradicts the status - REFUSED (fail closed)', not passed
        and 'disagree' in lines[-1] and TOKEN in lines[-1], lines[-1])
+    heads = lambda: [(p, hdr(p)) for p in [*(q for q in mine.values() if q != victim), tok]]
+    row = R1.load_mdw_table(t)['12h_Red']
+    _set_cards(tok, {'LSWBSB': '18MHz,23MHz'})
+    ok('not-dewarped: an \'_mdewarp\' name on a combination of subband products (LSWBSB, no MDWARP: never master-dewarped '
+       'itself, its name carries its members\' token) is no witness - the cell stays not dewarped', R1.dewarp_state(heads(), row)[0]
+       == 'not dewarped', R1.dewarp_state(heads(), row))
+    _set_cards(tok, {'MDWARP': True})
+    ok('not-dewarped: the same combination carrying MDWARP T contradicts the status - disagree', R1.dewarp_state(heads(), row)[0]
+       == 'disagree', R1.dewarp_state(heads(), row))
+    _set_cards(tok, remove=('LSWBSB', 'MDWARP'))
     os.rename(tok, victim)
     for p in mine.values():
         _set_cards(p, remove=('MDWSTAT',))
@@ -568,6 +584,13 @@ def test_gate_not_dewarped(fd):
        'required - same-named siblings stay the reference, only the dewarp-only cards are waived - REFUSED', not passed
        and any(os.path.basename(victim) in x and 'missing 1 card keys held by all 1 repaired siblings: P1RUN' in x
                for x in lines), [x for x in lines if x.startswith('REFUSED')] or lines[-1])
+    pb15 = f'{d15}/PB_deep_{SCOPE}.fits'      # 15h's PB map carries MDWSTAT, as a hybrid diffuse PB map inherits its master's
+    _set_cards(pb15, {'MDWSTAT': ND_STAT})
+    passed, lines = R1.sibling_card_gate(CELL, run, t)
+    ok('not-dewarped: a PB map missing MDWSTAT that a not-dewarped same-named sibling carries (15h) - not the apply\'s alone - '
+       'REFUSED', not passed and any(x.startswith(f'REFUSED PB_deep_{SCOPE}.fits: missing 1 card keys held by all 3 repaired '
+                                                    'siblings: MDWSTAT') for x in lines),
+       [x for x in lines if x.startswith('REFUSED')] or lines[-1])
     shutil.rmtree(f'{run}/15h')
     os.remove(keep)
 
