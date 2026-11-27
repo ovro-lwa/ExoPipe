@@ -68,8 +68,10 @@ Writes outside --out: none when --out is outside the production roots (the searc
   <out>/_state/, the parent snapshot goes under <out>/_parents/); a production run also edits the search markers
   (staleness gate) and pulls unharvested attempts (harvest), as production does today.
 Other tiers: sub-LST and snapshot run lib/catalog/tier_sublst.py / tier_snapshot.py (their flags are prefixed --sublst-,
-  --snap-). The 10-minute grouping (item F.3): `--tier sublst --stages group --group-input DIR` groups the cumulative's
-  detections (lib/catalog/grouping_stage.py) into catalog_grouping.SUBLST_DIR; every LST's build stage reads it.
+  --snap-). The 10-minute grouping (item F.3): `--tier sublst --stages group --group-omission O` groups the published LST
+  runs' detections (or --group-input DIR's) left after the deep omission O (the omit stage's --out; production's order,
+  decision table then drop then identities: sublst_cumulative.sh:99-107) into catalog_grouping.SUBLST_DIR, ONE tier-wide
+  grouping; every LST's build stage reads it and drops the same OMIT cells from its input (lib/catalog/grouping_stage.py).
   In the refactor window the snapshot per-tier localization belongs to `serve`, the fit-store row quarantine to
   `archive`, the sub-LST and deep parent catalogues to `masters --stages sources` (refactor decisions 2026-10-13).
 Deep omission of the short tiers (lib/catalog/deep_omission.py; Gregg 2026-10-24, R-GREGG-20261024-DEEP-OMISSION-DESIGN-

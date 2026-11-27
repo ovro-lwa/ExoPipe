@@ -626,6 +626,108 @@ def test_g30():
           (u.status, u.reason))
 
 
+# ---- 7b. G6c: the cumulative merge's drop is bound to the grouping's recorded table ------------------------------------------
+def test_g6c():
+    """Design B: the serve build's merge drops by THE deep-omission decision table the 10-minute grouping recorded (path and
+    sha256 of the table and its coverage record; one table of both Stokes), every detection merged in a cell it decides, and
+    after the merge the drop's named table and its copy in the build carry that sha256 - else REFUSED."""
+    import hashlib
+    import json
+    from exopipe.phase3.lib.catalog import grouping_stage
+    from exopipe.phase3.lib.catalog.wraps import builder_grouping as BG
+    from exopipe.phase3.lib.serve import sublst_build
+    d = f'{TMP}/g6c'
+    runs, gdir = f'{d}/runs', f'{d}/grouping'
+    cid = {'05h': 'I_05h_2030-01-01T05_46MHz_0001', '06h': 'V_06h_2030-01-02T06_50MHz_0002'}
+    for L, c in cid.items():
+        write(f'{runs}/Run_SLST{L[:2]}B/master_catalog.csv', f'cand_id,stokes\n{c},{c[0]}\n')
+        write(f'{runs}/Run_SLST{L[:2]}B/pertie_detections.csv', f'cand_id\n{c}\n')
+
+    def table(name, omit_v=False):
+        p = f'{d}/{name}/deep_omission.csv'
+        write(p, 'lst,band,night,stokes,verdict\n05h,46MHz,2030-01-01,I,KEEP\n'
+              + ('06h,50MHz,2030-01-02,V,OMIT\n' if omit_v else ''))
+        BG.write_cells(p, {('05h', '46MHz', '2030-01-01', 'I'): 1, ('06h', '50MHz', '2030-01-02', 'V'): 1})
+        return p
+
+    def sha(p):
+        return hashlib.sha256(open(p, 'rb').read()).hexdigest()
+
+    def record(S, t, finished='2030-01-01T00:00:00Z'):
+        om = dict(path=t, sha256=sha(t), cells_path=BG.cells_path(t), cells_sha256=sha(BG.cells_path(t)))
+        write(f'{gdir}/_records/catalog/Run_{S}.group.json', json.dumps(dict(
+            unit=f'Run_{S}.group', status='done', finished=finished, meta=dict(stage='group', stokes=[S], omission=om))))
+
+    class Unit:
+        def __init__(self):
+            self.meta, self.notes, self.inputs = {}, [], []
+
+        def refuse(self, why):
+            raise RuntimeError(why)
+
+        def note(self, m):
+            self.notes.append(m)
+
+        def add_input(self, p):
+            self.inputs.append(p)
+
+    plan = types.SimpleNamespace(lsts=['05h', '06h'])
+
+    def bind(u=None):
+        try:
+            with patch((sublst_build, 'lst_run', lambda l: f'{runs}/Run_SLST{l[:2]}B')):
+                return sublst_build.grouping_omission_table(plan, u or Unit(), gdir)
+        except (RuntimeError, grouping_stage.StageRefusal) as e:
+            return str(e)
+    t = table('t', omit_v=True)
+    record('I', t)
+    record('V', t)
+    u = Unit()
+    om = bind(u)
+    check('G6c: the grouping\'s one table read once (both Stokes), every merged detection in a cell it decides; recorded as '
+          'inputs (table and coverage record)', isinstance(om, BG.Omission) and om.path == t and om.sha256 == sha(t)
+          and u.inputs == [t, BG.cells_path(t)] and u.meta['grouping_omission']['sha256'] == sha(t), om)
+    record('V', table('other'))
+    got = bind()
+    check('G6c: Stokes I and V groupings filtered by different tables REFUSE', 'different deep-omission decision tables' in
+          str(got), got)
+    record('V', t)
+    write(f'{runs}/Run_SLST06B/pertie_detections.csv', f'cand_id\n{cid["06h"]}\nV_06h_2030-01-09T06_50MHz_0003\n')
+    got = bind()
+    check('G6c: a merged detection of a cell the table does not decide (a night it predates) REFUSES, naming the cell',
+          '06h/50MHz/2030-01-09/V' in str(got) and 'have no verdict' in str(got), got)
+    write(f'{runs}/Run_SLST06B/pertie_detections.csv', f'cand_id\n{cid["06h"]}\n')
+    B = f'{d}/B'
+    os.makedirs(B)
+    shutil.copy(t, f'{B}/deep_omission.csv')
+    write(f'{B}/deep_omission_summary.txt', f'1 detections omitted\ndecision table: {t}; 1 (lst, band, night, Stokes) omitted\n')
+    u = Unit()
+    try:
+        sublst_build.check_merge_omission(B, om, u)
+        got = 'bound'
+    except RuntimeError as e:
+        got = str(e)
+    check('G6c: the merge named the grouping\'s table and its copy in the build has the recorded sha256: bound',
+          got == 'bound' and u.meta['merge_omission']['sha256'] == sha(t), got)
+    data = bytearray(open(f'{B}/deep_omission.csv', 'rb').read())
+    data[-2] = ord('X') if data[-2] != ord('X') else ord('Y')                     # one byte changed
+    open(f'{B}/deep_omission.csv', 'wb').write(bytes(data))
+    try:
+        sublst_build.check_merge_omission(B, om, Unit())
+        got = 'bound'
+    except RuntimeError as e:
+        got = str(e)
+    check('G6c: a copy in the build that differs by one byte from the recorded table REFUSES (the drop read another table)',
+          'G6c' in got and 'read another table' in got and sha(t)[:12] in got, got)
+    write(f'{B}/deep_omission_summary.txt', f'1 detections omitted\ndecision table: {d}/other/deep_omission.csv; 0 omitted\n')
+    try:
+        sublst_build.check_merge_omission(B, om, Unit())
+        got = 'bound'
+    except RuntimeError as e:
+        got = str(e)
+    check('G6c: a merge whose drop names another table REFUSES', 'G6c' in got and 'not the grouping' in got, got)
+
+
 # ---- 8. the deep serve on a versioned run -----------------------------------------------------------------------------------
 def test_deep():
     from exopipe.phase3.lib.serve import deep, flow, sublst_build
@@ -900,6 +1002,7 @@ def main():
         test_pins()
         test_place()
         test_g30()
+        test_g6c()
         test_deep()
         test_cli_injected()
     finally:

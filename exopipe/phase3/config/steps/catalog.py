@@ -832,8 +832,8 @@ class catalog_grouping(_Section):
     GROUPING = 'design-b'                                 # 'design-b' (RULED 10-26): the catalog step groups every detection of a tier and
                                                           # Stokes ONCE, before every multiplicity-dependent gate - deep: stage 'group'
                                                           # after the selection, on the fitted conformant catalogue; 10-minute: `catalog
-                                                          # --tier sublst --stages group` on the cumulative's detections, read by every
-                                                          # LST's build. The builder then forms its sources from the grouping's
+                                                          # --tier sublst --stages group --group-omission O` on the LST runs' detections
+                                                          # left after the deep omission O (S-G28), read by every LST's build. The builder then forms its sources from the grouping's
                                                           # identities (one row per (identity, band); source_id = the identity's display
                                                           # name; lib/catalog/wraps/builder_grouping.py). 'production' = production's
                                                           # grouping: the builder's per-band association (build_source_catalogs_v3.py

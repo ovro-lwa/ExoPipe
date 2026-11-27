@@ -11,7 +11,10 @@ build  (unit sublst_<run>_build)  the build lock (G12; sublst_cumulative.sh:23 f
        today the caller skipped the cumulative and exited 0, sublst_catalog_publish.sh:96-100, batch row B-73);
        the DEEP-OMISSION decision table of the LSTs (lib/catalog/deep_omission.tenmin_table; Gregg 2026-10-24,
        sublst_cumulative.sh:37-46, 98-100) written OUTSIDE B, <runs root>/deep_omission/deep_omission_<UTC>.csv (class
-       omission_decisions; window-rms cache beside it, production's cache read as a seed in a parity run);
+       omission_decisions; window-rms cache beside it, production's cache read as a seed in a parity run) - under design B
+       instead THE table the 10-minute grouping recorded (G6c, grouping_omission_table: same path and sha256 as the grouping
+       and the LST builds dropped by, every detection merged in a cell it decides; after the merge the drop's named table
+       and its copy in B are checked against it, check_merge_omission);
        rm -rf B; SUBLST_DEEP_OMISSION=<table> sublst_cumulative.py B LSTs (the merge drops the OMIT rows per LST in place,
        sublst_deep_omission_drop.py, and records them: B/deep_omission_dropped.csv, class omission_record, with its
        per-instant test; its re-judging of a partial survivor's remaining single takes the builder's own 7-8 sigma gate under
@@ -520,6 +523,67 @@ def omission_table(plan, u):
     return table
 
 
+def grouping_omission_table(plan, u, gdir=None):
+    """Design B: the deep-omission decision table the cumulative merge's drop applies is THE table the tier-wide 10-minute
+    grouping recorded (grouping_stage.grouping_omission: the one table of both Stokes, its path and sha256 and those of its
+    coverage record, unchanged since - read once), never one computed again here: the merge drops the OMIT cells the
+    grouping and the LST builds dropped, and production's order holds (sublst_cumulative.sh:99-107: one table, then the drop,
+    then the master identity). G6c REFUSES: no such table, Stokes groupings on two tables, a table or coverage record changed
+    since the grouping, or a detection of the LST runs the merge reads (master_catalog.csv, pertie_detections.csv) in a cell
+    the table does not decide (all cells named). G6 (absent_gate) applies to the runs' served counts. Returns the Omission;
+    check_merge_omission binds the merge's own copy after it."""
+    from exopipe.phase3.lib.catalog import deep_omission
+    from exopipe.phase3.lib.catalog import grouping_stage as GS
+    gdir = gdir or GS.sublst_dir(_CFG())
+    try:
+        om = GS.grouping_omission(gdir)
+    except GS.StageRefusal as e:
+        u.refuse(f'G6c the cumulative drops by the grouping\'s deep-omission decision table: {e}')
+    unc, bad = set(), []
+    for l in plan.lsts:
+        for f in ('master_catalog.csv', 'pertie_detections.csv'):
+            p = os.path.join(lst_run(l), f)
+            with open(p, newline='') as fh:
+                for r in csv.DictReader(fh):
+                    try:
+                        om.omitted(r.get('cand_id'), r.get('stokes'), l)
+                    except GS._bg().Uncovered as e:
+                        unc.add(e.cell)
+                    except GS._bg().Refused as e:
+                        bad.append(str(e))
+                        break
+    if bad:
+        u.refuse(f'G6c {bad[0]}')
+    if unc:
+        u.refuse(f'G6c {om.uncovered(unc, "the LST runs the cumulative merges")}')
+    deep_omission.absent_gate(om.rows, deep_omission.tenmin_served_of(deep_omission.TenminRecords(deep_omission.Reader())))
+    u.add_input(om.path)
+    u.add_input(om.cells_path)
+    u.meta['grouping_omission'] = dict(om.ref(), grouping_dir=gdir)
+    u.note(f'deep-omission decision table of the grouping {om.path} (sha256 {om.sha256[:16]}): {om.decisions} decisions, '
+           f'{len(om.keys)} (LST, band, night, Stokes) omitted; every detection of the {len(plan.lsts)} LST runs in one of its '
+           f'{len(om.cells)} cells')
+    return om
+
+
+def check_merge_omission(B, om, u):
+    """G6c after the merge: production's drop names the table it loaded (deep_omission_summary.txt 'decision table: <path>',
+    sublst_deep_omission_drop.finish) and copies it into the build (deep_omission.csv): the path must be the grouping's
+    table and the copy, and the table now, must have its recorded sha256 - else the merge dropped by another table: REFUSES."""
+    with open(os.path.join(B, 'deep_omission_summary.txt')) as f:
+        lines = f.read().splitlines()
+    named = [x[len('decision table: '):].rsplit(';', 1)[0] for x in lines if x.startswith('decision table: ')]
+    if [os.path.abspath(x) for x in named] != [om.path]:
+        u.refuse(f'G6c the merge\'s deep-omission drop names the decision table(s) {named}, not the grouping\'s {om.path}')
+    for p in (os.path.join(B, 'deep_omission.csv'), om.path):
+        with open(p, 'rb') as f:
+            sha = hashlib.sha256(f.read()).hexdigest()
+        if sha != om.sha256:
+            u.refuse(f'G6c the merge\'s deep-omission drop read another table: {p} has sha256 {sha[:12]}, the grouping recorded '
+                     f'{om.sha256[:12]} ({om.path})')
+    u.meta['merge_omission'] = dict(path=om.path, sha256=om.sha256, copy=os.path.join(B, 'deep_omission.csv'))
+
+
 def pin_lsts(plan, u, stack):
     """G31 THE LST RUNS READ ARE PINNED (lib/serve/versions.py): the version each LST run names when the build starts is held
     (retention never deletes it under the merge) and stamped; the merge (production's sublst_cumulative.py, in place) reads the
@@ -563,7 +627,8 @@ def build_stage(run, plan):
                 u.add_input(os.path.join(lst_run(l), f))
         log = os.path.join(scripts.ops_root(), 'sublst_cumulative.log') if not plan.parity else \
             os.path.join(plan.out, 'sublst', 'sublst_cumulative.log')
-        table = omission_table(plan, u)
+        om = grouping_omission_table(plan, u) if _GS.mode().design_b else None
+        table = om.path if om is not None else omission_table(plan, u)
         if os.path.isdir(B):
             shutil.rmtree(B)
         # the drop's RE-JUDGING judges a partial survivor's remaining single with the builder's own 7-8 sigma gate under the
@@ -586,6 +651,8 @@ def build_stage(run, plan):
         for f in ('deep_omission.csv', 'deep_omission_dropped.csv', 'deep_omission_summary.txt'):
             if not os.path.exists(os.path.join(B, f)):
                 u.refuse(f'the merge applied no deep omission: {B}/{f} not written (sublst_deep_omission_drop.finish)')
+        if om is not None:
+            check_merge_omission(B, om, u)
         u.note('deep omission: ' + open(os.path.join(B, 'deep_omission_summary.txt')).readline().strip())
         u.add_output(os.path.join(B, 'deep_omission_dropped.csv'), 'omission_record', tier='sublst',
                      decisions=os.path.join(B, 'deep_omission.csv'))

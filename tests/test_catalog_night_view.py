@@ -319,9 +319,17 @@ def test_wiring():
           'table and (veto) the merged leak-veto tables',
           "frozen='delta', frozen_record=rec" in bd and 'cwd=B' in bd and 'P3_TENMIN_PERTIE=pt' in bd
           and 'P3_LEAKVETO_DIR=lv' in bd and "lv = '' if tag == 'noveto' else os.path.join(B, DB.LEAKVETO)" in bd)
-    check('wiring: a missing frozen record refuses; the grouping must hold every input row (S-G18)',
-          "st['kind'] == 'no-record'" in bd and "GS.covers(table, f'{B}/selected_{k}.csv')" in bd
+    check('wiring: a missing frozen record refuses; the grouping must hold every input row (S-G18) apart from the OMIT cells '
+          'of the deep omission it followed',
+          "st['kind'] == 'no-record'" in bd and "GS.covers(table, f'{B}/selected_{k}.csv', omission=om)" in bd
           and bd.index('if norec:') < bd.index('res = call('))
+    check('wiring (S-G28): the delta build reads the deep-omission decision table its grouping recorded ONCE (one table of '
+          'every Stokes; refused without one), refuses a night the table predates (I-G9, fail closed) and hands the table to '
+          'the builder, which drops the same OMIT cells',
+          'om = GS.grouping_omission(ctx.grouping_dir, tuple(sorted(tables)))' in bd and "refuse(f'S-G28 delta build" in bd
+          and 'why = om.night_refusal(ctx.lst, ctx.night)' in bd
+          and bd.index('om.night_refusal(') < bd.index('res = call(')
+          and "removed_dirs=[FL] + list(nights), omission=om))" in bd)
     od = body('_own_delta')
     check('wiring: a directory that is not this pass\'s own delta (finished, or marked started by a failed pass) is not '
           'replaced; the marker is written on creation and removed after the content test',
