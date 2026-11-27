@@ -223,6 +223,31 @@ def archive_equals_attempt(path, **ctx):
 
 
 # ---------------------------------------------------------------------------------------------------------------------
+# launch_epoch (archive quarantine --begin-launch)
+# ---------------------------------------------------------------------------------------------------------------------
+
+@content_test('launch_epoch')
+def launch_epoch_file(path, epoch=None, **ctx):
+    """A v2 deep-search launch file (lib/archive/quarantine.begin_launch; the one archive_quarantine.LAUNCH_EPOCH_FILE names, or
+    a retired one in its round's records directory): exactly one line, a positive finite UTC epoch (s), the epoch the unit
+    wrote (``epoch``)."""
+    import math
+    import time
+    from exopipe.phase3.lib.archive import quarantine as Q
+    try:
+        lines = open(path).read().splitlines()
+        v = float(lines[0]) if len(lines) == 1 else None
+    except (OSError, ValueError, IndexError) as e:
+        return False, None, f'unreadable as one epoch line: {e}'
+    if v is None or not math.isfinite(v) or v <= 0:
+        return False, v, f'not one positive finite epoch line: {lines[:2]}'
+    if epoch is not None and v != float(epoch):
+        return False, v, f'holds {v!r}, the unit wrote {epoch!r}'
+    return True, v, (f'launch epoch {v!r} ({time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(v))}), round '
+                     f'{Q.round_for(v, Q._q().ROUND_DEFAULT)}')
+
+
+# ---------------------------------------------------------------------------------------------------------------------
 # retirement_audit
 # ---------------------------------------------------------------------------------------------------------------------
 
@@ -367,11 +392,13 @@ def _later_quarantine(path, after, cell, stokes, qdir):
     """The moved_at of a quarantine-manifest row of ``path`` later than ``after`` (the restored file was quarantined
     again by a later search), or None."""
     K = _K()
-    man = os.path.join(qdir, f'{cell}_{stokes}.csv')
-    if not os.path.exists(man):
-        return None
-    _, rows = K.read_csv(man)
-    later = [r['moved_at'] for r in rows if r.get('path') == path and (r.get('moved_at') or '') > after]
+    later = []
+    for qd in ([qdir] if isinstance(qdir, str) else qdir):
+        man = os.path.join(qd, f'{cell}_{stokes}.csv')
+        if not os.path.exists(man):
+            continue
+        _, rows = K.read_csv(man)
+        later += [r['moved_at'] for r in rows if r.get('path') == path and (r.get('moved_at') or '') > after]
     return min(later) if later else None
 
 
@@ -382,7 +409,10 @@ def rows_restored(path, quarantine_manifest_dir=None, checksum=True, **ctx):
     for c in ('cell', 'stokes', 'path', 'dest', 'md5', 'action'):
         if c not in cols:
             return False, None, f'header {cols} lacks {c!r}'
-    qdir = quarantine_manifest_dir or K.expand(K.sec().FRAME_QUARANTINE_MANIFEST_DIR)
+    import glob
+    # production's manifests (p3s5_state, read only) and every v2 pre-search round's under archive.RECORDS_ROOT (one level)
+    qdir = quarantine_manifest_dir or ([K.expand(K.sec().FRAME_QUARANTINE_MANIFEST_DIR)]
+                                       + sorted(glob.glob(K.expand(K.sec().SEARCH_QUARANTINE_RECORDS_DIR, run='*'))))
     problems, superseded = [], 0
     for r in rows:
         act = r['action']

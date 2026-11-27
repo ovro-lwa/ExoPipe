@@ -13,12 +13,21 @@ from the launch (p3s5_launch.sh:22-23) and P3_COADD_ROOT unset (:197-198). It
 
 Here (refactor window, DESIGN 11.1): the PLAN (selection, destinations, G4, G3, md5) is evaluated in this process with the
 helper's literal rule; the membership precheck runs production's code in a child (core.legacy.run, '-c' with sys.path[0] =
-the production repo exactly as :37-39 - an in-process import would resolve the worktree's moved membership module); the
-APPLY on the production archive runs the helper itself in place (only when paths.PRODUCTION_WRITES is True); an apply on a
-mirror archive root (--archive-root) uses the same rename primitive (common.quarantine_move, the port of :58-67).
+the production repo exactly as :37-39 - an in-process import would resolve the worktree's moved membership module); every
+APPLY - on the production archive (paths.PRODUCTION_WRITES) as on a mirror archive root (--archive-root) - moves with the
+port of the helper's move loop (common.quarantine_move, :58-67). The helper itself is never run: it writes its manifest
+under paths.OPS_ROOT (p3s5_state/frame_quarantine, :18), which v2 never writes. A NEW round's manifest of record is
+<archive.SEARCH_QUARANTINE_RECORDS_DIR>/<cell>_<S>.csv, one directory per round under archive.RECORDS_ROOT, with the round's
+record (its launch epoch); a round production used, or a round of another launch epoch, refuses (round_gate). The old
+p3s5_state manifests stay where they are, read only (the refactor chat's decision of 2026-11-27, cutover row 64 step 2).
 """
+import fcntl
 import glob
+import json
+import math
 import os
+import re
+import time
 
 from exopipe.phase3.core.record import NoInput, Refusal
 from exopipe.phase3.lib.archive import common as K
@@ -51,25 +60,135 @@ print("PRECHECK-OK %%s %%s" %% (cell, base))
 '''
 
 
+# the narrow allowance key of the v2 deep search's archive writes (paths.PRODUCTION_WRITES_ALLOWED): its quarantine round, its
+# archive frames and the launch file begin_launch writes
+ALLOW_KEY = 'archive:search_deep'
+
+
 def _q():
     return K.sec('archive_quarantine')
 
 
 def launch_epoch(value=None):
-    """The launch epoch (UTC s): --launch-epoch, else the content of archive_quarantine.LAUNCH_EPOCH_FILE. Required: the
-    fleet refuses an unset launch epoch (p3s5_search_fleet.sh:37)."""
+    """The launch epoch (UTC s): --launch-epoch, else the content of archive_quarantine.LAUNCH_EPOCH_FILE (written by
+    begin_launch, `exopipe3 archive quarantine --begin-launch`). Required: the fleet refuses an unset launch epoch
+    (p3s5_search_fleet.sh:37)."""
     if value not in (None, ''):
-        return float(value)
+        try:
+            x = float(value)
+        except (TypeError, ValueError):
+            x = float('nan')
+        if not math.isfinite(x):
+            raise Refusal(f'--launch-epoch {value!r}: not a finite number (UTC s) - REFUSED')
+        return x
     p = K.expand(_q().LAUNCH_EPOCH_FILE)
     try:
-        return float(open(p).read().strip())
+        x = float(open(p).read().strip())
     except (OSError, ValueError) as e:
         raise Refusal(f'launch epoch unset: no --launch-epoch and {p} unreadable ({e}); the fleet refuses an unset launch '
                       f'epoch (p3s5_search_fleet.sh:37)')
+    if not math.isfinite(x):
+        raise Refusal(f'launch epoch {x} in {p} is not a finite number - REFUSED')
+    return x
 
 
 def quarantine_root(archive_root, round_name):
     return os.path.join(archive_root, f'{_q().RUN_PREFIX}{round_name}')
+
+
+def round_for(launch, configured):
+    """The quarantine round: 'launch-date' = the UTC date of the launch epoch (YYYYMMDD; production named its rounds so,
+    P3S5_QROUND 20261004 ... 20261113), else the literal round. A round that is not a plain name refuses."""
+    rnd = time.strftime('%Y%m%d', time.gmtime(float(launch))) if configured == 'launch-date' else str(configured or '')
+    if not re.fullmatch(r'[A-Za-z0-9_.-]+', rnd):
+        raise Refusal(f'quarantine round {rnd!r} (search_run.QUARANTINE_ROUND {configured!r}): a plain name, e.g. launch-date')
+    return rnd
+
+
+def round_records_dir(archive_root, round_name, out=None):
+    """Where a round's manifest of record and round record live: archive.SEARCH_QUARANTINE_RECORDS_DIR (under
+    archive.RECORDS_ROOT) for the production archive, <out>/manifests/frame_quarantine/<run> for a mirror archive root."""
+    run = f'{_q().RUN_PREFIX}{round_name}'
+    C = K.cfg()
+    if os.path.realpath(os.path.abspath(archive_root)) == os.path.realpath(C.paths.PHASE3_ARCHIVE_ROOT):
+        return K.expand(K.sec().SEARCH_QUARANTINE_RECORDS_DIR, run=run)
+    return os.path.join(out or '.', 'manifests', 'frame_quarantine', run)
+
+
+def under_ops_root(path):
+    """paths.OPS_ROOT when ``path`` is under it (production's state and manifests, never written by v2), else None."""
+    ops = os.path.realpath(K.cfg().paths.OPS_ROOT).rstrip('/')
+    real = os.path.realpath(os.path.abspath(path))
+    return ops if real == ops or real.startswith(ops + '/') else None
+
+
+def record_epoch(rec, where):
+    """The launch epoch (UTC s) a round record names: a finite number, else a Refusal naming ``where`` (a record without one,
+    null, or not a number is never compared as NaN or raised as a TypeError)."""
+    v = rec.get('launch_epoch') if isinstance(rec, dict) else None
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        x = float('nan')
+    if not math.isfinite(x):
+        raise Refusal(f'{where}: launch_epoch {v!r} is not a finite number - REFUSED (a round record names its launch epoch)')
+    return x
+
+
+def read_epoch_file(p):
+    """The launch epoch a launch file holds (one line, UTC s): a finite number, else a Refusal naming the file."""
+    try:
+        x = float(open(p).read().strip())
+    except (OSError, ValueError) as e:
+        raise Refusal(f'{p}: unreadable launch file ({e}) - REFUSED')
+    if not math.isfinite(x):
+        raise Refusal(f'{p}: launch epoch {x} is not a finite number - REFUSED')
+    return x
+
+
+def round_gate(archive_root, round_name, launch, rdir, create=False):
+    """A NEW round (the refactor chat's decision of 2026-11-27): the round's record in ``rdir`` names this launch epoch, or
+    there is no record and no quarantine Run of that name in the archive (a Run without a v2 record is a round production
+    used - 20261004, ..., 20261113 - whose manifests stay under p3s5_state, read only). A launch file in ``rdir`` (the launch
+    of the round retired there by begin_launch, or any file of that name) makes the round taken: its launch is over.
+    ``create``: write the record (before any move; a concurrent unit's record is read and compared). Refuses: an earlier
+    round, another launch's round, a retired launch's round, a record directory under paths.OPS_ROOT, a record whose launch
+    epoch is not a number. Returns the record."""
+    if under_ops_root(rdir):
+        raise Refusal(f'quarantine round {round_name}: its records directory {rdir} is under paths.OPS_ROOT '
+                      f'({under_ops_root(rdir)}), which v2 never writes - REFUSED')
+    rec_path = os.path.join(rdir, _q().ROUND_RECORD)
+    want = {'round': round_name, 'run': f'{_q().RUN_PREFIX}{round_name}', 'launch_epoch': float(launch)}
+    retired = os.path.join(rdir, os.path.basename(K.expand(_q().LAUNCH_EPOCH_FILE)))
+    if os.path.lexists(retired):
+        raise Refusal(f'quarantine round {round_name}: {retired} is there - the round of a retired launch (begin-launch '
+                      f'--retire-launch) is taken; a new launch needs a new round (launch date) - REFUSED')
+
+    def compare(rec):
+        if record_epoch(rec, rec_path) != float(launch):
+            raise Refusal(f'quarantine round {round_name}: its record {rec_path} names launch epoch {rec.get("launch_epoch")}, '
+                          f'this run {float(launch)} - one round per launch; a new launch needs a new round (launch date)')
+        return rec
+    if os.path.exists(rec_path):
+        return compare(K.read_json(rec_path))
+    qroot = quarantine_root(archive_root, round_name)
+    if os.path.lexists(qroot):
+        raise Refusal(f'quarantine round {round_name}: {qroot} exists with no v2 round record ({rec_path}) - an earlier '
+                      f'round (production\'s manifests: p3s5_state/frame_quarantine, read only); a NEW round is required '
+                      f'(search_run.QUARANTINE_ROUND launch-date with a new launch epoch, or --round)')
+    if not create:
+        return dict(want, created='')
+    os.makedirs(rdir, exist_ok=True)
+    rec = dict(want, created=K.utc(), host=os.uname()[1])
+    try:
+        fd = os.open(rec_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    except FileExistsError:                       # a concurrent unit of the same launch wrote it first
+        return compare(K.read_json(rec_path))
+    with os.fdopen(fd, 'w') as fh:
+        json.dump(rec, fh, indent=1)
+        fh.flush()
+        os.fsync(fh.fileno())
+    return rec
 
 
 def select_frames(archive_root, run_name, cell, stokes, launch):
@@ -142,10 +261,12 @@ def quarantine_for_search(u, cell, stokes, launch, round_name, apply=False, arch
                           out=None, precheck=True, checksum=True, check_writer=True, log=None, approved_manifest=None):
     """The whole pre-search quarantine of one (cell, Stokes), recorded in unit ``u`` (an archive or a search unit).
 
-    Plan (apply False): G7 precheck, plan rows, written to <out>/manifests/frame_quarantine/<cell>_<S>_plan_<UTC>.csv
-    (class quarantine_manifest; moved_at empty) when ``out`` is given. Apply: G2, G12 (concurrent writer), then the
-    production helper in place (production archive) or the rename primitive (mirror archive), rows appended to the
-    manifest of record (production: p3s5_state/frame_quarantine/<cell>_<S>.csv). Returns the rows."""
+    Plan (apply False): G7 precheck, the round gate (read only), plan rows, written to
+    <out>/manifests/frame_quarantine/<cell>_<S>_plan_<UTC>.csv (class quarantine_manifest; moved_at empty) when ``out`` is
+    given. Apply: G2, G12 (concurrent writer), the round gate (the round's record written), then the rename primitive, rows
+    appended to the round's manifest of record (production archive: archive.SEARCH_QUARANTINE_RECORDS_DIR/<cell>_<S>.csv
+    under archive.RECORDS_ROOT; mirror: <out>/manifests/frame_quarantine/<run>/<cell>_<S>.csv). Never under paths.OPS_ROOT.
+    Returns the rows."""
     C = K.cfg()
     archive_root = os.path.abspath(archive_root or C.paths.PHASE3_ARCHIVE_ROOT)
     run_name = run_name or C.paths.ARCHIVE_RUN
@@ -159,6 +280,9 @@ def quarantine_for_search(u, cell, stokes, launch, round_name, apply=False, arch
             raise Refusal(f'G7: {msg}')
     else:
         u.note('G7 membership precheck skipped (--no-membership-precheck with a ruling)')
+    rdir = round_records_dir(archive_root, round_name, out)
+    round_gate(archive_root, round_name, launch, rdir, create=False)      # an earlier round refuses at the plan already
+    u.meta.update(round_records=rdir)
     rows = plan_frame_quarantine(cell, stokes, launch, round_name, archive_root, run_name, checksum=checksum)
     u.meta['n_planned'] = len(rows)
     u.meta['bytes_planned'] = sum(int(r['bytes']) for r in rows)
@@ -179,11 +303,10 @@ def quarantine_for_search(u, cell, stokes, launch, round_name, apply=False, arch
                f'({u.meta["bytes_planned"] / 1e9:.2f} GB) to {quarantine_root(archive_root, round_name)}')
         return rows
     # ---- apply
-    if production:
-        mdir = K.expand(K.sec().FRAME_QUARANTINE_MANIFEST_DIR)
-    else:
-        mdir = os.path.join(out or '.', 'manifests', 'frame_quarantine')
-    manifest = os.path.join(mdir, f'{cell}_{stokes}.csv')
+    manifest = os.path.join(rdir, f'{cell}_{stokes}.csv')
+    if under_ops_root(manifest):
+        raise Refusal(f'G2: the quarantine manifest of record {manifest} is under paths.OPS_ROOT, which v2 never writes '
+                      f'(production\'s p3s5_state manifests are read only) - REFUSED')
     if not C.paths.PRODUCTION_WRITES:
         for p in (archive_root, manifest):
             if K.production_like(p):
@@ -194,62 +317,196 @@ def quarantine_for_search(u, cell, stokes, launch, round_name, apply=False, arch
         if live:
             raise Refusal(f'G12: the search fleet holds a live claim of {cell} {stokes} ({owner}) - a concurrent writer')
     t0 = K.utc()
-    admitted = admitted_cell(cell)
-    if admitted:
-        u.note(f'{cell}: holds night(s) admitted into its master ({admitted}): production\'s helper would refuse them as '
-               f'absent nights (its own membership check, p3s5_quarantine_frames.py:41-49) - its move loop is run by its port '
-               f'(D-ADMIT; the plan, G2 and G12 as above)')
-    if production and not admitted:
-        _apply_helper(u, cell, stokes, launch, round_name, rows, manifest, t0, log)
-    else:
-        with K.CsvAppender(manifest, K.sec().QUARANTINE_COLUMNS) as w:
-            for r in rows:
-                b, m, t = K.quarantine_move(r['path'], r['dest'], 'md5', what=f'{cell} {stokes}: quarantine')
-                if r['md5'] and m != r['md5']:
-                    u.note(f"{r['path']}: md5 changed between plan and move ({r['md5']} -> {m}); recorded value is the move's")
-                w.write(dict(r, bytes=b, md5=m, moved_at=t))
+    rec = round_gate(archive_root, round_name, launch, rdir, create=True)
+    u.note(f'quarantine round {rec["run"]} (launch epoch {rec["launch_epoch"]}); manifest of record {manifest}')
+    # the port of the helper's move loop (p3s5_quarantine_frames.py:52-67), for the production archive as for a mirror:
+    # the helper writes its manifest under paths.OPS_ROOT. Its membership check (:34-49) is G7 above (production's code in a
+    # child, read with the cell's admitted nights and the 18 MHz exception as the search judges the master)
+    with K.CsvAppender(manifest, K.sec().QUARANTINE_COLUMNS) as w:
+        for r in rows:
+            b, m, t = K.quarantine_move(r['path'], r['dest'], 'md5', what=f'{cell} {stokes}: quarantine')
+            if r['md5'] and m != r['md5']:
+                u.note(f"{r['path']}: md5 changed between plan and move ({r['md5']} -> {m}); recorded value is the move's")
+            w.write(dict(r, bytes=b, md5=m, moved_at=t))
     u.add_output(manifest, 'quarantine_manifest', since=t0)
     u.note(f'{cell} {stokes}: {len(rows)} earlier search frames quarantined')
     return rows
 
 
-def admitted_cell(cell):
-    """D-ADMIT: the nights admitted into the master of ``cell`` (the cell tree the precheck child reads: the first of
-    PRECHECK_CELL_ROOTS holding PRECHECK_CELL_MARKER), under the ruled reading (masters_admit.ADMITTED_NIGHTS) - [] under
-    production's, or for a cell without admissions."""
-    from exopipe.phase3.lib.masters import admit as AD
-    if AD.admitted_policy() != 'admitted':
-        return []
+def newest_round_epoch():
+    """(epoch, where) of the newest launch v2 has recorded - every round record (ROUND.json) and retired launch file under
+    archive.SEARCH_QUARANTINE_RECORDS_DIR, and the live launch file - or (None, None). A record or file whose epoch is not a
+    number refuses (record_epoch, read_epoch_file)."""
     q = _q()
-    base = next((os.path.join(r, cell) for r in q.PRECHECK_CELL_ROOTS
-                 if os.path.exists(os.path.join(r, cell, q.PRECHECK_CELL_MARKER))), None)
-    return sorted(AD.admitted_rows(base)) if base else []
+    lf = K.expand(q.LAUNCH_EPOCH_FILE)
+    found = []
+    for d in sorted(glob.glob(K.expand(K.sec().SEARCH_QUARANTINE_RECORDS_DIR, run=q.RUN_PREFIX + '*'))):
+        rp, fp = os.path.join(d, q.ROUND_RECORD), os.path.join(d, os.path.basename(lf))
+        if os.path.exists(rp):
+            found.append((record_epoch(K.read_json(rp), rp), rp))
+        if os.path.lexists(fp):
+            found.append((read_epoch_file(fp), fp))
+    if os.path.lexists(lf):
+        found.append((read_epoch_file(lf), lf))
+    return max(found) if found else (None, None)
 
 
-def _apply_helper(u, cell, stokes, launch, round_name, rows, manifest, t0, log):
-    """The production helper in place (p3s5_search_fleet.sh:197 with p3s5_launch.sh:23); refused on any non-zero exit
-    ('frame quarantine FAILED - not searched'), and the rows it appended must be the planned paths."""
-    from exopipe.phase3.core import legacy
-    helper = K.expand(_q().HELPER)
-    res = legacy.run(helper, [cell, stokes, repr(launch) if not float(launch).is_integer() else str(int(launch))],
-                     python='default', env={'P3S5_QROUND': round_name}, cwd=K.sec().LEGACY_CWD, log=log, unit=u,
-                     refusal_codes=(1,), refusal_text=('STOPPED',))
-    if not res.ok:
-        raise Refusal(f'frame quarantine FAILED - not searched: {res.reason or res.tail[-200:]}')
-    got = []
-    if os.path.exists(manifest):
-        _, man = K.read_csv(manifest)
-        got = [r for r in man if (r.get('moved_at') or '') >= t0]
-    want, have = {r['path'] for r in rows}, {r['path'] for r in got}
-    u.check('archive.quarantine_rows_equal_plan', want == have, len(have),
-            f'{len(have)} rows appended, {len(want)} planned' + ('' if want == have else
-                                                               f'; differ by {len(want ^ have)}'))
+def search_locks_held(root=None):
+    """The deep search's cell locks (<work root>/.<cell>.search.lock, deep_step.cell_lock: held by a live search for the whole
+    unit) that a process holds now: a non-blocking flock probe of each, released at once. ``root``: the production fleet's
+    work root, search_run.PRODUCTION_WORK_ROOT (its flow root, where its cell locks live)."""
+    root = root or K.cfg().search_run.PRODUCTION_WORK_ROOT
+    held = []
+    for p in sorted(glob.glob(os.path.join(root, '.*.search.lock'))):
+        try:
+            fh = open(p, 'rb')
+        except OSError:
+            continue
+        with fh:
+            try:
+                fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                held.append(p)
+                continue
+            fcntl.flock(fh, fcntl.LOCK_UN)
+    return held
+
+
+def begin_launch(u, epoch=None, retire=False, apply=False):
+    """`exopipe3 archive quarantine --begin-launch [--launch-epoch UTC_S] [--retire-launch] --apply`: the operator step that
+    starts a v2 deep-search launch (the refactor chat's decision (1) of 2026-11-27) - archive_quarantine.LAUNCH_EPOCH_FILE
+    written with the launch epoch (UTC s; default now), which every deep search run reads once at its start.
+
+    Before anything is written (fix round 2, 2026-11-27): the epoch must be a finite number, not later than now plus
+    archive_quarantine.LAUNCH_EPOCH_MAX_AHEAD_S, and not earlier than the newest launch v2 has recorded (newest_round_epoch);
+    the new launch's round (ROUND_DEFAULT 'launch-date': Run_SEARCH_QUARANTINE_<its UTC date>) must be free (round_gate, read
+    only). An existing launch file refuses, named, unless ``retire``: then it moves into its own round's records directory,
+    beside that round's ROUND.json (round_records_dir of its launch date), which closes that round - refused when that round is
+    the new launch's (two launches on one UTC date), when the round's record names another launch epoch, when a retired file
+    is already there, and while a deep search holds a cell lock of the production work root (search_locks_held).
+
+    Apply, in this order: the new file written to a temporary file opened O_EXCL and synced; the old file retired (a link that
+    never replaces, then the unlink); the new file linked into place (a link never replaces: a concurrent writer's file
+    refuses). When that last link fails, the retired file is restored in place. The file is read back; both files are outputs of
+    the unit (content test launch_epoch.launch_epoch_file). Refused under paths.OPS_ROOT, for an injected run, and under a
+    production tree while paths.PRODUCTION_WRITES is False unless the narrow allowance opens it to ALLOW_KEY. Returns the plan."""
+    from exopipe.phase3.core import injected
+    C = K.cfg()
+    q = _q()
+    p = K.expand(q.LAUNCH_EPOCH_FILE)
+    now = time.time()
+    new = launch_epoch(epoch) if epoch not in (None, '') else round(now, 3)       # a non-finite --launch-epoch refuses
+    if new > now + float(q.LAUNCH_EPOCH_MAX_AHEAD_S):
+        raise Refusal(f'begin-launch: --launch-epoch {new} ({time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(new))}) is later '
+                      f'than now plus {q.LAUNCH_EPOCH_MAX_AHEAD_S} s - REFUSED (nothing written)')
+    newest, where = newest_round_epoch()
+    if newest is not None and new < newest:
+        raise Refusal(f'begin-launch: launch epoch {new} is earlier than the newest recorded launch {newest} ({where}) - '
+                      f'REFUSED (nothing written)')
+    arch = C.paths.PHASE3_ARCHIVE_ROOT
+    rnd = round_for(new, q.ROUND_DEFAULT)
+    round_gate(arch, rnd, new, round_records_dir(arch, rnd), create=False)     # the new launch's round is free
+    plan = {'launch_file': p, 'launch_epoch': new, 'round': rnd, 'retired_to': None,
+            'launch_utc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(new))}
+    old = None
+    if os.path.lexists(p):
+        old = read_epoch_file(p)
+        if not retire:
+            raise Refusal(f'begin-launch: {p} exists (launch epoch {old}, '
+                          f'{time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(old))}) - a launch is under way or was not '
+                          f'retired; a new launch first moves it into its round\'s directory (--retire-launch)')
+        ornd = round_for(old, q.ROUND_DEFAULT)
+        if ornd == rnd:
+            raise Refusal(f'begin-launch: the launch in {p} ({old}) has round {rnd}, the new launch\'s - two launches on one '
+                          f'UTC date would share a quarantine round; REFUSED')
+        odir = round_records_dir(arch, ornd)
+        orec = os.path.join(odir, q.ROUND_RECORD)
+        if os.path.exists(orec) and record_epoch(K.read_json(orec), orec) != old:
+            raise Refusal(f'begin-launch: the round record {orec} names launch epoch '
+                          f'{K.read_json(orec).get("launch_epoch")}, the launch file {old} - REFUSED')
+        plan['retired_to'] = os.path.join(odir, os.path.basename(p))
+        if os.path.lexists(plan['retired_to']):
+            raise Refusal(f'begin-launch: {plan["retired_to"]} exists - the launch of round {ornd} was retired already; '
+                          f'REFUSED')
+        held = search_locks_held()
+        if held:
+            raise Refusal(f'begin-launch --retire-launch: {len(held)} deep search cell lock(s) held now ({held[:3]}) - a '
+                          f'search of the launch {old} is running; REFUSED (nothing written)')
+    u.meta.update(begin_launch=plan)
+    if not apply:
+        u.note(f'begin-launch (plan): {p} <- {new} ({plan["launch_utc"]}, round Run_SEARCH_QUARANTINE_{rnd})'
+               + (f'; the launch {old} moved first to {plan["retired_to"]}' if old is not None else ''))
+        return plan
+    targets = [p] + ([plan['retired_to']] if old is not None else [])
+    injected.check_all(targets, 'archive quarantine --begin-launch')
+    for t in targets:
+        if under_ops_root(t):
+            raise Refusal(f'G2: begin-launch would write {t} under paths.OPS_ROOT ({under_ops_root(t)}), which v2 never writes '
+                          f'- REFUSED')
+        if K.production_like(t) and not C.writes_allowed(ALLOW_KEY, t):
+            raise Refusal(f'G2: begin-launch would write {t} under the production tree {K.production_like(t)} and '
+                          f'paths.PRODUCTION_WRITES is False and paths.PRODUCTION_WRITES_ALLOWED does not open it to '
+                          f'{ALLOW_KEY!r} - REFUSED')
+    # 1. the new file, written and synced first (nothing moved yet)
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    tmp = f'{p}.{os.uname()[1]}.{os.getpid()}.tmp'
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    try:
+        with os.fdopen(fd, 'w') as fh:
+            fh.write(f'{new!r}\n')
+            fh.flush()
+            os.fsync(fh.fileno())
+        # 2. the old file retired into its round's records directory
+        if old is not None:
+            os.makedirs(os.path.dirname(plan['retired_to']), exist_ok=True)
+            try:
+                os.link(p, plan['retired_to'])
+            except FileExistsError:
+                raise Refusal(f'begin-launch: {plan["retired_to"]} appeared meanwhile - REFUSED (nothing moved)')
+            try:
+                os.unlink(p)
+            except OSError as e:
+                os.unlink(plan['retired_to'])
+                raise Refusal(f'begin-launch: {p} could not be unlinked ({e}) - REFUSED (nothing moved)')
+        # 3. the new file linked into place; on failure the retired file goes back
+        try:
+            os.link(tmp, p)
+        except OSError as e:
+            back = ''
+            if old is not None:
+                try:
+                    os.link(plan['retired_to'], p)
+                    os.unlink(plan['retired_to'])
+                    back = f'; the launch file {old} restored in place'
+                except OSError as e2:
+                    back = f'; the launch file {old} could NOT be restored ({e2}): it is at {plan["retired_to"]}'
+            raise Refusal(f'begin-launch: linking the new launch file {p} failed ({e}){back} - REFUSED')
+    finally:
+        if os.path.lexists(tmp):
+            os.unlink(tmp)
+    if old is not None:
+        u.note(f'begin-launch: the launch {old} retired to {plan["retired_to"]}')
+        u.add_output(plan['retired_to'], 'launch_epoch', epoch=old)
+    if launch_epoch() != new:
+        raise Refusal(f'begin-launch: {p} reads back {launch_epoch()}, written {new}')
+    u.add_output(p, 'launch_epoch', epoch=new)           # its content test (lib/archive/tests.launch_epoch_file), never waivable
+    u.note(f'begin-launch: {p} = {new} ({plan["launch_utc"]}); round Run_SEARCH_QUARANTINE_{rnd}')
+    return plan
+
+
+def run_begin_launch(ctx, args, unit_fn):
+    """`archive quarantine --begin-launch`: one unit, begin_launch (no --cells: the launch is the fleet's)."""
+    unit_fn('begin_launch', lambda u: begin_launch(u, getattr(args, 'launch_epoch', None),
+                                                   retire=bool(getattr(args, 'retire_launch', False)),
+                                                   apply=ctx.apply and not ctx.dry),
+            describe=lambda plan: f'{plan["launch_file"]} <- {plan["launch_epoch"]} (round {plan["round"]})'
+            + (f'; the earlier launch to {plan["retired_to"]}' if plan['retired_to'] else ''))
 
 
 def run_action(ctx, items, stokes, args, unit_fn):
     """`archive quarantine --tier deep --cells C --stokes S`: one unit per (cell, Stokes)."""
     launch = launch_epoch(getattr(args, 'launch_epoch', None))
-    round_name = args.round or _q().ROUND_DEFAULT
+    round_name = round_for(launch, args.round or _q().ROUND_DEFAULT)
     precheck = _q().MEMBERSHIP_PRECHECK and not args.no_membership_precheck
     if args.no_membership_precheck:
         K.require_ruling(args.apply_ruling, '--no-membership-precheck')
@@ -272,5 +529,6 @@ def ctx_log(ctx, unit):
     return p
 
 
-__all__ = ['launch_epoch', 'select_frames', 'plan_frame_quarantine', 'membership_precheck', 'quarantine_for_search',
-           'quarantine_root', 'NoInput']
+__all__ = ['ALLOW_KEY', 'launch_epoch', 'begin_launch', 'newest_round_epoch', 'search_locks_held', 'record_epoch',
+           'read_epoch_file', 'select_frames', 'plan_frame_quarantine', 'membership_precheck', 'quarantine_for_search',
+           'quarantine_root', 'round_for', 'round_records_dir', 'round_gate', 'under_ops_root', 'NoInput']

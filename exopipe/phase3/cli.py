@@ -157,11 +157,14 @@ def _guard_out(out, key=None):
 
 def _allow_key(name, args):
     """The step's name in paths.PRODUCTION_WRITES_ALLOWED: 'mosaic:<generation>' for the mosaic step, 'archive:<class>' for
-    `archive push --class <class>` (its records beside the archive, as the push's own G2 key), else the step name."""
+    `archive push --class <class>` (its records beside the archive, as the push's own G2 key), 'archive:search_deep' for
+    `archive quarantine --begin-launch` (the v2 deep search's launch file), else the step name."""
     if name == 'mosaic':
         return f'mosaic:{getattr(args, "generation", None)}'
     if name == 'archive' and getattr(args, 'action', None) == 'push' and getattr(args, 'push_class', None):
         return f'archive:{args.push_class}'
+    if name == 'archive' and getattr(args, 'action', None) == 'quarantine' and getattr(args, 'begin_launch', False):
+        return 'archive:search_deep'        # the launch file of the v2 deep search (lib/archive/quarantine.ALLOW_KEY)
     return name
 
 

@@ -5,9 +5,10 @@ One unit per (deep cell, Stokes): <cell>_<S> in bulk, <cell>_<S>_<date>[+n] in p
 
   preflight   inputs present and current, gates P1-P9 / G2-G4 of the spec (masters and COADDOP, membership, gate records,
               search-tier table, pinned-input md5s, engine literals = config, flow-cache currency, disk); --dry-run = this only
-  quarantine  the cell's earlier archive search frames: archive's job (decision 6, group 10). Production mode runs
-              exopipe_ops/p3s5_quarantine_frames.py in place with the fleet's environment (P3_COADD_ROOT unset, P3S5_QROUND);
-              while paths.PRODUCTION_WRITES is False it only writes the plan <out>/quarantine_plan/<unit>.csv
+  quarantine  the cell's earlier archive search frames: archive's job (decision 6, group 10). Production mode moves them with
+              lib/archive/quarantine.quarantine_for_search (the port of exopipe_ops/p3s5_quarantine_frames.py's move loop) into
+              the round Run_SEARCH_QUARANTINE_<launch date>, its manifest of record under archive.RECORDS_ROOT (never
+              paths.OPS_ROOT); while paths.PRODUCTION_WRITES is False it only writes the plan <out>/quarantine_plan/<unit>.csv
   detect      lib/search/deep_search.run_deep_cell IN PLACE in a fresh child (core.legacy.run, module mode: inherited P3_*
               cleared, the engine environment built from config, parity guard, child code fingerprint), cwd = the staged
               attempt, log = <attempt>/<cell>.log (incremental: <cell>.inc.log appended to the base log). The child maps the
@@ -374,9 +375,11 @@ def comparison_deviations():
     return [(k, c.get(k)) for k, prod in _COMPARISON if _norm(c.get(k)) != _norm(prod)]
 
 
-def engine_env(cell_root_parent, attempt, flow_root, label, archive_root, tmpdir):
+def engine_env(cell_root_parent, attempt, flow_root, label, archive_root, tmpdir, pred_roots=None, archive_record=None):
     """The engine child's environment (spec 7.3), built from config. core.legacy.run clears every inherited P3_* first; COMPARISON
-    keys at their production values set nothing (their variables stay unset, as in the fleet)."""
+    keys at their production values set nothing (their variables stay unset, as in the fleet). ``pred_roots``: where the
+    engine finds the frame each archive copy supersedes (P3_ARCHIVE_PREDECESSOR_ROOTS; archive_predecessor_roots);
+    ``archive_record``: where it records each archive frame with the frame it superseded, as used (P3_ARCHIVE_RECORD)."""
     from exopipe.phase3.core import legacy
     from exopipe.phase3.core.record import Refusal
     c = _cfg()
@@ -424,6 +427,11 @@ def engine_env(cell_root_parent, attempt, flow_root, label, archive_root, tmpdir
                       f'check\'s): under the B-02 rules they are one floor - REFUSING')                                          # floor
     if not si.ARCHIVE_WRITE:
         env['P3_ARCHIVE_WRITE'] = '0'
+    else:                                              # WAVE2 ARCHIVE-HEADER (decisions (3b), (7), 2026-11-27)
+        if pred_roots:
+            env['P3_ARCHIVE_PREDECESSOR_ROOTS'] = os.pathsep.join(pred_roots)
+        if archive_record:
+            env['P3_ARCHIVE_RECORD'] = archive_record
     if not sd.REFINE_X2:
         env['P3_REFINE_OFF'] = '1'
     if st.EXTRA_TABLES:
@@ -909,31 +917,79 @@ def _image_rows(attempt, label, stokes):
         return [r for r in csv.DictReader(fh) if r.get('stokes') == stokes]
 
 
-def stage_quarantine(u, item, ctx, f):
-    """Archive's frame quarantine before a FRESH attempt (decision 6, group 10). Window: plan only."""
+def quarantine_launch_round(ctx):
+    """(launch epoch, round) of the pre-search quarantine: search_run.QUARANTINE_EPOCH 'launch-file' =
+    archive_quarantine.LAUNCH_EPOCH_FILE (the v2 fleet's launch, written by `archive quarantine --begin-launch`; unset
+    refuses), 'job-created' = this run's start - for a window or scratch run only: refused whenever the run's archive root or
+    output root is a production path (production_tree, gate G3's test), whatever any allowance says, since two runs on one UTC
+    date would share the round 'launch-date' names (the refactor chat's decision (4) of 2026-11-27 and fix round 2); the round
+    search_run.QUARANTINE_ROUND ('launch-date': Run_SEARCH_QUARANTINE_<launch date>, a NEW round - 2026-11-27). Read through
+    run_launch, once per run."""
     from exopipe.phase3.core.record import Refusal
-    c = _cfg()
-    sr = c.search_run
+    from exopipe.phase3.lib.archive import quarantine as Q
+    sr = _cfg().search_run
     if sr.QUARANTINE_EPOCH == 'launch-file':
-        lf = os.path.join(c.paths.OPS_ROOT, sr.LAUNCH_EPOCH_FILE)
-        try:
-            launch = float(open(lf).read().strip())
-        except (OSError, ValueError) as e:
-            raise Refusal(f'quarantine: launch epoch unreadable at {lf} ({e}); the fleet refuses an unset launch epoch')
+        launch = Q.launch_epoch()
     elif sr.QUARANTINE_EPOCH == 'job-created':
+        hit = [f'{w} {p} (under {production_tree(p)})' for w, p in (('the archive root', ctx.get('archive_root')),
+                                                                    ('--out', ctx.get('out'))) if p and production_tree(p)]
+        if hit:
+            raise Refusal(f"search_run.QUARANTINE_EPOCH 'job-created' is for a window or scratch run only: this run writes "
+                          f"production ({'; '.join(hit)}), where a second run on one UTC date would share the launch-date "
+                          f"round - use 'launch-file' (archive quarantine --begin-launch); REFUSED")
         launch = ctx['t0']
     else:
         raise Refusal(f'search_run.QUARANTINE_EPOCH {sr.QUARANTINE_EPOCH!r}: launch-file or job-created')
+    return launch, Q.round_for(launch, sr.QUARANTINE_ROUND)
+
+
+def run_launch(ctx):
+    """(launch epoch, round) of this run, read ONCE (the refactor chat's fix round 2 of 2026-11-27): the first call reads
+    quarantine_launch_round and fixes the pair in ctx['launch'], the run's state (deep_step.run calls it at its start, before
+    any unit, when a stage needs it); every unit's quarantine stage and predecessor roots take that pair. A launch file retired
+    or rewritten while the run goes on never switches its round; a separate run (--stages detect after --stages quarantine)
+    reads the same launch file and so names the same round."""
+    if ctx.get('launch') is None:
+        ctx['launch'] = tuple(quarantine_launch_round(ctx))
+    return ctx['launch']
+
+
+def archive_predecessor_roots(ctx):
+    """WAVE2 ARCHIVE-HEADER (the refactor chat's decisions (3b) and (6a), 2026-11-27): where the engine finds the frame each
+    archive copy supersedes, in order - the run's archive root (the frame in place: one written earlier in this launch,
+    replaced in place), then this launch's own quarantine round (run_launch: the run's fixed launch, never a stage's state -
+    where the pre-search quarantine moved the frames, in this run or an earlier run of the launch) and, when the run's archive
+    root is the window's mirror, the production archive's frame in place (read only: the frame production's launch would move
+    into its round, never moved in the window). Never an older round (Run_SEARCH_QUARANTINE_20261004 .. 20261113): a frame with
+    no predecessor validates on its own."""
+    from exopipe.phase3.lib.archive import quarantine as Q
+    arch, prod = ctx['archive_root'], _cfg().paths.PHASE3_ARCHIVE_ROOT
+    roots = [arch, Q.quarantine_root(arch, run_launch(ctx)[1])]
+    if os.path.realpath(arch) != os.path.realpath(prod):
+        roots.append(prod)
+    return roots
+
+
+ARCHIVE_RECORD = 'archive_record.csv'      # in the attempt: the engine's record of each archive frame and the frame it superseded
+
+
+def stage_quarantine(u, item, ctx, f):
+    """Archive's frame quarantine before a FRESH attempt (decision 6, group 10). Window: plan only."""
+    from exopipe.phase3.lib.archive import quarantine as Q
+    c = _cfg()
+    launch, rnd = run_launch(ctx)                   # the run's fixed launch: Run_SEARCH_QUARANTINE_<launch date>, a NEW round
+    u.meta.update(launch_epoch=launch, quarantine_round=rnd)
     if c.paths.PRODUCTION_WRITES:
-        # the archive step's quarantine (lib/archive/quarantine.py): production's helper in place, recorded in this unit
-        # with its gates (G2, G7 precheck) and manifest; the writer claim (G12) is the search's own cell lock
-        from exopipe.phase3.lib.archive.quarantine import quarantine_for_search
-        quarantine_for_search(u, item.cell, item.stokes, launch, sr.QUARANTINE_ROUND, apply=True, check_writer=False,
-                              log=os.path.join(ctx['out'], '_records', 'search', 'logs', f'{item.name}.quarantine.log'))
+        # the archive step's quarantine (lib/archive/quarantine.py): the port of production's move loop, recorded in this unit
+        # with its gates (G2, G7 precheck, the round gate) and the round's manifest of record under archive.RECORDS_ROOT
+        # (never paths.OPS_ROOT); the writer claim (G12) is the search's own cell lock
+        Q.quarantine_for_search(u, item.cell, item.stokes, launch, rnd, apply=True, check_writer=False,
+                                log=os.path.join(ctx['out'], '_records', 'search', 'logs', f'{item.name}.quarantine.log'))
         return
-    # window: the frames production WOULD move (p3s5_quarantine_frames.py:50-51), nothing moved
+    # window: the frames production WOULD move (p3s5_quarantine_frames.py:50-51), nothing moved; the round gate read only
     arch = c.paths.PHASE3_ARCHIVE_ROOT
-    qroot = os.path.join(arch, f'Run_SEARCH_QUARANTINE_{sr.QUARANTINE_ROUND}')
+    Q.round_gate(arch, rnd, launch, Q.round_records_dir(arch, rnd), create=False)
+    qroot = Q.quarantine_root(arch, rnd)
     old = [p for p in sorted(glob.glob(os.path.join(arch, item.lst, '*', c.paths.ARCHIVE_RUN, item.scope, item.stokes, 'deep',
                                                     '*.fits')))
            if '_msub' in os.path.basename(p) and os.path.getmtime(p) < launch]
@@ -947,8 +1003,9 @@ def stage_quarantine(u, item, ctx, f):
                         time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(os.path.getmtime(p))), item.cell, item.stokes, launch])
     os.replace(plan + '.part', plan)
     u.add_output(plan, 'csv_table', required_columns=('path', 'dest', 'bytes'))
-    u.note(f'quarantine (window, plan only): {len(old)} archive frame(s) older than the launch epoch would be moved '
-           f'(a production run moves them with lib.archive.quarantine.quarantine_for_search)')
+    u.note(f'quarantine (window, plan only): {len(old)} archive frame(s) older than the launch epoch would be moved to '
+           f'{qroot} (a production run moves them with lib.archive.quarantine.quarantine_for_search; manifest of record '
+           f'{os.path.join(Q.round_records_dir(arch, rnd), item.cell + "_" + item.stokes + ".csv")})')
 
 
 def stage_detect(u, item, ctx, f):
@@ -978,7 +1035,12 @@ def stage_detect(u, item, ctx, f):
     tmpd = os.path.join(ctx['tmp'], item.name + '_' + tag)
     os.makedirs(tmpd, exist_ok=True)
     etmp = engine_tmpdir(c.search_run.ENGINE_TMP_ROOT, f'{item.cell}_{item.stokes}')     # short: AF_UNIX socket paths
-    env = engine_env(os.path.dirname(f['base']), attempt, ctx['flow_root'], label, ctx['archive_root'], etmp)
+    f['archive_pred_roots'] = archive_predecessor_roots(ctx) if c.search_inputs.ARCHIVE_WRITE else None
+    if c.search_inputs.ARCHIVE_WRITE:
+        u.meta.update(launch_epoch=run_launch(ctx)[0], quarantine_round=run_launch(ctx)[1])
+    f['archive_record'] = os.path.join(attempt, ARCHIVE_RECORD) if c.search_inputs.ARCHIVE_WRITE else None
+    env = engine_env(os.path.dirname(f['base']), attempt, ctx['flow_root'], label, ctx['archive_root'], etmp,
+                     pred_roots=f['archive_pred_roots'], archive_record=f['archive_record'])
     spec = dict(lst=item.lst, scope=item.scope, cell=item.cell, label=label, stokes=item.stokes, cadence=c.search.CADENCE,
                 included_dates=item.dates if item.mode == 'incremental' else None, markers=list(c.search.REFUSAL_MARKERS),
                 result=os.path.join(tmpd, 'result.json'))
@@ -1224,16 +1286,20 @@ def side_outputs(item, ctx, f):
     if f.get('t_detect'):
         from exopipe.phase3.core.record import fits_primary_cards
         c = _cfg()
+        rec = f.get('archive_record')                  # the engine's record: the frame each archive frame superseded, as used
         sub = 'iresid' if item.stokes == 'I' else 'vresid'
         for p in sorted(glob.glob(os.path.join(f['attempt'], f'Run_{f["label"]}', sub, item.cell, '*_redo_resid_*.fits'))):
-            name = str(fits_primary_cards(p).get('PRODNAME', '') or '')
+            name = str(fits_primary_cards(p, continued=True).get('PRODNAME', '') or '')   # a deep PRODNAME spans CONTINUE cards
             d = os.path.basename(p)[:10]
             if not name:
                 continue
             dst = os.path.join(ctx['archive_root'], item.lst, d, c.paths.ARCHIVE_RUN, item.scope, item.stokes, 'deep',
                                name if name.endswith('.fits') else name + '.fits')
             if os.path.exists(dst) and os.path.getmtime(dst) >= f['t_detect']:
-                out.append((dst, 'search_frame', {'stokes': item.stokes, 'copy_of': p}, dst))
+                # the content test reads the frame it superseded from the engine's record (decision (7), 2026-11-27: the
+                # predecessor the engine merged, never a second search of the roots; one replaced in place is gone, its
+                # cards are on the record)
+                out.append((dst, 'search_frame', {'stokes': item.stokes, 'copy_of': p, 'archive_record': rec}, dst))
     return out
 
 
@@ -1452,6 +1518,8 @@ def run_unit(u, item, stages, ctx):
             u.note('quarantine skipped: an incremental attempt appends to its base (p3s4_incremental_fleet.sh does not quarantine)')
         else:
             stage_quarantine(u, item, ctx, f)
+    if 'detect' not in stages and 'quarantine' in stages and set(stages) <= {'preflight', 'quarantine'}:
+        return f                      # --stages quarantine alone: the launch's quarantine; a later run of it detects
     if 'detect' not in stages:
         raise Refusal('stages without detect operate on an existing attempt: give --replay-attempt DIR|published '
                       '(read-only replay of fit/verify)')
@@ -1571,6 +1639,11 @@ def run(args, run):
                attempts=attempts, flow_root=flow_root, tmp=tmp, archive_root=archive_root, dry_run=run.dry_run,
                flow_from=getattr(args, 'deep_flow_from', None), keep_work=getattr(args, 'deep_keep_work', False),
                label=args.run_label or c.search.RUN_LABEL, roots=roots_table(), t0=t0)
+    if not run.dry_run and stages != ['preflight'] and ('quarantine' in stages or
+                                                      ('detect' in stages and c.search_inputs.ARCHIVE_WRITE)):
+        launch, rnd = run_launch(ctx)              # ONCE, before any unit: every unit takes this launch and round
+        print(f'search deep: launch epoch {launch} ({time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(launch))}), quarantine '
+              f'round {rnd} - fixed for this run', flush=True)
     if not run.dry_run:
         for d in (attempts, flow_root, tmp):
             os.makedirs(d, exist_ok=True)

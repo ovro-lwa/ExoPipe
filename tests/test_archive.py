@@ -251,14 +251,23 @@ def test_deep(out, root, E, A):
     write_fits(blocker, 0.0)
     rc = main_cli(['quarantine'] + q[:-3] + ['--round', 'T2', '--out', out, '--no-membership-precheck', '--apply-ruling',
                                              RULING])
+    ok(rc == 2 and 'no v2 round record' in rec(out, 'quarantine_12h_27MHz_I')['reason'],
+       'a round whose quarantine Run exists without a v2 round record (an earlier round): refused before any move')
+    from exopipe.phase3.lib.archive import common as K
+    K.write_json(os.path.join(out, 'manifests', 'frame_quarantine', 'Run_SEARCH_QUARANTINE_T2', 'ROUND.json'),
+                 dict(round='T2', run='Run_SEARCH_QUARANTINE_T2', launch_epoch=float(launch), created=''))
+    rc = main_cli(['quarantine'] + q[:-3] + ['--round', 'T2', '--out', out, '--no-membership-precheck', '--apply-ruling',
+                                             RULING])
     ok(rc == 2 and 'G4' in rec(out, 'quarantine_12h_27MHz_I')['reason'], 'taken quarantine destination: G4 before any move')
     rc = main_cli(['quarantine', '--apply', '--apply-ruling', RULING] + q)
     qr = rec(out, 'quarantine_12h_27MHz_I')
     ok(rc == 0 and qr['status'] == 'done', 'quarantine apply on the mirror')
     ok(os.path.exists(newf) and not os.path.exists(archive_frame(root, a, '27MHz', 'I', frame_name('27MHz', 'I', a))),
        'old frames moved, the frame newer than the launch kept')
-    man = os.path.join(out, 'manifests', 'frame_quarantine', '12h_27MHz_I.csv')
+    man = os.path.join(out, 'manifests', 'frame_quarantine', 'Run_SEARCH_QUARANTINE_T1', '12h_27MHz_I.csv')
     ok(len(list(csv.DictReader(open(man)))) == 3, 'manifest of record: 3 rows (path,dest,bytes,md5,cell,stokes,moved_at)')
+    rr = json.load(open(os.path.join(os.path.dirname(man), 'ROUND.json')))
+    ok(rr['round'] == 'T1' and rr['launch_epoch'] == float(launch), f'the round\'s record names its launch epoch ({rr})')
     raw = open(man, 'rb').read()
     ok(raw.startswith(b','.join(c.encode() for c in CFG.archive.QUARANTINE_COLUMNS) + b'\r\n')
        and raw.count(b'\r\n') == 4 and raw.count(b'\n') == 4,
@@ -343,6 +352,7 @@ def test_push_epoch(out, root, E, A):
     with fits.open(img) as h:
         ok(float(np.nanmax(h[0].data)) == 7.0, 'replaced epoch image = the staged one')
     ok(os.path.exists(os.path.join(root, 'Run_SEARCH_QUARANTINE_P1', os.path.relpath(img, root))), 'old one quarantined')
+    test_push_epoch_round(out, root, stg, b)
     # the excluded night: every staged file refused -> unit refused
     write_fits(os.path.join(stg, '12h', E, RUN, '27MHz', 'V', 'deep', frame_name('27MHz', 'V', E) + '.fits'), 1.0)
     rc = main_cli(['push', '--epochs', f'12h_{E}', '--staging-root', stg, '--archive-root', root, '--out', out])
@@ -354,6 +364,58 @@ def test_push_epoch(out, root, E, A):
     # sub-LST: nothing archived
     rc = main_cli(['push', '--tier', 'sublst', '--epochs', f'12h_{a}', '--out', out])
     ok(rc == 3, 'push --tier sublst: no-input (the sub-LST tier archives nothing today)')
+
+
+def test_push_epoch_round(out, root, stg, b):
+    """The refactor chat's fix round 2 (1): one rule for every move into a search quarantine round. An epoch push's replace
+    row goes to the round --round names, never the launch file's round: through quarantine.round_gate (ROUND.json first) and
+    into that round's manifest of record. A replace without --round refuses; a date-named round (a search launch's) refuses
+    without that launch's --launch-epoch; so no push made before the first search unit can block the launch's round."""
+    from exopipe.phase3.core.record import Refusal
+    from exopipe.phase3.lib.archive import quarantine as Q
+    rd = lambda r: os.path.join(out, 'manifests', 'frame_quarantine', f'Run_SEARCH_QUARANTINE_{r}')      # noqa: E731
+    rec1 = json.load(open(os.path.join(rd('P1'), 'ROUND.json')))
+    ok(rec1['round'] == 'P1' and os.path.exists(os.path.join(rd('P1'), '12h_27MHz_V.csv'))
+       and validate.run('quarantine_manifest', os.path.join(rd('P1'), '12h_27MHz_V.csv'))[0]['passed'],
+       f'the replace round P1: its ROUND.json (epoch {rec1.get("launch_epoch")}) and its manifest of record, content-tested')
+    name = f'73MHz_V_deep_Taper_Robust+0.0_dewarped_aligned_LST12h_{b.replace("-", "")}T050000'     # a band no other test uses
+    arch_b = write_fits(archive_frame(root, b, '73MHz', 'V', name), 2.0)
+    write_fits(os.path.join(stg, os.path.relpath(arch_b, root)), 9.0)
+    pb = ['push', '--epochs', f'12h_{b}', '--staging-root', stg, '--archive-root', root, '--out', out, '--set', EPOCH_CLASSES,
+          '--apply']
+    launch = round(time.time() - 30, 3)              # a launch begun, its first search unit not yet run: no ROUND.json
+    R = Q.round_for(launch, 'launch-date')
+
+    def launch_free():
+        try:
+            Q.round_gate(root, R, launch, rd(R), create=False)
+            return True
+        except Refusal:
+            return False
+    pixels = lambda: float(np.nanmax(fits.getdata(arch_b, memmap=False)))     # noqa: E731
+    r = {}
+    for what, extra in (('no --round', []), ('the launch\'s date-named round without --launch-epoch', ['--round', R]),
+                        ('a date-named round with another date\'s --launch-epoch', ['--round', R, '--launch-epoch',
+                                                                                    repr(launch + 3 * 86400)])):
+        rc = main_cli(pb + extra)
+        u = rec(out, f'push_epoch_12h_{b}')
+        r[what] = (rc == 2 and u['status'] == 'refused' and pixels() == 2.0 and launch_free()
+                   and not os.path.exists(os.path.join(root, f'Run_SEARCH_QUARANTINE_{R}')), u['reason'][:120])
+    ok(all(v[0] for v in r.values()), f'an epoch push replace refuses (nothing moved, the launch\'s round free): {r}')
+    rc = main_cli(pb + ['--round', R, '--launch-epoch', repr(launch)])
+    u = rec(out, f'push_epoch_12h_{b}')
+    recR = json.load(open(os.path.join(rd(R), 'ROUND.json'))) if os.path.exists(os.path.join(rd(R), 'ROUND.json')) else {}
+    q = os.path.join(root, f'Run_SEARCH_QUARANTINE_{R}', os.path.relpath(arch_b, root))
+    try:
+        Q.round_gate(root, R, launch + 1, rd(R), create=False)
+        other = 'not refused'
+    except Refusal as e:
+        other = str(e)
+    ok(rc == 0 and u['status'] == 'done' and pixels() == 9.0 and os.path.exists(q) and recR.get('launch_epoch') == launch
+       and launch_free() and other != 'not refused' and 'names launch epoch' in other,
+       f'joining the launch\'s round explicitly (--round {R} --launch-epoch {launch}): the old frame in that round, its '
+       f'ROUND.json names the launch epoch, so the launch\'s first quarantine passes and another epoch refuses '
+       f'({u["status"]} {u["reason"][:80]}; {recR}; {other[:80]})')
 
 
 def test_mosaic(out, root):

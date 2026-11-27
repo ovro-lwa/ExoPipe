@@ -1377,9 +1377,9 @@ def _archive_frame_publish(path, lst, scope, d, stokes, cadence, cell_tag):
     """Write a deep search frame (or its pbcorr sibling) into the ratified archive tree
     {LST}/{date}/{RUN}/{band}/{Stokes}/deep/<PRODNAME>.fits (Gregg 2026-09-09, contract
     steps 0.4/51). Deep cadence only; P3_ARCHIVE_RUN names the generation; P3_ARCHIVE_WRITE=0
-    is the only way to search without archiving (scratch, never production). The copy is checked and
-    placed by core/placement.copy (a copy that differs, or a placement refusal: PlacementRefusal,
-    the archive frame left as it was)."""
+    is the only way to search without archiving (scratch, never production). The frame is written by
+    _archive_write_merged (the superseded frame's header updated with the search's cards, validated; a refusal
+    leaves the archive frame as it was and, its text holding REFUSING, refuses this (cell, Stokes) unit only)."""
     if os.environ.get('P3_ARCHIVE_WRITE') == '0':
         return None
     # 2026-09-12 (contract step 66, Gregg "other recommendations approved"): the 10-minute cadence archives its
@@ -1396,13 +1396,182 @@ def _archive_frame_publish(path, lst, scope, d, stokes, cadence, cell_tag):
     _night = d[:10]
     dst = f'{_archive_root()}/{lst}/{_night}/{run}/{scope}/{stokes}/{cadence}/{name if name.endswith(".fits") else name + ".fits"}'
     os.makedirs(os.path.dirname(dst), exist_ok=True)
-    # core/placement.copy: the work frame copied to a temporary file beside the archive frame, its size and md5 checked
-    # against the work frame, then placed with the replaced frame's group, mode and ACL, or the archive directory's group
-    # and inherited ACL for a new one - never the work frame's mode and ACL mask (shutil.copy2 carried them); the times are
-    # the work frame's, as copy2 gave them. A refusal (PlacementRefusal) leaves the archive frame as it was
-    placement.sweep([dst])              # a killed earlier copy's temporary file (not modified for an hour)
-    placement.copy(path, dst, times=True)
+    # WAVE2 ARCHIVE-HEADER (the refactor chat's decision (3) of 2026-11-27: never an archive frame with fewer standard cards
+    # than the frame it supersedes; case (b) - archived search frames' cards ARE read: the BMAJ gate, archive push/audit
+    # content tests, the pages' cutouts): the archive frame is the superseded frame's full header updated with the search's
+    # own cards and the work frame's pixels, validated before it is placed; a frame with no predecessor validates or refuses
+    _archive_write_merged(path, dst, _archive_predecessor(dst), cell_tag, d)
     return dst
+
+
+# the cards a header carries for its data layout and checksums, never carried from another file
+_STRUCT_CARD = re.compile(r'^(SIMPLE|XTENSION|BITPIX|NAXIS\d*|EXTEND|PCOUNT|GCOUNT|BSCALE|BZERO|BLANK|CHECKSUM|DATASUM|END)$')
+# the world coordinate cards, the observer's place and the time reference (fix round 2 item (9) added RADECSYS, OBSGEO-*,
+# MJD-OBS and the DATE-OBS / MJDREF time family): a predecessor's card of these the search's frame lacks would mix two coordinate
+# systems or two time blocks - never carried, never silently dropped (the merge refuses, naming them)
+_WCS_CARD = re.compile(r'^(WCSAXES\w?|WCSNAME\w?|CTYPE\d+\w?|CRVAL\d+\w?|CRPIX\d+\w?|CDELT\d+\w?|CUNIT\d+\w?|CROTA\d+|'
+                       r'PC\d+_\d+\w?|CD\d+_\d+\w?|PV\d+_\d+\w?|PS\d+_\d+\w?|LONPOLE\w?|LATPOLE\w?|RADESYS\w?|RADECSYS|'
+                       r'EQUINOX\w?|EPOCH|MJDREF\w*|JDREF\w*|DATEREF|RESTFRQ\w?|RESTFREQ|RESTWAV\w?|SPECSYS\w?|SSYSOBS\w?|VELREF|'
+                       r'OBSGEO-[XYZBLH]|DATE-OBS|DATE-BEG|DATE-AVG|DATE-END|MJD-OBS|MJD-BEG|MJD-AVG|MJD-END|MJD-MID|TIMESYS|'
+                       r'TREFPOS|TREFDIR|TIMEUNIT|PLEPHEM|TSTART|TSTOP)$')
+
+
+# WAVE2 ARCHIVE-HEADER (the refactor chat's decision (6b) of 2026-11-27, fix round 2 item (8)): the SEARCH-OWNED cards - the
+# cards a deep-search engine writes on a search frame from its own measurements, rules and gate values. Never carried from the
+# frame an archive frame supersedes: a value the new search does not write is the earlier search's (dropped, named in a HISTORY
+# line). Derived from source, checked in as tests/fixtures/search_owned_cards.json (its sources list every commit scanned) and
+# re-derived by tests/test_search_archive_header.py. What was scanned:
+#   - every committed version of production's deep frame writer: each tracked file named *phase3_deep.py in the repositories
+#     /lustre/gh/main/exopipe (exopipe/phase3/phase3_deep.py, 79 commits 2026-08-12 .. 2026-11-17, 68 of them with an archive
+#     frame writer, from 2026-09-04) and /lustre/gh/main/exopipe_ops (its 4 copies: the two 2026-11-08 patches, the 2026-09-08
+#     staged gate, publish_staging - 7 commits), read with git log --follow and git show per commit; plus v2's writer, this
+#     module;
+#   - in each version, the archive frame writers _archive_frame_header, _write_pbcorr_sibling and _write_archive_frame: their
+#     literal card names, and the write_standard_header arguments _archive_frame_header computes itself (ebeam, imgrms,
+#     thermnoi, pbcorr, dewarped, aligned / alignref, msub / msubfile, ssub) - not those it reads from the epoch's Stage-1
+#     product (time block, beam, P1RUN, P2RUN, CALBP, LSTBIN), not the cards it copies from that product (SH*, FLUX*, MDW*,
+#     BIN*), not the coordinate cards;
+#   - those arguments' cards in the standard header (core.products.write_standard_header = phase3_products.write_standard_header;
+#     none of its 11 committed versions names a card the newest lacks);
+#   less THERMNOI, the frame's noise card (decision (1) of 2026-10-16: "THERMNOI stays the frame's noise card").
+# The history adds no card beyond these 26.
+SEARCH_OWNED_CARDS = frozenset((
+    'BUNIT', 'TELESCOP', 'LOOMSTR', 'LOOEXCL', 'MSTRFILE', 'MSTRNSTK', 'MSTRCOOP', 'MSTRMJD', 'MSTRDIG', 'STRIWIN', 'CADENCE',
+    'RUNLABEL', 'ORIGIN', 'PRODNAME', 'PBCORR', 'PBFILE',                                      # the frame writers' literals
+    'EBMAJ', 'EBMIN', 'EBPA', 'IMGRMS', 'DEWARPED', 'ALIGNED', 'ALIGNREF', 'MSUB', 'MSUBFILE', 'SSUB'))   # the standard header's
+# the engine's record of each archive frame it wrote (P3_ARCHIVE_RECORD, set by the deep step): the frame it superseded, as used
+ARCHIVE_RECORD_COLS = ['archive', 'work_frame', 'predecessor', 'predecessor_cards', 'carried', 'dropped', 'written_utc']
+
+
+def _archive_predecessor(dst):
+    """The archive frame ``dst`` supersedes: the same path relative to the archive root under each directory of
+    P3_ARCHIVE_PREDECESSOR_ROOTS (os.pathsep-separated, in order; the deep step's archive_predecessor_roots: the archive root -
+    the frame in place -, then this launch's own quarantine round - where the pre-search quarantine moved it -, and in the
+    window the production archive in place, read only; never an older round), default the archive root alone. None when no
+    directory holds it."""
+    root = _archive_root()
+    rel = os.path.relpath(dst, root)
+    if rel.startswith('..'):
+        raise RuntimeError(f'{dst} is not under the archive root {root} - REFUSING')
+    for r in [x for x in os.environ.get('P3_ARCHIVE_PREDECESSOR_ROOTS', root).split(os.pathsep) if x]:
+        p = os.path.join(r, rel)
+        if os.path.exists(p):
+            return p
+    return None
+
+
+def merged_archive_header(new, old, old_name):
+    """The superseded frame's header ``old`` updated with the search's own cards ``new`` (each card of ``new`` with its value
+    and comment; COMMENT and HISTORY lines of ``new`` the old header lacks appended), the cards carried from ``old`` named in
+    a HISTORY line. A search-owned card of ``old`` (SEARCH_OWNED_CARDS) the search's frame does not write is dropped, each
+    named in a HISTORY line (dropped_history): its value is the earlier search's. Returns (header, carried keywords, dropped
+    keywords). Refuses (RuntimeError, naming every one) the cards of ``old`` in _WCS_CARD the search's frame lacks - the world
+    coordinate cards, RADECSYS, the observer's place (OBSGEO-*) and the time family (DATE-OBS, MJD-OBS, MJDREF, TIMESYS, ...):
+    never carried and never silently dropped, the merged header would mix two coordinate systems or two time blocks."""
+    out = fits.Header()
+    newkeys = {c.keyword for c in new.cards if c.keyword not in ('COMMENT', 'HISTORY', '')}
+    carried, dropped, wcs = [], [], []
+    for c in old.cards:
+        k = c.keyword
+        if _STRUCT_CARD.match(k):
+            continue
+        if k not in ('COMMENT', 'HISTORY', '') and k not in newkeys:
+            if _WCS_CARD.match(k):
+                wcs.append(k)
+                continue
+            if k in SEARCH_OWNED_CARDS:
+                dropped.append(k)
+                continue
+            carried.append(k)
+        out.append(c, end=True)
+    if wcs:
+        raise RuntimeError(f'{old_name}: the superseded frame carries the coordinate card(s) {" ".join(wcs)} the search\'s '
+                           f'frame lacks - the merged header would mix two coordinate systems or time blocks; REFUSING')
+    oldtxt = {kw: ({str(v) for v in old.get(kw, [])} if kw in old else set()) for kw in ('COMMENT', 'HISTORY')}
+    for c in new.cards:
+        k = c.keyword
+        if _STRUCT_CARD.match(k) or k == '':
+            continue
+        if k in ('COMMENT', 'HISTORY'):
+            if str(c.value) not in oldtxt[k]:
+                (out.add_comment if k == 'COMMENT' else out.add_history)(str(c.value))
+            continue
+        out[k] = (c.value, c.comment)
+    if carried:
+        out.add_history('cards carried from the superseded archive frame: ' + ' '.join(carried))
+    for k in dropped:                    # one line per card: a HISTORY value over 72 characters is split across cards
+        out.add_history(dropped_history(k))
+    return out, carried, dropped
+
+
+def dropped_history(k):
+    """The HISTORY line naming a search-owned card of the superseded frame the search did not write (one card, under 72
+    characters)."""
+    return f'dropped search card {k} of the superseded frame: not written now'
+
+
+def _archive_record(row):
+    """Append one row (ARCHIVE_RECORD_COLS) to the engine's archive record P3_ARCHIVE_RECORD, when the deep step names one:
+    the frame each archive frame superseded, as the engine used it (its content test reads it)."""
+    p = os.environ.get('P3_ARCHIVE_RECORD')
+    if not p:
+        return
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    with open(p, 'a', newline='') as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        w = csv.writer(fh)
+        if fh.tell() == 0:
+            w.writerow(ARCHIVE_RECORD_COLS)
+        w.writerow([row.get(k, '') for k in ARCHIVE_RECORD_COLS])
+        fh.flush()
+        os.fsync(fh.fileno())
+        fcntl.flock(fh, fcntl.LOCK_UN)
+
+
+def _archive_write_merged(path, dst, pred, cell_tag, d):
+    """Write the archive frame ``dst``: the work frame's pixels with the merged header (merged_archive_header of the
+    predecessor ``pred``, or the work frame's own header when there is none), validated at level 'full' on a temporary file
+    beside ``dst`` and placed only when valid and when its pixels are the work frame's, bit for bit (core/placement.atomic:
+    the replaced frame's group, mode and ACL, or the directory's rule for a new one; the work frame's times, as copy2 gave
+    them). Every card of the predecessor is in the written frame, or nothing is placed. A refusal leaves ``dst`` as it was."""
+    from exopipe.common.validate_fits_headers import validate_header
+    with fits.open(path, memmap=False) as h:
+        new, data = h[0].header.copy(), np.array(h[0].data)
+    carried, dropped, pcards = [], [], []
+    if pred:
+        with fits.open(pred, memmap=False, lazy_load_hdus=True) as h:   # never memory-mapped (Lustre)
+            old = h[0].header.copy()
+        hdr, carried, dropped = merged_archive_header(new, old, f'{cell_tag} {d} {os.path.basename(pred)}')
+        pcards = sorted({c.keyword for c in old.cards if not _STRUCT_CARD.match(c.keyword)} - {'COMMENT', 'HISTORY', ''})
+        # every card of the predecessor, but its search-owned cards this search does not write (dropped, named above)
+        lost = sorted({c.keyword for c in old.cards if not _STRUCT_CARD.match(c.keyword)} - set(hdr.keys()) - SEARCH_OWNED_CARDS)
+        if lost:
+            raise RuntimeError(f'{cell_tag} {d}: the archive frame would lack card(s) {lost} of the frame it supersedes '
+                               f'({pred}) - REFUSING')
+    else:
+        hdr = new
+    placement.sweep([dst])              # a killed earlier write's temporary file (not modified for an hour)
+    with placement.atomic(dst) as _tmp:
+        fits.writeto(_tmp, data, hdr)
+        rep = validate_header(_tmp, level='full')
+        if not rep.ok:
+            raise RuntimeError(f'{cell_tag} {d}: archive frame header validation FAILED for {os.path.basename(dst)} '
+                               f'({"; ".join(rep.errors)[:300]}) - REFUSING to archive')
+        with fits.open(_tmp, memmap=False) as h:
+            back = np.asarray(h[0].data)
+        if back.shape != data.shape or back.dtype != data.dtype or not np.array_equal(back.view(np.uint8), data.view(np.uint8)):
+            raise RuntimeError(f'{cell_tag} {d}: the archive frame written for {os.path.basename(dst)} does not hold the work '
+                               f'frame\'s pixels bit for bit - REFUSING')
+    st = os.stat(path)
+    os.utime(dst, ns=(st.st_atime_ns, st.st_mtime_ns))
+    _archive_record(dict(archive=dst, work_frame=path, predecessor=pred or '', predecessor_cards=' '.join(pcards),
+                         carried=' '.join(carried), dropped=' '.join(dropped),
+                         written_utc=time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())))
+    print(f'  archive {os.path.basename(dst)}: ' + (f'header of the superseded {pred}' + (f', carried {" ".join(carried)}'
+                                                                                         if carried else ', nothing carried')
+                                                    + (f', dropped {" ".join(dropped)}' if dropped else '')
+                                                    if pred else 'no superseded frame (its own header, validated)'),
+          flush=True)
 
 
 def _write_archive_frame(path, data, hdr, cell_tag, d):

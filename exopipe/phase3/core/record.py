@@ -140,10 +140,14 @@ def _fits_value(text):
     return v
 
 
-def fits_primary_cards(path, max_blocks=400):
+def fits_primary_cards(path, max_blocks=400, continued=False):
     """Cards of the PRIMARY header of a FITS file, read header-only (2880-byte blocks up to END; no astropy, no
-    data read). {} for a file that does not start with SIMPLE. The first value of a repeated keyword is kept."""
+    data read). {} for a file that does not start with SIMPLE. The first value of a repeated keyword is kept.
+    ``continued``: a string value continued over CONTINUE cards (the FITS long-string convention astropy writes for a string
+    over 68 characters, e.g. a deep frame's PRODNAME) is read whole; without it the value is its first card's, ending in '&'
+    (unchanged for the callers that do not ask)."""
     cards = {}
+    pending = None              # the key whose string value ended in '&' on the card before (continued=True)
     with open(path, 'rb') as f:
         for n in range(max_blocks):
             blk = f.read(2880)
@@ -154,8 +158,17 @@ def fits_primary_cards(path, max_blocks=400):
                 key = card[:8].strip()
                 if key == 'END':
                     return cards
+                if continued:
+                    if pending and key == 'CONTINUE' and card[8:].lstrip().startswith("'"):
+                        cards[pending] = cards[pending][:-1] + _fits_value(card[8:])
+                        if not cards[pending].endswith('&'):
+                            pending = None
+                        continue
+                    pending = None
                 if card[8:10] == '= ' and key not in cards:
                     cards[key] = _fits_value(card[10:])
+                    if continued and card[10:].lstrip().startswith("'") and cards[key].endswith('&'):
+                        pending = key
     return cards
 
 

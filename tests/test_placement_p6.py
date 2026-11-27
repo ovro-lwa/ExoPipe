@@ -39,8 +39,10 @@ it): the tests hold under umask 022 and 002. Checks:
            (work kept: ...)';
   deep     the deep search's _write_archive_frame (a header that fails validation or a placement refusal leaves the frame
            as it was, no temporary file) and _archive_frame_publish (the archive frame takes the archive directory's mode,
-           never the work frame's 0600, with the work frame's times; a copy that differs leaves the earlier archive frame);
-           compiled alone (the module needs the cluster's data to import);
+           never the work frame's 0600, with the work frame's times and pixels; since 2026-11-27 it is written - the
+           superseded frame's header updated with the search's cards, validated - not copied: a header that fails validation
+           or a placement refusal leaves the earlier archive frame); compiled alone (the module needs the cluster's data to
+           import);
   publish  deep_step stage_publish: a file of the attempt not placed removes <dest>.part and publishes nothing, the refusal
            naming what was copied; the side outputs are placed BEFORE the attempt is published, and one that is not placed
            publishes nothing; an attempt already published refuses (a Refusal, never a RuntimeError), naming a missing
@@ -799,10 +801,17 @@ def test_photometry():
 
 def _deep_writers():
     src = open(os.path.join(REPO, 'exopipe', 'phase3', 'lib', 'search', 'deep_search.py')).read()
-    fns = {n.name: n for n in ast.parse(src).body if isinstance(n, ast.FunctionDef)}
-    code = '\n\n'.join(ast.get_source_segment(src, fns[k]) for k in ('_archive_root', '_archive_frame_publish',
-                                                                     '_write_archive_frame'))
-    g = dict(os=os, np=np, fits=fits, placement=PL)
+    body = ast.parse(src).body
+    fns = {n.name: n for n in body if isinstance(n, ast.FunctionDef)}
+    fns.update({t.id: n for n in body if isinstance(n, ast.Assign) for t in n.targets if isinstance(t, ast.Name)})
+    code = '\n\n'.join(ast.get_source_segment(src, fns[k]) for k in (
+        '_STRUCT_CARD', '_WCS_CARD', 'SEARCH_OWNED_CARDS', 'ARCHIVE_RECORD_COLS', '_archive_root', '_archive_predecessor',
+        'merged_archive_header', 'dropped_history', '_archive_record', '_archive_write_merged', '_archive_frame_publish',
+        '_write_archive_frame'))
+    import csv
+    import fcntl
+    import re
+    g = dict(os=os, re=re, np=np, fits=fits, placement=PL, time=time, csv=csv, fcntl=fcntl)
     exec(compile(code, 'deep_search.py:writers', 'exec'), g)
     return g
 
@@ -844,28 +853,43 @@ def test_deep_search_writers():
         VF.validate_header = real
     os.chmod(path, 0o600)
     os.utime(path, OLD)
-    env = {k: os.environ.get(k) for k in ('P3_ARCHIVE_ROOT', 'P3_ARCHIVE_RUN', 'P3_ARCHIVE_WRITE')}
+    env = {k: os.environ.get(k) for k in ('P3_ARCHIVE_ROOT', 'P3_ARCHIVE_RUN', 'P3_ARCHIVE_WRITE',
+                                          'P3_ARCHIVE_PREDECESSOR_ROOTS')}
     try:
+        VF.validate_header = lambda p, level='standard': ok
         arch = os.path.join(d, 'archive')
         os.makedirs(arch)
         os.chmod(arch, 0o2775)
         os.environ.update(P3_ARCHIVE_ROOT=arch, P3_ARCHIVE_RUN='Run_test')
         os.environ.pop('P3_ARCHIVE_WRITE', None)
+        os.environ.pop('P3_ARCHIVE_PREDECESSOR_ROOTS', None)
         dst = g['_archive_frame_publish'](path, '09h', 'Red', '2025-01-01', 'I', 'deep', '09h Red')
         assert dst == f'{arch}/09h/2025-01-01/Run_test/Red/I/deep/ovro_lwa_test_frame.fits', dst
-        assert _md5(dst) == _md5(path) and stat.S_IMODE(os.stat(dst).st_mode) == _rule_mode(os.path.dirname(dst)), \
-            oct(os.stat(dst).st_mode)
+        assert (np.array_equal(fits.getdata(dst), fits.getdata(path)) and fits.getheader(dst)['PRODNAME'] == hdr['PRODNAME']
+                and stat.S_IMODE(os.stat(dst).st_mode) == _rule_mode(os.path.dirname(dst))), oct(os.stat(dst).st_mode)
         assert os.stat(dst).st_mtime_ns == OLD[1] * 10 ** 9
         before = _md5(dst)
         fits.setval(path, 'EXTRA', value=1)
-        with _differs_for('f_redo_resid_09h.fits'):
-            try:
-                g['_archive_frame_publish'](path, '09h', 'Red', '2025-01-01', 'I', 'deep', '09h Red')
-                raise AssertionError('an archive copy that differs was placed')
-            except PL.CopyNotVerified:
-                pass
+        ok.ok, ok.errors = False, ['NAXIS missing']
+        try:
+            g['_archive_frame_publish'](path, '09h', 'Red', '2025-01-01', 'I', 'deep', '09h Red')
+            raise AssertionError('an archive frame whose header fails validation was placed')
+        except RuntimeError as e:
+            assert 'archive frame header validation FAILED' in str(e), e
         assert _md5(dst) == before and not _leftovers(d), _leftovers(d)
+        ok.ok, ok.errors = True, []
+        if CAN_REFUSE:
+            with _refuse_for('ovro_lwa_test_frame.fits'):
+                try:
+                    g['_archive_frame_publish'](path, '09h', 'Red', '2025-01-01', 'I', 'deep', '09h Red')
+                    raise AssertionError('a refused placement was placed')
+                except PL.PlacementRefusal:
+                    pass
+            assert _md5(dst) == before and not _leftovers(d), _leftovers(d)
+        g['_archive_frame_publish'](path, '09h', 'Red', '2025-01-01', 'I', 'deep', '09h Red')
+        assert fits.getheader(dst).get('EXTRA') == 1 and not _leftovers(d), _leftovers(d)    # the frame it superseded in place
     finally:
+        VF.validate_header = real
         for k, v in env.items():
             if v is None:
                 os.environ.pop(k, None)
@@ -873,8 +897,8 @@ def test_deep_search_writers():
                 os.environ[k] = v
     print('ok deep: _write_archive_frame places a valid frame (a killed write\'s temporary file swept), and a header that '
           'fails validation or a placement refusal leaves the frame as it was; _archive_frame_publish gives the archive '
-          'frame the directory\'s rule (the work frame 0600) and the work frame\'s times; a copy that differs leaves the '
-          'earlier archive frame; no temporary file')
+          'frame the directory\'s rule (the work frame 0600), the work frame\'s times and pixels; a header that fails '
+          'validation or a placement refusal leaves the earlier archive frame; no temporary file')
 
 
 def test_deep_publish():
