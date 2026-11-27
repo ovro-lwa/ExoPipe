@@ -585,7 +585,8 @@ def test_engine_child():
     item = DS.Item(CELL, 'I', 'bulk')
     ctx = dict(attempts=os.path.join(TMP, 'w', 'attempts'), tmp=os.path.join(TMP, 'w', 'tmp'),
                flow_root=os.path.join(TMP, 'w', 'flow'), archive_root=os.path.join(TMP, 'out', 'archive_mirror'), label='P3S5',
-               out=os.path.join(TMP, 'out'))
+               out=os.path.join(TMP, 'out'),
+               launch=(1795737600.0, '20261127'))   # the run's fixed launch (deep_step.run_launch, read at the run's start)
     for d in (ctx['attempts'], ctx['tmp'], ctx['flow_root']):
         os.makedirs(d, exist_ok=True)
     f = dict(base=os.path.join(TMP, 'coadd', CELL))
@@ -662,7 +663,8 @@ def test_b02_detect_frame_noise():
     run = record.Run('search', ['test'], os.path.join(TMP, 'out_b02fn'), CFG, dry_run=True)
     ctx = dict(attempts=os.path.join(TMP, 'w_b02fn', 'attempts'), tmp=os.path.join(TMP, 'w_b02fn', 'tmp'),
                flow_root=os.path.join(TMP, 'w_b02fn', 'flow'), archive_root=os.path.join(TMP, 'out_b02fn', 'archive_mirror'),
-               label='P3S5', out=os.path.join(TMP, 'out_b02fn'))
+               label='P3S5', out=os.path.join(TMP, 'out_b02fn'),
+               launch=(1795737600.0, '20261127'))   # the run's fixed launch (deep_step.run_launch, read at the run's start)
     for d in (ctx['attempts'], ctx['tmp'], ctx['flow_root']):
         os.makedirs(d, exist_ok=True)
     out = {}
