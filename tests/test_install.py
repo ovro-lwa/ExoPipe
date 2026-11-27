@@ -1000,8 +1000,10 @@ def _stamp_record(out, gen, value, wrong=None, status='done', kind='rebuild', wr
 
 
 def _e2e_record(run, nights, hdrs):
-    """G (2026-11-25, MDWSTAT from the dewarp record): a rebuilt cell whose dewarp was not accepted - the record stage stamped
-    MDWSTAT on its masters and recorded each one's md5. A record that is not current for the generation (one master's md5
+    """G (2026-11-25, MDWSTAT from the dewarp record): a rebuilt cell whose dewarp record stamped MDWSTAT on its masters and
+    recorded each one's md5 (a value other than the table's; 'applied ...', since the generation's real headers carry the
+    apply's MDWARP T and so take '_mdewarp' archive names - a not-dewarped value with them is a contradiction the sibling gate
+    refuses, R-GREGG-20261127-PR157-AND-18MHZ-SIBLING-CHECK-RECOMMENDATIONS-APPROVED). A record that is not current for the generation (one master's md5
     differs) refuses at MDW-REC before staging, the cell untouched, never falling back to the table; the current record is
     the source: the install is done, gate MDW-REC passes and notes that the record's value differs from the table's (cell
     and both values), the installed masters carry the record's value, and stage cards' sibling gate compares with the
@@ -1014,7 +1016,7 @@ def _e2e_record(run, nights, hdrs):
     CFG.reset()
     table = CFG.install.MDWSTAT_TABLE
     tv = (R1.load_mdw_table(table).get(CELL) or {}).get('mdwstat')
-    value = 'refused: held-out gain 1.2 arcsec < 5 (synthetic test)'
+    value = 'applied (synthetic test record)'
     out = f'{ROOT}/outG'
     cdir = build_current(out, hdrs, nights, run)
     gen = promoted_generation('promotedG', hdrs, nights, seed=7)
