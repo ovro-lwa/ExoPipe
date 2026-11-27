@@ -702,3 +702,20 @@ def served_counts_add_up(path, **ctx):
 def kept_product_follows_the_drop(path, tier=None, decisions=None, **ctx):
     """deep_omission_kept.csv: what the snapshot tier's cumulative step applies, traced to the decisions, record and summary."""
     return check_kept(path, decisions)
+
+
+@content_test('omission_cells')
+def coverage_matches_the_table(path, **ctx):
+    """deep_omission_cells.csv: the coverage record of deep_omission.csv beside it - names that table's sha256, holds every
+    cell with a decision row with that row's verdicts, and nothing else disagrees (wraps/builder_grouping.Omission, the one
+    reading the grouping and the builds use)."""
+    from exopipe.phase3.lib.catalog.wraps import builder_grouping as BG
+    table = path[:-len(BG.OMISSION_CELLS_SUFFIX)] + '.csv'
+    try:
+        om = BG.Omission(table)
+    except BG.Refused as e:
+        return _fail([str(e)], 0, '')
+    if os.path.abspath(om.cells_path) != os.path.abspath(path):
+        return _fail([f'the coverage record of {table} is {om.cells_path}, not {path}'], 0, '')
+    return _fail([], len(om.cells), f'{len(om.cells)} (LST, band, night, Stokes) cells, {len(om.keys)} OMIT, '
+                                    f'{om.decisions} decision rows of {table}')

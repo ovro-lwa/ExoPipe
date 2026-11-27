@@ -26,10 +26,14 @@ first that does not end done stops the item):
               build (--sublst-builds) and key with rows (as delta_build.key_state), the all-nights build's frozen record
               source_catalogs_<build>_<key>/builder_frozen.json (what each delta build reads);
         I-G8  the deep omission: the latest grouping run of each Stokes recorded a deep-omission decision table, the same
-              one for both Stokes (path and sha256), the table is unchanged now (grouping_stage.recorded_omission), and
-              every frozen record of I-G7 names that table's sha256 (the all-nights builds dropped the same OMIT cells the
-              grouping did). A table that differs REFUSES: the frozen state stands on one omission, made again only by a
-              new all-nights pass (FIRST_RUN). The night's grouping run is filtered by that same table.
+              one for both Stokes (path and sha256 of the table and of its coverage record), both unchanged now
+              (grouping_stage.grouping_omission, read once per item), and every frozen record of I-G7 names those sha256
+              (the all-nights builds dropped the same OMIT cells the grouping did). A table that differs REFUSES: the
+              frozen state stands on one omission, made again only by a new all-nights pass (FIRST_RUN). The night's
+              grouping run is filtered by that same table;
+        I-G9  the night has verdicts: the table's coverage record holds a cell of this night of this hour. A table computed
+              before the night (every appended night, until the follow-up computes verdicts for appended nights) REFUSES,
+              naming the night - never kept for want of a verdict.
         It ends no-input (exit 3; the chain goes on) when F's image table already holds the night: the night's 10-minute
         rows are then the all-nights pass's (a night in the window Masters, catalogued by the batch chain 'sublst-lst'),
         never appended a second time.
@@ -82,8 +86,9 @@ BUILD_STAGES = 'build,buildv,view'
 FIRST_RUN = ('The frozen state is written by the all-nights 10-minute pass under design B, in this order: (1) for every LST '
              'hour L, `exopipe3 catalog --tier sublst --lsts L --out F_L --until veto` over all nights (preflight..veto; its '
              'conformance writes conform_table_noise.csv and conform_pulsar_evidence.csv); (2) the deep omission of all '
-             'hours, `exopipe3 catalog --tier sublst --stages omit --lsts <every hour> --out O` (O/deep_omission.csv, the '
-             'decision table); (3) ONE tier-wide grouping (one state per Stokes for the whole tier, not one per LST) '
+             'hours on the same detections, `exopipe3 catalog --tier sublst --stages omit --lsts <every hour> --omit-lst-dir '
+             'L=F_L (every hour) --out O` (O/deep_omission.csv, the decision table, rated on the F_L catalogs as production '
+             'rates the runs it merges, and O/deep_omission_cells.csv, the cells it decides); (3) ONE tier-wide grouping (one state per Stokes for the whole tier, not one per LST) '
              '`exopipe3 catalog --tier sublst --stages group --group-new-state --group-omission O --lsts <every hour> '
              '--group-lst-dir L=F_L` (every hour) into catalog_grouping.SUBLST_DIR, which drops the OMIT cells of O before '
              'grouping; (4) the builds of every hour `--lsts L --out F_L --stages build,buildv` (each drops the same OMIT '
@@ -245,7 +250,11 @@ def frozen_state(lst, night, arm, out, grouping_dir, builds, view_hours=None, cf
                           f'{FIRST_RUN}' +
                           ('' if view_hours else '; or name the hours to view with --sublst-view-hours (an hour left out is '
                                                  'never certified for the cumulative)'))
-    omission = omission_state(grouping_dir, frozen)
+    om = omission_state(grouping_dir, frozen)
+    why = om.night_refusal(lst, night)
+    if why:
+        raise rec.Refusal(f'I-G9 {why}')
+    omission = om.ref()
     return dict(version=1, lst=lst, arm=arm, night=night, night_dir=_real(out), grouping_dir=_real(grouping_dir),
                 grouping=latest, frozen_from=F, hours=runs, nights_before=[list(x) for x in nights], scope=scope,
                 builds=list(builds), conform=dict(record=_rec().record_path(F, 'catalog', f'{unit}.conform'),
@@ -254,35 +263,31 @@ def frozen_state(lst, night, arm, out, grouping_dir, builds, view_hours=None, cf
 
 
 def omission_state(grouping_dir, frozen):
-    """I-G8 (the module text): {path, sha256} of the deep-omission decision table the frozen state stands on - the one the
-    latest grouping run of both Stokes recorded, unchanged now, and named by every frozen record of ``frozen`` ({hour:
-    {build_key: builder_frozen.json}}). Anything else raises record.Refusal."""
+    """I-G8 (the module text): the Omission (read once) of the deep-omission decision table the frozen state stands on - the
+    one the latest grouping run of both Stokes recorded (grouping_stage.grouping_omission), unchanged now, and named (table
+    and coverage record) by every frozen record of ``frozen`` ({hour: {build_key: builder_frozen.json}}). Anything else raises
+    record.Refusal."""
     rec, GS = _rec(), _gs()
-    got = {}
-    for S in ('I', 'V'):
-        try:
-            got[S] = GS.recorded_omission(grouping_dir, S)
-        except GS.StageRefusal as e:
-            raise rec.Refusal(f'I-G8 the deep omission of the frozen state: {e}. {FIRST_RUN}')
-    if got['I'] != got['V']:
-        raise rec.Refusal(f'I-G8 the Stokes I and V groupings in {grouping_dir} were filtered by different deep-omission '
-                          f'decision tables ({got["I"]["path"]} sha256 {got["I"]["sha256"][:12]}; {got["V"]["path"]} sha256 '
-                          f'{got["V"]["sha256"][:12]}): group both Stokes again (one run). {FIRST_RUN}')
-    want, bad = got['I']['sha256'], []
+    try:
+        om = GS.grouping_omission(grouping_dir)
+    except GS.StageRefusal as e:
+        raise rec.Refusal(f'I-G8 the deep omission of the frozen state: {e}. {FIRST_RUN}')
+    bad = []
     for H, recs in sorted(frozen.items()):
         for name, p in sorted(recs.items()):
             try:
                 with open(p) as f:
-                    have = ((json.load(f).get('omission') or {}).get('sha256')) or ''
+                    have = json.load(f).get('omission') or {}
             except (OSError, ValueError) as e:
-                have = f'unreadable ({type(e).__name__})'
-            if have != want:
-                bad.append(f'{H} {name}: {have[:12] or "no table"}')
+                have = {'sha256': f'unreadable ({type(e).__name__})'}
+            if not om.same(have):
+                bad.append(f'{H} {name}: {str(have.get("sha256") or "no table")[:12]}')
     if bad:
         raise rec.Refusal(f'I-G8 {len(bad)} frozen record(s) were built under another deep-omission decision table than the '
-                          f'grouping\'s ({got["I"]["path"]}, sha256 {want[:12]}): {", ".join(bad[:8])}'
-                          f'{" ..." if len(bad) > 8 else ""} - the frozen state stands on one omission. {FIRST_RUN}')
-    return got['I']
+                          f'grouping\'s ({om.path}, sha256 {om.sha256[:12]}, coverage record {om.cells_sha256[:12]}): '
+                          f'{", ".join(bad[:8])}{" ..." if len(bad) > 8 else ""} - the frozen state stands on one omission. '
+                          f'{FIRST_RUN}')
+    return om
 
 
 def _night_args(args, lst, night, frozen_from, gdir, stages=None):
@@ -383,12 +388,15 @@ def _group(run, u, st, out):
     if not any(L == lst and D == _real(out) for L, D in nd):
         nd.append((lst, _real(out)))
     hours = sorted(runs)
-    try:                                  # I-G8 again: the night is grouped under the table the frozen state stands on
-        om = omission_state(gdir, st['frozen_records'])
-    except rec.Refusal as e:
-        u.refuse(str(e))
-    if om != st.get('omission'):
-        u.refuse(f'I-G8 the deep-omission decision table of the grouping {gdir} changed since the gate read it: run the item again')
+    om = st.get('omission') or {}        # I-G8, read once by the gate: the night is grouped under the gate's table
+    for S in ('I', 'V'):                  # the latest runs still name it (records only; the grouping run reads it again)
+        try:
+            ref = GS.recorded_omission_ref(gdir, S)
+        except GS.StageRefusal as e:
+            u.refuse(f'I-G8 {e}')
+        if ref != om:
+            u.refuse(f'I-G8 the deep-omission decision table of the Stokes {S} grouping {gdir} changed since the gate read it: '
+                     f'run the item again')
     gargs = argparse.Namespace(tier='sublst', stages=STAGE_GROUP, lsts=','.join(hours), run_label=None, group_input=None,
                                group_new_state=False, group_mode='incremental', group_stokes='I,V', group_omission=om['path'],
                                group_lst_dir=[f'{H}={runs[H]}' for H in hours], group_night_dir=[f'{L}={D}' for L, D in nd])
@@ -424,6 +432,13 @@ def _group(run, u, st, out):
                        + ('' if held else f', not {out}'), path=table)
         tables[S] = dict(path=table, sha1=sha)
         u.add_input(table)
+        try:                              # the run read the gate's table (the grouping run hashed it again)
+            ref = GS.recorded_omission_ref(gdir, S)
+        except GS.StageRefusal as e:
+            u.refuse(f'after the grouping run: I-G8 {e}')
+        if ref != om:
+            u.refuse(f'I-G8 the grouping run with the night recorded another deep-omission decision table ({ref["path"]} sha256 '
+                     f'{ref["sha256"][:12]}) than the gate read ({om["path"]} sha256 {om["sha256"][:12]})')
     doc = dict(version=1, lst=lst, night=st['night'], grouping_dir=gdir, run_summary=summ, unit=gu[-1].name,
                record=rec.record_path(gdir, 'catalog', gu[-1].name), mode='incremental', tables=tables,
                hours=runs, nights=[list(x) for x in nd], counts=gu[-1].meta.get('summary'))
@@ -549,6 +564,7 @@ def run(args, run, epochs):
             u.add_input(g['record'])
             u.add_input(g['table'])
         u.add_input(st['omission']['path'])
+        u.add_input(st['omission']['cells_path'])
         u.add_input(st['conform']['record'])
         u.add_input(st['conform']['noise'])
         u.add_input(st['conform']['evidence'])

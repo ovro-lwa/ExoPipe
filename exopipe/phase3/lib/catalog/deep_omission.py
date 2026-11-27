@@ -63,7 +63,16 @@ DROP (the data level, before the cumulative catalogs, identities and pages):
       merge (sublst_cumulative.sh:99-107; test M1, sublst_master_identity.py:19): `catalog --tier sublst --stages group
       --group-omission <this stage's --out>` drops the OMIT rows from the grouping input and every LST build drops them from
       its builder input (lib/catalog/grouping_stage.py); the re-judging's removals keep their detections there, as the
-      detection tables keep them.
+      detection tables keep them. THE TABLE IS RATED ON THE DETECTIONS GROUPED: production's rate condition counts the
+      detections of the runs its merge then reads (sublst_deep_omission.py:124-131 served_counts, the published runs'
+      master_catalog.csv; sublst_cumulative.sh:99-101); under design B the grouping reads the LSTs' catalog directories F_L,
+      so `--omit-lst-dir L=F_L` makes this stage count (and look for members in) F_L instead of the published run. Beside
+      the table this stage writes its COVERAGE RECORD deep_omission_cells.csv (wraps/builder_grouping.write_cells): every
+      (LST, band, night, Stokes) cell of those detections (master_catalog.csv and pertie_detections.csv, the grouping's two
+      inputs; production's cell key, sublst_deep_omission_drop.py:43) and every cell with a decision row, with its verdicts
+      and the table's sha256. The table lists deep refusals only (a cell without a row is kept); the record says which cells
+      it decided, so the grouping and the builds REFUSE a detection of any other cell - a night newer than the table, or
+      detections other than the rated ones - instead of keeping it (G13 refuses a cand_id that does not name its cell).
 
 Where it sits. Production applies the rule where the cumulative product is assembled, after each unit's catalogue chain and
 pages (the served detections the rate condition counts exist only then) and before the cumulative catalogues, identities and
@@ -730,10 +739,11 @@ class TenminRecords:
     the wideband windows' WBMEMB cards. Window-rms caches are per LST, window_rms_<LST>.csv (production's layout): the stage's
     own under ``cache_dir`` (written), production's under ``seed_dir`` (read only)."""
 
-    def __init__(self, reader, cache_dir=None, seed_dir=None, frame_rms=None):
+    def __init__(self, reader, cache_dir=None, seed_dir=None, frame_rms=None, lst_dirs=None):
         cfg = _cfg()
         cs = cfg.catalog_sublst
         self.reader = reader
+        self.lst_dirs = {k: os.path.abspath(v) for k, v in (lst_dirs or {}).items()}   # --omit-lst-dir: rated instead of the run
         self.root = cfg.paths.SUBLST_ROOT
         self.arm = cs.ARM
         self.tree = cs.TENMIN_TREE.format(root=self.root, tree=cs.ARM_TREES[self.arm])
@@ -806,6 +816,9 @@ class TenminRecords:
         os.replace(f + '.tmp', f)
 
     def run_dir(self, lst):
+        """The LST's detections the table is rated on: its --omit-lst-dir directory, else its published run."""
+        if lst in self.lst_dirs:
+            return self.lst_dirs[lst]
         return os.path.join(_cfg().paths.TRANSIENTS_ROOT, _c().TENMIN_RUN.format(hh=lst[:-1], arm=self.arm))
 
     def windows(self, lst, band):
@@ -2190,21 +2203,59 @@ def write_rejudged(path, rows):
         w.writerows(rows)
 
 
-def tenmin_table(lsts, out_csv, rdir=None, cache_dir=None, seed_dir=None, reader=None, frame_rms=None):
+def tenmin_cells(lsts, recs, reader):
+    """{(lst, band, night, Stokes): number of detections} of the detections the table is rated on: every row of each LST's
+    master_catalog.csv (the rate's population, served_counts) and of its pertie_detections.csv where present (the grouping's
+    second input, grouping_stage.assemble_tenmin_input: a cell only it holds is covered too; a run without it is refused by
+    the grouping) in recs.run_dir(LST). G13: a cand_id that does not name its cell (production's key,
+    sublst_deep_omission_drop.py:43) REFUSES - a cell the coverage record cannot hold is never kept by default."""
+    from exopipe.phase3.lib.catalog.wraps import builder_grouping as BG
+    n, bad = collections.Counter(), []
+    for L in lsts:
+        R = recs.run_dir(L)
+        pt = [p for p in (os.path.join(R, 'pertie_detections.csv'), os.path.join(R, 'pertie', 'pertie_detections.csv'))
+              if os.path.exists(p)]
+        for p, g in [(os.path.join(R, 'master_catalog.csv'), 'tenmin_served')] + [(q, 'tenmin_pertie') for q in pt[:1]]:
+            for r in reader.rows(p, g, missing_ok=False):
+                k = BG.cell_of(r.get('cand_id'), r.get('stokes'))
+                if k is None:
+                    bad.append(f'{r.get("cand_id")!r} ({p})')
+                else:
+                    n[k] += 1
+    if bad:
+        refuse(f'G13: {len(bad)} detection(s) whose cand_id does not name its (LST, night, band) cell - the coverage record '
+               f'cannot hold them: {", ".join(bad[:5])}')
+    return n
+
+
+def tenmin_table(lsts, out_csv, rdir=None, cache_dir=None, seed_dir=None, reader=None, frame_rms=None, lst_dirs=None,
+                 cells=False):
     """The 10-minute decision table of ``lsts`` into ``out_csv`` - what the cumulative merge reads (SUBLST_DEEP_OMISSION).
     Window-rms caches: the stage's own under ``cache_dir`` (window_rms_<LST>.csv, written), production's under ``seed_dir``
-    (read only). Returns (rows, TenminRecords). G1 the refusal record; G2 an LST without its published run."""
+    (read only). lst_dirs ({LST: directory}, --omit-lst-dir): the detections rated for those LSTs instead of the published
+    runs. cells: also write the table's coverage record (tenmin_cells; recs.cells = (path, sha256, number of cells)).
+    Returns (rows, TenminRecords). G1 the refusal record; G2 an LST without its detections; G13 (tenmin_cells)."""
     c = _c()
     rdir = rdir or c.REFUSALS
     _record_gate(rdir)
     reader = reader or Reader()
-    recs = TenminRecords(reader, cache_dir=cache_dir, seed_dir=seed_dir, frame_rms=frame_rms)
+    recs = TenminRecords(reader, cache_dir=cache_dir, seed_dir=seed_dir, frame_rms=frame_rms, lst_dirs=lst_dirs)
+    bad = sorted(set(recs.lst_dirs) - set(lsts))
+    if bad:
+        refuse(f'G2: --omit-lst-dir names LST(s) {bad} outside --lsts')
     rows = []
     for L in lsts:
         if not os.path.exists(os.path.join(recs.run_dir(L), 'master_catalog.csv')):
-            refuse(f'G2: no published 10-minute run {recs.run_dir(L)}/master_catalog.csv for {L}')
+            refuse(f'G2: no 10-minute detections {recs.run_dir(L)}/master_catalog.csv for {L}'
+                   + ('' if L in recs.lst_dirs else ' (its published run)'))
         rows += decide_tenmin(L, rdir=rdir, recs=recs, reader=reader)
     write_decisions(out_csv, rows, TIER_TENMIN)
+    recs.cells = None
+    if cells:
+        from exopipe.phase3.lib.catalog.wraps import builder_grouping as BG
+        n = tenmin_cells(lsts, recs, reader)
+        p, sha = BG.write_cells(out_csv, n)
+        recs.cells = (p, sha, len(set(n) | {(r['lst'], r['band'], r['night'], r['stokes']) for r in rows}))
     return rows, recs
 
 
@@ -2216,10 +2267,11 @@ def tenmin_served_of(recs):
     return f
 
 
-def run_tenmin(lsts, out, rdir=None, seed_dir=None, u=None, label='omit', frame_rms=None):
-    """The 10-minute stage on the published LST runs of ``lsts``: the decision table, the detections the cumulative merge's
-    drop removes (their record) into ``out``. Window rms: production's cache catalog_omission.TENMIN_RMS_CACHE_SEED is read as
-    a seed (``seed_dir`` '' = none); the stage's own cache under <out>/cache. Returns the summary dict."""
+def run_tenmin(lsts, out, rdir=None, seed_dir=None, u=None, label='omit', frame_rms=None, lst_dirs=None):
+    """The 10-minute stage on the published LST runs of ``lsts`` (``lst_dirs``, --omit-lst-dir: those LSTs' catalog
+    directories instead): the decision table, its coverage record, the detections the cumulative merge's drop removes (their
+    record) into ``out``. Window rms: production's cache catalog_omission.TENMIN_RMS_CACHE_SEED is read as a seed
+    (``seed_dir`` '' = none); the stage's own cache under <out>/cache. Returns the summary dict."""
     c = _c()
     rdir = rdir or c.REFUSALS
     reader = Reader()
@@ -2227,7 +2279,7 @@ def run_tenmin(lsts, out, rdir=None, seed_dir=None, u=None, label='omit', frame_
     seed_dir = c.TENMIN_RMS_CACHE_SEED if seed_dir is None else (seed_dir or None)
     os.makedirs(out, exist_ok=True)
     rows, recs = tenmin_table(lsts, os.path.join(out, 'deep_omission.csv'), rdir=rdir, cache_dir=os.path.join(out, 'cache'),
-                              seed_dir=seed_dir, reader=reader, frame_rms=frame_rms)
+                              seed_dir=seed_dir, reader=reader, frame_rms=frame_rms, lst_dirs=lst_dirs, cells=True)
     OM, why = omitted_keys(rows), why_of(rows)
     absent = absent_gate(rows, tenmin_served_of(recs))
     rules = tenmin_rule_check(lsts)                     # G12: the LSTs' jobs searched under the configured size rule
@@ -2242,12 +2294,15 @@ def run_tenmin(lsts, out, rdir=None, seed_dir=None, u=None, label='omit', frame_
                 decisions=len(rows), omit_keys=len(OM),
                 verdicts=dict(collections.Counter(r['verdict'] for r in rows)),
                 absent_with_served=len(absent), window_rms=dict(sorted(recs.n.items())), rms_cache_seed=seed_dir,
+                rated=dict((L, recs.run_dir(L)) for L in lsts), lst_dirs=dict(recs.lst_dirs),
+                cells=dict(path=recs.cells[0], sha256=recs.cells[1], cells=recs.cells[2]),
                 seconds=round(time.time() - t0, 1))
     _write_summary(out, summ, n_det + n_rjm, 'decision table %s; %d (lst, band, night, Stokes) omitted; %d sources re-judged out'
                    ' (%d member rows)' % (os.path.join(out, 'deep_omission.csv'), len(OM), len(rej), n_rjm))
     if u is not None:
+        root = None if recs.lst_dirs else _cfg().paths.TRANSIENTS_ROOT      # None: the files' common path
         reader.record(u, {'refusals': rdir, 'tenmin_frames': recs.tree, 'tenmin_searched': recs.search,
-                          'tenmin_served': _cfg().paths.TRANSIENTS_ROOT, 'tenmin_members': _cfg().paths.TRANSIENTS_ROOT})
+                          'tenmin_served': root, 'tenmin_members': root, 'tenmin_pertie': root})
     return summ
 
 
@@ -2298,6 +2353,10 @@ def add_arguments(p):
     p.add_argument('--omit-runs', metavar='RUN,RUN|@FILE',
                    help='--stages omit, tier snapshot: the served batch runs of the view (directories, comma list or @file); '
                         'tier sublst takes --lsts (the published Run_SLST<hh>B runs)')
+    p.add_argument('--omit-lst-dir', action='append', default=[], metavar='LST=DIR',
+                   help='--stages omit, tier sublst: rate this LST on the detections of its catalog directory DIR '
+                        '(master_catalog.csv, pertie_detections.csv) instead of its published run - the directory the '
+                        'grouping reads (--group-lst-dir), as production rates the runs its merge reads; repeatable')
     p.add_argument('--omit-refusals', metavar='DIR',
                    help='--stages omit: the deep refusal record - an override of the RULED catalog_omission.REFUSALS (as --set '
                         'catalog_omission.REFUSALS=DIR: needs --ruling-for catalog_omission.REFUSALS=<ledger ID> or a --out '
@@ -2366,15 +2425,25 @@ def run(args, run):
             raise SystemExit('error: catalog --tier sublst --stages omit needs --lsts (the LSTs of the cumulative)')
         lsts = [cells.parse_lst(x) for x in cells.expand(raw, universe=cells.LSTS, kind='LST')]
         label = getattr(args, 'run_label', None) or 'Run_SLSTOMIT'
+        lst_dirs = {}
+        for x in getattr(args, 'omit_lst_dir', None) or []:
+            L, sep, D = x.partition('=')
+            if not sep or not D:
+                raise SystemExit(f'error: --omit-lst-dir {x!r}: LST=DIR')
+            L = cells.parse_lst(L)
+            if L in lst_dirs or L not in lsts:
+                raise SystemExit(f'error: --omit-lst-dir {x!r}: an LST of --lsts, once')
+            lst_dirs[L] = os.path.abspath(D)
     if run.dry_run:
         print(f'[{label}.{STAGE}] tier {tier}: refusal record {rdir}; out {out}; '
-              + (f'runs {" ".join(runs)}' if tier == TIER_SNAPSHOT else f'LSTs {" ".join(lsts)}'))
+              + (f'runs {" ".join(runs)}' if tier == TIER_SNAPSHOT else f'LSTs {" ".join(lsts)}'
+                 + (f'; rated on {", ".join(f"{L}={D}" for L, D in sorted(lst_dirs.items()))}' if lst_dirs else '')))
         return 0
     with run.unit(f'{label}.{STAGE}', tier=tier, stage=STAGE, refusals=rdir) as u:
         if tier == TIER_SNAPSHOT:
             summ = run_snapshot(runs, out, rdir=rdir, u=u, label=label)
         else:
-            summ = run_tenmin(lsts, out, rdir=rdir, u=u, label=label)
+            summ = run_tenmin(lsts, out, rdir=rdir, u=u, label=label, lst_dirs=lst_dirs)
         u.meta['summary'] = summ
         u.note('deep omission (%s): %d decisions, %d OMIT keys, %d detections omitted%s' % (
             tier, summ['decisions'], summ['omit_keys'], summ['omitted'],
@@ -2382,6 +2451,8 @@ def run(args, run):
         dec = os.path.join(out, 'deep_omission.csv')
         u.add_output(dec, 'omission_decisions', tier=tier)
         u.add_output(os.path.join(out, 'deep_omission_dropped.csv'), 'omission_record', tier=tier, decisions=dec)
+        if tier == TIER_TENMIN:            # the cells the table decides (the grouping and the builds refuse any other)
+            u.add_output(os.path.join(out, 'deep_omission_cells.csv'), 'omission_cells', tier=tier, decisions=dec)
         if tier == TIER_SNAPSHOT:          # the drop the snapshot tier's cumulative step applies (Q review F2)
             u.add_output(os.path.join(out, 'deep_omission_served.csv'), 'omission_served', tier=tier)
             u.add_output(os.path.join(out, REJUDGED_FILE), 'omission_rejudged', tier=tier)

@@ -29,11 +29,14 @@ Stages (--stages a,b / --from S / --until S; default all, in this order):
   select      select_v3.py (no verdict file, as production: question Q7) + p3s2_ephem_filter.py + split (S-G15)
   tie         sublst_pertie.py measure + frames on every selected row (S-G11: the window tie T1-T14 at the fitted positions)
   veto        leak_veto_sublst.py per (band, Stokes) of master_catalog.csv (S-G16; output unserved, B-24)
-  build       source catalogues without the leak veto + localizations + rejected-source record (S-G18..S-G20); under
+  build       source catalogs without the leak veto + localizations + rejected-source record (S-G18..S-G20); under
               design B the builder reads the tier-wide 10-minute grouping and its input loses the rows of the OMIT cells of
-              the deep-omission decision table that grouping recorded (S-G28; grouping_stage.recorded_omission,
-              wraps/builder_grouping.py DEEP OMISSION; the per-detection record gives them their own outcome)
-  buildv      source catalogues with the leak veto + localizations (S-G17; the same omission)
+              the deep-omission decision table that grouping recorded - the one table of both Stokes, read once per stage
+              (S-G28; grouping_stage.grouping_omission, wraps/builder_grouping.py DEEP OMISSION; the per-detection record
+              gives them their own outcome). A key whose every selected row is in an OMIT cell is not built: no catalog
+              directory, no builder record; its record part holds the omission outcomes and the unit's meta
+              'omission_unbuilt' names the key ("all N selected rows in OMIT cells")
+  buildv      source catalogs with the leak veto + localizations (S-G17; the same omission)
   tablefilter record only: complete-parent verdicts (tenmin_complete_parent.py on the recorded copy) + table_filter.csv
               (make_table_filter_tenmin.py) + the TABLE-FILTER content test (S-G24; sublst_catalogs.sh:320-351, exopipe_ops
               6c58469 + 5d98279); no-input when the no-veto build is not selected
@@ -65,8 +68,10 @@ Outputs (product classes): master_catalog.csv (merged_record -> tier_rule_remova
          Same names and layout as production (DESIGN 11.1: no renames in the window).
 Failure modes (exit 2, gate named in the record): S-G1..S-G22 and S-G24, S-G25 (2026-11-13) of spec section 5.2; S-G26
          (the ghost-track gate); S-G27 (the 10-minute grouping unit's cross-Stokes link, grouping_stage.link_unit); S-G28
-         (the deep omission of the design-B grouping and builds: no decision table, one missing, unreadable, changed since
-         the grouping recorded it, or without an LST grouped; grouping_stage.omission_of / recorded_omission); any
+         (the deep omission of the design-B grouping and builds: no decision table or coverage record, one missing,
+         unreadable, changed since the grouping recorded it, Stokes I and V groupings on different tables, a row of a cell
+         the table does not decide - a night newer than the table, named; grouping_stage.omission_of / grouping_omission);
+         any
          in-place module exiting non-zero (its last machine line recorded); a [lit] key whose module literal differs from config; a module switch set in this
          process environment that would leak into the children; a missing shared config key (named). Exit 1 = error.
 Per-hour vs intermittent: per LST once its search is complete (DESIGN 12.1: the sub-LST per-hour chain runs `catalog` after
@@ -1961,14 +1966,15 @@ def _build_delta(ctx, s, plan, tag):
         refuse(f'S-G17: build (veto) needs the night\'s leak-veto tables {U}/leakveto (run the veto stage)')
     tables, hours, night_dirs, scope, _out = _delta_inputs(ctx)
     groupings = _groupings(tables)
-    oms = {}
-    for st in tables:                    # the deep omission the grouping followed: every delta build drops its OMIT cells
-        try:
-            oms[st] = GS.recorded_omission(ctx.grouping_dir, st)
-        except GS.StageRefusal as e:
-            refuse(f'S-G28 delta build ({tag}): {e}')
-        s.inp(oms[st]['path'])
-        s.u.meta.setdefault('grouping_omission', {})[st] = oms[st]
+    try:                                 # the deep omission the grouping followed, read once: every delta build drops its OMIT cells
+        om = GS.grouping_omission(ctx.grouping_dir, tuple(sorted(tables)))
+    except GS.StageRefusal as e:
+        refuse(f'S-G28 delta build ({tag}): {e}')
+    s.inp(om.path, om.cells_path)
+    s.u.meta['grouping_omission'] = om.ref()
+    why = om.night_refusal(ctx.lst, ctx.night)      # a night the table predates has no verdict: refused (fail closed)
+    if why:
+        refuse(f'S-G28 delta build ({tag}): {why}')
     earlier = [x for x in DB.read_indexes(night_dirs) if os.path.realpath(x[0]) != os.path.realpath(U)]
     s.code(script)
     for st, (table, sha) in tables.items():
@@ -2017,7 +2023,7 @@ def _build_delta(ctx, s, plan, tag):
             open(f'{d}/{DELTA_STARTED}', 'w').close()   # this stage's own directory from here on, finished or not
             table, sha = tables[k[0]]
             s.inp(f'{FL}/selected_{k}.csv', rec, *[f'{n}/selected_{k}.csv' for n in nights if os.path.exists(f'{n}/selected_{k}.csv')])
-            bad = GS.covers(table, f'{B}/selected_{k}.csv', omission=oms[k[0]])
+            bad = GS.covers(table, f'{B}/selected_{k}.csv', omission=om)
             if bad:
                 refuse(f'S-G18 delta build {L} {k} ({tag}): the grouping {table} does not hold the build\'s input as selected '
                        f'({len(bad)}+ rows, e.g. {bad[:3]}) - group again with every appended night of {L}')
@@ -2026,7 +2032,7 @@ def _build_delta(ctx, s, plan, tag):
             res = call(ctx, s, GS.builder_runner(), [script, f'selected_{k}.csv', d, 'v_deep_images.csv'],
                        env=cL.env(P3_LEAKVETO_DIR=lv, P3_TENMIN_PERTIE=pt,
                                   **GS.builder_env(table, '10min', ctx.grouping_mode, sha1=sha, frozen='delta', frozen_record=rec,
-                                                   removed_dirs=[FL] + list(nights), omission=oms[k[0]])),
+                                                   removed_dirs=[FL] + list(nights), omission=om)),
                        log=f'{root}/catalogs_{tag}_{k}.log', cwd=B)
             name = f'{tag}_{k}' if own else f'{L}_{tag}_{k}'
             s.u.meta.setdefault('grouping_builder', {})[name] = GS.builder_line(res.tail)
@@ -2256,18 +2262,53 @@ def _build(ctx, s, plan, tag):
         refuse(f'S-G17: build (veto) needs the leak-veto tables {lv} (run the veto stage)')
     s.code(script, loc, rej, ctx.opsc('source_localization.py'))
     s.inp(f'{U}/v_deep_images.csv', os.path.join(ctx.pt, 'pertie_detections.csv'))
+    om = None
+    if ctx.grouping_mode.design_b:
+        # the deep omission the grouping followed (production's order: decision table, drop, identities), read ONCE for the
+        # stage: the one table the latest grouping runs of the Stokes built recorded (S-G28 refuses two); the runner drops the
+        # rows of its OMIT cells from the builder input - the grouping holds none of them
+        stokes = tuple(sorted({k[0] for k in SPLIT_KEYS if os.path.exists(f'{U}/selected_{k}.csv')
+                               and count_lines(f'{U}/selected_{k}.csv') > 1})) or ('I', 'V')
+        try:
+            om = GS.grouping_omission(ctx.grouping_dir, stokes)
+        except GS.StageRefusal as e:
+            refuse(f'S-G28 design B: {e}')
+        s.inp(om.path, om.cells_path)
+        s.u.meta['grouping_omission'] = om.ref()
     built = []
     for k in SPLIT_KEYS:
         n = count_lines(f'{U}/selected_{k}.csv') - 1 if os.path.exists(f'{U}/selected_{k}.csv') else 0
         if n < 1:
             ctx.log.say(f'{k}: no selected rows')
             continue
-        ctx.log.say(f'{k} ({tag}): {n} selected rows -> source catalogs')
         d = f'source_catalogs_{tag}_{k}'
+        part = f'{U}/detection_record_parts/builder_{tag}_{k}.csv'
+        if om is not None:                 # the rows the builder would read: counted AFTER the deep omission
+            with open(f'{U}/selected_{k}.csv', newline='') as f:
+                try:
+                    kept, gone = om.split(list(csv.DictReader(f)), what=f'{U}/selected_{k}.csv')
+                except GS._bg().Refused as e:
+                    refuse(f'S-G28 build {k} ({tag}): {e}')
+            if not kept:
+                # nothing to build: no catalog directory (an earlier one goes: it would stand for rows the grouping does not
+                # hold), no builder record, no done line; the record part accounts for every selected row (S-G25)
+                if os.path.isdir(f'{U}/{d}'):
+                    shutil.rmtree(f'{U}/{d}')
+                os.makedirs(os.path.dirname(part), exist_ok=True)
+                GS._bg().omission_only_part(part, gone, d)
+                why = (f'{k} ({tag}): all {n} selected rows in OMIT cells of {om.path} (sha256 {om.sha256[:12]}) - not built, '
+                       f'no catalog')
+                s.u.meta.setdefault('omission_unbuilt', {})[f'{tag}_{k}'] = why
+                s.u.note(why)
+                ctx.log.say(why)
+                continue
+            ctx.log.say(f'{k} ({tag}): {n} selected rows, {len(kept)} after the deep omission ({len(gone)} in OMIT cells) '
+                        f'-> source catalogs')
+        else:
+            ctx.log.say(f'{k} ({tag}): {n} selected rows -> source catalogs')
         os.makedirs(f'{U}/{d}', exist_ok=True)
         # P3_DETREC_BUILDER_OUT (sublst_catalogs.sh:367-370, record only): the builder's per-detection outcome for the record
-        # stage; no catalogue output changes
-        part = f'{U}/detection_record_parts/builder_{tag}_{k}.csv'
+        # stage; no catalog output changes
         os.makedirs(os.path.dirname(part), exist_ok=True)
         if os.path.lexists(part):
             os.remove(part)
@@ -2280,15 +2321,8 @@ def _build(ctx, s, plan, tag):
                 table, sha = GS.recorded_table(ctx.grouping_dir, k[0])
             except GS.StageRefusal as e:
                 refuse(f'S-G18 design B: {e} (`exopipe3 catalog --tier sublst --stages group`, or --sublst-grouping DIR)')
-            # the deep omission the grouping followed (production's order: decision table, drop, identities): the runner
-            # drops the rows of its OMIT cells from the builder input - the grouping holds none of them (S-G28)
-            try:
-                om = GS.recorded_omission(ctx.grouping_dir, k[0])
-            except GS.StageRefusal as e:
-                refuse(f'S-G28 design B: {e}')
-            s.inp(table, om['path'])
+            s.inp(table)
             s.u.meta.setdefault('grouping_tables', {})[k[0]] = dict(path=table, sha1=sha)
-            s.u.meta.setdefault('grouping_omission', {})[k[0]] = om
             bad = GS.covers(table, f'{U}/selected_{k}.csv', omission=om)
             if bad:
                 refuse(f'S-G18 design B: the grouping {table} does not hold selected_{k}.csv as selected ({len(bad)}+ rows, e.g. '
@@ -2309,7 +2343,7 @@ def _build(ctx, s, plan, tag):
         need_ok(res, f'S-G18 build_source_catalogs_v3.py {k} ({tag})', r'REFUS|Error',
                 say=lambda: ctx.log.say(f'{k} ({tag}): build_source_catalogs_v3 FAILED (see catalogs_{tag}_{k}.log)'))
         built.append(d)
-    ctx.log.say(f'source catalogues ({tag}) complete')
+    ctx.log.say(f'source catalogs ({tag}) complete')
     res = call(ctx, s, loc, [U], env=ctx.env(P3_LEAKVETO_DIR=lv, P3_LOC_CATS=cats, P3_LOC_OUT=f'{U}/localizations_{tag}',
                                              **_link_env(ctx, U, s=s)),
                log=f'{U}/catalogs_{tag}_loc.log', cwd=U)

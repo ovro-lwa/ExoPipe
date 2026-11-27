@@ -78,14 +78,19 @@ def wcsv(path, hdr, rows):
         w.writerows(rows)
 
 
-def omission(name='omission'):
-    """A deep-omission decision table (the omit stage's columns that are read) under TMP: {path, sha256}."""
+def omission(name='omission', nights=(NIGHT,)):
+    """A deep-omission decision table (the omit stage's columns that are read) under TMP and its coverage record (the cells
+    it decides: its decision rows, one per LST and night of ``nights``): {path, sha256, cells_path, cells_sha256}."""
+    from exopipe.phase3.lib.catalog.wraps import builder_grouping as BG
     p = os.path.join(TMP or tmp('_tmp'), name, 'deep_omission.csv')
     if not os.path.exists(p):
         wcsv(p, ['lst', 'band', 'night', 'stokes', 'verdict', 'reason'],          # the reason: tables of other names differ
-             [[f'{h:02d}h', 'Red', NIGHT, 'I', 'KEEP', name] for h in range(24)])
+             [[f'{h:02d}h', 'Red', n, 'I', 'KEEP', name] for h in range(24) for n in nights])
+        BG.write_cells(p, {})
     with open(p, 'rb') as f:
-        return dict(path=p, sha256=hashlib.sha256(f.read()).hexdigest())
+        sha = hashlib.sha256(f.read()).hexdigest()
+    with open(BG.cells_path(p), 'rb') as f:
+        return dict(path=p, sha256=sha, cells_path=BG.cells_path(p), cells_sha256=hashlib.sha256(f.read()).hexdigest())
 
 
 def grouping(gdir, runs, nights=(), status='done', stokes=('I', 'V'), name='Run_SLSTB.group', finished='2026-11-24T00:00:00Z',
@@ -294,6 +299,17 @@ def test_the_gate_refuses_another_deep_omission():
     shutil.rmtree(os.path.dirname(omission()['path']))                      # the other tests' table, restored
 
 
+def test_the_gate_refuses_a_night_the_deep_omission_table_predates():
+    """I-G9 (finding 3: fail closed): a night of which the table's coverage record holds no cell has no verdict - the gate
+    REFUSES, naming the night and saying the table predates it; never kept for want of a verdict."""
+    g, out = tmp('g_ig9'), tmp('n_ig9')
+    omission('before', nights=('2025-05-01',))                               # rated before the night 2025-05-08
+    F = all_nights(os.path.join(tmp('F_ig9'), 'F'), om='before')
+    grouping(g, {LST: F}, om='before')
+    msg = raises(record.Refusal, gate, g, out, view_hours=[LST])
+    assert msg.startswith('I-G9') and f'night {NIGHT} of {LST} has no verdict' in msg and 'predates it' in msg, msg
+
+
 def _run(out, argv, dry=False):
     a = parsed('catalog', argv + ['--out', out])
     from exopipe.phase3.core import cells
@@ -468,7 +484,8 @@ def test_the_night_records_are_tested_for_their_own_claims():
         assert all(x['passed'] for x in r), (cls, r)
     with open(omission()['path'], 'a') as f:                                 # I-G8: the table the state stands on changed
         f.write('17h,Red,2025-05-01,I,OMIT,late\n')
-    assert 'changed since the gate read it (I-G8)' in ' '.join(x['detail'] for x in validate.run('night_frozen_state', sp))
+    det = ' '.join(x['detail'] for x in validate.run('night_frozen_state', sp))
+    assert 'changed since' in det and '(I-G8)' in det, det
     shutil.rmtree(os.path.dirname(omission()['path']))
     omission()                                                               # restored (the same bytes)
     assert all(x['passed'] for x in validate.run('night_frozen_state', sp))

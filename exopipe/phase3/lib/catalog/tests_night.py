@@ -13,7 +13,6 @@ two records are records of what the gate saw and what the grouping took: they ar
 against the grouping table's present bytes (a later night's run replaces it by design).
 """
 import glob
-import hashlib
 import json
 import os
 
@@ -154,28 +153,31 @@ def night_frozen_state(path, **ctx):
     if not os.path.isfile(os.path.join(st['frozen_from'], 'v_deep_images.csv')):
         msgs.append(f'{st["frozen_from"]} holds no v_deep_images.csv')
     om = st.get('omission') or {}
-    if not (om.get('path') and om.get('sha256')):
-        msgs.append('no deep-omission decision table named (I-G8)')
+    omission = None
+    if not (om.get('path') and om.get('sha256') and om.get('cells_sha256')):
+        msgs.append('no deep-omission decision table named with its coverage record (I-G8)')
     else:
-        try:
-            with open(om['path'], 'rb') as f:
-                now = hashlib.sha256(f.read()).hexdigest()
-            if now != om['sha256']:
-                msgs.append(f'the deep-omission decision table {om["path"]} changed since the gate read it (I-G8)')
-        except OSError:
-            msgs.append(f'the deep-omission decision table {om["path"]} is gone (I-G8)')
+        from exopipe.phase3.lib.catalog.wraps import builder_grouping as BG
+        try:                              # the one reading of the table (wraps/builder_grouping.Omission)
+            omission = BG.Omission(om['path'], om['sha256'], om['cells_sha256'])
+        except BG.Refused as e:
+            msgs.append(f'the deep-omission decision table the gate read: {e} (I-G8)')
+        else:
+            why = omission.night_refusal(st['lst'], st['night'])
+            if why:
+                msgs.append(f'{why} (I-G9)')
     n = 0
     for H, keys in sorted((st.get('frozen_records') or {}).items()):
         for k, fp in sorted(keys.items()):
             n += 1
             if not os.path.isfile(fp):
                 msgs.append(f'{H} {k}: the frozen record {fp} is gone')
-            elif om.get('sha256'):
+            elif omission is not None:
                 try:
-                    have = (_json(fp).get('omission') or {}).get('sha256')
+                    have = _json(fp).get('omission') or {}
                 except (OSError, ValueError):
-                    have = None
-                if have != om['sha256']:
+                    have = {}
+                if not omission.same(have):
                     msgs.append(f'{H} {k}: the frozen record {fp} names another deep-omission decision table (I-G8)')
     c = st['conform']
     paths = [c.get('noise'), c.get('evidence')]

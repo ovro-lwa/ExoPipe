@@ -34,17 +34,23 @@ WHERE IT RUNS
              after the drop): O is the 10-minute omit stage's output (`exopipe3 catalog --tier sublst --stages omit --lsts
              ... --out O`, its deep_omission.csv; a file path names the table itself); every row in an OMIT (LST, band,
              night, Stokes) cell leaves the input exactly as production's drop removes it from master_catalog.csv and
-             pertie_detections.csv (wraps/builder_grouping.Omission). The re-judging removals (tenmin_rejudge) take
+             pertie_detections.csv (wraps/builder_grouping.Omission). The table's coverage record (deep_omission_cells.csv,
+             written by the omit stage beside it: every cell the table decides) must hold the cell of every row grouped: a
+             row of another cell (a night newer than the table, or detections other than the ones the table was computed
+             on - the omit stage rates the detections grouped, --omit-lst-dir) REFUSES, naming the cells. The re-judging
+             removals (tenmin_rejudge) take
              sources, member rows and pages only: production keeps their detections in the detection tables
              (sublst_deep_omission_drop.py:22-30, :180-183), so the grouping keeps them too. A missing, unreadable or
-             incomplete table, or one without an LST of the input, REFUSES (S-G28); the run records the table's path and
-             sha256 (meta 'omission') and the rows dropped (grouping_input/omission_dropped.csv). Every LST's build stage
+             incomplete table or coverage record, or a row of a cell the record does not hold, REFUSES (S-G28); the run
+             records the table and its coverage record (paths and sha256, meta 'omission') and the rows dropped
+             (grouping_input/omission_dropped.csv). Every LST's build stage
              then reads the grouping and DROPS the rows of the same OMIT cells from its builder input (the grouping does not
              hold them; wraps/builder_grouping.py, DEEP OMISSION) - any other selected row the grouping does not hold
              refuses (S-G18). THE ORDER for the all-nights pass: every LST's chain --until veto, the omit stage over all
-             LSTs, the group stage with --group-omission and --group-lst-dir <LST>=<its catalogue directory> for every LST,
+             LSTs with --omit-lst-dir <LST>=<its catalog directory>, the group stage with --group-omission and --group-lst-dir
+             <LST>=<its catalog directory> for every LST,
              then every LST's chain --from build (lib/catalog/incremental_sublst.FIRST_RUN). KNOWN LIMIT: a regroup can
-             rename or merge identities of LSTs built before it; their published catalogues still carry the old names (the
+             rename or merge identities of LSTs built before it; their published catalogs still carry the old names (the
              runner's start line records the grouping table's sha1) - the cumulative build does not yet refuse a mix of
              tables (report: what remains).
 PRODUCTS (per Stokes S, directory grouping_<S>/ of the stage's output)
@@ -516,9 +522,9 @@ def builder_env(table, tier, mode_=None, sha1=None, cfg=None, frozen='', frozen_
     removed_dirs: the run directories whose removal tables (selection / ephemeris) the build's record reads
     (wraps/builder_grouping.removed_before_builder); empty = the directory of the build's input. The frozen names and
     EXOPIPE3_REMOVED_DIRS are ALWAYS set, so a value inherited from the caller's environment never reaches a build.
-    omission: {path, sha256} of the deep-omission decision table the grouping recorded (recorded_omission; the 10-minute
-    tier: the runner drops its OMIT cells from the builder input and refuses a 10-minute build without one); the two names
-    are ALWAYS set, empty for none."""
+    omission: the Omission of the deep-omission decision table the grouping recorded (recorded_omission / grouping_omission;
+    the 10-minute tier: the runner drops its OMIT cells from the builder input and refuses a 10-minute build without one) -
+    its path, its sha256 and its coverage record's sha256; the three names are ALWAYS set, empty for none."""
     if frozen not in FROZEN_MODES:
         raise StageRefusal(f'builder_env: frozen={frozen!r} is not one of {FROZEN_MODES} - REFUSING')
     if (frozen == 'delta') != bool(frozen_record):
@@ -534,8 +540,9 @@ def builder_env(table, tier, mode_=None, sha1=None, cfg=None, frozen='', frozen_
            'EXOPIPE3_FROZEN_TOUCH': frozen_touch or '',
            'EXOPIPE3_FROZEN_BUILDER_SHA1': ','.join(g.FROZEN_BUILDER_SHA1),
            'EXOPIPE3_REMOVED_DIRS': os.pathsep.join(os.path.abspath(d) for d in removed_dirs),
-           'EXOPIPE3_GROUPING_OMISSION': (omission or {}).get('path') or '',
-           'EXOPIPE3_GROUPING_OMISSION_SHA256': (omission or {}).get('sha256') or ''}
+           'EXOPIPE3_GROUPING_OMISSION': omission.path if omission is not None else '',
+           'EXOPIPE3_GROUPING_OMISSION_SHA256': omission.sha256 if omission is not None else '',
+           'EXOPIPE3_GROUPING_OMISSION_CELLS_SHA256': omission.cells_sha256 if omission is not None else ''}
     if sha1:
         env['EXOPIPE3_GROUPING_TABLE_SHA1'] = sha1
     return env
@@ -551,23 +558,22 @@ def builder_line(text):
 
 def covers(table_path, selected_csv, omission=None):
     """[problems]: rows of the builder's input (a selected_<K>.csv) the grouping table does not hold, or holds with another
-    fingerprint (band, LST, date, catalogue ra / dec / S/N) - a stale grouping (the builder runner refuses the same).
-    omission ({path, sha256}, recorded_omission): rows of its OMIT cells are not problems - the runner drops them from the
-    builder input (the grouping holds none of them)."""
+    fingerprint (band, LST, date, catalog ra / dec / S/N) - a stale grouping (the builder runner refuses the same).
+    omission (an Omission, read once by the stage: recorded_omission / grouping_omission): rows of its OMIT cells are not
+    problems - the runner drops them from the builder input (the grouping holds none of them); rows of cells the table does not
+    decide are (S-G28, the cells named)."""
     T = read_detections(table_path)
-    om = None
-    if omission:
-        try:
-            om = _bg().Omission(omission['path'], omission['sha256'])
-        except _bg().Refused as e:
-            return [f'S-G28 {e}']
-    bad = []
+    om = omission
+    bad, unc = [], set()
     with open(selected_csv, newline='') as f:
         for r in csv.DictReader(f):
             if om is not None:
                 try:
                     if om.omitted(r['cand_id'], r.get('stokes'), r.get('lst', '')):
                         continue
+                except _bg().Uncovered as e:
+                    unc.add(e.cell)
+                    continue
                 except _bg().Refused as e:
                     bad.append(f'S-G28 {e}')
                     break
@@ -579,6 +585,8 @@ def covers(table_path, selected_csv, omission=None):
                 bad.append(f'{r["cand_id"]}: grouped with another fingerprint')
             if len(bad) >= 20:
                 break
+    if unc:
+        bad.insert(0, f'S-G28 {om.uncovered(unc, selected_csv)}')
     return bad
 
 
@@ -1262,7 +1270,8 @@ def assemble_tenmin_input(lsts, out_dir, cfg=None, lst_dirs=None, night_dirs=Non
     identities (sublst_cumulative.sh:99-107; the build drops the same rows from its input). Writes
     out_dir/grouping_input/{master_catalog,pertie_detections}.csv and the dropped rows' record omission_dropped.csv; returns
     (their paths, {lst: run dir}); omission.dropped counts the rows dropped per file. No omission, a run without either
-    file, an LST the decision table does not hold, or a cand_id in two runs, REFUSES.
+    file, a row of a cell the table does not decide (its coverage record; all such cells named), or a cand_id in two runs,
+    REFUSES.
     night_dirs (the per-hour catalog build): [(LST, directory)], the catalog directories of the nights appended since the LSTs'
     last all-nights builds - each one's rows follow its LST's run, in the order given, so the earlier nights' rows keep their
     places and the grouping's incremental mode sees only the newest night's detections as new. A night row whose cand_id
@@ -1271,10 +1280,6 @@ def assemble_tenmin_input(lsts, out_dir, cfg=None, lst_dirs=None, night_dirs=Non
     if omission is None:
         raise StageRefusal('S-G28 no deep-omission decision table: the 10-minute grouping holds the detections left after the '
                            'deep omission (--group-omission <the omit stage\'s --out>) - REFUSING, never "no omission"')
-    bad = sorted(set(lsts) - set(omission.lsts))
-    if bad:
-        raise StageRefusal(f'S-G28 the deep-omission decision table {omission.path} holds no decision of {bad} (its LSTs: '
-                           f'{", ".join(omission.lsts)}): run the omit stage over every grouped LST - REFUSING')
     d = os.path.join(out_dir, 'grouping_input')
     os.makedirs(d, exist_ok=True)
     lst_dirs = dict(lst_dirs or {})
@@ -1289,7 +1294,7 @@ def assemble_tenmin_input(lsts, out_dir, cfg=None, lst_dirs=None, night_dirs=Non
         raise StageRefusal('--group-night-dir names a night directory twice - REFUSING')
     runs = {L: lst_dirs.get(L) or lst_run(L, cfg) for L in lsts}
     srcs = [x for L, R in runs.items() for x in [(L, R, L)] + [(L2, D, f'{L2} night directory {D}') for L2, D in nights if L2 == L]]
-    out, gone = [], []
+    out, gone, unc = [], [], set()
     for name in ('master_catalog.csv', 'pertie_detections.csv'):
         hdr, rows, seen = [], [], {}
         for L, R, what in srcs:
@@ -1302,7 +1307,9 @@ def assemble_tenmin_input(lsts, out_dir, cfg=None, lst_dirs=None, night_dirs=Non
                 hdr += [k for k in (rd.fieldnames or []) if k not in hdr]
                 for r in rd:
                     c = r.get('cand_id')
-                    k = _omitted(omission, c, r.get('stokes'), L)
+                    k = _omitted(omission, c, r.get('stokes'), L, unc)
+                    if k is False:                # a cell the table does not decide: named below
+                        continue
                     if k:                         # production's filter_rows: the run's rows of an OMIT cell go
                         gone.append(dict(file=name, source=p, cand_id=c, lst=k[0], band=k[1], night=k[2], stokes=k[3]))
                         continue
@@ -1313,6 +1320,8 @@ def assemble_tenmin_input(lsts, out_dir, cfg=None, lst_dirs=None, night_dirs=Non
                     seen[c] = (L, r)
                     rows.append(r)
         out.append(_write_csv(os.path.join(d, name), hdr, rows))
+    if unc:
+        raise StageRefusal(f'S-G28 {omission.uncovered(unc, "the grouping input")}')
     _record_dropped(d, gone, omission)
     return out[0], out[1], runs
 
@@ -1321,9 +1330,13 @@ OMISSION_DROPPED = 'omission_dropped.csv'      # grouping_input/: the rows the d
 OMISSION_DROPPED_COLS = ['file', 'source', 'cand_id', 'lst', 'band', 'night', 'stokes']
 
 
-def _omitted(omission, cand_id, stokes, lst):
+def _omitted(omission, cand_id, stokes, lst, unc):
+    """The OMIT cell of a row, None (kept), or False when its cell is not one the table decides (added to ``unc``)."""
     try:
         return omission.omitted(cand_id, stokes, lst)
+    except _bg().Uncovered as e:
+        unc.add(e.cell)
+        return False
     except _bg().Refused as e:
         raise StageRefusal(f'S-G28 {e}')
 
@@ -1343,8 +1356,9 @@ def _bg():
 
 def omission_of(path):
     """The 10-minute deep-omission decision table named by --group-omission (the omit stage's --out directory: its
-    deep_omission.csv; or the table's own path) as an Omission (one read: sha256 and verdicts from the same bytes). A missing
-    or unreadable table, or one without the columns lst, band, night, stokes, verdict or without a row, REFUSES (S-G28)."""
+    deep_omission.csv; or the table's own path) as an Omission (one read of the table and of its coverage record: sha256 and
+    content from the same bytes). A missing or unreadable table or coverage record, a table without the columns lst, band,
+    night, stokes, verdict or without a row, or a coverage record that does not match it, REFUSES (S-G28)."""
     if not path:
         raise StageRefusal('S-G28 no deep-omission decision table: the 10-minute grouping needs --group-omission <the omit '
                            'stage\'s --out> (`exopipe3 catalog --tier sublst --stages omit --lsts <every grouped LST> --out '
@@ -1363,11 +1377,11 @@ OMISSION_TABLE = 'deep_omission.csv'           # the omit stage's decision table
 
 def filter_input(src, out_dir, omission):
     """--group-input DIR under the deep omission: DIR's master_catalog.csv and pertie_detections.csv without the rows of
-    the OMIT cells (each row's LST from its own lst column) into out_dir/grouping_input/; returns their paths. A row LST the
-    table does not hold REFUSES (S-G28)."""
+    the OMIT cells into out_dir/grouping_input/; returns their paths. A row of a cell the table does not decide (its coverage
+    record) REFUSES, all such cells named (S-G28)."""
     d = os.path.join(out_dir, 'grouping_input')
     os.makedirs(d, exist_ok=True)
-    out, gone = [], []
+    out, gone, unc = [], [], set()
     for name in ('master_catalog.csv', 'pertie_detections.csv'):
         p = os.path.join(src, name)
         if not os.path.exists(p):
@@ -1376,45 +1390,66 @@ def filter_input(src, out_dir, omission):
             rd = csv.DictReader(f)
             hdr, rows = list(rd.fieldnames or []), []
             for r in rd:
-                L = r.get('lst') or ''
-                if L not in omission.lsts:
-                    raise StageRefusal(f'S-G28 the deep-omission decision table {omission.path} holds no decision of {L!r} '
-                                       f'({r.get("cand_id")} of {p}) - REFUSING')
-                k = _omitted(omission, r.get('cand_id'), r.get('stokes'), L)
+                k = _omitted(omission, r.get('cand_id'), r.get('stokes'), r.get('lst') or '', unc)
+                if k is False:
+                    continue
                 if k:
                     gone.append(dict(file=name, source=p, cand_id=r.get('cand_id'), lst=k[0], band=k[1], night=k[2],
                                      stokes=k[3]))
                 else:
                     rows.append(r)
         out.append(_write_csv(os.path.join(d, name), hdr, rows))
+    if unc:
+        raise StageRefusal(f'S-G28 {omission.uncovered(unc, "--group-input " + src)}')
     _record_dropped(d, gone, omission)
     return out[0], out[1]
 
 
-def recorded_omission(grouping_dir, stokes, _rec=None):
-    """{path, sha256} of the deep-omission decision table the LATEST 10-minute grouping run of Stokes ``stokes`` in
-    grouping_dir recorded (meta 'omission'): what every build of that grouping drops. A latest run that is not done, one that
-    recorded no table (grouped before the grouping followed the omission), and a table missing or changed since REFUSE
-    (StageRefusal) - a build never drops by another table than its grouping's, and never drops nothing for want of one."""
+def recorded_omission_ref(grouping_dir, stokes, _rec=None):
+    """{path, sha256, cells_path, cells_sha256} the LATEST 10-minute grouping run of Stokes ``stokes`` in grouping_dir recorded
+    (meta 'omission'), read from the record only (no file hashed). A latest run that is not done, or one that recorded no
+    table or coverage record (grouped before the grouping followed the omission, or before the coverage record), REFUSES."""
     fin, p, r = _rec or _latest_group_record(grouping_dir, stokes)
     if r.get('status') != 'done':
         raise StageRefusal(f'the latest 10-minute grouping run of Stokes {stokes} ({os.path.basename(p)}, {fin}) ended '
                            f'{r.get("status")} - group again before building - REFUSING')
     om = (r.get('meta') or {}).get('omission') or {}
-    if not om.get('path') or not om.get('sha256'):
+    if not all(om.get(k) for k in ('path', 'sha256', 'cells_sha256')):
         raise StageRefusal(f'S-G28 the latest grouping run of Stokes {stokes} ({os.path.basename(p)}) recorded no deep-omission '
-                           f'decision table (it grouped before the grouping followed the omission): group again with '
-                           f'--group-omission - REFUSING')
+                           f'decision table with its coverage record (it grouped before the grouping followed the omission or '
+                           f'its coverage): group again with --group-omission - REFUSING')
+    return dict(path=om['path'], sha256=om['sha256'], cells_path=om.get('cells_path') or _bg().cells_path(om['path']),
+                cells_sha256=om['cells_sha256'])
+
+
+def recorded_omission(grouping_dir, stokes, _rec=None):
+    """The deep-omission decision table the LATEST 10-minute grouping run of Stokes ``stokes`` recorded, as an Omission read
+    ONCE and checked against the recorded sha256 of the table and of its coverage record: what every build of that grouping
+    drops. recorded_omission_ref's refusals, and a table or coverage record missing or changed since, REFUSE (StageRefusal) -
+    a build never drops by another table than its grouping's, and never drops nothing for want of one."""
+    ref = recorded_omission_ref(grouping_dir, stokes, _rec)
     try:
-        with open(om['path'], 'rb') as f:
-            now = hashlib.sha256(f.read()).hexdigest()
-    except OSError as e:
-        raise StageRefusal(f'S-G28 the deep-omission decision table {om["path"]} that {os.path.basename(p)} recorded is missing '
-                           f'or unreadable ({e}) - REFUSING')
-    if now != om['sha256']:
-        raise StageRefusal(f'S-G28 the deep-omission decision table {om["path"]} changed since {os.path.basename(p)} recorded it '
-                           f'(sha256 {now[:12]} vs {om["sha256"][:12]}) - group again - REFUSING')
-    return dict(path=om['path'], sha256=om['sha256'])
+        return _bg().Omission(ref['path'], ref['sha256'], ref['cells_sha256'])
+    except _bg().Refused as e:
+        raise StageRefusal(f'S-G28 the table the latest grouping run of Stokes {stokes} recorded: {e}')
+
+
+def grouping_omission(grouping_dir, stokes=('I', 'V')):
+    """THE deep-omission decision table of a 10-minute grouping: the one Omission the latest runs of every Stokes in ``stokes``
+    recorded (read once). Stokes groupings filtered by different tables (path or sha256 of the table or of its coverage record)
+    REFUSE - one cumulative stands on one omission (recorded_omission's refusals apply)."""
+    refs = {S: recorded_omission_ref(grouping_dir, S) for S in stokes}
+    first = refs[stokes[0]]
+    bad = [S for S in stokes if refs[S] != first]
+    if bad:
+        raise StageRefusal('S-G28 the 10-minute groupings in ' + grouping_dir + ' were filtered by different deep-omission '
+                           'decision tables: ' + '; '.join(f'{S}: {refs[S]["path"]} sha256 {refs[S]["sha256"][:12]} coverage '
+                                                           f'{refs[S]["cells_sha256"][:12]}' for S in stokes)
+                           + ' - group every Stokes again in one run - REFUSING')
+    try:
+        return _bg().Omission(first['path'], first['sha256'], first['cells_sha256'])
+    except _bg().Refused as e:
+        raise StageRefusal(f'S-G28 the table the grouping {grouping_dir} recorded: {e}')
 
 
 def run(args, run):
@@ -1458,6 +1493,7 @@ def _run_tenmin_unit(args, u, m, label, out, src, stokes, lsts, cells):
     try:
         omission = omission_of(getattr(args, 'group_omission', None))
         u.add_input(omission.path)
+        u.add_input(omission.cells_path)
         if src:
             for n in ('master_catalog.csv', 'pertie_detections.csv'):
                 u.add_input(os.path.join(src, n))
@@ -1486,8 +1522,8 @@ def _run_tenmin_unit(args, u, m, label, out, src, stokes, lsts, cells):
     except StageRefusal as e:
         u.refuse(str(e))
     # what every build of this grouping drops (recorded_omission): the decision table, read once above
-    u.meta['omission'] = dict(path=omission.path, sha256=omission.sha256, decisions=omission.decisions,
-                              omit_keys=len(omission.keys), lsts=omission.lsts, dropped=omission.dropped,
+    u.meta['omission'] = dict(omission.ref(), decisions=omission.decisions, omit_keys=len(omission.keys),
+                              cells=len(omission.cells), lsts=omission.lsts, dropped=omission.dropped,
                               record=os.path.join(out, 'grouping_input', OMISSION_DROPPED))
     u.note(f'deep omission: {omission.path} (sha256 {omission.sha256[:16]}; {len(omission.keys)} OMIT keys of '
            f'{omission.decisions} decisions): dropped ' + (', '.join(f'{n} {k}' for k, n in sorted(omission.dropped.items()))
