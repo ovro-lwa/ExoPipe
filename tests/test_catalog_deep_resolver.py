@@ -17,7 +17,9 @@ Asserts:
   (d) production's state is never written (bytes before = after), and the chain's state is under its run directory in
       production too (DeepRun.state_dir);
   (e) the chain and the omission take the same attempt (deep_omission.published_attempt per cell);
-  (f) an attempt outside every catalog.COLLECT_ROOTS root (production's p3s3_sources.py could not name it) refuses.
+  (f) an attempt outside every catalog.COLLECT_ROOTS root (production's p3s3_sources.py could not name it) refuses;
+  (g) resolved_state reads the copied register with THE register parser, attempts.register_lines (no parser of its own): a
+      cell's current row is its last line, a blank or short line is no row, a cell already current gets no row.
 
 Scratch: a fresh directory under $EXOPIPE3_TEST_SCRATCH, else the system temp directory, removed at exit.
 Run: python tests/test_catalog_deep_resolver.py [test names]   (exit 0 = all passed, 1 = a failure, 2 = imports missing)
@@ -228,9 +230,36 @@ def test_the_resolvers_production_register_must_be_the_chains_state():
             raise AssertionError('a resolver reading another production register was accepted')
 
 
+def test_resolved_state_reads_the_register_with_register_lines():
+    from exopipe.phase3.lib.search import attempts
+    import inspect
+    d = _tmp()
+    src, dst = os.path.join(d, 'src'), os.path.join(d, 'dst')
+    os.makedirs(src)
+    with open(os.path.join(src, 'published_V.csv'), 'w') as f:
+        f.write(f'00h_18MHz,nodeA,{OLD}\n\n01h_18MHz,nodeB\n00h_18MHz,nodeB,{NEW}\n02h_18MHz,nodeA,{OLD},extra\n')
+    calls, real = [], attempts.register_lines
+
+    def spy(path):
+        calls.append(path)
+        return real(path)
+    attempts.register_lines = spy
+    try:
+        n, added = DP.resolved_state(src, dst, {'V': {'00h_18MHz': ('nodeB', NEW), '01h_18MHz': ('nodeB', OLD),
+                                                      '02h_18MHz': ('nodeA', OLD)}})
+    finally:
+        attempts.register_lines = real
+    lines = open(os.path.join(dst, 'published_V.csv')).read().splitlines()
+    assert calls == [os.path.join(dst, 'published_V.csv')], calls                                # (g) the one parser
+    assert added == {'V': 1} and lines[-1] == f'01h_18MHz,nodeB,{OLD}', (added, lines)          # (g) last row; short line
+    body = inspect.getsource(DP.resolved_state)
+    assert "split(','" not in body and 'register_lines' in body, 'resolved_state parses the register itself'
+
+
 ORDER = ['test_newest_attempt_by_the_shared_resolver_through_the_chains_state',
          'test_production_run_never_takes_productions_state_as_its_own', 'test_a_tie_and_a_missing_attempt_are_not_settled',
-         'test_an_attempt_production_cannot_name_refuses', 'test_the_resolvers_production_register_must_be_the_chains_state']
+         'test_an_attempt_production_cannot_name_refuses', 'test_the_resolvers_production_register_must_be_the_chains_state',
+         'test_resolved_state_reads_the_register_with_register_lines']
 
 
 def main(names):

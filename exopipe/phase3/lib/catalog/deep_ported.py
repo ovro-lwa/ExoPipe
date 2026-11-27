@@ -280,17 +280,15 @@ def resolved_state(src, dst, resolved, keep_cell=None):
     published list is production's (copy_state: its history, which p3s3_merge.py's first-run refresh counts) with one row
     `cell,node,att` appended for every cell whose published attempt by the shared resolver ``resolved`` {S: {cell: (node,
     att)}} is not production's current (last) row, so p3s3_sources' last-row rule gives exactly the resolver's attempt; a
-    cell production lists that ``resolved`` lacks is refused by the caller. Returns ({'published_V': n, ...}, {S: appended})."""
+    cell production lists that ``resolved`` lacks is refused by the caller. The copied list is read with THE register parser,
+    attempts.register_lines (the refactor chat's decision (10) of 2026-11-27): a cell's current row is its last line there.
+    Returns ({'published_V': n, ...}, {S: appended})."""
+    from exopipe.phase3.lib.search import attempts
     n = copy_state(src, dst, keep_cell)
     added = {}
     for st, cells in resolved.items():
         p = os.path.join(dst, f'published_{st}.csv')
-        cur = {}
-        if os.path.exists(p):
-            for line in open(p):
-                q = line.strip().split(',')
-                if len(q) >= 3:
-                    cur[q[0]] = (q[1], q[2])
+        cur = {cell: (host, tag) for cell, host, tag in attempts.register_lines(p)}   # file order: the last row wins
         rows = [f'{cell},{node},{att}\n' for cell, (node, att) in sorted(cells.items()) if cur.get(cell) != (node, att)]
         with open(p, 'a') as f:
             f.writelines(rows)
