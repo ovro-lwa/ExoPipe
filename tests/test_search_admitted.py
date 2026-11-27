@@ -721,27 +721,15 @@ def seed_base_noise(label_root, exclude, stokes=None):
     never reaches the central box on any deep grid; as a card gives it back) and the frame itself (a symlink, where the run
     writes its frames), its image-ledger rows (the run's Stokes) and its gate-ledger rows (rules b02-3d: the table's noise of
     an append is the median of |peak / global S/N| over the base's harvested gate-ledger rows plus the night's own; the
-    served attempt's rows, under the header the engine writes), the nights of this run and the copy's admitted nights left
-    out. Returns {Stokes: {night: noise}}."""
+    served attempt's rows of the run's Stokes, under the header the engine writes, with its size-rule record and its finals'
+    catalogue rows, as a base attempt carries them), the nights of this run and the copy's admitted nights left out. The
+    base's recorded table noise is that statistic over its seeded rows (the frame_noise content test recomputes it).
+    Returns {Stokes: {night: noise}}."""
     from astropy.io import fits
     from exopipe.phase3.lib.search import removal_rules as RR
     pop = {st: {d: v for d, v in nz.items() if d not in exclude and d not in _SEED_EXCLUDE} for st, nz in served_noise().items()}
     rd = os.path.join(label_root, 'transients', 'Run_ADMITTEST')
     os.makedirs(rd, exist_ok=True)
-    with open(os.path.join(rd, RR.FRAME_NOISE), 'w', newline='') as fh:
-        w = csv.writer(fh)
-        w.writerow(RR.FRAME_NOISE_COLS)
-        for st, nz in sorted(pop.items()):
-            m = RR.median_noise([v for v, _f in nz.values()])
-            vv = sorted(v for v, _f in nz.values())
-            vm = repr(vv[len(vv) // 2]) if st == 'V' and len(vv) >= CFG.search_detect.SANITY_MIN_NIGHTS else ''   # the V gate's
-            vx = repr(float(CFG.search_detect.SANITY_X)) if vm else ''                                           # median, as run
-            fd = os.path.join(label_root, 'iresid' if st == 'I' else 'vresid', CELL)
-            os.makedirs(fd, exist_ok=True)
-            for d, (v, f_) in sorted(nz.items()):
-                w.writerow([LST, SC, st, d, repr(v), 1, 1, repr(m), vm, vx, 'served-base'])
-                if not os.path.lexists(os.path.join(fd, os.path.basename(f_))):
-                    os.symlink(f_, os.path.join(fd, os.path.basename(f_)))
     ip = os.path.join(rd, 'v_deep_images.csv')
     if not os.path.exists(ip):                    # the base's image rows come with its frames (an append's base has them)
         srv = os.path.join(CFG.calibrate.SERVED_RUN['deep'], 'v_deep_images.csv')
@@ -753,17 +741,44 @@ def seed_base_noise(label_root, exclude, stokes=None):
     lp = os.path.join(rd, 'v_deep_ledger.csv')
     if not os.path.exists(lp):                    # the base's gate-ledger rows (its table noise's rows)
         from exopipe.phase3.lib.search import deep_search as DSE, size_rule as SZ
-        cols = DSE.GLED_COLS + (list(SZ.GLED_COLS_SIZE) if SZ.engine_rule('deep') is not None else [])
+        szr = SZ.engine_rule('deep')
+        # the base was searched under the rule the append applies: its size-rule record goes beside its ledger, written by the
+        # engine's own writer before the ledger exists (a ledger without a record reads as production's: one rule per run)
+        SZ.write_run_record(rd, szr)
+        cols = DSE.GLED_COLS + (list(SZ.GLED_COLS_SIZE) if szr is not None else [])
         srv = CFG.calibrate.SERVED_RUN['deep']
         prov = {(r['cell'], r['stokes']): r['attempt_dir'] for r in csv.DictReader(open(os.path.join(srv, 'merge_provenance.csv')))}
-        keep = []
-        for st in sorted(pop):
-            sl = os.path.join(prov[(CELL, st)], 'transients', os.path.basename(srv), 'v_deep_ledger.csv')
-            keep += [r for r in csv.DictReader(open(sl)) if r['lst'] == LST and r['scope'] == SC and r['stokes'] == st
-                     and r['date'] in pop[st]]
+        keep, kcat, ccols = [], [], None
+        for st in sorted(s_ for s_ in pop if s_ in (stokes or 'IV')):   # the run's Stokes, as its image rows (an attempt's
+            sd = os.path.join(prov[(CELL, st)], 'transients', os.path.basename(srv))    # ledger is its own)
+            keep += [r for r in csv.DictReader(open(os.path.join(sd, 'v_deep_ledger.csv'))) if r['lst'] == LST
+                     and r['scope'] == SC and r['stokes'] == st and r['date'] in pop[st]]
+            with open(os.path.join(sd, 'master_catalog.csv'), newline='') as fh:   # ... and its finals' catalogue rows (a
+                cr = csv.DictReader(fh)                                            # base's finals are its catalogue rows)
+                ccols = cr.fieldnames
+                kcat += [r for r in cr if r['lst'] == LST and r['band'] == SC and r['stokes'] == st and r['date'] in pop[st]]
         with open(lp, 'w', newline='') as fh:
             w = csv.DictWriter(fh, fieldnames=cols, restval='', extrasaction='ignore')
             w.writeheader(); w.writerows(keep)
+        if ccols and not os.path.exists(os.path.join(rd, 'master_catalog.csv')):
+            with open(os.path.join(rd, 'master_catalog.csv'), 'w', newline='') as fh:
+                w = csv.DictWriter(fh, fieldnames=ccols)
+                w.writeheader(); w.writerows(kcat)
+    lr = RR.ledger_rms(RR.read_ledger(rd), LST, SC)   # rules b02-3d: the base's table noise is the derivation's statistic
+    with open(os.path.join(rd, RR.FRAME_NOISE), 'w', newline='') as fh:   # over its harvested gate-ledger rows
+        w = csv.writer(fh)
+        w.writerow(RR.FRAME_NOISE_COLS)
+        for st, nz in sorted(pop.items()):
+            m = RR.median_rms([x for d in nz for x in lr.get(st, {}).get(d, ())])
+            vv = sorted(v for v, _f in nz.values())
+            vm = repr(vv[len(vv) // 2]) if st == 'V' and len(vv) >= CFG.search_detect.SANITY_MIN_NIGHTS else ''   # the V gate's
+            vx = repr(float(CFG.search_detect.SANITY_X)) if vm else ''                                           # median, as run
+            fd = os.path.join(label_root, 'iresid' if st == 'I' else 'vresid', CELL)
+            os.makedirs(fd, exist_ok=True)
+            for d, (v, f_) in sorted(nz.items()):
+                w.writerow([LST, SC, st, d, repr(v), 1, 1, repr(m) if m is not None else '', vm, vx, 'served-base'])
+                if not os.path.lexists(os.path.join(fd, os.path.basename(f_))):
+                    os.symlink(f_, os.path.join(fd, os.path.basename(f_)))
     return {st: {d: v for d, (v, _f) in nz.items()} for st, nz in pop.items()}
 
 
