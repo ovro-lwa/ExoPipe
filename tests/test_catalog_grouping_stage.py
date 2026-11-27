@@ -16,13 +16,20 @@ lib/catalog/wraps/builder_grouping.py (the builder with the grouping), the 10-mi
                or a census change refuses; on a stub builder carrying the patch points, PASSTHROUGH writes byte-identical files
                and DESIGN-B forms the grouping's identities with the one multiples rule; a stale grouping refuses
   sublst       the 10-minute build stage (tier_sublst._build) runs the builder through the runner with the grouping under
-               design B, refuses a selected row the grouping does not hold, runs it in place under production's mode
+               design B and the deep-omission decision table that grouping recorded, refuses a selected row the grouping does
+               not hold, a grouping run that recorded no table and a table changed since (S-G28), runs it in place under
+               production's mode
   record       one_rule_record against synthetic builder outputs: rescued multiples, singles dropped by the sigma-stack test
                and by the repeat rungs, a single kept by a cross-match rung
   carry        carry_judgements: agreeing pages carried unchanged, a disagreement a CONFLICT not carried (kept with both
                verdicts for the page, merge_conflicts.jsonl), an unreached judgement reported, a non-empty journal refused
-  cli          `exopipe3 catalog --tier sublst --stages group --group-input <frozen 10-minute subset>`: the first run needs
-               --group-new-state; a second run carries every ID; under production's mode the unit is no-input
+  cli          `exopipe3 catalog --tier sublst --stages group --group-input <frozen 10-minute subset> --group-omission
+               <a table>`: the first run needs --group-new-state; a second run carries every ID; under production's mode the
+               unit is no-input
+  omission     THE DEEP OMISSION BEFORE THE GROUPING (S-G28; production's order, sublst_cumulative.sh:99-107): the OMIT cells'
+               rows are absent from the grouping, which equals on every field the grouping of the input with those rows removed
+               by hand; the dropped rows are recorded; the record names the table (what the builds read); no table, a missing
+               one and one without an LST grouped refuse; a table changed after the grouping makes the builds' reading refuse
   naming       THE NAMING RULE (grouping_stage.naming_order) through the 10-minute unit on the frozen I and V subsets: asked
                V,I or I,V, the unit groups I first; a name both Stokes would take stays I's short name and V takes the long
                form; no name is held in both; the cross-Stokes link is written (S-G27 not hit); an unchanged dataset gives the
@@ -65,6 +72,22 @@ LIVE_BUILDER = '/lustre/gh/main/exopipe_ops/build_source_catalogs_v3.py'
 FROZEN_BUILDERS = '/lustre/gh/main/phase3/sublst/code_frozen/*/exopipe_ops/build_source_catalogs_v3.py'
 PY = sys.executable
 FAILS, N = [], [0]
+ALL_LSTS = [f'{h:02d}h' for h in range(24)]
+OMISSION_COLS = ['lst', 'band', 'night', 'stokes', 'gates', 'verdict', 'reason']
+
+
+def omission_dir(d, omit=(), lsts=ALL_LSTS):
+    """d/deep_omission.csv (the omit stage's --out layout): one KEEP decision per LST of ``lsts`` plus an OMIT decision per
+    (lst, band, night, stokes) of ``omit``; returns d"""
+    rows = [dict(lst=L, band='73MHz', night='2000-01-01', stokes='I', gates='beam', verdict='KEEP', reason='test') for L in lsts]
+    rows += [dict(lst=k[0], band=k[1], night=k[2], stokes=k[3], gates='beam', verdict='OMIT', reason='test') for k in omit]
+    os.makedirs(d, exist_ok=True)
+    wcsv(f'{d}/deep_omission.csv', OMISSION_COLS, rows)
+    return d
+
+
+def sha256(p):
+    return hashlib.sha256(open(p, 'rb').read()).hexdigest()
 
 
 def check(name, ok, detail=''):
@@ -489,11 +512,15 @@ def test_sublst_build():
     CFG.catalog_grouping.BUILDER_SHA1 = tuple(keep_pin) + (_stub_sha1(f'{ops}/build_source_catalogs_v3.py'),)
     CFG.catalog_grouping.FROZEN_BUILDER_SHA1 = tuple(keep_fpin) + (_stub_sha1(f'{ops}/build_source_catalogs_v3.py'),)
 
-    def record(status='done', sha=None, finished='2030-01-01T00:00:00Z', name='Run_SLSTB.group'):
+    omt = f'{omission_dir(f"{d}/omit")}/deep_omission.csv'        # KEEP only: the builder reads the selection itself
+
+    def record(status='done', sha=None, finished='2030-01-01T00:00:00Z', name='Run_SLSTB.group', omission=True):
         t = ctx.grouping_table('I')
         r = dict(unit=name, status=status, finished=finished, reason='' if status == 'done' else 'a refusal',
                  meta=dict(stage='group', tier='sublst', stokes=['I'],
                            tables={} if status != 'done' else {'I': dict(path=t, sha1=sha or GS.table_digest(t))}))
+        if omission:
+            r['meta']['omission'] = dict(path=omt, sha256=sha256(omt))
         os.makedirs(f'{gdir}/_records/catalog', exist_ok=True)
         json.dump(r, open(f'{gdir}/_records/catalog/{name}.json', 'w'))
     record()
@@ -517,6 +544,30 @@ def test_sublst_build():
     check('sub-LST build under design B writes the frozen record of the per-hour delta build (builder_frozen.json)',
           os.path.exists(f'{U}/source_catalogs_noveto_I_sb/builder_frozen.json'),
           sorted(os.listdir(f'{U}/source_catalogs_noveto_I_sb')) if os.path.isdir(f'{U}/source_catalogs_noveto_I_sb') else None)
+    frz = json.load(open(f'{U}/source_catalogs_noveto_I_sb/builder_frozen.json')) \
+        if os.path.exists(f'{U}/source_catalogs_noveto_I_sb/builder_frozen.json') else {}
+    check('sub-LST build (S-G28): the unit records the decision table its grouping recorded (path, sha256)',
+          s.u.meta.get('grouping_omission', {}).get('I') == dict(path=omt, sha256=sha256(omt)), s.u.meta.get('grouping_omission'))
+    check('sub-LST build (S-G28): the frozen record names the decision table (path, sha256; nothing dropped here)',
+          (frz.get('omission') or {}).get('sha256') == sha256(omt) and frz['omission'].get('path') == omt
+          and frz['omission'].get('dropped') == 0, frz.get('omission'))
+    for what, setup, want in (('its grouping run recorded no deep-omission decision table',
+                               lambda: record(omission=False), 'recorded no deep-omission decision table'),
+                              ('the decision table changed since its grouping run recorded it',
+                               lambda: (record(), open(omt, 'a').write('05h,46MHz,2030-01-01,I,beam,OMIT,late\n')),
+                               'changed since')):
+        setup()
+        shutil.rmtree(f'{U}/source_catalogs_noveto_I_sb', ignore_errors=True)
+        st, s, plan = run_build()
+        check(f'S-G28: sub-LST build REFUSES when {what}', 'S-G28' in st and want in st and 'REFUSING' in st, st)
+    omission_dir(f'{d}/omit', omit=[('05h', '46MHz', '2030-01-01', 'I')])
+    record()                                      # an OMIT cell in 05h, whose stub cand_ids do not name their cell
+    shutil.rmtree(f'{U}/source_catalogs_noveto_I_sb', ignore_errors=True)
+    st, s, plan = run_build()
+    check('S-G28: an OMIT cell in an LST whose cand_ids do not name their (LST, night, band) REFUSES (the builder never runs '
+          'on a guess)', 'does not name its (LST, night, band)' in st or 'does not name its' in json.dumps(s.u.meta), st)
+    omission_dir(f'{d}/omit')
+    record()
     # F2: the build reads only a table a DONE group-unit record recorded, with the sha1 it has now
     tab0 = open(ctx.grouping_table('I')).read()
 
@@ -1126,15 +1177,38 @@ def test_tenmin_input():
     wcsv(f'{d}/run05/pertie_detections.csv', ['cand_id', 'sys_arcmin'], [dict(cand_id='I1_05h_a', sys_arcmin='0.5')])
     wcsv(f'{d}/cat06/master_catalog.csv', mc_cols, [dict(cand_id='I1_06h_b', lst='06h', stokes='I', snr='9')])
     wcsv(f'{d}/cat06/pertie/pertie_detections.csv', ['cand_id', 'sys_arcmin'], [dict(cand_id='I1_06h_b', sys_arcmin='0.4')])
-    mc, pt, runs = GS.assemble_tenmin_input(['05h', '06h'], f'{d}/out', lst_dirs={'05h': f'{d}/run05', '06h': f'{d}/cat06'})
+    om = GS.omission_of(omission_dir(f'{d}/keep'))
+    mc, pt, runs = GS.assemble_tenmin_input(['05h', '06h'], f'{d}/out', lst_dirs={'05h': f'{d}/run05', '06h': f'{d}/cat06'},
+                                            omission=om)
     check('10-minute input: both layouts concatenated in LST order (published run; catalogue directory)',
           [r['cand_id'] for r in rcsv(mc)[1]] == ['I1_05h_a', 'I1_06h_b'] and [r['cand_id'] for r in rcsv(pt)[1]] ==
           ['I1_05h_a', 'I1_06h_b'], (rcsv(mc)[1], rcsv(pt)[1]))
+    # S-G28: the OMIT cells' rows (production-form cand_ids) are absent from both inputs and recorded
+    c1, c2, c3 = 'I_05h_2030-01-01T05_46MHz_0001', 'I_05h_2030-01-02T05_46MHz_0002', 'V1_05h_2030-01-01T05_46MHz_0003'
+    wcsv(f'{d}/run07/master_catalog.csv', mc_cols, [dict(cand_id=c, lst='05h', stokes=c[0], snr='8') for c in (c1, c2, c3)])
+    wcsv(f'{d}/run07/pertie_detections.csv', ['cand_id', 'sys_arcmin'], [dict(cand_id=c, sys_arcmin='0.5') for c in (c1, c2, c3)])
+    omx = GS.omission_of(omission_dir(f'{d}/omit', omit=[('05h', '46MHz', '2030-01-01', 'I')]))
+    mc, pt, _r = GS.assemble_tenmin_input(['05h'], f'{d}/out3', lst_dirs={'05h': f'{d}/run07'}, omission=omx)
+    dr = rcsv(f'{d}/out3/grouping_input/{GS.OMISSION_DROPPED}')[1]
+    check('10-minute input (S-G28): the OMIT cell\'s rows (that LST, band, night and Stokes) are absent from the catalog and '
+          'the window tie, the other Stokes and nights kept; the dropped rows recorded per file',
+          [r['cand_id'] for r in rcsv(mc)[1]] == [c2, c3] and [r['cand_id'] for r in rcsv(pt)[1]] == [c2, c3]
+          and sorted((r['cand_id'], r['lst'], r['band'], r['night'], r['stokes']) for r in dr)
+          == [(c1, '05h', '46MHz', '2030-01-01', 'I')] * 2 and sum(omx.dropped.values()) == 2,
+          (rcsv(mc)[1], dr, omx.dropped))
+    for what, kw in (('no decision table', dict(omission=None)),
+                     ('a decision table without the LST', dict(omission=GS.omission_of(omission_dir(f'{d}/k6', lsts=['06h']))))):
+        try:
+            GS.assemble_tenmin_input(['05h'], f'{d}/out4', lst_dirs={'05h': f'{d}/run07'}, **kw)
+            got = 'assembled'
+        except GS.StageRefusal as e:
+            got = str(e)
+        check(f'10-minute input (S-G28): {what} REFUSES, never "no omission"', 'S-G28' in got and 'REFUSING' in got, got)
     wcsv(f'{d}/cat06/master_catalog.csv', mc_cols, [dict(cand_id='I1_05h_a', lst='06h', stokes='I', snr='9')])
     for what, kw in (('a cand_id in two LSTs', dict(lst_dirs={'05h': f'{d}/run05', '06h': f'{d}/cat06'})),
                      ('an LST outside --lsts', dict(lst_dirs={'05h': f'{d}/run05', '07h': f'{d}/cat06'}))):
         try:
-            GS.assemble_tenmin_input(['05h', '06h'] if '07h' not in kw['lst_dirs'] else ['05h'], f'{d}/out2', **kw)
+            GS.assemble_tenmin_input(['05h', '06h'] if '07h' not in kw['lst_dirs'] else ['05h'], f'{d}/out2', omission=om, **kw)
             got = 'assembled'
         except GS.StageRefusal as e:
             got = str(e)
@@ -1151,7 +1225,7 @@ def cli(args, timeout=1800):
 def test_cli():
     out = f'{T}/cli/grouping_sublst'
     common = ['catalog', '--tier', 'sublst', '--stages', 'group', '--group-input', f'{FROZEN}/tenmin', '--out', out,
-              '--cores', 'none', '--group-stokes', 'V']
+              '--cores', 'none', '--group-stokes', 'V', '--group-omission', omission_dir(f'{T}/cli/omit')]
     rc, txt = cli(common)
     check('cli: the first 10-minute grouping without --group-new-state REFUSES (exit 2)', rc == 2 and 'new=True' in txt,
           txt[-400:])
@@ -1191,6 +1265,65 @@ def test_cli():
           rc == 3 and rec.get('status') == 'no-input' and 'no grouping stage' in (rec.get('reason') or ''), (rc, rec.get('reason')))
 
 
+def test_omission():
+    """S-G28 through the unit on the frozen 10-minute subset (production-form cand_ids): the grouping after the deep omission
+    equals the grouping of the input with the OMIT cells' rows removed by hand, on every field"""
+    d = f'{T}/omission'
+    src = f'{FROZEN}/tenmin'
+    import re
+    cid = re.compile(r'^([IV])\w*?_(\d\dh)_(\d{4}-\d\d-\d\d)T\d\d_([^_]+)_\d+$')   # sublst_deep_omission_drop.py:43
+
+    def key(r):
+        m = cid.match(r['cand_id'])
+        return (m.group(2), m.group(4), m.group(3), r.get('stokes') or m.group(1))
+    mcols, mrows = rcsv(f'{src}/master_catalog.csv')
+    pcols, prows = rcsv(f'{src}/pertie_detections.csv')
+    cells = collections.Counter(key(r) for r in mrows if r['stokes'] == 'V')
+    omit = [k for k, _n in sorted(cells.items(), key=lambda kv: (-kv[1], kv[0]))[:2]]   # the two fullest V cells
+    gone = {r['cand_id'] for r in mrows if key(r) in omit}
+    os.makedirs(f'{d}/hand')
+    wcsv(f'{d}/hand/master_catalog.csv', mcols, [r for r in mrows if r['cand_id'] not in gone])
+    wcsv(f'{d}/hand/pertie_detections.csv', pcols, [r for r in prows if r['cand_id'] not in gone])
+    keep, om = omission_dir(f'{d}/keep'), omission_dir(f'{d}/omit', omit=omit)
+    base = ['catalog', '--tier', 'sublst', '--stages', 'group', '--cores', 'none', '--group-stokes', 'V', '--group-new-state']
+    rc_o, txt_o = cli(base + ['--group-input', src, '--out', f'{d}/o', '--group-omission', om])
+    rc_h, txt_h = cli(base + ['--group-input', f'{d}/hand', '--out', f'{d}/h', '--group-omission', keep])
+    to = rcsv(f'{d}/o/grouping_V/detections.csv')[1] if rc_o == 0 else []
+    th = rcsv(f'{d}/h/grouping_V/detections.csv')[1] if rc_h == 0 else []
+    wantV = {r['cand_id'] for r in mrows if r['stokes'] == 'V'} - gone
+    check(f'omission: the {len(gone)} detections of the two OMIT cells {omit} are absent from the grouping; every other V '
+          f'detection of the input is in it', rc_o == 0 and len(gone) > 0 and {r['cand_id'] for r in to} == wantV,
+          (rc_o, txt_o[-400:]))
+    check('omission: the grouping after the deep omission equals the grouping of the hand-filtered input on every field of '
+          'every row', rc_h == 0 and to == th and len(to) == len(wantV), (rc_h, txt_h[-300:], len(to), len(th)))
+    rec = json.load(open(f'{d}/o/_records/catalog/Run_SLSTB.group.json')) if rc_o == 0 else {}
+    mo = rec.get('meta', {}).get('omission', {})
+    dr = rcsv(mo['record'])[1] if mo.get('record') and os.path.exists(mo['record']) else []
+    check('omission: the record names the table (path, sha256) and the dropped rows per file; the drop record lists them',
+          mo.get('path') == f'{om}/deep_omission.csv' and mo.get('sha256') == sha256(f'{om}/deep_omission.csv')
+          and mo.get('omit_keys') == 2 and mo.get('dropped') == {'master_catalog.csv': len(gone), 'pertie_detections.csv':
+          sum(1 for r in prows if r['cand_id'] in gone)} and {r['cand_id'] for r in dr} == gone, (mo, len(dr)))
+    got = GS.recorded_omission(f'{d}/o', 'V') if rc_o == 0 else None
+    check('omission: recorded_omission (what every build reads) returns that table', got == dict(path=mo.get('path'),
+          sha256=mo.get('sha256')), got)
+    for what, args, text in (('no --group-omission', [], 'no deep-omission decision table'),
+                             ('a missing table', ['--group-omission', f'{d}/nowhere'], 'missing or unreadable'),
+                             ('a table without the input\'s LSTs', ['--group-omission', omission_dir(f'{d}/k23', lsts=['23h'])],
+                              'holds no decision of')):
+        rc, txt = cli(base + ['--group-input', src, '--out', f'{d}/x'] + args)
+        check(f'omission: {what} REFUSES (exit 2, S-G28), never "no omission"', rc == 2 and 'S-G28' in txt and text in txt,
+              (rc, txt[-300:]))
+    with open(f'{om}/deep_omission.csv', 'a') as f:
+        f.write('05h,46MHz,2025-01-01,V,beam,OMIT,changed after the grouping\n')
+    try:
+        GS.recorded_omission(f'{d}/o', 'V')
+        got = 'accepted'
+    except GS.StageRefusal as e:
+        got = str(e)
+    check('omission: a table changed after the grouping recorded it makes the builds\' reading REFUSE (S-G28)',
+          'S-G28' in got and 'changed since' in got, got)
+
+
 def _names(out, S):
     return {r['cand_id']: (r['identity_id'], r['identity_name']) for r in rcsv(f'{out}/grouping_{S}/detections.csv')[1]}
 
@@ -1201,11 +1334,11 @@ def test_naming():
           'I\'s new names); one Stokes: as asked, the default reservation',
           GS.naming_order(['V', 'I']) == (['I', 'V'], {'I': frozenset()}) == GS.naming_order(['I', 'V'])
           and GS.naming_order(['V']) == (['V'], {}) and GS.naming_order(['I']) == (['I'], {}))
-    outs = {}
+    outs, keep = {}, omission_dir(f'{T}/naming/omit')
     for k, order in (('a', 'V,I'), ('b', 'I,V')):
         out = outs[k] = f'{T}/naming/{k}'
         rc, txt = cli(['catalog', '--tier', 'sublst', '--stages', 'group', '--group-input', f'{FROZEN}/tenmin', '--out', out,
-                       '--cores', 'none', '--group-stokes', order, '--group-new-state'])
+                       '--cores', 'none', '--group-stokes', order, '--group-new-state', '--group-omission', keep])
         rec = json.load(open(f'{out}/_records/catalog/Run_SLSTB.group.json'))
         check(f'naming: --group-stokes {order} groups both and links them (exit 0, unit done, no S-G27)',
               rc == 0 and rec.get('status') == 'done' and isinstance(rec.get('meta', {}).get('stokes_link'), dict)
@@ -1240,7 +1373,7 @@ def test_naming():
     vers0 = sorted(os.listdir(os.path.join(outs['a'], SL.VERSIONS)))
     for k in range(3):
         rc, txt = cli(['catalog', '--tier', 'sublst', '--stages', 'group', '--group-input', f'{FROZEN}/tenmin', '--out',
-                       outs['a'], '--cores', 'none', '--group-stokes', 'V,I'])
+                       outs['a'], '--cores', 'none', '--group-stokes', 'V,I', '--group-omission', keep])
         same = all(_names(outs['a'], S) == a[S] for S in ('I', 'V'))
         if rc != 0 or not same:
             break
@@ -1264,7 +1397,7 @@ def _pos_of(out, S, iid):
 # =====================================================================================================================
 ORDER = ['test_mode', 'test_frozen', 'test_defects', 'test_runner', 'test_sublst_build', 'test_one_rule_record', 'test_carry',
          'test_serve_carry', 'test_carry_between_window', 'test_refused_grouping', 'test_grouping_mix', 'test_identity_writeback',
-         'test_tenmin_input', 'test_cli', 'test_naming']
+         'test_tenmin_input', 'test_cli', 'test_omission', 'test_naming']
 
 
 def main(names):

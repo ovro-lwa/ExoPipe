@@ -13,6 +13,7 @@ two records are records of what the gate saw and what the grouping took: they ar
 against the grouping table's present bytes (a later night's run replaces it by design).
 """
 import glob
+import hashlib
 import json
 import os
 
@@ -130,8 +131,9 @@ def night_frozen_state(path, **ctx):
     """The per-hour item's gate record, tested for its own claims: it names the hour, the arm, the night, the all-nights
     directory (which holds the image table) and the done grouping run of each of Stokes I and V with its table and sha1; the
     night's hour is in scope; every builder's frozen record it found is still there (the all-nights build's, never
-    rewritten); and gate I-G6 holds again (tier_sublst.frozen_records_refusal: the conformance records the night was judged
-    by, as the all-nights directory's own conformance record lists them)."""
+    rewritten) and names the deep-omission decision table the record names, which is unchanged (gate I-G8: the frozen state
+    stands on one omission, never replaced by a night); and gate I-G6 holds again (tier_sublst.frozen_records_refusal: the
+    conformance records the night was judged by, as the all-nights directory's own conformance record lists them)."""
     try:
         st = _json(path)
     except (OSError, ValueError) as e:
@@ -151,12 +153,30 @@ def night_frozen_state(path, **ctx):
         msgs.append(f'the night\'s own hour {st["lst"]} is not in scope')
     if not os.path.isfile(os.path.join(st['frozen_from'], 'v_deep_images.csv')):
         msgs.append(f'{st["frozen_from"]} holds no v_deep_images.csv')
+    om = st.get('omission') or {}
+    if not (om.get('path') and om.get('sha256')):
+        msgs.append('no deep-omission decision table named (I-G8)')
+    else:
+        try:
+            with open(om['path'], 'rb') as f:
+                now = hashlib.sha256(f.read()).hexdigest()
+            if now != om['sha256']:
+                msgs.append(f'the deep-omission decision table {om["path"]} changed since the gate read it (I-G8)')
+        except OSError:
+            msgs.append(f'the deep-omission decision table {om["path"]} is gone (I-G8)')
     n = 0
     for H, keys in sorted((st.get('frozen_records') or {}).items()):
         for k, fp in sorted(keys.items()):
             n += 1
             if not os.path.isfile(fp):
                 msgs.append(f'{H} {k}: the frozen record {fp} is gone')
+            elif om.get('sha256'):
+                try:
+                    have = (_json(fp).get('omission') or {}).get('sha256')
+                except (OSError, ValueError):
+                    have = None
+                if have != om['sha256']:
+                    msgs.append(f'{H} {k}: the frozen record {fp} names another deep-omission decision table (I-G8)')
     c = st['conform']
     paths = [c.get('noise'), c.get('evidence')]
     if not all(paths):
@@ -167,8 +187,8 @@ def night_frozen_state(path, **ctx):
         if why:
             msgs.append(f'the conformance records the night is judged by: {why}')
     return (not msgs, n, '; '.join(msgs) if msgs else
-            f'{st["lst"]} {st["night"]}: frozen from {st["frozen_from"]}; {n} frozen builder record(s) present; both '
-            f'grouping runs named; I-G6 holds')
+            f'{st["lst"]} {st["night"]}: frozen from {st["frozen_from"]}; {n} frozen builder record(s) present, each '
+            f'naming the unchanged deep-omission decision table; both grouping runs named; I-G6 holds')
 
 
 @content_test('night_grouping_record')

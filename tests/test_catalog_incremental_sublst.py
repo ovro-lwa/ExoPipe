@@ -13,6 +13,7 @@ Run: python tests/test_catalog_incremental_sublst.py [test names]   (exit 0 = al
 import argparse
 import contextlib
 import csv
+import hashlib
 import inspect
 import io
 import json
@@ -77,8 +78,20 @@ def wcsv(path, hdr, rows):
         w.writerows(rows)
 
 
-def grouping(gdir, runs, nights=(), status='done', stokes=('I', 'V'), name='Run_SLSTB.group', finished='2026-11-24T00:00:00Z'):
-    """A grouping run record of stage 'group' with its tables, as grouping_stage writes it."""
+def omission(name='omission'):
+    """A deep-omission decision table (the omit stage's columns that are read) under TMP: {path, sha256}."""
+    p = os.path.join(TMP or tmp('_tmp'), name, 'deep_omission.csv')
+    if not os.path.exists(p):
+        wcsv(p, ['lst', 'band', 'night', 'stokes', 'verdict', 'reason'],          # the reason: tables of other names differ
+             [[f'{h:02d}h', 'Red', NIGHT, 'I', 'KEEP', name] for h in range(24)])
+    with open(p, 'rb') as f:
+        return dict(path=p, sha256=hashlib.sha256(f.read()).hexdigest())
+
+
+def grouping(gdir, runs, nights=(), status='done', stokes=('I', 'V'), name='Run_SLSTB.group', finished='2026-11-24T00:00:00Z',
+             om='omission'):
+    """A grouping run record of stage 'group' with its tables and the deep-omission decision table ``om`` (a name for
+    omission(); None: none recorded), as grouping_stage writes it."""
     tables = {}
     for S in stokes:
         t = os.path.join(gdir, f'grouping_{S}', GS.DETECTIONS)
@@ -87,6 +100,8 @@ def grouping(gdir, runs, nights=(), status='done', stokes=('I', 'V'), name='Run_
     r = dict(unit=name, status=status, reason='', finished=finished,
              meta=dict(stage=GS.STAGE, stokes=list(stokes), tables=tables, input=dict(runs),
                        input_nights=[[L, D] for L, D in nights]))
+    if om:
+        r['meta']['omission'] = dict(omission(om), decisions=24, omit_keys=0, lsts=[], dropped={})
     p = record.record_path(gdir, 'catalog', name)
     os.makedirs(os.path.dirname(p), exist_ok=True)
     with open(p, 'w') as f:
@@ -94,9 +109,10 @@ def grouping(gdir, runs, nights=(), status='done', stokes=('I', 'V'), name='Run_
     return p
 
 
-def all_nights(F, lst=LST, night_rows=0, conform=True, frozen=('noveto', 'veto'), keys=('V_sb', 'I_sb')):
+def all_nights(F, lst=LST, night_rows=0, conform=True, frozen=('noveto', 'veto'), keys=('V_sb', 'I_sb'), om='omission'):
     """An all-nights catalog directory: its image table (night_rows rows of NIGHT), the two frozen conformance records with
-    the done conformance record that lists them, and the builds' frozen records of ``keys`` (with selected rows)."""
+    the done conformance record that lists them, and the builds' frozen records of ``keys`` (with selected rows), each
+    naming the deep-omission decision table ``om`` (a name for omission())."""
     os.makedirs(F, exist_ok=True)
     rows = [[lst, 'Red', 'I', '2025-04-06T00']] + [[lst, 'Red', 'I', f'{NIGHT}T0{i}'] for i in range(night_rows)]
     wcsv(os.path.join(F, DB.IMAGES), ['lst', 'scope', 'stokes', 'date'], rows)
@@ -116,7 +132,7 @@ def all_nights(F, lst=LST, night_rows=0, conform=True, frozen=('noveto', 'veto')
             cat = os.path.join(F, DB.CAT.format(tag=tag, key=K))
             os.makedirs(cat, exist_ok=True)
             with open(os.path.join(cat, DB.FROZEN_RECORD), 'w') as f:
-                json.dump({'rows': {}}, f)
+                json.dump({'rows': {}, 'omission': dict(omission(om), dropped=0)}, f)
     return F
 
 
@@ -157,8 +173,12 @@ def test_the_tier_has_an_incremental_path_and_its_night_directory():
     assert TS.night_out_refusal(want, LST, ARM, f'{LST}_{ARM}') == ''
     # what the first all-nights pass must write is named in every refusal of the gate
     for part in ('--group-new-state', 'conform_table_noise.csv', 'conform_pulsar_evidence.csv', DB.FROZEN_RECORD,
-                 '--stages build,buildv', 'catalog_grouping.SUBLST_DIR'):
+                 '--stages build,buildv', 'catalog_grouping.SUBLST_DIR', '--until veto', '--stages omit', '--group-omission',
+                 'not one per LST'):
         assert part in INC.FIRST_RUN, part
+    # the pass order: every hour to the veto, then the omission, then ONE grouping, then the builds
+    order = [INC.FIRST_RUN.index(x) for x in ('--until veto', '--stages omit', '--stages group', '--stages build,buildv')]
+    assert order == sorted(order), order
 
 
 def test_the_gate_refuses_without_the_frozen_grouping_state():
@@ -243,6 +263,35 @@ def test_the_gate_refuses_mixed_stokes_a_second_directory_and_production_groupin
     with Patch((CFG.catalog_grouping, 'GROUPING', 'production'), (CFG.catalog_grouping, 'MULTIPLES_RULE', 'production')):
         msg = raises(record.Refusal, gate, g2, out, view_hours=[LST])
     assert msg.startswith('I-G1') and 'design-B' in msg, msg
+
+
+def test_the_gate_refuses_another_deep_omission():
+    """I-G8: the frozen state stands on ONE deep-omission decision table - the one the latest grouping run of both Stokes
+    recorded, unchanged, and named by every frozen record in scope; anything else refuses."""
+    g, out = tmp('g_om'), tmp('n_om')
+    F = all_nights(os.path.join(tmp('F_om'), 'F'))
+    grouping(g, {LST: F})
+    st = gate(g, out, view_hours=[LST])
+    assert st['omission'] == omission(), st.get('omission')
+    grouping(g, {LST: F}, om=None)                                          # a grouping that followed no omission
+    msg = raises(record.Refusal, gate, g, out, view_hours=[LST])
+    assert msg.startswith('I-G8') and 'recorded no deep-omission decision table' in msg and INC.FIRST_RUN in msg, msg
+    grouping(g, {LST: F}, stokes=('I',), name='Run_SLSTB_I.group', finished='2026-11-24T00:00:01Z')
+    grouping(g, {LST: F}, stokes=('V',), name='Run_SLSTB_V.group', finished='2026-11-24T00:00:02Z', om='other')
+    msg = raises(record.Refusal, gate, g, out, view_hours=[LST])            # I and V filtered by different tables
+    assert msg.startswith('I-G8') and 'different deep-omission decision tables' in msg, msg
+    g2 = tmp('g_om2')
+    grouping(g2, {LST: F}, om='other')                                       # the frozen records name another table
+    msg = raises(record.Refusal, gate, g2, out, view_hours=[LST])
+    assert msg.startswith('I-G8 4 frozen record(s) were built under another deep-omission decision table') and \
+        'the frozen state stands on one omission' in msg, msg
+    g3 = tmp('g_om3')
+    grouping(g3, {LST: F})
+    with open(omission()['path'], 'a') as f:                                 # the table changed after the grouping
+        f.write('17h,Red,2025-05-01,I,OMIT\n')
+    msg = raises(record.Refusal, gate, g3, out, view_hours=[LST])
+    assert msg.startswith('I-G8') and 'changed since' in msg, msg
+    shutil.rmtree(os.path.dirname(omission()['path']))                      # the other tests' table, restored
 
 
 def _run(out, argv, dry=False):
@@ -417,6 +466,12 @@ def test_the_night_records_are_tested_for_their_own_claims():
     for cls, path in (('night_grouping_record', p), ('night_frozen_state', sp)):
         r = validate.run(cls, path)
         assert all(x['passed'] for x in r), (cls, r)
+    with open(omission()['path'], 'a') as f:                                 # I-G8: the table the state stands on changed
+        f.write('17h,Red,2025-05-01,I,OMIT,late\n')
+    assert 'changed since the gate read it (I-G8)' in ' '.join(x['detail'] for x in validate.run('night_frozen_state', sp))
+    shutil.rmtree(os.path.dirname(omission()['path']))
+    omission()                                                               # restored (the same bytes)
+    assert all(x['passed'] for x in validate.run('night_frozen_state', sp))
     frz = st['frozen_records'][LST]['noveto_V_sb']
     os.remove(frz)
     assert 'is gone' in ' '.join(x['detail'] for x in validate.run('night_frozen_state', sp))

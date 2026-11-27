@@ -43,6 +43,23 @@ once: its sha1 and its rows come from the same bytes. With EXOPIPE3_GROUPING_PRO
 grouping_table.json into the builder's output directory (the table's path and sha1, the builder's sha1) - what the
 cumulative build checks (one grouping table for every LST build).
 
+DEEP OMISSION (the 10-minute tier; production's order, sublst_cumulative.sh:99-107: the decision table, then the merge's drop of
+its OMIT (LST, band, night, Stokes) rows, then the identities, whose test M1, sublst_master_identity.py:19, requires the
+grouping to hold exactly the detections the drop leaves): the 10-minute grouping holds no detection of an OMIT cell, so a
+10-minute build under design B DROPS those rows from its input before the builder reads them, instead of refusing them as
+detections the grouping lacks. EXOPIPE3_GROUPING_OMISSION names the decision table the grouping run recorded (the 10-minute
+omit stage's deep_omission.csv; grouping_stage.recorded_omission) and EXOPIPE3_GROUPING_OMISSION_SHA256 its sha256; the table
+is read once (its sha256 and its verdicts come from the same bytes) and a table with another sha256, a missing or unreadable
+one, one without the columns lst, band, night, stokes and verdict, and a 10-minute design-B build without one REFUSE - the
+build never falls back to "no omission". A row is in an OMIT cell exactly as production's drop decides it
+(sublst_deep_omission_drop.omitted: LST, night and band from the cand_id, Stokes from the row, else the cand_id's first letter;
+an LST without an OMIT key keeps every row); a cand_id that does not name its cell in an LST with OMIT keys REFUSES (production
+would keep it). The rows kept are written to <input directory>/builder_inputs/<output directory name>.csv and the builder reads
+that file; the removal tables the records read stay those of the input's own directory. Recorded: grouping_table.json,
+builder_frozen.json and builder_delta.json name the table (path, sha256) and the detections dropped; a delta build REFUSES a
+frozen record made under another table. The per-detection record's part (P3_DETREC_BUILDER_OUT) gets one row per dropped
+detection with builder_outcome OMIT_OUTCOME, so the record still accounts for every selected detection (S-G25).
+
 FROZEN STATISTICS (EXOPIPE3_FROZEN_MODE; the per-hour 10-minute catalog build: Gregg 2026-11-13, fix ledger
 R-GREGG-20261113-SPEEDUP-CHECKIN-TEN-ANSWERS answer 3, "the builder runs only on the sources the new night touches, with its
 statistics frozen from the last all-nights build, and writes a delta rather than a whole new catalog"; arrival order:
@@ -79,6 +96,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import sys
 import types
 
@@ -177,9 +195,112 @@ def removed_before_builder(dirs, sel, table):
 
 def removed_dirs(gated):
     """The run directories whose removal tables a build's record reads: REMOVED_DIRS_ENV when set (a delta build's input is
-    assembled from the all-nights run and its nights' runs), else the directory of the build's input ``gated``."""
+    assembled from the all-nights run and its nights' runs), else the directory of the build's input ``gated`` (the
+    selection the stage handed the runner, not the omission's builder_inputs/ copy)."""
     v = os.environ.get(REMOVED_DIRS_ENV) or ''
     return [d for d in v.split(os.pathsep) if d] or [os.path.dirname(os.path.abspath(gated))]
+
+
+# ---- DEEP OMISSION of the 10-minute tier (see the module text) ------------------------------------------------------------
+OMISSION_ENV, OMISSION_SHA256_ENV = 'EXOPIPE3_GROUPING_OMISSION', 'EXOPIPE3_GROUPING_OMISSION_SHA256'
+OMISSION_COLS = ('lst', 'band', 'night', 'stokes', 'verdict')
+OMISSION_INPUTS = 'builder_inputs'          # beside the build's input: the rows the omission keeps, one file per output directory
+OMIT_OUTCOME = 'deep omission: OMIT cell, dropped before the builder'
+# production's cand_id pattern (sublst_deep_omission_drop.py:43): Stokes letter, LST, night, band
+OMISSION_CID = re.compile(r'^([IV])\w*?_(\d\dh)_(\d{4}-\d\d-\d\d)T\d\d_([^_]+)_\d+$')
+
+
+class Omission:
+    """The 10-minute deep-omission decision table (the omit stage's deep_omission.csv; production's sublst_deep_omission.py
+    table): the OMIT (lst, band, night, stokes) keys, read once. REFUSES (Refused) a missing or unreadable table, one without
+    the columns OMISSION_COLS or without a row, and one whose sha256 is not ``sha256`` when that is given."""
+
+    def __init__(self, path, sha256=None):
+        if not path:
+            raise Refused('no deep-omission decision table named - REFUSING (never "no omission")')
+        self.path = os.path.abspath(path)
+        try:
+            with open(self.path, 'rb') as f:
+                data = f.read()
+            rows = list(csv.DictReader(io.StringIO(data.decode('utf-8'), newline='')))
+        except (OSError, UnicodeDecodeError, csv.Error) as e:
+            raise Refused(f'the deep-omission decision table {self.path} is missing or unreadable ({type(e).__name__}: {e}) - '
+                          f'REFUSING')
+        self.sha256 = hashlib.sha256(data).hexdigest()
+        if sha256 and self.sha256 != sha256:
+            raise Refused(f'the deep-omission decision table {self.path} has sha256 {self.sha256[:12]}, its grouping run recorded '
+                          f'{sha256[:12]} - the table changed: group again - REFUSING')
+        miss = [c for c in OMISSION_COLS if not rows or c not in rows[0]]
+        if not rows or miss:
+            raise Refused(f'the deep-omission decision table {self.path} has ' + (f'no column {", ".join(miss)}' if rows else
+                                                                                     'no decision row') + ' - REFUSING')
+        self.keys = {(r['lst'], r['band'], r['night'], r['stokes']) for r in rows if r['verdict'] == 'OMIT'}
+        self.lsts = sorted({r['lst'] for r in rows})
+        self.omit_lsts = {k[0] for k in self.keys}
+        self.decisions = len(rows)
+
+    def omitted(self, cand_id, stokes, lst):
+        """the OMIT key of a detection, or None - production's omitted(cand_id, stokes) behind filter_rows' early return
+        (``lst``: the LST of the run or the row; an LST without an OMIT key keeps every row). A cand_id that does not name its
+        cell in an LST with OMIT keys REFUSES."""
+        if lst not in self.omit_lsts:
+            return None
+        m = OMISSION_CID.match(cand_id or '')
+        if not m:
+            raise Refused(f'{cand_id!r} ({lst}) does not name its (LST, night, band): whether the deep omission drops it cannot '
+                          f'be told - REFUSING')
+        k = (m.group(2), m.group(4), m.group(3), stokes or m.group(1))
+        return k if k in self.keys else None
+
+    def split(self, rows, lst_of=lambda r: r.get('lst', '')):
+        """(kept rows, dropped rows) of ``rows`` (dicts with cand_id; Stokes from the row's 'stokes')."""
+        kept, gone = [], []
+        for r in rows:
+            (gone if self.omitted(r.get('cand_id'), r.get('stokes'), lst_of(r)) else kept).append(r)
+        return kept, gone
+
+    def summary(self, dropped=()):
+        return dict(path=self.path, sha256=self.sha256, decisions=self.decisions, omit_keys=len(self.keys), lsts=self.lsts,
+                    dropped=len(dropped), dropped_cand_ids=sorted(r['cand_id'] for r in dropped))
+
+
+def omission_input(selected, out_dir, om):
+    """The builder input under the deep omission: (path the builder reads, rows dropped). No row dropped: ``selected`` itself;
+    else <dir of selected>/OMISSION_INPUTS/<name of out_dir>.csv holding the kept rows (same header, same order)."""
+    with open(selected, newline='') as f:
+        rd = csv.DictReader(f)
+        hdr, rows = list(rd.fieldnames or []), list(rd)
+    kept, gone = om.split(rows)
+    if not gone:
+        return selected, gone
+    d = os.path.join(os.path.dirname(os.path.abspath(selected)), OMISSION_INPUTS)
+    os.makedirs(d, exist_ok=True)
+    p = os.path.join(d, os.path.basename(os.path.normpath(out_dir)) + '.csv')
+    with open(p + '.tmp', 'w', newline='') as f:
+        w = csv.DictWriter(f, fieldnames=hdr)
+        w.writeheader()
+        w.writerows(kept)
+    os.replace(p + '.tmp', p)
+    return p, gone
+
+
+def omission_outcomes(part, gone, out_dir):
+    """One per-detection record row (P3_DETREC_BUILDER_OUT ``part``, the builder's columns) per dropped detection, outcome
+    OMIT_OUTCOME, appended after the builder wrote the part. A part the builder did not write is left absent (the record
+    stage refuses it)."""
+    if not gone or not part or not os.path.exists(part):
+        return 0
+    with open(part, newline='') as f:
+        hdr = next(csv.reader(f), None)
+    if not hdr or 'builder_outcome' not in hdr:
+        raise Refused(f'{part}: no builder_outcome column - the dropped detections cannot be recorded - REFUSING')
+    with open(part, 'a', newline='') as f:
+        w = csv.DictWriter(f, fieldnames=hdr, extrasaction='ignore')
+        for r in gone:
+            w.writerow(dict(cand_id=r['cand_id'], lst=r.get('lst', ''), band=r.get('band', ''), stokes=r.get('stokes', ''),
+                            date=r.get('date', ''), snr=r.get('snr', ''), builder_outdir=os.path.basename(os.path.normpath(out_dir)),
+                            leakveto='not-reached', sstack_verdict='not-reached', builder_outcome=OMIT_OUTCOME))
+    return len(gone)
 
 
 def group_digest_of(rows):
@@ -192,7 +313,7 @@ def group_digest_of(rows):
     return hashlib.sha1('\n'.join(lines).encode()).hexdigest()[:16]
 
 
-FROZEN_VERSION = 2                          # 2: the record names what the footprint and the densities were computed from
+FROZEN_VERSION = 3                          # 3: the record names the deep-omission decision table; 2: the record names what the footprint and the densities were computed from
 FROZEN_PATCHES = [
     # other bands' detections a source is matched against (allband_positions, 728-745: column other_bands, the MB rung)
     ('F1-other-band-rows',
@@ -310,6 +431,8 @@ class Hook:
         self.frozen = None                       # the Frozen object of a delta build (run sets it)
         self.T, self.mgroup, self.checked = {}, {}, set()
         self._digest = {}
+        self.input_path = ''                     # the selection the stage handed the runner (run sets it)
+        self.omission, self.omission_gone = None, []   # the 10-minute deep omission (run sets them)
         if self.active:
             if tier not in TIERS:
                 raise Refused(f'EXOPIPE3_GROUPING_TIER={tier!r} is not one of {TIERS} - REFUSING')
@@ -487,6 +610,12 @@ class Frozen:
         self.rec = json.loads(data.decode())
         if self.rec.get('version') != FROZEN_VERSION:
             raise Refused(f'{record}: record version {self.rec.get("version")!r}, this runner reads {FROZEN_VERSION} - REFUSING')
+        want = (self.rec.get('omission') or {}).get('sha256') or ''
+        have = g.omission.sha256 if g.omission is not None else ''
+        if want != have:
+            raise Refused(f'{record}: the all-nights build dropped the OMIT cells of the deep-omission decision table with sha256 '
+                          f'{want[:12] or "none"}, this delta build those of {have[:12] or "none"} - a delta build stands on '
+                          f'the table its all-nights build was made under - REFUSING')
 
     # ---- what a delta build knows once the builder has read its rows ---------------------------------------------------------
     def _prepare(self):
@@ -779,7 +908,9 @@ class Frozen:
                    rows={c: [g.T[c]['identity_id'], g.group_digest(g.T[c]['multiples_id'])] for c in kept},
                    vetoed=sorted(set(sel) - set(kept)),
                    # the table's detections removed before the builder (selection / ephemeris), with the reason
-                   removed=removed_before_builder(removed_dirs(gated), set(sel), g.T))
+                   removed=removed_before_builder(removed_dirs(g.input_path or gated), set(sel), g.T),
+                   # the deep omission's decision table and the OMIT-cell rows dropped from the input before the builder
+                   omission=g.omission.summary(g.omission_gone) if g.omission is not None else None)
         p = os.path.join(out_dir, FROZEN_RECORD)
         _write_json(p, rec)
         return p, len(kept), len(srcs)
@@ -832,7 +963,8 @@ class Frozen:
                             # detection this build read - the cumulative's gate compares that set with the present table's
                             vetoed=sorted(sel - {r['cand_id'] for r in ns['rows']}),
                             # the table's detections removed before the builder (selection / ephemeris), with the reason
-                            removed=removed_before_builder(removed_dirs(ns['gated_csv']), sel, g.T),
+                            removed=removed_before_builder(removed_dirs(g.input_path or ns['gated_csv']), sel, g.T),
+                            omission=g.omission.summary(g.omission_gone) if g.omission is not None else None,
                             grouping_table=dict(path=os.path.abspath(g.table_path), sha1=g.table_sha1),
                             touch_all=self.touch_all, input_detections=len(ns['rows']), new_detections=len(self.new),
                             rows={r['cand_id']: [g.T[r['cand_id']]['identity_id'],
@@ -845,9 +977,11 @@ class Frozen:
 
 
 def run(builder, args, mode, table=None, tier=None, rungs='multiples-level', accepted=(), table_sha1=None, provenance=False,
-        frozen_mode='', frozen_record=None, frozen_touch='', frozen_accepted=()):
+        frozen_mode='', frozen_record=None, frozen_touch='', frozen_accepted=(), omission=None, omission_sha256=None):
     """Run the patched builder as __main__ (its file name, its directory first on sys.path, sys.argv = [builder] + args).
-    accepted: the path-normalized sha1s the patches were written for (any other builder REFUSES)."""
+    accepted: the path-normalized sha1s the patches were written for (any other builder REFUSES). omission / omission_sha256:
+    the 10-minute deep-omission decision table and its sha256 (DEEP OMISSION in the module text; required for a 10-minute
+    design-B build, refused otherwise)."""
     builder = os.path.abspath(builder)
     with open(builder) as f:
         src = f.read()
@@ -877,6 +1011,25 @@ def run(builder, args, mode, table=None, tier=None, rungs='multiples-level', acc
     patched, names = patch(src, frozen=patch_frozen)
     hook = Hook(mode, table, tier, rungs, table_sha1)
     hook.table_path = table or ''
+    args = list(args)
+    out_dir = (args[1] if os.path.isabs(args[1]) else os.path.join(os.getcwd(), args[1])) if len(args) >= 2 else None
+    if args:
+        hook.input_path = os.path.abspath(args[0])
+    if omission and not hook.active:
+        raise Refused(f'{OMISSION_ENV} names a decision table under EXOPIPE3_GROUPING_MODE={mode!r}: the drop exists only '
+                      f'under design B - REFUSING')
+    if hook.active and tier == '10min':
+        if not omission or not omission_sha256:
+            raise Refused(f'{OMISSION_ENV} / {OMISSION_SHA256_ENV} unset: a 10-minute build under design B drops the deep '
+                          f'omission\'s OMIT cells (its grouping holds none of their detections) - name the decision table '
+                          f'the grouping run recorded (grouping_stage.recorded_omission) - REFUSING')
+        if len(args) < 2:
+            raise Refused('a 10-minute build under design B needs its input and output directory - REFUSING')
+        hook.omission = Omission(omission, omission_sha256)
+        args[0], hook.omission_gone = omission_input(args[0], out_dir, hook.omission)
+    elif omission:
+        raise Refused(f'{OMISSION_ENV} names a decision table for tier {tier!r}: the deep omission of the builder input is the '
+                      f'10-minute tier\'s - REFUSING')
     frozen = Frozen(frozen_mode, hook, frozen_record, frozen_touch)
     hook.frozen = frozen
     mod = types.ModuleType('__main__')
@@ -892,11 +1045,17 @@ def run(builder, args, mode, table=None, tier=None, rungs='multiples-level', acc
     print(f'GROUPING-BUILDER start: builder {builder} sha1 {sha1}; patches {len(names)} ({",".join(names)}); mode {mode}; '
           f'tier {tier}; repeat rungs {rungs}; table {table or "-"} sha1 {hook.table_sha1 or "-"} ({len(hook.T)} detections)'
           + (f'; frozen statistics: {frozen_mode}' + (f', record {frozen.rec_path} sha1 {frozen.rec_sha1}' if frozen.active else '')
-             + (', every identity touched' if frozen.active and frozen.touch_all else '') if frozen_mode else ''),
+             + (', every identity touched' if frozen.active and frozen.touch_all else '') if frozen_mode else '')
+          + (f'; deep omission {hook.omission.path} sha256 {hook.omission.sha256[:16]} ({len(hook.omission.keys)} OMIT keys): '
+             f'{len(hook.omission_gone)} input row(s) in OMIT cells dropped, the builder reads {args[0]}'
+             if hook.omission is not None else ''),
           flush=True)
     code = compile(patched, builder, 'exec')
     exec(code, mod.__dict__)
-    out_dir = (args[1] if os.path.isabs(args[1]) else os.path.join(os.getcwd(), args[1])) if len(args) >= 2 else None
+    if hook.omission is not None:
+        n_out = omission_outcomes(os.environ.get('P3_DETREC_BUILDER_OUT') or '', hook.omission_gone, out_dir)
+        if n_out:
+            print(f'DETREC-BUILDER deep omission: {n_out} dropped detection(s) recorded with outcome {OMIT_OUTCOME!r}', flush=True)
     rec_sha256 = ''
     if frozen_mode == 'record':
         p, n_rows, n_src = frozen.write_record(out_dir, sha1, norm)
@@ -912,6 +1071,9 @@ def run(builder, args, mode, table=None, tier=None, rungs='multiples-level', acc
         with open(p + '.tmp', 'w') as f:
             json.dump(dict(table=os.path.abspath(table), table_sha1=hook.table_sha1, tier=tier, repeat_rungs=rungs,
                            builder=builder, builder_sha1=sha1, builder_normalized_sha1=norm, rows_checked=len(hook.checked),
+                           input=hook.input_path, builder_input=os.path.abspath(args[0]),
+                           omission=(dict(path=hook.omission.path, sha256=hook.omission.sha256,
+                                          dropped=len(hook.omission_gone)) if hook.omission is not None else None),
                            # binds builder_frozen.json to this directory: the cumulative's gate (lib/serve/sublst_build.
                            # grouping_mix) certifies a directory only from the record whose sha256 is named here
                            **({'frozen_record_sha256': rec_sha256} if rec_sha256 else {})),
@@ -932,7 +1094,8 @@ def main(argv):
             provenance=os.environ.get('EXOPIPE3_GROUPING_PROVENANCE') == '1',
             frozen_mode=os.environ.get('EXOPIPE3_FROZEN_MODE', ''), frozen_record=os.environ.get('EXOPIPE3_FROZEN_RECORD'),
             frozen_touch=os.environ.get('EXOPIPE3_FROZEN_TOUCH', ''),
-            frozen_accepted=os.environ.get('EXOPIPE3_FROZEN_BUILDER_SHA1', '').split(','))
+            frozen_accepted=os.environ.get('EXOPIPE3_FROZEN_BUILDER_SHA1', '').split(','),
+            omission=os.environ.get(OMISSION_ENV) or None, omission_sha256=os.environ.get(OMISSION_SHA256_ENV) or None)
     except Refused as e:
         print(f'GROUPING-BUILDER REFUSING: {e}', flush=True)
         sys.exit(2)

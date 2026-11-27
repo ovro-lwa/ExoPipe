@@ -23,16 +23,30 @@ WHERE IT RUNS
              fitted conformant catalogue (the select stage's input master_catalog.csv) of that Stokes, with the frames' beams
              (frame_beam_bmaj.csv); the state (stable IDs) at <run>/<STATE_SUBDIR>/. Then 'associate' runs the builder with the
              grouping (lib/catalog/wraps/builder_grouping.py) and 'fork' (production's multiples_fork.py) ends no-input.
-  10-minute  `exopipe3 catalog --tier sublst --stages group [--lsts ...]` (one unit '<label>.group'): every detection of the
-             published LST runs (their master_catalog.csv + pertie_detections.csv, concatenated: what every LST's build sees -
-             BEFORE the cumulative merge's deep omission, which the merge applies as production does), per Stokes, into
-             catalog_grouping.SUBLST_DIR (or --out; the state beside it); --group-input DIR groups DIR/master_catalog.csv +
-             DIR/pertie_detections.csv instead (e.g. a frozen cumulative). Every LST's build stage then reads the grouping and
-             refuses a selected row it does not hold (S-G18). THE ORDER for an LST being catalogued: its chain --until veto,
-             then the group stage with --group-lst-dir <LST>=<its catalogue directory> (its new detections in place of its
-             published run), then its chain --from build. KNOWN LIMIT: a regroup can rename or merge identities of LSTs built
-             before it; their published catalogues still carry the old names (the runner's start line records the grouping
-             table's sha1) - the cumulative build does not yet refuse a mix of tables (report: what remains).
+  10-minute  `exopipe3 catalog --tier sublst --stages group --group-omission O [--lsts ...]` (one unit '<label>.group'):
+             ONE tier-wide grouping of every LST (the state is the tier's, per Stokes - not one per LST): every detection of
+             the published LST runs (their master_catalog.csv + pertie_detections.csv, concatenated) AFTER the deep
+             omission, per Stokes, into catalog_grouping.SUBLST_DIR (or --out; the state beside it); --group-input DIR groups
+             DIR/master_catalog.csv + DIR/pertie_detections.csv instead (e.g. a frozen cumulative), with the same omission.
+             THE OMISSION (production's order, sublst_cumulative.sh:99-107: the decision table (:99), the merge with its drop
+             (:101, sublst_cumulative.py + sublst_deep_omission_drop.filter_rows), then the master identity (:103-107), whose
+             test M1, sublst_master_identity.py:19, requires the grouping to hold exactly the build's master_catalog.csv
+             after the drop): O is the 10-minute omit stage's output (`exopipe3 catalog --tier sublst --stages omit --lsts
+             ... --out O`, its deep_omission.csv; a file path names the table itself); every row in an OMIT (LST, band,
+             night, Stokes) cell leaves the input exactly as production's drop removes it from master_catalog.csv and
+             pertie_detections.csv (wraps/builder_grouping.Omission). The re-judging removals (tenmin_rejudge) take
+             sources, member rows and pages only: production keeps their detections in the detection tables
+             (sublst_deep_omission_drop.py:22-30, :180-183), so the grouping keeps them too. A missing, unreadable or
+             incomplete table, or one without an LST of the input, REFUSES (S-G28); the run records the table's path and
+             sha256 (meta 'omission') and the rows dropped (grouping_input/omission_dropped.csv). Every LST's build stage
+             then reads the grouping and DROPS the rows of the same OMIT cells from its builder input (the grouping does not
+             hold them; wraps/builder_grouping.py, DEEP OMISSION) - any other selected row the grouping does not hold
+             refuses (S-G18). THE ORDER for the all-nights pass: every LST's chain --until veto, the omit stage over all
+             LSTs, the group stage with --group-omission and --group-lst-dir <LST>=<its catalogue directory> for every LST,
+             then every LST's chain --from build (lib/catalog/incremental_sublst.FIRST_RUN). KNOWN LIMIT: a regroup can
+             rename or merge identities of LSTs built before it; their published catalogues still carry the old names (the
+             runner's start line records the grouping table's sha1) - the cumulative build does not yet refuse a mix of
+             tables (report: what remains).
 PRODUCTS (per Stokes S, directory grouping_<S>/ of the stage's output)
   detections.csv   one row per detection of the input (DET_COLS): its catalog fingerprint, identity and multiples-level IDs and
                    display names, the multiples group's multiplicity (10-minute windows / deep nights) and multiple flag
@@ -51,6 +65,7 @@ LABELS (carry_judgements): a journal of Gregg's judgements keyed by the OLD page
 import collections
 import csv
 import glob
+import hashlib
 import json
 import math
 import os
@@ -491,7 +506,8 @@ def recorded_table(grouping_dir, stokes, _rec=None):
 FROZEN_MODES = ('', 'record', 'delta', 'passthrough')     # the runner's EXOPIPE3_FROZEN_MODE (its FROZEN STATISTICS text)
 
 
-def builder_env(table, tier, mode_=None, sha1=None, cfg=None, frozen='', frozen_record=None, frozen_touch='', removed_dirs=()):
+def builder_env(table, tier, mode_=None, sha1=None, cfg=None, frozen='', frozen_record=None, frozen_touch='', removed_dirs=(),
+                omission=None):
     """The environment of the runner: the grouping table of the key's Stokes and its expected sha1 (the runner refuses a table
     that changed after the stage checked it), the tier, the repeat rungs, and the accepted builders (catalog_grouping.
     BUILDER_SHA1: path-normalized sha1s of the builders the patches were written for; review 2026-11-04, F7).
@@ -499,7 +515,10 @@ def builder_env(table, tier, mode_=None, sha1=None, cfg=None, frozen='', frozen_
     builder_frozen.json), 'delta' (a night's build on the record ``frozen_record``), 'passthrough' (the check of the hooks).
     removed_dirs: the run directories whose removal tables (selection / ephemeris) the build's record reads
     (wraps/builder_grouping.removed_before_builder); empty = the directory of the build's input. The frozen names and
-    EXOPIPE3_REMOVED_DIRS are ALWAYS set, so a value inherited from the caller's environment never reaches a build."""
+    EXOPIPE3_REMOVED_DIRS are ALWAYS set, so a value inherited from the caller's environment never reaches a build.
+    omission: {path, sha256} of the deep-omission decision table the grouping recorded (recorded_omission; the 10-minute
+    tier: the runner drops its OMIT cells from the builder input and refuses a 10-minute build without one); the two names
+    are ALWAYS set, empty for none."""
     if frozen not in FROZEN_MODES:
         raise StageRefusal(f'builder_env: frozen={frozen!r} is not one of {FROZEN_MODES} - REFUSING')
     if (frozen == 'delta') != bool(frozen_record):
@@ -514,7 +533,9 @@ def builder_env(table, tier, mode_=None, sha1=None, cfg=None, frozen='', frozen_
            'EXOPIPE3_FROZEN_MODE': frozen, 'EXOPIPE3_FROZEN_RECORD': os.path.abspath(frozen_record) if frozen_record else '',
            'EXOPIPE3_FROZEN_TOUCH': frozen_touch or '',
            'EXOPIPE3_FROZEN_BUILDER_SHA1': ','.join(g.FROZEN_BUILDER_SHA1),
-           'EXOPIPE3_REMOVED_DIRS': os.pathsep.join(os.path.abspath(d) for d in removed_dirs)}
+           'EXOPIPE3_REMOVED_DIRS': os.pathsep.join(os.path.abspath(d) for d in removed_dirs),
+           'EXOPIPE3_GROUPING_OMISSION': (omission or {}).get('path') or '',
+           'EXOPIPE3_GROUPING_OMISSION_SHA256': (omission or {}).get('sha256') or ''}
     if sha1:
         env['EXOPIPE3_GROUPING_TABLE_SHA1'] = sha1
     return env
@@ -528,13 +549,28 @@ def builder_line(text):
     return ''
 
 
-def covers(table_path, selected_csv):
+def covers(table_path, selected_csv, omission=None):
     """[problems]: rows of the builder's input (a selected_<K>.csv) the grouping table does not hold, or holds with another
-    fingerprint (band, LST, date, catalogue ra / dec / S/N) - a stale grouping (the builder runner refuses the same)."""
+    fingerprint (band, LST, date, catalogue ra / dec / S/N) - a stale grouping (the builder runner refuses the same).
+    omission ({path, sha256}, recorded_omission): rows of its OMIT cells are not problems - the runner drops them from the
+    builder input (the grouping holds none of them)."""
     T = read_detections(table_path)
+    om = None
+    if omission:
+        try:
+            om = _bg().Omission(omission['path'], omission['sha256'])
+        except _bg().Refused as e:
+            return [f'S-G28 {e}']
     bad = []
     with open(selected_csv, newline='') as f:
         for r in csv.DictReader(f):
+            if om is not None:
+                try:
+                    if om.omitted(r['cand_id'], r.get('stokes'), r.get('lst', '')):
+                        continue
+                except _bg().Refused as e:
+                    bad.append(f'S-G28 {e}')
+                    break
             e = T.get(r['cand_id'])
             if e is None:
                 bad.append(f'{r["cand_id"]}: not in the grouping')
@@ -1180,6 +1216,11 @@ def add_arguments(p):
     p.add_argument('--group-mode', choices=('batch', 'incremental', 'regroup'),
                    help="grouping.group_catalog mode: default 'batch' for a new state, else 'incremental' (pure appends; a "
                         "re-searched window refuses, naming 'regroup'); 'regroup' recomputes the partition and carries the IDs")
+    p.add_argument('--group-omission', metavar='DIR|CSV',
+                   help='tier sublst (required): the deep-omission decision table the grouping input is filtered by - the '
+                        '10-minute omit stage\'s --out (`--tier sublst --stages omit --lsts <every grouped LST> --out DIR`: '
+                        'DIR/deep_omission.csv) or the table itself; production\'s order, decision table then drop then '
+                        'identities (sublst_cumulative.sh:99-107)')
     p.add_argument('--group-stokes', default='I,V', metavar='I,V', help='Stokes to group (default both)')
     p.add_argument('--group-lst-dir', action='append', default=[], metavar='LST=DIR',
                    help='tier sublst: take this LST\'s detections from its CATALOGUE directory DIR (master_catalog.csv, '
@@ -1214,17 +1255,26 @@ def _pertie_of(d):
     return os.path.join(d, 'pertie_detections.csv')
 
 
-def assemble_tenmin_input(lsts, out_dir, cfg=None, lst_dirs=None, night_dirs=None):
+def assemble_tenmin_input(lsts, out_dir, cfg=None, lst_dirs=None, night_dirs=None, omission=None):
     """The 10-minute grouping input: the master_catalog.csv and pertie_detections.csv rows of every published LST run of
-    ``lsts`` (header union, LST order, the run's row order) - every detection the LSTs' builds see, BEFORE the cumulative's deep
-    omission (the merge applies it, as production; a build refuses a detection the grouping does not hold). Writes
-    out_dir/grouping_input/{master_catalog,pertie_detections}.csv; returns (their paths, {lst: run dir}). A run without
-    either file, or a cand_id in two runs, REFUSES.
+    ``lsts`` (header union, LST order, the run's row order) AFTER the deep omission ``omission`` (an Omission, omission_of):
+    the rows of its OMIT cells are dropped per LST before the concatenation, as production's merge drops them before its
+    identities (sublst_cumulative.sh:99-107; the build drops the same rows from its input). Writes
+    out_dir/grouping_input/{master_catalog,pertie_detections}.csv and the dropped rows' record omission_dropped.csv; returns
+    (their paths, {lst: run dir}); omission.dropped counts the rows dropped per file. No omission, a run without either
+    file, an LST the decision table does not hold, or a cand_id in two runs, REFUSES.
     night_dirs (the per-hour catalog build): [(LST, directory)], the catalog directories of the nights appended since the LSTs'
     last all-nights builds - each one's rows follow its LST's run, in the order given, so the earlier nights' rows keep their
     places and the grouping's incremental mode sees only the newest night's detections as new. A night row whose cand_id
     the LST's run (or an earlier night) already holds with the same content is the same detection (kept once); with another
     content it REFUSES, as two runs do."""
+    if omission is None:
+        raise StageRefusal('S-G28 no deep-omission decision table: the 10-minute grouping holds the detections left after the '
+                           'deep omission (--group-omission <the omit stage\'s --out>) - REFUSING, never "no omission"')
+    bad = sorted(set(lsts) - set(omission.lsts))
+    if bad:
+        raise StageRefusal(f'S-G28 the deep-omission decision table {omission.path} holds no decision of {bad} (its LSTs: '
+                           f'{", ".join(omission.lsts)}): run the omit stage over every grouped LST - REFUSING')
     d = os.path.join(out_dir, 'grouping_input')
     os.makedirs(d, exist_ok=True)
     lst_dirs = dict(lst_dirs or {})
@@ -1239,7 +1289,7 @@ def assemble_tenmin_input(lsts, out_dir, cfg=None, lst_dirs=None, night_dirs=Non
         raise StageRefusal('--group-night-dir names a night directory twice - REFUSING')
     runs = {L: lst_dirs.get(L) or lst_run(L, cfg) for L in lsts}
     srcs = [x for L, R in runs.items() for x in [(L, R, L)] + [(L2, D, f'{L2} night directory {D}') for L2, D in nights if L2 == L]]
-    out = []
+    out, gone = [], []
     for name in ('master_catalog.csv', 'pertie_detections.csv'):
         hdr, rows, seen = [], [], {}
         for L, R, what in srcs:
@@ -1252,6 +1302,10 @@ def assemble_tenmin_input(lsts, out_dir, cfg=None, lst_dirs=None, night_dirs=Non
                 hdr += [k for k in (rd.fieldnames or []) if k not in hdr]
                 for r in rd:
                     c = r.get('cand_id')
+                    k = _omitted(omission, c, r.get('stokes'), L)
+                    if k:                         # production's filter_rows: the run's rows of an OMIT cell go
+                        gone.append(dict(file=name, source=p, cand_id=c, lst=k[0], band=k[1], night=k[2], stokes=k[3]))
+                        continue
                     if c in seen:
                         if seen[c] != (L, r):
                             raise StageRefusal(f'{name}: cand_id {c} in {seen[c][0]} and {what} - REFUSING')
@@ -1259,7 +1313,108 @@ def assemble_tenmin_input(lsts, out_dir, cfg=None, lst_dirs=None, night_dirs=Non
                     seen[c] = (L, r)
                     rows.append(r)
         out.append(_write_csv(os.path.join(d, name), hdr, rows))
+    _record_dropped(d, gone, omission)
     return out[0], out[1], runs
+
+
+OMISSION_DROPPED = 'omission_dropped.csv'      # grouping_input/: the rows the deep omission dropped from the grouping input
+OMISSION_DROPPED_COLS = ['file', 'source', 'cand_id', 'lst', 'band', 'night', 'stokes']
+
+
+def _omitted(omission, cand_id, stokes, lst):
+    try:
+        return omission.omitted(cand_id, stokes, lst)
+    except _bg().Refused as e:
+        raise StageRefusal(f'S-G28 {e}')
+
+
+def _record_dropped(d, gone, omission):
+    _write_csv(os.path.join(d, OMISSION_DROPPED), OMISSION_DROPPED_COLS, gone)
+    omission.dropped = dict(collections.Counter(g['file'] for g in gone))
+    return omission.dropped
+
+
+def _bg():
+    """wraps/builder_grouping (stdlib only): the ONE reading of the deep-omission decision table (Omission), the builder's
+    and the grouping's."""
+    from exopipe.phase3.lib.catalog.wraps import builder_grouping
+    return builder_grouping
+
+
+def omission_of(path):
+    """The 10-minute deep-omission decision table named by --group-omission (the omit stage's --out directory: its
+    deep_omission.csv; or the table's own path) as an Omission (one read: sha256 and verdicts from the same bytes). A missing
+    or unreadable table, or one without the columns lst, band, night, stokes, verdict or without a row, REFUSES (S-G28)."""
+    if not path:
+        raise StageRefusal('S-G28 no deep-omission decision table: the 10-minute grouping needs --group-omission <the omit '
+                           'stage\'s --out> (`exopipe3 catalog --tier sublst --stages omit --lsts <every grouped LST> --out '
+                           'DIR`) - REFUSING, never "no omission"')
+    p = os.path.abspath(path)
+    if os.path.isdir(p):
+        p = os.path.join(p, OMISSION_TABLE)
+    try:
+        return _bg().Omission(p)
+    except _bg().Refused as e:
+        raise StageRefusal(f'S-G28 {e}')
+
+
+OMISSION_TABLE = 'deep_omission.csv'           # the omit stage's decision table in its --out (deep_omission.run_tenmin)
+
+
+def filter_input(src, out_dir, omission):
+    """--group-input DIR under the deep omission: DIR's master_catalog.csv and pertie_detections.csv without the rows of
+    the OMIT cells (each row's LST from its own lst column) into out_dir/grouping_input/; returns their paths. A row LST the
+    table does not hold REFUSES (S-G28)."""
+    d = os.path.join(out_dir, 'grouping_input')
+    os.makedirs(d, exist_ok=True)
+    out, gone = [], []
+    for name in ('master_catalog.csv', 'pertie_detections.csv'):
+        p = os.path.join(src, name)
+        if not os.path.exists(p):
+            raise StageRefusal(f'--group-input {src}: no {name} - REFUSING')
+        with open(p, newline='') as f:
+            rd = csv.DictReader(f)
+            hdr, rows = list(rd.fieldnames or []), []
+            for r in rd:
+                L = r.get('lst') or ''
+                if L not in omission.lsts:
+                    raise StageRefusal(f'S-G28 the deep-omission decision table {omission.path} holds no decision of {L!r} '
+                                       f'({r.get("cand_id")} of {p}) - REFUSING')
+                k = _omitted(omission, r.get('cand_id'), r.get('stokes'), L)
+                if k:
+                    gone.append(dict(file=name, source=p, cand_id=r.get('cand_id'), lst=k[0], band=k[1], night=k[2],
+                                     stokes=k[3]))
+                else:
+                    rows.append(r)
+        out.append(_write_csv(os.path.join(d, name), hdr, rows))
+    _record_dropped(d, gone, omission)
+    return out[0], out[1]
+
+
+def recorded_omission(grouping_dir, stokes, _rec=None):
+    """{path, sha256} of the deep-omission decision table the LATEST 10-minute grouping run of Stokes ``stokes`` in
+    grouping_dir recorded (meta 'omission'): what every build of that grouping drops. A latest run that is not done, one that
+    recorded no table (grouped before the grouping followed the omission), and a table missing or changed since REFUSE
+    (StageRefusal) - a build never drops by another table than its grouping's, and never drops nothing for want of one."""
+    fin, p, r = _rec or _latest_group_record(grouping_dir, stokes)
+    if r.get('status') != 'done':
+        raise StageRefusal(f'the latest 10-minute grouping run of Stokes {stokes} ({os.path.basename(p)}, {fin}) ended '
+                           f'{r.get("status")} - group again before building - REFUSING')
+    om = (r.get('meta') or {}).get('omission') or {}
+    if not om.get('path') or not om.get('sha256'):
+        raise StageRefusal(f'S-G28 the latest grouping run of Stokes {stokes} ({os.path.basename(p)}) recorded no deep-omission '
+                           f'decision table (it grouped before the grouping followed the omission): group again with '
+                           f'--group-omission - REFUSING')
+    try:
+        with open(om['path'], 'rb') as f:
+            now = hashlib.sha256(f.read()).hexdigest()
+    except OSError as e:
+        raise StageRefusal(f'S-G28 the deep-omission decision table {om["path"]} that {os.path.basename(p)} recorded is missing '
+                           f'or unreadable ({e}) - REFUSING')
+    if now != om['sha256']:
+        raise StageRefusal(f'S-G28 the deep-omission decision table {om["path"]} changed since {os.path.basename(p)} recorded it '
+                           f'(sha256 {now[:12]} vs {om["sha256"][:12]}) - group again - REFUSING')
+    return dict(path=om['path'], sha256=om['sha256'])
 
 
 def run(args, run):
@@ -1276,6 +1431,7 @@ def run(args, run):
     if run.dry_run:
         print(f'[{label}.{STAGE}] tier sublst: grouping {m!r}; input '
               + (src if src else f'the published LST runs {lsts[0]}..{lsts[-1]} ({len(lsts)})')
+              + f' after the deep omission {getattr(args, "group_omission", None) or "(none named: the unit refuses, S-G28)"}'
               + f'; out {out} (state in the same directory); Stokes {",".join(stokes)}')
         return 0
     from exopipe.phase3.core.record import NoInput
@@ -1300,8 +1456,12 @@ def run(args, run):
 def _run_tenmin_unit(args, u, m, label, out, src, stokes, lsts, cells):
     """the body of the 10-minute group unit (run holds the unit lock)"""
     try:
+        omission = omission_of(getattr(args, 'group_omission', None))
+        u.add_input(omission.path)
         if src:
-            mc, pt = os.path.join(src, 'master_catalog.csv'), os.path.join(src, 'pertie_detections.csv')
+            for n in ('master_catalog.csv', 'pertie_detections.csv'):
+                u.add_input(os.path.join(src, n))
+            mc, pt = filter_input(src, out, omission)
             u.meta['input'] = src
         else:
             ld = {}
@@ -1316,7 +1476,7 @@ def _run_tenmin_unit(args, u, m, label, out, src, stokes, lsts, cells):
                     raise StageRefusal(f'--group-night-dir {x!r}: LST=DIR - REFUSING')
                 k, v = x.split('=', 1)
                 nd.append((cells.parse_lst(k), os.path.abspath(v)))
-            mc, pt, runs = assemble_tenmin_input(lsts, out, lst_dirs=ld, night_dirs=nd)
+            mc, pt, runs = assemble_tenmin_input(lsts, out, lst_dirs=ld, night_dirs=nd, omission=omission)
             u.meta['input'] = {L: R for L, R in runs.items()}
             if nd:
                 u.meta['input_nights'] = [[L, D] for L, D in nd]
@@ -1325,6 +1485,13 @@ def _run_tenmin_unit(args, u, m, label, out, src, stokes, lsts, cells):
                 u.add_input(_pertie_of(R))
     except StageRefusal as e:
         u.refuse(str(e))
+    # what every build of this grouping drops (recorded_omission): the decision table, read once above
+    u.meta['omission'] = dict(path=omission.path, sha256=omission.sha256, decisions=omission.decisions,
+                              omit_keys=len(omission.keys), lsts=omission.lsts, dropped=omission.dropped,
+                              record=os.path.join(out, 'grouping_input', OMISSION_DROPPED))
+    u.note(f'deep omission: {omission.path} (sha256 {omission.sha256[:16]}; {len(omission.keys)} OMIT keys of '
+           f'{omission.decisions} decisions): dropped ' + (', '.join(f'{n} {k}' for k, n in sorted(omission.dropped.items()))
+                                                          or 'no row'))
     for p in (mc, pt):
         if not os.path.exists(p):
             u.refuse(f'grouping input {p} is missing')

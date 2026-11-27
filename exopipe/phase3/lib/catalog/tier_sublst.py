@@ -29,8 +29,11 @@ Stages (--stages a,b / --from S / --until S; default all, in this order):
   select      select_v3.py (no verdict file, as production: question Q7) + p3s2_ephem_filter.py + split (S-G15)
   tie         sublst_pertie.py measure + frames on every selected row (S-G11: the window tie T1-T14 at the fitted positions)
   veto        leak_veto_sublst.py per (band, Stokes) of master_catalog.csv (S-G16; output unserved, B-24)
-  build       source catalogues without the leak veto + localizations + rejected-source record (S-G18..S-G20)
-  buildv      source catalogues with the leak veto + localizations (S-G17)
+  build       source catalogues without the leak veto + localizations + rejected-source record (S-G18..S-G20); under
+              design B the builder reads the tier-wide 10-minute grouping and its input loses the rows of the OMIT cells of
+              the deep-omission decision table that grouping recorded (S-G28; grouping_stage.recorded_omission,
+              wraps/builder_grouping.py DEEP OMISSION; the per-detection record gives them their own outcome)
+  buildv      source catalogues with the leak veto + localizations (S-G17; the same omission)
   tablefilter record only: complete-parent verdicts (tenmin_complete_parent.py on the recorded copy) + table_filter.csv
               (make_table_filter_tenmin.py) + the TABLE-FILTER content test (S-G24; sublst_catalogs.sh:320-351, exopipe_ops
               6c58469 + 5d98279); no-input when the no-veto build is not selected
@@ -61,7 +64,9 @@ Outputs (product classes): master_catalog.csv (merged_record -> tier_rule_remova
          (compare_copy), compare summaries and tie_members.csv (csv_table), the preflight report (catalog_preflight).
          Same names and layout as production (DESIGN 11.1: no renames in the window).
 Failure modes (exit 2, gate named in the record): S-G1..S-G22 and S-G24, S-G25 (2026-11-13) of spec section 5.2; S-G26
-         (the ghost-track gate); S-G27 (the 10-minute grouping unit's cross-Stokes link, grouping_stage.link_unit); any
+         (the ghost-track gate); S-G27 (the 10-minute grouping unit's cross-Stokes link, grouping_stage.link_unit); S-G28
+         (the deep omission of the design-B grouping and builds: no decision table, one missing, unreadable, changed since
+         the grouping recorded it, or without an LST grouped; grouping_stage.omission_of / recorded_omission); any
          in-place module exiting non-zero (its last machine line recorded); a [lit] key whose module literal differs from config; a module switch set in this
          process environment that would leak into the children; a missing shared config key (named). Exit 1 = error.
 Per-hour vs intermittent: per LST once its search is complete (DESIGN 12.1: the sub-LST per-hour chain runs `catalog` after
@@ -1956,6 +1961,14 @@ def _build_delta(ctx, s, plan, tag):
         refuse(f'S-G17: build (veto) needs the night\'s leak-veto tables {U}/leakveto (run the veto stage)')
     tables, hours, night_dirs, scope, _out = _delta_inputs(ctx)
     groupings = _groupings(tables)
+    oms = {}
+    for st in tables:                    # the deep omission the grouping followed: every delta build drops its OMIT cells
+        try:
+            oms[st] = GS.recorded_omission(ctx.grouping_dir, st)
+        except GS.StageRefusal as e:
+            refuse(f'S-G28 delta build ({tag}): {e}')
+        s.inp(oms[st]['path'])
+        s.u.meta.setdefault('grouping_omission', {})[st] = oms[st]
     earlier = [x for x in DB.read_indexes(night_dirs) if os.path.realpath(x[0]) != os.path.realpath(U)]
     s.code(script)
     for st, (table, sha) in tables.items():
@@ -2004,7 +2017,7 @@ def _build_delta(ctx, s, plan, tag):
             open(f'{d}/{DELTA_STARTED}', 'w').close()   # this stage's own directory from here on, finished or not
             table, sha = tables[k[0]]
             s.inp(f'{FL}/selected_{k}.csv', rec, *[f'{n}/selected_{k}.csv' for n in nights if os.path.exists(f'{n}/selected_{k}.csv')])
-            bad = GS.covers(table, f'{B}/selected_{k}.csv')
+            bad = GS.covers(table, f'{B}/selected_{k}.csv', omission=oms[k[0]])
             if bad:
                 refuse(f'S-G18 delta build {L} {k} ({tag}): the grouping {table} does not hold the build\'s input as selected '
                        f'({len(bad)}+ rows, e.g. {bad[:3]}) - group again with every appended night of {L}')
@@ -2013,7 +2026,7 @@ def _build_delta(ctx, s, plan, tag):
             res = call(ctx, s, GS.builder_runner(), [script, f'selected_{k}.csv', d, 'v_deep_images.csv'],
                        env=cL.env(P3_LEAKVETO_DIR=lv, P3_TENMIN_PERTIE=pt,
                                   **GS.builder_env(table, '10min', ctx.grouping_mode, sha1=sha, frozen='delta', frozen_record=rec,
-                                                   removed_dirs=[FL] + list(nights))),
+                                                   removed_dirs=[FL] + list(nights), omission=oms[k[0]])),
                        log=f'{root}/catalogs_{tag}_{k}.log', cwd=B)
             name = f'{tag}_{k}' if own else f'{L}_{tag}_{k}'
             s.u.meta.setdefault('grouping_builder', {})[name] = GS.builder_line(res.tail)
@@ -2267,16 +2280,24 @@ def _build(ctx, s, plan, tag):
                 table, sha = GS.recorded_table(ctx.grouping_dir, k[0])
             except GS.StageRefusal as e:
                 refuse(f'S-G18 design B: {e} (`exopipe3 catalog --tier sublst --stages group`, or --sublst-grouping DIR)')
-            s.inp(table)
+            # the deep omission the grouping followed (production's order: decision table, drop, identities): the runner
+            # drops the rows of its OMIT cells from the builder input - the grouping holds none of them (S-G28)
+            try:
+                om = GS.recorded_omission(ctx.grouping_dir, k[0])
+            except GS.StageRefusal as e:
+                refuse(f'S-G28 design B: {e}')
+            s.inp(table, om['path'])
             s.u.meta.setdefault('grouping_tables', {})[k[0]] = dict(path=table, sha1=sha)
-            bad = GS.covers(table, f'{U}/selected_{k}.csv')
+            s.u.meta.setdefault('grouping_omission', {})[k[0]] = om
+            bad = GS.covers(table, f'{U}/selected_{k}.csv', omission=om)
             if bad:
                 refuse(f'S-G18 design B: the grouping {table} does not hold selected_{k}.csv as selected ({len(bad)}+ rows, e.g. '
                        f'{bad[:3]}) - group again with this LST (--group-lst-dir {ctx.lst}={U})')
             res = call(ctx, s, GS.builder_runner(), [script, f'selected_{k}.csv', d, 'v_deep_images.csv'],
                        # frozen='record': the all-nights build writes builder_frozen.json, which a night's delta build stands on
                        env=ctx.env(P3_LEAKVETO_DIR=lv, P3_DETREC_BUILDER_OUT=part,
-                                   **GS.builder_env(table, '10min', ctx.grouping_mode, sha1=sha, frozen='record')),
+                                   **GS.builder_env(table, '10min', ctx.grouping_mode, sha1=sha, frozen='record',
+                                                    omission=om)),
                        log=f'{U}/catalogs_{tag}_{k}.log', cwd=U)
             s.u.meta.setdefault('grouping_builder', {})[f'{tag}_{k}'] = GS.builder_line(res.tail)
             if res.ok and not GS.builder_line(res.tail).startswith('GROUPING-BUILDER done'):

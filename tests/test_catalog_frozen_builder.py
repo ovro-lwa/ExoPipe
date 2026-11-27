@@ -22,6 +22,11 @@ grouping_stage.assemble_tenmin_input with night directories).
               that changed; an unknown mode or touch value; builder_env's two refusals
   night_dirs  assemble_tenmin_input: a night directory's rows follow its LST's run; the same row twice is kept once; another
               content, an LST outside --lsts and a directory twice refuse
+  omission    the deep omission (S-G28): a build whose input holds rows of OMIT cells (absent from the grouping) drops them
+              instead of refusing - the same catalogs as the build of the kept rows, the per-detection record gets one row per
+              dropped detection, the record names the table; the same input without the table's OMIT keys refuses (stale
+              grouping); a missing, unset or changed table refuses; a delta build under another table than its record's
+              refuses, under the same table it runs
 Run: NUMPY_MADVISE_HUGEPAGE=0 EXOPIPE3_SITE=/lustre/gh/main/exopipe_ops/exopipe3_site.py taskset -c $(bash
      /lustre/gh/main/exopipe_ops/node_free_cores.sh) /opt/devel/pipeline/envs/py38_orca_nkosogor/bin/python3
      tests/test_catalog_frozen_builder.py [names]
@@ -122,8 +127,22 @@ MULT = {'R': 'G'}
 XSEP_ARCMIN = 600.0
 
 
+IDMAP = {}                                  # production-form cand_id -> identity letter (parseable())
+
+
 def L(cand):
-    return cand.split('_')[2][0]
+    return IDMAP.get(cand) or cand.split('_')[2][0]
+
+
+def parseable(spec):
+    """``spec`` with production-form cand_ids (<Stokes>_<LST>_<night>T<hh>_<band>_<n>, which name their deep-omission cell;
+    sublst_deep_omission_drop.py:43), the identity letter kept in IDMAP"""
+    out = []
+    for i, (c, b, dt, ra, de, s, ss, x) in enumerate(spec):
+        p = f'I_05h_{dt}T03_{b}_{i + 1}'
+        IDMAP[p] = L(c)
+        out.append((p,) + (b, dt, ra, de, s, ss, x))
+    return out
 
 
 def name(k):
@@ -153,6 +172,18 @@ def write_world(d, tag, spec, image_dates=(D1, D2, D3)):
     return f'selected_{tag}.csv', f'{d}/table_{tag}.csv', f'images_{tag}.csv'
 
 
+OMISSION_COLS = ['lst', 'band', 'night', 'stokes', 'gates', 'verdict', 'reason']
+
+
+def omission_table(d, rows=None, name='deep_omission.csv'):
+    """a deep-omission decision table (the omit stage's columns that are read); default one KEEP decision of each LST used
+    (no OMIT key: the build's input is unchanged). Returns (path, sha256)."""
+    p = f'{d}/{name}'
+    wcsv(p, OMISSION_COLS, rows if rows is not None else
+         [dict(lst=L, band='46MHz', night=D1, stokes='I', gates='beam', verdict='KEEP', reason='test') for L in ('05h', '06h')])
+    return p, hashlib.sha256(open(p, 'rb').read()).hexdigest()
+
+
 def setup(d):
     shutil.rmtree(d, ignore_errors=True)
     os.makedirs(d)
@@ -169,6 +200,9 @@ def run(d, b, sha, sel, out, table, images, frozen='', record=None, touch='', mo
                EXOPIPE3_GROUPING_BUILDER_SHA1=sha, EXOPIPE3_GROUPING_TABLE=table, EXOPIPE3_FROZEN_MODE=frozen,
                EXOPIPE3_FROZEN_RECORD=record or '', EXOPIPE3_FROZEN_TOUCH=touch,
                EXOPIPE3_FROZEN_BUILDER_SHA1=sha if frozen_accepted is None else frozen_accepted)
+    if mode == 'design-b':                       # a 10-minute design-B build names its deep-omission table (none OMIT here)
+        op, osha = omission_table(d)
+        env.update(EXOPIPE3_GROUPING_OMISSION=op, EXOPIPE3_GROUPING_OMISSION_SHA256=osha)
     env.update(extra or {})
     p = subprocess.run([PY, GS.builder_runner(), b, sel, out, images], cwd=d, env=env, capture_output=True, text=True,
                        timeout=300)
@@ -264,10 +298,10 @@ def test_modes():
     want_src = {('46MHz', name('A')), ('46MHz', name('B')), ('46MHz', name('D')), ('46MHz', name('E')), ('50MHz', name('E')),
                 ('50MHz', name('G')), ('50MHz', name('H'))}
     area = 41253.0 * 25 / 36
-    check('record content: version 2; every input detection with its identity and a digest of its multiples-level group; the '
+    check('record content: version 3; every input detection with its identity and a digest of its multiples-level group; the '
           'seven sources before the gates (C and K, removed as sources seen once, are not among them) with best detection '
           'and matched sample; the band systematics, footprint areas, densities and what the footprint stands on',
-          rec.get('version') == 2 and set(rec.get('rows', {})) == {c[0] for c in BASE}
+          rec.get('version') == 3 and set(rec.get('rows', {})) == {c[0] for c in BASE}
           and all(len(v) == 2 and v[0].startswith('GTI-') and len(v[1]) == 16 for v in rec['rows'].values())
           and {(s[0], s[4]) for s in rec['sources']} == want_src and len(rec['sources']) == 7
           and sorted(s[2] for s in rec['sources'] if s[3] == 'S1') == ['I_05h_B1', 'I_05h_D1', 'I_05h_G1']
@@ -494,8 +528,9 @@ def test_night_dirs():
         wcsv(f'{d}/night{i + 1}/master_catalog.csv', mc, extra + [dict(cand_id=cid, lst='05h', stokes='I', snr='7')])
         wcsv(f'{d}/night{i + 1}/pertie/pertie_detections.csv', pc, [dict(cand_id=cid, sys_arcmin='0.3')])
     runs = {'05h': f'{d}/run05', '06h': f'{d}/run06'}
+    om = GS.omission_of(omission_table(d)[0])        # no OMIT key: every row is kept
     m, p, _r = GS.assemble_tenmin_input(['05h', '06h'], f'{d}/out', lst_dirs=runs,
-                                        night_dirs=[('05h', f'{d}/night1'), ('05h', f'{d}/night2')])
+                                        night_dirs=[('05h', f'{d}/night1'), ('05h', f'{d}/night2')], omission=om)
     check('night directories: each night\'s rows follow its LST\'s run in the order given, before the next LST; a row a later '
           'night repeats with the same content is kept once',
           [r['cand_id'] for r in rcsv(m)[1]] == ['I1_05h_a', 'I1_05h_n1', 'I1_05h_n2', 'I1_06h_b']
@@ -507,14 +542,88 @@ def test_night_dirs():
                            ('a night directory named twice', ['05h', '06h'], [('05h', f'{d}/night1'), ('05h', f'{d}/night1')]),
                            ('a night directory without a catalog', ['05h', '06h'], [('05h', f'{d}/nowhere')])):
         try:
-            GS.assemble_tenmin_input(lsts, f'{d}/out2', lst_dirs={k: v for k, v in runs.items() if k in lsts}, night_dirs=nd)
+            GS.assemble_tenmin_input(lsts, f'{d}/out2', lst_dirs={k: v for k, v in runs.items() if k in lsts}, night_dirs=nd,
+                                     omission=om)
             got = 'assembled'
         except GS.StageRefusal as e:
             got = str(e)
         check(f'night directories: {what} REFUSES', 'REFUSING' in got or 'night directory' in got, got)
 
 
-ORDER = ['test_patches', 'test_modes', 'test_removed_before_builder', 'test_night', 'test_order', 'test_refusals', 'test_night_dirs']
+def test_omission():
+    bg = _bg()
+    d = f'{T}/omission'
+    b, sha = setup(d)
+    spec = parseable(BASE)
+    omit = {('46MHz', D3), ('50MHz', D1)}                       # B1 and G1: the two OMIT cells' detections
+    gone = sorted(r[0] for r in spec if (r[1], r[2]) in omit)
+    sel_k, tab, img = write_world(d, 'kept', [r for r in spec if (r[1], r[2]) not in omit])   # the grouping holds no OMIT row
+    sel_f = write_world(d, 'full', spec)[0]                   # the selection: every row
+    orows = [dict(lst='05h', band=bd, night=nt, stokes='I', gates='beam', verdict='OMIT' if (bd, nt) in omit else 'KEEP',
+                  reason='test') for bd in ('46MHz', '50MHz') for nt in (D1, D2, D3)]
+    op, osha = omission_table(d, orows, 'omit_table.csv')
+    dcols = ['cand_id', 'lst', 'band', 'stokes', 'date', 'snr', 'builder_outdir', 'leakveto', 'band_built', 'sstack_gate',
+             'sstack', 'sstack_thr_snr', 'sstack_verdict', 'source_id', 'rank', 'builder_outcome']
+
+    def detrec(name):                          # the builder's part as the live builder leaves it (the stub writes none)
+        p = f'{d}/{name}'
+        wcsv(p, dcols, [dict(cand_id=c, builder_outcome='survivor') for c in ('x1', 'x2')])
+        return p
+
+    om = dict(EXOPIPE3_GROUPING_OMISSION=op, EXOPIPE3_GROUPING_OMISSION_SHA256=osha)
+    rc_a, txt_a = run(d, b, sha, sel_k, 'out_a', tab, img, frozen='record')
+    part = detrec('detrec_b.csv')
+    rc_b, txt_b = run(d, b, sha, sel_f, 'out_b', tab, img, frozen='record', extra=dict(om, P3_DETREC_BUILDER_OUT=part))
+    rec = json.load(open(f'{d}/out_b/builder_frozen.json')) if rc_b == 0 else {}
+    inp = f'{d}/{bg.OMISSION_INPUTS}/out_b.csv'
+    _c, drows = rcsv(part)
+    check('omission: a build whose input holds the OMIT cells\' rows drops them instead of refusing - every catalog table '
+          'equals the build of the kept rows', rc_a == 0 and rc_b == 0 and tables(f'{d}/out_a') == tables(f'{d}/out_b'),
+          (rc_a, txt_a[-300:], rc_b, txt_b[-400:]))
+    check('omission: the builder read the kept rows (builder_inputs/<out>.csv, 8 of 10) and the frozen record names the table '
+          '(path, sha256) and the two dropped detections',
+          os.path.exists(inp) and sorted(r['cand_id'] for r in rcsv(inp)[1]) == sorted(r[0] for r in spec if r[0] not in gone)
+          and (rec.get('omission') or {}).get('sha256') == osha and rec['omission'].get('path') == op
+          and rec['omission'].get('dropped') == 2 and rec['omission'].get('dropped_cand_ids') == gone
+          and rec.get('version') == bg.FROZEN_VERSION, rec.get('omission'))
+    check('omission: the per-detection record gets one row per dropped detection with the omission outcome (after the '
+          'builder\'s rows), and the log says so',
+          [r['cand_id'] for r in drows[:2]] == ['x1', 'x2'] and sorted(r['cand_id'] for r in drows[2:]) == gone
+          and [r['builder_outcome'] for r in drows[2:]] == [bg.OMIT_OUTCOME] * 2
+          and all(r['leakveto'] == 'not-reached' and r['builder_outdir'] == 'out_b' for r in drows[2:])
+          and 'DETREC-BUILDER deep omission: 2 dropped detection(s)' in txt_b,
+          (['|'.join((r['cand_id'], r['builder_outcome'], r['leakveto'], r['builder_outdir'])) for r in drows], txt_b[-300:]))
+    rc, txt = run(d, b, sha, sel_f, 'out_c', tab, img, frozen='record')          # a table without these OMIT keys
+    check('omission: the same input under a table without those OMIT keys REFUSES (the rows are not in the grouping)',
+          rc == 2 and 'REFUSING' in txt and 'not in the grouping table' in txt, (rc, txt[-300:]))
+    bad = f'{d}/changed.csv'
+    shutil.copy(op, bad)
+    with open(bad, 'a') as f:
+        f.write('05h,50MHz,2030-01-02,I,beam,OMIT,changed after the grouping recorded it\n')
+    for what, text, ext in (('a missing table', 'missing or unreadable', dict(om, EXOPIPE3_GROUPING_OMISSION=f'{d}/nowhere.csv')),
+                            ('an unset table', 'unset', dict(EXOPIPE3_GROUPING_OMISSION='', EXOPIPE3_GROUPING_OMISSION_SHA256='')),
+                            ('a table changed since the grouping recorded it', 'its grouping run recorded',
+                             dict(om, EXOPIPE3_GROUPING_OMISSION=bad))):
+        rc, txt = run(d, b, sha, sel_f, 'out_x', tab, img, frozen='record', extra=ext)
+        check(f'omission: {what} REFUSES (exit 2), never "no omission"', rc == 2 and 'REFUSING' in txt and text in txt,
+              (rc, txt[-300:]))
+    rc, txt = run(d, b, sha, sel_f, 'out_x', tab, img, frozen='record',
+                  extra=dict(om, EXOPIPE3_GROUPING_MODE='passthrough'))
+    check('omission: a table named outside design B REFUSES', rc == 2 and 'only under design B' in txt, (rc, txt[-300:]))
+    recp = f'{d}/out_b/builder_frozen.json'
+    nsha = hashlib.sha256(open(bad, 'rb').read()).hexdigest()
+    rc, txt = run(d, b, sha, sel_f, 'out_d', tab, img, frozen='delta', record=recp, touch='all',
+                  extra=dict(EXOPIPE3_GROUPING_OMISSION=bad, EXOPIPE3_GROUPING_OMISSION_SHA256=nsha))
+    check('omission: a delta build under another decision table than its all-nights record\'s REFUSES',
+          rc == 2 and 'REFUSING' in txt and 'the all-nights build dropped the OMIT cells' in txt, (rc, txt[-300:]))
+    rc, txt = run(d, b, sha, sel_f, 'out_e', tab, img, frozen='delta', record=recp, touch='all', extra=om)
+    check('omission: the delta build under its record\'s table runs and drops the same rows', rc == 0
+          and os.path.exists(f'{d}/{bg.OMISSION_INPUTS}/out_e.csv') and sorted(sources(f'{d}/out_e')) == sorted(sources(f'{d}/out_b')),
+          (rc, txt[-400:]))
+
+
+ORDER = ['test_patches', 'test_modes', 'test_removed_before_builder', 'test_night', 'test_order', 'test_refusals', 'test_night_dirs',
+         'test_omission']
 
 
 def main(names):

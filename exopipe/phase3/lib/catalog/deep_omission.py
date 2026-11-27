@@ -59,6 +59,11 @@ DROP (the data level, before the cumulative catalogs, identities and pages):
       records the detections that drop removes (the member rows of every LST run whose key is OMIT) and the partial survivors
       its RE-JUDGING removes (edf3263, tenmin_rejudge: the builder's survivor rule on the members kept), refusing those the drop
       would refuse (G10) and, when any is removed, without Gregg's go (catalog_omission.TENMIN_REJUDGE_APPROVED, 35aad1a; G11).
+      Under design B the tier-wide 10-minute grouping follows the same table, as production's master identity follows the
+      merge (sublst_cumulative.sh:99-107; test M1, sublst_master_identity.py:19): `catalog --tier sublst --stages group
+      --group-omission <this stage's --out>` drops the OMIT rows from the grouping input and every LST build drops them from
+      its builder input (lib/catalog/grouping_stage.py); the re-judging's removals keep their detections there, as the
+      detection tables keep them.
 
 Where it sits. Production applies the rule where the cumulative product is assembled, after each unit's catalogue chain and
 pages (the served detections the rate condition counts exist only then) and before the cumulative catalogues, identities and
