@@ -16,6 +16,12 @@ wiring in lib/install/). Data-free: synthetic FITS with the full standard header
              MDWSTAT other than the table's, an uncorrected MDWMED1 each REFUSE; an exempt whole refusal; siblings read
              from another root (the install under --out); the table read by the writer's loader under the writer's key (an
              unusable table refuses); excluded names left out
+  notdewarp  a not-dewarped cell (R-GREGG-20261127-PR157-AND-18MHZ-SIBLING-CHECK-RECOMMENDATIONS-APPROVED): the dewarp-only
+             cards equal the keys the dewarp apply writes (parsed from master_dewarp._apply), less MDWSTAT on a master; PASS
+             with the siblings' '_mdewarp' names and those cards waived (11 per master, 12 on the PB map); a missing FLUXREF
+             or master MDWSTAT, an MDWARP T file and an '_mdewarp' file name each REFUSE; one 'applied' master, a table
+             saying applied or no MDWSTAT at all compares as before (no waiver, refused); a dewarped cell compares with '_mdewarp' siblings only, a
+             missing dewarp card refusing it
   vclean     vclean_source_check (current, no VCSRC, another VCSRC, another time block); build_vclean_cell refuses a stale
              pair; refresh_vclean_cell (the sv2 clean and the data_decisions gate stubbed): a check-only call on the stale pair
              runs and writes nothing; the refresh re-cleans it - old pair quarantined with md5, new pair stamped, carded,
@@ -408,6 +414,149 @@ def test_gate(fd, table):
     ok('gate: exclude leaves the named files out (a card missing there no longer refuses)', not passed and passed_x
        and f'{len(mine) - 1} of {len(mine) - 1} archived files' in lines_x[-1], lines_x[-1])
     shutil.copy2(keep, victim)
+    os.remove(keep)
+
+
+ND_STAT = 'refused: held-out gain 1.0 arcsec < 5'
+TOKEN = '_mdewarp'
+DEWARP_VALUES = dict(MDWARP=True, MDWMETH='rbf-multiquadric', MDWINTP='cubic-spline', MDWREF='synthetic', MDWNANC=50, MDWCV=3.0,
+                     MDWMED0=1.0, MDWMED1=0.9, MDWP50=10.0, MDWP95=20.0, MDWDATE='2026-10-05T00:00:00', MDWSTAT='applied')
+
+
+def _set_cards(path, cards=None, remove=()):
+    with fits.open(path, mode='update', memmap=False) as h:
+        for k in remove:
+            if k in h[0].header:
+                del h[0].header[k]
+        for k, v in (cards or {}).items():
+            h[0].header[k] = v
+
+
+def _nd_layout(fd):
+    """A band of three LSTs from the repaired master cell: 13h and 14h dewarped as the apply leaves them (every master named
+    with '_mdewarp', every file with the apply's cards - MDWSTAT 'applied' on the PB maps too, as the 2026-11-11 writer
+    stamps it; PB maps keep their names, as in the archive), 12h not dewarped (MDWSTAT 'refused: ...', no MDWARP, no
+    token). Returns (run, {working name: 12h archive path}, {lst: {working name: path}} of the dewarped LSTs, table)."""
+    run = f'{ROOT}/gate_nd/Coadd/Run_X'
+    cells = {}
+    for lst in ('12h', '13h', '14h'):
+        cp = _archive_copy(fd, f'{run}/{lst}/{SCOPE}', lst)
+        for f in list(cp):
+            if f.startswith('PB_deep_R075') or f.startswith('I_deep_NoTaper_R0_'):
+                os.remove(cp.pop(f))
+            elif f.startswith('PB'):                 # the archive names a PB map as its working name (PB_deep_<scope>.fits)
+                os.rename(cp[f], f'{run}/{lst}/{SCOPE}/{f}')
+                cp[f] = f'{run}/{lst}/{SCOPE}/{f}'
+        for f, p in list(cp.items()):
+            if lst == '12h':
+                if not f.startswith('PB'):
+                    _set_cards(p, {'MDWSTAT': ND_STAT}, remove=('MDWARP',))
+                continue
+            _set_cards(p, DEWARP_VALUES)
+            if not f.startswith('PB'):
+                q = os.path.join(os.path.dirname(p), os.path.basename(p).replace('_LST', TOKEN + '_LST', 1))
+                os.rename(p, q)
+                cp[f] = q
+        cells[lst] = cp
+    t = mdw_table(f'{ROOT}/mdw_gate_nd.csv', [('12h Red', ND_STAT, '', ''), ('13h Red', 'applied', '', ''),
+                                              ('14h Red', 'applied', '', '')])
+    return run, cells.pop('12h'), cells, t
+
+
+
+def test_gate_not_dewarped(fd):
+    """R-GREGG-20261127-PR157-AND-18MHZ-SIBLING-CHECK-RECOMMENDATIONS-APPROVED: a not-dewarped cell is compared with its
+    siblings' names without '_mdewarp' and need not carry the dewarp-only cards; every other card must still match."""
+    import ast
+    from exopipe.phase3.lib.masters import release1_cards as R1
+    src_path = os.path.join(REPO, 'exopipe/phase3/lib/dewarp/master_dewarp.py')
+    src = open(src_path).read()
+    tree = ast.parse(src)
+    apply_ = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == '_apply']
+    written = [kw.arg for n in ast.walk(apply_[0]) if isinstance(n, ast.Assign) and any(getattr(t, 'id', '') == 'cards'
+               for t in n.targets) and isinstance(n.value, ast.Call) and getattr(n.value.func, 'id', '') == 'dict'
+               for kw in n.value.keywords] if apply_ else []
+    ok('not-dewarped: DEWARP_APPLY_CARDS are exactly the card keys the dewarp apply writes (master_dewarp._apply cards)',
+       tuple(written) == R1.DEWARP_APPLY_CARDS, written)
+    out_name = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == '_out_name']
+    ok('not-dewarped: MDEWARP_TOKEN is the apply\'s output-name token (master_dewarp._out_name)', R1.MDEWARP_TOKEN == TOKEN
+       and out_name and R1.MDEWARP_TOKEN in ast.get_source_segment(src, out_name[0]))
+    m_only, pb_only = R1.dewarp_only_cards('/x/Red_I_deep_Taper_R0_Red.fits'), R1.dewarp_only_cards('/x/PB_deep_Red.fits')
+    ok('not-dewarped: dewarp-only cards - the apply\'s 12 on a PB map, 11 on a master (MDWSTAT: the repair writes it on every '
+       'master)', pb_only == set(R1.DEWARP_APPLY_CARDS) and m_only == set(R1.DEWARP_APPLY_CARDS) - {'MDWSTAT'}, sorted(m_only))
+    run, mine, dew, t = _nd_layout(fd)
+    passed, lines = R1.sibling_card_gate(CELL, run, t)
+    waived = {x.split(':')[0][len('WAIVED '):]: int(x.split(': ')[1].split()[0]) for x in lines if x.startswith('WAIVED')}
+    pb = os.path.basename(mine[f'PB_deep_{SCOPE}.fits'])
+    ok('not-dewarped: PASS - names compared without \'_mdewarp\', 11 dewarp-only keys waived per master, 12 on the PB map',
+       passed and lines[-1].startswith(f'SIBLING-CARD-GATE PASS {CELL}: {len(mine)} of {len(mine)}') and 'not dewarped' in lines[-1]
+       and len(waived) == len(mine) and waived.pop(pb) == 12 and set(waived.values()) == {11},
+       [x for x in lines if x.startswith('REFUSED')] or lines[-1])
+    ok('not-dewarped: dewarp_state names the cell not dewarped from MDWSTAT, the names and MDWARP',
+       R1.dewarp_state([(p, hdr(p)) for p in mine.values()], R1.load_mdw_table(t)['12h_Red'])[0] == 'not dewarped')
+    victim = mine[f'I_deep_Taper_R0_{SCOPE}.fits']
+    keep = victim + '.keep'
+    shutil.copy2(victim, keep)
+
+    def edit(cards=None, remove=(), cell=CELL, table=t):
+        shutil.copy2(keep, victim)
+        _set_cards(victim, cards, remove)
+        return R1.sibling_card_gate(cell, run, table)
+    passed, lines = edit(remove=('FLUXREF',))
+    ok('not-dewarped: a master missing a card that is not dewarp-only (FLUXREF) - REFUSED, naming the file and the key',
+       not passed and any(os.path.basename(victim) in x and 'missing 1 card keys' in x and 'FLUXREF' in x for x in lines), lines[0])
+    passed, lines = edit(remove=('MDWSTAT',))
+    ok('not-dewarped: a master missing MDWSTAT (written by the repair on every master, so not dewarp-only there) - REFUSED',
+       not passed and any(os.path.basename(victim) in x and 'MDWSTAT' in x for x in lines if x.startswith('REFUSED ')), lines[0])
+    passed, lines = edit(cards={'MDWARP': True})
+    ok('not-dewarped: a file carrying MDWARP T contradicts the status - REFUSED (fail closed)', not passed
+       and 'disagree' in lines[-1] and 'MDWARP' in lines[-1], lines[-1])
+    passed, lines = edit(cards={'MDWSTAT': 'applied'})
+    ok('not-dewarped: one master saying \'applied\' among \'refused\' ones - compared as before, no waiver: REFUSED (its MDWSTAT '
+       'is not the table\'s)', not passed and 'not dewarped' not in lines[-1]
+       and any(os.path.basename(victim) in x and '!= table' in x for x in lines), lines[-1])
+    t_app = mdw_table(f'{ROOT}/mdw_gate_nd_app.csv', [('12h Red', 'applied', '', ''), ('13h Red', 'applied', '', ''),
+                                                      ('14h Red', 'applied', '', '')])
+    passed, lines = edit(table=t_app)
+    ok('not-dewarped: the MDWSTAT table saying applied for the cell - compared as before, no waiver: REFUSED (\'!= table\')',
+       not passed and 'not dewarped' not in lines[-1] and any('!= table' in x for x in lines), lines[-1])
+    shutil.copy2(keep, victim)
+    tok = os.path.join(os.path.dirname(victim), os.path.basename(victim).replace('_LST', TOKEN + '_LST', 1))
+    os.rename(victim, tok)
+    passed, lines = R1.sibling_card_gate(CELL, run, t)
+    ok('not-dewarped: a file named with \'_mdewarp\' contradicts the status - REFUSED (fail closed)', not passed
+       and 'disagree' in lines[-1] and TOKEN in lines[-1], lines[-1])
+    os.rename(tok, victim)
+    for p in mine.values():
+        _set_cards(p, remove=('MDWSTAT',))
+    passed, lines = R1.sibling_card_gate(CELL, run, t)
+    ok('not-dewarped: no MDWSTAT on any file (no status card) - compared as before: no repaired sibling of the plain name, '
+       'REFUSED', not passed and 'not dewarped' not in lines[-1]
+       and any('no repaired sibling product of this name' in x for x in lines), lines[-1])
+    for f, p in mine.items():
+        if not f.startswith('PB'):
+            _set_cards(p, {'MDWSTAT': ND_STAT})
+    shutil.copy2(victim, keep)
+    passed, lines = R1.sibling_card_gate('13h_Red', run, t)
+    ok('not-dewarped: a dewarped cell (13h) passes, compared with the same-named \'_mdewarp\' siblings, nothing waived',
+       passed and 'not dewarped' not in lines[-1] and not any(x.startswith('WAIVED') for x in lines), lines[-1])
+    d13 = dew['13h'][f'I_deep_Taper_R0_{SCOPE}.fits']
+    shutil.copy2(d13, d13 + '.keep')
+    _set_cards(d13, remove=('MDWMETH',))
+    passed, lines = R1.sibling_card_gate('13h_Red', run, t)
+    ok('not-dewarped: a dewarped master missing a dewarp card (MDWMETH) - REFUSED (no waiver for a dewarped cell)',
+       not passed and any(os.path.basename(d13) in x and 'MDWMETH' in x for x in lines), lines[0])
+    shutil.copy2(d13 + '.keep', d13)
+    os.remove(d13 + '.keep')
+    moved = f'{ROOT}/gate_nd_14h'
+    shutil.move(f'{run}/14h', moved)
+    passed, lines = R1.sibling_card_gate('13h_Red', run, t)
+    ok('not-dewarped: a dewarped cell whose only sibling is not dewarped (14h moved away) - REFUSED, no repaired sibling of '
+       'its \'_mdewarp\' names (the token is never stripped for a dewarped cell)', not passed
+       and sum('no repaired sibling product of this name' in x for x in lines) == len(dew['13h']) - 1, lines[-1])
+    shutil.move(moved, f'{run}/14h')
+    passed, lines = R1.sibling_card_gate(CELL, run, t)
+    ok('not-dewarped: the layout restored passes again', passed, lines[-1])
     os.remove(keep)
 
 
@@ -1148,6 +1297,7 @@ def main():
         test_night_cell()
         test_mdwstat_rules()
         test_gate(fd, table)
+        test_gate_not_dewarped(fd)
         test_mdwstat_source(fd)
         test_vclean()
         test_install_wiring()

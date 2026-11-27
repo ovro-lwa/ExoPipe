@@ -44,7 +44,8 @@ plan,install,verify with it False):
   cards     the Release 1 header-repair cards of the installed cell (install_cell.sh:35-54): gate CARDS refuses when a
             sourced card is still to add, an archive copy's header differs from its working file, or provenance_nights.csv
             differs from the one derived; gate CARD-GATE = the sibling card-key gate (sibling_card_gate.py): every archived
-            FITS of the cell carries every card key its repaired same-named siblings of the band's other LSTs all hold, and
+            FITS of the cell carries every card key its repaired same-named siblings of the band's other LSTs all hold (a cell
+            whose MDWSTAT says not dewarped: names compared without '_mdewarp', the dewarp-only cards not required), and
             MDWSTAT / MDWMED1 agree with the MDWSTAT source the install chose (the dewarp record or install.MDWSTAT_TABLE;
             without install in the same invocation it is chosen again and must be the one the install recorded - a record
             without one means the table - current for the masters it installed, and carried by the installed masters'
