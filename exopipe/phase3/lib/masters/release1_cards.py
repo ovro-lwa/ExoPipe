@@ -47,7 +47,7 @@ GATE  sibling_card_gate (sibling_card_gate.py, exopipe_ops 2421f36 + efc3608 val
       still holding the table's uncorrected value refuses. A cell whose dewarp status card says it was NOT dewarped
       (RULING_NOT_DEWARPED; dewarp_state: every MDWSTAT 'refused: ...' / 'not attempted...', and no file named '_mdewarp' or
       carrying MDWARP T) need not carry the dewarp-only cards (dewarp_only_cards: the cards the master dewarp apply writes;
-      MDWSTAT only on a PB map whose siblings are all dewarped), and a product of it with no repaired sibling of its own name
+      MDWSTAT only on a PB_deep map whose siblings are all dewarped), and a product of it with no repaired sibling of its own name
       is compared with the siblings of its name without '_mdewarp'; every other card must still match (same-named siblings,
       where there are any, stay the reference). A not-dewarped status that the names or MDWARP contradict refuses the cell;
       every other cell is compared as before.
@@ -644,14 +644,16 @@ def product_key(path, strip_mdewarp=False):
 
 def dewarp_only_cards(path, ref_dewarped):
     """The card keys a product of a not-dewarped cell need not carry although its repaired siblings do: the cards the master
-    dewarp apply writes (DEWARP_APPLY_CARDS, lib/dewarp/master_dewarp._apply), less MDWSTAT unless ``path`` is a PB map and
-    ``ref_dewarped`` (every sibling of its reference carries MDWARP T). Other writers put MDWSTAT on not-dewarped files too:
-    the header repair on every master, dewarped or not (header_repair_release1.py:232 MDW_CLASSES, :1101 a name starting 'PB'
-    is a PB map, :1113; RULING_MDWSTAT), and a hybrid diffuse PB map inherits its reconstruction master's MDWSTAT (archive:
-    the Run_NOTAPER_HYBRID_20261028 PBdiffuse maps of not-dewarped LSTs carry MDWSTAT 'refused: ...'). Only on a PB map whose
-    siblings are all dewarped is MDWSTAT the apply's alone (its 'applied', master_dewarp.py:288)."""
-    pbmap = os.path.basename(path).startswith('PB')
-    return frozenset(k for k in DEWARP_APPLY_CARDS if k != 'MDWSTAT' or (pbmap and ref_dewarped))
+    dewarp apply writes (DEWARP_APPLY_CARDS, lib/dewarp/master_dewarp._apply), less MDWSTAT unless ``path`` is a PB_deep map
+    (PB_deep_<scope>.fits, PB_deep_R075_<scope>.fits: the PB maps of the generation the apply resamples, its coadd_final,
+    master_dewarp.py:268 and :291-294) and ``ref_dewarped`` (every sibling of its reference carries MDWARP T). Other writers put
+    MDWSTAT on files the apply never wrote: the header repair on every master, dewarped or not, and on no PB map
+    (header_repair_release1.py:232 MDW_CLASSES, :1101, :1113; RULING_MDWSTAT), and a hybrid diffuse PB map
+    (PBdiffuse_deep_<scope>.fits, made by the hybrid step after the apply, lib/hybrid/master.py) inherits its reconstruction
+    master's MDWSTAT - 'refused: ...' in a not-dewarped LST, 'applied' in a dewarped one - so even an all-dewarped reference
+    does not make a PBdiffuse map's MDWSTAT the apply's. Only a PB_deep map's MDWSTAT is the apply's alone ('applied', :288)."""
+    pbdeep = os.path.basename(path).startswith('PB_deep_')
+    return frozenset(k for k in DEWARP_APPLY_CARDS if k != 'MDWSTAT' or (pbdeep and ref_dewarped))
 
 
 def dewarp_state(heads, row):
