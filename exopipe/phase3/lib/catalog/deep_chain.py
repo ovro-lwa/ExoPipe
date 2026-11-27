@@ -663,18 +663,23 @@ class DeepRun:
                 if not self.prod:
                     u.refuse(f'D-G3: {len(todo)} published attempt(s) not harvested (e.g. {todo[0]["cell"]}/{todo[0]["stokes"]}); '
                              f'the harvest writes into the production collect root {c.catalog_merge.HARVEST_DEST_ROOT}')
+                # B-02: each attempt's rules record comes with it; under catalog_conform.MODE 'check' (the check reads every
+                # merged attempt's record, conform_check.rules_findings) one missing at the source refuses the attempt
+                from exopipe.phase3.lib.catalog import conform_check as _CC
+                try:
+                    rules_required = _CC.conform_mode() == 'check'
+                except RuntimeError as e:
+                    u.refuse(str(e))
                 fails = []
                 for a in todo:
-                    dest, argv, extra, remote = deep_ported.harvest_commands(a, self.label, self.host,
-                                                                            c.catalog_merge.HARVEST_DEST_ROOT,
-                                                                            c.catalog.DEEP_STAGING_ATTEMPTS)
-                    os.makedirs(dest, exist_ok=True)
-                    rc = self.shell(u, argv, self.env(extra, state_dir=state), self.log)
-                    if rc != 0:
-                        fails.append(f"{a['cell']} {a['node']} {a['att']}")
-                    if remote:
-                        time.sleep(c.catalog_merge.HARVEST_SSH_SLEEP_S)
-                self.say(f'harvest: {len(todo)} to pull, {len(todo) - len(fails)} pulled, {len(fails)} failed')
+                    _dest, why = deep_ported.harvest_attempt(
+                        a, self.label, self.host, c.catalog_merge.HARVEST_DEST_ROOT, c.catalog.DEEP_STAGING_ATTEMPTS,
+                        rules_required, lambda argv, extra: self.shell(u, argv, self.env(extra, state_dir=state), self.log),
+                        pause=lambda: time.sleep(c.catalog_merge.HARVEST_SSH_SLEEP_S))
+                    if why:
+                        fails.append(why)
+                self.say(f'harvest: {len(todo)} to pull, {len(todo) - len(fails)} pulled, {len(fails)} failed'
+                         + (' (rules records required)' if rules_required else ''))
                 if fails:
                     u.refuse(f'D-G3: harvest failed for {len(fails)} attempt(s): {fails[:6]}')
                 atts = self.attempts(state, u, slog)
@@ -1627,6 +1632,8 @@ class DeepRun:
                       + (' - would be pulled by rsync' if n_un and self.prod else (' - REFUSED (D-G3) outside production' if n_un else '')))
                 except Exception as e:
                     p(f'    published attempts: not readable here ({e})')
+                p('    pulls each attempt\'s rules record (search_rules.json) with it; under catalog_conform.MODE \'check\' a record '
+                  'missing at the source refuses (B-02)')
                 p('    writes: stage_harvest/harvest_manifest.csv; class harvest_manifest')
             elif stage == 'merge':
                 preds(self.u('merge'))

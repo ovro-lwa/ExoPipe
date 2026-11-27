@@ -195,6 +195,55 @@ def harvest_commands(a, label, host, dest_root, staging):
     return dest, argv, {'SSH_AUTH_SOCK': ''}, True
 
 
+def harvest_rules_command(a, label, host, dest_root, staging, required):
+    """B-02: the rsync of one published, unharvested attempt's rules record (lib/search/removal_rules.RULES_RECORD, written by
+    the search step into the attempt directory, deep_step.stage_detect). The shell harvest (ops/p3s3_harvest_published.sh:16-23)
+    pulled the run tree and the log only, so an attempt it pulled lost its record and read as searched under 'production'
+    (removal_rules.attempt_rules). ``required`` (catalog_conform.MODE 'check': conform_check.rules_findings reads every
+    attempt's record): a record missing at the source fails the rsync (exit 23); otherwise a missing record is skipped
+    (--ignore-missing-args: an attempt searched under 'production' has none) and a present one is still copied. Same
+    destination, environment and host rule as harvest_commands. Returns (destination dir, argv, env additions, remote?)."""
+    from exopipe.phase3.lib.search import removal_rules as RR
+    low = label.lower()
+    cell, st, node, att = a['cell'], a['stokes'], a['node'], a['att']
+    dest = f'{dest_root}/{low}_collect_{node}/attempts/{cell}_{st}_{att}'
+    src = f'{staging}/{cell}_{st}_{att}/{RR.RULES_RECORD}'
+    opts = ['-a'] if required else ['-a', '--ignore-missing-args']
+    if node == host:
+        return dest, ['rsync'] + opts + [src, f'{dest}/'], {}, False
+    return dest, ['rsync'] + opts + [f'{node}:{src}', f'{dest}/'], {'SSH_AUTH_SOCK': ''}, True
+
+
+def harvest_attempt(a, label, host, dest_root, staging, rules_required, run, pause=None):
+    """Pull one published, unharvested attempt: its rules record first (harvest_rules_command), then its run tree and log
+    (harvest_commands), each by ``run(argv, env additions) -> exit status``; ``pause()`` runs after each remote rsync (the
+    connection-burst rule). Under ``rules_required`` a record missing at the source stops the attempt before its tree is
+    pulled, so the collect root never gains an attempt the check would refuse, and a record that is not at the destination
+    after the pull refuses too. Returns (destination dir, None) or (destination dir, the failure's words)."""
+    from exopipe.phase3.lib.search import removal_rules as RR
+    dest, argv, extra, remote = harvest_rules_command(a, label, host, dest_root, staging, rules_required)
+    os.makedirs(dest, exist_ok=True)
+    rc = run(argv, extra)
+    if remote and pause:
+        pause()
+    tag = f"{a['cell']} {a['stokes']} {a['node']} {a['att']}"
+    if rc != 0:
+        return dest, (f'{tag}: rules record {RR.RULES_RECORD} not pulled (rsync exit {rc})'
+                      + (" - catalog_conform.MODE 'check' needs it: the attempt's removal rules cannot be told without it "
+                         "(conform_check.rules_findings would read it as 'production'); the run tree was not pulled"
+                         if rules_required else ''))
+    dest, argv, extra, remote = harvest_commands(a, label, host, dest_root, staging)
+    rc = run(argv, extra)
+    if remote and pause:
+        pause()
+    if rc != 0:
+        return dest, f'{tag}: run tree not pulled (rsync exit {rc})'
+    if rules_required and not os.path.isfile(os.path.join(dest, RR.RULES_RECORD)):
+        return dest, (f"{tag}: no {RR.RULES_RECORD} in {dest} after the pull - catalog_conform.MODE 'check' needs the "
+                      f"attempt's rules record")
+    return dest, None
+
+
 def copy_state(src, dst, keep_cell=None):
     """The state the merge reads and the staleness gate edits (published_<S>.csv, markers_<S>/), copied for a run outside
     the production roots so the gate drops markers only in the copy (spec 1.3 item 3). ``keep_cell(cell)`` filters the
