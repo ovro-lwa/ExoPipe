@@ -23,7 +23,8 @@ steps.frames, which imports it):
 Every test returns (passed, value, detail) and reads the file's CONTENT; heavy imports stay inside the functions.
 Thresholds come from the effective config keys (lib/frames/deep_engine.engine_values: search's sections while search
 produces the deep frames). Context keys a step may pass (all optional): stokes, in_master (bool), ncoadd (int, the
-own-Stokes central master's NCOADD), copy_of (source of an archive copy), pb_path (the PB map of a sibling),
+own-Stokes central master's NCOADD), copy_of (source of an archive copy), archive_record (the deep engine's record of the
+frame an archive copy superseded), predecessor (that frame), pb_path (the PB map of a sibling),
 plain_path (the plain frame of a sibling), floor, cell, tier.
 """
 import csv
@@ -229,12 +230,26 @@ def pixels(path, **ctx):
 
 
 @content_test('search_frame')
-def copy_identical(path, copy_of=None, predecessor=None, **ctx):
-    """An archive copy holds the attempt frame it was made from: the same pixels, bit for bit, and every card of the attempt
-    frame with its value (phase3_deep.py:850-873 made a byte-identical copy2); and every card of the archive frame it
-    superseded (``predecessor``, when known: the refactor chat's decision (3b) of 2026-11-27 - never an archive frame with
-    fewer standard cards than the frame it supersedes; the archive frame is the superseded frame's header updated with the
-    search's own cards)."""
+def _archive_record_row(record, path):
+    """The engine's last row for archive frame ``path`` in its archive record (deep_search.ARCHIVE_RECORD_COLS), or None."""
+    if not record or not os.path.exists(record):
+        return None
+    rp, row = os.path.realpath(path), None
+    with open(record, newline='') as fh:
+        for r in csv.DictReader(fh):
+            if os.path.realpath(r.get('archive') or '') == rp:
+                row = r
+    return row
+
+
+def copy_identical(path, copy_of=None, predecessor=None, archive_record=None, **ctx):
+    """An archive copy holds the attempt frame it was made from: the same pixels, bit for bit, every card of the attempt frame
+    with its value (phase3_deep.py:850-873 made a byte-identical copy2), and its COMMENT and HISTORY lines; and every card of
+    the archive frame it superseded but the search-owned cards (deep_search.SEARCH_OWNED_CARDS) the search did not write,
+    each of those named in a HISTORY line (the refactor chat's decisions (3b), (5), (6b) of 2026-11-27: the archive frame is
+    the superseded frame's header updated with the search's own cards). The superseded frame is the one the engine recorded
+    in ``archive_record`` (its P3_ARCHIVE_RECORD, decision (7): the frame it merged, with its card names - one replaced in
+    place is gone, the record holds its cards), else ``predecessor`` when given; a frame missing from the record fails."""
     if not copy_of:
         return True, None, 'n/a (not an archive copy in this context)'
     import numpy as np
@@ -247,16 +262,52 @@ def copy_identical(path, copy_of=None, predecessor=None, **ctx):
     bad = [k for k in hb if k not in skip and (k not in ha or str(ha[k]) != str(hb[k]))]
     if bad:
         return False, len(bad), f'card(s) of {os.path.basename(copy_of)} absent or different: {bad[:6]}'
-    lost = []
-    if predecessor and os.path.exists(predecessor):
+    for kw in ('COMMENT', 'HISTORY'):
+        have = {str(v) for v in ha[kw]} if kw in ha else set()
+        miss = [str(v) for v in hb[kw] if str(v) not in have] if kw in hb else []
+        if miss:
+            return False, len(miss), f'{kw} line(s) of {os.path.basename(copy_of)} absent: {miss[:3]}'
+    from exopipe.phase3.lib.search.deep_search import SEARCH_OWNED_CARDS, _STRUCT_CARD, dropped_history
+
+    def cards_of(h):
+        return {k for k in h if k not in skip and not _STRUCT_CARD.match(k)}
+    pcards, src = None, None
+    if archive_record:
+        row = _archive_record_row(archive_record, path)
+        if row is None:
+            return False, None, f'no row for this frame in the engine\'s archive record {archive_record}'
+        rp = row.get('predecessor') or None
+        if predecessor and (not rp or os.path.realpath(predecessor) != os.path.realpath(rp)):
+            return False, None, f'the engine recorded the superseded frame {rp}, not {predecessor}'
+        predecessor = rp
+        if rp:
+            pcards = set((row.get('predecessor_cards') or '').split())
+            src = 'as recorded'
+            if os.path.exists(rp) and os.path.realpath(rp) != os.path.realpath(path):
+                from astropy.io import fits
+                with fits.open(rp, memmap=False, lazy_load_hdus=True) as h:
+                    actual = cards_of(h[0].header)
+                if actual != pcards:
+                    return False, None, (f'the record\'s cards of the superseded {os.path.basename(rp)} differ from the file: '
+                                         f'{sorted(actual ^ pcards)[:6]}')
+                src = 'recorded and read'
+    elif predecessor and os.path.exists(predecessor):
         from astropy.io import fits
         with fits.open(predecessor, memmap=False, lazy_load_hdus=True) as h:
-            hp = h[0].header
-        lost = [k for k in hp if k not in skip and k not in ha]
-    if lost:
-        return False, len(lost), f'lacks card(s) of the superseded frame {os.path.basename(predecessor)}: {lost[:6]}'
-    return True, len(ha), (f'pixels and cards of {os.path.basename(copy_of)}'
-                           + (f'; every card of the superseded {os.path.basename(predecessor)}' if predecessor else ''))
+            pcards = cards_of(h[0].header)
+        src = 'read'
+    if pcards is not None:
+        lost = sorted(pcards - set(ha.keys()) - SEARCH_OWNED_CARDS)
+        if lost:
+            return False, len(lost), f'lacks card(s) of the superseded frame {os.path.basename(predecessor)}: {lost[:6]}'
+        dropped = sorted((pcards & SEARCH_OWNED_CARDS) - set(ha.keys()))
+        hist = {str(v) for v in ha['HISTORY']} if 'HISTORY' in ha else set()
+        unnamed = [k for k in dropped if dropped_history(k) not in hist]
+        if unnamed:
+            return False, len(unnamed), f'search card(s) of the superseded frame dropped without a HISTORY line: {unnamed[:6]}'
+    return True, len(ha), (f'pixels, cards and COMMENT/HISTORY lines of {os.path.basename(copy_of)}'
+                           + (f'; every card of the superseded {os.path.basename(predecessor)} ({src}) but the search\'s own'
+                              if pcards is not None else '; no superseded frame'))
 
 
 def _resolve_pb(path, hdr, cell=None):

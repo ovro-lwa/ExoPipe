@@ -323,9 +323,10 @@ class search_run(_Section):
                                                             # p3s5_launch.sh:22, 20261004 ... 20261113); a literal names the round. A round
                                                             # production used refuses (lib/archive/quarantine.round_gate; the refactor
                                                             # chat's decision of 2026-11-27: a NEW round, never 20261004)
-    QUARANTINE_EPOCH = 'launch-file'                        # 'launch-file' = archive_quarantine.LAUNCH_EPOCH_FILE (the v2 fleet's launch);
-                                                            # 'job-created' = this run's start (fixes the reuse half of defect D2 - deep
-                                                            # chat's call, spec Q7)
+    QUARANTINE_EPOCH = 'launch-file'                        # 'launch-file' = archive_quarantine.LAUNCH_EPOCH_FILE (the v2 fleet's launch,
+                                                            # `archive quarantine --begin-launch`); 'job-created' = this run's start, a
+                                                            # window or scratch run only - refused when the run writes production (two
+                                                            # runs on one UTC date would share the round; decision (4) of 2026-11-27)
     QUARANTINE_SCRIPT = 'p3s5_quarantine_frames.py'         # in legacy_root('exopipe_ops'); owned by archive (decision 6, group 10)
     CACHE_CURRENT_SCRIPT = 'p3s3_cache_current.py'          # in legacy_root('exopipe_ops'): flow-cache currency (p3s5_search_fleet.sh:96,109;
                                                             # FIX-P3S3-CACHE-CURRENT-MD5-MATCHES-SEARCH-NAN-ZEROING)

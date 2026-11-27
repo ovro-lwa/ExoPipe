@@ -186,33 +186,14 @@ def test_quarantine_precheck(cd):
 
 def test_quarantine_apply(cd):
     """MAJOR (eighth review): production's frame-quarantine helper re-runs production's membership check and refuses a cell
-    holding an admitted night; under the ruled reading such a cell's moves are run by the helper's port, under production's by
-    the helper (its own refusal, as production)."""
+    holding an admitted night; every cell's moves are run by the helper's port (its precheck reads the admitted nights, above).
+    The unused admitted_cell is gone (the refactor chat's decision (9) of 2026-11-27: dead code)."""
     import inspect
     from exopipe.phase3.lib.archive import quarantine as Q
-
-    class _Q:
-        PRECHECK_CELL_ROOTS = (os.path.dirname(cd),)
-        PRECHECK_CELL_MARKER = 'coadd_final/weights.csv'
-    real = Q._q
-    Q._q = lambda: _Q
-    try:
-        admission(cd, NEW)
-        got = Q.admitted_cell(CELL)
-        CFG.masters_admit.ADMITTED_NIGHTS = 'absent'
-        try:
-            prod = Q.admitted_cell(CELL)
-        finally:
-            CFG.masters_admit.ADMITTED_NIGHTS = 'admitted'
-        os.remove(os.path.join(cd, 'coadd_final', A.ADMISSIONS))
-        none = Q.admitted_cell(CELL)
-    finally:
-        Q._q = real
     src = inspect.getsource(Q.quarantine_for_search)
-    check('admitted_cell reads the cell\'s admitted nights under the ruled reading (none under production\'s); the quarantine '
-          'apply takes the port of the helper\'s move loop for every cell (the helper writes its manifest under '
-          'paths.OPS_ROOT, never run since 2026-11-27)', got == [NEW] and prod == [] and none == []
-          and 'K.quarantine_move(' in src and '_apply_helper' not in inspect.getsource(Q), (got, prod, none))
+    check('the quarantine apply takes the port of the helper\'s move loop for every cell (the helper writes its manifest under '
+          'paths.OPS_ROOT, never run since 2026-11-27); the dead admitted_cell is gone',
+          'K.quarantine_move(' in src and '_apply_helper' not in inspect.getsource(Q) and not hasattr(Q, 'admitted_cell'))
 
 
 def test_no_other_caller():

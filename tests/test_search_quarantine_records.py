@@ -13,7 +13,17 @@ production branch of lib/archive/quarantine runs):
   new round    a round production used (its Run in the archive, no v2 record: 20261004, the 11-13 launch's 20261113), a round
                of another launch epoch, and a records root under the ops root each refuse before anything moves
   search       the search's quarantine stage (window): reads the v2 launch epoch, plans into Run_SEARCH_QUARANTINE_<launch
-               date>, refuses production's launch epoch (an earlier round); it never names paths.OPS_ROOT
+               date> (the only round the engine then takes a predecessor from), refuses production's launch epoch (an earlier
+               round); it never names paths.OPS_ROOT
+  begin-launch the operator step that writes the launch file (decision (1)): plan writes nothing; apply writes the epoch
+               atomically (no temporary file left); an existing file refuses, named; --retire-launch moves it first into its
+               own round's records directory beside ROUND.json; a second launch on one UTC date, an occupied retirement
+               place, a production records root the allowance does not open (G2) and a records root under paths.OPS_ROOT
+               refuse; the narrow allowance key 'archive:search_deep' opens it; the key is protected; through the CLI
+  round        archive_quarantine.ROUND_DEFAULT is 'launch-date', as search_run.QUARANTINE_ROUND (decision (3))
+  job-created  search_run.QUARANTINE_EPOCH 'job-created' passes in the window (and in a scratch run beside a configured
+               allowance) and refuses, naming 'launch-file', when the run writes production: paths.PRODUCTION_WRITES, a run
+               an allowance opens, a production archive root, --out under a production root (decision (4))
 Run: python tests/test_search_quarantine_records.py
 """
 import csv
@@ -219,13 +229,14 @@ def test_search_stage():
           'p3s5_state/launch_epoch)', sr.QUARANTINE_ROUND == 'launch-date' and sr.QUARANTINE_EPOCH == 'launch-file'
           and not hasattr(sr, 'LAUNCH_EPOCH_FILE'))
     ops0 = tree(OPS)
-    u = Unit()
-    DS.stage_quarantine(u, item, ctx, {})
+    u, f = Unit(), {}
+    DS.stage_quarantine(u, item, ctx, f)
     plan = os.path.join(OUT, 'quarantine_plan', f'{CELL}_I.csv')
     rows = list(csv.DictReader(open(plan)))
     check('the search\'s quarantine stage (window): plans the frames older than the v2 launch into Run_SEARCH_QUARANTINE_'
-          '<launch date>, the manifest of record named under the records root',
-          rows and all(f'/Run_SEARCH_QUARANTINE_{rnd}/' in r['dest'] for r in rows)
+          '<launch date>, the manifest of record named under the records root; the round handed on to the detect stage '
+          '(the only round the engine takes a predecessor from)',
+          rows and all(f'/Run_SEARCH_QUARANTINE_{rnd}/' in r['dest'] for r in rows) and f.get('quarantine_round') == rnd
           and all(float(r['launch_epoch']) == launch for r in rows)
           and any(os.path.join(REC, 'frame_quarantine', f'Run_SEARCH_QUARANTINE_{rnd}', f'{CELL}_I.csv') in n for n in u.notes),
           (rows[:1], u.notes))
@@ -242,6 +253,115 @@ def test_search_stage():
           tree(OPS) == ops0 and not any('OPS_ROOT' in ln for ln in code), [ln for ln in code if 'OPS_ROOT' in ln])
 
 
+def refused(fn):
+    try:
+        fn()
+        return False, 'not refused'
+    except Refusal as e:
+        return True, str(e)
+
+
+def test_begin_launch(launch, rnd):
+    """decision (1) of 2026-11-27: the launch file is written by an operator step, never by hand."""
+    from exopipe.phase3 import cli
+    lf = Q.K.expand(CFG.archive_quarantine.LAUNCH_EPOCH_FILE)
+    os.remove(lf)                                    # the earlier checks wrote it by hand
+    ops0 = tree(OPS)
+    plan = Q.begin_launch(Unit(), epoch=launch, apply=False)
+    check('begin-launch plan: names the launch file, the epoch and its round; writes nothing',
+          plan['launch_file'] == lf and plan['launch_epoch'] == launch and plan['round'] == rnd and not os.path.exists(lf), plan)
+    Q.begin_launch(Unit(), epoch=launch, apply=True)
+    left = [x for x in os.listdir(os.path.dirname(lf)) if x.endswith('.tmp')]
+    check('begin-launch apply: the launch file holds the epoch (launch_epoch reads it back), no temporary file left',
+          Q.launch_epoch() == launch and not left, (open(lf).read(), left))
+    r = {'an existing launch file, no --retire-launch': refused(lambda: Q.begin_launch(Unit(), epoch=launch + 86400 * 2,
+                                                                                         apply=True))}
+    same = launch + 1.0
+    r['a second launch on the same UTC date'] = refused(lambda: Q.begin_launch(Unit(), epoch=same, retire=True, apply=True))
+    check('begin-launch refuses an existing launch file (naming it, pointing to --retire-launch) and a second launch on one '
+          'UTC date (one round per launch), the launch file as it was',
+          all(v[0] for v in r.values()) and lf in r['an existing launch file, no --retire-launch'][1]
+          and '--retire-launch' in r['an existing launch file, no --retire-launch'][1] and Q.launch_epoch() == launch
+          and Q.round_for(same, 'launch-date') == rnd, r)
+    new2 = launch + 86400 * 2
+    rdir = os.path.join(REC, 'frame_quarantine', f'Run_SEARCH_QUARANTINE_{rnd}')
+    p2 = Q.begin_launch(Unit(), epoch=new2, retire=True, apply=True)
+    ret = os.path.join(rdir, os.path.basename(lf))
+    check('begin-launch --retire-launch: the earlier launch file moved into its own round\'s records directory beside its '
+          'ROUND.json (that launch\'s epoch), the new epoch written; paths.OPS_ROOT untouched',
+          p2['retired_to'] == ret and os.path.exists(os.path.join(rdir, 'ROUND.json')) and float(open(ret).read()) == launch
+          and Q.launch_epoch() == new2 and tree(OPS) == ops0, (p2, os.listdir(rdir)))
+    open(lf + '.x', 'w').write(f'{launch!r}\n')
+    os.replace(lf + '.x', lf)                        # a launch of round rnd again: its retirement place is taken
+    r2 = refused(lambda: Q.begin_launch(Unit(), epoch=new2 + 86400 * 2, retire=True, apply=True))
+    check('begin-launch --retire-launch refuses when the round\'s retired launch file is there already',
+          r2[0] and 'retired already' in r2[1] and Q.launch_epoch() == launch, r2)
+    os.remove(lf)
+    # G2: a production records root - refused without the narrow allowance, written with 'archive:search_deep'
+    pr = os.path.join(T, 'prod_records')
+    keep = (CFG.archive.RECORDS_ROOT, CFG.paths.PRODUCTION_ROOTS, CFG.paths.PRODUCTION_WRITES_ALLOWED)
+    try:
+        CFG.archive.RECORDS_ROOT = pr
+        CFG.paths.PRODUCTION_ROOTS = tuple(CFG.paths.PRODUCTION_ROOTS) + (pr,)
+        CFG.paths.PRODUCTION_WRITES_ALLOWED = {}
+        plf = Q.K.expand(CFG.archive_quarantine.LAUNCH_EPOCH_FILE)
+        g2 = refused(lambda: Q.begin_launch(Unit(), epoch=new2, apply=True))
+        g2ok = g2[0] and g2[1].startswith('G2') and "'archive:search_deep'" in g2[1] and not os.path.exists(plf)
+        CFG.paths.PRODUCTION_WRITES_ALLOWED = {Q.ALLOW_KEY: (pr,)}
+        Q.begin_launch(Unit(), epoch=new2, apply=True)
+        allowed = Q.launch_epoch() == new2 and plf.startswith(pr + '/')
+        CFG.archive.RECORDS_ROOT = os.path.join(OPS, 'records')
+        ops = refused(lambda: Q.begin_launch(Unit(), epoch=new2, apply=True))
+    finally:
+        CFG.archive.RECORDS_ROOT, CFG.paths.PRODUCTION_ROOTS, CFG.paths.PRODUCTION_WRITES_ALLOWED = keep
+    check('begin-launch under a production records root: refused (G2) while paths.PRODUCTION_WRITES is False and no '
+          'allowance opens it, nothing written; written when the narrow allowance opens it to \'archive:search_deep\'; a '
+          'records root under paths.OPS_ROOT refuses', g2ok and allowed and ops[0] and 'OPS_ROOT' in ops[1], (g2, ops))
+    check('archive_quarantine.LAUNCH_EPOCH_FILE is a protected key (no --set moves it); ROUND_DEFAULT is \'launch-date\', as '
+          'search_run.QUARANTINE_ROUND (decision (3))',
+          CFG.protected('archive_quarantine.LAUNCH_EPOCH_FILE') and CFG.archive_quarantine.ROUND_DEFAULT == 'launch-date'
+          == CFG.search_run.QUARANTINE_ROUND)
+    # the CLI: archive quarantine --begin-launch (no --cells), --retire-launch only with it
+    co = os.path.join(T, 'cli_out')
+    new4 = new2 + 86400 * 5
+    rc = cli.main(['archive', 'quarantine', '--begin-launch', '--launch-epoch', repr(new4), '--apply', '--out', co])
+    urec = json.load(open(os.path.join(co, '_records', 'archive', 'begin_launch.json')))
+    rc2 = cli.main(['archive', 'quarantine', '--begin-launch', '--cells', CELL, '--apply', '--out', co])
+    rc3 = cli.main(['archive', 'quarantine', '--retire-launch', '--cells', CELL, '--out', co])
+    check('the CLI: `exopipe3 archive quarantine --begin-launch --launch-epoch E --apply` writes the launch file (unit '
+          'begin_launch); --begin-launch with --cells and --retire-launch without --begin-launch refuse',
+          rc == 0 and urec['status'] == 'done' and Q.launch_epoch() == new4 and rc2 != 0 and rc3 != 0
+          and Q.launch_epoch() == new4, (rc, urec.get('status'), urec.get('reason'), rc2, rc3))
+
+
+def test_job_created():
+    """decision (4) of 2026-11-27: 'job-created' is for a window or scratch run only."""
+    sr = CFG.search_run
+    keep = (sr.QUARANTINE_EPOCH, CFG.paths.PRODUCTION_WRITES, CFG.paths.PRODUCTION_WRITES_ALLOWED, CFG.paths.PRODUCTION_ROOTS)
+    t0 = 1795737600.0
+    ctx = dict(out=OUT, t0=t0, archive_root=os.path.join(OUT, 'archive_mirror'))
+    r = {}
+    try:
+        sr.QUARANTINE_EPOCH = 'job-created'
+        window = DS.quarantine_launch_round(ctx)
+        CFG.paths.PRODUCTION_WRITES_ALLOWED = {Q.ALLOW_KEY: (ARCH,), 'search:deep': (ARCH,)}
+        beside = DS.quarantine_launch_round(ctx)         # an allowance in config, this run scratch: it writes no production
+        CFG.paths.PRODUCTION_WRITES_ALLOWED = {}
+        CFG.paths.PRODUCTION_WRITES = True
+        r['paths.PRODUCTION_WRITES'] = refused(lambda: DS.quarantine_launch_round(ctx))
+        CFG.paths.PRODUCTION_WRITES = False
+        r['a run a narrow allowance opens'] = refused(lambda: DS.quarantine_launch_round(dict(ctx, production=True)))
+        CFG.paths.PRODUCTION_ROOTS = tuple(CFG.paths.PRODUCTION_ROOTS) + (ARCH,)
+        r['a production archive root'] = refused(lambda: DS.quarantine_launch_round(dict(ctx, archive_root=ARCH)))
+        r['--out under a production root'] = refused(lambda: DS.quarantine_launch_round(dict(ctx, out=os.path.join(ARCH, 'o'))))
+    finally:
+        sr.QUARANTINE_EPOCH, CFG.paths.PRODUCTION_WRITES, CFG.paths.PRODUCTION_WRITES_ALLOWED, CFG.paths.PRODUCTION_ROOTS = keep
+    check('search_run.QUARANTINE_EPOCH \'job-created\': this run\'s start in the window and in a scratch run beside a '
+          'configured allowance; refused, naming \'launch-file\', when the run writes production (paths.PRODUCTION_WRITES, a '
+          'run an allowance opens, a production archive root, --out under a production root)',
+          window == beside == (t0, '20261127') and all(v[0] and "'launch-file'" in v[1] for v in r.values()), (window, r))
+
+
 def main():
     try:
         setup()
@@ -249,6 +369,8 @@ def main():
         launch, rnd = test_apply()
         test_refusals(launch, rnd)
         test_search_stage()
+        test_begin_launch(launch, rnd)
+        test_job_created()
     finally:
         CFG.reset()
         if not os.environ.get('EXOPIPE3_TEST_KEEP'):

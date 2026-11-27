@@ -375,10 +375,11 @@ def comparison_deviations():
     return [(k, c.get(k)) for k, prod in _COMPARISON if _norm(c.get(k)) != _norm(prod)]
 
 
-def engine_env(cell_root_parent, attempt, flow_root, label, archive_root, tmpdir, pred_roots=None):
+def engine_env(cell_root_parent, attempt, flow_root, label, archive_root, tmpdir, pred_roots=None, archive_record=None):
     """The engine child's environment (spec 7.3), built from config. core.legacy.run clears every inherited P3_* first; COMPARISON
     keys at their production values set nothing (their variables stay unset, as in the fleet). ``pred_roots``: where the
-    engine finds the frame each archive copy supersedes (P3_ARCHIVE_PREDECESSOR_ROOTS; archive_predecessor_roots)."""
+    engine finds the frame each archive copy supersedes (P3_ARCHIVE_PREDECESSOR_ROOTS; archive_predecessor_roots);
+    ``archive_record``: where it records each archive frame with the frame it superseded, as used (P3_ARCHIVE_RECORD)."""
     from exopipe.phase3.core import legacy
     from exopipe.phase3.core.record import Refusal
     c = _cfg()
@@ -426,8 +427,11 @@ def engine_env(cell_root_parent, attempt, flow_root, label, archive_root, tmpdir
                       f'check\'s): under the B-02 rules they are one floor - REFUSING')                                          # floor
     if not si.ARCHIVE_WRITE:
         env['P3_ARCHIVE_WRITE'] = '0'
-    elif pred_roots:                                   # WAVE2 ARCHIVE-HEADER (decision (3b), 2026-11-27)
-        env['P3_ARCHIVE_PREDECESSOR_ROOTS'] = os.pathsep.join(pred_roots)
+    else:                                              # WAVE2 ARCHIVE-HEADER (decisions (3b), (7), 2026-11-27)
+        if pred_roots:
+            env['P3_ARCHIVE_PREDECESSOR_ROOTS'] = os.pathsep.join(pred_roots)
+        if archive_record:
+            env['P3_ARCHIVE_RECORD'] = archive_record
     if not sd.REFINE_X2:
         env['P3_REFINE_OFF'] = '1'
     if st.EXTRA_TABLES:
@@ -915,38 +919,53 @@ def _image_rows(attempt, label, stokes):
 
 def quarantine_launch_round(ctx):
     """(launch epoch, round) of the pre-search quarantine: search_run.QUARANTINE_EPOCH 'launch-file' =
-    archive_quarantine.LAUNCH_EPOCH_FILE (the v2 fleet's launch; unset refuses), 'job-created' = this run's start; the round
-    search_run.QUARANTINE_ROUND ('launch-date': Run_SEARCH_QUARANTINE_<launch date>, a NEW round - 2026-11-27)."""
+    archive_quarantine.LAUNCH_EPOCH_FILE (the v2 fleet's launch, written by `archive quarantine --begin-launch`; unset
+    refuses), 'job-created' = this run's start - for a window or scratch run only: refused whenever the run's writes would land
+    in production (paths.PRODUCTION_WRITES; a run a narrow allowance key opens - ctx 'production' when set, and its archive
+    root, the production archive; an archive root or --out under a production root), since two runs on one UTC date would
+    share the round 'launch-date' names (the refactor chat's decision (4) of 2026-11-27); the
+    round search_run.QUARANTINE_ROUND ('launch-date': Run_SEARCH_QUARANTINE_<launch date>, a NEW round - 2026-11-27)."""
     from exopipe.phase3.core.record import Refusal
+    from exopipe.phase3.lib.archive import common as K
     from exopipe.phase3.lib.archive import quarantine as Q
-    sr = _cfg().search_run
+    c = _cfg()
+    sr = c.search_run
     if sr.QUARANTINE_EPOCH == 'launch-file':
         launch = Q.launch_epoch()
     elif sr.QUARANTINE_EPOCH == 'job-created':
+        # where this run's writes land, not whether an allowance exists in config: a run a narrow allowance opens writes the
+        # production archive (deep_step.run's archive root when it writes production) - a scratch run beside it stays free
+        hit = [f'{w} {p} (under {K.production_like(p)})' for w, p in (('the archive root', ctx.get('archive_root')),
+                                                                      ('--out', ctx.get('out'))) if p and K.production_like(p)]
+        if c.paths.PRODUCTION_WRITES or ctx.get('production') or hit:
+            why = ('paths.PRODUCTION_WRITES' if c.paths.PRODUCTION_WRITES else
+                   'a narrow production-write allowance opens it' if ctx.get('production') else '; '.join(hit))
+            raise Refusal(f"search_run.QUARANTINE_EPOCH 'job-created' is for a window or scratch run only: this run writes "
+                          f"production ({why}), where a second run on one UTC date would share the launch-date round - use "
+                          f"'launch-file' (archive quarantine --begin-launch); REFUSED")
         launch = ctx['t0']
     else:
         raise Refusal(f'search_run.QUARANTINE_EPOCH {sr.QUARANTINE_EPOCH!r}: launch-file or job-created')
     return launch, Q.round_for(launch, sr.QUARANTINE_ROUND)
 
 
-def archive_predecessor_roots(ctx):
-    """WAVE2 ARCHIVE-HEADER (the refactor chat's decision (3b), 2026-11-27): where the engine finds the frame each archive copy
-    supersedes, in order - the run's archive root (a frame written earlier in this round, replaced in place), then its
-    quarantine rounds newest first (Run_SEARCH_QUARANTINE_*: this launch's round, where the pre-search quarantine moved the
-    frames, sorts first - its name is the launch date; the rounds of retired PSF-master attempts are left out, as
-    gate_inputs.deep_target_beam leaves them out) and, when the run's archive root is the window's mirror, the production
-    archive and its rounds the same way (read only: the frames production would supersede, never moved in the window). One
-    directory listing per archive root; no launch epoch needed (an append quarantines nothing)."""
+def archive_predecessor_roots(ctx, rnd=None):
+    """WAVE2 ARCHIVE-HEADER (the refactor chat's decisions (3b) and (6a), 2026-11-27): where the engine finds the frame each
+    archive copy supersedes, in order - the run's archive root (the frame in place: one written earlier in this launch,
+    replaced in place), then this launch's own quarantine round ``rnd`` (stage_quarantine's round, where the pre-search
+    quarantine moved the frames; None for an append or a run without the quarantine stage: the frame in place only) and, when
+    the run's archive root is the window's mirror, the production archive's frame in place (read only: the frame production's
+    launch would move into its round, never moved in the window). Never an older round (Run_SEARCH_QUARANTINE_20261004 ..
+    20261113): a frame with no predecessor validates on its own."""
     from exopipe.phase3.lib.archive import quarantine as Q
-
-    def rounds(a):
-        return sorted((p for p in glob.glob(Q.quarantine_root(a, '*'))
-                       if os.path.isdir(p) and not p.endswith('_retired_psfmaster')), reverse=True)
     arch, prod = ctx['archive_root'], _cfg().paths.PHASE3_ARCHIVE_ROOT
-    roots = [arch] + rounds(arch)
+    roots = [arch] + ([Q.quarantine_root(arch, rnd)] if rnd else [])
     if os.path.realpath(arch) != os.path.realpath(prod):
-        roots += [prod] + rounds(prod)
+        roots.append(prod)
     return roots
+
+
+ARCHIVE_RECORD = 'archive_record.csv'      # in the attempt: the engine's record of each archive frame and the frame it superseded
 
 
 def stage_quarantine(u, item, ctx, f):
@@ -954,6 +973,7 @@ def stage_quarantine(u, item, ctx, f):
     from exopipe.phase3.lib.archive import quarantine as Q
     c = _cfg()
     launch, rnd = quarantine_launch_round(ctx)      # Run_SEARCH_QUARANTINE_<launch date>: a NEW round (2026-11-27)
+    f['quarantine_round'] = rnd                     # the only round the engine takes a predecessor from (decision (6a))
     if c.paths.PRODUCTION_WRITES:
         # the archive step's quarantine (lib/archive/quarantine.py): the port of production's move loop, recorded in this unit
         # with its gates (G2, G7 precheck, the round gate) and the round's manifest of record under archive.RECORDS_ROOT
@@ -1010,9 +1030,11 @@ def stage_detect(u, item, ctx, f):
     tmpd = os.path.join(ctx['tmp'], item.name + '_' + tag)
     os.makedirs(tmpd, exist_ok=True)
     etmp = engine_tmpdir(c.search_run.ENGINE_TMP_ROOT, f'{item.cell}_{item.stokes}')     # short: AF_UNIX socket paths
-    f['archive_pred_roots'] = archive_predecessor_roots(ctx) if c.search_inputs.ARCHIVE_WRITE else None
+    f['archive_pred_roots'] = (archive_predecessor_roots(ctx, f.get('quarantine_round')) if c.search_inputs.ARCHIVE_WRITE
+                               else None)
+    f['archive_record'] = os.path.join(attempt, ARCHIVE_RECORD) if c.search_inputs.ARCHIVE_WRITE else None
     env = engine_env(os.path.dirname(f['base']), attempt, ctx['flow_root'], label, ctx['archive_root'], etmp,
-                     pred_roots=f['archive_pred_roots'])
+                     pred_roots=f['archive_pred_roots'], archive_record=f['archive_record'])
     spec = dict(lst=item.lst, scope=item.scope, cell=item.cell, label=label, stokes=item.stokes, cadence=c.search.CADENCE,
                 included_dates=item.dates if item.mode == 'incremental' else None, markers=list(c.search.REFUSAL_MARKERS),
                 result=os.path.join(tmpd, 'result.json'))
@@ -1258,7 +1280,7 @@ def side_outputs(item, ctx, f):
     if f.get('t_detect'):
         from exopipe.phase3.core.record import fits_primary_cards
         c = _cfg()
-        pred_roots = f.get('archive_pred_roots')       # as the detect stage gave them to the engine
+        rec = f.get('archive_record')                  # the engine's record: the frame each archive frame superseded, as used
         sub = 'iresid' if item.stokes == 'I' else 'vresid'
         for p in sorted(glob.glob(os.path.join(f['attempt'], f'Run_{f["label"]}', sub, item.cell, '*_redo_resid_*.fits'))):
             name = str(fits_primary_cards(p, continued=True).get('PRODNAME', '') or '')   # a deep PRODNAME spans CONTINUE cards
@@ -1268,12 +1290,10 @@ def side_outputs(item, ctx, f):
             dst = os.path.join(ctx['archive_root'], item.lst, d, c.paths.ARCHIVE_RUN, item.scope, item.stokes, 'deep',
                                name if name.endswith('.fits') else name + '.fits')
             if os.path.exists(dst) and os.path.getmtime(dst) >= f['t_detect']:
-                # the frame it superseded, for the content test (decision (3b): never fewer cards than it): the first of the
-                # engine's predecessor roots after the archive root that holds it - a quarantine round, or in the window the
-                # production archive (a frame replaced in place is gone: the engine's own check covered it)
-                rel = os.path.relpath(dst, ctx['archive_root'])
-                pred = next((os.path.join(r, rel) for r in (pred_roots or [])[1:] if os.path.exists(os.path.join(r, rel))), None)
-                out.append((dst, 'search_frame', {'stokes': item.stokes, 'copy_of': p, 'predecessor': pred}, dst))
+                # the content test reads the frame it superseded from the engine's record (decision (7), 2026-11-27: the
+                # predecessor the engine merged, never a second search of the roots; one replaced in place is gone, its
+                # cards are on the record)
+                out.append((dst, 'search_frame', {'stokes': item.stokes, 'copy_of': p, 'archive_record': rec}, dst))
     return out
 
 

@@ -293,8 +293,16 @@ def run_epoch(ctx, args, run, unit_fn):
                       f'(sub-LST searches with P3_ARCHIVE_WRITE=0, sublst_search_pass.sh:30; snapshot products are shipped '
                       f'by the fleet / `archive supersede`); nothing to push')
     staging = args.staging_root or _p().EPOCH_STAGING_ROOT
-    rnd = args.round or K.sec('archive_quarantine').ROUND_DEFAULT
-    qrun = f'{_p().EPOCH_REPLACE_QUARANTINE_PREFIX}{rnd}'
+
+    def qrun_of():
+        """The replaced files' quarantine Run: --round, else archive_quarantine.ROUND_DEFAULT, whose 'launch-date' is the
+        round of the launch epoch (the search quarantine's round; an unset launch epoch refuses, as the quarantine does).
+        Read at the apply only: a plan needs no launch."""
+        rnd = args.round or K.sec('archive_quarantine').ROUND_DEFAULT
+        if rnd == 'launch-date':
+            from exopipe.phase3.lib.archive import quarantine as Q
+            rnd = Q.round_for(Q.launch_epoch(getattr(args, 'launch_epoch', None)), rnd)
+        return f'{_p().EPOCH_REPLACE_QUARANTINE_PREFIX}{rnd}'
     stages = args._stages
     for item in epoch_items(args, staging):
         def body(u, item=item):
@@ -324,12 +332,15 @@ def run_epoch(ctx, args, run, unit_fn):
                 return rows
             # ---- apply
             todo = [r for r in rows if r['action'] in ('publish', 'replace')]
+            qrun = qrun_of() if any(r['action'] == 'replace' for r in todo) else None     # only a replace quarantines
             qdir = ctx.applied_manifest_dir('frame_quarantine', K.sec().FRAME_QUARANTINE_MANIFEST_DIR)
             pdir = ctx.applied_manifest_dir('frame_publish', K.sec().FRAME_PUBLISH_MANIFEST_DIR)
             ctx.guard_writes([ctx.archive_root, qdir, pdir, man], f'push --class epoch {item}')
             for r in todo:
+                if r['action'] != 'replace':
+                    continue
                 q = os.path.join(ctx.archive_root, qrun, os.path.relpath(r['dest'], ctx.archive_root))
-                if r['action'] == 'replace' and os.path.lexists(q):
+                if os.path.lexists(q):
                     raise Refusal(f'G4: quarantine destination exists: {q} (choose another --round)')
             ok, free = K.free_space_ok(ctx.archive_root, K.sec().FREE_SPACE_FLOOR_GB)
             if not ok:

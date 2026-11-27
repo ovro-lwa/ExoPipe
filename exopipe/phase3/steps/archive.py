@@ -4,6 +4,7 @@ content audit -> quarantine of superseded files; retire-excluded; rollback. PLAN
     exopipe3 archive retire-excluded --tier deep --out DIR                        # plan: excluded nights' files in the Run
     exopipe3 archive retire-excluded --apply --manifest PLAN.csv --apply-ruling "<Gregg's words, UTC, ledger ID>" --out DIR
     exopipe3 archive quarantine --cells 08h_59MHz --stokes V --round 20261012 --out DIR    # pre-search frame quarantine plan
+    exopipe3 archive quarantine --begin-launch [--retire-launch] --apply --out DIR         # a v2 deep-search launch's epoch file
     exopipe3 archive sync --cells 08h_59MHz --stokes V --attempt ATTEMPT_DIR --out DIR      # archive frames = attempt frames
     exopipe3 archive retire-refused --cells 08h_59MHz --stokes V --out DIR                  # M10: frames of refused nights
     exopipe3 archive push --epochs 04h_2025-10-14 --staging-root MIRROR --out DIR          # per hour: one epoch's products
@@ -19,6 +20,10 @@ Actions and units of work (one run record per unit, <out>/_records/archive/<unit
                    a NEW round only (a round production used, or another launch's, refuses); the round's manifest of record
                    under archive.RECORDS_ROOT (archive.SEARCH_QUARANTINE_RECORDS_DIR), never paths.OPS_ROOT.
                    The search step's quarantine stage calls the same function (lib.archive.quarantine.quarantine_for_search).
+                   --begin-launch (no --cells; unit begin_launch): the operator step that starts a v2 deep-search launch -
+                   archive_quarantine.LAUNCH_EPOCH_FILE written with the launch epoch (--launch-epoch, default now), atomically,
+                   under the narrow allowance key 'archive:search_deep'; an existing file refuses, named, unless
+                   --retire-launch moves it first into its own round's records directory (lib.archive.quarantine.begin_launch).
   sync             deep; unit sync_<cell>_<S>. Plan keep / replace / publish / retire of the archive frames against the
                    published attempt (ops/p3s5_archive_sync.py in place); apply = '.part' copies -> audit -> quarantine +
                    rename -> closing re-plan all 'keep' (G17). Retire rows need --apply-ruling.
@@ -120,6 +125,12 @@ def apply_guard(ctx, args):
     paths.PRODUCTION_WRITES_ALLOWED (R-GREGG-20261118-CUTOVER-ALLOWANCE-HYBRID-MOSAIC-V5) reaches a production push of an allowed
     class. Every other action or class opens nothing: refused while paths.PRODUCTION_WRITES is False."""
     from exopipe.phase3.cli import _allow_key
+    if args.action == 'quarantine' and getattr(args, 'begin_launch', False):
+        # writes no archive file: the launch file under archive.RECORDS_ROOT (begin_launch checks it, and its retired copy)
+        from exopipe.phase3.lib.archive import common as K
+        from exopipe.phase3.lib.archive import quarantine as Q
+        ctx.guard_writes([K.expand(Q._q().LAUNCH_EPOCH_FILE)], 'archive quarantine --begin-launch --apply', allow=Q.ALLOW_KEY)
+        return
     ctx.guard_writes([ctx.archive_root], f'archive {args.action} --apply', allow=_allow_key('archive', args))
 
 
@@ -173,6 +184,13 @@ def add_arguments(p):
                         'archive_quarantine.LAUNCH_EPOCH_FILE)')
     g.add_argument('--no-membership-precheck', action='store_true',
                    help='quarantine: skip the membership precheck (G7); needs --apply-ruling')
+    g.add_argument('--begin-launch', action='store_true',
+                   help='quarantine: start a v2 deep-search launch - write archive_quarantine.LAUNCH_EPOCH_FILE with the launch '
+                        'epoch (--launch-epoch, default now); no --cells; with --apply only (otherwise the plan); an existing '
+                        'file refuses unless --retire-launch')
+    g.add_argument('--retire-launch', action='store_true',
+                   help='quarantine --begin-launch: first move the existing launch file into its own round\'s records '
+                        'directory (beside its ROUND.json)')
     g.add_argument('--attempt', action='append', metavar='DIR',
                    help='sync / retire-refused: attempt directory <cell>_<S>_<att> (repeatable; default the published, '
                         'harvested attempts of the register)')
@@ -333,9 +351,17 @@ def _dispatch(args, run, ctx, tier, unit_fn):
     from exopipe.phase3.core.record import NoInput
     from exopipe.phase3.lib.archive import common as K
     a = args.action
+    if getattr(args, 'retire_launch', False) and not getattr(args, 'begin_launch', False):
+        raise ValueError('--retire-launch is a switch of quarantine --begin-launch only')
     if a == 'quarantine':
         from exopipe.phase3.lib.archive import quarantine as Q
+        if args.begin_launch:
+            if _cells(args, required=False):
+                raise ValueError('quarantine --begin-launch writes the launch of the whole fleet: no --cells')
+            return Q.run_begin_launch(ctx, args, unit_fn)
         return Q.run_action(ctx, _cells(args), K.stokes_list(args.stokes), args, unit_fn)
+    if getattr(args, 'begin_launch', False):
+        raise ValueError(f'--begin-launch is a switch of the quarantine action only (not {a})')
     if a in ('sync', 'retire-refused'):
         from exopipe.phase3.lib.archive import sync as SY
         S = SY.legacy_module()

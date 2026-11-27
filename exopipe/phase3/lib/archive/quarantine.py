@@ -58,13 +58,19 @@ print("PRECHECK-OK %%s %%s" %% (cell, base))
 '''
 
 
+# the narrow allowance key of the v2 deep search's archive writes (paths.PRODUCTION_WRITES_ALLOWED): its quarantine round, its
+# archive frames and the launch file begin_launch writes
+ALLOW_KEY = 'archive:search_deep'
+
+
 def _q():
     return K.sec('archive_quarantine')
 
 
 def launch_epoch(value=None):
-    """The launch epoch (UTC s): --launch-epoch, else the content of archive_quarantine.LAUNCH_EPOCH_FILE. Required: the
-    fleet refuses an unset launch epoch (p3s5_search_fleet.sh:37)."""
+    """The launch epoch (UTC s): --launch-epoch, else the content of archive_quarantine.LAUNCH_EPOCH_FILE (written by
+    begin_launch, `exopipe3 archive quarantine --begin-launch`). Required: the fleet refuses an unset launch epoch
+    (p3s5_search_fleet.sh:37)."""
     if value not in (None, ''):
         return float(value)
     p = K.expand(_q().LAUNCH_EPOCH_FILE)
@@ -286,17 +292,102 @@ def quarantine_for_search(u, cell, stokes, launch, round_name, apply=False, arch
     return rows
 
 
-def admitted_cell(cell):
-    """D-ADMIT: the nights admitted into the master of ``cell`` (the cell tree the precheck child reads: the first of
-    PRECHECK_CELL_ROOTS holding PRECHECK_CELL_MARKER), under the ruled reading (masters_admit.ADMITTED_NIGHTS) - [] under
-    production's, or for a cell without admissions."""
-    from exopipe.phase3.lib.masters import admit as AD
-    if AD.admitted_policy() != 'admitted':
-        return []
+def begin_launch(u, epoch=None, retire=False, apply=False):
+    """`exopipe3 archive quarantine --begin-launch [--launch-epoch UTC_S] [--retire-launch] --apply`: the operator step that
+    starts a v2 deep-search launch (the refactor chat's decision (1) of 2026-11-27) - archive_quarantine.LAUNCH_EPOCH_FILE
+    written with the launch epoch (UTC s; default now), which launch_epoch and the search's quarantine read.
+
+    The new launch's round (ROUND_DEFAULT 'launch-date': Run_SEARCH_QUARANTINE_<its UTC date>) must be free (round_gate, read
+    only). An existing launch file refuses, named, unless ``retire``: then it is first moved into its own round's records
+    directory, beside that round's ROUND.json (round_records_dir of its launch date; a link that never replaces, then the
+    unlink) - refused when that round is the new launch's (two launches on one UTC date), when the round's record names
+    another launch epoch, or when a retired file is already there. The new file: a temporary file opened O_EXCL, written and
+    synced, then linked into place (a link never replaces: a concurrent writer's file refuses), the temporary file removed;
+    read back. Apply only (otherwise the plan): refused under paths.OPS_ROOT, for an injected run, and under a production
+    tree while paths.PRODUCTION_WRITES is False unless the narrow allowance opens it to ALLOW_KEY. Returns the plan."""
+    from exopipe.phase3.core import injected
+    C = K.cfg()
     q = _q()
-    base = next((os.path.join(r, cell) for r in q.PRECHECK_CELL_ROOTS
-                 if os.path.exists(os.path.join(r, cell, q.PRECHECK_CELL_MARKER))), None)
-    return sorted(AD.admitted_rows(base)) if base else []
+    p = K.expand(q.LAUNCH_EPOCH_FILE)
+    new = float(epoch) if epoch not in (None, '') else round(time.time(), 3)
+    arch = C.paths.PHASE3_ARCHIVE_ROOT
+    rnd = round_for(new, q.ROUND_DEFAULT)
+    round_gate(arch, rnd, new, round_records_dir(arch, rnd), create=False)     # the new launch's round is free
+    plan = {'launch_file': p, 'launch_epoch': new, 'round': rnd, 'retired_to': None,
+            'launch_utc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(new))}
+    old = None
+    if os.path.lexists(p):
+        try:
+            old = float(open(p).read().strip())
+        except (OSError, ValueError) as e:
+            raise Refusal(f'begin-launch: {p} exists and is unreadable ({e}) - REFUSED (nothing written)')
+        if not retire:
+            raise Refusal(f'begin-launch: {p} exists (launch epoch {old}, '
+                          f'{time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(old))}) - a launch is under way or was not '
+                          f'retired; a new launch first moves it into its round\'s directory (--retire-launch)')
+        ornd = round_for(old, q.ROUND_DEFAULT)
+        if ornd == rnd:
+            raise Refusal(f'begin-launch: the launch in {p} ({old}) has round {rnd}, the new launch\'s - two launches on one '
+                          f'UTC date would share a quarantine round; REFUSED')
+        odir = round_records_dir(arch, ornd)
+        orec = os.path.join(odir, q.ROUND_RECORD)
+        if os.path.exists(orec) and float(K.read_json(orec).get('launch_epoch', 'nan')) != old:
+            raise Refusal(f'begin-launch: the round record {orec} names launch epoch '
+                          f'{K.read_json(orec).get("launch_epoch")}, the launch file {old} - REFUSED')
+        plan['retired_to'] = os.path.join(odir, os.path.basename(p))
+        if os.path.lexists(plan['retired_to']):
+            raise Refusal(f'begin-launch: {plan["retired_to"]} exists - the launch of round {ornd} was retired already; '
+                          f'REFUSED')
+    u.meta.update(begin_launch=plan)
+    if not apply:
+        u.note(f'begin-launch (plan): {p} <- {new} ({plan["launch_utc"]}, round Run_SEARCH_QUARANTINE_{rnd})'
+               + (f'; the launch {old} moved first to {plan["retired_to"]}' if old is not None else ''))
+        return plan
+    targets = [p] + ([plan['retired_to']] if old is not None else [])
+    injected.check_all(targets, 'archive quarantine --begin-launch')
+    for t in targets:
+        if under_ops_root(t):
+            raise Refusal(f'G2: begin-launch would write {t} under paths.OPS_ROOT ({under_ops_root(t)}), which v2 never writes '
+                          f'- REFUSED')
+        if K.production_like(t) and not C.writes_allowed(ALLOW_KEY, t):
+            raise Refusal(f'G2: begin-launch would write {t} under the production tree {K.production_like(t)} and '
+                          f'paths.PRODUCTION_WRITES is False and paths.PRODUCTION_WRITES_ALLOWED does not open it to '
+                          f'{ALLOW_KEY!r} - REFUSED')
+    if old is not None:
+        os.makedirs(os.path.dirname(plan['retired_to']), exist_ok=True)
+        try:
+            os.link(p, plan['retired_to'])
+        except FileExistsError:
+            raise Refusal(f'begin-launch: {plan["retired_to"]} appeared meanwhile - REFUSED (nothing moved)')
+        os.unlink(p)
+        u.note(f'begin-launch: the launch {old} retired to {plan["retired_to"]}')
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    tmp = f'{p}.{os.uname()[1]}.{os.getpid()}.tmp'
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    try:
+        with os.fdopen(fd, 'w') as fh:
+            fh.write(f'{new!r}\n')
+            fh.flush()
+            os.fsync(fh.fileno())
+        try:
+            os.link(tmp, p)
+        except FileExistsError:
+            raise Refusal(f'begin-launch: {p} appeared meanwhile (a concurrent begin-launch) - REFUSED')
+    finally:
+        os.unlink(tmp)
+    if launch_epoch() != new:
+        raise Refusal(f'begin-launch: {p} reads back {launch_epoch()}, written {new}')
+    u.note(f'begin-launch: {p} = {new} ({plan["launch_utc"]}); round Run_SEARCH_QUARANTINE_{rnd}')
+    return plan
+
+
+def run_begin_launch(ctx, args, unit_fn):
+    """`archive quarantine --begin-launch`: one unit, begin_launch (no --cells: the launch is the fleet's)."""
+    unit_fn('begin_launch', lambda u: begin_launch(u, getattr(args, 'launch_epoch', None),
+                                                   retire=bool(getattr(args, 'retire_launch', False)),
+                                                   apply=ctx.apply and not ctx.dry),
+            describe=lambda plan: f'{plan["launch_file"]} <- {plan["launch_epoch"]} (round {plan["round"]})'
+            + (f'; the earlier launch to {plan["retired_to"]}' if plan['retired_to'] else ''))
 
 
 def run_action(ctx, items, stokes, args, unit_fn):
@@ -325,5 +416,5 @@ def ctx_log(ctx, unit):
     return p
 
 
-__all__ = ['launch_epoch', 'select_frames', 'plan_frame_quarantine', 'membership_precheck', 'quarantine_for_search',
+__all__ = ['ALLOW_KEY', 'launch_epoch', 'begin_launch', 'select_frames', 'plan_frame_quarantine', 'membership_precheck', 'quarantine_for_search',
            'quarantine_root', 'round_for', 'round_records_dir', 'round_gate', 'under_ops_root', 'NoInput']

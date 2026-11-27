@@ -805,10 +805,13 @@ def _deep_writers():
     fns = {n.name: n for n in body if isinstance(n, ast.FunctionDef)}
     fns.update({t.id: n for n in body if isinstance(n, ast.Assign) for t in n.targets if isinstance(t, ast.Name)})
     code = '\n\n'.join(ast.get_source_segment(src, fns[k]) for k in (
-        '_STRUCT_CARD', '_WCS_CARD', '_archive_root', '_archive_predecessor', 'merged_archive_header', '_archive_write_merged',
-        '_archive_frame_publish', '_write_archive_frame'))
+        '_STRUCT_CARD', '_WCS_CARD', 'SEARCH_OWNED_CARDS', 'ARCHIVE_RECORD_COLS', '_archive_root', '_archive_predecessor',
+        'merged_archive_header', 'dropped_history', '_archive_record', '_archive_write_merged', '_archive_frame_publish',
+        '_write_archive_frame'))
+    import csv
+    import fcntl
     import re
-    g = dict(os=os, re=re, np=np, fits=fits, placement=PL)
+    g = dict(os=os, re=re, np=np, fits=fits, placement=PL, time=time, csv=csv, fcntl=fcntl)
     exec(compile(code, 'deep_search.py:writers', 'exec'), g)
     return g
 
