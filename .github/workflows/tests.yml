@@ -40,6 +40,10 @@ jobs:
         run: python tests/test_sublst_wideband_perhour.py
       - name: 10-minute catalog of one night in the per-hour chain (the frozen-state gate, the item's refusals, pages of the night)
         run: python tests/test_catalog_incremental_sublst.py
+      - name: deep catalog harvest pulls each attempt's rules record (required under the check; cutover row 64)
+        run: python tests/test_catalog_harvest_rules.py
+      - name: deep catalog takes each published attempt from the omission's shared resolver, through its own state (never production's register; cutover row 64)
+        run: python tests/test_catalog_deep_resolver.py
       - name: R1 epoch header gate
         run: python tests/test_r1_epoch_header_gate.py
       - name: no memory maps (R-GREGG-20261117-NO-MMAP-OF-LUSTRE-FILES-READ-OR-WRITE)

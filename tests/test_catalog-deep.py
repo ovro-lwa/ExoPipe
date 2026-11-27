@@ -442,7 +442,9 @@ def make_world():
 _SAVED = {}
 _PATCH = (('site', 'LEGACY_CODE_ROOTS'), ('site', 'PYTHON'), ('catalog', 'COLLECT_ROOTS'), ('catalog', 'BINDING_CHECK'),
           ('paths', 'COADD_SB_ROOT'), ('paths', 'OPS_ROOT'), ('catalog_conform', 'MODE'), ('catalog_conform', 'DEEP_ELEV_EPOCH'),
-          ('catalog_grouping', 'GROUPING'), ('catalog_grouping', 'MULTIPLES_RULE'), ('catalog_grouping', 'BUILDER_SHA1'))
+          ('catalog_grouping', 'GROUPING'), ('catalog_grouping', 'MULTIPLES_RULE'), ('catalog_grouping', 'BUILDER_SHA1'),
+          ('search_run', 'COLLECT_ROOT'), ('search_run', 'REGISTER'), ('search_run', 'COLLECT_LABEL'),
+          ('search_run', 'COLLECT_ROOTS'))
 
 
 def patch_cfg():
@@ -456,6 +458,12 @@ def patch_cfg():
     CFG.catalog.BINDING_CHECK = False                   # the stubs carry no production literals (tested separately)
     CFG.paths.COADD_SB_ROOT = f'{T}/coadd_sb'
     CFG.paths.OPS_ROOT = f'{T}/ops_state'
+    # the shared resolver of published attempts (deep_omission.published_attempts) over the test world: every collect root's
+    # register (search_run.COLLECT_ROOT of any host) and production's (OPS_ROOT / search_run.REGISTER = the chain's state)
+    CFG.search_run.COLLECT_ROOT = f'{T}/collect/{LABEL.lower()}_collect_{{host}}'
+    CFG.search_run.REGISTER = f'{LABEL.lower()}_state/published_{{stokes}}.csv'
+    CFG.search_run.COLLECT_LABEL = LABEL.lower()
+    CFG.search_run.COLLECT_ROOTS = (f'{T}/collect',)
     # the chain's production path - production's conform (here its stub), as the parity file runs it; the check and the
     # pulsar stage (catalog_conform.MODE 'check', B-02 steps 2 and 4) are tested in tests/test_conform_check.py and below
     CFG.catalog_conform.MODE = getattr(sys.modules[__name__], '_MODE', 'remove')
@@ -815,11 +823,75 @@ def test_overrides_of_bound_keys_refused():
 
 
 def test_harvest_refuses_unharvested_outside_production():
+    """D-G3: a published attempt present in its collect root without its gate ledger (not harvested) is not pulled outside
+    production. A published attempt on no collect root at all is refused first, by the shared resolver ('not on disk')."""
     make_world()
+    make_attempt('05h_Red', 'I', node='nodeB', att='20300105T000000')
+    os.remove(f'{T}/collect/{LABEL.lower()}_collect_nodeB/attempts/05h_Red_I_20300105T000000/transients/Run_{LABEL}/'
+              'v_deep_ledger.csv')
     with open(f'{T}/ops_state/{LABEL.lower()}_state/published_I.csv', 'a') as f:
         f.write('05h_Red,nodeB,20300105T000000\n')
     rc, err = cli('--stages', 'harvest', expect=2)
     assert 'D-G3' in rec(f'{LABEL}.harvest')['reason']
+    with open(f'{T}/ops_state/{LABEL.lower()}_state/published_I.csv', 'a') as f:
+        f.write('05h_Blue,nodeB,20300105T000000\n')
+    rc, err = cli('--stages', 'harvest', expect=2)
+    r = rec(f'{LABEL}.harvest')['reason']
+    assert 'not settled by the shared resolver' in r and '05h_Blue Stokes I' in r and 'not on disk' in r, r[:400]
+
+
+def test_harvest_and_merge_take_the_shared_resolvers_attempt():
+    """Cutover row 64 step 2 (option (b)): the chain's harvest and merge take each (cell, Stokes)'s published attempt from THE
+    shared resolver the deep omission uses (deep_omission.published_attempts: every collect root's register and production's;
+    the newest wins; a tie or a missing attempt refuses), through the chain's own state; production's state is never written."""
+    make_world()
+    low = LABEL.lower()
+    prod = f'{T}/ops_state/{low}_state'
+
+    def snap():
+        return {os.path.relpath(os.path.join(dp, fn), prod): open(os.path.join(dp, fn), 'rb').read()
+                for dp, _d, fs in os.walk(prod) for fn in fs}
+
+    before = snap()
+    # (a) a v2 attempt registered ONLY in a collect root's register (lib/search/deep_step.register_row) is the one merged
+    _node, att, _ = make_attempt('05h_Full', 'V', node='nodeB', att='20300105T000000')
+    open(f'{T}/collect/{low}_collect_nodeB/published_V.csv', 'a').write(f'05h_Full,nodeB,{att}\n')
+    # (b) production's attempt, registered only in production's state, is still found when no register names a newer one
+    # (here an OLDER v2 attempt of 05h_23MHz Stokes I in a collect root does not displace it)
+    make_attempt('05h_23MHz', 'I', node='nodeB', att='20300103T000000')
+    open(f'{T}/collect/{low}_collect_nodeB/published_I.csv', 'a').write('05h_23MHz,nodeB,20300103T000000\n')
+    cli('--stages', 'preflight,harvest,merge', expect=0)
+    prov = {(r['cell'], r['stokes']): r['attempt_dir'] for r in rows(f'{U}/merge_provenance.csv')}
+    assert prov[('05h_Full', 'V')].endswith(f'{low}_collect_nodeB/attempts/05h_Full_V_{att}'), prov
+    for k in (('05h_Full', 'I'), ('05h_23MHz', 'V'), ('05h_23MHz', 'I')):
+        assert prov[k].endswith(f'{low}_collect_nodeA/attempts/{k[0]}_{k[1]}_20300104T000000'), (k, prov[k])
+    h = rec(f'{LABEL}.harvest')
+    assert h['meta']['resolver_appended'] == {'V': 1, 'I': 0}, h['meta'].get('resolver_appended')
+    man = {(r['cell'], r['stokes']): r for r in rows(h['meta']['harvest_manifest'])}
+    assert man[('05h_Full', 'V')]['node'] == 'nodeB' and man[('05h_Full', 'V')]['att'] == att, man[('05h_Full', 'V')]
+    assert h['meta']['state_dir'] == f'{U}/_state/{low}_state'
+    assert snap() == before, "the chain wrote production's search state"
+    # a newer attempt registered after the harvest: the merge refuses (the registers, not the harvest's copy, are read) -
+    # in a register of a collect root that did not exist at the harvest (no input of its record) by the resolver itself
+    make_attempt('05h_Full', 'V', node='nodeC', att='20300106T000000')
+    open(f'{T}/collect/{low}_collect_nodeC/published_V.csv', 'a').write('05h_Full,nodeC,20300106T000000\n')
+    cli('--stages', 'merge', expect=2)
+    r = rec(f'{LABEL}.merge')
+    assert r['status'] == 'refused' and 'by the shared resolver changed since the harvest' in r['reason'], r['reason'][:400]
+    os.remove(f'{T}/collect/{low}_collect_nodeC/published_V.csv')
+    # in a register the harvest read: its record is no longer current
+    open(f'{T}/collect/{low}_collect_nodeB/published_V.csv', 'a').write(f'05h_Full,nodeB,{att}\n')
+    cli('--stages', 'merge', expect=2)
+    r = rec(f'{LABEL}.merge')
+    assert r['status'] == 'refused' and 'published_V.csv changed since its record' in r['reason'], r['reason'][:400]
+    # (c) two registers naming DIFFERENT attempts with the same newest UTC: not settled - the harvest refuses
+    make_attempt('05h_Full', 'I', node='nodeB', att='20300104T000000')
+    open(f'{T}/collect/{low}_collect_nodeB/published_I.csv', 'a').write('05h_Full,nodeB,20300104T000000\n')
+    cli('--stages', 'harvest', expect=2)
+    r = rec(f'{LABEL}.harvest')
+    assert (r['status'] == 'refused' and 'is not settled' in r['reason'] and '05h_Full Stokes I' in r['reason']
+            and f'{low}_collect_nodeA' in r['reason'] and f'{low}_collect_nodeB' in r['reason']), r['reason'][:500]
+    assert snap() == before, "the chain wrote production's search state"
 
 
 def test_b30_unharvested_merge():
@@ -1421,7 +1493,8 @@ ORDER = ['test_help_and_dry_run', 'test_b30_code_identity_gate_refuses_a_stub_ro
          'test_preflight_refuses_missing_parent', 'test_preflight_fails_on_an_empty_parent_copy',
          'test_chain_to_fork_then_union_to_list',
          'test_stale_directory_refused_d9', 'test_changed_input_makes_records_stale', 'test_overrides_of_bound_keys_refused',
-         'test_harvest_refuses_unharvested_outside_production', 'test_b30_unharvested_merge',
+         'test_harvest_refuses_unharvested_outside_production', 'test_harvest_and_merge_take_the_shared_resolvers_attempt',
+         'test_b30_unharvested_merge',
          'test_qa_percentiles_refuse_a_table_without_counts',
          'test_merge_refresh_replaces_a_changed_attempt', 'test_merge_refusal_record_keeps_extraction_rows',
          'test_size_rule_in_the_chain', 'test_full_band_in_the_chain', 'test_b30_identity_pre_check',
