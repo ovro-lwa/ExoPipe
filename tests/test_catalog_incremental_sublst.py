@@ -80,13 +80,14 @@ def wcsv(path, hdr, rows):
 
 def omission(name='omission', nights=(NIGHT,)):
     """A deep-omission decision table (the omit stage's columns that are read) under TMP and its coverage record (the cells
-    it decides: its decision rows, one per LST and night of ``nights``): {path, sha256, cells_path, cells_sha256}."""
+    it decides: its decision rows, one per LST and night of ``nights``, each rated on one detection - a night is decided by
+    a table that rated its detections, Omission.night_refusal): {path, sha256, cells_path, cells_sha256}."""
     from exopipe.phase3.lib.catalog.wraps import builder_grouping as BG
     p = os.path.join(TMP or tmp('_tmp'), name, 'deep_omission.csv')
     if not os.path.exists(p):
         wcsv(p, ['lst', 'band', 'night', 'stokes', 'verdict', 'reason'],          # the reason: tables of other names differ
              [[f'{h:02d}h', 'Red', n, 'I', 'KEEP', name] for h in range(24) for n in nights])
-        BG.write_cells(p, {})
+        BG.write_cells(p, {(f'{h:02d}h', 'Red', n, 'I'): 1 for h in range(24) for n in nights})
     with open(p, 'rb') as f:
         sha = hashlib.sha256(f.read()).hexdigest()
     with open(BG.cells_path(p), 'rb') as f:
@@ -323,11 +324,13 @@ def test_a_night_the_table_predates_is_rated_before_its_grouping_and_never_group
     earlier = tmp('ig9_earlier')
     grouping(g, {LST: F}, nights=[(LST, earlier), (LST, out)], om='before', finished='2026-11-24T00:00:05Z')
     ou = _UnitRefusal()
-    sout = os.path.join(tmp('ig9_search_out'), 'p3s5_collect_thishost')
-    with Patch((DO, 'append_night', fake_append), (INC, '_deep_search_out', lambda: sout)):
+    site = os.path.join(tmp('ig9_search_out'), 'p3s5_collect_{host}')       # every site root of the search, whatever node
+    for h in ('nodeA', 'nodeB'):
+        os.makedirs(site.format(host=h), exist_ok=True)
+    with Patch((DO, 'append_night', fake_append), (DO._cfg().search_run, 'COLLECT_ROOT', site)):
         parent, om = INC._rate_night(ou, st, out)
     assert parent == om == before and seen['parent'] == before and (seen['lst'], seen['night']) == (LST, NIGHT), seen
-    assert seen['search_out'] == sout, seen                                  # the chain's deep search's out root (G18 reads it)
+    assert seen['search_out'] == [site.format(host=h) for h in ('nodeA', 'nodeB')], seen   # G18 reads every node's register
     assert seen['night_dir'] == out and seen['out'] == os.path.join(out, DO.APPEND_DIR), seen
     assert seen['lst_dirs'] == {LST: st['frozen_from']} and seen['night_dirs'] == {LST: [os.path.realpath(earlier)]}, seen
     grouping(g, {LST: F}, om='other', finished='2026-11-24T00:00:06Z')       # the latest grouping's table: not an append
@@ -344,7 +347,8 @@ def test_a_night_the_table_predates_is_rated_before_its_grouping_and_never_group
         data = f.read()
     with open(app, 'wb') as f:
         f.write(data + f'{LST},Red,{NIGHT},I,KEEP,before\r\n'.encode())
-    BG.write_cells(app, {(LST, 'Green', NIGHT, 'V'): 3, **{k: 0 for k in BG.Omission(before['path']).cells}})
+    rated = {k: int(n) for k, n in BG.Omission(before['path']).detections.items()}
+    BG.write_cells(app, {(LST, 'Green', NIGHT, 'V'): 3, **rated})
     V = BG.Omission(app)
     assert V.extends(before) == '' and V.night_refusal(LST, NIGHT) == ''
     def reached(*a, **k):
@@ -358,7 +362,8 @@ def test_a_night_the_table_predates_is_rated_before_its_grouping_and_never_group
     assert st2['omission'] == V.ref(), st2['omission']
     with open(app, 'wb') as f:                                               # an earlier row changed: not an append
         f.write(data.replace(b'KEEP', b'OMIT', 1) + f'{LST},Red,{NIGHT},I,KEEP,before\r\n'.encode())
-    BG.write_cells(app, {(LST, 'Green', NIGHT, 'V'): 3, **{k: 0 for k in BG.Omission(before['path']).cells}})
+    rated = {k: int(n) for k, n in BG.Omission(before['path']).detections.items()}
+    BG.write_cells(app, {(LST, 'Green', NIGHT, 'V'): 3, **rated})
     grouping(g, {LST: F}, om=None, omission_ref=BG.Omission(app).ref(), finished='2026-11-25T00:00:01Z')
     msg = raises(record.Refusal, gate, g, out, view_hours=[LST])
     assert msg.startswith('I-G8 4 frozen record(s)') and 'does not begin with the recorded table' in msg, msg
@@ -578,6 +583,13 @@ def test_the_night_records_are_tested_for_their_own_claims():
     with open(p, 'w') as f:
         json.dump(doc, f)
     assert 'holds this directory 0 time' in ' '.join(x['detail'] for x in validate.run('night_grouping_record', p))
+    doc.pop('omission', None)                                                # a record from before the omission table
+    with open(p, 'w') as f:
+        json.dump(doc, f)
+    r = validate.run('night_grouping_record', p)
+    det = ' '.join(x['detail'] for x in r)
+    assert not all(x['passed'] for x in r) and 'predates the deep-omission decision table' in det and 'group the night again' \
+        in det, det
 
 
 def test_the_night_keys_are_checked_before_the_grouping_takes_the_night():
@@ -612,6 +624,27 @@ def test_a_failed_grouping_run_leaves_the_last_done_state_standing():
         assert json.load(f)['status'] == 'refused'
     runs, _n = GS.recorded_inputs(g, 'I')
     assert runs == {LST: F}, runs
+
+
+def test_the_omit_unit_refuses_two_stokes_that_recorded_different_nights():
+    """I-G10: the omit unit takes the nights appended before (the night's rate population) from the latest grouping runs of
+    BOTH Stokes; when they differ it REFUSES, named, and rates nothing - one Stokes' list is never applied to the other."""
+    g, out = tmp('g_ig10'), tmp('n_ig10')
+    omission('before', nights=('2025-05-01',))
+    F = all_nights(os.path.join(tmp('F_ig10'), 'F'), om='before')
+    grouping(g, {LST: F}, om='before')
+    st = gate(g, out, view_hours=[LST])
+    os.makedirs(out, exist_ok=True)
+    from exopipe.phase3.lib.catalog import deep_omission as DO
+    earlier = tmp('ig10_earlier')
+    grouping(g, {LST: F}, nights=[(LST, earlier), (LST, out)], stokes=('I',), name='Run_SLSTB.group_i', om='before',
+             finished='2026-11-24T00:00:05Z')
+    grouping(g, {LST: F}, nights=[(LST, out)], stokes=('V',), name='Run_SLSTB.group_v', om='before',
+             finished='2026-11-24T00:00:06Z')
+    called = []
+    with Patch((DO, 'append_night', lambda *a, **k: called.append(1))):
+        msg = raises(_Refused, INC._rate_night, _UnitRefusal(), st, out)
+    assert msg.startswith('I-G10') and 'only in I' in msg and earlier in msg and not called, msg
 
 
 def test_a_view_index_and_a_view_root_are_tested_from_their_files():

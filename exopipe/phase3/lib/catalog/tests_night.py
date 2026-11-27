@@ -217,7 +217,9 @@ def night_grouping_record(path, **ctx):
     if not g.get('record'):
         msgs.append('the grouping run\'s record is not named')
     om = g.get('omission') or {}           # I-G9: the night was grouped under a table that decides it
-    if not (om.get('path') and om.get('sha256') and om.get('cells_sha256')):
+    if 'omission' not in g:
+        msgs.append('the record predates the deep-omission decision table (it names none): group the night again (I-G9)')
+    elif not (om.get('path') and om.get('sha256') and om.get('cells_sha256')):
         msgs.append('no deep-omission decision table named with its coverage record (I-G9)')
     else:
         from exopipe.phase3.lib.catalog.wraps import builder_grouping as BG

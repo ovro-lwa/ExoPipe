@@ -756,24 +756,32 @@ def appended_night_extends_its_parent(path, **ctx):
     why = om.night_refusal(rec.get('lst'), rec.get('night'))
     if why:
         msgs.append(why)
-    # G18: every cell of the night's detections has positive proof that the deep search ran on the night, still true of the
-    # record it names (an image row of the night in the attempt's image ledger, or a refusal row of the night in the view)
+    # G18: every cell of the night's detections, and every member subband of a band group with detections (proof_need), has
+    # positive proof that the deep search ran on the night, still true of the record it names: an image row of the night and
+    # Stokes in the attempt's image ledger, or a refusal row of the night in the view that refuses that Stokes (_covers, the
+    # gate's own mapping of gates to Stokes)
+    from exopipe.phase3.lib.catalog import deep_omission as DO
     L, N, proof = rec.get('lst'), rec.get('night'), rec.get('searched') or {}
-    for k in sorted(k for k in om.cells if (k[0], k[2]) == (L, N) and int(om.detections.get(k) or 0) > 0):
-        p = proof.get(f'{k[1]}/{k[3]}')
+    cells = {(k[1], k[3]) for k in om.cells if (k[0], k[2]) == (L, N) and int(om.detections.get(k) or 0) > 0}
+    for b, S in sorted(DO.proof_need(cells)):
+        k = f'{L}/{b}/{N}/{S}'
+        p = proof.get(f'{b}/{S}')
         if not p:
-            msgs.append(f'{"/".join(k)}: no record that the deep search ran on the night (G18)')
+            msgs.append(f'{k}: no record that the deep search ran on the night (G18)')
         elif p[0] == 'image':
             try:
                 with open(p[1], newline='') as f:
-                    ok = any(r.get('date') == N and r.get('stokes') == k[3] for r in csv.DictReader(f))
+                    ok = any(r.get('date') == N and r.get('stokes') == S for r in csv.DictReader(f))
             except OSError:
                 ok = False
             if not ok:
-                msgs.append(f'{"/".join(k)}: the image ledger {p[1]} has no Stokes {k[3]} row of {N}')
-        elif not any(any(len(r) > 2 and r[2] == N for r in _csv_rows(x)) for x in
-                     glob.glob(os.path.join(rec.get('refusals') or '', f'{L}_{k[1]}_*_excluded.csv'))):
-            msgs.append(f'{"/".join(k)}: the refusal rows it was proven by are not in {rec.get("refusals")}')
-    return _fail(msgs, len(tail or ()), f'{rec.get("lst")} {rec.get("night")}: {rec.get("appended_rows")} decision row(s) and '
-                                         f'{rec.get("appended_cells")} cell(s) appended to {rec["parent"]["path"]} '
-                                         f'(sha256 {rec["parent"]["sha256"][:12]}); earlier rows byte-identical')
+                msgs.append(f'{k}: the image ledger {p[1]} has no Stokes {S} row of {N}')
+        elif not any(any(len(r) > 2 and r[2] == N and DO._covers(x[1], r, S) for r in _csv_rows(x[0])) for x in
+                     [(q, os.path.basename(q)[len(f'{L}_{b}_'):-len('_excluded.csv')]) for q in
+                      glob.glob(os.path.join(rec.get('refusals') or '', f'{L}_{b}_*_excluded.csv'))]):
+            msgs.append(f'{k}: no refusal row of the night refusing Stokes {S} in {rec.get("refusals")} (its proof)')
+    par = rec.get('parent') or {}
+    return _fail(msgs, len(tail or ()), f'{L} {N}: {rec.get("appended_rows")} decision row(s) and {rec.get("appended_cells")} '
+                                         f'cell(s) appended to {par.get("path")} (sha256 {(par.get("sha256") or "")[:12]}); '
+                                         f'earlier rows byte-identical; every cell of the night\'s detections and its band '
+                                         f'group\'s members proven searched')

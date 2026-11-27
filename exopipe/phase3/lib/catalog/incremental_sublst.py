@@ -45,7 +45,9 @@ first that does not end done stops the item):
         and APPENDED to it as a new table version <night directory>/deep_omission/deep_omission.csv with its coverage record
         (the parent's cells plus every cell of the night's detections and decisions). Earlier verdicts are never recomputed
         (ruling (1) of R-GREGG-20261112-PER-HOUR-STEPS-SIX-RULINGS: "no for earlier verdicts (a detection removed by a gate
-        stays removed until the periodic audit pass)"). A parent that already decides the night appends nothing.
+        stays removed until the periodic audit pass)"). A parent that already rated the night's detections appends nothing.
+        I-G10: the latest grouping runs of I and V recorded different nights appended before (the rate's population) -
+        REFUSES. The night's deep record is read from the attempts the deep search published on any node (G18).
   <LST>_<arm>.group   the ONE tier-wide 10-minute grouping, incremental, filtered by the omit unit's table: I-G9, the night
         has verdicts (that table's coverage record holds the night: a night without them REFUSES, named, never kept for
         want of a verdict), and the latest grouping runs still name the omit unit's parent; its input is the latest grouping run's own (every
@@ -370,37 +372,47 @@ def _keep_last_done(gdir, gu, saved):
     return moved
 
 
-def _deep_search_out():
-    """The out root of the chain's `search --tier deep --epochs {item}` step on this host (it is given no --out; its default,
-    lib/search/deep_step.default_out): where its register and published attempts are - the night's deep record the omit unit
-    reads (deep_omission.night_deep_record)."""
-    from exopipe.phase3.lib.search import deep_step as DS
-    return DS.default_out(None)
+def _deep_search_roots():
+    """The out roots whose registers may name the attempts the chain's `search --tier deep --epochs {item}` published: it is
+    given no --out and writes to the default root of the node that ran it (lib/search/deep_step.default_out), which no record
+    of the chain names and which may be another node than this item's - so every site root of the search
+    (deep_omission.search_roots); the night's deep record the omit unit reads (deep_omission.night_deep_record) takes the
+    newest published attempt over all of them and production's register, and refuses where they do not settle it."""
+    from exopipe.phase3.lib.catalog import deep_omission as DO
+    return DO.search_roots(None)
 
 
 def _rate_night(u, st, out):
     """The omit unit (module text): the night's deep-omission verdicts, under night_lock. The table the latest grouping runs
     of both Stokes recorded NOW (another item may have appended its night since the gate) must be the gate's or an append to
     it (I-G8); the night is rated - on the deep search's record of the night, read from the attempts the chain's deep search
-    published (_deep_search_out; deep_omission.night_deep_record), and refused (G18) for a cell of its detections the search
-    has no record of running on - and appended to it as a new version in <night directory>/deep_omission
-    (deep_omission.APPEND_DIR, deep_omission.append_night), or that table, when it already decides the night. Returns (the
-    parent's ref, the ref of the table the night is grouped under)."""
+    published, on whichever node (_deep_search_roots; deep_omission.night_deep_record), and refused (G18) for a cell of its
+    detections, or a member subband of a band group with detections, the search has no record of running on - and appended to
+    it as a new version in <night directory>/deep_omission (deep_omission.APPEND_DIR, deep_omission.append_night), or that
+    table, when it already decides the night. The nights appended before (the rate population) come from the latest grouping
+    runs of both Stokes, which must agree (I-G10). Returns (the parent's ref, the ref of the table the night is grouped
+    under)."""
     GS, rec = _gs(), _rec()
     from exopipe.phase3.lib.catalog import deep_omission as DO
     gdir, lst, night = st['grouping_dir'], st['lst'], st['night']
     try:
         cur = GS.grouping_omission(gdir)
-        _runs, nd = GS.recorded_inputs(gdir, 'I')
+        nds = {S: GS.recorded_inputs(gdir, S)[1] for S in ('I', 'V')}
     except GS.StageRefusal as e:
         u.refuse(f'I-G8 the grouping {gdir} before the night\'s verdicts: {e}')
+    if nds['I'] != nds['V']:                          # the nights appended before: one list, the same for both Stokes
+        u.refuse(f'I-G10 the latest grouping runs of Stokes I and V in {gdir} recorded different nights appended before '
+                 f'(I: {len(nds["I"])}, V: {len(nds["V"])}; only in I: {sorted(set(nds["I"]) - set(nds["V"]))[:3]}, only in V: '
+                 f'{sorted(set(nds["V"]) - set(nds["I"]))[:3]}) - the night\'s rate would be judged among one Stokes\' nights '
+                 f'for both: group again')
+    nd = nds['I']
     why = cur.extends(st['omission'])
     if why:
         u.refuse(f'I-G8 the deep-omission decision table of the grouping {gdir} ({cur.path}) is neither the one the gate read '
                  f'({st["omission"]["path"]}) nor an append to it: {why}')
     before = [_real(D) for L, D in nd if L == lst and _real(D) != _real(out)]
     try:
-        summ = DO.append_night(cur.ref(), lst, night, out, os.path.join(out, DO.APPEND_DIR), search_out=_deep_search_out(),
+        summ = DO.append_night(cur.ref(), lst, night, out, os.path.join(out, DO.APPEND_DIR), search_out=_deep_search_roots(),
                                lst_dirs={lst: st['frozen_from']}, night_dirs={lst: before})
     except (rec.Refusal, DO.OmissionRefusal) as e:
         u.refuse(f'the night\'s deep-omission verdicts: {e}')

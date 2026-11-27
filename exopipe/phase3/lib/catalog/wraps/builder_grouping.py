@@ -96,6 +96,7 @@ other REFUSES until the list is made again. EXOPIPE3_FROZEN_TOUCH=all (tests): e
 night the delta must then equal the all-nights build except for the rank and the review directory.
 """
 import collections
+import copy
 import csv
 import hashlib
 import io
@@ -275,6 +276,17 @@ class Uncovered(RuntimeError):
         self.cell = cell
 
 
+_PARSED = collections.OrderedDict()     # Omission: {(path, sha256, cells_sha256): the parsed table}, this process
+_PARSED_MAX = 8
+
+
+def _ndet(v):
+    try:
+        return int(v or 0)
+    except ValueError:
+        return 0
+
+
 class Omission:
     """The 10-minute deep-omission decision table (the omit stage's deep_omission.csv; production's sublst_deep_omission.py
     table) with its coverage record (cells_path: every cell the table decides), each read ONCE (sha256 and content from the same
@@ -282,7 +294,9 @@ class Omission:
     a cell outside it - a night newer than the table, or detections other than the table's - REFUSES (fail closed) instead of
     being kept. REFUSES (Refused): a missing or unreadable table or coverage record, a table without the columns OMISSION_COLS
     or without a row, a sha256 other than ``sha256`` / ``cells_sha256`` when given, a coverage record of another table, and a
-    cell whose verdicts in the table differ from its coverage record (a decision row added, changed or removed since)."""
+    cell whose verdicts in the table differ from its coverage record (a decision row added, changed or removed since). The
+    bytes of both files are read and hashed every time (a table changed since is never taken for the recorded one); the
+    PARSE of one (path, sha256, cells_sha256) is done once per process (_PARSED, the last _PARSED_MAX tables)."""
 
     def __init__(self, path, sha256=None, cells_sha256=None):
         if not path:
@@ -291,6 +305,11 @@ class Omission:
         self.cells_path = cells_path(self.path)
         data, self.sha256 = self._read(self.path, 'decision table', sha256)
         cdata, self.cells_sha256 = self._read(self.cells_path, 'coverage record', cells_sha256)
+        key = (self.path, self.sha256, self.cells_sha256)
+        if key in _PARSED:
+            _PARSED.move_to_end(key)                     # each instance its own containers (no caller edits the cache)
+            self.__dict__.update({k: copy.copy(v) for k, v in _PARSED[key].items()})
+            return
         try:
             rows = list(csv.DictReader(io.StringIO(data.decode('utf-8'), newline='')))
             crows = list(csv.DictReader(io.StringIO(cdata.decode('utf-8'), newline='')))
@@ -325,6 +344,9 @@ class Omission:
         self.keys = {k for k, v in ver.items() if 'OMIT' in v.split(';')}
         self.lsts = sorted({k[0] for k in self.cells})
         self.decisions = len(rows)
+        _PARSED[key] = {k: copy.copy(v) for k, v in self.__dict__.items()}
+        while len(_PARSED) > _PARSED_MAX:
+            _PARSED.popitem(last=False)
 
     @staticmethod
     def _read(p, what, want):
@@ -354,8 +376,10 @@ class Omission:
         """'' when the record ``rec`` names this table and coverage record, or a table this one APPENDS to (the verdicts of
         an appended night, deep_omission.append_night): the recorded table, unchanged (its recorded sha256 and that of its
         coverage record), is a byte-for-byte prefix of this one; every cell of its coverage record is in this one with the same
-        verdicts and detections; and the rows after the prefix decide only cells it does not hold. Earlier verdicts never
-        change (ruling (1) of R-GREGG-20261112-PER-HOUR-STEPS-SIX-RULINGS). Else the reason it is neither."""
+        verdicts and detections; and the rows after the prefix decide only cells it does not hold - except the cells of a
+        night it decided on NO detection (decision rows only, no cell of the night with detections), which rows after the
+        prefix may decide (the cell's verdicts then hold its earlier ones) and which take the night's detections. Earlier
+        verdicts never change (ruling (1) of R-GREGG-20261112-PER-HOUR-STEPS-SIX-RULINGS). Else the reason it is neither."""
         rec = rec or {}
         if self.same(rec):
             return ''
@@ -368,11 +392,17 @@ class Omission:
         if not (A.data.endswith(b'\n') and self.data.startswith(A.data)):
             return (f'{self.path} (sha256 {self.sha256[:12]}) does not begin with the recorded table {A.path} (sha256 '
                     f'{A.sha256[:12]}) byte for byte: an earlier decision row changed')
-        changed = sorted(k for k in A.cells if (self._cov.get(k), self.detections.get(k)) != (A._cov[k], A.detections[k]))
+        # a night the recorded table decided on NO detection (decision rows only, deep_omission.append_night) may be rated now:
+        # its cells' rows stay in the prefix, rows of the night are appended, and its cells take the night's detections
+        rated = {(k[0], k[2]) for k, n in A.detections.items() if _ndet(n) > 0}
+        later = {k for k in A.cells if (k[0], k[2]) not in rated}
+        changed = sorted(k for k in A.cells if (self._cov.get(k), self.detections.get(k)) != (A._cov[k], A.detections[k])
+                         and not (k in later and k in self._cov
+                                  and set(A._cov[k].split(';')) - {''} <= set((self._cov[k] or '').split(';')) - {''}))
         if changed:
             return (f'{len(changed)} cell(s) of the recorded coverage record {A.cells_path} are missing or changed in '
                     f'{self.cells_path}: ' + ', '.join('/'.join(k) for k in changed[:8]) + (' ...' if len(changed) > 8 else ''))
-        late = sorted(k for k in _cell_verdicts(self.rows[A.decisions:]) if k in A.cells)
+        late = sorted(k for k in _cell_verdicts(self.rows[A.decisions:]) if k in A.cells and k not in later)
         if late:
             return (f'{len(late)} row(s) appended to the recorded table {A.path} decide cells it already decided (an earlier '
                     f'verdict changed): ' + ', '.join('/'.join(k) for k in late[:8]) + (' ...' if len(late) > 8 else ''))
@@ -400,13 +430,24 @@ class Omission:
                        + (' ...' if len(nights) > 8 else '') + ' - the table predates them or was computed on other detections '
                        '(the omit stage rates the detections grouped: --omit-lst-dir) - REFUSING')
 
+    def rated_cells(self, lst, night):
+        """The cells of night ``night`` of ``lst`` the table was computed on WITH detections (coverage record: detections > 0) -
+        a cell with a decision row only (the deep search refused it; no detection of it was rated) is not among them."""
+        return {k for k in self.cells if k[0] == lst and k[2] == night and _ndet(self.detections.get(k)) > 0}
+
     def night_refusal(self, lst, night):
-        """'' when the table decides cells of night ``night`` of ``lst``; else the refusal text: the table predates the night."""
-        if any(k[0] == lst and k[2] == night for k in self.cells):
+        """'' when the table rated detections of night ``night`` of ``lst`` (rated_cells); else the refusal text: the table
+        predates the night, or decides it on no detection (decision rows only)."""
+        if self.rated_cells(lst, night):
             return ''
-        return (f'night {night} of {lst} has no verdict: the deep-omission decision table {self.path} (sha256 {self.sha256[:12]}) '
-                f'predates it - its coverage record {self.cells_path} holds no cell of the night (the per-hour item\'s omit unit '
-                f'appends a night\'s verdicts before its grouping, deep_omission.append_night) - REFUSING')
+        rows = any(k[0] == lst and k[2] == night for k in self.cells)
+        cov = 'its coverage record ' + self.cells_path
+        return (f'night {night} of {lst} has no verdict on its detections: the deep-omission decision table {self.path} '
+                f'(sha256 {self.sha256[:12]}) ' + ('decides it on no detection - ' + cov + ' holds '
+                                           'decision rows of the night only, no rated detection' if rows else
+                                           'predates it - ' + cov + ' holds no cell of the '
+                                           'night') + ' (the per-hour item\'s omit unit appends a night\'s verdicts before its '
+                f'grouping, deep_omission.append_night) - REFUSING')
 
     def split(self, rows, what='the input', lst_of=lambda r: r.get('lst', '')):
         """(kept rows, dropped rows) of ``rows`` (dicts with cand_id; Stokes from the row's 'stokes'). Rows of cells the
