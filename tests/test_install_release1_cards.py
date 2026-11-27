@@ -19,9 +19,10 @@ wiring in lib/install/). Data-free: synthetic FITS with the full standard header
   notdewarp  a not-dewarped cell (R-GREGG-20261127-PR157-AND-18MHZ-SIBLING-CHECK-RECOMMENDATIONS-APPROVED): the dewarp-only
              cards equal the keys the dewarp apply writes (parsed from master_dewarp._apply), less MDWSTAT on a master; PASS
              with the siblings' '_mdewarp' names and those cards waived (11 per master, 12 on the PB map); a missing FLUXREF
-             or master MDWSTAT, an MDWARP T file and an '_mdewarp' file name each REFUSE; one 'applied' master, a table
-             saying applied or no MDWSTAT at all compares as before (no waiver, refused); a dewarped cell compares with '_mdewarp' siblings only, a
-             missing dewarp card refusing it
+             or master MDWSTAT, an MDWARP T file and an '_mdewarp' file name each REFUSE; a card held by every same-named
+             not-dewarped sibling stays required; one 'applied' master, a table saying applied or no MDWSTAT at all
+             compares as before (no waiver, refused); a dewarped cell compares with '_mdewarp' siblings only, a missing
+             dewarp card refusing it
   vclean     vclean_source_check (current, no VCSRC, another VCSRC, another time block); build_vclean_cell refuses a stale
              pair; refresh_vclean_cell (the sv2 clean and the data_decisions gate stubbed): a check-only call on the stale pair
              runs and writes nothing; the refresh re-cleans it - old pair quarantined with md5, new pair stamped, carded,
@@ -557,6 +558,17 @@ def test_gate_not_dewarped(fd):
     shutil.move(moved, f'{run}/14h')
     passed, lines = R1.sibling_card_gate(CELL, run, t)
     ok('not-dewarped: the layout restored passes again', passed, lines[-1])
+    d15 = f'{run}/15h/{SCOPE}'                 # a second not-dewarped LST: plain names, one card the dewarped LSTs lack
+    os.makedirs(d15)
+    for f, p in mine.items():
+        shutil.copy2(p, f'{d15}/{os.path.basename(p).replace("_LST12h_", "_LST15h_")}')
+    _set_cards(f'{d15}/{os.path.basename(victim).replace("_LST12h_", "_LST15h_")}', {'P1RUN': 'Run_20260101_030000'})
+    passed, lines = R1.sibling_card_gate(CELL, run, t)
+    ok('not-dewarped: a card every same-named not-dewarped sibling holds (P1RUN, on 15h) but the dewarped ones lack stays '
+       'required - same-named siblings stay the reference, only the dewarp-only cards are waived - REFUSED', not passed
+       and any(os.path.basename(victim) in x and 'missing 1 card keys held by all 1 repaired siblings: P1RUN' in x
+               for x in lines), [x for x in lines if x.startswith('REFUSED')] or lines[-1])
+    shutil.rmtree(f'{run}/15h')
     os.remove(keep)
 
 

@@ -46,9 +46,10 @@ GATE  sibling_card_gate (sibling_card_gate.py, exopipe_ops 2421f36 + efc3608 val
       the repair HISTORY line; no repaired sibling of that name refuses (fail closed); MDWSTAT must equal the table row; an MDWMED1
       still holding the table's uncorrected value refuses. A cell whose dewarp status card says it was NOT dewarped
       (RULING_NOT_DEWARPED; dewarp_state: every MDWSTAT 'refused: ...' / 'not attempted...', and no file named '_mdewarp' or
-      carrying MDWARP T) is compared with its siblings' names without '_mdewarp' and need not carry the dewarp-only cards
-      (dewarp_only_cards: the cards the master dewarp apply writes); every other card must still match. A not-dewarped status
-      that the MDWSTAT row, the names or MDWARP contradict refuses the cell; every other cell is compared as before.
+      carrying MDWARP T) need not carry the dewarp-only cards (dewarp_only_cards: the cards the master dewarp apply writes),
+      and a product of it with no repaired sibling of its own name is compared with the siblings of its name without
+      '_mdewarp'; every other card must still match (same-named siblings, where there are any, stay the reference). A
+      not-dewarped status that the names or MDWARP contradict refuses the cell; every other cell is compared as before.
 
 No import-time side effects; headers are read with memmap=False (R-GREGG-20261117-NO-MMAP-OF-LUSTRE-FILES-READ-OR-WRITE).
 """
@@ -84,7 +85,7 @@ SKIP = {'HISTORY', 'COMMENT', ''}                             # sibling_card_gat
 RULING_NOT_DEWARPED = 'R-GREGG-20261127-PR157-AND-18MHZ-SIBLING-CHECK-RECOMMENDATIONS-APPROVED'   # the gate's not-dewarped cells
 MDEWARP_TOKEN = '_mdewarp'                                    # the dewarp apply's name token (lib/dewarp/master_dewarp._out_name)
 DEWARP_APPLY_CARDS = ('MDWARP', 'MDWMETH', 'MDWINTP', 'MDWREF', 'MDWNANC', 'MDWCV', 'MDWMED0', 'MDWMED1', 'MDWP50', 'MDWP95',
-                      'MDWDATE', 'MDWSTAT')                   # the card keys the apply writes on every product (master_dewarp._apply)
+                      'MDWDATE', 'MDWSTAT')                   # the keys the apply writes on every product (master_dewarp._apply)
 END = 'END' + ' ' * 77
 _P2_RUN_LINE = re.compile(r' - \[PHASE2\] - INFO -\s+(\d+MHz)\s+(Run_\d{8}_\d{6})\s+\(\d+ FITS files\)\s*$')   # :460
 _P2_DIR_LINE = re.compile(r' - \[PHASE2\] - INFO - Found \d+ run\(s\) in (\S+):\s*$')                          # :461
@@ -692,9 +693,10 @@ def sibling_card_gate(cell, archive_run, mdw_table, sibling_run=None, refusals=(
     the table's 'LST band' format); a table that cannot be used refuses. ``exclude``: fnmatch patterns of archived file names
     left out (the cleaned Stokes V refresh's pre-check of every other file, before it writes). ``mdw_table``: the table path
     or the install's MDWSTAT source (mdw_rows: a cell whose value comes from its dewarp record is compared with the record's
-    value). A cell dewarp_state calls 'not dewarped' (RULING_NOT_DEWARPED) is compared with the siblings' names without
-    '_mdewarp' and need not carry the dewarp-only cards (dewarp_only_cards; one WAIVED line per file with the keys); every
-    other card must still match; a state of 'disagree' refuses the cell."""
+    value). A cell dewarp_state calls 'not dewarped' (RULING_NOT_DEWARPED) need not carry the dewarp-only cards
+    (dewarp_only_cards; one WAIVED line per file with the keys), and a product of it with no repaired sibling of its own name
+    is compared with the siblings of its name without '_mdewarp'; every other card must still match (a product that has
+    same-named siblings keeps them as its reference); a state of 'disagree' refuses the cell."""
     import fnmatch
     m = re.fullmatch(r'(\d\dh)_(\w+)', cell)
     if not m:
@@ -717,18 +719,23 @@ def sibling_card_gate(cell, archive_run, mdw_table, sibling_run=None, refusals=(
         return False, [f'SIBLING-CARD-GATE REFUSED {cell}: the dewarp status and the files disagree ({why}; fail closed, '
                        f'{RULING_NOT_DEWARPED})']
     strip = state == 'not dewarped'
-    sib = {}
+    sib, sib_stripped = {}, {}
     for f in sorted(glob.glob(f'{sibling_run}/[0-2][0-9]h/{band}/*.fits')):
         if f.split('/')[-3] == lst:
             continue
         keys, repaired, _ = header_keys(f)
         if repaired:
-            sib.setdefault(product_key(f, strip), []).append(keys)
+            sib.setdefault(product_key(f), []).append(keys)
+            if strip:
+                sib_stripped.setdefault(product_key(f, True), []).append(keys)
     exempt_of = whole_refusals(refusals)
     refused = exempt = n_waived = 0
     for f in mine:
         keys, repaired, h = own[f]
-        ref = sib.get(product_key(f, strip))
+        # a not-dewarped product with repaired siblings of its own name is compared with them as before; the siblings of its
+        # name without '_mdewarp' are its reference only where it has none, so no card but the dewarp-only ones stops being
+        # required (the larger intersection would also drop cards some dewarped siblings lack, e.g. P1RUN P2RUN SCALE_A)
+        ref = sib.get(product_key(f)) or (sib_stripped.get(product_key(f, True)) if strip else None)
         vals = value_problems(h, trow)
         if not ref:
             if f in exempt_of and not vals:
@@ -760,6 +767,7 @@ def sibling_card_gate(cell, archive_run, mdw_table, sibling_run=None, refusals=(
                  f'repaired siblings ({n_sib} sibling files read), {exempt} exempt (refused whole by the repair), and MDWSTAT / '
                  f'MDWMED1 agree with the {(trow or {}).get("mdwstat_source") or "table"} '
                  f'({"row " + repr(trow["mdwstat"][:40]) if trow else "no table row"})'
-                 + (f'; not dewarped ({why}): sibling names compared without {MDEWARP_TOKEN!r}, dewarp-only card keys waived on '
-                    f'{n_waived} files ({RULING_NOT_DEWARPED})' if strip else ''))
+                 + (f'; not dewarped ({why}): a product without a same-named sibling compared with the names without '
+                    f'{MDEWARP_TOKEN!r}, dewarp-only card keys waived on {n_waived} files ({RULING_NOT_DEWARPED})'
+                    if strip else ''))
     return True, lines
