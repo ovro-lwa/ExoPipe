@@ -370,12 +370,22 @@ def _keep_last_done(gdir, gu, saved):
     return moved
 
 
+def _deep_search_out():
+    """The out root of the chain's `search --tier deep --epochs {item}` step on this host (it is given no --out; its default,
+    lib/search/deep_step.default_out): where its register and published attempts are - the night's deep record the omit unit
+    reads (deep_omission.night_deep_record)."""
+    from exopipe.phase3.lib.search import deep_step as DS
+    return DS.default_out(None)
+
+
 def _rate_night(u, st, out):
     """The omit unit (module text): the night's deep-omission verdicts, under night_lock. The table the latest grouping runs
     of both Stokes recorded NOW (another item may have appended its night since the gate) must be the gate's or an append to
-    it (I-G8); the night is rated and appended to it as a new version in <night directory>/deep_omission (deep_omission.APPEND_DIR,
-    deep_omission.append_night), or that table, when it already decides the night. Returns (the parent's ref, the ref of the
-    table the night is grouped under)."""
+    it (I-G8); the night is rated - on the deep search's record of the night, read from the attempts the chain's deep search
+    published (_deep_search_out; deep_omission.night_deep_record), and refused (G18) for a cell of its detections the search
+    has no record of running on - and appended to it as a new version in <night directory>/deep_omission
+    (deep_omission.APPEND_DIR, deep_omission.append_night), or that table, when it already decides the night. Returns (the
+    parent's ref, the ref of the table the night is grouped under)."""
     GS, rec = _gs(), _rec()
     from exopipe.phase3.lib.catalog import deep_omission as DO
     gdir, lst, night = st['grouping_dir'], st['lst'], st['night']
@@ -390,12 +400,14 @@ def _rate_night(u, st, out):
                  f'({st["omission"]["path"]}) nor an append to it: {why}')
     before = [_real(D) for L, D in nd if L == lst and _real(D) != _real(out)]
     try:
-        summ = DO.append_night(cur.ref(), lst, night, out, os.path.join(out, DO.APPEND_DIR),
+        summ = DO.append_night(cur.ref(), lst, night, out, os.path.join(out, DO.APPEND_DIR), search_out=_deep_search_out(),
                                lst_dirs={lst: st['frozen_from']}, night_dirs={lst: before})
     except (rec.Refusal, DO.OmissionRefusal) as e:
         u.refuse(f'the night\'s deep-omission verdicts: {e}')
     u.add_input(cur.path)
     u.add_input(cur.cells_path)
+    for p in summ.get('deep_record_files') or ():      # the deep search's record of the night: image ledgers, refusal files
+        u.add_input(p)
     u.meta['omission_append'] = summ
     t = summ['table']
     if summ['status'] == 'appended':

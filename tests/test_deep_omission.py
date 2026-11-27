@@ -754,6 +754,45 @@ def test_tenmin():
             assert t['passed'], t
 
 
+def deep_attempts(sout, rdir, lsts=('05h', '06h'), drop=(), unregistered=()):
+    """The per-hour deep search's published attempts of every cell of ``lsts`` under its out root ``sout``, as it writes them
+    (lib/search/deep_step.py: <sout>/attempts/<cell>_<S>_<tag>/transients/Run_<label>/, the register <sout>/published_<S>.csv
+    of lines cell,host,tag): each attempt holds the cell's refusal files of the merged record ``rdir`` (both Stokes' rows, as
+    a search attempt writes them, the older attempt's rows above) and an image ledger with a row of every night and Stokes.
+    ``drop``: (cell, night) pairs the attempts hold no record of (no image row, no refusal row); ``unregistered``: cells with
+    no register line (no published attempt)."""
+    label = _cfg().search.RUN_LABEL
+    shutil.rmtree(sout, ignore_errors=True)
+    for S in ('I', 'V'):
+        reg = []
+        for lst in lsts:
+            for band in SUBBANDS + ('Red', 'Green'):
+                cell = f'{lst}_{band}'
+                d = os.path.join(sout, 'attempts', f'{cell}_{S}_{TAG}', 'transients', f'Run_{label}')
+                os.makedirs(os.path.join(d, 'refusals'))
+                for p in glob.glob(os.path.join(rdir, f'{cell}_*_excluded.csv')):
+                    with open(p, newline='') as f:
+                        rows = [r for r in csv.reader(f) if r and (cell, r[2]) not in drop]
+                    with open(os.path.join(d, 'refusals', os.path.basename(p)), 'w', newline='') as f:
+                        csv.writer(f).writerows(rows)
+                _wcsv(os.path.join(d, 'v_deep_images.csv'), ['lst', 'scope', 'stokes', 'date'],
+                      [dict(lst=lst, scope=band, stokes=S, date=n) for n in NIGHTS if (cell, n) not in drop])
+                if cell not in unregistered:
+                    reg.append(f'{cell},testhost,{TAG}\n')
+        with open(os.path.join(sout, f'published_{S}.csv'), 'w') as f:
+            f.writelines(reg)
+    return sout
+
+
+def _c_prop():
+    return tuple(_cfg().catalog_omission.PROPAGATE)
+
+
+def _csv_rows(p):
+    with open(p, newline='') as f:
+        return [r for r in csv.reader(f)]
+
+
 _REFUSED = object()                  # deep_omission.refuse raises core.record.Refusal in the package
 
 
@@ -762,13 +801,19 @@ def test_tenmin_append_night():
     night's rows, its coverage record without the night's cells - with that night appended (rated on an all-nights directory
     without the night plus the night's own directory) holds production's rows of the night (the full table's: run_tenmin =
     production's decide, test_tenmin), after the predating table's bytes, unchanged; its coverage record holds the night's
-    cells as the full one does; a second append appends nothing. Refusals: a parent changed since recorded, a night decided in
-    part, detections of another night, an ABSENT verdict over detections (G6)."""
+    cells as the full one does; a second append appends nothing. The night's deep refusals are read ONLY where the per-hour
+    deep search writes them (its published attempts, deep_attempts; the merged record catalog_omission.REFUSALS is absent):
+    a night with refusals there gets production's OMIT and ABSENT rows; a night searched clean gets no row and its detections
+    are kept; a cell of the night's detections the attempts hold no record of (no image row and no refusal row of the night,
+    or no published attempt) REFUSES (G18), never kept by default. Refusals: a parent changed since recorded, a night decided
+    in part, detections of another night, an ABSENT verdict over detections (G6)."""
     DO, C = _DO(), _cfg()
     from exopipe.phase3.core import validate
     from exopipe.phase3.lib.catalog.wraps import builder_grouping as BG
     root, rdir, sl, tr, frms = tenmin_world('tenmin_append')
-    with Patch((C.paths, 'SUBLST_ROOT', sl), (C.paths, 'TRANSIENTS_ROOT', tr)):
+    sout = deep_attempts(os.path.join(root, 'search_out'), rdir)            # the per-hour deep search's own record
+    with Patch((C.paths, 'SUBLST_ROOT', sl), (C.paths, 'TRANSIENTS_ROOT', tr), (C.paths, 'OPS_ROOT', os.path.join(root, 'ops')),
+               (C.catalog_omission, 'REFUSALS', os.path.join(root, 'no_merged_record'))):
         DO.run_tenmin(['05h', '06h'], os.path.join(root, 'full'), rdir=rdir, seed_dir='', frame_rms=frms)
         full = os.path.join(root, 'full', 'deep_omission.csv')
         frows, fcov = _rows(full), _rows(BG.cells_path(full))
@@ -801,7 +846,8 @@ def test_tenmin_append_night():
         par = predating('pred', L, N)
         F, D = split(L, N, 'split')
         out = os.path.join(root, 'split', 'night', DO.APPEND_DIR)
-        summ = DO.append_night(par, L, N, D, out, rdir=rdir, lst_dirs={L: F}, seed_dir='', frame_rms=frms)
+        kw = dict(search_out=sout, seed_dir='', frame_rms=frms)
+        summ = DO.append_night(par, L, N, D, out, lst_dirs={L: F}, **kw)
         new = os.path.join(out, 'deep_omission.csv')
         want = [r for r in frows if (r['lst'], r['night']) == (L, N)]
         got = _rows(new)
@@ -810,46 +856,93 @@ def test_tenmin_append_night():
         assert summ['status'] == 'appended' and summ['appended_rows'] == len(want) == per[(L, N)] > 2, summ
         assert nb.startswith(pb) and got[len(got) - len(want):] == want, 'the night\'s rows are not production\'s'
         assert {r['verdict'] for r in want} >= {'OMIT'}, want
+        # read where the per-hour search writes them: the view holds the merged record's rows of the night, nothing else
+        assert summ['refusals'] == os.path.join(out, DO.ATTEMPT_VIEW) and summ['deep_search_out'] == sout, summ
+        merged = sorted(tuple(r) for p in glob.glob(os.path.join(rdir, f'{L}_*_excluded.csv')) for r in _csv_rows(p)
+                        if r and r[2] == N and r[-1] == TAG)
+        view = sorted(tuple(r) for p in glob.glob(os.path.join(summ['refusals'], '*_excluded.csv')) for r in _csv_rows(p))
+        assert view == merged and merged, (view, merged)
+        mine = sorted({(r['lst'], r['band'], r['night'], r['stokes']) for r in fcov if (r['lst'], r['night']) == (L, N)
+                       and int(r['detections'])})
+        assert sorted(summ['searched']) == sorted(f'{k[1]}/{k[3]}' for k in mine), summ['searched']
         V = BG.Omission(new)
         assert V.extends(par) == '' and V.night_refusal(L, N) == ''
-        cov = lambda rows: {(r['lst'], r['band'], r['night'], r['stokes']): (r['verdict'], r['detections']) for r in rows
-                            if (r['lst'], r['night']) == (L, N)}
+        cov = lambda rows, l=L, n=N: {(r['lst'], r['band'], r['night'], r['stokes']): (r['verdict'], r['detections'])
+                                      for r in rows if (r['lst'], r['night']) == (l, n)}
         assert cov(_rows(BG.cells_path(new))) == cov(fcov), 'the night\'s cells differ from the full coverage record'
         for t in validate.run('omission_append', os.path.join(out, DO.APPEND_RECORD), tier='sublst'):
             assert t['passed'], t
         # a second append: nothing (the table already decides the night)
-        again = DO.append_night(V.ref(), L, N, D, os.path.join(root, 'again'), rdir=rdir, lst_dirs={L: F}, seed_dir='',
-                                frame_rms=frms)
+        again = DO.append_night(V.ref(), L, N, D, os.path.join(root, 'again'), lst_dirs={L: F}, **kw)
         assert again['status'] == 'covered' and again['table'] == V.ref() and not os.path.exists(os.path.join(root, 'again'))
         with open(new, 'rb') as g:
             assert g.read() == nb
+        # G18: a cell of the night's detections the search holds no record of (neither an image row nor a refusal row of the
+        # night), or one with no published attempt, REFUSES - nothing written; never kept by default
+        b0, s0 = mine[0][1], mine[0][3]
+        s18 = deep_attempts(os.path.join(root, 'search_out_18'), rdir, drop={(f'{L}_{b0}', N)})
+        msg = _raises(_REFUSED, DO.append_night, par, L, N, D, os.path.join(root, 'r18'), lst_dirs={L: F},
+                      **dict(kw, search_out=s18))
+        assert (msg.startswith('G18') and f'{L}_{b0} Stokes {s0}: the image ledger' in msg
+                and 'never kept by default' in msg), msg
+        assert not os.path.exists(os.path.join(root, 'r18')), 'a refused append wrote'
+        s18b = deep_attempts(os.path.join(root, 'search_out_18b'), rdir, unregistered={f'{L}_{b0}'})
+        msg = _raises(_REFUSED, DO.append_night, par, L, N, D, os.path.join(root, 'r18b'), lst_dirs={L: F},
+                      **dict(kw, search_out=s18b))
+        assert msg.startswith('G18') and f'{L}_{b0} Stokes {s0}: no published deep attempt' in msg, msg
+        # a refusal row of the night is proof too: a cell of the night's detections without its image rows of the night but with
+        # a refusal row of the night (a gate that does not propagate, so the verdicts stay production's) is proven by it
+        sref = deep_attempts(os.path.join(root, 'search_out_ref'), rdir)
+        for S in ('I', 'V'):
+            d = os.path.join(sref, 'attempts', f'{L}_{b0}_{S}_{TAG}', 'transients', f'Run_{C.search.RUN_LABEL}')
+            _wcsv(os.path.join(d, 'v_deep_images.csv'), ['lst', 'scope', 'stokes', 'date'],
+                  [r for r in _rows(os.path.join(d, 'v_deep_images.csv')) if r['date'] != N])
+            with open(os.path.join(d, 'refusals', f'{L}_{b0}_stale_input_excluded.csv'), 'a', newline='') as f:
+                csv.writer(f).writerow([L, b0, N, 'V product unreadable', TAG])
+        assert 'stale_input' not in _c_prop(), 'the proof gate must not propagate'
+        sr = DO.append_night(par, L, N, D, os.path.join(root, 'ref', DO.APPEND_DIR), lst_dirs={L: F},
+                             **dict(kw, search_out=sref))
+        assert _rows(sr['table']['path'])[len(got) - len(want):] == want, 'refusal-proven night: other rows'
+        assert sr['searched'][f'{b0}/{s0}'] == ['refusal', f'{L}_{b0} stale_input'], sr['searched']
+        # a night searched clean (06h has refusals on nights 2-3 only): no decision row, its cells covered, every detection kept
+        Nc = NIGHTS[5]
+        pc = predating('predc', '06h', Nc)
+        Fc, Dc = split('06h', Nc, 'splitc')
+        sc = DO.append_night(pc, '06h', Nc, Dc, os.path.join(root, 'splitc', 'night', DO.APPEND_DIR), lst_dirs={'06h': Fc},
+                             **kw)
+        Vc = BG.Omission(sc['table']['path'])
+        dets = _rows(os.path.join(Dc, 'master_catalog.csv'))
+        assert sc['status'] == 'appended' and sc['appended_rows'] == 0 and sc['appended_cells'] > 0 and dets, sc
+        assert not [r for r in frows if (r['lst'], r['night']) == ('06h', Nc)], 'the fixture night is not clean'
+        assert cov(_rows(BG.cells_path(sc['table']['path'])), '06h', Nc) == cov(fcov, '06h', Nc)
+        assert all(Vc.omitted(r['cand_id'], r['stokes']) is None for r in dets), 'a detection of a clean night dropped'
+        assert all(v[0] == 'image' for v in sc['searched'].values()) and Vc.extends(pc) == ''
         # refusals
         msg = _raises(_REFUSED, DO.append_night, dict(par, sha256='0' * 64), L, N, D, os.path.join(root, 'r1'),
-                      rdir=rdir, lst_dirs={L: F}, seed_dir='', frame_rms=frms)
+                      lst_dirs={L: F}, **kw)
         assert 'changed since' in msg, msg                                    # the parent changed since recorded
-        mine = sorted({(r['lst'], r['band'], r['night'], r['stokes']) for r in fcov if (r['lst'], r['night']) == (L, N)
-                       and int(r['detections'])})
         assert len(mine) >= 2, mine
         part = predating('part', L, N, extra={mine[0]: 1})
-        msg = _raises(_REFUSED, DO.append_night, part, L, N, D, os.path.join(root, 'r2'), rdir=rdir,
-                      lst_dirs={L: F}, seed_dir='', frame_rms=frms)
+        msg = _raises(_REFUSED, DO.append_night, part, L, N, D, os.path.join(root, 'r2'), lst_dirs={L: F}, **kw)
         assert msg.startswith('G15') and 'only in part' in msg and '/'.join(mine[1]) in msg, msg
         D2, O = os.path.join(root, 'other_night'), [n for n in NIGHTS if n != N][0]
         mc = _rows(os.path.join(D, 'master_catalog.csv'))
         _wcsv(os.path.join(D2, 'master_catalog.csv'), list(mc[0]),
               mc + [dict(mc[0], cand_id=f'I1_{L}_{O}T00_46MHz_9999', date=f'{O}T00', band='46MHz', stokes='I')])
-        msg = _raises(_REFUSED, DO.append_night, par, L, N, D2, os.path.join(root, 'r3'), rdir=rdir,
-                      lst_dirs={L: F}, seed_dir='', frame_rms=frms)
+        msg = _raises(_REFUSED, DO.append_night, par, L, N, D2, os.path.join(root, 'r3'), lst_dirs={L: F}, **kw)
         assert msg.startswith('G14') and f'outside the night {N} of {L}' in msg, msg
-        # G6: 05h 55 MHz night 8 is refused by the deep search with no window in the tier (ABSENT); detections there refuse
+        # 05h night 8: 55 MHz refused by the deep search (nightimage, in its attempt) with no window in the tier: ABSENT, as
+        # production; with detections there, G6 refuses
         N7 = NIGHTS[7]
         p7 = predating('pred7', '05h', N7)
         F7, D7 = split('05h', N7, 'split7')
+        s7 = DO.append_night(p7, '05h', N7, D7, os.path.join(root, 'split7', 'ok', DO.APPEND_DIR), lst_dirs={'05h': F7}, **kw)
+        w7 = [r for r in frows if (r['lst'], r['night']) == ('05h', N7)]
+        assert _rows(s7['table']['path'])[-len(w7):] == w7 and 'ABSENT' in {r['verdict'] for r in w7}, (w7, s7)
         mc = _rows(os.path.join(D7, 'master_catalog.csv'))
         _wcsv(os.path.join(D7, 'master_catalog.csv'), list(mc[0]),
               mc + [dict(mc[0], cand_id=f'I1_05h_{N7}T00_55MHz_9999', date=f'{N7}T00', band='55MHz', stokes='I')])
-        msg = _raises(_REFUSED, DO.append_night, p7, '05h', N7, D7, os.path.join(root, 'r4'), rdir=rdir,
-                      lst_dirs={'05h': F7}, seed_dir='', frame_rms=frms)
+        msg = _raises(_REFUSED, DO.append_night, p7, '05h', N7, D7, os.path.join(root, 'r4'), lst_dirs={'05h': F7}, **kw)
         assert msg.startswith('G6') and 'hold served detections' in msg, msg
 
 

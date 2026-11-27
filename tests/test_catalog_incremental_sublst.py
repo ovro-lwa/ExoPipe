@@ -323,9 +323,11 @@ def test_a_night_the_table_predates_is_rated_before_its_grouping_and_never_group
     earlier = tmp('ig9_earlier')
     grouping(g, {LST: F}, nights=[(LST, earlier), (LST, out)], om='before', finished='2026-11-24T00:00:05Z')
     ou = _UnitRefusal()
-    with Patch((DO, 'append_night', fake_append)):
+    sout = os.path.join(tmp('ig9_search_out'), 'p3s5_collect_thishost')
+    with Patch((DO, 'append_night', fake_append), (INC, '_deep_search_out', lambda: sout)):
         parent, om = INC._rate_night(ou, st, out)
     assert parent == om == before and seen['parent'] == before and (seen['lst'], seen['night']) == (LST, NIGHT), seen
+    assert seen['search_out'] == sout, seen                                  # the chain's deep search's out root (G18 reads it)
     assert seen['night_dir'] == out and seen['out'] == os.path.join(out, DO.APPEND_DIR), seen
     assert seen['lst_dirs'] == {LST: st['frozen_from']} and seen['night_dirs'] == {LST: [os.path.realpath(earlier)]}, seen
     grouping(g, {LST: F}, om='other', finished='2026-11-24T00:00:06Z')       # the latest grouping's table: not an append

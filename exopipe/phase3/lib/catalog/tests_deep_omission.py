@@ -41,6 +41,7 @@ Every test reads content and returns (passed, value, detail).
 """
 import collections
 import csv
+import glob
 import hashlib
 import json
 import math
@@ -721,6 +722,11 @@ def coverage_matches_the_table(path, **ctx):
                                     f'{om.decisions} decision rows of {table}')
 
 
+def _csv_rows(p):
+    with open(p, newline='') as f:
+        return list(csv.reader(f))
+
+
 @content_test('omission_append')
 def appended_night_extends_its_parent(path, **ctx):
     """deep_omission_append.json (deep_omission.append_night): the table beside it is the one the record names, unchanged; it
@@ -750,6 +756,24 @@ def appended_night_extends_its_parent(path, **ctx):
     why = om.night_refusal(rec.get('lst'), rec.get('night'))
     if why:
         msgs.append(why)
+    # G18: every cell of the night's detections has positive proof that the deep search ran on the night, still true of the
+    # record it names (an image row of the night in the attempt's image ledger, or a refusal row of the night in the view)
+    L, N, proof = rec.get('lst'), rec.get('night'), rec.get('searched') or {}
+    for k in sorted(k for k in om.cells if (k[0], k[2]) == (L, N) and int(om.detections.get(k) or 0) > 0):
+        p = proof.get(f'{k[1]}/{k[3]}')
+        if not p:
+            msgs.append(f'{"/".join(k)}: no record that the deep search ran on the night (G18)')
+        elif p[0] == 'image':
+            try:
+                with open(p[1], newline='') as f:
+                    ok = any(r.get('date') == N and r.get('stokes') == k[3] for r in csv.DictReader(f))
+            except OSError:
+                ok = False
+            if not ok:
+                msgs.append(f'{"/".join(k)}: the image ledger {p[1]} has no Stokes {k[3]} row of {N}')
+        elif not any(any(len(r) > 2 and r[2] == N for r in _csv_rows(x)) for x in
+                     glob.glob(os.path.join(rec.get('refusals') or '', f'{L}_{k[1]}_*_excluded.csv'))):
+            msgs.append(f'{"/".join(k)}: the refusal rows it was proven by are not in {rec.get("refusals")}')
     return _fail(msgs, len(tail or ()), f'{rec.get("lst")} {rec.get("night")}: {rec.get("appended_rows")} decision row(s) and '
                                          f'{rec.get("appended_cells")} cell(s) appended to {rec["parent"]["path"]} '
                                          f'(sha256 {rec["parent"]["sha256"][:12]}); earlier rows byte-identical')
