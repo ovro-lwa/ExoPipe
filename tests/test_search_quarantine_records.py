@@ -324,10 +324,12 @@ def test_begin_launch(launch, rnd):
     # the CLI: archive quarantine --begin-launch (no --cells), --retire-launch only with it
     co = os.path.join(T, 'cli_out')
     new4 = new2 + 86400 * 5
-    rc = cli.main(['archive', 'quarantine', '--begin-launch', '--launch-epoch', repr(new4), '--apply', '--out', co])
-    urec = json.load(open(os.path.join(co, '_records', 'archive', 'begin_launch.json')))
-    rc2 = cli.main(['archive', 'quarantine', '--begin-launch', '--cells', CELL, '--apply', '--out', co])
-    rc3 = cli.main(['archive', 'quarantine', '--retire-launch', '--cells', CELL, '--out', co])
+    rc = cli.main(['archive', 'quarantine', '--begin-launch', '--launch-epoch', repr(new4), '--apply', '--out', co,
+                   '--cores', 'none'])
+    rp = os.path.join(co, '_records', 'archive', 'begin_launch.json')
+    urec = json.load(open(rp)) if os.path.exists(rp) else {'status': 'no record'}
+    rc2 = cli.main(['archive', 'quarantine', '--begin-launch', '--cells', CELL, '--apply', '--out', co, '--cores', 'none'])
+    rc3 = cli.main(['archive', 'quarantine', '--retire-launch', '--cells', CELL, '--out', co, '--cores', 'none'])
     check('the CLI: `exopipe3 archive quarantine --begin-launch --launch-epoch E --apply` writes the launch file (unit '
           'begin_launch); --begin-launch with --cells and --retire-launch without --begin-launch refuse',
           rc == 0 and urec['status'] == 'done' and Q.launch_epoch() == new4 and rc2 != 0 and rc3 != 0
