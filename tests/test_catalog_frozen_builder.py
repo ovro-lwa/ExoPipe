@@ -637,8 +637,29 @@ def test_omission():
     rc, txt = run(d, b, sha, sel_f, 'out_d', tab, img, frozen='delta', record=recp, touch='all',
                   extra=dict(EXOPIPE3_GROUPING_OMISSION=bad, EXOPIPE3_GROUPING_OMISSION_SHA256=nsha,
                              EXOPIPE3_GROUPING_OMISSION_CELLS_SHA256=ncsha))
-    check('omission: a delta build under another decision table than its all-nights record\'s REFUSES',
-          rc == 2 and 'REFUSING' in txt and 'the all-nights build dropped the OMIT cells' in txt, (rc, txt[-300:]))
+    check('omission: a delta build under a table whose added row decides a cell of its all-nights record\'s table (an '
+          'earlier verdict changed: not an append) REFUSES',
+          rc == 2 and 'REFUSING' in txt and 'the all-nights build dropped the OMIT cells' in txt
+          and 'missing or changed' in txt and '05h/50MHz/2030-01-02/I' in txt, (rc, txt[-300:]))
+    for name, edit, ok in (('appended', lambda t: t, True),                       # a new night's row, the earlier rows kept
+                           ('rewritten', lambda t: t.replace(b',test', b',rewritten', 1), False)):  # an earlier row rewritten
+        other = f'{d}/{name}.csv'
+        with open(op, 'rb') as f, open(other, 'wb') as g:                         # bytes: the table's own line ends kept
+            g.write(edit(f.read()) + b'05h,50MHz,2031-01-01,I,beam,OMIT,a night appended\r\n')
+        rsha = hashlib.sha256(open(other, 'rb').read()).hexdigest()
+        _p, rcsha = bg.write_cells(other, {**FIXTURE_CELLS, ('05h', '46MHz', '2031-01-01', 'V'): 2})
+        rc, txt = run(d, b, sha, sel_f, f'out_{name}', tab, img, frozen='delta', record=recp, touch='all',
+                      extra=dict(EXOPIPE3_GROUPING_OMISSION=other, EXOPIPE3_GROUPING_OMISSION_SHA256=rsha,
+                                 EXOPIPE3_GROUPING_OMISSION_CELLS_SHA256=rcsha))
+        if ok:
+            check('omission: a delta build under an APPEND to its all-nights record\'s table (an appended night\'s verdicts: '
+                  'that table a byte prefix, its cells unchanged, the new rows deciding new cells only) runs and drops the '
+                  'same rows (I-G8)', rc == 0 and sorted(sources(f'{d}/out_{name}')) == sorted(sources(f'{d}/out_b')),
+                  (rc, txt[-400:]))
+        else:
+            check('omission: a delta build under a table that neither is its all-nights record\'s nor appends to it (an '
+                  'earlier row rewritten) REFUSES', rc == 2 and 'REFUSING' in txt and 'does not begin with the recorded table'
+                  in txt, (rc, txt[-300:]))
     rc, txt = run(d, b, sha, sel_f, 'out_e', tab, img, frozen='delta', record=recp, touch='all', extra=om)
     check('omission: the delta build under its record\'s table runs and drops the same rows', rc == 0
           and os.path.exists(f'{d}/{bg.OMISSION_INPUTS}/out_e.csv') and sorted(sources(f'{d}/out_e')) == sorted(sources(f'{d}/out_b')),

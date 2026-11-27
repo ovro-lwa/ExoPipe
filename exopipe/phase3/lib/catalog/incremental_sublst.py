@@ -27,32 +27,43 @@ first that does not end done stops the item):
               source_catalogs_<build>_<key>/builder_frozen.json (what each delta build reads);
         I-G8  the deep omission: the latest grouping run of each Stokes recorded a deep-omission decision table, the same
               one for both Stokes (path and sha256 of the table and of its coverage record), both unchanged now
-              (grouping_stage.grouping_omission, read once per item), and every frozen record of I-G7 names those sha256
-              (the all-nights builds dropped the same OMIT cells the grouping did). A table that differs REFUSES: the
-              frozen state stands on one omission, made again only by a new all-nights pass (FIRST_RUN). The night's
-              grouping run is filtered by that same table;
-        I-G9  the night has verdicts: the table's coverage record holds a cell of this night of this hour. A table computed
-              before the night (every appended night, until the follow-up computes verdicts for appended nights) REFUSES,
-              naming the night - never kept for want of a verdict.
+              (grouping_stage.grouping_omission, read once per item), and every frozen record of I-G7 names that table or
+              one it appends to (wraps/builder_grouping.Omission.extends: the frozen record's table, unchanged, a byte
+              prefix of it, its cells unchanged, the rows after it deciding only new cells - the verdicts of nights appended
+              since). Any other table REFUSES: the frozen state stands on one omission and the nights appended to it, made
+              again only by a new all-nights pass (FIRST_RUN).
         It ends no-input (exit 3; the chain goes on) when F's image table already holds the night: the night's 10-minute
         rows are then the all-nights pass's (a night in the window Masters, catalogued by the batch chain 'sublst-lst'),
         never appended a second time.
   <LST>_<arm>.preflight .. .veto   the NIGHT PASS (lib/catalog/tier_sublst.py with --sublst-night <date>
         --sublst-frozen-from F): the LST chain's stages on the night's rows only, read through a night view of the search
         jobs, its conformance judged by F's records. A merge that finds no row of the night ends the item no-input (exit 3).
-  <LST>_<arm>.group   the ONE tier-wide 10-minute grouping, incremental: its input is the latest grouping run's own (every
+  <LST>_<arm>.omit   the night's deep-omission verdicts (deep_omission.append_night), under the items' lock: the table the
+        latest grouping run recorded now (the gate's, or an append to it by another item since: I-G8) is the parent; the
+        night's refused cells are rated as production rates a night (sublst_deep_omission.decide, :134-225; its rate among
+        the all-nights directory's, the nights appended before and this night's detections; every threshold over every night)
+        and APPENDED to it as a new table version <night directory>/deep_omission/deep_omission.csv with its coverage record
+        (the parent's cells plus every cell of the night's detections and decisions). Earlier verdicts are never recomputed
+        (ruling (1) of R-GREGG-20261112-PER-HOUR-STEPS-SIX-RULINGS: "no for earlier verdicts (a detection removed by a gate
+        stays removed until the periodic audit pass)"). A parent that already rated the night's detections appends nothing.
+        I-G10: the latest grouping runs of I and V recorded different nights appended before (the rate's population) -
+        REFUSES. The night's deep record is read from the attempts the deep search published on any node (G18).
+  <LST>_<arm>.group   the ONE tier-wide 10-minute grouping, incremental, filtered by the omit unit's table: I-G9, the night
+        has verdicts (that table's coverage record holds the night: a night without them REFUSES, named, never kept for
+        want of a verdict), and the latest grouping runs still name the omit unit's parent; its input is the latest grouping run's own (every
         hour's all-nights directory, every night appended since, read again here) plus this night's directory, last; the run
-        writes its record in the grouping directory and this unit records it in <night directory>/night_grouping.json.
+        writes its record in the grouping directory and this unit records it in <night directory>/night_grouping.json
+        (with the table the night was grouped under; the delta builds and the cumulative read the same one).
         Earlier detections keep their identities; only the night's are assigned.
   <LST>_<arm>.build, .buildv, .view   the night pass's delta builds (this hour and every other hour a touched identity
         reaches) and the catalog view of every hour with the index hour_views.json (tier_sublst._build_delta, st_view).
-  The grouping, builds and views of one item hold <grouping directory>/.night_items.lock (night_lock): an item of another
+  The verdicts, grouping, builds and views of one item hold <grouping directory>/.night_items.lock (night_lock): an item of another
   hour waits up to catalog_sublst.NIGHT_LOCK_WAIT_S, then refuses (the grouping unit's own lock would refuse it at once).
 AN ITEM RUN AGAIN (a chain retry; the chain line passes --resume) runs the gate, then, with --resume, resumes at its first
 unit that does not stand (resume_point): before the grouping holds the night, at the first night-pass stage not done (the
 tier's own --stages gap check, tier_sublst.check_from, vouches for the stage before and restores the files later stages
-rewrite in place), else at the grouping; once the grouping holds the night from this directory, the night pass is never
-run again and group, build, buildv, view are judged by core/record.resume_check (record done, clean tree, recorded inputs,
+rewrite in place), else at the omit unit (omit and group run together, one hold of the lock); once the grouping holds the
+night from this directory, the night pass and the omit unit are never run again and group, build, buildv, view are judged by core/record.resume_check (record done, clean tree, recorded inputs,
 code and config unchanged, outputs passing their content tests now - night_grouping_record, catalog_view and
 hour_views_index fail once a later grouping run replaced the table they stand on). The units before the resume point are
 recorded skipped-valid; the gate records it (meta `resume`). Without --resume the gate REFUSES a night directory holding
@@ -77,6 +88,7 @@ import os
 import sys
 
 STAGE_GATE = 'frozen-state'
+STAGE_OMIT = 'omit'
 STAGE_GROUP = 'group'
 GATE_RECORD = 'frozen_state.json'        # in the night directory: the frozen state the night stood on
 GROUP_RECORD = 'night_grouping.json'     # in the night directory: the grouping run that took the night
@@ -250,10 +262,7 @@ def frozen_state(lst, night, arm, out, grouping_dir, builds, view_hours=None, cf
                           f'{FIRST_RUN}' +
                           ('' if view_hours else '; or name the hours to view with --sublst-view-hours (an hour left out is '
                                                  'never certified for the cumulative)'))
-    om = omission_state(grouping_dir, frozen)
-    why = om.night_refusal(lst, night)
-    if why:
-        raise rec.Refusal(f'I-G9 {why}')
+    om = omission_state(grouping_dir, frozen)    # I-G9 is the group unit's: the omit unit rates the night after its pass
     omission = om.ref()
     return dict(version=1, lst=lst, arm=arm, night=night, night_dir=_real(out), grouping_dir=_real(grouping_dir),
                 grouping=latest, frozen_from=F, hours=runs, nights_before=[list(x) for x in nights], scope=scope,
@@ -264,9 +273,9 @@ def frozen_state(lst, night, arm, out, grouping_dir, builds, view_hours=None, cf
 
 def omission_state(grouping_dir, frozen):
     """I-G8 (the module text): the Omission (read once) of the deep-omission decision table the frozen state stands on - the
-    one the latest grouping run of both Stokes recorded (grouping_stage.grouping_omission), unchanged now, and named (table
-    and coverage record) by every frozen record of ``frozen`` ({hour: {build_key: builder_frozen.json}}). Anything else raises
-    record.Refusal."""
+    one the latest grouping run of both Stokes recorded (grouping_stage.grouping_omission), unchanged now; every frozen record
+    of ``frozen`` ({hour: {build_key: builder_frozen.json}}) names it or a table it appends to (Omission.extends: the nights
+    appended since the all-nights builds). Anything else raises record.Refusal."""
     rec, GS = _rec(), _gs()
     try:
         om = GS.grouping_omission(grouping_dir)
@@ -280,11 +289,13 @@ def omission_state(grouping_dir, frozen):
                     have = json.load(f).get('omission') or {}
             except (OSError, ValueError) as e:
                 have = {'sha256': f'unreadable ({type(e).__name__})'}
-            if not om.same(have):
-                bad.append(f'{H} {name}: {str(have.get("sha256") or "no table")[:12]}')
+            why = om.extends(have)
+            if why:
+                bad.append(f'{H} {name}: {str(have.get("sha256") or "no table")[:12]} ({why})')
     if bad:
-        raise rec.Refusal(f'I-G8 {len(bad)} frozen record(s) were built under another deep-omission decision table than the '
-                          f'grouping\'s ({om.path}, sha256 {om.sha256[:12]}, coverage record {om.cells_sha256[:12]}): '
+        raise rec.Refusal(f'I-G8 {len(bad)} frozen record(s) were built under a deep-omission decision table that is neither '
+                          f'the grouping\'s ({om.path}, sha256 {om.sha256[:12]}, coverage record {om.cells_sha256[:12]}) nor one '
+                          f'it appends to: '
                           f'{", ".join(bad[:8])}{" ..." if len(bad) > 8 else ""} - the frozen state stands on one omission. '
                           f'{FIRST_RUN}')
     return om
@@ -361,10 +372,73 @@ def _keep_last_done(gdir, gu, saved):
     return moved
 
 
-def _group(run, u, st, out):
-    """The tier-wide grouping, incremental, with this night's directory appended last; its own run record in the grouping
-    directory. Records the run in out/GROUP_RECORD. Runs under night_lock: the inputs are read again here (another item may
-    have appended its night since the gate), and the all-nights directories must be the gate's."""
+def _deep_search_roots():
+    """The out roots whose registers may name the attempts the chain's `search --tier deep --epochs {item}` published: it is
+    given no --out and writes to the default root of the node that ran it (lib/search/deep_step.default_out), which no record
+    of the chain names and which may be another node than this item's - so every site root of the search
+    (deep_omission.search_roots); the night's deep record the omit unit reads (deep_omission.night_deep_record) takes the
+    newest published attempt over all of them and production's register, and refuses where they do not settle it."""
+    from exopipe.phase3.lib.catalog import deep_omission as DO
+    return DO.search_roots(None)
+
+
+def _rate_night(u, st, out):
+    """The omit unit (module text): the night's deep-omission verdicts, under night_lock. The table the latest grouping runs
+    of both Stokes recorded NOW (another item may have appended its night since the gate) must be the gate's or an append to
+    it (I-G8); the night is rated - on the deep search's record of the night, read from the attempts the chain's deep search
+    published, on whichever node (_deep_search_roots; deep_omission.night_deep_record), and refused (G18) for a cell of its
+    detections, or a member subband of a band group with detections, the search has no record of running on - and appended to
+    it as a new version in <night directory>/deep_omission (deep_omission.APPEND_DIR, deep_omission.append_night), or that
+    table, when it already decides the night. The nights appended before (the rate population) come from the latest grouping
+    runs of both Stokes, which must agree (I-G10). Returns (the parent's ref, the ref of the table the night is grouped
+    under)."""
+    GS, rec = _gs(), _rec()
+    from exopipe.phase3.lib.catalog import deep_omission as DO
+    gdir, lst, night = st['grouping_dir'], st['lst'], st['night']
+    try:
+        cur = GS.grouping_omission(gdir)
+        nds = {S: GS.recorded_inputs(gdir, S)[1] for S in ('I', 'V')}
+    except GS.StageRefusal as e:
+        u.refuse(f'I-G8 the grouping {gdir} before the night\'s verdicts: {e}')
+    if nds['I'] != nds['V']:                          # the nights appended before: one list, the same for both Stokes
+        u.refuse(f'I-G10 the latest grouping runs of Stokes I and V in {gdir} recorded different nights appended before '
+                 f'(I: {len(nds["I"])}, V: {len(nds["V"])}; only in I: {sorted(set(nds["I"]) - set(nds["V"]))[:3]}, only in V: '
+                 f'{sorted(set(nds["V"]) - set(nds["I"]))[:3]}) - the night\'s rate would be judged among one Stokes\' nights '
+                 f'for both: group again')
+    nd = nds['I']
+    why = cur.extends(st['omission'])
+    if why:
+        u.refuse(f'I-G8 the deep-omission decision table of the grouping {gdir} ({cur.path}) is neither the one the gate read '
+                 f'({st["omission"]["path"]}) nor an append to it: {why}')
+    before = [_real(D) for L, D in nd if L == lst and _real(D) != _real(out)]
+    try:
+        summ = DO.append_night(cur.ref(), lst, night, out, os.path.join(out, DO.APPEND_DIR), search_out=_deep_search_roots(),
+                               lst_dirs={lst: st['frozen_from']}, night_dirs={lst: before})
+    except (rec.Refusal, DO.OmissionRefusal) as e:
+        u.refuse(f'the night\'s deep-omission verdicts: {e}')
+    u.add_input(cur.path)
+    u.add_input(cur.cells_path)
+    for p in summ.get('deep_record_files') or ():      # the deep search's record of the night: image ledgers, refusal files
+        u.add_input(p)
+    u.meta['omission_append'] = summ
+    t = summ['table']
+    if summ['status'] == 'appended':
+        u.add_output(t['path'], 'omission_decisions', tier='sublst')
+        u.add_output(t['cells_path'], 'omission_cells', tier='sublst', decisions=t['path'])
+        u.add_output(os.path.join(os.path.dirname(t['path']), DO.APPEND_RECORD), 'omission_append', tier='sublst')
+        u.note(f'night {night} of {lst}: {summ["appended_rows"]} decision row(s) ({summ["verdicts"]}) and '
+               f'{summ["appended_cells"]} cell(s) appended to {cur.path} (sha256 {cur.sha256[:12]}) as {t["path"]} (sha256 '
+               f'{t["sha256"][:12]}); earlier rows byte-identical')
+    else:
+        u.note(f'night {night} of {lst}: the table {cur.path} (sha256 {cur.sha256[:12]}) already decides it - nothing appended')
+    return cur.ref(), t
+
+
+def _group(run, u, st, out, parent, om):
+    """The tier-wide grouping, incremental, with this night's directory appended last, filtered by ``om`` (the omit unit's
+    table: I-G9, it must decide the night); its own run record in the grouping directory. Records the run in out/GROUP_RECORD.
+    Runs under night_lock, right after the omit unit: the inputs are read again here (another item may have appended its
+    night since the gate), the all-nights directories must be the gate's, and the latest runs must still name ``parent``."""
     rec, GS = _rec(), _gs()
     lst, gdir = st['lst'], st['grouping_dir']
     now = {}
@@ -388,15 +462,20 @@ def _group(run, u, st, out):
     if not any(L == lst and D == _real(out) for L, D in nd):
         nd.append((lst, _real(out)))
     hours = sorted(runs)
-    om = st.get('omission') or {}        # I-G8, read once by the gate: the night is grouped under the gate's table
-    for S in ('I', 'V'):                  # the latest runs still name it (records only; the grouping run reads it again)
+    for S in ('I', 'V'):                  # the latest runs still name the omit unit's parent (records only)
         try:
             ref = GS.recorded_omission_ref(gdir, S)
         except GS.StageRefusal as e:
             u.refuse(f'I-G8 {e}')
-        if ref != om:
-            u.refuse(f'I-G8 the deep-omission decision table of the Stokes {S} grouping {gdir} changed since the gate read it: '
-                     f'run the item again')
+        if ref != parent:
+            u.refuse(f'I-G8 the deep-omission decision table of the Stokes {S} grouping {gdir} changed since the omit unit read '
+                     f'it: run the item again')
+    try:                                  # I-G9: the night has verdicts in the table it is grouped under
+        why = GS._bg().Omission(om['path'], om['sha256'], om['cells_sha256']).night_refusal(lst, st['night'])
+    except GS._bg().Refused as e:
+        why = str(e)
+    if why:
+        u.refuse(f'I-G9 {why}')
     gargs = argparse.Namespace(tier='sublst', stages=STAGE_GROUP, lsts=','.join(hours), run_label=None, group_input=None,
                                group_new_state=False, group_mode='incremental', group_stokes='I,V', group_omission=om['path'],
                                group_lst_dir=[f'{H}={runs[H]}' for H in hours], group_night_dir=[f'{L}={D}' for L, D in nd])
@@ -438,8 +517,8 @@ def _group(run, u, st, out):
             u.refuse(f'after the grouping run: I-G8 {e}')
         if ref != om:
             u.refuse(f'I-G8 the grouping run with the night recorded another deep-omission decision table ({ref["path"]} sha256 '
-                     f'{ref["sha256"][:12]}) than the gate read ({om["path"]} sha256 {om["sha256"][:12]})')
-    doc = dict(version=1, lst=lst, night=st['night'], grouping_dir=gdir, run_summary=summ, unit=gu[-1].name,
+                     f'{ref["sha256"][:12]}) than the omit unit\'s ({om["path"]} sha256 {om["sha256"][:12]})')
+    doc = dict(version=1, lst=lst, night=st['night'], grouping_dir=gdir, run_summary=summ, unit=gu[-1].name, omission=om,
                record=rec.record_path(gdir, 'catalog', gu[-1].name), mode='incremental', tables=tables,
                hours=runs, nights=[list(x) for x in nd], counts=gu[-1].meta.get('summary'))
     p = os.path.join(out, GROUP_RECORD)
@@ -449,9 +528,9 @@ def _group(run, u, st, out):
 
 
 def item_units():
-    """The units of an item after the gate, in order: the night pass's stages (tier_sublst.NIGHT_DEFAULT), `group`, then
-    BUILD_STAGES."""
-    return list(_ts().NIGHT_DEFAULT) + [STAGE_GROUP] + BUILD_STAGES.split(',')
+    """The units of an item after the gate, in order: the night pass's stages (tier_sublst.NIGHT_DEFAULT), `omit`, `group`,
+    then BUILD_STAGES."""
+    return list(_ts().NIGHT_DEFAULT) + [STAGE_OMIT, STAGE_GROUP] + BUILD_STAGES.split(',')
 
 
 def resume_point(run, unit, out, grouped):
@@ -478,8 +557,9 @@ def resume_point(run, unit, out, grouped):
             return s, f'{unit}.{s} is {st or "unrecorded"}', stood
         stood.append((s, 'the grouping holds the night from this directory: the night pass is not run again' if grouped
                       else 'record done (the next stage\'s --stages gap check vouches for its outputs)'))
-    if not grouped:
-        return STAGE_GROUP, 'the grouping does not hold the night yet', stood
+    if not grouped:                       # omit and group run together, under one hold of the items' lock
+        return STAGE_OMIT, 'the grouping does not hold the night yet', stood
+    stood.append((STAGE_OMIT, 'the grouping holds the night from this directory under the table it recorded'))
     stood.append((STAGE_GROUP, 'the grouping holds the night from this directory: never grouped again for no new night'))
     for s in BUILD_STAGES.split(','):
         ok, why = run.resume_check(f'{unit}.{s}', inputs=None, admitted=None)
@@ -499,6 +579,8 @@ def _skip(run, unit, stood, **meta):
 
 def _plan_lines(st, lst, night, out):
     yield f'night pass: catalog --tier sublst --lsts {lst} --sublst-night {night} --sublst-frozen-from {st["frozen_from"]} --out {out}'
+    yield (f'verdicts: the night rated and appended to the grouping\'s deep-omission decision table '
+           f'{st["omission"]["path"]} (or one appended to it since) as {os.path.join(out, "deep_omission", "deep_omission.csv")}')
     yield (f'grouping: catalog --tier sublst --stages group --group-mode incremental --out {st["grouping_dir"]} over the '
            f'{len(st["hours"])} hour(s) of the latest run + {len(st["nights_before"])} night(s) appended before + this one')
     yield f'builds and views: the night pass with --stages {BUILD_STAGES} (scope {", ".join(st["scope"])})'
@@ -615,7 +697,7 @@ def run(args, run, epochs):
         if [s for s in ran if s not in done or done[s].status != 'done']:
             return None
     bstages = [s for s in BUILD_STAGES.split(',') if units.index(s) >= i0]
-    first = STAGE_GROUP if units.index(STAGE_GROUP) >= i0 else bstages[0]
+    first = STAGE_OMIT if units.index(STAGE_OMIT) >= i0 else bstages[0]
     # 3. THE GROUPING, incremental, with the night, and 4. THE DELTA BUILDS AND THE VIEWS: one item at a time (night_lock)
     with contextlib.ExitStack() as held:
         try:
@@ -624,9 +706,13 @@ def run(args, run, epochs):
             with run.unit(f'{unit}.{first}', tier='sublst', lst=lst, arm=arm, night=night, stage=first) as u:
                 u.refuse(str(e))
             return None
-        if first == STAGE_GROUP:
+        if first == STAGE_OMIT:          # 3a. the night's verdicts, then 3b. the grouping under them (one hold of the lock)
+            with run.unit(f'{unit}.{STAGE_OMIT}', tier='sublst', lst=lst, arm=arm, night=night, stage=STAGE_OMIT) as u:
+                parent, om = _rate_night(u, st, out)
+            if u.status != 'done':
+                return None
             with run.unit(f'{unit}.{STAGE_GROUP}', tier='sublst', lst=lst, arm=arm, night=night, stage=STAGE_GROUP) as u:
-                _group(run, u, st, out)
+                _group(run, u, st, out, parent, om)
             if u.status != 'done':
                 return None
         _night_pass(run, _night_args(args, lst, night, st['frozen_from'], gdir, ','.join(bstages)), unit, ','.join(bstages))

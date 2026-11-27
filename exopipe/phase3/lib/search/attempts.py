@@ -81,14 +81,20 @@ def rows_utc(attempt_dir):
     return parse(s)['utc'] if s else None
 
 
-def register_rows(path, cell):
-    """[(host, tag)] of ``cell`` in a register published_<S>.csv (lines cell,host,tag), in file order; [] when there is none."""
+def register_lines(path):
+    """[(cell, host, tag)] of a register published_<S>.csv (lines cell,host,tag), in file order; [] when there is none - THE
+    register parser (register_rows; deep_omission.lst_deep_cells)."""
     out = []
     if not os.path.exists(path):
         return out
     with open(path) as fh:
         for line in fh:
             parts = line.strip().split(',')
-            if len(parts) >= 3 and parts[0] == cell:
-                out.append((parts[1], parts[2]))
+            if len(parts) >= 3:
+                out.append((parts[0], parts[1], parts[2]))
     return out
+
+
+def register_rows(path, cell):
+    """[(host, tag)] of ``cell`` in a register published_<S>.csv (lines cell,host,tag), in file order; [] when there is none."""
+    return [(h, t) for c, h, t in register_lines(path) if c == cell]

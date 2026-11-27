@@ -41,6 +41,7 @@ Every test reads content and returns (passed, value, detail).
 """
 import collections
 import csv
+import glob
 import hashlib
 import json
 import math
@@ -719,3 +720,68 @@ def coverage_matches_the_table(path, **ctx):
         return _fail([f'the coverage record of {table} is {om.cells_path}, not {path}'], 0, '')
     return _fail([], len(om.cells), f'{len(om.cells)} (LST, band, night, Stokes) cells, {len(om.keys)} OMIT, '
                                     f'{om.decisions} decision rows of {table}')
+
+
+def _csv_rows(p):
+    with open(p, newline='') as f:
+        return list(csv.reader(f))
+
+
+@content_test('omission_append')
+def appended_night_extends_its_parent(path, **ctx):
+    """deep_omission_append.json (deep_omission.append_night): the table beside it is the one the record names, unchanged; it
+    APPENDS to the parent table the record names (wraps/builder_grouping.Omission.extends: the parent, unchanged, a byte prefix;
+    every parent cell unchanged in the coverage record; the appended rows decide no parent cell - earlier verdicts kept,
+    ruling (1) of R-GREGG-20261112-PER-HOUR-STEPS-SIX-RULINGS); every appended row is of the record's night and LST, as many
+    as recorded; and the coverage record holds the night (I-G9)."""
+    from exopipe.phase3.lib.catalog.wraps import builder_grouping as BG
+    try:
+        with open(path) as f:
+            rec = json.load(f)
+        t = rec['table']
+        om = BG.Omission(t['path'], t['sha256'], t['cells_sha256'])
+    except (OSError, ValueError, KeyError, TypeError, BG.Refused) as e:
+        return _fail([f'{path}: {e}'], 0, '')
+    msgs = []
+    if os.path.dirname(os.path.abspath(om.path)) != os.path.dirname(os.path.abspath(path)):
+        msgs.append(f'the record names {om.path}, not the table beside it')
+    why = om.extends(rec.get('parent'))
+    if why:
+        msgs.append(f'the table does not append to its parent: {why}')
+    n_par = len(om.rows) - int(rec.get('appended_rows', -1))
+    tail = om.rows[n_par:] if 0 <= n_par <= len(om.rows) else None
+    if tail is None or any((r['lst'], r['night']) != (rec.get('lst'), rec.get('night')) for r in tail):
+        msgs.append(f'the rows after the parent are not {rec.get("appended_rows")} row(s) of the night {rec.get("night")} of '
+                    f'{rec.get("lst")}')
+    why = om.night_refusal(rec.get('lst'), rec.get('night'))
+    if why:
+        msgs.append(why)
+    # G18: every cell of the night's detections, and every member subband of a band group with detections (proof_need), has
+    # positive proof that the deep search ran on the night, still true of the record it names: an image row of the night and
+    # Stokes in the attempt's image ledger, or a refusal row of the night in the view that refuses that Stokes (_covers, the
+    # gate's own mapping of gates to Stokes)
+    from exopipe.phase3.lib.catalog import deep_omission as DO
+    L, N, proof = rec.get('lst'), rec.get('night'), rec.get('searched') or {}
+    cells = {(k[1], k[3]) for k in om.cells if (k[0], k[2]) == (L, N) and int(om.detections.get(k) or 0) > 0}
+    for b, S in sorted(DO.proof_need(cells)):
+        k = f'{L}/{b}/{N}/{S}'
+        p = proof.get(f'{b}/{S}')
+        if not p:
+            msgs.append(f'{k}: no record that the deep search ran on the night (G18)')
+        elif p[0] == 'image':
+            try:
+                with open(p[1], newline='') as f:
+                    ok = any(r.get('date') == N and r.get('stokes') == S for r in csv.DictReader(f))
+            except OSError:
+                ok = False
+            if not ok:
+                msgs.append(f'{k}: the image ledger {p[1]} has no Stokes {S} row of {N}')
+        elif not any(any(len(r) > 2 and r[2] == N and DO._covers(x[1], r, S) for r in _csv_rows(x[0])) for x in
+                     [(q, os.path.basename(q)[len(f'{L}_{b}_'):-len('_excluded.csv')]) for q in
+                      glob.glob(os.path.join(rec.get('refusals') or '', f'{L}_{b}_*_excluded.csv'))]):
+            msgs.append(f'{k}: no refusal row of the night refusing Stokes {S} in {rec.get("refusals")} (its proof)')
+    par = rec.get('parent') or {}
+    return _fail(msgs, len(tail or ()), f'{L} {N}: {rec.get("appended_rows")} decision row(s) and {rec.get("appended_cells")} '
+                                         f'cell(s) appended to {par.get("path")} (sha256 {(par.get("sha256") or "")[:12]}); '
+                                         f'earlier rows byte-identical; every cell of the night\'s detections and its band '
+                                         f'group\'s members proven searched')

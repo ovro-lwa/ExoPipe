@@ -472,6 +472,19 @@ def refusal_files(rdir, lst):
     return glob.glob(os.path.join(rdir, '%s_*_excluded.csv' % lst))
 
 
+def gate_stokes(g, r):
+    """The Stokes a deep refusal row ``r`` of gate ``g`` refuses - production's reading (sublst_deep_omission.load_refusals
+    :45-75): a searchtier row its own (its fourth field), sanity_I and sanity_V their one Stokes, every other gate both (a gate
+    with another _I / _V suffix, e.g. epochgate_V, too). THE mapping: load_refusals and the proof of G18 (_covers) use it."""
+    if g == 'searchtier':
+        return [r[3]]
+    if g == 'sanity_I':
+        return ['I']
+    if g == 'sanity_V':
+        return ['V']
+    return ['I', 'V']
+
+
 def load_refusals(rdir, lst, reader=None):
     """{(band, night, S): [(gate, value, threshold, attempt)]} of the LST's propagating refusals, the LST-band's latest attempt
     only (sublst_deep_omission.load_refusals; a row's attempt is its last field)."""
@@ -498,18 +511,10 @@ def load_refusals(rdir, lst, reader=None):
                 continue
             night = r[2]
             if gate == 'searchtier':
-                S = [r[3]]
                 val, thr = r[4], r[5]
-            elif gate == 'sanity_I':
-                S = ['I']
-                val, thr = (r[3], r[4]) if len(r) >= 6 else ('', '')
-            elif gate == 'sanity_V':
-                S = ['V']
-                val, thr = (r[3], r[4]) if len(r) >= 6 else ('', '')
             else:
-                S = ['I', 'V']
                 val, thr = (r[3], r[4]) if len(r) >= 6 else ('', '')
-            for s in S:
+            for s in gate_stokes(gate, r):
                 out[(band, night, s)].append((gate, val, thr, latest[band]))
     return out
 
@@ -739,11 +744,13 @@ class TenminRecords:
     the wideband windows' WBMEMB cards. Window-rms caches are per LST, window_rms_<LST>.csv (production's layout): the stage's
     own under ``cache_dir`` (written), production's under ``seed_dir`` (read only)."""
 
-    def __init__(self, reader, cache_dir=None, seed_dir=None, frame_rms=None, lst_dirs=None):
+    def __init__(self, reader, cache_dir=None, seed_dir=None, frame_rms=None, lst_dirs=None, night_dirs=None):
         cfg = _cfg()
         cs = cfg.catalog_sublst
         self.reader = reader
         self.lst_dirs = {k: os.path.abspath(v) for k, v in (lst_dirs or {}).items()}   # --omit-lst-dir: rated instead of the run
+        # append_night: the night directories appended to an LST's all-nights directory ({LST: [dir]}), counted with it
+        self.night_dirs = {k: [os.path.abspath(d) for d in v] for k, v in (night_dirs or {}).items()}
         self.root = cfg.paths.SUBLST_ROOT
         self.arm = cs.ARM
         self.tree = cs.TENMIN_TREE.format(root=self.root, tree=cs.ARM_TREES[self.arm])
@@ -879,14 +886,17 @@ class TenminRecords:
         return v
 
     def served(self, lst):
-        """({(band, window key, S): n served detections} of the published LST run's master_catalog.csv, run exists)."""
+        """({(band, window key, S): n served detections} of the published LST run's master_catalog.csv, run exists); with
+        night_dirs, also the master_catalog.csv of each night directory appended to the LST (what the published run holds
+        when production recomputes the table: every night)."""
         if lst not in self._served:
             f = os.path.join(self.run_dir(lst), 'master_catalog.csv')
             n = collections.defaultdict(int)
             ok = os.path.exists(f)
             if ok:
-                for r in self.reader.rows(f, 'tenmin_served', missing_ok=False):
-                    n[(r['band'], r['date'], r['stokes'])] += 1
+                for p in [f] + [os.path.join(d, 'master_catalog.csv') for d in self.night_dirs.get(lst, [])]:
+                    for r in self.reader.rows(p, 'tenmin_served', missing_ok=False):
+                        n[(r['band'], r['date'], r['stokes'])] += 1
             self._served[lst] = (n, ok)
         return self._served[lst]
 
@@ -913,14 +923,18 @@ class TenminRecords:
         return self._wbm[path]
 
 
-def decide_tenmin(lst, rdir=None, recs=None, reader=None):
-    """The 10-minute decisions of one LST (sublst_deep_omission.decide): rows in production's order and formats."""
+def decide_tenmin(lst, rdir=None, recs=None, reader=None, nights=None):
+    """The 10-minute decisions of one LST (sublst_deep_omission.decide): rows in production's order and formats. nights: the
+    refused cells of those nights only (append_night), each decided as production decides it - the thresholds over every
+    night of its band and Stokes - with the wideband consequences of those nights."""
     import numpy as np
     c = _c()
     reader = reader or (recs.reader if recs else Reader())
     recs = recs or TenminRecords(reader)
     G = groups()
     refs = load_refusals(rdir or c.REFUSALS, lst, reader)
+    if nights is not None:
+        refs = {k: v for k, v in refs.items() if k[1] in nights}
     if not refs:
         return []
     served, have_run = recs.served(lst)
@@ -2209,23 +2223,38 @@ def tenmin_cells(lsts, recs, reader):
     second input, grouping_stage.assemble_tenmin_input: a cell only it holds is covered too; a run without it is refused by
     the grouping) in recs.run_dir(LST). G13: a cand_id that does not name its cell (production's key,
     sublst_deep_omission_drop.py:43) REFUSES - a cell the coverage record cannot hold is never kept by default."""
-    from exopipe.phase3.lib.catalog.wraps import builder_grouping as BG
     n, bad = collections.Counter(), []
     for L in lsts:
-        R = recs.run_dir(L)
-        pt = [p for p in (os.path.join(R, 'pertie_detections.csv'), os.path.join(R, 'pertie', 'pertie_detections.csv'))
-              if os.path.exists(p)]
-        for p, g in [(os.path.join(R, 'master_catalog.csv'), 'tenmin_served')] + [(q, 'tenmin_pertie') for q in pt[:1]]:
-            for r in reader.rows(p, g, missing_ok=False):
-                k = BG.cell_of(r.get('cand_id'), r.get('stokes'))
-                if k is None:
-                    bad.append(f'{r.get("cand_id")!r} ({p})')
-                else:
-                    n[k] += 1
+        m, b = dir_cells(recs.run_dir(L), reader)
+        n.update(m)
+        bad += b
     if bad:
         refuse(f'G13: {len(bad)} detection(s) whose cand_id does not name its (LST, night, band) cell - the coverage record '
                f'cannot hold them: {", ".join(bad[:5])}')
     return n
+
+
+def dir_rows(D, reader):
+    """(file, row, its cell (lst, band, night, Stokes) or None) of every detection of one catalog directory: master_catalog.csv
+    and its pertie_detections.csv where present (the grouping's two inputs)."""
+    from exopipe.phase3.lib.catalog.wraps import builder_grouping as BG
+    pt = [p for p in (os.path.join(D, 'pertie_detections.csv'), os.path.join(D, 'pertie', 'pertie_detections.csv'))
+          if os.path.exists(p)]
+    for p, g in [(os.path.join(D, 'master_catalog.csv'), 'tenmin_served')] + [(q, 'tenmin_pertie') for q in pt[:1]]:
+        for r in reader.rows(p, g, missing_ok=False):
+            yield p, r, BG.cell_of(r.get('cand_id'), r.get('stokes'))
+
+
+def dir_cells(D, reader):
+    """({(lst, band, night, Stokes): number of detections}, [the cand_ids that do not name their cell]) of one catalog
+    directory's detections (dir_rows; tenmin_cells)."""
+    n, bad = collections.Counter(), []
+    for p, r, k in dir_rows(D, reader):
+        if k is None:
+            bad.append(f'{r.get("cand_id")!r} ({p})')
+        else:
+            n[k] += 1
+    return n, bad
 
 
 def tenmin_table(lsts, out_csv, rdir=None, cache_dir=None, seed_dir=None, reader=None, frame_rms=None, lst_dirs=None,
@@ -2303,6 +2332,350 @@ def run_tenmin(lsts, out, rdir=None, seed_dir=None, u=None, label='omit', frame_
         root = None if recs.lst_dirs else _cfg().paths.TRANSIENTS_ROOT      # None: the files' common path
         reader.record(u, {'refusals': rdir, 'tenmin_frames': recs.tree, 'tenmin_searched': recs.search,
                           'tenmin_served': root, 'tenmin_members': root, 'tenmin_pertie': root})
+    return summ
+
+
+APPEND_DIR = 'deep_omission'                    # in the per-hour item's night directory: the table version with the night
+APPEND_RECORD = 'deep_omission_append.json'     # beside that table: what was appended to which table, rated on what
+EARLIER_VERDICTS_RULING = ('R-GREGG-20261112-PER-HOUR-STEPS-SIX-RULINGS (1): "no for earlier verdicts (a detection removed by '
+                           'a gate stays removed until the periodic audit pass)"; Gregg: "Agreed."')
+SEARCHED_GATE = 'G18'                     # no record the deep search ran on the appended night for a cell of its detections
+ATTEMPT_VIEW = 'refusals_attempts'        # in the append's out: the night's refusal rows, as read from the deep attempts
+
+
+def _rtag(g, r):
+    """A refusal row's attempt tag (exopipe_ops p3s3_merge._rtag): the last field, except a source-extraction row's (lst, scope,
+    date, Stokes, reason, ATTEMPT, UTC time), whose tag is the sixth."""
+    return r[5] if g.startswith('extraction') and len(r) >= 7 else r[-1]
+
+
+def attempt_refusals(att, cell, label):
+    """{gate: [row]}: a deep attempt's CURRENT refusal rows of ``cell`` (exopipe_ops p3s3_merge._cur_refusals, :225-233) - the
+    rows of its newest search tag plus every drop-patch row ('<UTC>stdrop') - read where the deep search writes them,
+    <att>/transients/Run_<label>/refusals/<cell>_<gate>_excluded.csv (lib/search/deep_step.py stage_verify)."""
+    rd = os.path.join(att, 'transients', f'Run_{label}', 'refusals')
+    rows = {}
+    if os.path.isdir(rd):
+        for fn in sorted(os.listdir(rd)):
+            if fn.startswith(cell + '_') and fn.endswith('_excluded.csv'):
+                with open(os.path.join(rd, fn), newline='') as fh:
+                    rows[fn[len(cell) + 1:-len('_excluded.csv')]] = [r for r in csv.reader(fh) if r]
+    st = [_rtag(g, r) for g, rr in rows.items() for r in rr if not _rtag(g, r).endswith('stdrop')]
+    T = max(st) if st else None
+    return {g: [r for r in rr if _rtag(g, r) == T or _rtag(g, r).endswith('stdrop')] for g, rr in rows.items()}
+
+
+def cell_refusals(cell, atts, label):
+    """{gate: [row]}: production's merged refusal record of one cell (exopipe_ops p3s3_merge.py:240-258) from its published
+    attempts ``atts`` {Stokes: attempt directory}: the searchtier rows of Stokes S and the _S gates from S's attempt, the
+    night-level gates from the cell's newest attempt; every row carries the cell's newest tag (what load_refusals keeps)."""
+    from exopipe.phase3.lib.search import attempts as AT
+    tag = {}
+    for S, a in atts.items():
+        m = AT.NAME.match(os.path.basename(a.rstrip('/')))
+        if not m or (m['cell'], m['s']) != (cell, S):
+            refuse(f'{SEARCHED_GATE} {a} is not a deep attempt of {cell} Stokes {S}')
+        tag[S] = m['att'][:15]
+    cur = {S: attempt_refusals(a, cell, label) for S, a in atts.items()}
+    tags = [_rtag(g, r) for c in cur.values() for g, rr in c.items() for r in rr]
+    if not tags:
+        return {}
+    newest, Tn = max(sorted(atts), key=lambda S: tag[S]), max(tags)
+    out = {}
+    for g in sorted(set().union(*[set(c) for c in cur.values()])):
+        if g == 'searchtier':
+            rows = [r for S in sorted(cur) for r in cur[S].get(g, []) if len(r) > 3 and r[3] == S]
+        elif g[-2:] in ('_V', '_I'):
+            rows = cur.get(g[-1], {}).get(g, [])
+        else:
+            rows = cur[newest].get(g, [])
+        if rows:
+            out[g] = [r[:-1] + [Tn] for r in rows]
+    return out
+
+
+def _covers(g, r, S):
+    """Whether the refusal row ``r`` of gate ``g`` refuses Stokes ``S`` (gate_stokes, load_refusals' reading of the gates)."""
+    return not (g == 'searchtier' and len(r) <= 3) and S in gate_stokes(g, r)
+
+
+def search_roots(search_out=None):
+    """The out roots of the deep search whose registers name a night's attempts: ``search_out`` (a root or a list of roots),
+    else EVERY site root of the search (search_run.COLLECT_ROOT of any host): the chain's `search --tier deep --epochs <item>`
+    is given no --out and writes to the default root of the node that ran it (lib/search/deep_step.default_out), and the
+    per-hour catalog item may run on another node. No record of the chain names that node, so every root is read."""
+    if search_out:
+        return [os.path.abspath(p) for p in ([search_out] if isinstance(search_out, str) else search_out)]
+    return sorted(glob.glob(_cfg().search_run.COLLECT_ROOT.format(host='*')))
+
+
+def _registers(S, roots):
+    """[(register, root or None)]: the registers of Stokes ``S`` - each root's own (<root>/published_<S>.csv, deep_step.
+    register_row) and production's (paths.OPS_ROOT / search_run.REGISTER, root None: resolved over search_run.COLLECT_ROOTS)."""
+    c = _cfg()
+    return ([(os.path.join(r, f'published_{S}.csv'), r) for r in roots]
+            + [(os.path.join(c.paths.OPS_ROOT, c.search_run.REGISTER.format(stokes=S)), None)])
+
+
+def lst_deep_cells(lst, roots):
+    """The deep cells of ``lst`` the published registers list (_registers; parsed by lib/search/attempts.register_lines) - the
+    cells production's merge reads (p3s3_merge.py)."""
+    from exopipe.phase3.lib.search import attempts as AT
+    return {c for S in ('I', 'V') for p, _r in _registers(S, roots) for c, _h, _t in AT.register_lines(p)
+            if c.startswith(lst + '_')}
+
+
+def published_attempt(cell, S, roots):
+    """(the published deep attempt of (cell, Stokes S) or None, why it is not settled or ''), by the search's own rules over
+    EVERY register (_registers): a register's current row is its last (lib/search/attempts.py, deep_step._last_register_row);
+    a root's row names <root>/attempts/<cell>_<S>_<tag>, production's is resolved over search_run.COLLECT_ROOTS as
+    deep_step.resolve_published resolves it; of the registers' current attempts the NEWEST (its tag's UTC, the attempt
+    p3s3_merge.py takes as newest) is the published one. Not settled: the newest named by two registers as different attempts,
+    or not on disk. (None, '') when no register lists the cell."""
+    from exopipe.phase3.lib.search import deep_step as DS
+    sr = _cfg().search_run
+    cand = []
+    for reg, root in _registers(S, roots):
+        row = DS._last_register_row(reg, cell)
+        if not row:
+            continue
+        host, tag = row
+        dirs = ([os.path.join(root, 'attempts', f'{cell}_{S}_{tag}')] if root else
+                [os.path.join(r, f'{sr.COLLECT_LABEL}_collect_{host}', 'attempts', f'{cell}_{S}_{tag}')
+                 for r in sr.COLLECT_ROOTS])
+        cand.append((tag[:15], next((d for d in dirs if os.path.isdir(d)), None), reg, tag))
+    if not cand:
+        return None, ''
+    T = max(t for t, _d, _r, _a in cand)
+    top = [x for x in cand if x[0] == T]
+    found = {os.path.realpath(d) for _t, d, _r, _a in top if d}
+    if len(found) == 1 and all(d for _t, d, _r, _a in top):
+        return sorted(d for _t, d, _r, _a in top)[0], ''
+    return None, (f'the newest published attempt of {cell} Stokes {S} (UTC {T}) is not settled: '
+                  + '; '.join(f'{r} names {a} ({d or "not on disk"})' for _t, d, r, a in top))
+
+
+def proof_need(cells):
+    """{(band, Stokes)} that need positive proof the deep search ran on the night (G18), of the night's detection cells
+    ``cells`` {(band, Stokes)}: each of them, and for a band group's cell every member subband of the group in that Stokes
+    (groups(); catalog_omission.WIDEBAND_EXCEPT excepted: its refusals never omit the group) - a member's refusal rows give
+    the group's night its consequence rows (decide_tenmin), so a member the search has no record of on the night would leave
+    the group's detections kept by default."""
+    G, ex = groups(), set(_c().WIDEBAND_EXCEPT)
+    need = set(cells)
+    for b, S in cells:
+        need |= {(m, S) for m in G.get(b, ()) if m not in ex}
+    return need
+
+
+def night_deep_record(lst, night, need, roots, label):
+    """THE DEEP SEARCH'S RECORD OF ONE NIGHT, read where the per-hour deep search writes it (`search --tier deep --epochs
+    <LST>_<night>`, before the item's 10-minute steps in the chain): for every deep cell of ``lst`` (lst_deep_cells, plus the
+    cells of ``need``), its published attempt per Stokes (published_attempt over every register of ``roots`` and production's)
+    and the night's rows of the cell's merged refusal record (cell_refusals). ``need`` {(band, Stokes)} (proof_need): each
+    needs POSITIVE PROOF that the deep search ran on the night: an image row of the night in its attempt's image ledger
+    (v_deep_images.csv, the record the search's append gate reads, deep_step.py:741-753), or a current refusal row of the night
+    that refuses that Stokes (_covers). The absence of a refusal file is never proof. Returns (view {cell: {gate: rows}},
+    attempts {cell: {S: dir}}, proof {'<band>/<S>': [kind, path]}, missing [why] - a cell of ``need`` without proof, or any
+    cell whose published attempt is not settled -, files read [path])."""
+    from exopipe.phase3.lib.search import deep_step as DS
+    cells = lst_deep_cells(lst, roots) | {f'{lst}_{b}' for b, _S in need}
+    view, atts, files, missing = {}, {}, [], []
+    for cell in sorted(cells):
+        a = {}
+        for S in ('I', 'V'):
+            d, why = published_attempt(cell, S, roots)
+            if why:
+                missing.append(why)
+            elif d:
+                a[S] = d
+        if not a:
+            continue
+        atts[cell] = a
+        for d in a.values():
+            rd = os.path.join(d, 'transients', f'Run_{label}', 'refusals')
+            if os.path.isdir(rd):
+                files += sorted(os.path.join(rd, f) for f in os.listdir(rd)
+                                if f.startswith(cell + '_') and f.endswith('_excluded.csv'))
+        rows = {g: [r for r in rr if len(r) > 2 and r[2] == night] for g, rr in cell_refusals(cell, a, label).items()}
+        view[cell] = {g: rr for g, rr in rows.items() if rr}
+    proof = {}
+    regs = ', '.join(sorted({p for S in ('I', 'V') for p, _r in _registers(S, roots)}))
+    for band, S in sorted(need):
+        cell = f'{lst}_{band}'
+        a = atts.get(cell, {}).get(S)
+        if not a:
+            missing.append(f'{cell} Stokes {S}: no published deep attempt (no register lists one: {regs})')
+            continue
+        led = os.path.join(a, 'transients', f'Run_{label}', 'v_deep_images.csv')
+        files.append(led)
+        if any(r.get('date') == night for r in DS._image_rows(a, label, S)):
+            proof[f'{band}/{S}'] = ['image', led]
+            continue
+        hit = sorted(g for g, rr in view.get(cell, {}).items() if any(_covers(g, r, S) for r in rr))
+        if hit:
+            proof[f'{band}/{S}'] = ['refusal', f'{cell} {";".join(hit)}']
+            continue
+        missing.append(f'{cell} Stokes {S}: the image ledger {led} has no row of {night} and the attempt\'s current refusal '
+                       f'rows name none')
+    return view, atts, proof, missing, sorted(set(f for f in files if os.path.exists(f)))
+
+
+def night_dropped(night_dir, keys, why, reader):
+    """The record rows ('detection', TENMIN_RECORD_COLS) of an appended night's detections the omission drops: each detection
+    of the night directory (dir_rows: master_catalog.csv, then its pertie_detections.csv; once per cand_id and Stokes) whose
+    cell is in ``keys`` {(lst, band, night, Stokes)}, with the cell's 'why' (why_of). The night is not grouped yet (the omit
+    unit runs before the grouping, which drops these before it groups: wraps/builder_grouping.omission_input), so a row names
+    no view and no source."""
+    out, seen = [], set()
+    for p, r, k in dir_rows(night_dir, reader):
+        if k in keys and (r.get('cand_id'), k[3]) not in seen:
+            seen.add((r.get('cand_id'), k[3]))
+            out.append(dict(kind='detection', lst=k[0], stokes=k[3], view='', source_id='', band=k[1],
+                            cand_id=r.get('cand_id'), night=k[2], why=why.get(k + ('10min',), ''),
+                            detail=f'not grouped yet ({os.path.basename(p)})'))
+    return out
+
+
+NIGHT_REJUDGE = ('none at the omit unit: the night is not grouped yet - its OMIT detections are dropped before the grouping '
+                 '(wraps/builder_grouping.omission_input) and earlier sources keep their members (EARLIER_VERDICTS_RULING), so '
+                 'no source is a partial survivor here; a source the night\'s grouping builds is judged by the build on the '
+                 'detections it keeps (design B), which records no count of the sources so removed')
+
+
+def append_night(parent, lst, night, night_dir, out, search_out=None, label=None, lst_dirs=None, night_dirs=None,
+                 seed_dir=None, frame_rms=None, reader=None):
+    """THE VERDICTS OF AN APPENDED NIGHT (the per-hour 10-minute item's omit unit, lib/catalog/incremental_sublst.py): the
+    night ``night`` of ``lst``, its detections in ``night_dir`` (master_catalog.csv, pertie_detections.csv), rated as
+    production rates a night (sublst_deep_omission.decide :134-225): the deep search's refusals of the night (load_refusals
+    :45-75 over the night's record as the per-hour deep search wrote it, night_deep_record: its attempts by the registers of
+    ``search_out`` - default every site root of the search, search_roots - and production's, each cell's record merged as
+    p3s3_merge.py merges it; the merged record catalog_omission.REFUSALS is not read for the night), the windows the
+    tier searched (tier_windows :76-98), their central rms
+    (window_rms :99-123) and the served rate (served_counts :124-131: here the detections of the LST's all-nights directory
+    ``lst_dirs[lst]``, of every night appended to it before, ``night_dirs[lst]``, and of this night - what the published run
+    holds when production recomputes the table), each threshold over every night of the band and Stokes, as in production.
+    The night's rows are APPENDED to the decision table ``parent`` (a ref {path, sha256, cells_sha256} or a path) as a new
+    version <out>/deep_omission.csv: the parent's bytes unchanged, then the night's rows in production's order and format;
+    its coverage record holds the parent's cells unchanged plus every cell of the night's detections and decisions; <out>/
+    APPEND_RECORD says what was appended to which table. EARLIER VERDICTS ARE KEPT, never recomputed (EARLIER_VERDICTS_RULING),
+    even where the night moves a threshold. A night the parent RATED (a cell of the night with detections in its coverage
+    record) appends nothing: the parent is the night's table, nothing is written. A night the parent decides on no detection
+    (decision rows only: the deep search refused it before the tier rated a detection of it) is rated now; its rows are
+    appended after the parent's, which stay (a cell's verdicts are then the union, as for two rows of one cell in production's
+    table: wraps/builder_grouping.Omission). Beside the table: deep_omission_dropped.csv, the night's detections the table
+    drops (night_dropped; production's record columns), and in the record the re-judging (NIGHT_REJUDGE: none here, the night
+    is not grouped yet). REFUSES (OmissionRefusal): the parent's own refusals (wraps/builder_grouping.Omission: changed since
+    recorded, coverage record of another table, ...); G14 no detection in night_dir, or one outside the night of lst, or one
+    whose cand_id does not name its cell; G15 a night the parent rated in part only (rated before on other detections); G12
+    (tenmin_rule_check) the LST's 10-minute search jobs not searched under the configured size rule; G18 (SEARCHED_GATE) a
+    cell of the night's detections, or a member subband of a band group with detections (proof_need), without positive proof
+    that the deep search ran on the night (night_deep_record: no published attempt, or neither an image row nor a refusal row
+    of the night), or a cell of the LST whose published attempt the registers do not settle - such a night is never kept by
+    default; G2 no all-nights detections of lst; G1 an injected run's attempt; G6 (absent_gate) an ABSENT verdict over served
+    detections; G17 a row the parent's columns cannot hold. Returns the summary (status 'appended' or 'covered'; 'table' = the
+    ref of the night's table)."""
+    from exopipe.phase3.lib.catalog.wraps import builder_grouping as BG
+    from exopipe.phase3.core import placement
+    c = _c()
+    reader = reader or Reader()
+    ref = parent if isinstance(parent, dict) else dict(path=parent)
+    try:
+        P = BG.Omission(ref.get('path'), ref.get('sha256'), ref.get('cells_sha256'))
+    except BG.Refused as e:
+        refuse(f'the decision table the night is appended to: {e}')
+    night_dir = os.path.abspath(night_dir)
+    mine, bad = dir_cells(night_dir, reader)
+    other = sorted(k for k in mine if (k[0], k[2]) != (lst, night))
+    if bad or other or not mine:
+        refuse(f'G14 {night_dir}: ' + ('no detection of the night' if not (bad or other or mine) else
+                                       f'{len(bad) + len(other)} detection cell(s) outside the night {night} of {lst} or not '
+                                       f'named by their cand_id: ' + ', '.join(bad[:3] + ['/'.join(k) for k in other[:5]])))
+    rated = P.rated_cells(lst, night)                 # the night's cells the parent was computed on with detections
+    base = dict(lst=lst, night=night, night_dir=night_dir, parent=P.ref())
+    if rated:
+        miss = sorted(set(mine) - rated)
+        if miss:
+            refuse(f'G15 the table {P.path} rated the night {night} of {lst} only in part: {len(miss)} cell(s) of the '
+                   f'night\'s detections are not among the cells it rated detections of '
+                   f'({", ".join("/".join(k) for k in miss[:8])}) - the night was rated before on other detections; an earlier '
+                   f'verdict is never recomputed ({EARLIER_VERDICTS_RULING})')
+        return dict(base, status='covered', table=P.ref(), appended_rows=0, appended_cells=0)
+    prior = sum(1 for r in P.rows if (r['lst'], r['night']) == (lst, night))   # decision rows of the night on no detection
+    t0 = time.time()
+    rules = tenmin_rule_check([lst])                  # G12: the LST's jobs searched under the configured size rule
+    roots = search_roots(search_out)
+    label = label or _cfg().search.RUN_LABEL
+    need = proof_need({(k[1], k[3]) for k in mine})
+    view, atts, proof, missing, files = night_deep_record(lst, night, need, roots, label)
+    if missing:
+        refuse(f'{SEARCHED_GATE} no record that the deep search ran on the night {night} of {lst} for {len(missing)} '
+               f'cell(s) of the night\'s detections or their band groups\' members: ' + '; '.join(missing[:6])
+               + (f' (+{len(missing) - 6} more)' if len(missing) > 6 else '')
+               + ' - a night the deep search did not search is never kept by default')
+    for a in sorted({d for v in atts.values() for d in v.values()}):
+        injected_record_gate(a)                       # G1: an ordinary run never takes its decisions from an injected run's
+    rdir = os.path.join(out, ATTEMPT_VIEW)            # the night's rows, written for load_refusals (the unit's own output)
+    if os.path.isdir(rdir):
+        shutil.rmtree(rdir)
+    os.makedirs(rdir)
+    for cell, gates in sorted(view.items()):
+        for g, rr in sorted(gates.items()):
+            with placement.atomic(os.path.join(rdir, f'{cell}_{g}_excluded.csv')) as tmp, open(tmp, 'w', newline='') as fh:
+                csv.writer(fh, lineterminator='\n').writerows(rr)
+    seed_dir = c.TENMIN_RMS_CACHE_SEED if seed_dir is None else (seed_dir or None)
+    nd = [os.path.abspath(d) for d in (night_dirs or {}).get(lst, []) if os.path.abspath(d) != night_dir] + [night_dir]
+    recs = TenminRecords(reader, cache_dir=os.path.join(out, 'cache'), seed_dir=seed_dir, frame_rms=frame_rms,
+                         lst_dirs=lst_dirs, night_dirs={lst: nd})
+    if not os.path.exists(os.path.join(recs.run_dir(lst), 'master_catalog.csv')):
+        refuse(f'G2: no 10-minute detections {recs.run_dir(lst)}/master_catalog.csv for {lst} (the all-nights directory the '
+               f'night\'s rate is judged among)')
+    rows = decide_tenmin(lst, rdir=rdir, recs=recs, reader=reader, nights={night})
+    absent = absent_gate(rows, tenmin_served_of(recs))
+    dec = {(r['lst'], r['band'], r['night'], r['stokes']) for r in rows}
+    if any((k[0], k[2]) != (lst, night) for k in dec):           # decide_tenmin(nights=) returns the night's rows only
+        refuse(f'G14 rows of another night rated for the night {night} of {lst}: {sorted(dec)[:3]}')
+    data = P.data
+    hdr = next(csv.reader(io.StringIO(data.decode('utf-8'), newline='')))
+    buf = io.StringIO(newline='')
+    w = csv.DictWriter(buf, fieldnames=hdr)
+    for r in rows:
+        r = dict(r, rate_definition=TENMIN_RATE_DEF)
+        if set(r) != set(hdr):
+            refuse(f'G17 the table {P.path} has the columns {hdr}; the night\'s rows have {list(r)} - they cannot be appended '
+                   f'byte for byte')
+        w.writerow(r)
+    if not data.endswith(b'\n'):
+        refuse(f'G17 the table {P.path} does not end with a whole row: the night\'s rows cannot be appended to it')
+    os.makedirs(out, exist_ok=True)
+    table = os.path.join(out, 'deep_omission.csv')
+    with placement.atomic(table) as tmp, open(tmp, 'wb') as fh:
+        fh.write(data + buf.getvalue().encode('utf-8'))
+    counts = {k: int(v or 0) for k, v in P.detections.items()}
+    counts.update(mine)
+    BG.write_cells(table, counts)
+    try:
+        V = BG.Omission(table)
+    except BG.Refused as e:
+        refuse(f'the appended table {table}: {e}')
+    why = V.extends(P.ref()) or V.night_refusal(lst, night)
+    if why:
+        refuse(f'the appended table {table} does not extend {P.path} with the night: {why}')
+    keys = {k for k in V.keys if (k[0], k[2]) == (lst, night)}
+    dropped = night_dropped(night_dir, keys, why_of([r for r in V.rows if (r['lst'], r['night']) == (lst, night)]), reader)
+    write_record(os.path.join(out, 'deep_omission_dropped.csv'), dropped, TENMIN_RECORD_COLS)
+    g78, _env, g_rule = tenmin_size_gate()
+    summ = dict(base, status='appended', table=V.ref(), appended_rows=len(rows), appended_cells=len(V.cells - P.cells),
+                parent_rows_of_night=prior, verdicts=dict(collections.Counter(r['verdict'] for r in rows)),
+                omit_keys=len(V.keys - P.keys), detections=sum(mine.values()), omitted=len(dropped),
+                dropped=os.path.join(out, 'deep_omission_dropped.csv'), rejudged=None, rejudge=NIGHT_REJUDGE,
+                rejudge_size_gate=dict(rule=g_rule, gate_beams=str(g78), lst_rules=rules),
+                absent_with_served=len(absent), refusals=os.path.abspath(rdir),
+                deep_search_roots=roots, deep_attempts=atts, searched=proof, deep_record_files=files,
+                rated_on=dict(lst_dir=recs.run_dir(lst), night_dirs=nd), window_rms=dict(sorted(recs.n.items())),
+                rms_cache_seed=seed_dir, earlier_verdicts=EARLIER_VERDICTS_RULING, seconds=round(time.time() - t0, 1))
+    with placement.atomic(os.path.join(out, APPEND_RECORD)) as tmp, open(tmp, 'w') as fh:
+        json.dump(dict(summ, version=1), fh, indent=1, sort_keys=True)
     return summ
 
 

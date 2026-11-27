@@ -444,7 +444,8 @@ class runner(_Section):
                   # the batch chain 'sublst-lst''s (Gregg 2026-11-13). `catalog --tier sublst --incremental` (lib/catalog/
                   # incremental_sublst.py): a gate on the frozen all-nights state (it REFUSES, and the item stops, until the
                   # first all-nights design-B pass has written it; no-input when the night is in that pass), the night
-                  # pass, the incremental grouping with the night, the delta builds and views (design 2.2a, 2.3a stage 1-2).
+                  # pass, the night's deep-omission verdicts appended to the table (omit unit), the incremental grouping
+                  # with the night, the delta builds and views (design 2.2a, 2.3a stage 1-2).
                   'frames --tier sublst --stages nonmember-list,stack,nonmember --epochs {item}',
                   'flow --tier sublst --stages refine-nonmember --epochs {item}',
                   'frames --tier sublst --stages wideband,tree-nonmember --epochs {item}',
