@@ -1,6 +1,7 @@
 """`exopipe3 forced --tier snapshot --stages wide_jobs,wide_search,wide_test,wide_publish` (family W) and `--stages activity`
 (family N): the two inputs of the astrometry figure v2 that analysis scripts made - the forced targets' wide-area burst test
-(forced_wide_v3.csv in each of the 4 tested forced runs, Run_SNAPFORCED_{I,V}{10s,1min}_gen5; astrometry_assoc.V3_MAP) and
+(forced_wide_v3.csv in each of the 4 tested forced runs, Run_SNAPFORCED_{I,V}{10s,1min}_<generation> - wide_jobs.run_name,
+gen6 since 2026-11-27, production's last test gen5; astrometry_assoc.V3_MAP) and
 the night-activity table (astrometry_assoc.night_act). Spec
 docs/specs/forced_wide.md. Campaign stages (no per-hour form), named only (never a default), one family per invocation.
 
@@ -344,6 +345,90 @@ def gate_cutout_root(c):
         raise Refusal('W-CUTROOT the cutout root %s is not readable on %s' % (c.cutout_root, K.hostname()))
 
 
+def cutout_generation(root, cfg):
+    """The generation a cutout root names: its directory name (else its real path's) against photometry_campaign.
+    CUTOUT_ROOT_FMT's ('photometry_gen5' -> 'gen5'), None when it names none (a copy under another name)."""
+    import re
+    cc = cfg.photometry_campaign
+    pre, _, post = os.path.basename(cc.CUTOUT_ROOT_FMT).partition('{generation}')
+    gre = cc.GENERATION_RE.strip('^$')
+    for r in (os.path.abspath(root), os.path.realpath(root)):
+        m = re.fullmatch(re.escape(pre) + '(' + gre + ')' + re.escape(post), os.path.basename(r.rstrip('/')))
+        if m:
+            return m.group(1)
+    return None
+
+
+def stage1_minute_bases(stage1):
+    """{minute_basis: [n files, an example]} of a stage-1 directory: the first forced_*.npz (sorted) of each cell directory,
+    its 'minute_basis' member ('' = none; the npz read with allow_pickle=False, no memory map); None when the directory is
+    absent or holds no npz."""
+    import numpy as np
+    if not os.path.isdir(stage1):
+        return None
+    out = {}
+    for cell in sorted(os.listdir(stage1)):
+        d = os.path.join(stage1, cell)
+        if not os.path.isdir(d):
+            continue
+        npz = sorted(f for f in os.listdir(d) if f.startswith('forced_') and f.endswith('.npz'))
+        if not npz:
+            continue
+        p = os.path.join(d, npz[0])
+        with np.load(p, allow_pickle=False) as z:
+            mb = str(z['minute_basis']) if 'minute_basis' in z.files else ''
+        out.setdefault(mb, [0, p])[0] += 1
+    return out or None
+
+
+def minute_rule(c):
+    """(rule, how): the 1-minute blocks' minute rule of the cutouts SEARCHED (W-MINUTE) - the minute_basis the stage-1 npz of
+    the cutout root's generation record (<photometry.OUT_ROOT[snapshot]>/<photometry_campaign.STAGE1_DIR_FMT>, one npz per
+    cell; forced_wide_search.MINUTE_BASIS_RULE: none = 'filename', gen5; integration-midpoint-dateobs-v1 = 'midpoint', gen6),
+    else the generation's rule (MINUTE_RULE_OF_GENERATION). Refuses a stage 1 of mixed or unknown bases, a basis that
+    contradicts the generation's rule, a configured MINUTE_RULE that differs from the inputs', and a root whose rule
+    neither names (a copy under another name) unless MINUTE_RULE is configured."""
+    ws, cfg = c.ws, c.cfg
+    rules = sorted(set(ws.MINUTE_BASIS_RULE.values()))
+    if ws.MINUTE_RULE is not None and ws.MINUTE_RULE not in rules:
+        raise Refusal('W-MINUTE forced_wide_search.MINUTE_RULE %r: None (the inputs\' rule) or one of %s' % (ws.MINUTE_RULE, rules))
+    g = cutout_generation(c.cutout_root, cfg)
+    rule, how = None, []
+    if g:
+        s1 = os.path.join(cfg.photometry.OUT_ROOT['snapshot'], cfg.photometry_campaign.STAGE1_DIR_FMT.format(generation=g))
+        bases = stage1_minute_bases(s1)
+        if bases:
+            if len(bases) > 1:
+                raise Refusal('W-MINUTE the stage 1 of %s (%s) mixes minute bases: %s' % (g, s1, '; '.join(
+                    '%r in %d files (e.g. %s)' % (b or None, n, ex) for b, (n, ex) in sorted(bases.items()))))
+            (mb, (n, ex)), = bases.items()
+            if mb not in ws.MINUTE_BASIS_RULE:
+                raise Refusal('W-MINUTE the stage 1 of %s (%s) records minute_basis %r (e.g. %s): no rule of '
+                              'forced_wide_search.MINUTE_BASIS_RULE' % (g, s1, mb, ex))
+            rule = ws.MINUTE_BASIS_RULE[mb]
+            how.append('%s: minute_basis %r in %d stage-1 files of %s (one per cell)' % (rule, mb or None, n, s1))
+        gr = ws.MINUTE_RULE_OF_GENERATION.get(g)
+        if rule and gr and gr != rule:
+            raise Refusal('W-MINUTE the stage 1 of %s says %r but forced_wide_search.MINUTE_RULE_OF_GENERATION[%s] = %r'
+                          % (g, rule, g, gr))
+        if not rule and gr:
+            rule = gr
+            how.append('%s: the rule of %s (forced_wide_search.MINUTE_RULE_OF_GENERATION; no stage-1 npz readable in %s)'
+                       % (gr, g, s1))
+    if ws.MINUTE_RULE is not None:
+        if rule and ws.MINUTE_RULE != rule:
+            raise Refusal('W-MINUTE forced_wide_search.MINUTE_RULE %r, but the cutouts searched (%s) are of a stage 1 keyed '
+                          '%r (%s)' % (ws.MINUTE_RULE, c.cutout_root, rule, '; '.join(how)))
+        if not rule:
+            rule = ws.MINUTE_RULE
+            how.append('%s: configured (forced_wide_search.MINUTE_RULE; the cutout root %s names no generation of a known rule)'
+                       % (rule, c.cutout_root))
+    if not rule:
+        raise Refusal('W-MINUTE the minute rule of the cutouts %s is unknown (no generation named, or none of '
+                      'MINUTE_RULE_OF_GENERATION and no stage-1 npz): set forced_wide_search.MINUTE_RULE' % c.cutout_root)
+    return rule, '; '.join(how)
+
+
 def _jobs_planned(c):
     """The jobs a plan / dry run can list: from this root's jobs.json when it exists, else none (wide_jobs of this invocation)."""
     from exopipe.phase3.lib.forced import wide_jobs as WJ
@@ -372,10 +457,12 @@ def stage_search(c):
             c.would_refuse.append('W-WORKERS wide_search %d > %d' % (workers, c.ws.MAX_WORKERS))
         try:
             gate_cutout_root(c)
-        except Refusal as e:             # a retired or absent generation: refused, nothing of it is listed (review F6)
-            K.plan('[wide_search]   %s: refused' % e)
+            rule, how = minute_rule(c)
+        except Refusal as e:             # a retired or absent generation, or no minute rule: refused, nothing of it is listed
+            K.plan('[wide_search]   %s: refused' % e)    # (review F6)
             c.would_refuse.append(str(e).split(' ', 1)[0] + ' ' + c.cutout_root)
             return
+        K.plan('[wide_search]   1-minute blocks keyed by minute rule %s' % how)
         jobs = _jobs_planned(c)
         if jobs is None:
             K.plan('[wide_search]   the jobs come from wide_jobs (no %s yet)' % c.jobs_path)
@@ -401,6 +488,8 @@ def stage_search(c):
         raise Refusal('forced_wide_search.FILE_ERRORS %r: refuse or drop' % c.ws.FILE_ERRORS)
     gate_env()
     gate_cutout_root(c)
+    c.minute_rule, c.minute_rule_how = minute_rule(c)
+    print('wide_search: 1-minute blocks keyed by minute rule %s' % c.minute_rule_how, flush=True)
     # the in-place modules, imported here so the records name their code (the workers inherit them; their caches are installed
     # in the workers only: wide_search.eval_mod)
     for m in ('snapshot_forced_eval', 'phase3_snapshot_search', 'phase3_tier_rules', 'phase3_snapshot_astro'):
@@ -418,7 +507,8 @@ def stage_search(c):
     try:
         with get_context('fork').Pool(workers, initializer=WS.pool_worker_init, initargs=(c.args.threads or 1,)) as pool:
             pending = {(search_unit(j), b): pool.apply_async(WS.search_band, ((j, b, c.cutout_root,
-                                                                               os.path.join(stage, WS.npz_name(j, b))),))
+                                                                               os.path.join(stage, WS.npz_name(j, b)),
+                                                                               c.minute_rule),))
                        for j, b in tasks}
             for k, j in enumerate(todo, 1):
                 try:
@@ -439,7 +529,8 @@ def search_job(c, job, pending, stage, jobs_path):
     from exopipe.phase3.core import validate
     name = search_unit(job)
     with c.run.unit(name, tier='snapshot', stage='wide_search', family='W', stokes=job['stokes'], identity=job['identity'],
-                    bands=list(job['bands']), cutout_root=c.cutout_root, file_errors=c.ws.FILE_ERRORS) as u:
+                    bands=list(job['bands']), cutout_root=c.cutout_root, file_errors=c.ws.FILE_ERRORS,
+                    minute_rule=getattr(c, 'minute_rule', None), minute_rule_how=getattr(c, 'minute_rule_how', None)) as u:
         u.add_input(jobs_path)
         u.add_input(c.cfg.paths.DATA_DECISIONS)
         if getattr(c, 'tier_rule3_pin', None) and os.path.exists(c.tier_rule3_pin):

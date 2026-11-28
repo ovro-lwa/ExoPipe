@@ -1,13 +1,15 @@
 """THE WIDE-AREA BURST SEARCH of family W (stage wide_search): every peak of |S/N| >= SNR_MIN, either sign, anywhere in a
-forced target's served snapshot cutouts (gen5 when ported), on EXACTLY the frames the forced photometry used. Port of phase3/refactor_analysis/
+forced target's served snapshot cutouts (photometry.CUTOUT_ROOTS['snapshot'], gen6 since 2026-11-27; --wide-cutout-root
+another generation), on EXACTLY the frames the forced photometry used. Port of phase3/refactor_analysis/
 review_items_20261031/forced_wide/forced_wide_search.py (2026-11-02; Gregg 2026-11-01 "a wide search area that allows the
 burst tapering to be identified", "Go"); its docstring is the method, the values are config (forced_wide_search):
 
 For every (Stokes, target, band) of the jobs, every cutout of that target (one per LST-hour cell: a 300'-wide RESIDUAL cube -
 frame minus hour median - on the cell's fixed grid, every 10-s frame with its admission flag):
   FRAMES   10 s: admitted (TIMES) and the forced evaluation's domain gate at the target (snapshot_forced_eval.gate_mask, in
-           place: elevation >= 30 deg, A-team, the night rule, Sun / Jupiter); 1 min: gen5's blocks (admitted frames of one
-           minute - MINUTE_RULE - >= BLOCK_MIN_FRAMES, averaged), gated the same way at the block time. A band excluded by
+           place: elevation >= 30 deg, A-team, the night rule, Sun / Jupiter); 1 min: stage 1's blocks of the generation
+           searched (admitted frames of one minute - the minute rule of that generation's stage 1, wide_stages.minute_rule -
+           >= BLOCK_MIN_FRAMES, averaged), gated the same way at the block time. A band excluded by
            data_decisions (core.exclusions, scope 'snapshot' as the evaluation reads it) or refused by tier rule 3 for
            (LST, night) (phase3_tier_rules.deep_search_refused, in place) is skipped, as the evaluation drops it. The target's
            a-priori screen (zone / clean, snapshot_forced_eval.zone_flags) is recorded per file and tier: the forced queue lists
@@ -244,15 +246,18 @@ def gates_10s(E, cell, band, st, tra, tde, ts, adm):
     return idx[g]
 
 
-def blocks_1min(cube, dobs, adm, ts_list, c=None):
-    """stage 1's 1-minute blocks (as it ran for the served generation): admitted frames by minute (MINUTE_RULE), >= BLOCK_MIN_FRAMES,
-    averaged"""
+def blocks_1min(cube, dobs, adm, ts_list, c=None, rule=None):
+    """stage 1's 1-minute blocks (as it ran for the generation searched): admitted frames by minute (``rule``, the stage's
+    wide_stages.minute_rule: 'filename' or 'midpoint'; else MINUTE_RULE), >= BLOCK_MIN_FRAMES, averaged"""
     from collections import OrderedDict
     c = c or scfg()
+    rule = rule or c.MINUTE_RULE
+    if rule not in ('filename', 'midpoint'):
+        raise ValueError('W-MINUTE minute rule %r: filename or midpoint (wide_stages.minute_rule resolves it)' % (rule,))
     mins = OrderedDict()
     for i in range(len(dobs)):
         if adm[i]:
-            key = ts_list[i][:13] if c.MINUTE_RULE == 'filename' else _E['SS'].integration_minute_key(dobs[i])
+            key = ts_list[i][:13] if rule == 'filename' else _E['SS'].integration_minute_key(dobs[i])
             mins.setdefault(key, []).append(i)
     bk = [(k, ix) for k, ix in sorted(mins.items()) if len(ix) >= c.BLOCK_MIN_FRAMES]
     if not bk:
@@ -335,9 +340,9 @@ def io_yield(c=None):
 
 def search_band(task):
     """One (Stokes, target, band): every cutout of the target in that band -> a staged npz. ``task`` = (job, band, cutout root,
-    staged npz path). Returns a dict: path, n_files, n_peaks, statuses, errors, nights (searched), inputs (the noise / catalogue
+    staged npz path, minute rule). Returns a dict: path, n_files, n_peaks, statuses, errors, nights (searched), inputs (the noise / catalogue
     files this task read), cutout_dir, listing (name, size, mtime_ns per cutout), seconds, waited."""
-    job, band, root, part = task
+    job, band, root, part, rule = task
     from astropy.io import fits
     from astropy.wcs import WCS
     from exopipe.phase3.core import exclusions as X
@@ -390,7 +395,7 @@ def search_band(task):
                     planes = cube[use]
                     keys = [ts[i] for i in use]
                 else:
-                    keys, planes = blocks_1min(cube, dobs, adm, ts, c)
+                    keys, planes = blocks_1min(cube, dobs, adm, ts, c, rule)
                     if keys:
                         prefill_times(keys)
                         g = E.gate_mask(cell, band, st, np.array([tra]), np.array([tde]), keys)[0]

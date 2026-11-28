@@ -323,7 +323,7 @@ def targets(item, CFG):
     for tier, tag in CFG.notify.FORCED_TIERS.items():
         for stokes in ('V', 'I'):
             run = os.path.join(CFG.paths.SNAPSHOT_REVIEW_ROOT, CFG.notify.FORCED_RUN.format(
-                stokes=stokes, tier=tag, generation=CFG.notify.FORCED_RUN_GENERATION[tag]))
+                stokes=stokes, tier=tag, generation=CFG.photometry.GENERATIONS[CFG.photometry.CADENCE_TIER[tag]]))
             ev = os.path.join(run, 'forced_assoc_events.csv')
             if not os.path.exists(ev):
                 limits.append(f'forced photometry, {tier} Stokes {stokes}: no served event list ({ev}) - not listed')

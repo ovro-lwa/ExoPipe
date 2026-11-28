@@ -154,6 +154,16 @@ def test_generation(d):
         check('generation 6 is served (photometry.GENERATIONS[snapshot] = gen6, 2026-11-27), so the configured campaign '
               'generation gen6 refuses CP-GEN (a campaign writes a new generation)', CFG.photometry.GENERATIONS['snapshot']
               == 'gen6' and CFG.photometry_campaign.GENERATION == 'gen6' and e is not None and 'CP-GEN' in e, e)
+        e2 = raises(CP.generation, write=False)
+        check('... CP-GEN\'s served-generation refusal is for writes: the read-only check reads gen6 (generation(write=False) = '
+              'gen6, stage1_dir(write=False) = stage1_gen6)', e2 is None and CP.generation(write=False) == 'gen6'
+              and CP.stage1_dir(write=False) == 'stage1_gen6' and CP.cutout_root(write=False).endswith('photometry_gen6'), e2)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = CP.main(['check', '--generation', 'gen6', '--out', os.path.join(d, 'out_gen_check_none')])
+        check('`campaign check --generation gen6` (the served generation) runs: past CP-GEN to the content test, which says '
+              'there is no gen6 campaign start record under that --out (exit 2)', rc == 2 and 'CP-GEN' not in buf.getvalue()
+              and 'no campaign start record of generation gen6' in buf.getvalue(), (rc, buf.getvalue()[-300:]))
         served_gen5(P)
         check('the generation written is photometry_campaign.GENERATION (gen6), the served one photometry.GENERATIONS'
               '[snapshot] (gen5 while the campaign ran)', CP.generation() == 'gen6'

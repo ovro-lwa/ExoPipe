@@ -27,7 +27,7 @@ What the flag does (cli calls begin() before the step runs):
      root (refused_roots(): paths.PRODUCTION_ROOTS, every other root of the paths section - the archive tree, the Phase-1 and
      Phase-2 data, the working trees, the served-run roots, ops state, clv15 with data_decisions.csv and the fix ledger, the
      production package's reference tables -, every section's own production roots (PRODUCTION_ROOTS, EXTRA_PRODUCTION_ROOTS,
-     OUT_ROOT, PRODUCTION_OUT, PHOT_ROOT, CUTOUT_ROOT(S), TIER_FORCED_ROOTS: the photometry roots, the served page roots) and the
+     OUT_ROOT, PRODUCTION_OUT, PHOT_ROOT, CUTOUT_ROOTS, TIER_FORCED_ROOTS: the photometry roots, the served page roots) and the
      step's default --out). Else exit 2.
   3. The write guard of core/guard.py, labelled INJECTED-RUN GUARD, in this process and every Python process it starts: a write
      anywhere but --out, --work, the node's scratch root, /tmp and /dev/shm raises InjectedWriteRefused (a PermissionError)

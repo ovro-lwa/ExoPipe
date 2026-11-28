@@ -7,6 +7,26 @@ ledger ID of the ruling behind a key. Per run: --set SECTION.KEY=VALUE or --conf
 from exopipe.phase3.config import _Section
 
 
+def _ph():
+    from exopipe.phase3.config.steps import photometry as P      # the photometry sections (their current values)
+    return P.photometry
+
+
+def snapshot_generation_roots(gen):
+    """{forced_snapshot key: path} of snapshot cutout generation ``gen``, named as the photometry step writes them: the
+    evaluations <photometry.OUT_ROOT[snapshot]>/<photometry_evaluate.EVAL_DIR[sb|wb] with tag gen>, the zone flags
+    <...>/<ZONE_FLAGS_FILE>, stage 1 <...>/<photometry_campaign.STAGE1_DIR_FMT> and the cutouts photometry_campaign.
+    CUTOUT_ROOT_FMT. forced_snapshot's five keys are this of photometry.GENERATIONS['snapshot'] (DERIVED)."""
+    import os
+    from exopipe.phase3.config.steps import photometry as P
+    root, ev, cc = P.photometry.OUT_ROOT['snapshot'], P.photometry_evaluate, P.photometry_campaign
+    return {'EVAL_SB': os.path.join(root, ev.EVAL_DIR['sb'].format(tag=gen)),
+            'EVAL_WB': os.path.join(root, ev.EVAL_DIR['wb'].format(tag=gen)),
+            'ZONE_FLAGS': os.path.join(root, ev.ZONE_FLAGS_FILE.format(tag=gen)),
+            'STAGE1_ROOT': os.path.join(root, cc.STAGE1_DIR_FMT.format(generation=gen)),
+            'PHOT_ROOT': cc.CUTOUT_ROOT_FMT.format(generation=gen)}
+
+
 # =====================================================================================================================
 # unit forced (was exopipe/phase3/_cfgdraft_forced.py)
 # Configuration of `exopipe3 forced`. Spec: exopipe_ops/refactor_20261012/plan/specs/forced.md section 3, as
@@ -141,13 +161,17 @@ class forced_snapshot(_Section):
     # eval, P3_PHOT_ROOT and P3_FORCED_STAGE1). The step passes every one to the child explicitly - the evaluations (build/verify
     # --eval-sb/--eval-wb) and the zone flags (served --flags) as arguments, the two roots as P3_PHOT_ROOT / P3_FORCED_STAGE1
     # (tier_snapshot.roots_env; core.legacy.run clears P3_*, and the module defaults are generation 4's: snapshot_forced_panels.py
-    # :40-42, :246). A new generation changes these five values (tier_snapshot.generation_roots); tests/test_forced checks them
-    # against the served runs' records, tests/test_served_generation_roots.py against the served registry
-    EVAL_SB = '/lustre/gh/main/phase3/snapshot_forced/eval_gen6'       # gen6 driver :29 EV
-    EVAL_WB = '/lustre/gh/main/phase3/snapshot_forced/eval_wb_gen6'    # :29 EVW
-    ZONE_FLAGS = '/lustre/gh/main/phase3/snapshot_forced/zones_recomputed_gen6.csv'   # :29 FLAGS - the served-zones test Z2
-    STAGE1_ROOT = '/lustre/gh/main/phase3/snapshot_forced/stage1_gen6'   # :28 IN - stage 1 (P3_FORCED_STAGE1)
-    PHOT_ROOT = '/lustre/pipeline/exopipe/phase3/photometry_gen6'        # :28 PHOT - the cutout generation (P3_PHOT_ROOT)
+    # :40-42, :246). The five are DERIVED from photometry.GENERATIONS['snapshot'] (snapshot_generation_roots, below: the names
+    # the photometry step writes; gen6 = the driver's :29 EV, EVW, FLAGS and :28 IN, PHOT); --snap-generation names another
+    # generation (tier_snapshot.apply_generation). tests/test_forced checks them against the served runs' records,
+    # tests/test_served_generation_roots.py against the served registry
+    EVAL_SB = None                               # the stage-2 evaluation, subbands (build/verify --eval-sb)
+    EVAL_WB = None                               # the stage-2 evaluation, widebands (--eval-wb)
+    ZONE_FLAGS = None                            # the zone flags (served --flags) - the served-zones test Z2
+    STAGE1_ROOT = None                           # stage 1 (P3_FORCED_STAGE1)
+    PHOT_ROOT = None                             # the cutout generation (P3_PHOT_ROOT)
+    DERIVED = {k: (('photometry.GENERATIONS',), (lambda k=k: snapshot_generation_roots(_ph().GENERATIONS['snapshot'])[k]))
+               for k in ('EVAL_SB', 'EVAL_WB', 'ZONE_FLAGS', 'STAGE1_ROOT', 'PHOT_ROOT')}
     MASTER_CATS = '/lustre/gh/main/exopipe_ops/snapshot_master_catalogs'   # pinned tie references (:888)
     FROZEN_MASTERS = '/lustre/pipeline/exopipe/phase3/snapshot_masters_gen4'  # pinned; FREEZE-SNAPSHOT-MASTERS-GEN4 (:1264)
     HOURS_SEARCHED_DIR = '/lustre/gh/main/exopipe_ops/snapshot_forced_state/done'   # photometry fleet markers read as data (:1206); Q12
@@ -258,7 +282,8 @@ class forced_tier_pages(_Section):
     # eval_tag): 'hwj10pc' for HWJ / 10 pc, production's names; 'hwj10pclpt' with LPT. The script reads ev_dir's literal
     # name (SCRIPT_EVAL_NAME), so evaluations of other samples are read through <out>/<EVAL_LINKS>/<SCRIPT_EVAL_NAME>,
     # symbolic links tier_eval makes to them, with SF = that directory
-    EVAL_NAME = 'eval_{tier}_{wb}gen5_{samples}'  # {wb} = 'wb_' for the wideband kind, else ''
+    EVAL_NAME = 'eval_{tier}_{wb}{generation}_{samples}'  # {wb} = 'wb_' for the wideband kind, else ''; {generation} =
+                                                 # photometry.GENERATIONS of the tier (CADENCE_TIER; tier_pages.eval_dirs)
     SCRIPT_EVAL_NAME = 'eval_{tier}_{wb}gen5_hwj10pc'   # MIRROR ev_dir :37-38
     EVAL_LINKS = 'eval_links_{samples}'
     EVAL_ROOT_GLOBAL = 'SF'                      # the script's module literal ev_dir joins (:30 SF = PP.SF = SCRIPT_SF)
@@ -345,9 +370,9 @@ class forced_wide(_Section):
     #      holding the same run names. Production's wide test ran on generation 5 only (forced_wide_v3.csv in the four
     #      Run_SNAPFORCED_*_gen5 runs, 2026-11-04; v3/publish_v3_to_runs.py:6): the gen6 runs hold none yet. The 10-minute
     #      and 1-hour runs the ambiguous list reads (AMBIGUOUS_RUNS) are the served generation-5 ones (p9120-p9123,
-    #      registered_pages.json:223-330): the generation is per cadence (wide_jobs.run_name)
+    #      registered_pages.json:223-330): the generation is per cadence - photometry.GENERATIONS of the cadence's tier
+    #      (photometry.CADENCE_TIER; wide_jobs.run_name)
     RUN_NAME = 'Run_SNAPFORCED_{S}{cadence}_{generation}'
-    RUN_GENERATION = {'10s': 'gen6', '1min': 'gen6', '10min': 'gen5', 'deep': 'gen5'}   # cadence -> the served run's generation
     # (Stokes, cadence) of the runs TESTED - their events, their base jobs, the publication - in the order the job list reads them
     # (forced_ambiguous.py: I10s, V10s, I1min, V1min; a target's first row wins, so the order is part of the result). The
     # 10-minute and 1-hour forced runs have no wide test: their events are not single-frame bursts (forced_wide_jobs.py:72,
@@ -363,9 +388,13 @@ class forced_wide(_Section):
     # overrides
     CUTOUT_GLOB = '*_??h_????????T??????_{S}.fits'   # the per-cell 10-s cutouts of an object (not _10min_ / _deep_);
                                                  # forced_wide_search.py:251
-    WORK_ROOT = '/lustre/gh/main/phase3/snapshot_forced/forced_wide_gen6'   # the family's production --out (jobs, bursts,
-                                                 # results); beside stage1_gen6 / eval_gen6 (photometry.OUT_ROOT[snapshot]); not
-                                                 # made yet (production's gen5 work root was review_items_20261031/forced_wide)
+    # the family's production --out (jobs, bursts, results): WORK_ROOT_FMT of photometry.GENERATIONS['snapshot'] (DERIVED),
+    # beside stage1_<gen> / eval_<gen> (photometry.OUT_ROOT[snapshot]); forced_wide_gen6 is not made yet (production's gen5
+    # work root was review_items_20261031/forced_wide)
+    WORK_ROOT_FMT = '/lustre/gh/main/phase3/snapshot_forced/forced_wide_{generation}'
+    WORK_ROOT = None
+    DERIVED = {'WORK_ROOT': (('photometry.GENERATIONS',),
+                             lambda: forced_wide.WORK_ROOT_FMT.format(generation=_ph().GENERATIONS['snapshot']))}
     JOBS = 'jobs.json'                           # wide_jobs: the job list (base + extension jobs)
     EVENTS = 'events.csv'                        # wide_jobs: the forced events of the four runs (v3 load_events)
     BURSTS_DIR = 'bursts'                        # wide_search: <BURSTS_DIR>/<S>_<identity>_<band>.npz
@@ -427,13 +456,17 @@ class forced_wide_search(_Section):
     """Family W, stage wide_search: every peak of |S/N| >= SNR_MIN, either sign, in each job's served cutouts, on EXACTLY the
     frames the forced photometry used (forced_wide_search.py docstring; gate-exact with stage 2, snapshot_forced_eval)."""
     # FRAMES: 10 s = admitted and the evaluation's domain gate at the target (snapshot_forced_eval.gate_mask, in place); 1 min =
-    # stage 1's blocks: admitted frames of one minute, >= BLOCK_MIN_FRAMES, averaged. MINUTE_RULE: the minute key of the served
-    # generation's stage 1: 'filename' = the file-name minute ts[:13] (forced_wide_search.py:31), gen5's (its stage 1 ran
-    # 2026-10-26, before the integration-midpoint rule entered stage 1, exopipe_ops 40611cc, 2026-10-28); 'midpoint' =
-    # phase3_snapshot_search.integration_minute_key, gen6's (its stage-1 files record minute_basis
-    # 'integration-midpoint-dateobs-v1'; production's search takes it as FW_MINUTE_RULE=midpoint, forced_wide_search.py:35, :196).
-    # It changes with photometry.CUTOUT_ROOTS['snapshot']
-    MINUTE_RULE = 'midpoint'
+    # stage 1's blocks: admitted frames of one minute, >= BLOCK_MIN_FRAMES, averaged, keyed by the minute rule of the stage 1
+    # that measured the cutouts SEARCHED (wide_search.minute_rule, W-MINUTE): 'filename' = the file-name minute ts[:13]
+    # (forced_wide_search.py:31) - gen5's stage 1 (2026-10-26, before the integration-midpoint rule entered stage 1, exopipe_ops
+    # 40611cc, 2026-10-28; its npz carry no minute_basis); 'midpoint' = phase3_snapshot_search.integration_minute_key - gen6's
+    # (its npz minute_basis 'integration-midpoint-dateobs-v1'; production's search takes it as FW_MINUTE_RULE=midpoint,
+    # forced_wide_search.py:35, :196). The rule is read from the stage-1 npz of the cutout root's generation (<photometry.
+    # OUT_ROOT[snapshot]>/<photometry_campaign.STAGE1_DIR_FMT>; MINUTE_BASIS_RULE), else taken from that generation
+    # (MINUTE_RULE_OF_GENERATION); neither refuses. MINUTE_RULE None = that rule; a value set refuses unless the inputs agree
+    MINUTE_RULE = None
+    MINUTE_BASIS_RULE = {'': 'filename', 'integration-midpoint-dateobs-v1': 'midpoint'}   # npz minute_basis ('' = none) -> rule
+    MINUTE_RULE_OF_GENERATION = {'gen5': 'filename', 'gen6': 'midpoint'}   # when no stage-1 npz of the generation is readable
     BLOCK_MIN_FRAMES = 3                         # admitted frames per 1-minute block (forced_wide_search.py:190; stage 1's rule)
     # PEAKS: local extrema of |value| over 3 x 3 pixels, either sign (in a frame-minus-median cube a wandering source is a
     # dipole), more than EDGE_PX inside the cutout; candidates at >= PRE_SIGMA x the plane's robust rms, then S/N = value / the
@@ -467,7 +500,7 @@ class forced_wide_search(_Section):
     # MIRROR (protected): the site phase3_snapshot_search.sun_state computes the Sun at (lat deg, lon deg, height m) - its literal
     # (clv15 phase3_snapshot_search.py:651); the vectorized time cache must hold what sun_state computes (tests compare)
     SUN_SITE = (37.2398, -118.2817, 1222)
-    NULLABLE_KEYS = ('IO_GUARD_LOG',)
+    NULLABLE_KEYS = ('IO_GUARD_LOG', 'MINUTE_RULE')
     PROTECTED_KEYS = ('SUN_SITE',)
     RULED = {k: 'R-GREGG-20261103-FORCED-WIDE-V3-APPROVED' for k in (
         'SNR_MIN', 'PRE_SIGMA', 'STAMP_PX', 'STAMP_CORE_PX', 'STAMP_MIN_FRAC', 'EDGE_PX', 'BLOCK_MIN_FRAMES')}

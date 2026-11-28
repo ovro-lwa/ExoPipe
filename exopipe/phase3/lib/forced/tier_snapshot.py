@@ -53,7 +53,8 @@ def add_arguments(p):
                    help='the cutout generation the run is built from (gen5, gen6, ...): its two evaluations, zone flags, '
                         'stage 1 and cutouts (generation_roots: photometry_evaluate.EVAL_DIR and ZONE_FLAGS_FILE with tag GEN '
                         'under photometry.OUT_ROOT[snapshot], photometry_campaign.STAGE1_DIR_FMT and CUTOUT_ROOT_FMT); '
-                        'default the forced_snapshot keys (the served generation). Not with --snap-eval-sb/-wb, '
+                        'default the forced_snapshot keys (derived from photometry.GENERATIONS[snapshot], the served '
+                        'generation). Not with --snap-eval-sb/-wb, '
                         '--snap-zone-flags or a --set of those keys')
     g.add_argument('--snap-review-root', metavar='DIR',
                    help='review root under a non-production --out (default <out>/review); production: '
@@ -81,20 +82,15 @@ GENERATION_KEYS = ('EVAL_SB', 'EVAL_WB', 'ZONE_FLAGS', 'STAGE1_ROOT', 'PHOT_ROOT
 
 
 def generation_roots(gen):
-    """{forced_snapshot key: path} of cutout generation ``gen``, named as the photometry step writes them: the evaluations
-    <photometry.OUT_ROOT[snapshot]>/<photometry_evaluate.EVAL_DIR[sb|wb] with tag gen>, the zone flags <...>/<ZONE_FLAGS_FILE>,
-    stage 1 <...>/<photometry_campaign.STAGE1_DIR_FMT> and the cutouts photometry_campaign.CUTOUT_ROOT_FMT. Generation 6 gives
-    the forced_snapshot keys as configured (tests/test_photometry_snapshot_stage2.py, tests/test_served_generation_roots.py)."""
-    c = K.cfg()
-    ev, cc = c.photometry_evaluate, c.photometry_campaign
+    """{forced_snapshot key: path} of cutout generation ``gen``, named as the photometry step writes them (config forced.
+    snapshot_generation_roots: the evaluations <photometry.OUT_ROOT[snapshot]>/<photometry_evaluate.EVAL_DIR[sb|wb] with tag
+    gen>, the zone flags <...>/<ZONE_FLAGS_FILE>, stage 1 <...>/<photometry_campaign.STAGE1_DIR_FMT> and the cutouts
+    photometry_campaign.CUTOUT_ROOT_FMT). The forced_snapshot keys are this of photometry.GENERATIONS['snapshot'] (DERIVED;
+    tests/test_photometry_snapshot_stage2.py, tests/test_served_generation_roots.py)."""
+    from exopipe.phase3.config.steps.forced import snapshot_generation_roots
     if not gen or not all(ch.isalnum() or ch in '-.' for ch in gen):
         raise Refusal('--snap-generation %r: a generation tag (letters, digits, - or .), e.g. gen6' % gen)
-    root = c.photometry.OUT_ROOT['snapshot']
-    return {'EVAL_SB': os.path.join(root, ev.EVAL_DIR['sb'].format(tag=gen)),
-            'EVAL_WB': os.path.join(root, ev.EVAL_DIR['wb'].format(tag=gen)),
-            'ZONE_FLAGS': os.path.join(root, ev.ZONE_FLAGS_FILE.format(tag=gen)),
-            'STAGE1_ROOT': os.path.join(root, cc.STAGE1_DIR_FMT.format(generation=gen)),
-            'PHOT_ROOT': cc.CUTOUT_ROOT_FMT.format(generation=gen)}
+    return snapshot_generation_roots(gen)
 
 
 def apply_generation(args):
@@ -107,7 +103,7 @@ def apply_generation(args):
     flags = [f for f, v in (('--snap-eval-sb', args.snap_eval_sb), ('--snap-eval-wb', args.snap_eval_wb),
                             ('--snap-zone-flags', args.snap_zone_flags)) if v]
     sets = sorted({o[0] for o in c.overrides if o[0].split('[', 1)[0] in {'forced_snapshot.' + k for k in GENERATION_KEYS}
-                   and o[3] != '--snap-generation'})
+                   and o[3] != '--snap-generation' and not str(o[3]).startswith('derived from ')})
     if flags or sets:
         raise Refusal('--snap-generation %s names the evaluations, zone flags, stage 1 and cutouts together; not with %s'
                       % (gen, ', '.join(flags + sets)))

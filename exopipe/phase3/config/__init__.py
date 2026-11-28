@@ -71,9 +71,13 @@ import os
 import re
 
 
-_META = ('RULED', 'PROTECTED_KEYS', 'NULLABLE_KEYS')   # UPPER_CASE section attributes that DESCRIBE tunables; never tunables
-# NULLABLE_KEYS: the keys whose None is a value with a meaning (e.g. 'no cut', production's behavior) - an override may set
-# them to None; every other key refuses an override of another type than its value's
+_META = ('RULED', 'PROTECTED_KEYS', 'NULLABLE_KEYS', 'DERIVED')   # UPPER_CASE section attributes that DESCRIBE tunables;
+# never tunables. NULLABLE_KEYS: the keys whose None is a value with a meaning (e.g. 'no cut', production's behavior) - an
+# override may set them to None; every other key refuses an override of another type than its value's.
+# DERIVED = {'KEY': (('section.SOURCE', ...), fn)}: a key whose value is fn() of other keys (fn reads the sections' classes,
+# so it sees their current values). _Config fills it at start; an override of a SOURCE re-derives every key derived from it
+# that the run did not override itself, each recorded as an override with source 'derived from <SOURCE>' (so one entry -
+# e.g. photometry.GENERATIONS - switches every root and run name of a generation, in the file or by --set)
 
 
 
@@ -238,6 +242,27 @@ class _Config:
         self.overrides = []
         self._undo = []              # [(section, key, previous value)] for reset()
         self._auth = {'rulings': {}, 'out': None, 'mode': 'run'}
+        for name, sec, key, _, fn in self.derived_keys():
+            setattr(sec, key, fn())
+
+    def derived_keys(self):
+        """[(section name, section, key, source keys, fn)] of every DERIVED key."""
+        return [(name, sec, key, tuple(src), fn) for name, sec in sorted(self._sections.items())
+                for key, (src, fn) in sorted((getattr(sec, 'DERIVED', None) or {}).items())]
+
+    def _rederive(self, source):
+        """After an override of ``source`` ('section.KEY'): every key DERIVED from it that no override of this run named
+        itself takes its new derivation (recorded as an override 'derived from <source>')."""
+        own = {o[0].split('[', 1)[0] for o in self.overrides if not str(o[3]).startswith('derived from ')}
+        for name, sec, key, src, fn in self.derived_keys():
+            dotted = f'{name}.{key}'
+            if source not in src or dotted in own:
+                continue
+            old, new = getattr(sec, key), fn()
+            if new != old:
+                setattr(sec, key, new)
+                self._undo.append((sec, key, old))
+                self.overrides.append((dotted, old, new, f'derived from {source}', f'derived from {source}'))
 
     def sections(self):
         return dict(self._sections)
@@ -376,6 +401,7 @@ class _Config:
         setattr(s, key, new_top)
         self._undo.append((s, key, top))
         self.overrides.append((dotted, old, new, source, authority))
+        self._rederive(base)
 
     def reset(self):
         """Undo every override applied in this process (tests; `exopipe3 config`)."""

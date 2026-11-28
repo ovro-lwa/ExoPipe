@@ -44,8 +44,8 @@ class photometry(_Section):
               'sublst': ('cutouts', 'cutmeasure')}
     # without --stages / --epochs: the measurement chains as before; a cutout (re)generation is a campaign named explicitly
     # (production ran it as dated drivers, never per hour). The per-hour 10-s cutouts are the search's: `search --tier snapshot`
-    # writes them into CUTOUT_ROOT (search_snapshot.CUTOUTS_ON; tier_snapshot.cutout_root reads this key - one source of
-    # truth, review F1 2026-11-03), and the night's stage 1 is `photometry --tier snapshot --epochs <LST>_<date>` (EPOCH_STAGES),
+    # writes them into CUTOUT_ROOTS['snapshot'] (search_snapshot.CUTOUTS_ON; search/tier_snapshot.cutout_root reads this key -
+    # one source of truth, review F1 2026-11-03), and the night's stage 1 is `photometry --tier snapshot --epochs <LST>_<date>` (EPOCH_STAGES),
     # a campaign in production (snapshot_forced_fleet.sh) that the runner's per-hour chain (runner.CHAINS['epoch']) runs
     # after the 10-second light curves and before `catalog --tier snapshot --incremental`, whose gate SI-G8 reads its done
     # measure records. sub-LST: no default - its only stages regenerate products, so they are named (--stages; review F4)
@@ -70,13 +70,20 @@ class photometry(_Section):
     #      the served runs' FT-START records and the served stage-1 manifests, so a generation switch fails until this config
     #      follows it. Generation 4 (PHASE3_ARCHIVE_ROOT/photometry, <snapshot_forced>/stage1) is retired: it held cutouts an
     #      injected run wrote (INCIDENT-INJECTED-SEARCH-WROTE-PRODUCTION-PHOTOMETRY-CUTOUTS-HS-PSC-EVENT-UNREPRODUCIBLE-20261024).
+    #      GENERATIONS is the ONE place a tier's generation is named: every root and run name of a tier derives from it
+    #      (DERIVED below; forced_snapshot, forced_wide, the email and the tier pages' evaluations through CADENCE_TIER), so a
+    #      generation switch is one entry here (or one --set, which re-derives the rest). Keys that name a generation
+    #      themselves are the MIRRORs of in-place scripts and the planets page (PLANETS_PAGE_GENERATION), each justified in
+    #      tests/test_served_generation_roots.py
     GENERATIONS = {'snapshot': 'gen6', 'deep': 'gen5', 'sublst': 'gen5'}   # tier -> the served cutout generation
-    CUTOUT_ROOTS = {'snapshot': '/lustre/pipeline/exopipe/phase3/photometry_gen6',   # per-night cutouts <sample>/<band>/
-                    'deep': '/lustre/pipeline/exopipe/phase3/photometry_gen5',       # <object>/ (snapshot measure reads, the
-                    'sublst': '/lustre/pipeline/exopipe/phase3/photometry_gen5'}     # search and the cutouts stage write); deep /
-                                                 # sub-LST: the tier cutouts (cutmeasure, the tier pages read); --cutout-root
-                                                 # overrides
-    STAGE1_DIR = 'stage1_gen6'                   # snapshot stage 1 = <--out>/<this>; production <OUT_ROOT[snapshot]>/stage1_gen6
+    CADENCE_TIER = {'10s': 'snapshot', '1min': 'snapshot', '10min': 'sublst', 'deep': 'deep'}   # a forced run's cadence ->
+                                                 # the photometry tier whose cutouts it measured
+    # DERIVED (never written by hand): CUTOUT_ROOTS[tier] = photometry_campaign.CUTOUT_ROOT_FMT of GENERATIONS[tier] - snapshot:
+    # the per-night cutouts <sample>/<band>/<object>/ (snapshot measure reads, the search and the cutouts stage write); deep /
+    # sub-LST: the tier cutouts (cutmeasure, the tier pages read); --cutout-root overrides. STAGE1_DIR = photometry_campaign.
+    # STAGE1_DIR_FMT of GENERATIONS['snapshot'] (snapshot stage 1 = <--out>/<this>; production <OUT_ROOT[snapshot]>/stage1_gen6)
+    CUTOUT_ROOTS = None
+    STAGE1_DIR = None
     # THE PLANETS PAGE (/s/planets/: registered_pages.json:114-116, root site_planets_SUN_gen5; built by the dated drivers
     # planets_page_orbit_build_20261028.sh, planets_gen6_stage34_20261127.sh - no v2 family builds or reads it): the generation
     # of its 10-s and 1-minute inputs as served now, site_planets_SUN_gen5/page_record.json: stage 1 <OUT_ROOT[snapshot]>/
@@ -84,6 +91,13 @@ class photometry(_Section):
     # swaps a page built on stage1_gen6_planets_orbit / photometry_gen6 into the same root and reports PLANETS-GEN6-DONE. Its
     # 10-minute and deep inputs stay TIER_FORCED_ROOTS['SolarSystem'] on the gen5 tier cubes (:36 P3_PHOT_ROOT=$G5, :67)
     PLANETS_PAGE_GENERATION = 'gen5'             # switch at PLANETS-GEN6-DONE (to 'gen6')
+    # the planets page's 10-s / 1-min inputs of a generation (steps_common.planets_roots): its SolarSystem per-night cutouts
+    # <photometry_campaign.CUTOUT_ROOT_FMT>/<PLANET_SAMPLE> and stage 1 <OUT_ROOT[snapshot]>/<PLANETS_STAGE1_FMT>
+    # (planets_page_orbit_build_20261028.sh:11 P3_FORCED_STAGE1 stage1_gen5_planets_orbit; planets_gen6_stage34_20261127.sh:15
+    # stage1_gen6_planets_orbit). Its 10-minute and deep inputs are the TIER generation's (TIER_FORCED_ROOTS['SolarSystem'],
+    # GENERATIONS['deep']): the gen6 page still reads tiers_gen5_planets_orbit and the gen5 tier cubes (:67 P3_FORCED_TIERS,
+    # P3_PHOT_ROOT_TIERS=$G5), so PLANETS_PAGE_GENERATION switches the per-night inputs only
+    PLANETS_STAGE1_FMT = 'stage1_{generation}_planets_orbit'
     # cutmeasure: <root>/<10min|deep>/<LST>/forced_<sample>_<band>_<S>.npz + forced_manifest.csv, the root per sample as served:
     # HWJ / 10 pc in forced_tiers_gen5 (the served tier pages read it: tier_forced_page_20261027.py through
     # planets_forced_page_20261026.py:61 FT, the P3_FORCED_TIERS default); the
@@ -92,11 +106,15 @@ class photometry(_Section):
     # --tier-out puts every sample under one root instead. LPT (2026-11-24): in forced_tiers_gen5 with HWJ / 10 pc, the root the
     # tier pages read (forced_tier_pages.SAMPLES); the served generation holds LPT once cutouts,cutmeasure --in-place has run.
     # Unchanged by generation 6 (it cut no tier cutouts); SolarSystem stays at PLANETS-GEN6-DONE (planets_gen6_stage34_20261127.sh
-    # :67 P3_FORCED_TIERS=tiers_gen5_planets_orbit)
-    TIER_FORCED_ROOTS = {'HWJ': '/lustre/pipeline/exopipe/phase3/forced_tiers_gen5',
-                         '10pc': '/lustre/pipeline/exopipe/phase3/forced_tiers_gen5',
-                         'LPT': '/lustre/pipeline/exopipe/phase3/forced_tiers_gen5',
-                         'SolarSystem': '/lustre/gh/main/phase3/snapshot_forced/tiers_gen5_planets_orbit'}
+    # :67 P3_FORCED_TIERS=tiers_gen5_planets_orbit). DERIVED from GENERATIONS['deep'] (the tier cutouts' generation; deep and
+    # sub-LST are one root, T-ROOTS): HWJ / 10 pc / LPT = TIER_FORCED_ROOT_FMT, SolarSystem = PLANETS_TIERS_FMT
+    TIER_FORCED_ROOT_FMT = '/lustre/pipeline/exopipe/phase3/forced_tiers_{generation}'
+    PLANETS_TIERS_FMT = '/lustre/gh/main/phase3/snapshot_forced/tiers_{generation}_planets_orbit'
+    TIER_FORCED_ROOT_SAMPLES = ('HWJ', '10pc', 'LPT')
+    TIER_FORCED_ROOTS = None
+    DERIVED = {'CUTOUT_ROOTS': (('photometry.GENERATIONS',), lambda: _cutout_roots()),
+               'STAGE1_DIR': (('photometry.GENERATIONS',), lambda: _stage1_dir()),
+               'TIER_FORCED_ROOTS': (('photometry.GENERATIONS',), lambda: _tier_forced_roots())}
     TIER_FORCED_ENGINE_SAMPLES = ('HWJ', '10pc', 'SolarSystem')   # MIRROR photometry_tier_forced_20261026.py:54 SAMPLES (its
                                                  # --samples; + the ad-hoc tags of ADHOC_ENV, its ADHOC, 2026-11-20)
     # the samples cutmeasure measures (no --targets). One the engine does not name (LPT) is given as an ad-hoc tag
@@ -652,3 +670,20 @@ class photometry_fluxscale(_Section):
              'WEIGHT_SAMPLE_FRAMES': 'R-GREGG-20261118-WIDEBAND-WEIGHTS-ON-RESCALED-CUBES-KEEP-RULING',
              'SAMPLES_NEW_SINCE_GEN5': 'R-GREGG-20261118-GEN6-WITH-LPTS-SAMPLE-WIRED',
              'FSAPPLD_TOL': 'RESULT-20261117-GEN6-PROBE-CUTOUTS-FROM-RESCALED-CUBES'}
+
+
+# ---- the derivations of photometry's DERIVED keys (called at start and when photometry.GENERATIONS is overridden; they read
+#      the classes, so they see the current values)
+def _cutout_roots():
+    return {t: photometry_campaign.CUTOUT_ROOT_FMT.format(generation=g) for t, g in photometry.GENERATIONS.items()}
+
+
+def _stage1_dir():
+    return photometry_campaign.STAGE1_DIR_FMT.format(generation=photometry.GENERATIONS['snapshot'])
+
+
+def _tier_forced_roots():
+    g = photometry.GENERATIONS['deep']
+    out = {s: photometry.TIER_FORCED_ROOT_FMT.format(generation=g) for s in photometry.TIER_FORCED_ROOT_SAMPLES}
+    out[photometry.PLANET_SAMPLE] = photometry.PLANETS_TIERS_FMT.format(generation=g)
+    return out

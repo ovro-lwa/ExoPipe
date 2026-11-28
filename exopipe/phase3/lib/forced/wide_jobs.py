@@ -130,9 +130,11 @@ def run_label(stokes, cadence):
 
 
 def run_name(stokes, cadence):
-    """The served forced run of (Stokes, cadence): forced_wide.RUN_NAME with the cadence's generation (RUN_GENERATION)."""
+    """The served forced run of (Stokes, cadence): forced_wide.RUN_NAME with the generation of the cadence's tier
+    (photometry.GENERATIONS[photometry.CADENCE_TIER[cadence]])."""
     w = cfg().forced_wide
-    return w.RUN_NAME.format(S=stokes, cadence=cadence, generation=w.RUN_GENERATION[cadence])
+    ph = cfg().photometry
+    return w.RUN_NAME.format(S=stokes, cadence=cadence, generation=ph.GENERATIONS[ph.CADENCE_TIER[cadence]])
 
 
 def run_dirs(root, which=None):

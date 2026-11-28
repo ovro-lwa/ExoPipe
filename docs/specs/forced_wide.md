@@ -51,8 +51,9 @@ cataloged source the bursts at the target belong to.
 
 ### Inputs
 
-- **The four forced runs** of the served generation (`forced_wide.RUNS`, named `forced_wide.RUN_NAME` with the cadence's
-  `forced_wide.RUN_GENERATION`: gen6 for 10 s and 1 min, gen5 for the 10-minute and 1-hour runs the ambiguous list reads):
+- **The four forced runs** of the served generation (`forced_wide.RUNS`, named `forced_wide.RUN_NAME` with the generation
+  of the cadence's tier, `photometry.GENERATIONS[photometry.CADENCE_TIER[cadence]]`: gen6 for 10 s and 1 min, gen5 for the
+  10-minute and 1-hour runs the ambiguous list reads):
   `Run_SNAPFORCED_{I,V}{10s,1min}_gen6` under `paths.SNAPSHOT_REVIEW_ROOT` (served since 2026-11-27; production's
   test ran on the `_gen5` runs, which the hub no longer links). These are on lwacalim07's /data07, so
   `--wide-runs DIR` can read a copy instead. The test reads each run's `queue_<S>.txt`, `forced_assoc_events.csv`,
@@ -97,9 +98,12 @@ residual cube (frame minus the hour median) on the cell's fixed grid.
   - 10 s: the frames that were admitted and that pass the evaluation's domain gate at the target. The gate covers
     elevation ≥ 30°, the A-team, the night rule, and the Sun and Jupiter.
   - 1 min: stage 1's blocks. These are admitted frames of one minute, at least `BLOCK_MIN_FRAMES` (3), averaged and
-    gated at the block time. `MINUTE_RULE = 'midpoint'` keys them by the integration-midpoint minute, which is what
-    gen6's stage 1 used (its files record `minute_basis` `integration-midpoint-dateobs-v1`); gen5's stage 1 used the
-    file-name minute, `'filename'`, the value of production's 2026-11-04 run.
+    gated at the block time, keyed by the minute rule of the stage 1 that measured the cutouts searched
+    (`wide_stages.minute_rule`, gate W-MINUTE). The rule is read from that generation's stage-1 npz files (one per cell):
+    gen6's record `minute_basis` `integration-midpoint-dateobs-v1`, the integration-midpoint minute, `'midpoint'`;
+    gen5's record none, the file-name minute, `'filename'`, the value of production's 2026-11-04 run. With no npz
+    readable, the generation's rule (`MINUTE_RULE_OF_GENERATION`) applies. `MINUTE_RULE` is None; a value set refuses
+    unless the inputs agree, and a cutout root that names no generation needs one.
   - A band excluded for that (LST, night), or refused by tier rule 3, is skipped.
   - The target's a-priori screen (zone or clean) is recorded per file and tier.
 - **Peaks.** Local extrema of |value| over 3 × 3 pixels, of either sign. Candidates are kept at ≥ 4 × the plane's
@@ -396,15 +400,14 @@ pool-ordered controls, the 900-line cap and the job generator's 1000 resamples i
 exopipe3 forced --tier snapshot --stages wide_jobs --wide-runs <Lustre copy> \
     --wide-jobs <analysis>/jobs.json,<analysis>/v3/jobs_ext.json \
     --out <scratch> --parity --config exopipe/phase3/parity/production_20261013.cfg \
-    --set "forced_wide.RUN_GENERATION={'10s':'gen5','1min':'gen5','10min':'gen5','deep':'gen5'}" \
-    --set "forced_wide_search.MINUTE_RULE='filename'"
+    --set "photometry.GENERATIONS[snapshot]='gen5'"
 ```
 
-The two `--set` arguments name the generation production's run of 2026-11-04 tested: the `_gen5` runs and the
-file-name minute. Every stage of the parity run takes them, and `wide_search` also takes
-`--wide-cutout-root /lustre/pipeline/exopipe/phase3/photometry_gen5`, the cutouts that run searched. They are not in the
-parity file, which holds ruled values only. The defaults follow the served generation, which is gen6 for 10 s and 1 min
-since 2026-11-27.
+The `--set` names the generation production's run of 2026-11-04 tested. Every root and run name derived from
+`photometry.GENERATIONS` follows it: the `_gen5` runs, the cutouts that run searched
+(`photometry_gen5`, so no `--wide-cutout-root`), and, through W-MINUTE, the file-name minute of gen5's stage 1. Every
+stage of the parity run takes it. It is not in the parity file, which holds ruled values only. The defaults follow the
+served generation, which is gen6 for 10 s and 1 min since 2026-11-27.
 
 Then run `wide_search --wide-only I:KELT-24,...`, `wide_test --wide-bursts <analysis>/bursts_gen5` and `wide_publish`
 into `<scratch>/review/<run>`, which must exist. The comparison tools and results are under

@@ -2460,6 +2460,21 @@ def test_cutouts_snapshot():
     rc, txt = step(argv + ['--dry-run'])
     check('cutouts --dry-run: one unit planned, nothing written', rc == 0 and 'unit cutouts.%s.%s' % (CUT_CELL, CUT_SB) in txt
           and not os.path.exists(CUT_OUT), txt)
+    # PR 195 review item 10: the plan names the served generation by real paths - a link to the served snapshot root is it
+    link = os.path.join(TMP, 'served_snapshot_link')
+    os.symlink(CUT_ROOT, link)
+    try:
+        with patched(CFG.photometry, CUTOUT_ROOTS=dict(CFG.photometry.CUTOUT_ROOTS, snapshot=CUT_ROOT)):
+            rc_l, txt_l = step(['photometry'] + CUT_COMMON + ['--cells', '%s_%s' % (CUT_CELL, CUT_SB), '--cutout-root', link,
+                                                              '--out', CUT_OUT, '--dry-run'])
+    finally:
+        os.remove(link)
+    gs = CFG.photometry.GENERATIONS['snapshot']
+    check('cutouts --dry-run, --cutout-root a LINK to the (patched) served snapshot root: the plan says generation %s, not '
+          '"not served" (real paths), and C-INPLACE refuses it without --in-place (exit 2); the unpatched dry run above says '
+          '"not served" for its own root' % gs, rc_l == 2 and '(generation %s)' % gs in txt_l and 'not served' not in txt_l
+          and 'WOULD REFUSE C-INPLACE' in txt_l and '(generation not served)' in txt and not os.path.exists(CUT_OUT),
+          (rc_l, txt_l[-600:]))
     rc, txt = step(argv)
     rec = records(CUT_OUT).get(unit, {})
     man = [o['path'] for o in rec.get('outputs', []) if o['class'] == 'photometry_cutout_manifest']
@@ -3327,6 +3342,12 @@ def tier_review_fixes(adhoc, root, tout, out):
                              '--in-place without a cutouts / cutmeasure stage')):
             rc, txt = step(base + extra + ['--dry-run'])
             check('C-INPLACE (review F4): %s refuses (dry run, exit 2)' % what, rc == 2 and 'C-INPLACE' in txt, txt[-700:])
+        # PR 195 review item 10: the tier stage resolves its cutout root inside its gates - a tier with no served root
+        # (C-TIER-ROOT) is a refusal the dry run plans (exit 2), never an exception before the plan
+        with patched(CFG.photometry, CUTOUT_ROOTS={k: v for k, v in CFG.photometry.CUTOUT_ROOTS.items() if k != 'deep'}):
+            rc, txt = step(base + ['--stages', 'cutouts', '--dry-run'])
+        check('tier cutouts --dry-run with no served cutout root for deep: WOULD REFUSE C-TIER-ROOT planned, exit 2, no '
+              'traceback', rc == 2 and 'WOULD REFUSE C-TIER-ROOT' in txt and 'Traceback' not in txt, (rc, txt[-600:]))
         rc, txt = step(base + ['--stages', 'cutouts,cutmeasure', '--in-place', '--dry-run'])
         check('C-INPLACE: --in-place --stages cutouts,cutmeasure (into the served roots, cutmeasure chained) is planned (dry run, '
               'exit 0)', rc == 0 and 'WOULD REFUSE' not in txt and '[cutmeasure]' in txt, txt[-700:])

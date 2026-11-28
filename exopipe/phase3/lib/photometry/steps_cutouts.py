@@ -468,13 +468,19 @@ def stage_snapshot_cutouts(run, args):
     from exopipe.phase3.lib.photometry import campaign as CP
     camp = CP.start(run, args) if getattr(args, 'campaign', False) else None   # the campaign's units, pin, space, I/O guard
     targets = K.adhoc_targets(args)
-    root = K.cutout_root(args)
+    try:
+        root = K.cutout_root(args)
+    except Refusal as e:                 # a dry run plans the refusal (exit 2), as the gates below
+        if run.dry_run:
+            K.would_refuse(run, 'cutouts', str(e))
+            return []
+        raise
     planets = bool(getattr(args, 'planets', False))
     items = snapshot_items(args)
     samples = run_samples(targets, planets, 'snapshot')
+    served = os.path.realpath(root) == os.path.realpath(K.served_cutout_root('snapshot'))   # a link to it is it
     K.plan(run, '[cutouts] %d (night cell, band) units -> %s (generation %s); samples %s%s; engines %s, site PYTHON[%s]'
-           % (len(items), root, K.cfg().photometry.GENERATIONS['snapshot'] if root == K.served_cutout_root('snapshot')
-              else 'not served',
+           % (len(items), root, K.cfg().photometry.GENERATIONS['snapshot'] if served else 'not served',
               ','.join(samples), ' (ad hoc: %s)' % ', '.join('%s=%s' % t for t in targets) if targets else '',
               ('subbands lib/photometry/stamp_engine.py (the stamp method, reference %s), widebands in place '
                '(phase3_snapshot_group_search.py --cutouts-from-cubes)' % K.cfg().photometry_cutouts.STAMP_REFERENCE_ROOT
@@ -1419,10 +1425,10 @@ def stage_tier_cutouts(run, args):
     tier = args.tier
     token = _cc().TIER_TOKEN[tier]
     targets = K.adhoc_targets(args)
-    root = K.cutout_root(args)
     planets = bool(getattr(args, 'planets', False))
-    samples = run_samples(targets, planets, tier)
     try:
+        root = K.cutout_root(args)       # C-TIER-ROOT / CP-GEN refuse here: a dry run plans them (exit 2)
+        samples = run_samples(targets, planets, tier)
         gate_tier_run(args)
         gate_tier_host(tier)
         cells = tier_items(args, tier)

@@ -15,8 +15,9 @@ Campaign stages, named only (never a default), one family per invocation (as fam
              run_evals.sh): `<FT>/<tier> <out>/<EVAL_NAME> --kind sb|wb --nproc N --tier 10min|deep --survey-cells
              EVAL_SURVEY_CELLS --samples <SAMPLES>` with P3_PHOT_ROOT = the cutout root (the cutouts' TIMES), per tier and
              kind. The thresholds, counts and exceedance fractions are per sample, so a sample added leaves the other samples'
-             rows as they were. Outputs <out>/eval_<tier>_[wb_]gen5_<samples>/thresholds.csv (class forced_tier_eval; <samples>
-             = eval_tag(SAMPLES): hwj10pc, production's names, or hwj10pclpt) and, when <samples> is not the script's literal
+             rows as they were. Outputs <out>/eval_<tier>_[wb_]<generation>_<samples>/thresholds.csv (class forced_tier_eval;
+             eval_name: <generation> = photometry.GENERATIONS of the tier, gen5; <samples> = eval_tag(SAMPLES): hwj10pc,
+             production's names, or hwj10pclpt) and, when <samples> is not the script's literal
              hwj10pc, <out>/eval_links_<samples>/, links with the script's literal names (ev_dir :37-38) that the site reads as
              SF. FT = --tier-forced-root, else photometry.TIER_FORCED_ROOTS (one root for every sample); the cutout root =
              --tier-cutout-root, else photometry.CUTOUT_ROOTS of the tiers (one root). Resume identity: the exclusion list (an input) and the admitted
@@ -101,6 +102,14 @@ def eval_tag(samples):
     return ''.join(re.sub(r'[^0-9a-z]', '', s.lower()) for s in samples)
 
 
+def eval_name(tier, kind, samples):
+    """forced_tier_pages.EVAL_NAME of (tier, kind) for ``samples``: {generation} = photometry.GENERATIONS of the cadence's
+    tier (photometry.CADENCE_TIER: 10min -> sublst, deep -> deep), the tier cutouts the evaluation measures."""
+    c = K.cfg()
+    return c.forced_tier_pages.EVAL_NAME.format(tier=tier, wb='wb_' if kind == 'wb' else '', samples=eval_tag(samples),
+                                                generation=c.photometry.GENERATIONS[c.photometry.CADENCE_TIER[tier]])
+
+
 def selected_events(t=None, ev_dirs=None, samples=None):
     """The rows the in-place build lists (tier_forced_page_20261027.py:41-65): per tier and kind, the clean rows of the
     evaluation's targets_ge4.csv of the samples (default forced_tier_pages.SAMPLES) at or above thr_survey_gauss of their
@@ -178,10 +187,7 @@ class TCtx:
 
     def eval_dirs(self):
         """{(tier, kind): <out>/<EVAL_NAME>}: the evaluations tier_eval writes, named from SAMPLES (eval_tag)."""
-        tag = eval_tag(self.t.SAMPLES)
-        return {(tier, kind): os.path.join(self.W, self.t.EVAL_NAME.format(tier=tier, wb='wb_' if kind == 'wb' else '',
-                                                                           samples=tag))
-                for tier, kind in sorted(self.t.EVAL_DIRS)}
+        return {(tier, kind): os.path.join(self.W, eval_name(tier, kind, self.t.SAMPLES)) for tier, kind in sorted(self.t.EVAL_DIRS)}
 
     def eval_links(self, evs=None):
         """(directory, {link: evaluation}) through which the script reads evaluations not named as its literal

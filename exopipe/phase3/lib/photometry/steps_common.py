@@ -220,17 +220,38 @@ def adhoc_env(targets, planets=False):
     return env
 
 
+def planets_roots(gen=None):
+    """{what: root} of the planets page's (/s/planets/) per-night inputs of generation ``gen`` (default photometry.
+    PLANETS_PAGE_GENERATION, the generation served): its SolarSystem cutouts <photometry_campaign.CUTOUT_ROOT_FMT>/
+    <PLANET_SAMPLE> and its stage 1 <OUT_ROOT[snapshot]>/<PLANETS_STAGE1_FMT>. Its 10-minute and deep inputs are the tier
+    generation's (photometry.TIER_FORCED_ROOTS[PLANET_SAMPLE], DERIVED from GENERATIONS['deep']), not this key's:
+    planets_gen6_stage34_20261127.sh:66-67 builds the gen6 page on P3_PHOT_ROOT_TIERS=photometry_gen5 and
+    P3_FORCED_TIERS=tiers_gen5_planets_orbit."""
+    import re
+    c = cfg()
+    ph, cc = c.photometry, c.photometry_campaign
+    g = gen or ph.PLANETS_PAGE_GENERATION
+    if not isinstance(g, str) or not re.match(cc.GENERATION_RE, g):
+        raise Refusal('photometry.PLANETS_PAGE_GENERATION %r does not name a generation (%s)' % (g, cc.GENERATION_RE))
+    return {'planets page cutouts': os.path.join(cc.CUTOUT_ROOT_FMT.format(generation=g), ph.PLANET_SAMPLE),
+            'planets page stage 1': os.path.join(ph.OUT_ROOT['snapshot'], ph.PLANETS_STAGE1_FMT.format(generation=g)),
+            'planets page tier forced root': ph.TIER_FORCED_ROOTS[ph.PLANET_SAMPLE]}
+
+
 def served_roots():
     """[(what, root)] of the SERVED generations' product roots: photometry.CUTOUT_ROOTS (one entry per distinct root, naming
-    its tiers: 'cutout root (deep, sublst)'), the stage-1 root <OUT_ROOT[snapshot]>/<STAGE1_DIR>, and photometry.
-    TIER_FORCED_ROOTS per sample."""
+    its tiers: 'cutout root (deep, sublst)'), the stage-1 root <OUT_ROOT[snapshot]>/<STAGE1_DIR>, photometry.
+    TIER_FORCED_ROOTS per sample, and the planets page's per-night cutouts and stage 1 (planets_roots, photometry.
+    PLANETS_PAGE_GENERATION)."""
     ph = cfg().photometry
     tiers = {}
     for t, r in sorted(ph.CUTOUT_ROOTS.items()):
         tiers.setdefault(r, []).append(t)
+    pl = planets_roots()
     return ([('cutout root (%s)' % ', '.join(ts), r) for r, ts in tiers.items()]
             + [('stage-1 root', os.path.join(ph.OUT_ROOT['snapshot'], ph.STAGE1_DIR))]
-            + [('tier forced root (%s)' % s, r) for s, r in sorted(ph.TIER_FORCED_ROOTS.items())])
+            + [('tier forced root (%s)' % s, r) for s, r in sorted(ph.TIER_FORCED_ROOTS.items())]
+            + [('%s (%s)' % (w, ph.PLANETS_PAGE_GENERATION), pl[w]) for w in ('planets page cutouts', 'planets page stage 1')])
 
 
 def served_root_of(path):
