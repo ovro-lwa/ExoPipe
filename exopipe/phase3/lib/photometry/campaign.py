@@ -55,7 +55,6 @@ refactor_20261012/plan/GEN6_PORT_PLAN_20261123.md pull request 4):
 import argparse
 import json
 import os
-import re
 import shutil
 import sys
 import tempfile
@@ -82,10 +81,16 @@ def generation(write=True):
     """photometry_campaign.GENERATION, refused (CP-GEN) unless it names a generation (GENERATION_RE) and - for a campaign that
     WRITES (``write``) - one other than the served snapshot one (photometry.GENERATIONS['snapshot']: a campaign cuts the
     per-night snapshot cutouts). The read-only check (``write=False``, `campaign check`) reads any generation's campaign,
-    the served one included."""
-    g, served = _cc().GENERATION, K.cfg().photometry.GENERATIONS['snapshot']
-    if not isinstance(g, str) or not re.match(_cc().GENERATION_RE, g):
-        raise Refusal('CP-GEN: photometry_campaign.GENERATION %r does not name a generation (%s)' % (g, _cc().GENERATION_RE))
+    the served one included. The served generation is checked against the served registry first (SERVED-GEN,
+    steps_common.gate_served_generations)."""
+    from exopipe.phase3.config.steps.photometry import is_generation
+    g = _cc().GENERATION
+    try:
+        is_generation(g)
+    except ValueError as e:
+        raise Refusal('CP-GEN: photometry_campaign.GENERATION %s' % e)
+    K.gate_served_generations()
+    served = K.cfg().photometry.GENERATIONS['snapshot']
     if write and g == served:
         raise Refusal('CP-GEN: photometry_campaign.GENERATION %s is the served generation (photometry.GENERATIONS[snapshot]) - a campaign '
                       'writes a new generation; a regeneration of the served one is --in-place' % g)

@@ -147,7 +147,8 @@ def records(out):
 
 @contextlib.contextmanager
 def patched(obj, **kw):
-    old = {k: getattr(obj, k) for k in kw}
+    # the raw attribute (a config.Derived key's descriptor, not its value), so the restore puts back what was there
+    old = {k: vars(obj)[k] if k in vars(obj) else getattr(obj, k) for k in kw}
     for k, v in kw.items():
         setattr(obj, k, v)
     try:

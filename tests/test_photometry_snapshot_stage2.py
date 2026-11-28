@@ -18,8 +18,10 @@ Asserts:
   - the generation of family C (lib/forced/tier_snapshot): generation_roots('gen6') = the forced_snapshot keys as configured
     (the served generation since 2026-11-27): stage1_gen6, eval_gen6, eval_wb_gen6, zones_recomputed_gen6.csv and
     photometry_gen6; gen5 names the retired generation's roots;
-    --snap-generation sets the five keys as overrides of that source and refuses a mix with --snap-eval-sb/-wb,
-    --snap-zone-flags or a --set of those keys; a bad tag refuses; G-GEN: an evaluation made from another stage 1 (its
+    --snap-generation sets forced_snapshot.GENERATION (the five keys are derived from it: not settable themselves) as an
+    override of that source - ruled: into a non-production --out only, check_out refusing a production one; the served
+    generation is a no-op - and refuses a mix with --snap-eval-sb/-wb, --snap-zone-flags or a --set of the key; a bad tag
+    refuses; G-GEN: an evaluation made from another stage 1 (its
     evaluate record, else its sibling stage1_<tag>) is named, one made from the panels' stage 1 is not, one of unknown
     provenance (neither) is named;
   - the serve switch (lib/serve): the title and hub text of a forced run come from serve.FORCED_GENERATIONS of the run's tag -
@@ -59,7 +61,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
 os.environ.setdefault('NUMPY_MADVISE_HUGEPAGE', '0')
 
-from exopipe.phase3.config import CFG                                # noqa: E402
+from exopipe.phase3.config import CFG, ConfigRefusal                 # noqa: E402
 from exopipe.phase3.core import record                              # noqa: E402
 from exopipe.phase3.core.record import Refusal                      # noqa: E402
 from exopipe.phase3.lib.photometry import steps_snapshot as SS      # noqa: E402
@@ -80,7 +82,7 @@ def check(label, cond, detail=''):
 def raises(fn, *a, **k):
     try:
         fn(*a, **k)
-    except Refusal as e:
+    except (Refusal, ConfigRefusal) as e:
         return str(e)
     return None
 
@@ -257,26 +259,43 @@ def test_generation(d):
     try:
         r = raises(TS.apply_generation, snap_args(snap_generation='gen6', snap_eval_sb='/x'))
         check('--snap-generation with --snap-eval-sb refuses', r is not None and '--snap-eval-sb' in r, r)
-        CFG.set('forced_snapshot.STAGE1_ROOT', '/elsewhere')
+        r = raises(CFG.set, 'forced_snapshot.STAGE1_ROOT', '/elsewhere')
+        check('a --set of a generation root itself refuses: it is derived (config.Derived), set its input '
+              'forced_snapshot.GENERATION', r is not None and 'derived' in r and 'forced_snapshot.GENERATION' in r, r)
+        CFG.authorize([], out=d)
+        CFG.set('forced_snapshot.GENERATION', 'gen5')
         r = raises(TS.apply_generation, snap_args(snap_generation='gen6'))
-        check('--snap-generation with a --set of a generation key refuses', r is not None and 'STAGE1_ROOT' in r, r)
+        check('--snap-generation with a --set of forced_snapshot.GENERATION refuses', r is not None
+              and 'forced_snapshot.GENERATION' in r, r)
         CFG.reset()
         g5 = TS.generation_roots('gen5')
         check('generation_roots(gen5): the retired generation\'s eval_gen5, stage1_gen5 and photometry_gen5 (not the served '
               'roots)', g5['STAGE1_ROOT'] == os.path.join(root, 'stage1_gen5') and g5['EVAL_SB'] == os.path.join(root, 'eval_gen5')
               and os.path.basename(g5['PHOT_ROOT']) == 'photometry_gen5' and all(g5[k] != getattr(s, k) for k in TS.GENERATION_KEYS),
               g5)
+        TS.apply_generation(snap_args(snap_generation='gen6'))
+        check('--snap-generation gen6, the served generation, is a no-op (no override)', CFG.overrides == [], CFG.overrides)
+        CFG.authorize([], out=None)
+        r = raises(TS.apply_generation, snap_args(snap_generation='gen5'))
+        check('--snap-generation gen5 into a production --out refuses: forced_snapshot.GENERATION is ruled (--ruling-for, or a '
+              'non-production --out)', r is not None and 'forced_snapshot.GENERATION' in r and 'ruling' in r
+              and CFG.overrides == [], r)
+        CFG.authorize([], out=d)
         TS.apply_generation(snap_args(snap_generation='gen5'))
         got = {k: getattr(s, k) for k in TS.GENERATION_KEYS}
         src = {o[0]: o[3] for o in CFG.overrides}
-        check('--snap-generation gen5 sets the five keys, recorded as overrides of source --snap-generation',
-              got == g5 and all(src.get('forced_snapshot.' + k) == '--snap-generation' for k in TS.GENERATION_KEYS),
-              (got, src))
+        check('--snap-generation gen5 (a non-production --out) sets forced_snapshot.GENERATION, recorded as an override of '
+              'source --snap-generation; the five keys follow it', got == g5 and src == {'forced_snapshot.GENERATION':
+                                                                                          '--snap-generation'}, (got, src))
+        r = raises(CFG.check_out, CFG.photometry.OUT_ROOT['snapshot'])
+        check('... and refuses at check_out when the run\'s final --out is a production root', r is not None
+              and 'forced_snapshot.GENERATION' in r and 'production root' in r, r)
         roots = TS.roots_env(s)
         check('the children read generation 5\'s cutouts and stage 1 (P3_PHOT_ROOT, P3_FORCED_STAGE1)',
               roots == {'P3_PHOT_ROOT': g5['PHOT_ROOT'], 'P3_FORCED_STAGE1': g5['STAGE1_ROOT']}, roots)
     finally:
         CFG.reset()
+        CFG.authorize([])
     # G-GEN: evaluation_stage1 / generation_mismatch
     base = os.path.join(d, 'gen')
     for x in ('stage1_gen5', 'stage1_gen6', 'eval_gen6', 'eval_wb_gen6', 'v2/eval_gen6', 'v2/eval_wb_gen6'):
@@ -292,9 +311,9 @@ def test_generation(d):
     class C:
         pass
     c = C()
-    c.cfg = CFG
+    # the panels' stage 1 is a derived key (not settable): a stand-in config names it
+    c.cfg = argparse.Namespace(forced_snapshot=argparse.Namespace(STAGE1_ROOT=os.path.join(base, 'stage1_gen6')))
     try:
-        CFG.set('forced_snapshot.STAGE1_ROOT', os.path.join(base, 'stage1_gen6'))
         c.ev_sb, c.ev_wb = os.path.join(base, 'eval_gen6'), os.path.join(base, 'eval_wb_gen6')
         check('G-GEN: both evaluations made from the panels\' stage 1 - nothing named', TS.generation_mismatch(c) == [],
               TS.generation_mismatch(c))

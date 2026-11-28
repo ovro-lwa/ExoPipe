@@ -98,12 +98,18 @@ residual cube (frame minus the hour median) on the cell's fixed grid.
   - 10 s: the frames that were admitted and that pass the evaluation's domain gate at the target. The gate covers
     elevation ≥ 30°, the A-team, the night rule, and the Sun and Jupiter.
   - 1 min: stage 1's blocks. These are admitted frames of one minute, at least `BLOCK_MIN_FRAMES` (3), averaged and
-    gated at the block time, keyed by the minute rule of the stage 1 that measured the cutouts searched
-    (`wide_stages.minute_rule`, gate W-MINUTE). The rule is read from that generation's stage-1 npz files (one per cell):
-    gen6's record `minute_basis` `integration-midpoint-dateobs-v1`, the integration-midpoint minute, `'midpoint'`;
-    gen5's record none, the file-name minute, `'filename'`, the value of production's 2026-11-04 run. With no npz
-    readable, the generation's rule (`MINUTE_RULE_OF_GENERATION`) applies. `MINUTE_RULE` is None; a value set refuses
-    unless the inputs agree, and a cutout root that names no generation needs one.
+    gated at the block time, keyed by the minute rule of the stage 1 that measured the cutouts searched (gate
+    W-MINUTE). The run's rule is the generation's of the cutout root (`wide_stages.minute_rule`: the generation its real
+    path names, `MINUTE_RULE_OF_GENERATION`): gen6 `'midpoint'`, the integration-midpoint minute, whose stage-1 npz files
+    record `minute_basis` `integration-midpoint-dateobs-v1`; gen5 `'filename'`, the file-name minute, whose files record
+    none, the value of production's 2026-11-04 run. Each search unit then checks every cell it searches against that
+    cell's own stage-1 npz, `<OUT_ROOT[snapshot]>/<STAGE1_DIR_FMT>/<cell>/forced_<sample>_<band>_<S>.npz`
+    (`wide_search.minute_basis`): a file that is unreadable or absent, or whose basis is not of the run's rule, refuses
+    the whole unit before any band is placed, whatever `FILE_ERRORS` says. No readable basis is never a default.
+    `MINUTE_RULE` is None; a value set refuses unless it is the generation's. A cutout root that names no generation, a
+    link whose name and real path name different generations (W-CUTROOT), and an absent stage 1 refuse, and a dry run
+    plans each. The cutout root's real path, the rule and the stage 1 are each unit's identity: `--resume` re-runs a unit
+    recorded with others.
   - A band excluded for that (LST, night), or refused by tier rule 3, is skipped.
   - The target's a-priori screen (zone or clean) is recorded per file and tier.
 - **Peaks.** Local extrema of |value| over 3 × 3 pixels, of either sign. Candidates are kept at ≥ 4 × the plane's
@@ -403,11 +409,13 @@ exopipe3 forced --tier snapshot --stages wide_jobs --wide-runs <Lustre copy> \
     --set "photometry.GENERATIONS[snapshot]='gen5'"
 ```
 
-The `--set` names the generation production's run of 2026-11-04 tested. Every root and run name derived from
-`photometry.GENERATIONS` follows it: the `_gen5` runs, the cutouts that run searched
-(`photometry_gen5`, so no `--wide-cutout-root`), and, through W-MINUTE, the file-name minute of gen5's stage 1. Every
-stage of the parity run takes it. It is not in the parity file, which holds ruled values only. The defaults follow the
-served generation, which is gen6 for 10 s and 1 min since 2026-11-27.
+The `--set` names the generation production's run of 2026-11-04 tested. `photometry.GENERATIONS` is protected (and
+ruled, R-GREGG-20261118-GEN6-WITH-LPTS-SAMPLE-WIRED): only a `--parity` run into a non-production `--out` may override
+it, and the served-root gate (SERVED-GEN) takes such a replay. Every root and run name derived from it (config.Derived,
+computed when read) follows it: the `_gen5` runs, the cutouts that run searched (`photometry_gen5`, so no
+`--wide-cutout-root`), and, through W-MINUTE, the file-name minute of gen5's stage 1, checked per cell. Every stage of
+the parity run takes it. It is not in the parity file, which holds ruled values only. The defaults follow the served
+generation, which is gen6 for 10 s and 1 min since 2026-11-27.
 
 Then run `wide_search --wide-only I:KELT-24,...`, `wide_test --wide-bursts <analysis>/bursts_gen5` and `wide_publish`
 into `<scratch>/review/<run>`, which must exist. The comparison tools and results are under

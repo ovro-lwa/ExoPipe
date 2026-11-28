@@ -90,7 +90,8 @@ class Patch:
         self.saved = []
 
     def set(self, obj, key, val):
-        self.saved.append((obj, key, getattr(obj, key)))
+        # the raw attribute (a config.Derived key's descriptor, not its value), so undo() restores it as it was
+        self.saved.append((obj, key, vars(obj)[key] if key in vars(obj) else getattr(obj, key)))
         setattr(obj, key, val)
 
     def undo(self):
@@ -135,20 +136,28 @@ def run_of(out, **kw):
 
 # ---------------------------------------------------------------------------------------------------------------------
 
-GEN5_SERVED = {'GENERATIONS': ('snapshot', 'gen5'), 'CUTOUT_ROOTS': ('snapshot', '/lustre/pipeline/exopipe/phase3/photometry_gen5')}
-
-
-def served_gen5(P):
-    """The served state the gen6 campaign ran in (2026-11-17..27): snapshot generation 5 (photometry.GENERATIONS /
-    CUTOUT_ROOTS ['snapshot'], STAGE1_DIR stage1_gen5), in memory only. Since 2026-11-27 generation 6 is served, so the
-    configured campaign generation gen6 refuses CP-GEN (test_generation); the campaign's own tests run in its own state."""
-    for key, (tier, val) in GEN5_SERVED.items():
-        P.set(CFG.photometry, key, dict(getattr(CFG.photometry, key), **{tier: val}))
-    P.set(CFG.photometry, 'STAGE1_DIR', 'stage1_gen5')
+def served_gen5(P, d):
+    """The served state the gen6 campaign ran in (2026-11-17..27): snapshot generation 5 - photometry.GENERATIONS['snapshot']
+    = gen5 (CUTOUT_ROOTS['snapshot'] photometry_gen5 and STAGE1_DIR stage1_gen5 follow: Derived) and the served registry's
+    fixture of then (the fixture with the 10-s / 1-min runs of gen5, in ``d``; SERVED-GEN compares the two), in memory
+    only. Since 2026-11-27 generation 6 is served, so the configured campaign generation gen6 refuses CP-GEN
+    (test_generation); the campaign's own tests run in its own state."""
+    ph = CFG.photometry
+    with open(K.served_fixture_path()) as f:
+        fx = json.load(f)
+    for v in fx['registry']['forced'].values():
+        for cad in ('10s', '1min'):
+            v['run'] = v['run'].replace('%s_gen6' % cad, '%s_gen5' % cad)
+    path = os.path.join(d, 'served_generations_gen5.json')
+    with open(path, 'w') as f:
+        json.dump(fx, f)
+    P.set(ph, 'SERVED_GENERATIONS_FILE', path)
+    P.set(ph, 'GENERATIONS', dict(ph.GENERATIONS, snapshot='gen5'))
 
 
 def test_generation(d):
     P = Patch()
+    served_file = CFG.photometry.SERVED_GENERATIONS_FILE
     try:
         e = raises(CP.generation)
         check('generation 6 is served (photometry.GENERATIONS[snapshot] = gen6, 2026-11-27), so the configured campaign '
@@ -164,10 +173,11 @@ def test_generation(d):
         check('`campaign check --generation gen6` (the served generation) runs: past CP-GEN to the content test, which says '
               'there is no gen6 campaign start record under that --out (exit 2)', rc == 2 and 'CP-GEN' not in buf.getvalue()
               and 'no campaign start record of generation gen6' in buf.getvalue(), (rc, buf.getvalue()[-300:]))
-        served_gen5(P)
+        served_gen5(P, d)
         check('the generation written is photometry_campaign.GENERATION (gen6), the served one photometry.GENERATIONS'
-              '[snapshot] (gen5 while the campaign ran)', CP.generation() == 'gen6'
-              and CFG.photometry.GENERATIONS['snapshot'] == 'gen5', CP.generation())
+              '[snapshot] (gen5 while the campaign ran; CUTOUT_ROOTS and STAGE1_DIR follow it)', CP.generation() == 'gen6'
+              and CFG.photometry.GENERATIONS['snapshot'] == 'gen5' and CFG.photometry.STAGE1_DIR == 'stage1_gen5'
+              and CFG.photometry.CUTOUT_ROOTS['snapshot'].endswith('photometry_gen5'), CP.generation())
         check('both roots derive from it: %s, <out>/%s' % (CP.cutout_root(), CP.stage1_dir()),
               CP.cutout_root() == '/lustre/pipeline/exopipe/phase3/photometry_gen6' and CP.stage1_dir() == 'stage1_gen6')
         P.set(CFG.photometry_campaign, 'GENERATION', 'gen7')
@@ -188,6 +198,12 @@ def test_generation(d):
         P.set(CFG.photometry_campaign, 'GENERATION', 'photometry_gen6')
         e = raises(CP.generation)
         check('CP-GEN: a value that does not name a generation refuses', e is not None and 'CP-GEN' in e, e)
+        P.set(CFG.photometry_campaign, 'GENERATION', 'gen7')
+        P.set(CFG.photometry, 'SERVED_GENERATIONS_FILE', served_file)
+        e = raises(CP.generation)
+        check('SERVED-GEN: photometry.GENERATIONS[snapshot] gen5 against the served registry\'s fixture (gen6) refuses: the '
+              'served-root gate protects what the hub serves (a served generation changes in one commit with the fixture)',
+              e is not None and 'SERVED-GEN' in e and 'GENERATIONS[snapshot] = gen5' in e and 'serves gen6' in e, e)
     finally:
         P.undo()
 
@@ -1253,7 +1269,7 @@ def main():
     try:
         test_generation(d)
         P = Patch()
-        served_gen5(P)          # the rest in the state the campaign ran in (served generation 5); undone below
+        served_gen5(P, d)       # the rest in the state the campaign ran in (served generation 5); undone below
         test_resume_hash()
         test_args()
         W = World(d)
