@@ -56,25 +56,43 @@ class photometry(_Section):
     TIERS_WITH_ENGINE = ('deep', 'snapshot', 'sublst')   # sub-LST: cutouts + cutmeasure; no measure / evaluate engine (ledger
                                                  # 1513/1518 notes; the 19h pilot sublst_forced_phot.py is one-off) - gate
                                                  # PHOT-SUBLST-NO-ENGINE refuses those
-    # ---- THE GENERATION PRODUCTION SERVES (generation 5: the cutouts regenerated from the flow cubes 2026-10-25/26 and the tier
-    #      cutouts of 2026-10-25, stage 1 on them; served by the snapshot forced pages since 2026-10-26 19:54-20:16 UT -
-    #      snapshot_forced_gen5_20261025.sh:11 P3_PHOT_ROOT / SF_OUT, snapshot_cutout_regen_20261025.sh:13 ROOT,
-    #      photometry_tier_forced_20261026.py --out). The forced step names the same roots (forced_snapshot.PHOT_ROOT, STAGE1_ROOT);
-    #      tests/test_photometry.py test_served_generation checks both against the served runs' FT-START records and the served
-    #      stage-1 manifests, so a generation switch fails until this config follows it. Generation 4 (PHASE3_ARCHIVE_ROOT/photometry,
-    #      <snapshot_forced>/stage1) is retired: it held cutouts an injected run wrote (INCIDENT-INJECTED-SEARCH-WROTE-PRODUCTION-
-    #      PHOTOMETRY-CUTOUTS-HS-PSC-EVENT-UNREPRODUCIBLE-20261024).
-    GENERATION = 'gen5'
-    CUTOUT_ROOT = '/lustre/pipeline/exopipe/phase3/photometry_gen5'          # every tier's cutouts: <sample>/<band>/<object>/
-                                                 # (snapshot measure reads, the cutouts stage writes; --cutout-root overrides)
-    STAGE1_DIR = 'stage1_gen5'                   # snapshot stage 1 = <--out>/<this>; production <OUT_ROOT[snapshot]>/stage1_gen5
+    # ---- THE GENERATION PRODUCTION SERVES, PER TIER (2026-11-27). Snapshot (10 s, 1 min): generation 6, the cutouts cut from
+    #      the rescaled cubes (Master flux scale) by the gen6 campaign, stage 1 on them; served by the snapshot forced pages
+    #      p8775 / p8776 / p8785 / p8786 (serve/registered_pages.json:778-888, Run_SNAPFORCED_{V,I}{1min,10s}_gen6; Gregg
+    #      "Approve gen6 with the LPTs included"). Their FT-START records (2026-11-26 20:06 - 2026-11-27 10:01 UT;
+    #      snapshot_forced_pages_run_Run_SNAPFORCED_V10s_gen6.log:1, _V1min_gen6.log:1, _I10s_gen6.log:27, _I1min_gen6.log:69)
+    #      name P3_PHOT_ROOT=photometry_gen6 and P3_FORCED_STAGE1=stage1_gen6 (gen6_20261117/gen6_forced_stages_DRAFT.sh:28).
+    #      Deep and 10 minutes (sub-LST): generation 5's TIER cutouts (<object>_<LST>_deep_ / _10min_ files, 2026-10-25) in
+    #      photometry_gen5, which generation 6 does not hold; served by the tier pages p9120-p9123 (registered_pages.json:223-330,
+    #      Run_SNAPFORCED_{V,I}{10min,deep}_gen5; site_hwj10pc_tiers_gen5/page_record.json phot = photometry_gen5). The forced
+    #      step names the snapshot roots too (forced_snapshot.PHOT_ROOT, STAGE1_ROOT); tests/test_served_generation_roots.py
+    #      checks every tier against the served registry (data-free) and tests/test_photometry.py test_served_generation against
+    #      the served runs' FT-START records and the served stage-1 manifests, so a generation switch fails until this config
+    #      follows it. Generation 4 (PHASE3_ARCHIVE_ROOT/photometry, <snapshot_forced>/stage1) is retired: it held cutouts an
+    #      injected run wrote (INCIDENT-INJECTED-SEARCH-WROTE-PRODUCTION-PHOTOMETRY-CUTOUTS-HS-PSC-EVENT-UNREPRODUCIBLE-20261024).
+    GENERATIONS = {'snapshot': 'gen6', 'deep': 'gen5', 'sublst': 'gen5'}   # tier -> the served cutout generation
+    CUTOUT_ROOTS = {'snapshot': '/lustre/pipeline/exopipe/phase3/photometry_gen6',   # per-night cutouts <sample>/<band>/
+                    'deep': '/lustre/pipeline/exopipe/phase3/photometry_gen5',       # <object>/ (snapshot measure reads, the
+                    'sublst': '/lustre/pipeline/exopipe/phase3/photometry_gen5'}     # search and the cutouts stage write); deep /
+                                                 # sub-LST: the tier cutouts (cutmeasure, the tier pages read); --cutout-root
+                                                 # overrides
+    STAGE1_DIR = 'stage1_gen6'                   # snapshot stage 1 = <--out>/<this>; production <OUT_ROOT[snapshot]>/stage1_gen6
+    # THE PLANETS PAGE (/s/planets/: registered_pages.json:114-116, root site_planets_SUN_gen5; built by the dated drivers
+    # planets_page_orbit_build_20261028.sh, planets_gen6_stage34_20261127.sh - no v2 family builds or reads it): the generation
+    # of its 10-s and 1-minute inputs as served now, site_planets_SUN_gen5/page_record.json: stage 1 <OUT_ROOT[snapshot]>/
+    # stage1_gen5_planets_orbit on photometry_gen5/SolarSystem. The Snapshot chat's rerun (planets_gen6_stage34_20261127.sh:64-77)
+    # swaps a page built on stage1_gen6_planets_orbit / photometry_gen6 into the same root and reports PLANETS-GEN6-DONE. Its
+    # 10-minute and deep inputs stay TIER_FORCED_ROOTS['SolarSystem'] on the gen5 tier cubes (:36 P3_PHOT_ROOT=$G5, :67)
+    PLANETS_PAGE_GENERATION = 'gen5'             # switch at PLANETS-GEN6-DONE (to 'gen6')
     # cutmeasure: <root>/<10min|deep>/<LST>/forced_<sample>_<band>_<S>.npz + forced_manifest.csv, the root per sample as served:
     # HWJ / 10 pc in forced_tiers_gen5 (the served tier pages read it: tier_forced_page_20261027.py through
     # planets_forced_page_20261026.py:61 FT, the P3_FORCED_TIERS default); the
     # planets' orbit-control re-run (fa17f4c, Gregg 2026-10-28 "all approved") in tiers_gen5_planets_orbit, which the planets page
     # reads (planets_page_orbit_build_20261028.sh:12 P3_FORCED_TIERS) - forced_tiers_gen5 still holds their 9b0ca31 ring files.
     # --tier-out puts every sample under one root instead. LPT (2026-11-24): in forced_tiers_gen5 with HWJ / 10 pc, the root the
-    # tier pages read (forced_tier_pages.SAMPLES); the served generation holds LPT once cutouts,cutmeasure --in-place has run
+    # tier pages read (forced_tier_pages.SAMPLES); the served generation holds LPT once cutouts,cutmeasure --in-place has run.
+    # Unchanged by generation 6 (it cut no tier cutouts); SolarSystem stays at PLANETS-GEN6-DONE (planets_gen6_stage34_20261127.sh
+    # :67 P3_FORCED_TIERS=tiers_gen5_planets_orbit)
     TIER_FORCED_ROOTS = {'HWJ': '/lustre/pipeline/exopipe/phase3/forced_tiers_gen5',
                          '10pc': '/lustre/pipeline/exopipe/phase3/forced_tiers_gen5',
                          'LPT': '/lustre/pipeline/exopipe/phase3/forced_tiers_gen5',
@@ -237,7 +255,8 @@ class photometry_frames(_Section):
 class photometry_measure(_Section):
     """Measurement at the target and its ring controls (deep_forced_phot.py, snapshot_forced_phot.py in place). MIRROR keys
     describe the engines' literals (PROTECTED); SHARDS, BAND_PROCS and WORK_SUBDIR steer the step. The cutouts measured are
-    photometry.CUTOUT_ROOT's (the served generation; --cutout-root overrides); stage 1 is written to <out>/photometry.STAGE1_DIR."""
+    photometry.CUTOUT_ROOTS[tier]'s (the tier's served generation; --cutout-root overrides); stage 1 is written to
+    <out>/photometry.STAGE1_DIR."""
     # ---- both tiers (identical values today; R-FORCED-PHOTOMETRY-ELEMENTS-APPROVED-V-FAINT-PARENT-ENTRIES = ledger 1513)
     N_CONTROLS = 12                 # MIRROR deep_forced_phot.py:58 (N_CTRL), snapshot_forced_phot.py:47 (NCTL)
     RING_BEAMS = 4.0                # beam FWHM; MIRROR deep :58 (R_CTRL_BEAMS), snapshot :48; snapshot falls back to the largest
@@ -391,14 +410,14 @@ class photometry_evaluate(_Section):
 
 class photometry_cutouts(_Section):
     """The photometry cutout product of every tier and the stages that write it. Snapshot (10 s): written per hour by
-    `search --tier snapshot` into photometry.CUTOUT_ROOT (phase3_snapshot_cutouts.write_cutouts in place; search_snapshot.
+    `search --tier snapshot` into photometry.CUTOUT_ROOTS['snapshot'] (phase3_snapshot_cutouts.write_cutouts in place; search_snapshot.
     CUTOUTS_ON switches it, CUTOUT_SUBDIR names its scratch root under --out in the refactor window) and REGENERATED from the
     consolidated flow cubes by `photometry --tier snapshot --stages cutouts` (the search's own path, in place:
     phase3_snapshot_search.py / phase3_snapshot_group_search.py --cutouts-from-cubes; the production campaign
     snapshot_cutout_regen_20261025.sh, _wb_20261025.sh). Deep and 10-minute: `photometry --tier deep|sublst --stages cutouts`
     (photometry_tier_cutouts_20261025.py in place) and `--stages cutmeasure` (photometry_tier_forced_20261026.py in place).
     Every stage writes into a generation root (--cutout-root / --tier-out), never a retired one, through a staging directory of
-    the unit; the SERVED roots (photometry.CUTOUT_ROOT / TIER_FORCED_ROOTS) only with --in-place, the measurement on the new
+    the unit; the SERVED roots (photometry.CUTOUT_ROOTS / TIER_FORCED_ROOTS) only with --in-place, the measurement on the new
     cutouts chained in the same invocation (review F4: production's rule is a new root, never over the existing product).
     Content tests owned here (classes photometry_cutout, photometry_cutout_manifest, photometry_tier_npz,
     photometry_tier_manifest), run on the staged files before anything reaches the root and again once placed. Keys marked
@@ -488,8 +507,10 @@ class photometry_campaign(_Section):
     GEN6_PORT_PLAN_20261123.md pull request 4). The campaign lists its (cell, band) units itself from the flow cubes, pins the
     engine code at its start, checks the space before each unit and yields to the recorders' I/O guard; stage 1 of a cell runs
     per band kind once every cutouts unit of that kind is terminal. The generation written is THIS section's GENERATION, never
-    the served one (photometry.GENERATION; a campaign writes a new generation, the serve switch is the serve step's)."""
-    # ---- the generation written (spec discrepancy 3 of the plan, decided 2026-11-23): both roots derive from one value
+    the served one (photometry.GENERATIONS['snapshot']; a campaign writes a new generation, the serve switch is the serve step's)."""
+    # ---- the generation written (spec discrepancy 3 of the plan, decided 2026-11-23): both roots derive from one value.
+    #      Generation 6 is served since 2026-11-27 (photometry.GENERATIONS['snapshot']), so CP-GEN refuses this value: the
+    #      next campaign names its generation (--generation, or this key); none is planned
     GENERATION = 'gen6'
     GENERATION_RE = r'^gen\d+$'
     CUTOUT_ROOT_FMT = '/lustre/pipeline/exopipe/phase3/photometry_{generation}'     # gen6: gen6_cutout_regen_DRAFT.sh ROOT

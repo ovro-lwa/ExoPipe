@@ -40,8 +40,9 @@ Stages:  frames (deep_forced_frames.py in place, on the host that reads the cell
 
 Snapshot tier (lib/photometry/steps_snapshot.py). --out = the snapshot forced root (default photometry.OUT_ROOT[snapshot]).
 Inputs:  the photometry cutouts of the SERVED GENERATION <cutout root>/<sample>/<band>/<object>/<object>_<LST>_<UTC>_<S>.fits
-         (default photometry.CUTOUT_ROOT = photometry_gen5; class photometry_cutout, its content test reported per band); the
-         gen-4 Master catalogues; evaluate: the stage-1 files (--stage1, default <out>/photometry.STAGE1_DIR = stage1_gen5),
+         (default photometry.CUTOUT_ROOTS[snapshot] = photometry_gen6; class photometry_cutout, its content test reported per
+         band); the gen-4 Master catalogues; evaluate: the stage-1 files (--stage1, default <out>/photometry.STAGE1_DIR =
+         stage1_gen6),
          the search's noise medians and runinfo (paths.SNAPSHOT_FLEET_OUT), the curve constants, the tier-3 pin,
          data_decisions.csv, the refused-cell list.
 Outputs: <STAGE1_DIR>/<cell>/forced_<sample>_<band>_<S>.npz (photometry_snapshot_npz) + forced_manifest.csv (photometry_manifest);
@@ -58,7 +59,7 @@ sublst cutouts per <LST>_<band> = photometry_tier_cutouts_20261025.py, cutmeasur
 the source checked first, then ONE FILE PER (sample, band, object, LST, date, Stokes) (C-STALE; --fresh quarantines superseded
 files), then a per-unit manifest <root>/_manifest/<10s|deep|10min>/... (photometry_cutout_manifest) whose content tests run on
 the staged files before anything is placed; the files a placement replaces move to a quarantine directory first, and a
-refusal after that puts everything back. The SERVED roots (the defaults photometry.CUTOUT_ROOT, TIER_FORCED_ROOTS) only with
+refusal after that puts everything back. The SERVED roots (the defaults photometry.CUTOUT_ROOTS of the tier, TIER_FORCED_ROOTS) only with
 --in-place, the measurement on the new cutouts chained in the same invocation (C-INPLACE; production's rule: a regeneration
 writes a new root, never over the served product); a snapshot regeneration in place covers whole cells, since the chained
 measure rewrites a cell's served stage 1 (its full-band manifest) only as a whole. --targets TAG=CSV[,TAG=CSV] (+ --planets):
@@ -82,7 +83,8 @@ Failure modes (exit 2 = refused, the gate named in the record; 3 = nothing to do
   SE-DONE (a cell without a complete stage 1), the evaluation's own refusals, Z (no targets_ge4 rows, or a recomputed
   zone screen differs: the zone-flag file is not written).
   cutouts: C-CELLS (no --cells; a tier cell the tool does not know), C-HOST (the tier tool's inputs not readable on this
-  host), C-ROOT (a retired generation; a production root in the window), C-INPLACE (a served root without --in-place;
+  host), C-TIER-ROOT (no served cutout root for the tier), C-ROOT (a retired generation; a production root in the window),
+  C-INPLACE (a served root without --in-place, or another tier's served cutout root;
   --in-place without its measurement chained, or - snapshot - over a band subset, another manifest name, an --index, or a
   cell the chained measure does not select), C-RUN (--src-run other than the tier tool's deep run), C-NOCUBE / C-EXCLUDED /
   C-NOCUT (exit 3 per unit; C-STALE when the root still holds that (cell, band)'s files; a snapshot C-EXCLUDED before any
@@ -156,7 +158,8 @@ def add_arguments(p):
                                                        'SCRATCH_ROOT + photometry_frames.STAGE_SUBDIR)')
     cu = p.add_argument_group('cutouts (every tier)')
     cu.add_argument('--cutout-root', metavar='DIR', help='the cutout generation measured (snapshot measure, cutmeasure) and '
-                                                         'written (cutouts): default photometry.CUTOUT_ROOT, the served one')
+                                                         'written (cutouts): default photometry.CUTOUT_ROOTS[tier], the '
+                                                         'served one')
     cu.add_argument('--tier-out', metavar='DIR', help='cutmeasure: the tier forced root of every sample (default '
                                                       'photometry.TIER_FORCED_ROOTS, per sample as served)')
     cu.add_argument('--targets', metavar='TAG=CSV[,TAG=CSV]',
@@ -166,7 +169,7 @@ def add_arguments(p):
                          '--out, and --tier-out for cutmeasure); not evaluated')
     cu.add_argument('--planets', action='store_true', help='with --targets: cut the planets too (P3_SNAP_CUTOUT_PLANETS=1)')
     cu.add_argument('--in-place', action='store_true',
-                    help='cutouts / cutmeasure: regenerate the SERVED generation itself (photometry.CUTOUT_ROOT, TIER_FORCED_ROOTS '
+                    help='cutouts / cutmeasure: regenerate the SERVED generation itself (photometry.CUTOUT_ROOTS[tier], TIER_FORCED_ROOTS '
                          '- refused without this flag: a regeneration writes a new root), its measurement chained in this '
                          'invocation (snapshot: --stages cutouts,measure into the served stage 1, whole cells only - no '
                          '<cell>_<band>, --scopes, --manifest-name or --index; deep / sublst: --stages cutouts,cutmeasure '

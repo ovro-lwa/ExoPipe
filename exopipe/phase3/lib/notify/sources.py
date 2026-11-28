@@ -322,7 +322,8 @@ def targets(item, CFG):
     page_of = {os.path.normpath(v['run']): k for k, v in reg.items() if v.get('run')}
     for tier, tag in CFG.notify.FORCED_TIERS.items():
         for stokes in ('V', 'I'):
-            run = os.path.join(CFG.paths.SNAPSHOT_REVIEW_ROOT, CFG.notify.FORCED_RUN.format(stokes=stokes, tier=tag))
+            run = os.path.join(CFG.paths.SNAPSHOT_REVIEW_ROOT, CFG.notify.FORCED_RUN.format(
+                stokes=stokes, tier=tag, generation=CFG.notify.FORCED_RUN_GENERATION[tag]))
             ev = os.path.join(run, 'forced_assoc_events.csv')
             if not os.path.exists(ev):
                 limits.append(f'forced photometry, {tier} Stokes {stokes}: no served event list ({ev}) - not listed')

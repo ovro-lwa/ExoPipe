@@ -1532,7 +1532,7 @@ def n2(path, cutout_root=None, **ctx):
             u = (base - datetime.datetime(1970, 1, 1)).total_seconds() + (float('0' + st_[19:]) if len(st_) > 19 else 0.0)
             return (datetime.datetime(1970, 1, 1) + datetime.timedelta(seconds=int(math.floor(u + half)))).strftime('%Y%m%d_%H%M')
         cell = os.path.basename(os.path.dirname(os.path.abspath(path)))
-        root = cutout_root or c.photometry.CUTOUT_ROOT
+        root = cutout_root or c.photometry.CUTOUT_ROOTS['snapshot']
         names = [str(n) for n in d['names']]
         cp = _cutout_for(root, mt['smp'], mt['band'], names[0], cell, mt['st']) if names else []
         if len(cp) != 1:
@@ -1618,7 +1618,7 @@ def n4(path, cutout_root=None, **ctx):
     if not mt:
         return False, None, 'file name is not forced_<sample>_<band>_<S>.npz'
     cell = os.path.basename(os.path.dirname(os.path.abspath(path)))
-    root = cutout_root or c.photometry.CUTOUT_ROOT
+    root = cutout_root or c.photometry.CUTOUT_ROOTS['snapshot']
     d = _npz(path)
     names = [str(n) for n in d['names']]
     T, F = len(names), len(d['ts'])

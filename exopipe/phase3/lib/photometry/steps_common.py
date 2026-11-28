@@ -116,13 +116,26 @@ def gate_tier(tier, stages_arg=None):
 # generation roots and ad-hoc target lists (CUTOVER_READINESS 'PHOTOMETRY CUTOUTS ...', 'DATED DRIVERS TO COVER')
 # ---------------------------------------------------------------------------------------------------------------------
 
-def cutout_root(args):
+def served_cutout_root(tier):
+    """The served cutout generation of ``tier`` (photometry.CUTOUT_ROOTS: snapshot = the per-night cutouts, deep / sublst =
+    the tier cutouts); a tier without an entry refuses (C-TIER-ROOT), never another tier's root."""
+    roots = cfg().photometry.CUTOUT_ROOTS
+    if tier not in roots:
+        raise Refusal('C-TIER-ROOT: no served cutout root for tier %r (photometry.CUTOUT_ROOTS names %s)'
+                      % (tier, ', '.join(sorted(roots))))
+    return roots[tier]
+
+
+def cutout_root(args, tier=None):
     """The cutout generation a stage reads or writes: a campaign's generation (--campaign: photometry_campaign.GENERATION,
-    lib/photometry/campaign.py), else --cutout-root, else the served generation (photometry.CUTOUT_ROOT)."""
+    lib/photometry/campaign.py), else --cutout-root, else the tier's served generation (photometry.CUTOUT_ROOTS[tier]; tier =
+    ``tier``, else args.tier)."""
     if getattr(args, 'campaign', False):
         from exopipe.phase3.lib.photometry import campaign
         return campaign.cutout_root()
-    return os.path.abspath(args.cutout_root) if getattr(args, 'cutout_root', None) else cfg().photometry.CUTOUT_ROOT
+    if getattr(args, 'cutout_root', None):
+        return os.path.abspath(args.cutout_root)
+    return served_cutout_root(tier or getattr(args, 'tier', None))
 
 
 def gate_write_root(path, what):
@@ -208,10 +221,15 @@ def adhoc_env(targets, planets=False):
 
 
 def served_roots():
-    """[(what, root)] of the SERVED generation's product roots: photometry.CUTOUT_ROOT, the stage-1 root <OUT_ROOT[snapshot]>/
-    <STAGE1_DIR>, and photometry.TIER_FORCED_ROOTS per sample."""
+    """[(what, root)] of the SERVED generations' product roots: photometry.CUTOUT_ROOTS (one entry per distinct root, naming
+    its tiers: 'cutout root (deep, sublst)'), the stage-1 root <OUT_ROOT[snapshot]>/<STAGE1_DIR>, and photometry.
+    TIER_FORCED_ROOTS per sample."""
     ph = cfg().photometry
-    return ([('cutout root', ph.CUTOUT_ROOT), ('stage-1 root', os.path.join(ph.OUT_ROOT['snapshot'], ph.STAGE1_DIR))]
+    tiers = {}
+    for t, r in sorted(ph.CUTOUT_ROOTS.items()):
+        tiers.setdefault(r, []).append(t)
+    return ([('cutout root (%s)' % ', '.join(ts), r) for r, ts in tiers.items()]
+            + [('stage-1 root', os.path.join(ph.OUT_ROOT['snapshot'], ph.STAGE1_DIR))]
             + [('tier forced root (%s)' % s, r) for s, r in sorted(ph.TIER_FORCED_ROOTS.items())])
 
 

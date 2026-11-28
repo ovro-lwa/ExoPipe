@@ -1,5 +1,5 @@
 """THE WIDE-AREA BURST SEARCH of family W (stage wide_search): every peak of |S/N| >= SNR_MIN, either sign, anywhere in a
-forced target's gen5 cutouts, on EXACTLY the frames the forced photometry used. Port of phase3/refactor_analysis/
+forced target's served snapshot cutouts (gen5 when ported), on EXACTLY the frames the forced photometry used. Port of phase3/refactor_analysis/
 review_items_20261031/forced_wide/forced_wide_search.py (2026-11-02; Gregg 2026-11-01 "a wide search area that allows the
 burst tapering to be identified", "Go"); its docstring is the method, the values are config (forced_wide_search):
 
@@ -245,7 +245,7 @@ def gates_10s(E, cell, band, st, tra, tde, ts, adm):
 
 
 def blocks_1min(cube, dobs, adm, ts_list, c=None):
-    """gen5's 1-minute blocks (stage 1 as it ran for gen5): admitted frames by minute (MINUTE_RULE), >= BLOCK_MIN_FRAMES,
+    """stage 1's 1-minute blocks (as it ran for the served generation): admitted frames by minute (MINUTE_RULE), >= BLOCK_MIN_FRAMES,
     averaged"""
     from collections import OrderedDict
     c = c or scfg()

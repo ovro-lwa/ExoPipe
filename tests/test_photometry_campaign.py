@@ -135,11 +135,29 @@ def run_of(out, **kw):
 
 # ---------------------------------------------------------------------------------------------------------------------
 
+GEN5_SERVED = {'GENERATIONS': ('snapshot', 'gen5'), 'CUTOUT_ROOTS': ('snapshot', '/lustre/pipeline/exopipe/phase3/photometry_gen5')}
+
+
+def served_gen5(P):
+    """The served state the gen6 campaign ran in (2026-11-17..27): snapshot generation 5 (photometry.GENERATIONS /
+    CUTOUT_ROOTS ['snapshot'], STAGE1_DIR stage1_gen5), in memory only. Since 2026-11-27 generation 6 is served, so the
+    configured campaign generation gen6 refuses CP-GEN (test_generation); the campaign's own tests run in its own state."""
+    for key, (tier, val) in GEN5_SERVED.items():
+        P.set(CFG.photometry, key, dict(getattr(CFG.photometry, key), **{tier: val}))
+    P.set(CFG.photometry, 'STAGE1_DIR', 'stage1_gen5')
+
+
 def test_generation(d):
     P = Patch()
     try:
-        check('the generation written is photometry_campaign.GENERATION (gen6), the served one stays photometry.GENERATION '
-              '(gen5)', CP.generation() == 'gen6' and CFG.photometry.GENERATION == 'gen5', CP.generation())
+        e = raises(CP.generation)
+        check('generation 6 is served (photometry.GENERATIONS[snapshot] = gen6, 2026-11-27), so the configured campaign '
+              'generation gen6 refuses CP-GEN (a campaign writes a new generation)', CFG.photometry.GENERATIONS['snapshot']
+              == 'gen6' and CFG.photometry_campaign.GENERATION == 'gen6' and e is not None and 'CP-GEN' in e, e)
+        served_gen5(P)
+        check('the generation written is photometry_campaign.GENERATION (gen6), the served one photometry.GENERATIONS'
+              '[snapshot] (gen5 while the campaign ran)', CP.generation() == 'gen6'
+              and CFG.photometry.GENERATIONS['snapshot'] == 'gen5', CP.generation())
         check('both roots derive from it: %s, <out>/%s' % (CP.cutout_root(), CP.stage1_dir()),
               CP.cutout_root() == '/lustre/pipeline/exopipe/phase3/photometry_gen6' and CP.stage1_dir() == 'stage1_gen6')
         P.set(CFG.photometry_campaign, 'GENERATION', 'gen7')
@@ -150,10 +168,10 @@ def test_generation(d):
         check('--campaign: the cutout root the stages read and write is the campaign\'s (steps_common.cutout_root), stage 1 '
               'is <out>/<its directory> (steps_snapshot.stage1_root)', K.cutout_root(args) == CP.cutout_root()
               and SS.stage1_root(run, args) == os.path.join(run.out_root, 'stage1_gen7'))
-        plain = argparse.Namespace(campaign=False, cutout_root=None)
-        check('... without --campaign the served roots as before', K.cutout_root(plain) == CFG.photometry.CUTOUT_ROOT
+        plain = argparse.Namespace(campaign=False, cutout_root=None, tier='snapshot')
+        check('... without --campaign the served roots as before', K.cutout_root(plain) == CFG.photometry.CUTOUT_ROOTS['snapshot']
               and SS.stage1_root(run, plain) == SS.stage1_root(run) == os.path.join(run.out_root, CFG.photometry.STAGE1_DIR))
-        P.set(CFG.photometry_campaign, 'GENERATION', CFG.photometry.GENERATION)
+        P.set(CFG.photometry_campaign, 'GENERATION', CFG.photometry.GENERATIONS['snapshot'])
         e = raises(CP.generation)
         check('CP-GEN: the served generation as the campaign\'s refuses (a campaign writes a new generation)',
               e is not None and 'CP-GEN' in e and 'served' in e, e)
@@ -528,16 +546,16 @@ def test_readiness(d):
     ev = CP.Enumeration()
     ev.units = [(V, b) for b in ('41MHz', '55MHz')]
     ev.cells = [V]
-    write_rec(out, 'cutouts.%s.41MHz' % V, 'done', meta={'cutout_root': CFG.photometry.CUTOUT_ROOT}, ident=None)  # gen5 --in-place
+    write_rec(out, 'cutouts.%s.41MHz' % V, 'done', meta={'cutout_root': CFG.photometry.CUTOUT_ROOTS['snapshot']}, ident=None)  # gen5 --in-place
     write_rec(out, 'cutouts.%s.55MHz' % V, 'done', ident=('gen6', '/elsewhere/photometry_gen6'))
     sv = [CP.unit_state(out, V, b, TIDENT) for b in ('41MHz', '55MHz')]
     rv = CP.readiness(out, ev, V, 'sb', TIDENT)
     check('a done record of another run under the same --out (a gen5 --in-place record; a gen6 record of another cutout root) '
           'is not done: held (incomplete), naming it, and it holds its cell\'s stage 1',
           [x[0] for x in sv] == ['held', 'held'] and all('a record of another run' in x[1] for x in sv)
-          and CFG.photometry.CUTOUT_ROOT in sv[0][1] and rv[0] == 'held', (sv, rv))
+          and CFG.photometry.CUTOUT_ROOTS['snapshot'] in sv[0][1] and rv[0] == 'held', (sv, rv))
     write_rec(out, 'cutouts.%s.41MHz' % V, 'refused', 'C-FLUXSCALE: %s 41MHz: V: no FSAPPLD - the engine not started' % V,
-              meta={'cutout_root': CFG.photometry.CUTOUT_ROOT}, ident=None)
+              meta={'cutout_root': CFG.photometry.CUTOUT_ROOTS['snapshot']}, ident=None)
     write_rec(out, 'cutouts.%s.55MHz' % V, 'no-input', 'C-EXCLUDED: x', ident=None)
     sv = [CP.unit_state(out, V, b, TIDENT)[0] for b in ('41MHz', '55MHz')]
     check('... another run\'s refused gap or exclusion is no gap or exclusion of this campaign (held)', sv == ['held', 'held'], sv)
@@ -1224,6 +1242,8 @@ def main():
     d = tempfile.mkdtemp(prefix='test_photometry_campaign_', dir=base)
     try:
         test_generation(d)
+        P = Patch()
+        served_gen5(P)          # the rest in the state the campaign ran in (served generation 5); undone below
         test_resume_hash()
         test_args()
         W = World(d)
@@ -1238,6 +1258,7 @@ def main():
         test_check_readers(W, d)
         test_fluxscale_classes(W, d)
         test_start(W, d)
+        P.undo()
     finally:
         shutil.rmtree(d, ignore_errors=True)
     print('%d check(s) failed: %s' % (len(FAILS), FAILS) if FAILS else 'all checks passed', flush=True)

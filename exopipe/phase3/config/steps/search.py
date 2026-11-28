@@ -549,7 +549,7 @@ class search_snapshot(_Section):
                                             # the group search skipped (v9:235); --snap-pause-1min sets it
     CUTOUTS_ON = True                       # P3_SNAP_CUTOUTS (SS:1315 default '1'; photometry cutout cubes, a product of `photometry`)
     CUTOUT_SUBDIR = 'photometry'            # P3_SNAP_CUTOUT_ROOT while paths.PRODUCTION_WRITES is False (and in every injected
-                                            # run): <out>/<this>. With production writes the root is photometry.CUTOUT_ROOT, the
+                                            # run): <out>/<this>. With production writes the root is photometry.CUTOUT_ROOTS['snapshot'], the
                                             # served generation the photometry measure and the forced pages read - ONE source of
                                             # truth, no copy here (review F1 2026-11-03: this key named PHASE3_ARCHIVE_ROOT/
                                             # photometry, the retired generation 4 = phase3_snapshot_cutouts.ROOT_DEFAULT, which

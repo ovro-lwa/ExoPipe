@@ -45,8 +45,11 @@ class notify(_Section):
     # of Phase 2's fixed-threshold word. The hours' numbers are kept in <out>/notify/<this file>; an hour is read once.
     IONOSPHERE_POPULATION = 'ionosphere_population.json'
     # Forced photometry: the served event lists (events at or above each sample's detection threshold, with the
-    # association verdict of each) under paths.SNAPSHOT_REVIEW_ROOT
-    FORCED_RUN = 'Run_SNAPFORCED_{stokes}{tier}_gen5'
+    # association verdict of each) under paths.SNAPSHOT_REVIEW_ROOT; the run of a tier is the one its hub button serves
+    # (serve/registered_pages.json): generation 6 for 10 s and 1 minute (p8775 / p8776 / p8785 / p8786, :778-888), generation 5
+    # for 10 minutes and deep (p9120-p9123, :223-330)
+    FORCED_RUN = 'Run_SNAPFORCED_{stokes}{tier}_{generation}'
+    FORCED_RUN_GENERATION = {'deep': 'gen5', '10min': 'gen5', '1min': 'gen6', '10s': 'gen6'}   # FORCED_TIERS tag -> generation
     FORCED_TIERS = {'deep': 'deep', '10-minute': '10min', '1-minute': '1min', '10-s': '10s'}
     SAMPLES = {'HWJ': 'Hot / Warm Jupiter', '10pc': '10 pc'}     # sample tag of the forced tables -> name in the email
     XM_SAMPLES = {'Hot_Warm_Jupiters': 'HWJ', '10pc': '10pc'}    # prefix of a catalog's xm_best -> sample tag

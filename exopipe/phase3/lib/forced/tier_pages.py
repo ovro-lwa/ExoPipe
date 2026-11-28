@@ -19,7 +19,7 @@ Campaign stages, named only (never a default), one family per invocation (as fam
              = eval_tag(SAMPLES): hwj10pc, production's names, or hwj10pclpt) and, when <samples> is not the script's literal
              hwj10pc, <out>/eval_links_<samples>/, links with the script's literal names (ev_dir :37-38) that the site reads as
              SF. FT = --tier-forced-root, else photometry.TIER_FORCED_ROOTS (one root for every sample); the cutout root =
-             --tier-cutout-root, else photometry.CUTOUT_ROOT. Resume identity: the exclusion list (an input) and the admitted
+             --tier-cutout-root, else photometry.CUTOUT_ROOTS of the tiers (one root). Resume identity: the exclusion list (an input) and the admitted
              (tier, LST, band, night) set of the tier files (_eval_admitted).
   tier_site  unit T_site: `build SITE --nproc N`, then its content test `verify SITE` (HWJ10PC-TIERS-PAGE-OK: the events are
              exactly the clean measurements at or above their Gaussian thresholds in the four evaluations, every card's forced
@@ -81,7 +81,7 @@ def add_arguments(p):
                                                              '<LST>/forced_<sample>_<band>_<S>.npz) the evaluations and the '
                                                              'site read (default photometry.TIER_FORCED_ROOTS of the samples)')
     g.add_argument('--tier-cutout-root', metavar='DIR', help='tier_eval / tier_site: the tier cutouts those were measured on '
-                                                             '(default photometry.CUTOUT_ROOT)')
+                                                             '(default photometry.CUTOUT_ROOTS of the tiers: one root)')
 
 
 def default_out(args):
@@ -157,9 +157,17 @@ class TCtx:
     def _roots(self):
         """(tier forced root, cutout root, T-ROOTS refusal or None): --tier-forced-root, else the one root
         photometry.TIER_FORCED_ROOTS names for every forced_tier_pages.SAMPLES (the script reads one, PP.FT);
-        --tier-cutout-root, else photometry.CUTOUT_ROOT."""
+        --tier-cutout-root, else the one root photometry.CUTOUT_ROOTS names for both tiers (deep, sublst: the tier cutouts; the
+        script reads one, P3_PHOT_ROOT)."""
         ph = self.cfg.photometry
-        phot = os.path.abspath(self.args.tier_cutout_root) if getattr(self.args, 'tier_cutout_root', None) else ph.CUTOUT_ROOT
+        if getattr(self.args, 'tier_cutout_root', None):
+            phot = os.path.abspath(self.args.tier_cutout_root)
+        else:
+            cr = {t: ph.CUTOUT_ROOTS.get(t) for t in ('deep', 'sublst')}
+            if None in cr.values() or len(set(cr.values())) != 1:
+                return None, None, ('T-ROOTS the tiers\' cutout roots (photometry.CUTOUT_ROOTS) are %s: the pages read one '
+                                    'root - give --tier-cutout-root' % cr)
+            phot = cr['deep']
         if getattr(self.args, 'tier_forced_root', None):
             return os.path.abspath(self.args.tier_forced_root), phot, None
         roots = {s: ph.TIER_FORCED_ROOTS.get(s) for s in self.t.SAMPLES}

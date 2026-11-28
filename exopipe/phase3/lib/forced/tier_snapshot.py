@@ -12,7 +12,7 @@ read; lwacalim07 today); the other stages run on any node that can read the inpu
 built it when it is node-local.
 
 Generation (--snap-generation GEN): the two evaluations, the zone flags, stage 1 and the cutouts of one cutout generation,
-named as the photometry step writes them (generation_roots; default the forced_snapshot keys, generation 5). G-GEN: the build
+named as the photometry step writes them (generation_roots; default the forced_snapshot keys, generation 6). G-GEN: the build
 refuses evaluations made from another stage 1 than the one the panels read (their evaluate record, else their sibling
 stage1_<tag>), and an evaluation with neither (unknown provenance). Generation 6 measures LPT besides HWJ and 10 pc (photometry.SAMPLES_MEASURED): its events are built and
 rendered like the others, and the served catalogue lists them under the sample 'FORCED TARGET LPT'.
@@ -83,8 +83,8 @@ GENERATION_KEYS = ('EVAL_SB', 'EVAL_WB', 'ZONE_FLAGS', 'STAGE1_ROOT', 'PHOT_ROOT
 def generation_roots(gen):
     """{forced_snapshot key: path} of cutout generation ``gen``, named as the photometry step writes them: the evaluations
     <photometry.OUT_ROOT[snapshot]>/<photometry_evaluate.EVAL_DIR[sb|wb] with tag gen>, the zone flags <...>/<ZONE_FLAGS_FILE>,
-    stage 1 <...>/<photometry_campaign.STAGE1_DIR_FMT> and the cutouts photometry_campaign.CUTOUT_ROOT_FMT. Generation 5 gives
-    the forced_snapshot keys as configured (tests/test_forced.py checks it)."""
+    stage 1 <...>/<photometry_campaign.STAGE1_DIR_FMT> and the cutouts photometry_campaign.CUTOUT_ROOT_FMT. Generation 6 gives
+    the forced_snapshot keys as configured (tests/test_photometry_snapshot_stage2.py, tests/test_served_generation_roots.py)."""
     c = K.cfg()
     ev, cc = c.photometry_evaluate, c.photometry_campaign
     if not gen or not all(ch.isalnum() or ch in '-.' for ch in gen):

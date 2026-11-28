@@ -110,10 +110,16 @@ def catdir(path):
         fa.CATDIR = old
 
 
+def rname(s_, c_):
+    """the served forced run of (Stokes, cadence): forced_wide.RUN_NAME with the cadence's RUN_GENERATION"""
+    from exopipe.phase3.lib.forced import wide_jobs as WJ
+    return WJ.run_name(s_, c_)
+
+
 def runs8(root):
     """the eight forced run directories (empty) under root: a host-independent --wide-runs for dry runs"""
     for s_, c_ in CFG.forced_wide.AMBIGUOUS_RUNS:
-        os.makedirs(os.path.join(root, CFG.forced_wide.RUN_NAME.format(S=s_, cadence=c_)), exist_ok=True)
+        os.makedirs(os.path.join(root, rname(s_, c_)), exist_ok=True)
     return root
 
 
@@ -278,8 +284,10 @@ def test_method_truth():
     bad = [(k, se.get(k), v) for k, v in pairs if se.get(k) != v]
     check('forced_wide_search = forced_wide_search.py\'s literals', not bad, bad)
     ssrc = open(os.path.join(fw, 'forced_wide_search.py')).read()
-    check("MINUTE_RULE = the search's default 'filename'", "os.environ.get('FW_MINUTE_RULE', 'filename')" in ssrc
-          and s.MINUTE_RULE == 'filename')
+    check("MINUTE_RULE = 'midpoint', the served gen6 stage 1's minute (its files' minute_basis integration-midpoint-dateobs-v1); "
+          "the search takes it as FW_MINUTE_RULE (its default 'filename' was gen5's)",
+          "os.environ.get('FW_MINUTE_RULE', 'filename')" in ssrc
+          and "if MINUTE_RULE == 'filename' else SS.integration_minute_key(dobs[i])" in ssrc and s.MINUTE_RULE == 'midpoint')
     v2 = _assigns(os.path.join(fw, 'forced_wide_analyze.py'))
     pairs = [('CTL_FLUX', t.V2_CTL_FLUX), ('CTL_BRIGHTER', t.V2_CTL_BRIGHTER), ('CTL_MIN_CELLS', t.V2_CTL_MIN_CELLS),
              ('CTL_MIN_N', t.V2_CTL_MIN_N), ('MIN_CELLS_DECIDE', t.V2_MIN_NIGHTS),
@@ -366,7 +374,7 @@ def test_cli_gates():
     check('cli: --stokes refused for W (use --wide-only)', rc == 2 and '--wide-only' in err, err[-300:])
     r8 = runs8(os.path.join(TMP, 'runs8'))
     for s_, c_ in CFG.forced_wide.RUNS:                # the publication's run directories under <out>/review (a clean dry run)
-        os.makedirs(os.path.join(out, 'review', CFG.forced_wide.RUN_NAME.format(S=s_, cadence=c_)), exist_ok=True)
+        os.makedirs(os.path.join(out, 'review', rname(s_, c_)), exist_ok=True)
     rc, err = cli(base + ['--stages', 'wide_jobs,wide_search,wide_test,wide_publish', '--wide-runs', r8, '--dry-run'])
     check('cli: W dry run exit 0, plans every stage', rc == 0 and all(('[%s]' % s) in _LAST_OUT[0] for s in
                                                                       ('wide_jobs', 'wide_search', 'wide_test', 'wide_publish')),
@@ -433,7 +441,7 @@ def test_cli_gates():
     res = os.path.join(out, 'results_v3.csv')
     fake_record(out, 'W_test', [(res, 'forced_wide_results')], meta={'partial': True, 'only': ['I:X']})
     rc, err = cli(base + ['--stages', 'wide_publish'])
-    r = rec(out, 'W_publish_Run_SNAPFORCED_I10s_gen5')
+    r = rec(out, 'W_publish_Run_SNAPFORCED_I10s_gen6')
     check('cli: W-PARTIAL a partial test is never published', rc == 2 and 'W-PARTIAL' in r.get('reason', ''),
           (rc, r.get('reason')))
 
@@ -459,29 +467,29 @@ def test_publish():
     fake_record(out, 'W_test', [(res, 'forced_wide_results')], meta={'partial': False})
     base = ['forced', '--tier', 'snapshot', '--cores', 'none', '--out', out, '--stages', 'wide_publish']
     rc, err = cli(base, env={'P3_RADIO_CATDIR': '/tmp/x'})
-    r = rec(out, 'W_publish_Run_SNAPFORCED_I10s_gen5')
+    r = rec(out, 'W_publish_Run_SNAPFORCED_I10s_gen6')
     check('cli: W-ENV wide_publish refuses a caller P3_RADIO_CATDIR (review F4)', rc == 2 and 'W-ENV' in r.get('reason', ''),
           (rc, r.get('reason')))
     with catdir('/tmp/not_the_radio_catalogues'):
         rc, err = cli(base)
-    r = rec(out, 'W_publish_Run_SNAPFORCED_I10s_gen5')
+    r = rec(out, 'W_publish_Run_SNAPFORCED_I10s_gen6')
     check('cli: W-CATDIR wide_publish refuses catalogues other than forced_assoc.RADIO_CATDIR (review F4)',
           rc == 2 and 'W-CATDIR' in r.get('reason', ''), (rc, r.get('reason')))
     rc, err = cli(base)
-    r = rec(out, 'W_publish_Run_SNAPFORCED_I10s_gen5')
+    r = rec(out, 'W_publish_Run_SNAPFORCED_I10s_gen6')
     check('cli: W-RUNDIR the run directory absent at the review root', rc == 2 and 'W-RUNDIR' in r.get('reason', ''),
           (rc, r.get('reason')))
     for s_, c_ in CFG.forced_wide.RUNS:
-        os.makedirs(os.path.join(out, 'review', CFG.forced_wide.RUN_NAME.format(S=s_, cadence=c_)), exist_ok=True)
+        os.makedirs(os.path.join(out, 'review', rname(s_, c_)), exist_ok=True)
     rc, err = cli(base)
-    p = os.path.join(out, 'review', 'Run_SNAPFORCED_I10s_gen5', 'forced_wide_v3.csv')
+    p = os.path.join(out, 'review', 'Run_SNAPFORCED_I10s_gen6', 'forced_wide_v3.csv')
     got = list(csv.DictReader(open(p))) if os.path.exists(p) else []
     check('cli: publish done (exit 0), the I 10 s file holds the row', rc == 0 and len(got) == 1, (rc, err[-300:]))
     check('named_radec = the served file\'s for KELT-24 (the named sources found by name within 200\')',
           got and got[0]['named_radec'] == KELT24_RADEC, got[0]['named_radec'] if got else None)
-    empty = list(csv.DictReader(open(os.path.join(out, 'review', 'Run_SNAPFORCED_V1min_gen5', 'forced_wide_v3.csv'))))
+    empty = list(csv.DictReader(open(os.path.join(out, 'review', 'Run_SNAPFORCED_V1min_gen6', 'forced_wide_v3.csv'))))
     check('a run without rows gets the header only (as production)', empty == [])
-    r = rec(out, 'W_publish_Run_SNAPFORCED_I10s_gen5')
+    r = rec(out, 'W_publish_Run_SNAPFORCED_I10s_gen6')
     check('publish record done, its output passed its content test', r.get('status') == 'done' and r['tests']
           and all(x['passed'] for x in r['tests']), r.get('reason'))
     # the content test refuses a row whose named source lies elsewhere
@@ -494,7 +502,7 @@ def test_publish():
     # publishing again: the file it replaces is backed up beside it (<file>.bak_<UTC>), its sha1 and the new one's recorded
     before = open(p, 'rb').read()
     rc, err = cli(base + ['--fresh'])
-    r = rec(out, 'W_publish_Run_SNAPFORCED_I10s_gen5')
+    r = rec(out, 'W_publish_Run_SNAPFORCED_I10s_gen6')
     m = r.get('meta') or {}
     bak = m.get('backup') or ''
     import hashlib
@@ -516,7 +524,7 @@ def test_publish():
             rc, err = cli(base + ['--fresh'])
         finally:
             PL.target_attrs = real
-        r = rec(out, 'W_publish_Run_SNAPFORCED_I10s_gen5')
+        r = rec(out, 'W_publish_Run_SNAPFORCED_I10s_gen6')
         m = r.get('meta') or {}
         names = os.listdir(rd)
         gone = m.get('backup_removed') or ''
@@ -538,7 +546,7 @@ def test_publish():
     row2 = dict(row, named="VLSSr J000000.0+000000 9.9 Jy at 31.3'")
     write_csv(res, [row2], list(RESULT_COLUMNS))
     rc, err = cli(base + ['--fresh'])
-    r = rec(out, 'W_publish_Run_SNAPFORCED_I10s_gen5')
+    r = rec(out, 'W_publish_Run_SNAPFORCED_I10s_gen6')
     check('cli: W-NAMED a named source not found around its target refuses', rc == 2 and 'W-NAMED' in r.get('reason', ''),
           (rc, r.get('reason')))
 
@@ -1192,14 +1200,24 @@ def test_search_functions():
         dx, dy = WS.interp2d(b, c)
         err.append(max(abs(dx - x0), abs(dy - y0)))
     check('interp2d exact on a rotated elliptical Gaussian', max(err) < 1e-6, max(err))
-    # gen5's 1-minute blocks: the file-name minute, >= 3 admitted frames, averaged
+    # the 1-minute blocks: >= 3 admitted frames of one minute, averaged
     cube = np.arange(6 * 4, dtype=np.float32).reshape(6, 2, 2)
     ts = ['20250101_010001', '20250101_010011', '20250101_010021', '20250101_010101', '20250101_010111', '20250101_010121']
     adm = np.array([1, 1, 1, 1, 1, 0], bool)
+    import types
     WS._E['SS'] = None
-    keys, blk = WS.blocks_1min(cube, ts, adm, ts, c)
-    check('blocks_1min: one block of the minute holding >= 3 admitted frames, its mean, key + 00',
+    keys, blk = WS.blocks_1min(cube, ts, adm, ts, types.SimpleNamespace(MINUTE_RULE='filename',
+                                                                         BLOCK_MIN_FRAMES=c.BLOCK_MIN_FRAMES))
+    check("blocks_1min, MINUTE_RULE 'filename' (gen5): one block of the minute holding >= 3 admitted frames, its mean, key + 00",
           keys == ['20250101_010000'] and np.array_equal(blk[0], cube[:3].mean(0)), (keys, blk))
+    # gen6's (the served generation; MINUTE_RULE 'midpoint', configured): the integration midpoint's minute
+    # (phase3_snapshot_search.integration_minute_key in place, stubbed here)
+    mid = dict(zip(ts, ['20250101_0100'] * 2 + ['20250101_0101'] * 4))
+    WS._E['SS'] = types.SimpleNamespace(integration_minute_key=lambda d: mid[d])
+    keys, blk = WS.blocks_1min(cube, ts, adm, ts, c)
+    check("blocks_1min, MINUTE_RULE 'midpoint' (configured): keyed by the midpoint minute - frames 2-4, not the file-name "
+          "minute's 0-2", c.MINUTE_RULE == 'midpoint' and keys == ['20250101_010100']
+          and np.array_equal(blk[0], cube[2:5].mean(0)), (keys, blk))
     WS._E.pop('SS', None)
     # the product: deterministic bytes, its content test
     out = os.path.join(TMP, 'npz')

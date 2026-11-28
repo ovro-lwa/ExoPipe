@@ -207,7 +207,7 @@ def add_arguments(p):
                         'hybrid: the hybrid step\'s --out (its tilefill records)')
     g.add_argument('--workdir', help='supersede: the frame-time work directory W (W/out, W/cutouts; {cell} expanded)')
     g.add_argument('--ship-root', help='supersede: live per-cell tree (default paths.SNAPSHOT_FLEET_OUT)')
-    g.add_argument('--phot-root', help='supersede: photometry cutout root (default photometry.CUTOUT_ROOT, the served '
+    g.add_argument('--phot-root', help='supersede: photometry cutout root (default photometry.CUTOUT_ROOTS[snapshot], the served '
                                        'generation; a retired one refuses)')
     g.add_argument('--quar-root', help='supersede: quarantine root (default archive_snapshot.FRAMETIME_QUARANTINE_ROOT)')
     g.add_argument('--stores', nargs='+', metavar='CSV', help='quarantine-rows: fit store files (default the --cells stores '

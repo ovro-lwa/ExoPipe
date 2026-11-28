@@ -473,7 +473,8 @@ def stage_snapshot_cutouts(run, args):
     items = snapshot_items(args)
     samples = run_samples(targets, planets, 'snapshot')
     K.plan(run, '[cutouts] %d (night cell, band) units -> %s (generation %s); samples %s%s; engines %s, site PYTHON[%s]'
-           % (len(items), root, K.cfg().photometry.GENERATION if root == K.cfg().photometry.CUTOUT_ROOT else 'not served',
+           % (len(items), root, K.cfg().photometry.GENERATIONS['snapshot'] if root == K.served_cutout_root('snapshot')
+              else 'not served',
               ','.join(samples), ' (ad hoc: %s)' % ', '.join('%s=%s' % t for t in targets) if targets else '',
               ('subbands lib/photometry/stamp_engine.py (the stamp method, reference %s), widebands in place '
                '(phase3_snapshot_group_search.py --cutouts-from-cubes)' % K.cfg().photometry_cutouts.STAMP_REFERENCE_ROOT
@@ -541,12 +542,14 @@ def gate_write_roots(run, args, stage, roots, targets, adhoc_roots, cells=None):
 def gate_in_place(run, args, stage, roots, cells=None):
     """C-INPLACE (review F4; production's rule, phase3_snapshot_search.regen_cutouts: P3_SNAP_CUTOUT_ROOT is 'a new root -
     never over the existing product'; generation 5 was built beside generation 4 and the pages switched after). A cutouts /
-    cutmeasure stage writes a SERVED root (photometry.CUTOUT_ROOT; photometry.TIER_FORCED_ROOTS) only with --in-place, and then
+    cutmeasure stage writes a SERVED root (photometry.CUTOUT_ROOTS; photometry.TIER_FORCED_ROOTS) only with --in-place, and then
     the measurement of the new cutouts runs in the same invocation: snapshot cutouts -> the measure stage into the served
     stage 1 (--out = photometry.OUT_ROOT[snapshot]), over whole cells (gate_in_place_whole_cells); deep / sublst cutouts ->
     cutmeasure into the served tier forced roots (no --tier-out; it re-measures every band of each LST found in the root);
     cutmeasure into the served tier forced roots measures the served cutouts (no other --cutout-root). A root INSIDE a served
-    root is no generation root at all (refused); --in-place with no served root to write refuses."""
+    root is no generation root at all (refused); --in-place with no served root to write refuses; a cutouts stage writes only
+    its OWN tier's served cutout root (photometry.CUTOUT_ROOTS[tier]: the snapshot per-night cutouts are generation 6, the
+    deep / sub-LST tier cutouts generation 5 - never one tier's cutouts into another tier's served root)."""
     ph = K.cfg().photometry
     in_place = bool(getattr(args, 'in_place', False))
     stages = list(getattr(args, 'photometry_stages', ()) or ())
@@ -563,11 +566,15 @@ def gate_in_place(run, args, stage, roots, cells=None):
         want = 'cutout root' if stage == 'cutouts' else 'tier forced root'
         if not what.startswith(want):
             raise Refusal('C-INPLACE: %s is the served generation\'s %s - the %s stage writes a %s' % (r, what, stage, want))
+        if stage == 'cutouts' and real(sr) != real(K.served_cutout_root(args.tier)):
+            raise Refusal('C-INPLACE: %s is the served %s, not tier %s\'s (photometry.CUTOUT_ROOTS[%s] = %s) - a tier\'s '
+                          'cutouts never go into another tier\'s served root' % (r, what, args.tier, args.tier,
+                                                                               K.served_cutout_root(args.tier)))
         served.append(r)
     if not served:
         if in_place:
             raise Refusal('C-INPLACE: --in-place regenerates the served generation, but the %s stage writes %s, no served '
-                          'root (photometry.CUTOUT_ROOT / TIER_FORCED_ROOTS)' % (stage, ', '.join(roots)))
+                          'root (photometry.CUTOUT_ROOTS / TIER_FORCED_ROOTS)' % (stage, ', '.join(roots)))
         return
     if not in_place:
         raise Refusal('C-INPLACE: %s is the SERVED generation\'s root - a regeneration writes a new root (%s), never over the '
@@ -591,9 +598,10 @@ def gate_in_place(run, args, stage, roots, cells=None):
         if getattr(args, 'tier_out', None):
             raise Refusal('C-INPLACE: --in-place cutmeasure writes each sample\'s own served root (photometry.'
                           'TIER_FORCED_ROOTS); --tier-out %s puts every sample under one root' % args.tier_out)
-        if real(K.cutout_root(args)) != real(ph.CUTOUT_ROOT):
-            raise Refusal('C-INPLACE: the served tier forced roots measure the served cutouts (photometry.CUTOUT_ROOT %s); '
-                          '--cutout-root %s is another generation' % (ph.CUTOUT_ROOT, K.cutout_root(args)))
+        if real(K.cutout_root(args)) != real(K.served_cutout_root(args.tier)):
+            raise Refusal('C-INPLACE: the served tier forced roots measure the served cutouts (photometry.CUTOUT_ROOTS[%s] %s); '
+                          '--cutout-root %s is another generation' % (args.tier, K.served_cutout_root(args.tier),
+                                                                      K.cutout_root(args)))
 
 
 def gate_in_place_whole_cells(args, cells):

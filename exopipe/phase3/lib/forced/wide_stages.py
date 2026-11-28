@@ -10,7 +10,7 @@ Family W. --out = the work root W (default forced_wide.WORK_ROOT); records W/_re
                 -> W/jobs.json (forced_wide_jobs) and the tested runs' forced events -> W/events.csv (forced_wide_events). --wide-jobs FILE[,FILE] adopts job lists the analysis wrote (forced_wide_jobs.py
                 jobs.json, v3 jobs_ext.json) instead of selecting (a replay; recorded).
   wide_search   unit W_search_<S>_<identity> per job: the burst search of each band on the cutouts (--wide-cutout-root, default
-                photometry.CUTOUT_ROOT) -> W/bursts/<S>_<identity>_<band>.npz (forced_wide_bursts), a pool of at most
+                photometry.CUTOUT_ROOTS[snapshot]) -> W/bursts/<S>_<identity>_<band>.npz (forced_wide_bursts), a pool of at most
                 forced_wide_search.MAX_WORKERS processes (--workers), each cutout read after the recorders' I/O guard allows it.
   wide_test     unit W_test: the v3 analysis of every job (pool: every job of the Stokes) -> W/results_v3.csv
                 (forced_wide_results) and W/candidates_v3.csv (forced_wide_candidates). The bursts: this root's done
@@ -74,7 +74,7 @@ def add_arguments(p):
     g.add_argument('--wide-jobs', metavar='FILE[,FILE]', help='wide_jobs: adopt job lists the analysis wrote (forced_wide_jobs.py '
                                                              'jobs.json, then v3 jobs_ext.json) instead of selecting them (a replay)')
     g.add_argument('--wide-cutout-root', metavar='DIR', help='wide_search: the cutout generation searched (default '
-                                                             'photometry.CUTOUT_ROOT, the served one)')
+                                                             'photometry.CUTOUT_ROOTS[snapshot], the served one)')
     g.add_argument('--wide-bursts', metavar='DIR', help='wide_test: read every job\'s burst files from DIR instead of this root\'s '
                                                         'wide_search records (each file content-tested as an input)')
     g.add_argument('--wide-only', metavar='S:IDENTITY[,..]', help='wide_search / wide_test: only these jobs (IDENTITY * = every job '
@@ -218,7 +218,7 @@ class WCtx:
         self.runs = WJ.run_dirs(self.runs_root)                              # the tested runs (forced_wide.RUNS)
         self.amb_runs = WJ.run_dirs(self.runs_root, self.w.AMBIGUOUS_RUNS)    # the queues of the ambiguous list
         self.would_refuse = []           # gates a dry run's plan names (the dry run then exits 2)
-        self.cutout_root = os.path.abspath(args.wide_cutout_root or cfg.photometry.CUTOUT_ROOT)
+        self.cutout_root = os.path.abspath(args.wide_cutout_root or cfg.photometry.CUTOUT_ROOTS['snapshot'])
         if args.out:
             rr = args.snap_review_root or os.path.join(self.W, cfg.forced_snapshot.REVIEW_SUBDIR_UNDER_OUT)
         else:
@@ -339,7 +339,7 @@ def gate_cutout_root(c):
     retired = {os.path.realpath(r) for r in c.cfg.photometry.RETIRED_CUTOUT_ROOTS}
     if os.path.realpath(c.cutout_root) in retired:
         raise Refusal('W-CUTROOT %s is a retired cutout generation (photometry.RETIRED_CUTOUT_ROOTS): the forced photometry '
-                      'measured photometry.CUTOUT_ROOT' % c.cutout_root)
+                      'measured photometry.CUTOUT_ROOTS[snapshot]' % c.cutout_root)
     if not os.path.isdir(c.cutout_root):
         raise Refusal('W-CUTROOT the cutout root %s is not readable on %s' % (c.cutout_root, K.hostname()))
 
@@ -493,7 +493,7 @@ def pool_files(c, jobs, jobs_path=None):
     """{(S, identity, band): npz path} of every job band - from --wide-bursts DIR, else this root's done W_search records
     (refuses W-POOL naming what is missing). Pooled from records, every file must come from ONE search: each record's jobs.json
     is the current one (same fingerprint) and its cutout root is the selected generation (--wide-cutout-root or
-    photometry.CUTOUT_ROOT) - a search of another generation or of other jobs is refused, never pooled (review F8)."""
+    photometry.CUTOUT_ROOTS['snapshot']) - a search of another generation or of other jobs is refused, never pooled (review F8)."""
     from exopipe.phase3.core import record as R
     from exopipe.phase3.lib.forced import wide_search as WS
     out, missing, stale, roots = {}, [], [], {}
@@ -652,7 +652,7 @@ def stage_publish(c):
     from exopipe.phase3.lib.forced import wide_v3 as V3
     from exopipe.phase3.core import validate
     K.plan('[wide_publish] %s into the %d tested forced runs under %s (each replaced file backed up as <file>.bak_<UTC>): %s'
-           % (c.w.PUBLISHED, len(c.w.RUNS), c.review_root, ', '.join(c.w.RUN_NAME.format(S=s, cadence=t) for s, t in c.w.RUNS)))
+           % (c.w.PUBLISHED, len(c.w.RUNS), c.review_root, ', '.join(WJ.run_name(s, t) for s, t in c.w.RUNS)))
     if c.dry:
         # every gate of a run the real publication would hit is planned and counted (the republish verification 2026-11-04:
         # the dry run against the served root exited 0 while the real run refuses W-ROOT and W-HOST)
@@ -663,7 +663,7 @@ def stage_publish(c):
         if not local:
             c.would_refuse.append('W-HOST wide_publish %s' % c.review_root)
         for st, cad in c.w.RUNS:
-            D = os.path.join(c.review_root, c.w.RUN_NAME.format(S=st, cadence=cad))
+            D = os.path.join(c.review_root, WJ.run_name(st, cad))
             try:
                 K.refuse_production_target(D, 'review run')
             except Refusal as e:
@@ -677,7 +677,7 @@ def stage_publish(c):
                 K.plan('[wide_publish]   %s replaced (backed up first)' % os.path.join(D, c.w.PUBLISHED))
         return
     for st, cad in c.w.RUNS:
-        rname = c.w.RUN_NAME.format(S=st, cadence=cad)
+        rname = WJ.run_name(st, cad)
         name = 'W_publish_%s' % rname
         D = os.path.join(c.review_root, rname)
         final = os.path.join(D, c.w.PUBLISHED)

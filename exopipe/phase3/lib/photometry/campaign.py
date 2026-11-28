@@ -80,12 +80,12 @@ def _cc():
 
 def generation():
     """photometry_campaign.GENERATION, refused (CP-GEN) unless it names a generation (GENERATION_RE) other than the served
-    one (photometry.GENERATION)."""
-    g, served = _cc().GENERATION, K.cfg().photometry.GENERATION
+    snapshot one (photometry.GENERATIONS['snapshot']: a campaign cuts the per-night snapshot cutouts)."""
+    g, served = _cc().GENERATION, K.cfg().photometry.GENERATIONS['snapshot']
     if not isinstance(g, str) or not re.match(_cc().GENERATION_RE, g):
         raise Refusal('CP-GEN: photometry_campaign.GENERATION %r does not name a generation (%s)' % (g, _cc().GENERATION_RE))
     if g == served:
-        raise Refusal('CP-GEN: photometry_campaign.GENERATION %s is the served generation (photometry.GENERATION) - a campaign '
+        raise Refusal('CP-GEN: photometry_campaign.GENERATION %s is the served generation (photometry.GENERATIONS[snapshot]) - a campaign '
                       'writes a new generation; a regeneration of the served one is --in-place' % g)
     return g
 
