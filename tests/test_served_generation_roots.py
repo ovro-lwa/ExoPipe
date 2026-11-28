@@ -18,9 +18,11 @@ Data free (CI): the config is compared with the fixture. Asserts:
     (= the 10-s / 1-min build logs' paths), the forced wide-area test's runs and work root, the email's forced runs, the tier
     pages' evaluation names (= the page record's), and the minute rule of each served snapshot generation (= the rule its
     stage-1 minute_basis gives);
-  - the planets page: PLANETS_PAGE_GENERATION is the served planets site's, and its per-night inputs (steps_common.
-    planets_roots: SolarSystem cutouts and stage 1) and its tier forced root are the page record's; switching the key alone
-    moves the per-night inputs and the served-root gate, not the tier root (planets_gen6_stage34_20261127.sh:66-67);
+  - the planets page: PLANETS_PAGE_GENERATION (derived: GENERATIONS[snapshot], since PLANETS-GEN6-DONE) is the generation
+    its page record's per-night inputs name (not the site's name: site_planets_SUN_gen5 holds the gen6 page), and its
+    per-night inputs (steps_common.planets_roots: SolarSystem cutouts and stage 1), its tier cubes (CUTOUT_ROOTS[deep]) and
+    its tier forced root are the page record's; a snapshot switch moves the per-night inputs and the served-root gate, not
+    the tier roots (planets_gen6_stage34_20261127.sh:66-67), and refuses SERVED-GEN while the page has not followed;
   - every config key naming a generation is either derived (config.Derived, computed when read; photometry.GENERATIONS among
     its inputs) or listed in SEPARATE with the reason it cannot follow it; every input a derived key lists changes it (the
     inputs table, INPUT_CHANGE); a derived key is not settable; photometry.GENERATIONS is protected and ruled;
@@ -61,8 +63,8 @@ _GEN5 = re.compile(r'(?<![0-9A-Za-z])gen5(?![0-9A-Za-z])')
 # ---- THE KEYS THAT NAME A GENERATION BUT ARE NOT DERIVED FROM photometry.GENERATIONS: why each cannot follow it
 SEPARATE = {
     'photometry.GENERATIONS': 'the source: tier -> the served cutout generation',
-    'photometry.PLANETS_PAGE_GENERATION': 'a served reader that differs: the planets page (/s/planets/) serves gen5 per-night '
-                                          'inputs while the snapshot pages serve gen6, until PLANETS-GEN6-DONE',
+    # (photometry.PLANETS_PAGE_GENERATION was here - 'the planets page serves gen5 per-night inputs while the snapshot pages
+    # serve gen6' - until PLANETS-GEN6-DONE, 2026-11-28 05:29:23Z; since then it is DERIVED from GENERATIONS['snapshot'])
     'photometry_campaign.GENERATION': 'the generation a campaign WRITES: never the served one (CP-GEN refuses it equal)',
     'photometry_cutouts.STAMP_REFERENCE_ROOT': 'the stamp method\'s reference, generation 6 as approved and tested (Gregg '
                                                '2026-11-21, R-GREGG-20261121-THREE-DECISIONS-APPROVED item 2): a served '
@@ -90,14 +92,13 @@ TP, SC, SCU = ('exopipe/phase3/lib/forced/tier_pages.py', 'exopipe/phase3/lib/ph
 GEN5_SERVED = {
     'photometry.GENERATIONS[deep]': ('p9122 / p9123: the generation of their evaluations', TP + ':110', 'GENERATIONS'),
     'photometry.GENERATIONS[sublst]': ('p9120 / p9121: the generation of their evaluations', TP + ':110', 'GENERATIONS'),
-    'photometry.CUTOUT_ROOTS[deep]': ('p9122 / p9123: the tier cutouts (page record inputs.phot)', TP + ':175', 'CUTOUT_ROOTS'),
+    'photometry.CUTOUT_ROOTS[deep]': ('p9122 / p9123: the tier cutouts (page record inputs.phot); /s/planets/: its tier cubes '
+                                      '(inputs.phot_tiers)', TP + ':175', 'CUTOUT_ROOTS'),
     'photometry.CUTOUT_ROOTS[sublst]': ('p9120 / p9121: the tier cutouts (inputs.phot)', TP + ':175', 'CUTOUT_ROOTS'),
     'photometry.TIER_FORCED_ROOTS[HWJ]': ('p9120-p9123: forced_tiers_gen5 (inputs.tiers)', TP + ':182', 'TIER_FORCED_ROOTS'),
     'photometry.TIER_FORCED_ROOTS[10pc]': ('p9120-p9123: forced_tiers_gen5 (inputs.tiers)', TP + ':182', 'TIER_FORCED_ROOTS'),
     'photometry.TIER_FORCED_ROOTS[SolarSystem]': ('/s/planets/: its 10-minute and deep inputs (inputs.tiers; the served-root '
-                                                  'gate holds it)', SC + ':339', 'TIER_FORCED_ROOTS'),
-    'photometry.PLANETS_PAGE_GENERATION': ('/s/planets/: its per-night cutouts and stage 1 (inputs.phot, inputs.stage1)',
-                                           SC + ':316', 'PLANETS_PAGE_GENERATION'),
+                                                  'gate holds it)', SC + ':340', 'TIER_FORCED_ROOTS'),
     'forced_tier_pages.EVAL_DIRS[10min,sb]': ('p9120 / p9121 (inputs.evals 10min|sb)', TP + ':190', 'EVAL_DIRS'),
     'forced_tier_pages.EVAL_DIRS[10min,wb]': ('p9120 / p9121 (inputs.evals 10min|wb)', TP + ':190', 'EVAL_DIRS'),
     'forced_tier_pages.EVAL_DIRS[deep,sb]': ('p9122 / p9123 (inputs.evals deep|sb)', TP + ':190', 'EVAL_DIRS'),
@@ -214,7 +215,7 @@ def read_served():
         logs[run] = {'path': path, 'line': i, 'fields': fields}
     gens = sorted({FORCED_RUN_RE.match(os.path.basename(v['run'])).group(3) for v in forced.values()
                    if CADENCE_TIER[FORCED_RUN_RE.match(os.path.basename(v['run'])).group(2)] == 'snapshot'}
-                  | {gen_of_site(recs['planets']['site'])})
+                  | ({planets_generation(recs['planets']['fields'])} - {None}))
     basis = {}
     for g in gens:
         p = STAGE1_NPZ.format(generation=g)
@@ -223,9 +224,19 @@ def read_served():
     return {'registry': reg, 'page_records': recs, 'run_logs': logs, 'stage1_minute_basis': basis}
 
 
-def gen_of_site(name):
-    m = re.search(r'_(gen\d+)$', name)
-    return m.group(1) if m else None
+def planets_generation(fields):
+    """The generation of the planets page's per-night inputs as its page record names them (``fields``: the fixture's
+    inputs.* of the planets record): stage 1 <OUT_ROOT[snapshot]>/<photometry.PLANETS_STAGE1_FMT> and cutouts
+    <photometry_campaign.CUTOUT_ROOT_FMT>; None unless both name one and the same. Not the site's name: the gen6 page was
+    swapped into site_planets_SUN_gen5 (planets_gen6_stage34_20261127.sh:64-77)."""
+    ph, cc = CFG.photometry, CFG.photometry_campaign
+    gens = set()
+    for k, fmt in (('inputs.stage1', os.path.join(ph.OUT_ROOT['snapshot'], ph.PLANETS_STAGE1_FMT)),
+                   ('inputs.phot', cc.CUTOUT_ROOT_FMT)):
+        pre, _, post = fmt.partition('{generation}')
+        m = re.fullmatch(re.escape(pre) + r'(gen\d+)' + re.escape(post), str(fields.get(k) or '').rstrip('/'))
+        gens.add(m.group(1) if m else None)
+    return gens.pop() if len(gens) == 1 else None
 
 
 def write_fixture():
@@ -269,12 +280,14 @@ def _entry(k):
 
 
 def gen_keys(rx=GEN_RE):
-    """{'section.KEY[entry]' (or '{key}' for a dict key): value} of every config value matching ``rx``."""
+    """{'section.KEY[entry]' (or '{key}' for a dict key): value} of every config value matching ``rx``. A path into this
+    checkout (package data, e.g. masters_build.NAMED_OUT_OF_MASTER) is matched without the checkout's own location, which
+    may name a generation itself (a worktree .../planets_gen6_20261128/wt)."""
     out = {}
 
     def walk(v, path):
         if isinstance(v, str):
-            if rx.search(v):
+            if rx.search(v[len(REPO):] if v.startswith(REPO + os.sep) else v):
                 out[path] = v
         elif isinstance(v, (list, tuple, set, frozenset)):
             for x in v:
@@ -298,10 +311,8 @@ def served_inputs(fx):
     """{GEN5_SERVED key: (config value, the served input it must equal)}."""
     ph, t = CFG.photometry, CFG.forced_tier_pages
     from exopipe.phase3.lib.forced import tier_pages as TPM
-    from exopipe.phase3.lib.photometry import steps_common as K
     tr = fx['page_records']['tier pages']['fields']
     pr = fx['page_records']['planets']['fields']
-    pl = K.planets_roots()
     runs = served_runs(fx)
     out = {'photometry.GENERATIONS[deep]': (ph.GENERATIONS['deep'], served_generation(fx, 'deep')),
            'photometry.GENERATIONS[sublst]': (ph.GENERATIONS['sublst'], served_generation(fx, '10min')),
@@ -310,10 +321,6 @@ def served_inputs(fx):
            'photometry.TIER_FORCED_ROOTS[HWJ]': (ph.TIER_FORCED_ROOTS['HWJ'], tr.get('inputs.tiers')),
            'photometry.TIER_FORCED_ROOTS[10pc]': (ph.TIER_FORCED_ROOTS['10pc'], tr.get('inputs.tiers')),
            'photometry.TIER_FORCED_ROOTS[SolarSystem]': (ph.TIER_FORCED_ROOTS[ph.PLANET_SAMPLE], pr.get('inputs.tiers')),
-           'photometry.PLANETS_PAGE_GENERATION': ((ph.PLANETS_PAGE_GENERATION, pl['planets page stage 1'],
-                                                   os.path.dirname(pl['planets page cutouts'])),
-                                                  (gen_of_site(fx['page_records']['planets']['site']), pr.get('inputs.stage1'),
-                                                   pr.get('inputs.phot'))),
            'forced_tier_pages.SCRIPT_EVAL_NAME': (sorted(t.SCRIPT_EVAL_NAME.format(tier=ti, wb='wb_' if k == 'wb' else '')
                                                          for ti, k in t.EVAL_DIRS),
                                                   sorted(os.path.basename(v) for k, v in tr.items()
@@ -391,8 +398,16 @@ def problems(fx):
     for (S, cad), run in sorted(runs.items()):
         want('notify.FORCED_RUN (%s %s)' % (S, cad), n.FORCED_RUN.format(
             stokes=S, tier=cad, generation=ph.GENERATIONS[ph.CADENCE_TIER[cad]]), run)
-    want('photometry.PLANETS_PAGE_GENERATION', ph.PLANETS_PAGE_GENERATION,
-         gen_of_site(os.path.basename(fx['registry']['planets']['root'])))
+    pr = fx['page_records']['planets']['fields']
+    want('photometry.PLANETS_PAGE_GENERATION (= GENERATIONS[snapshot]; the planets page record\'s inputs.stage1 and '
+         'inputs.phot name one generation)', ph.PLANETS_PAGE_GENERATION, planets_generation(pr))
+    pl = K.planets_roots()
+    want('the planets page\'s per-night stage 1 (steps_common.planets_roots; inputs.stage1)', pl['planets page stage 1'],
+         pr.get('inputs.stage1'))
+    want('the planets page\'s per-night cutouts\' generation root (steps_common.planets_roots; inputs.phot)',
+         os.path.dirname(pl['planets page cutouts']), pr.get('inputs.phot'))
+    want('the planets page\'s tier cubes = photometry.CUTOUT_ROOTS[deep] (inputs.phot_tiers)', ph.CUTOUT_ROOTS['deep'],
+         pr.get('inputs.phot_tiers'))
     try:
         want('the served-root gate holds the planets page\'s per-night inputs',
              {r for _, r in K.served_roots()} >= set(K.planets_roots().values()), True)
@@ -457,13 +472,19 @@ def test_served():
            os.path.basename(CFG.forced_snapshot.EVAL_SB), CFG.forced_wide_search.MINUTE_BASIS_RULE.get(
                fx['stage1_minute_basis']['gen6']['minute_basis'])) == ('gen6', 'photometry_gen6', 'stage1_gen6', 'eval_gen6',
                                                                         'midpoint'))
-    check('the deep and 10-minute tiers are gen5 (the tier cutouts); gen5\'s stage 1 has no minute_basis: filename',
+    check('the deep and 10-minute tiers are gen5 (the tier cutouts); the fixture records one stage-1 minute basis, gen6\'s: '
+          'no served page reads a gen5 stage 1 since PLANETS-GEN6-DONE (the planets page reads stage1_gen6_planets_orbit)',
           [os.path.basename(ph.CUTOUT_ROOTS[t]) for t in ('deep', 'sublst')] == ['photometry_gen5'] * 2
-          and fx['stage1_minute_basis']['gen5']['minute_basis'] == '')
+          and sorted(fx['stage1_minute_basis']) == ['gen6'], sorted(fx['stage1_minute_basis']))
     src = open(os.path.join(REPO, 'exopipe', 'phase3', 'config', 'steps', 'photometry.py')).read().splitlines()
     line = [ln for ln in src if ln.strip().startswith('PLANETS_PAGE_GENERATION =')]
-    check('the planets line says "switch at PLANETS-GEN6-DONE"', len(line) == 1 and 'switch at PLANETS-GEN6-DONE' in line[0],
-          line)
+    d = CFG.derived('photometry.PLANETS_PAGE_GENERATION')
+    check('PLANETS-GEN6-DONE: the planets page follows the snapshot generation - PLANETS_PAGE_GENERATION is one line, Derived '
+          'from photometry.GENERATIONS alone (= GENERATIONS[snapshot] = gen6); its tier forced root stays '
+          'tiers_<GENERATIONS[deep]>_planets_orbit (gen5)', len(line) == 1 and 'Derived((\'photometry.GENERATIONS\',)' in line[0]
+          and d is not None and d.inputs == ('photometry.GENERATIONS',)
+          and ph.PLANETS_PAGE_GENERATION == ph.GENERATIONS['snapshot'] == 'gen6'
+          and os.path.basename(ph.TIER_FORCED_ROOTS[ph.PLANET_SAMPLE]) == 'tiers_gen5_planets_orbit', (line, d and d.inputs))
 
 
 @case
@@ -519,6 +540,18 @@ def fixture_copy(edit):
     return path
 
 
+def planets_record_of(gen):
+    """A fixture edit (for fixture_copy / falsify): the planets page record's per-night inputs of generation ``gen`` -
+    inputs.stage1 <OUT_ROOT[snapshot]>/<PLANETS_STAGE1_FMT>, inputs.phot <CUTOUT_ROOT_FMT> (gen5: the record before
+    PLANETS-GEN6-DONE); its tier inputs unchanged."""
+    def edit(f):
+        ph = CFG.photometry
+        f['page_records']['planets']['fields'].update({
+            'inputs.stage1': os.path.join(ph.OUT_ROOT['snapshot'], ph.PLANETS_STAGE1_FMT.format(generation=gen)),
+            'inputs.phot': CFG.photometry_campaign.CUTOUT_ROOT_FMT.format(generation=gen)})
+    return edit
+
+
 def refusal(fn, *a, **k):
     from exopipe.phase3.config import ConfigRefusal
     from exopipe.phase3.core.record import Refusal
@@ -531,8 +564,9 @@ def refusal(fn, *a, **k):
 
 @case
 def test_one_key_switch():
-    """photometry.GENERATIONS[snapshot] switches every snapshot root and run name (a protected key: a --parity replay here);
-    PLANETS_PAGE_GENERATION the planets page's per-night inputs and the served-root gate, not its tier root."""
+    """photometry.GENERATIONS[snapshot] switches every snapshot root and run name and the planets page's per-night inputs
+    (a protected key: a --parity replay here), not the planets page's tier root (GENERATIONS[deep]); PLANETS_PAGE_GENERATION
+    is derived from it, so a snapshot switch the planets page has not followed refuses SERVED-GEN."""
     from exopipe.phase3.lib.forced import wide_jobs as WJ
     from exopipe.phase3.lib.photometry import steps_common as K
     ph = CFG.photometry
@@ -549,50 +583,62 @@ def test_one_key_switch():
                os.path.basename(fs.EVAL_WB), os.path.basename(fs.ZONE_FLAGS), os.path.basename(fs.STAGE1_ROOT),
                os.path.basename(fs.PHOT_ROOT), os.path.basename(CFG.forced_wide.WORK_ROOT), WJ.run_name('I', '10s'),
                n.FORCED_RUN.format(stokes='V', tier='1min', generation=ph.GENERATIONS[ph.CADENCE_TIER['1min']]),
-               WJ.run_name('I', 'deep'), os.path.basename(ph.CUTOUT_ROOTS['deep']))
+               WJ.run_name('I', 'deep'), os.path.basename(ph.CUTOUT_ROOTS['deep']), ph.PLANETS_PAGE_GENERATION,
+               os.path.relpath(K.planets_roots()['planets page cutouts'], os.path.dirname(ph.CUTOUT_ROOTS['snapshot'])),
+               os.path.basename(K.planets_roots()['planets page stage 1']),
+               os.path.basename(ph.TIER_FORCED_ROOTS[ph.PLANET_SAMPLE]))
         rec = [(o[0], str(o[4]).split(':', 1)[0]) for o in CFG.overrides]
-        check('one photometry.GENERATIONS[snapshot]=gen7 (parity replay) moves every snapshot root and run name, computed '
-              'when read (the one override recorded is the input), and no tier one: %s' % (got,),
+        check('one photometry.GENERATIONS[snapshot]=gen7 (parity replay) moves every snapshot root and run name and the '
+              'planets page\'s per-night inputs, computed when read (the one override recorded is the input), and no tier '
+              'one (the planets page\'s tier forced root stays): %s' % (got,),
               got == ('photometry_gen7', 'stage1_gen7', 'eval_gen7', 'eval_wb_gen7', 'zones_recomputed_gen7.csv', 'stage1_gen7',
                       'photometry_gen7', 'forced_wide_gen7', 'Run_SNAPFORCED_I10s_gen7', 'Run_SNAPFORCED_V1min_gen7',
-                      'Run_SNAPFORCED_Ideep_gen5', 'photometry_gen5')
+                      'Run_SNAPFORCED_Ideep_gen5', 'photometry_gen5', 'gen7', 'photometry_gen7/SolarSystem',
+                      'stage1_gen7_planets_orbit', 'tiers_gen5_planets_orbit')
               and rec == [('photometry.GENERATIONS[snapshot]', 'parity replay')], (got, rec))
         e = refusal(K.served_roots)
-        check('... the served-root gate takes the parity replay (SERVED-GEN exempts it: writes confined to --out)', e is None, e)
+        check('... the served-root gate takes the parity replay (SERVED-GEN exempts it, the derived planets page key too: '
+              'writes confined to --out)', e is None, e)
         e = refusal(CFG.set, 'forced_snapshot.EVAL_SB', '/x/eval_mine', source='test')
         check('... a derived key is not settable (EVAL_SB): refused, naming its inputs - no frozen value beside re-derived '
               'siblings', e is not None and 'derived' in e and 'photometry_evaluate.EVAL_DIR' in e
               and CFG.forced_snapshot.EVAL_SB.endswith('eval_gen7'), e)
     check('... reset restores the served values', os.path.basename(CFG.forced_snapshot.EVAL_SB) == 'eval_gen6'
-          and ph.STAGE1_DIR == 'stage1_gen6' and not CFG.overrides)
-    before = K.planets_roots()
+          and ph.STAGE1_DIR == 'stage1_gen6' and ph.PLANETS_PAGE_GENERATION == 'gen6' and not CFG.overrides)
+    pl = K.planets_roots()
+    served = {r for _, r in K.served_roots()}
+    g5 = K.planets_roots('gen5')
+    e = refusal(CFG.set, 'photometry.PLANETS_PAGE_GENERATION', 'gen5', source='test')
+    check('PLANETS-GEN6-DONE (2026-11-28 05:29:23Z): PLANETS_PAGE_GENERATION is derived (a --set refuses, naming '
+          'photometry.GENERATIONS) = gen6; the planets page\'s cutouts photometry_gen6/SolarSystem and stage 1 '
+          'stage1_gen6_planets_orbit are in the served-root gate and stage1_gen5_planets_orbit is not under any served root; '
+          'its tier forced root stays %s (GENERATIONS[deep]; planets_gen6_stage34_20261127.sh:66-67)' % os.path.basename(tier_root),
+          e is not None and 'derived' in e and 'photometry.GENERATIONS' in e and ph.PLANETS_PAGE_GENERATION == 'gen6'
+          and pl['planets page cutouts'] == os.path.join(CFG.photometry_campaign.CUTOUT_ROOT_FMT.format(generation='gen6'),
+                                                         'SolarSystem')
+          and os.path.basename(pl['planets page stage 1']) == 'stage1_gen6_planets_orbit'
+          and {pl['planets page cutouts'], pl['planets page stage 1']} <= served and tier_root in served
+          and os.path.basename(tier_root) == 'tiers_gen5_planets_orbit'
+          and K.served_root_of(os.path.join(g5['planets page stage 1'], '18h_2025-04-11')) is None, (e, pl))
+    hit = K.served_root_of(os.path.join(pl['planets page stage 1'], '18h_2025-04-11'))
+    check('... the gate names a path under the planets stage 1 as served (C-INPLACE / PHOT-ADHOC protect it)',
+          hit is not None and hit[1] == pl['planets page stage 1'], hit)
+    hit = K.served_root_of(os.path.join(g5['planets page cutouts'], 'Green'))
+    check('... the gen5 SolarSystem per-night cutouts are no planets input, but they stay under a served root: photometry_gen5 '
+          'holds the tier cutouts (CUTOUT_ROOTS[deep] / [sublst])', hit is not None
+          and hit[1] == CFG.photometry.CUTOUT_ROOTS['deep'] and 'planets' not in hit[0], hit)
+    old = fixture_copy(planets_record_of('gen5'))
     try:
-        CFG.set('photometry.PLANETS_PAGE_GENERATION', 'gen6', source='test')
-        e = refusal(K.served_roots)
-        check('PLANETS_PAGE_GENERATION=gen6 while the fixture\'s planets page serves gen5: the served-root gate refuses '
-              '(SERVED-GEN)', e is not None and 'SERVED-GEN' in e and 'PLANETS_PAGE_GENERATION = gen6' in e, e)
-        g6 = fixture_copy(lambda f: f['page_records']['planets']['fields'].update(
-            {'inputs.stage1': f['page_records']['planets']['fields']['inputs.stage1'].replace('_gen5_', '_gen6_')}))
-        try:
-            with raw((ph, 'SERVED_GENERATIONS_FILE', g6)):
-                after = K.planets_roots()
-                served = {r for _, r in K.served_roots()}
-                check('PLANETS-GEN6-DONE is one key (with the fixture written once the hub serves it): PLANETS_PAGE_GENERATION=gen6 '
-                      'moves the planets page\'s cutouts to photometry_gen6/SolarSystem and its stage 1 to '
-                      'stage1_gen6_planets_orbit, both in the served-root gate; its tier forced root stays %s '
-                      '(planets_gen6_stage34_20261127.sh:66-67)' % os.path.basename(tier_root),
-                      after['planets page cutouts'] == os.path.join(
-                          CFG.photometry_campaign.CUTOUT_ROOT_FMT.format(generation='gen6'), 'SolarSystem')
-                      and os.path.basename(after['planets page stage 1']) == 'stage1_gen6_planets_orbit'
-                      and ph.TIER_FORCED_ROOTS[ph.PLANET_SAMPLE] == tier_root
-                      and {after['planets page cutouts'], after['planets page stage 1']} <= served
-                      and before['planets page stage 1'] not in served, (before, after))
-                hit = K.served_root_of(os.path.join(after['planets page stage 1'], '18h_2025-04-11'))
-                check('... the gate names a path under the new planets stage 1 as served (C-INPLACE / PHOT-ADHOC protect it)',
-                      hit is not None and hit[1] == after['planets page stage 1'], hit)
-        finally:
-            os.remove(g6)
+        with raw((ph, 'SERVED_GENERATIONS_FILE', old)):
+            e = refusal(K.served_roots)
+            e2 = refusal(K.served_cutout_root, 'snapshot')
+        check('a fixture whose planets page serves gen5 (its record before PLANETS-GEN6-DONE) against GENERATIONS[snapshot] gen6: '
+              'the served-root gate refuses (SERVED-GEN), naming the derived key - a snapshot switch the page has not followed '
+              'fails closed (served_cutout_root too)', e is not None and 'SERVED-GEN' in e
+              and 'PLANETS_PAGE_GENERATION = gen6 (derived: GENERATIONS[snapshot]), the planets page serves gen5' in e
+              and e2 is not None and 'SERVED-GEN' in e2, (e, e2))
     finally:
+        os.remove(old)
         CFG.reset()
 
 
@@ -649,31 +695,32 @@ def test_derived_inputs():
     CFG.reset()
     check('a derived key is not settable: --set refuses, naming every input to set instead (%d keys)' % len(table),
           not sets and not CFG.overrides, sets)
-    e = refusal(CFG.set, 'photometry.PLANETS_PAGE_GENERATION', 'photometry_gen6', source='test')
     with parity():
         e2 = refusal(CFG.set, 'photometry.GENERATIONS[snapshot]', 'six', source='test')
         g = CFG.photometry.GENERATIONS['snapshot']
-    check('VALIDATE at --set: a generation that is not gen<N> refuses (PLANETS_PAGE_GENERATION, GENERATIONS under parity) '
-          'and leaves the value', e is not None and e2 is not None and 'does not name a generation' in e2
-          and CFG.photometry.PLANETS_PAGE_GENERATION == 'gen5' and g == 'gen6', (e, e2))
+    check('VALIDATE at --set: a generation that is not gen<N> refuses (GENERATIONS under parity; forced_snapshot.GENERATION '
+          'below) and leaves the value (and the derived PLANETS_PAGE_GENERATION) as it was', e2 is not None
+          and 'does not name a generation' in e2 and g == 'gen6' and CFG.photometry.PLANETS_PAGE_GENERATION == 'gen6', e2)
     import tempfile
     out = tempfile.mkdtemp(prefix='derived_out_', dir=os.environ.get('EXOPIPE3_TEST_SCRATCH'))
     try:
         e = refusal(CFG.set, 'forced_snapshot.GENERATION', 'gen5', source='test')
         CFG.authorize([], out=out)
+        e4 = refusal(CFG.set, 'forced_snapshot.GENERATION', 'photometry_gen5', source='test')
         CFG.set('forced_snapshot.GENERATION', 'gen5', source='test')
         st1 = CFG.forced_snapshot.STAGE1_ROOT
         e3 = refusal(CFG.check_out, CFG.photometry.OUT_ROOT['snapshot'])
         check('a ruled input (forced_snapshot.GENERATION): refused into a production --out without --ruling-for; into a '
-              'non-production --out it moves the derived roots (%s), and check_out refuses when the final --out is a '
-              'production root' % os.path.basename(st1), e is not None and 'carries a ruling' in e
-              and st1.endswith('stage1_gen5') and e3 is not None and 'production root' in e3, (e, e3))
+              'non-production --out a value that is not gen<N> refuses (VALIDATE), gen5 moves the derived roots (%s), and '
+              'check_out refuses when the final --out is a production root' % os.path.basename(st1), e is not None
+              and 'carries a ruling' in e and e4 is not None and 'does not name a generation' in e4
+              and st1.endswith('stage1_gen5') and e3 is not None and 'production root' in e3, (e, e4, e3))
     finally:
         CFG.reset()
         CFG.authorize([])
         os.rmdir(out)
     e = refusal(K.gate_served_generations)
-    check('SERVED-GEN: the config agrees with the fixture (snapshot gen6, deep and sublst gen5, planets page gen5)', e is None, e)
+    check('SERVED-GEN: the config agrees with the fixture (snapshot gen6, deep and sublst gen5, planets page gen6)', e is None, e)
     g5 = fixture_copy(lambda f: [v.update(run=v['run'].replace('10s_gen6', '10s_gen5').replace('1min_gen6', '1min_gen5'))
                                  for v in f['registry']['forced'].values()])
     mixed = fixture_copy(lambda f: [v.update(run=v['run'].replace('V10s_gen6', 'V10s_gen5'))
@@ -760,10 +807,20 @@ def test_falsification():
                 {'inputs.evals.deep|sb': '/lustre/gh/main/phase3/snapshot_forced/eval_deep_gen4_hwj10pc'}))
     falsify(fx, 'the 10-minute pages served from gen6 runs', {}, 'photometry.GENERATIONS[sublst]',
             lambda f: [v.update(run=v['run'].replace('10min_gen5', '10min_gen6')) for v in f['registry']['forced'].values()])
-    falsify(fx, 'the planets page switched before PLANETS-GEN6-DONE', {'photometry.PLANETS_PAGE_GENERATION': 'gen6'},
-            'photometry.PLANETS_PAGE_GENERATION')
-    falsify(fx, '... which the served-root gate refuses too (SERVED-GEN)', {'photometry.PLANETS_PAGE_GENERATION': 'gen6'},
-            'SERVED-GEN')
+    falsify(fx, 'the planets page record of gen5 (before PLANETS-GEN6-DONE) against the snapshot generation gen6', {},
+            'photometry.PLANETS_PAGE_GENERATION', planets_record_of('gen5'))
+    old = fixture_copy(planets_record_of('gen5'))
+    try:
+        falsify(fx, '... which the served-root gate refuses too (SERVED-GEN)', {}, 'SERVED-GEN', planets_record_of('gen5'),
+                inputs=[(ph, 'SERVED_GENERATIONS_FILE', old)])
+    finally:
+        os.remove(old)
+    falsify(fx, 'the planets page record naming gen6 cutouts and a gen5 stage 1 (no one generation)', {},
+            'photometry.PLANETS_PAGE_GENERATION', lambda f: f['page_records']['planets']['fields'].update(
+                {'inputs.stage1': os.path.join(ph.OUT_ROOT['snapshot'], 'stage1_gen5_planets_orbit')}))
+    falsify(fx, 'the planets page\'s tier cubes of another generation (inputs.phot_tiers)', {}, 'inputs.phot_tiers',
+            lambda f: f['page_records']['planets']['fields'].update({'inputs.phot_tiers': cc.CUTOUT_ROOT_FMT.format(
+                generation='gen6')}))
     falsify(fx, 'the planets page record naming another tier root', {}, 'photometry.TIER_FORCED_ROOTS[SolarSystem]',
             lambda f: f['page_records']['planets']['fields'].update({'inputs.tiers': '/x/tiers_gen6_planets_orbit'}))
     falsify(fx, 'an unlisted key naming gen5', {'forced_snapshot.REVIEW_SUBDIR_UNDER_OUT': 'review_gen5'},

@@ -138,9 +138,10 @@ def run_of(out, **kw):
 
 def served_gen5(P, d):
     """The served state the gen6 campaign ran in (2026-11-17..27): snapshot generation 5 - photometry.GENERATIONS['snapshot']
-    = gen5 (CUTOUT_ROOTS['snapshot'] photometry_gen5 and STAGE1_DIR stage1_gen5 follow: Derived) and the served registry's
-    fixture of then (the fixture with the 10-s / 1-min runs of gen5, in ``d``; SERVED-GEN compares the two), in memory
-    only. Since 2026-11-27 generation 6 is served, so the configured campaign generation gen6 refuses CP-GEN
+    = gen5 (CUTOUT_ROOTS['snapshot'] photometry_gen5, STAGE1_DIR stage1_gen5 and PLANETS_PAGE_GENERATION follow: Derived)
+    and the served registry's fixture of then (the fixture with the 10-s / 1-min runs of gen5 and the planets page record's
+    gen5 per-night inputs, in ``d``; SERVED-GEN compares the two), in memory only. Since 2026-11-27 generation 6 is served
+    (the planets page since PLANETS-GEN6-DONE, 2026-11-28), so the configured campaign generation gen6 refuses CP-GEN
     (test_generation); the campaign's own tests run in its own state."""
     ph = CFG.photometry
     with open(K.served_fixture_path()) as f:
@@ -148,6 +149,9 @@ def served_gen5(P, d):
     for v in fx['registry']['forced'].values():
         for cad in ('10s', '1min'):
             v['run'] = v['run'].replace('%s_gen6' % cad, '%s_gen5' % cad)
+    fl = fx['page_records']['planets']['fields']
+    fl.update({'inputs.stage1': os.path.join(ph.OUT_ROOT['snapshot'], ph.PLANETS_STAGE1_FMT.format(generation='gen5')),
+               'inputs.phot': CFG.photometry_campaign.CUTOUT_ROOT_FMT.format(generation='gen5')})
     path = os.path.join(d, 'served_generations_gen5.json')
     with open(path, 'w') as f:
         json.dump(fx, f)

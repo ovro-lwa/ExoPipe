@@ -11,8 +11,8 @@ from exopipe.phase3.config import Derived, _Section
 
 def is_generation(v):
     """The ONE validator of a cutout generation tag (photometry_campaign.GENERATION_RE, e.g. 'gen6'): returns ``v``, else
-    ValueError. VALIDATE of photometry.GENERATIONS (each entry), PLANETS_PAGE_GENERATION and forced_snapshot.GENERATION (at
-    config load and on every override); campaign.generation and tier_snapshot.generation_roots call it too."""
+    ValueError. VALIDATE of photometry.GENERATIONS (each entry) and forced_snapshot.GENERATION (at config load and on every
+    override); campaign.generation, tier_snapshot.generation_roots and steps_common.planets_roots call it too."""
     rx = photometry_campaign.GENERATION_RE
     if not isinstance(v, str) or not re.match(rx, v):
         raise ValueError('%r does not name a generation (photometry_campaign.GENERATION_RE %s)' % (v, rx))
@@ -88,14 +88,14 @@ class photometry(_Section):
     #      PHOT-ADHOC, CP-GEN), so it is PROTECTED and RULED (Gregg 2026-11-18 "Approve gen6 with the LPTs included"): it changes
     #      by a commit, with the served registry's fixture SERVED_GENERATIONS_FILE (steps_common.gate_served_generations refuses
     #      a disagreement), or in a --parity replay into a non-production --out. Keys that name a generation themselves are the
-    #      MIRRORs of in-place scripts and the planets page (PLANETS_PAGE_GENERATION), each justified in
-    #      tests/test_served_generation_roots.py
+    #      MIRRORs of in-place scripts and the tables with one row per generation, each justified in
+    #      tests/test_served_generation_roots.py (SEPARATE); the planets page follows GENERATIONS since PLANETS-GEN6-DONE
     GENERATIONS = {'snapshot': 'gen6', 'deep': 'gen5', 'sublst': 'gen5'}   # tier -> the served cutout generation
     CADENCE_TIER = {'10s': 'snapshot', '1min': 'snapshot', '10min': 'sublst', 'deep': 'deep'}   # a forced run's cadence ->
                                                  # the photometry tier whose cutouts it measured
     # the served registry's generations as tests/test_served_generation_roots.py --write-fixture records them (the hub's
-    # registered_pages.json: each forced page's run, the planets page's record); the served-root gate refuses a GENERATIONS or
-    # PLANETS_PAGE_GENERATION that disagrees with it (steps_common.gate_served_generations). A name in the config package
+    # registered_pages.json: each forced page's run, the planets page's record); the served-root gate refuses a GENERATIONS
+    # (and so a PLANETS_PAGE_GENERATION) that disagrees with it (steps_common.gate_served_generations). A name in the config package
     # (exopipe/phase3/config/), so the config hash does not depend on where the tree lives
     SERVED_GENERATIONS_FILE = 'served_generations.json'
     # Derived (computed when read, never set): CUTOUT_ROOTS[tier] = photometry_campaign.CUTOUT_ROOT_FMT of GENERATIONS[tier] -
@@ -107,19 +107,24 @@ class photometry(_Section):
                            lambda gens, fmt: {t: fmt.format(generation=g) for t, g in gens.items()})
     STAGE1_DIR = Derived(('photometry.GENERATIONS', 'photometry_campaign.STAGE1_DIR_FMT'),
                          lambda gens, fmt: fmt.format(generation=gens['snapshot']))
-    # THE PLANETS PAGE (/s/planets/: registered_pages.json:114-116, root site_planets_SUN_gen5; built by the dated drivers
-    # planets_page_orbit_build_20261028.sh, planets_gen6_stage34_20261127.sh - no v2 family builds or reads it): the generation
-    # of its 10-s and 1-minute inputs as served now, site_planets_SUN_gen5/page_record.json: stage 1 <OUT_ROOT[snapshot]>/
-    # stage1_gen5_planets_orbit on photometry_gen5/SolarSystem. The Snapshot chat's rerun (planets_gen6_stage34_20261127.sh:64-77)
-    # swaps a page built on stage1_gen6_planets_orbit / photometry_gen6 into the same root and reports PLANETS-GEN6-DONE. Its
-    # 10-minute and deep inputs stay TIER_FORCED_ROOTS['SolarSystem'] on the gen5 tier cubes (:36 P3_PHOT_ROOT=$G5, :67)
-    PLANETS_PAGE_GENERATION = 'gen5'             # switch at PLANETS-GEN6-DONE (to 'gen6')
+    # THE PLANETS PAGE (/s/planets/: registered_pages.json:114-116, root site_planets_SUN_gen5 - the directory keeps its gen5
+    # name; built by the dated drivers planets_page_orbit_build_20261028.sh, planets_gen6_stage34_20261127.sh - no v2 family
+    # builds or reads it). Its 10-s and 1-minute inputs are snapshot-tier products of the SNAPSHOT generation: since
+    # PLANETS-GEN6-DONE (2026-11-28 05:29:23Z, DONE-20261127-PLANETS-PAGE-ON-GEN6: planets_gen6_stage34_20261127.sh:64-80
+    # swapped a page built on stage1_gen6_planets_orbit / photometry_gen6 into the same root) site_planets_SUN_gen5/
+    # page_record.json names inputs.stage1 <OUT_ROOT[snapshot]>/stage1_gen6_planets_orbit and inputs.phot photometry_gen6, as the
+    # snapshot pages p8775 / p8776 / p8785 / p8786 serve gen6. So the key is Derived from GENERATIONS['snapshot'] (computed when
+    # read, not settable; protected and ruled through GENERATIONS); until 11-28 it was a separate key 'gen5' while the page lagged
+    # the snapshot pages. A future snapshot switch the page has not followed refuses SERVED-GEN (the fixture's planets page
+    # against GENERATIONS['snapshot']) until the page is rebuilt on it, or that commit separates the key again with the lag as
+    # its reason. Its 10-minute and deep inputs stay the TIER generation's (TIER_FORCED_ROOTS['SolarSystem'] and
+    # CUTOUT_ROOTS['deep'], GENERATIONS['deep']): the gen6 page reads tiers_gen5_planets_orbit and the gen5 tier cubes (:66-67
+    # P3_PHOT_ROOT_TIERS=$G5, P3_FORCED_TIERS; page_record inputs.phot_tiers, inputs.tiers)
+    PLANETS_PAGE_GENERATION = Derived(('photometry.GENERATIONS',), lambda gens: gens['snapshot'])
     # the planets page's 10-s / 1-min inputs of a generation (steps_common.planets_roots): its SolarSystem per-night cutouts
     # <photometry_campaign.CUTOUT_ROOT_FMT>/<PLANET_SAMPLE> and stage 1 <OUT_ROOT[snapshot]>/<PLANETS_STAGE1_FMT>
     # (planets_page_orbit_build_20261028.sh:11 P3_FORCED_STAGE1 stage1_gen5_planets_orbit; planets_gen6_stage34_20261127.sh:15
-    # stage1_gen6_planets_orbit). Its 10-minute and deep inputs are the TIER generation's (TIER_FORCED_ROOTS['SolarSystem'],
-    # GENERATIONS['deep']): the gen6 page still reads tiers_gen5_planets_orbit and the gen5 tier cubes (:67 P3_FORCED_TIERS,
-    # P3_PHOT_ROOT_TIERS=$G5), so PLANETS_PAGE_GENERATION switches the per-night inputs only
+    # stage1_gen6_planets_orbit)
     PLANETS_STAGE1_FMT = 'stage1_{generation}_planets_orbit'
     # cutmeasure: <root>/<10min|deep>/<LST>/forced_<sample>_<band>_<S>.npz + forced_manifest.csv, the root per sample as served:
     # HWJ / 10 pc in forced_tiers_gen5 (the served tier pages read it: tier_forced_page_20261027.py through
@@ -128,7 +133,7 @@ class photometry(_Section):
     # reads (planets_page_orbit_build_20261028.sh:12 P3_FORCED_TIERS) - forced_tiers_gen5 still holds their 9b0ca31 ring files.
     # --tier-out puts every sample under one root instead. LPT (2026-11-24): in forced_tiers_gen5 with HWJ / 10 pc, the root the
     # tier pages read (forced_tier_pages.SAMPLES); the served generation holds LPT once cutouts,cutmeasure --in-place has run.
-    # Unchanged by generation 6 (it cut no tier cutouts); SolarSystem stays at PLANETS-GEN6-DONE (planets_gen6_stage34_20261127.sh
+    # Unchanged by generation 6 (it cut no tier cutouts); SolarSystem stayed at PLANETS-GEN6-DONE (planets_gen6_stage34_20261127.sh
     # :67 P3_FORCED_TIERS=tiers_gen5_planets_orbit). Derived from GENERATIONS['deep'] (the tier cutouts' generation; deep and
     # sub-LST are one root, T-ROOTS): HWJ / 10 pc / LPT = TIER_FORCED_ROOT_FMT, SolarSystem (PLANET_SAMPLE) = PLANETS_TIERS_FMT
     TIER_FORCED_ROOT_FMT = '/lustre/pipeline/exopipe/phase3/forced_tiers_{generation}'
@@ -250,8 +255,7 @@ class photometry(_Section):
                       'TIER_FORCED_ENGINE_SAMPLES',
                       'PLANET_SAMPLE', 'ADHOC_ENV', 'ADHOC_PLANETS_ENV', 'ENGINE_V2', 'GENERATIONS',
                       'SERVED_GENERATIONS_FILE')
-    VALIDATE = {'GENERATIONS': lambda d: [is_generation(g) for g in d.values()],
-                'PLANETS_PAGE_GENERATION': lambda g: is_generation(g)}
+    VALIDATE = {'GENERATIONS': lambda d: [is_generation(g) for g in d.values()]}
     RULED = {'GENERATIONS': 'R-GREGG-20261118-GEN6-WITH-LPTS-SAMPLE-WIRED',
              'SAMPLES_MEASURED': ('R-FORCED-PHOTOMETRY-ELEMENTS-APPROVED-V-FAINT-PARENT-ENTRIES',
                                   'R-GREGG-20261118-GEN6-WITH-LPTS-SAMPLE-WIRED'),
