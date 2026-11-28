@@ -1,6 +1,7 @@
 """`exopipe3 forced --tier snapshot --stages wide_jobs,wide_search,wide_test,wide_publish` (family W) and `--stages activity`
 (family N): the two inputs of the astrometry figure v2 that analysis scripts made - the forced targets' wide-area burst test
-(forced_wide_v3.csv in each of the 4 tested forced runs, Run_SNAPFORCED_{I,V}{10s,1min}_gen5; astrometry_assoc.V3_MAP) and
+(forced_wide_v3.csv in each of the 4 tested forced runs, Run_SNAPFORCED_{I,V}{10s,1min}_<generation> - wide_jobs.run_name,
+gen6 since 2026-11-27, production's last test gen5; astrometry_assoc.V3_MAP) and
 the night-activity table (astrometry_assoc.night_act). Spec
 docs/specs/forced_wide.md. Campaign stages (no per-hour form), named only (never a default), one family per invocation.
 
@@ -10,7 +11,7 @@ Family W. --out = the work root W (default forced_wide.WORK_ROOT); records W/_re
                 -> W/jobs.json (forced_wide_jobs) and the tested runs' forced events -> W/events.csv (forced_wide_events). --wide-jobs FILE[,FILE] adopts job lists the analysis wrote (forced_wide_jobs.py
                 jobs.json, v3 jobs_ext.json) instead of selecting (a replay; recorded).
   wide_search   unit W_search_<S>_<identity> per job: the burst search of each band on the cutouts (--wide-cutout-root, default
-                photometry.CUTOUT_ROOT) -> W/bursts/<S>_<identity>_<band>.npz (forced_wide_bursts), a pool of at most
+                photometry.CUTOUT_ROOTS[snapshot]) -> W/bursts/<S>_<identity>_<band>.npz (forced_wide_bursts), a pool of at most
                 forced_wide_search.MAX_WORKERS processes (--workers), each cutout read after the recorders' I/O guard allows it.
   wide_test     unit W_test: the v3 analysis of every job (pool: every job of the Stokes) -> W/results_v3.csv
                 (forced_wide_results) and W/candidates_v3.csv (forced_wide_candidates). The bursts: this root's done
@@ -74,7 +75,7 @@ def add_arguments(p):
     g.add_argument('--wide-jobs', metavar='FILE[,FILE]', help='wide_jobs: adopt job lists the analysis wrote (forced_wide_jobs.py '
                                                              'jobs.json, then v3 jobs_ext.json) instead of selecting them (a replay)')
     g.add_argument('--wide-cutout-root', metavar='DIR', help='wide_search: the cutout generation searched (default '
-                                                             'photometry.CUTOUT_ROOT, the served one)')
+                                                             'photometry.CUTOUT_ROOTS[snapshot], the served one)')
     g.add_argument('--wide-bursts', metavar='DIR', help='wide_test: read every job\'s burst files from DIR instead of this root\'s '
                                                         'wide_search records (each file content-tested as an input)')
     g.add_argument('--wide-only', metavar='S:IDENTITY[,..]', help='wide_search / wide_test: only these jobs (IDENTITY * = every job '
@@ -218,7 +219,7 @@ class WCtx:
         self.runs = WJ.run_dirs(self.runs_root)                              # the tested runs (forced_wide.RUNS)
         self.amb_runs = WJ.run_dirs(self.runs_root, self.w.AMBIGUOUS_RUNS)    # the queues of the ambiguous list
         self.would_refuse = []           # gates a dry run's plan names (the dry run then exits 2)
-        self.cutout_root = os.path.abspath(args.wide_cutout_root or cfg.photometry.CUTOUT_ROOT)
+        self.cutout_root = os.path.abspath(args.wide_cutout_root or cfg.photometry.CUTOUT_ROOTS['snapshot'])
         if args.out:
             rr = args.snap_review_root or os.path.join(self.W, cfg.forced_snapshot.REVIEW_SUBDIR_UNDER_OUT)
         else:
@@ -339,9 +340,64 @@ def gate_cutout_root(c):
     retired = {os.path.realpath(r) for r in c.cfg.photometry.RETIRED_CUTOUT_ROOTS}
     if os.path.realpath(c.cutout_root) in retired:
         raise Refusal('W-CUTROOT %s is a retired cutout generation (photometry.RETIRED_CUTOUT_ROOTS): the forced photometry '
-                      'measured photometry.CUTOUT_ROOT' % c.cutout_root)
+                      'measured photometry.CUTOUT_ROOTS[snapshot]' % c.cutout_root)
     if not os.path.isdir(c.cutout_root):
         raise Refusal('W-CUTROOT the cutout root %s is not readable on %s' % (c.cutout_root, K.hostname()))
+
+
+def cutout_generation(root, cfg):
+    """The generation of a cutout root: its REAL path's directory name against photometry_campaign.CUTOUT_ROOT_FMT's
+    ('photometry_gen5' -> 'gen5'), None when it names none (a copy under another name). Refuses (W-CUTROOT) a root whose own
+    name names a generation its real path does not (a link photometry_gen6 -> photometry_gen5, or to an unnamed copy)."""
+    import re
+    cc = cfg.photometry_campaign
+    pre, _, post = os.path.basename(cc.CUTOUT_ROOT_FMT).partition('{generation}')
+    rx = re.escape(pre) + '(' + cc.GENERATION_RE.strip('^$') + ')' + re.escape(post)
+
+    def named(path):
+        m = re.fullmatch(rx, os.path.basename(path.rstrip('/')))
+        return m.group(1) if m else None
+    real, own = named(os.path.realpath(root)), named(os.path.abspath(root))
+    if own and own != real:
+        raise Refusal('W-CUTROOT the cutout root %s names %s, but its real path %s names %s' % (
+            root, own, os.path.realpath(root), real or 'no generation'))
+    return real
+
+
+def minute_rule(c):
+    """(rule, how, stage 1): the run's minute rule of the 1-minute blocks (W-MINUTE) and the stage-1 root every search unit
+    checks it against (wide_search.minute_basis: each cutout file's cell's own stage-1 npz). The rule is the cutout root's
+    generation's (cutout_generation, by its real path; forced_wide_search.MINUTE_RULE_OF_GENERATION), or forced_wide_search.
+    MINUTE_RULE when set - which must then equal the generation's; the stage 1 is <photometry.OUT_ROOT[snapshot]>/
+    <photometry_campaign.STAGE1_DIR_FMT> of the generation. Refuses a MINUTE_RULE of no known rule, a root that names no
+    generation (no stage 1 to check it against), a configured rule other than the generation's, a generation of no rule, and
+    an absent stage-1 directory. Reads no file (one stat)."""
+    ws, cfg = c.ws, c.cfg
+    rules = sorted(set(ws.MINUTE_BASIS_RULE.values()))
+    if ws.MINUTE_RULE is not None and ws.MINUTE_RULE not in rules:
+        raise Refusal('W-MINUTE forced_wide_search.MINUTE_RULE %r: None (the generation\'s rule) or one of %s'
+                      % (ws.MINUTE_RULE, rules))
+    g = cutout_generation(c.cutout_root, cfg)
+    if not g:
+        raise Refusal('W-MINUTE the cutout root %s (real path %s) names no generation (photometry_campaign.CUTOUT_ROOT_FMT %s): '
+                      'no stage 1 to check the cells\' minute basis against' % (c.cutout_root, os.path.realpath(c.cutout_root),
+                                                                                cfg.photometry_campaign.CUTOUT_ROOT_FMT))
+    gr = ws.MINUTE_RULE_OF_GENERATION.get(g)
+    if ws.MINUTE_RULE is not None and gr is not None and ws.MINUTE_RULE != gr:
+        raise Refusal('W-MINUTE forced_wide_search.MINUTE_RULE %r, but the cutouts searched (%s) are %s, keyed %r '
+                      '(forced_wide_search.MINUTE_RULE_OF_GENERATION[%s])' % (ws.MINUTE_RULE, c.cutout_root, g, gr, g))
+    rule = ws.MINUTE_RULE or gr
+    if not rule:
+        raise Refusal('W-MINUTE %s (%s) has no rule in forced_wide_search.MINUTE_RULE_OF_GENERATION: set '
+                      'forced_wide_search.MINUTE_RULE' % (g, c.cutout_root))
+    s1 = os.path.join(cfg.photometry.OUT_ROOT['snapshot'], cfg.photometry_campaign.STAGE1_DIR_FMT.format(generation=g))
+    if not os.path.isdir(s1):
+        raise Refusal('W-MINUTE the stage 1 of %s (%s) is not readable on %s: every search unit checks its cells\' minute basis '
+                      'there' % (g, s1, K.hostname()))
+    how = ('%s (%s); every unit checks it against the minute_basis of its cells\' stage 1, %s/<cell>/%s'
+           % (rule, 'configured, forced_wide_search.MINUTE_RULE' if ws.MINUTE_RULE else
+              'the rule of %s, forced_wide_search.MINUTE_RULE_OF_GENERATION' % g, s1, ws.STAGE1_NPZ))
+    return rule, how, s1
 
 
 def _jobs_planned(c):
@@ -372,10 +428,12 @@ def stage_search(c):
             c.would_refuse.append('W-WORKERS wide_search %d > %d' % (workers, c.ws.MAX_WORKERS))
         try:
             gate_cutout_root(c)
-        except Refusal as e:             # a retired or absent generation: refused, nothing of it is listed (review F6)
-            K.plan('[wide_search]   %s: refused' % e)
+            rule, how, _s1 = minute_rule(c)
+        except Refusal as e:             # a retired or absent generation, or no minute rule: refused, nothing of it is listed
+            K.plan('[wide_search]   %s: refused' % e)    # (review F6)
             c.would_refuse.append(str(e).split(' ', 1)[0] + ' ' + c.cutout_root)
             return
+        K.plan('[wide_search]   1-minute blocks keyed by minute rule %s' % how)
         jobs = _jobs_planned(c)
         if jobs is None:
             K.plan('[wide_search]   the jobs come from wide_jobs (no %s yet)' % c.jobs_path)
@@ -401,12 +459,14 @@ def stage_search(c):
         raise Refusal('forced_wide_search.FILE_ERRORS %r: refuse or drop' % c.ws.FILE_ERRORS)
     gate_env()
     gate_cutout_root(c)
+    c.minute_rule, c.minute_rule_how, c.minute_stage1 = minute_rule(c)
+    print('wide_search: 1-minute blocks keyed by minute rule %s' % c.minute_rule_how, flush=True)
     # the in-place modules, imported here so the records name their code (the workers inherit them; their caches are installed
     # in the workers only: wide_search.eval_mod)
     for m in ('snapshot_forced_eval', 'phase3_snapshot_search', 'phase3_tier_rules', 'phase3_snapshot_astro'):
         WJ.inplace(m)
     c.tier_rule3_pin = getattr(WJ.inplace('phase3_tier_rules'), 'DEEP_SEARCH_PIN', None)   # tier rule 3's frozen pin (an input)
-    todo = [j for j in jobs if not K.resumed(c.run, search_unit(j), None, tier='snapshot', stage='wide_search', family='W')]
+    todo = [j for j in jobs if not search_resumed(c, j)]
     if not todo:
         return
     stage = os.path.join(c.bursts, '_staging_%s' % c.run.run_id)
@@ -418,7 +478,8 @@ def stage_search(c):
     try:
         with get_context('fork').Pool(workers, initializer=WS.pool_worker_init, initargs=(c.args.threads or 1,)) as pool:
             pending = {(search_unit(j), b): pool.apply_async(WS.search_band, ((j, b, c.cutout_root,
-                                                                               os.path.join(stage, WS.npz_name(j, b))),))
+                                                                               os.path.join(stage, WS.npz_name(j, b)),
+                                                                               c.minute_rule, c.minute_stage1),))
                        for j, b in tasks}
             for k, j in enumerate(todo, 1):
                 try:
@@ -430,18 +491,36 @@ def stage_search(c):
         shutil.rmtree(stage, ignore_errors=True)
 
 
+def search_identity(c):
+    """{meta key: value} a search unit is made from that no config key names: the cutout root's real path (--wide-cutout-root
+    or photometry.CUTOUT_ROOTS['snapshot']), the minute rule and the stage 1 it was checked against. Recorded in every unit's
+    meta; --resume skips a unit only when all equal its record's (common.resumed identity)."""
+    return {'cutout_root_real': os.path.realpath(c.cutout_root), 'minute_rule': getattr(c, 'minute_rule', None),
+            'minute_stage1': getattr(c, 'minute_stage1', None)}
+
+
+def search_resumed(c, job):
+    return K.resumed(c.run, search_unit(job), None, identity=search_identity(c), tier='snapshot', stage='wide_search',
+                     family='W')
+
+
 def search_job(c, job, pending, stage, jobs_path):
     """One unit W_search_<S>_<identity>: wait for its bands' results, gate them, place the npz files (core/placement.replace
     of the worker's file in the staging directory beside them: the replaced file's group, mode and ACL, or the directory's rule
     for a new one). A placement refusal (PlacementRefusal, a record.Refusal) removes that band's staged file and is the unit's
-    refusal (recorded 'refused'): the bands placed before it stay placed."""
+    refusal (recorded 'refused'): the bands placed before it stay placed. W-MINUTE (a cell whose stage-1 minute basis is
+    unreadable or of another rule than the run's, wide_search.minute_basis) refuses the whole unit before any band is placed,
+    whatever forced_wide_search.FILE_ERRORS says."""
     from exopipe.phase3.lib.forced import wide_search as WS
     from exopipe.phase3.core import validate
     name = search_unit(job)
     with c.run.unit(name, tier='snapshot', stage='wide_search', family='W', stokes=job['stokes'], identity=job['identity'],
-                    bands=list(job['bands']), cutout_root=c.cutout_root, file_errors=c.ws.FILE_ERRORS) as u:
+                    bands=list(job['bands']), cutout_root=c.cutout_root, file_errors=c.ws.FILE_ERRORS,
+                    minute_rule_how=getattr(c, 'minute_rule_how', None), **search_identity(c)) as u:
         u.add_input(jobs_path)
         u.add_input(c.cfg.paths.DATA_DECISIONS)
+        if getattr(c, 'minute_stage1', None):
+            u.add_input(c.minute_stage1)
         if getattr(c, 'tier_rule3_pin', None) and os.path.exists(c.tier_rule3_pin):
             u.add_input(c.tier_rule3_pin)
         if c.ws.IO_GUARD_LOG and not os.path.exists(c.ws.IO_GUARD_LOG):
@@ -449,12 +528,23 @@ def search_job(c, job, pending, stage, jobs_path):
                    'to the recorders' % c.ws.IO_GUARD_LOG)
         os.makedirs(c.bursts, exist_ok=True)
         nights, inputs, per_band = set(), set(), {}
+        results = {b: pending[(name, b)].get() for b in job['bands']}
+        minute = ['%s: %s' % (b, r['minute']) for b, r in results.items() if r.get('minute')]
+        if minute:
+            for r in results.values():
+                if r.get('path') and os.path.exists(r['path']):
+                    os.remove(r['path'])
+            u.meta['bands_detail'] = {b: {'minute': r.get('minute'), 'minute_bases': r.get('minute_bases')}
+                                      for b, r in results.items()}
+            raise Refusal('W-MINUTE %d of %d band(s): a cell\'s stage-1 minute basis is unreadable or not the run\'s rule %r - '
+                          'nothing of this unit placed; %s' % (len(minute), len(results), getattr(c, 'minute_rule', None),
+                                                               minute[0]))
         for b in job['bands']:
             final = os.path.join(c.bursts, WS.npz_name(job, b))
             u.plan(final, 'forced_wide_bursts')
-            res = pending[(name, b)].get()
+            res = results[b]
             part = res['path']
-            per_band[b] = {k: res.get(k) for k in ('n_files', 'n_peaks', 'statuses', 'seconds', 'waited')}
+            per_band[b] = {k: res.get(k) for k in ('n_files', 'n_peaks', 'statuses', 'seconds', 'waited', 'minute_bases')}
             if res.get('missing'):
                 u.refuse_item(final, 'W-NOCUT %s: no cutout directory for %s in %s' % (b, job['identity'], c.cutout_root),
                               gate='W-NOCUT')
@@ -493,7 +583,7 @@ def pool_files(c, jobs, jobs_path=None):
     """{(S, identity, band): npz path} of every job band - from --wide-bursts DIR, else this root's done W_search records
     (refuses W-POOL naming what is missing). Pooled from records, every file must come from ONE search: each record's jobs.json
     is the current one (same fingerprint) and its cutout root is the selected generation (--wide-cutout-root or
-    photometry.CUTOUT_ROOT) - a search of another generation or of other jobs is refused, never pooled (review F8)."""
+    photometry.CUTOUT_ROOTS['snapshot']) - a search of another generation or of other jobs is refused, never pooled (review F8)."""
     from exopipe.phase3.core import record as R
     from exopipe.phase3.lib.forced import wide_search as WS
     out, missing, stale, roots = {}, [], [], {}
@@ -652,7 +742,7 @@ def stage_publish(c):
     from exopipe.phase3.lib.forced import wide_v3 as V3
     from exopipe.phase3.core import validate
     K.plan('[wide_publish] %s into the %d tested forced runs under %s (each replaced file backed up as <file>.bak_<UTC>): %s'
-           % (c.w.PUBLISHED, len(c.w.RUNS), c.review_root, ', '.join(c.w.RUN_NAME.format(S=s, cadence=t) for s, t in c.w.RUNS)))
+           % (c.w.PUBLISHED, len(c.w.RUNS), c.review_root, ', '.join(WJ.run_name(s, t) for s, t in c.w.RUNS)))
     if c.dry:
         # every gate of a run the real publication would hit is planned and counted (the republish verification 2026-11-04:
         # the dry run against the served root exited 0 while the real run refuses W-ROOT and W-HOST)
@@ -663,7 +753,7 @@ def stage_publish(c):
         if not local:
             c.would_refuse.append('W-HOST wide_publish %s' % c.review_root)
         for st, cad in c.w.RUNS:
-            D = os.path.join(c.review_root, c.w.RUN_NAME.format(S=st, cadence=cad))
+            D = os.path.join(c.review_root, WJ.run_name(st, cad))
             try:
                 K.refuse_production_target(D, 'review run')
             except Refusal as e:
@@ -677,7 +767,7 @@ def stage_publish(c):
                 K.plan('[wide_publish]   %s replaced (backed up first)' % os.path.join(D, c.w.PUBLISHED))
         return
     for st, cad in c.w.RUNS:
-        rname = c.w.RUN_NAME.format(S=st, cadence=cad)
+        rname = WJ.run_name(st, cad)
         name = 'W_publish_%s' % rname
         D = os.path.join(c.review_root, rname)
         final = os.path.join(D, c.w.PUBLISHED)

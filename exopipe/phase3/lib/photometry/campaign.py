@@ -55,7 +55,6 @@ refactor_20261012/plan/GEN6_PORT_PLAN_20261123.md pull request 4):
 import argparse
 import json
 import os
-import re
 import shutil
 import sys
 import tempfile
@@ -78,24 +77,32 @@ def _cc():
 # the generation written (one config value)
 # ---------------------------------------------------------------------------------------------------------------------
 
-def generation():
-    """photometry_campaign.GENERATION, refused (CP-GEN) unless it names a generation (GENERATION_RE) other than the served
-    one (photometry.GENERATION)."""
-    g, served = _cc().GENERATION, K.cfg().photometry.GENERATION
-    if not isinstance(g, str) or not re.match(_cc().GENERATION_RE, g):
-        raise Refusal('CP-GEN: photometry_campaign.GENERATION %r does not name a generation (%s)' % (g, _cc().GENERATION_RE))
-    if g == served:
-        raise Refusal('CP-GEN: photometry_campaign.GENERATION %s is the served generation (photometry.GENERATION) - a campaign '
+def generation(write=True):
+    """photometry_campaign.GENERATION, refused (CP-GEN) unless it names a generation (GENERATION_RE) and - for a campaign that
+    WRITES (``write``) - one other than the served snapshot one (photometry.GENERATIONS['snapshot']: a campaign cuts the
+    per-night snapshot cutouts). The read-only check (``write=False``, `campaign check`) reads any generation's campaign,
+    the served one included. The served generation is checked against the served registry first (SERVED-GEN,
+    steps_common.gate_served_generations)."""
+    from exopipe.phase3.config.steps.photometry import is_generation
+    g = _cc().GENERATION
+    try:
+        is_generation(g)
+    except ValueError as e:
+        raise Refusal('CP-GEN: photometry_campaign.GENERATION %s' % e)
+    K.gate_served_generations()
+    served = K.cfg().photometry.GENERATIONS['snapshot']
+    if write and g == served:
+        raise Refusal('CP-GEN: photometry_campaign.GENERATION %s is the served generation (photometry.GENERATIONS[snapshot]) - a campaign '
                       'writes a new generation; a regeneration of the served one is --in-place' % g)
     return g
 
 
-def cutout_root():
-    return _cc().CUTOUT_ROOT_FMT.format(generation=generation())
+def cutout_root(write=True):
+    return _cc().CUTOUT_ROOT_FMT.format(generation=generation(write))
 
 
-def stage1_dir():
-    return _cc().STAGE1_DIR_FMT.format(generation=generation())
+def stage1_dir(write=True):
+    return _cc().STAGE1_DIR_FMT.format(generation=generation(write))
 
 
 def kind_bands(kind):
@@ -900,7 +907,7 @@ def main(argv=None):
         K.cfg().set('photometry_campaign.GENERATION', a.generation, source='--generation')
     out = os.path.abspath(a.out)
     try:
-        gen = generation()
+        gen = generation(write=False)       # CP-GEN's served-generation refusal is for writes: the check reads any
         started = latest_record(out, gen)
         if started is None:
             raise Refusal('no campaign start record of generation %s under %s' % (gen, os.path.join(
@@ -920,7 +927,7 @@ def main(argv=None):
     except Refusal as e:
         print('CANNOT CHECK: %s' % e, flush=True)
         return 2
-    stage1 = None if a.no_stage1 else os.path.join(out, stage1_dir())
+    stage1 = None if a.no_stage1 else os.path.join(out, stage1_dir(write=False))
     ok, counts, problems, gaps = check(out, enum, started, stage1, a.retest)
     added, removed = units_changed(started, enum.units, cells)
     if added or removed:

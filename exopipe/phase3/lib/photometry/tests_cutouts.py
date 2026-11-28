@@ -711,7 +711,10 @@ def tn2(path, cutout_root=None, **ctx):
     c = _cfg()
     mm = c.photometry_measure
     tier, lst = os.path.abspath(path).split('/')[-3], os.path.abspath(path).split('/')[-2]
-    root = cutout_root or c.photometry.CUTOUT_ROOT
+    ptier = {v: k for k, v in c.photometry_cutouts.TIER_TOKEN.items()}.get(tier)     # 10min -> sublst; deep -> deep
+    if not cutout_root and ptier is None:
+        return False, None, 'not under <root>/<10min|deep>/<LST>/: no tier, so no served cutout root (photometry.CUTOUT_ROOTS)'
+    root = cutout_root or c.photometry.CUTOUT_ROOTS[ptier]
     d = _tier_npz(path)
     names = [str(x) for x in d['names']]
     axis = [str(k) for k in (d['key'] if tier == '10min' else d['night'])]

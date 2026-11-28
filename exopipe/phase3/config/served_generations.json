@@ -1,0 +1,233 @@
+{
+ "about": "the served generations, written by tests/test_served_generation_roots.py --write-fixture from the files it names (serve/registered_pages.json, the served runs' page records or build logs, one stage-1 npz per served snapshot generation); the test compares the config with it, and with the live files where they are readable",
+ "page_records": {
+  "planets": {
+   "bytes": 5686142,
+   "fields": {
+    "inputs.evals.10min|sb|Neptune": "/lustre/gh/main/phase3/snapshot_forced/eval_10min_gen5_planets_orbit_Neptune",
+    "inputs.evals.10min|sb|SUN": "/lustre/gh/main/phase3/snapshot_forced/eval_10min_gen5_planets_orbit_SUN",
+    "inputs.evals.10min|sb|Saturn": "/lustre/gh/main/phase3/snapshot_forced/eval_10min_gen5_planets_orbit_Saturn",
+    "inputs.evals.10min|sb|Uranus": "/lustre/gh/main/phase3/snapshot_forced/eval_10min_gen5_planets_orbit_Uranus",
+    "inputs.evals.10min|wb|Neptune": "/lustre/gh/main/phase3/snapshot_forced/eval_10min_wb_gen5_planets_orbit_Neptune",
+    "inputs.evals.10min|wb|SUN": "/lustre/gh/main/phase3/snapshot_forced/eval_10min_wb_gen5_planets_orbit_SUN",
+    "inputs.evals.10min|wb|Saturn": "/lustre/gh/main/phase3/snapshot_forced/eval_10min_wb_gen5_planets_orbit_Saturn",
+    "inputs.evals.10min|wb|Uranus": "/lustre/gh/main/phase3/snapshot_forced/eval_10min_wb_gen5_planets_orbit_Uranus",
+    "inputs.evals.10s|sb|Neptune": "/lustre/gh/main/phase3/snapshot_forced/eval_gen5_planets_orbit_Neptune",
+    "inputs.evals.10s|sb|SUN": "/lustre/gh/main/phase3/snapshot_forced/eval_gen5_planets_orbit_SUN",
+    "inputs.evals.10s|sb|Saturn": "/lustre/gh/main/phase3/snapshot_forced/eval_gen5_planets_orbit_Saturn",
+    "inputs.evals.10s|sb|Uranus": "/lustre/gh/main/phase3/snapshot_forced/eval_gen5_planets_orbit_Uranus",
+    "inputs.evals.10s|wb|Neptune": "/lustre/gh/main/phase3/snapshot_forced/eval_wb_gen5_planets_orbit_Neptune",
+    "inputs.evals.10s|wb|SUN": "/lustre/gh/main/phase3/snapshot_forced/eval_wb_gen5_planets_orbit_SUN",
+    "inputs.evals.10s|wb|Saturn": "/lustre/gh/main/phase3/snapshot_forced/eval_wb_gen5_planets_orbit_Saturn",
+    "inputs.evals.10s|wb|Uranus": "/lustre/gh/main/phase3/snapshot_forced/eval_wb_gen5_planets_orbit_Uranus",
+    "inputs.evals.1min|sb|Neptune": "/lustre/gh/main/phase3/snapshot_forced/eval_gen5_planets_orbit_Neptune",
+    "inputs.evals.1min|sb|SUN": "/lustre/gh/main/phase3/snapshot_forced/eval_gen5_planets_orbit_SUN",
+    "inputs.evals.1min|sb|Saturn": "/lustre/gh/main/phase3/snapshot_forced/eval_gen5_planets_orbit_Saturn",
+    "inputs.evals.1min|sb|Uranus": "/lustre/gh/main/phase3/snapshot_forced/eval_gen5_planets_orbit_Uranus",
+    "inputs.evals.1min|wb|Neptune": "/lustre/gh/main/phase3/snapshot_forced/eval_wb_gen5_planets_orbit_Neptune",
+    "inputs.evals.1min|wb|SUN": "/lustre/gh/main/phase3/snapshot_forced/eval_wb_gen5_planets_orbit_SUN",
+    "inputs.evals.1min|wb|Saturn": "/lustre/gh/main/phase3/snapshot_forced/eval_wb_gen5_planets_orbit_Saturn",
+    "inputs.evals.1min|wb|Uranus": "/lustre/gh/main/phase3/snapshot_forced/eval_wb_gen5_planets_orbit_Uranus",
+    "inputs.evals.deep|sb|Neptune": "/lustre/gh/main/phase3/snapshot_forced/eval_deep_gen5_planets_orbit_Neptune",
+    "inputs.evals.deep|sb|SUN": "/lustre/gh/main/phase3/snapshot_forced/eval_deep_gen5_planets_orbit_SUN",
+    "inputs.evals.deep|sb|Saturn": "/lustre/gh/main/phase3/snapshot_forced/eval_deep_gen5_planets_orbit_Saturn",
+    "inputs.evals.deep|sb|Uranus": "/lustre/gh/main/phase3/snapshot_forced/eval_deep_gen5_planets_orbit_Uranus",
+    "inputs.evals.deep|wb|Neptune": "/lustre/gh/main/phase3/snapshot_forced/eval_deep_wb_gen5_planets_orbit_Neptune",
+    "inputs.evals.deep|wb|SUN": "/lustre/gh/main/phase3/snapshot_forced/eval_deep_wb_gen5_planets_orbit_SUN",
+    "inputs.evals.deep|wb|Saturn": "/lustre/gh/main/phase3/snapshot_forced/eval_deep_wb_gen5_planets_orbit_Saturn",
+    "inputs.evals.deep|wb|Uranus": "/lustre/gh/main/phase3/snapshot_forced/eval_deep_wb_gen5_planets_orbit_Uranus",
+    "inputs.phot": "/lustre/pipeline/exopipe/phase3/photometry_gen5",
+    "inputs.stage1": "/lustre/gh/main/phase3/snapshot_forced/stage1_gen5_planets_orbit",
+    "inputs.tiers": "/lustre/gh/main/phase3/snapshot_forced/tiers_gen5_planets_orbit"
+   },
+   "mtime_utc": "2026-10-28T03:34:25Z",
+   "path": "/lustre/gh/main/phase3/snapshot_forced/site_planets_SUN_gen5/page_record.json",
+   "sha256": "eab13c01f949a68a97c3fd5c79d3d739a7eb4449ce29262c01f0068b1a525636",
+   "site": "site_planets_SUN_gen5"
+  },
+  "tier pages": {
+   "bytes": 888517,
+   "fields": {
+    "inputs.evals.10min|sb": "/lustre/gh/main/phase3/snapshot_forced/eval_10min_gen5_hwj10pc",
+    "inputs.evals.10min|wb": "/lustre/gh/main/phase3/snapshot_forced/eval_10min_wb_gen5_hwj10pc",
+    "inputs.evals.deep|sb": "/lustre/gh/main/phase3/snapshot_forced/eval_deep_gen5_hwj10pc",
+    "inputs.evals.deep|wb": "/lustre/gh/main/phase3/snapshot_forced/eval_deep_wb_gen5_hwj10pc",
+    "inputs.phot": "/lustre/pipeline/exopipe/phase3/photometry_gen5",
+    "inputs.tiers": "/lustre/pipeline/exopipe/phase3/forced_tiers_gen5"
+   },
+   "mtime_utc": "2026-10-27T06:54:17Z",
+   "path": "/lustre/gh/main/phase3/snapshot_forced/site_hwj10pc_tiers_gen5/page_record.json",
+   "sha256": "8ade72a8c86658ea6e77a3ab84972da85ed2cd886b06acfc27bb422c5d5aeda6",
+   "site": "site_hwj10pc_tiers_gen5"
+  }
+ },
+ "registry": {
+  "bytes": 43379,
+  "forced": {
+   "8775": {
+    "generation_args": [
+     "/data07/gh/phase3/snapshot_search/review/Run_SNAPFORCED_V1min_gen6",
+     "/data07/gh/phase3/snapshot_search/review/Run_SNAPFORCED_V1min_gen6/queue_V.txt",
+     "/data07/gh/phase3/snapshot_search/review/Run_SNAPFORCED_V1min_gen6/source_catalogs_V",
+     "8786:/data07/gh/phase3/snapshot_search/review/Run_SNAPFORCED_V10s_gen6/source_catalogs_V:forced Stokes V 10-s page",
+     "8785:/data07/gh/phase3/snapshot_search/review/Run_SNAPFORCED_I10s_gen6/source_catalogs_I:forced Stokes I 10-s page",
+     "8776:/data07/gh/phase3/snapshot_search/review/Run_SNAPFORCED_I1min_gen6/source_catalogs_I:forced Stokes I 1-min page",
+     "Snapshot FORCED photometry (HWJ + 10 pc + LPT), Stokes V, 1-minute blocks - pixel-distance screen, fitted, reference-tied, localized, associated (target / background source / ambiguous) - generation-6 cutouts from the rescaled cubes (Master flux scale) (Run_SNAPFORCED_V1min_gen6) - served 2026-11-27 11:40 UT"
+    ],
+    "line": 778,
+    "run": "/data07/gh/phase3/snapshot_search/review/Run_SNAPFORCED_V1min_gen6"
+   },
+   "8776": {
+    "generation_args": [
+     "/data07/gh/phase3/snapshot_search/review/Run_SNAPFORCED_I1min_gen6",
+     "/data07/gh/phase3/snapshot_search/review/Run_SNAPFORCED_I1min_gen6/queue_I.txt",
+     "/data07/gh/phase3/snapshot_search/review/Run_SNAPFORCED_I1min_gen6/source_catalogs_I",
+     "8786:/data07/gh/phase3/snapshot_search/review/Run_SNAPFORCED_V10s_gen6/source_catalogs_V:forced Stokes V 10-s page",
+     "8785:/data07/gh/phase3/snapshot_search/review/Run_SNAPFORCED_I10s_gen6/source_catalogs_I:forced Stokes I 10-s page",
+     "8775:/data07/gh/phase3/snapshot_search/review/Run_SNAPFORCED_V1min_gen6/source_catalogs_V:forced Stokes V 1-min page",
+     "Snapshot FORCED photometry (HWJ + 10 pc + LPT), Stokes I, 1-minute blocks - pixel-distance screen, fitted, reference-tied, localized, associated (target / background source / ambiguous) - generation-6 cutouts from the rescaled cubes (Master flux scale) (Run_SNAPFORCED_I1min_gen6) - served 2026-11-27 11:40 UT"
+    ],
+    "line": 813,
+    "run": "/data07/gh/phase3/snapshot_search/review/Run_SNAPFORCED_I1min_gen6"
+   },
+   "8785": {
+    "generation_args": [
+     "/data07/gh/phase3/snapshot_search/review/Run_SNAPFORCED_I10s_gen6",
+     "/data07/gh/phase3/snapshot_search/review/Run_SNAPFORCED_I10s_gen6/queue_I.txt",
+     "/data07/gh/phase3/snapshot_search/review/Run_SNAPFORCED_I10s_gen6/source_catalogs_I",
+     "8786:/data07/gh/phase3/snapshot_search/review/Run_SNAPFORCED_V10s_gen6/source_catalogs_V:forced Stokes V 10-s page",
+     "8775:/data07/gh/phase3/snapshot_search/review/Run_SNAPFORCED_V1min_gen6/source_catalogs_V:forced Stokes V 1-min page",
+     "8776:/data07/gh/phase3/snapshot_search/review/Run_SNAPFORCED_I1min_gen6/source_catalogs_I:forced Stokes I 1-min page",
+     "Snapshot FORCED photometry (HWJ + 10 pc + LPT), Stokes I, 10-second frames - pixel-distance screen, fitted, reference-tied, localized, associated (target / background source / ambiguous) - generation-6 cutouts from the rescaled cubes (Master flux scale) (Run_SNAPFORCED_I10s_gen6) - served 2026-11-27 11:40 UT"
+    ],
+    "line": 848,
+    "run": "/data07/gh/phase3/snapshot_search/review/Run_SNAPFORCED_I10s_gen6"
+   },
+   "8786": {
+    "generation_args": [
+     "/data07/gh/phase3/snapshot_search/review/Run_SNAPFORCED_V10s_gen6",
+     "/data07/gh/phase3/snapshot_search/review/Run_SNAPFORCED_V10s_gen6/queue_V.txt",
+     "/data07/gh/phase3/snapshot_search/review/Run_SNAPFORCED_V10s_gen6/source_catalogs_V",
+     "8785:/data07/gh/phase3/snapshot_search/review/Run_SNAPFORCED_I10s_gen6/source_catalogs_I:forced Stokes I 10-s page",
+     "8775:/data07/gh/phase3/snapshot_search/review/Run_SNAPFORCED_V1min_gen6/source_catalogs_V:forced Stokes V 1-min page",
+     "8776:/data07/gh/phase3/snapshot_search/review/Run_SNAPFORCED_I1min_gen6/source_catalogs_I:forced Stokes I 1-min page",
+     "Snapshot FORCED photometry (HWJ + 10 pc + LPT), Stokes V, 10-second frames - pixel-distance screen, fitted, reference-tied, localized, associated (target / background source / ambiguous) - generation-6 cutouts from the rescaled cubes (Master flux scale) (Run_SNAPFORCED_V10s_gen6) - served 2026-11-27 11:40 UT"
+    ],
+    "line": 883,
+    "run": "/data07/gh/phase3/snapshot_search/review/Run_SNAPFORCED_V10s_gen6"
+   },
+   "9120": {
+    "generation_args": [
+     "/data07/gh/phase3/snapshot_search/review/Run_SNAPFORCED_V10min_gen5",
+     "/data07/gh/phase3/snapshot_search/review/Run_SNAPFORCED_V10min_gen5/queue_V.txt",
+     "/data07/gh/phase3/snapshot_search/review/Run_SNAPFORCED_V10min_gen5/source_catalogs_V",
+     "9121:/data07/gh/phase3/snapshot_search/review/Run_SNAPFORCED_I10min_gen5/source_catalogs_I:forced Stokes I 10-minute page",
+     "9122:/data07/gh/phase3/snapshot_search/review/Run_SNAPFORCED_Vdeep_gen5/source_catalogs_V:forced Stokes V deep (1-hour) page",
+     "9123:/data07/gh/phase3/snapshot_search/review/Run_SNAPFORCED_Ideep_gen5/source_catalogs_I:forced Stokes I deep (1-hour) page",
+     "Snapshot-chain FORCED photometry (HWJ + 10 pc), Stokes V, 10-minute windows - each event fitted in its own image (Gaussian >= 7 sigma, template below), localized, associated (target / background source / ambiguous); no reference tie at this tier (Run_SNAPFORCED_V10min_gen5) - served 2026-10-27 08:04 UT"
+    ],
+    "line": 223,
+    "run": "/data07/gh/phase3/snapshot_search/review/Run_SNAPFORCED_V10min_gen5"
+   },
+   "9121": {
+    "generation_args": [
+     "/data07/gh/phase3/snapshot_search/review/Run_SNAPFORCED_I10min_gen5",
+     "/data07/gh/phase3/snapshot_search/review/Run_SNAPFORCED_I10min_gen5/queue_I.txt",
+     "/data07/gh/phase3/snapshot_search/review/Run_SNAPFORCED_I10min_gen5/source_catalogs_I",
+     "9120:/data07/gh/phase3/snapshot_search/review/Run_SNAPFORCED_V10min_gen5/source_catalogs_V:forced Stokes V 10-minute page",
+     "9122:/data07/gh/phase3/snapshot_search/review/Run_SNAPFORCED_Vdeep_gen5/source_catalogs_V:forced Stokes V deep (1-hour) page",
+     "9123:/data07/gh/phase3/snapshot_search/review/Run_SNAPFORCED_Ideep_gen5/source_catalogs_I:forced Stokes I deep (1-hour) page",
+     "Snapshot-chain FORCED photometry (HWJ + 10 pc), Stokes I, 10-minute windows - each event fitted in its own image (Gaussian >= 7 sigma, template below), localized, associated (target / background source / ambiguous); no reference tie at this tier (Run_SNAPFORCED_I10min_gen5) - served 2026-10-27 08:04 UT"
+    ],
+    "line": 257,
+    "run": "/data07/gh/phase3/snapshot_search/review/Run_SNAPFORCED_I10min_gen5"
+   },
+   "9122": {
+    "generation_args": [
+     "/data07/gh/phase3/snapshot_search/review/Run_SNAPFORCED_Vdeep_gen5",
+     "/data07/gh/phase3/snapshot_search/review/Run_SNAPFORCED_Vdeep_gen5/queue_V.txt",
+     "/data07/gh/phase3/snapshot_search/review/Run_SNAPFORCED_Vdeep_gen5/source_catalogs_V",
+     "9120:/data07/gh/phase3/snapshot_search/review/Run_SNAPFORCED_V10min_gen5/source_catalogs_V:forced Stokes V 10-minute page",
+     "9121:/data07/gh/phase3/snapshot_search/review/Run_SNAPFORCED_I10min_gen5/source_catalogs_I:forced Stokes I 10-minute page",
+     "9123:/data07/gh/phase3/snapshot_search/review/Run_SNAPFORCED_Ideep_gen5/source_catalogs_I:forced Stokes I deep (1-hour) page",
+     "Snapshot-chain FORCED photometry (HWJ + 10 pc), Stokes V, 1-hour (deep) nightly epochs - each event fitted in its own image (Gaussian >= 7 sigma, template below), localized, associated (target / background source / ambiguous); no reference tie at this tier (Run_SNAPFORCED_Vdeep_gen5) - served 2026-10-27 08:04 UT"
+    ],
+    "line": 291,
+    "run": "/data07/gh/phase3/snapshot_search/review/Run_SNAPFORCED_Vdeep_gen5"
+   },
+   "9123": {
+    "generation_args": [
+     "/data07/gh/phase3/snapshot_search/review/Run_SNAPFORCED_Ideep_gen5",
+     "/data07/gh/phase3/snapshot_search/review/Run_SNAPFORCED_Ideep_gen5/queue_I.txt",
+     "/data07/gh/phase3/snapshot_search/review/Run_SNAPFORCED_Ideep_gen5/source_catalogs_I",
+     "9120:/data07/gh/phase3/snapshot_search/review/Run_SNAPFORCED_V10min_gen5/source_catalogs_V:forced Stokes V 10-minute page",
+     "9121:/data07/gh/phase3/snapshot_search/review/Run_SNAPFORCED_I10min_gen5/source_catalogs_I:forced Stokes I 10-minute page",
+     "9122:/data07/gh/phase3/snapshot_search/review/Run_SNAPFORCED_Vdeep_gen5/source_catalogs_V:forced Stokes V deep (1-hour) page",
+     "Snapshot-chain FORCED photometry (HWJ + 10 pc), Stokes I, 1-hour (deep) nightly epochs - each event fitted in its own image (Gaussian >= 7 sigma, template below), localized, associated (target / background source / ambiguous); no reference tie at this tier (Run_SNAPFORCED_Ideep_gen5) - served 2026-10-27 08:04 UT"
+    ],
+    "line": 325,
+    "run": "/data07/gh/phase3/snapshot_search/review/Run_SNAPFORCED_Ideep_gen5"
+   }
+  },
+  "mtime_utc": "2026-11-27T11:40:02Z",
+  "path": "/lustre/gh/main/phase3/serve/registered_pages.json",
+  "planets": {
+   "line": 114,
+   "root": "/lustre/gh/main/phase3/snapshot_forced/site_planets_SUN_gen5"
+  },
+  "sha256": "7256deb2a72461ba88ee28d470a7800b01fa054dbd74c5abfd0254a507d0f50e"
+ },
+ "run_logs": {
+  "Run_SNAPFORCED_I10s_gen6": {
+   "fields": {
+    "P3_FORCED_STAGE1": "/lustre/gh/main/phase3/snapshot_forced/stage1_gen6",
+    "P3_PHOT_ROOT": "/lustre/pipeline/exopipe/phase3/photometry_gen6",
+    "eval_sb": "/lustre/gh/main/phase3/snapshot_forced/eval_gen6",
+    "eval_wb": "/lustre/gh/main/phase3/snapshot_forced/eval_wb_gen6"
+   },
+   "line": 27,
+   "path": "/lustre/gh/main/exopipe_ops/snapshot_forced_pages_run_Run_SNAPFORCED_I10s_gen6.log"
+  },
+  "Run_SNAPFORCED_I1min_gen6": {
+   "fields": {
+    "P3_FORCED_STAGE1": "/lustre/gh/main/phase3/snapshot_forced/stage1_gen6",
+    "P3_PHOT_ROOT": "/lustre/pipeline/exopipe/phase3/photometry_gen6",
+    "eval_sb": "/lustre/gh/main/phase3/snapshot_forced/eval_gen6",
+    "eval_wb": "/lustre/gh/main/phase3/snapshot_forced/eval_wb_gen6"
+   },
+   "line": 69,
+   "path": "/lustre/gh/main/exopipe_ops/snapshot_forced_pages_run_Run_SNAPFORCED_I1min_gen6.log"
+  },
+  "Run_SNAPFORCED_V10s_gen6": {
+   "fields": {
+    "P3_FORCED_STAGE1": "/lustre/gh/main/phase3/snapshot_forced/stage1_gen6",
+    "P3_PHOT_ROOT": "/lustre/pipeline/exopipe/phase3/photometry_gen6",
+    "eval_sb": "/lustre/gh/main/phase3/snapshot_forced/eval_gen6",
+    "eval_wb": "/lustre/gh/main/phase3/snapshot_forced/eval_wb_gen6"
+   },
+   "line": 1,
+   "path": "/lustre/gh/main/exopipe_ops/snapshot_forced_pages_run_Run_SNAPFORCED_V10s_gen6.log"
+  },
+  "Run_SNAPFORCED_V1min_gen6": {
+   "fields": {
+    "P3_FORCED_STAGE1": "/lustre/gh/main/phase3/snapshot_forced/stage1_gen6",
+    "P3_PHOT_ROOT": "/lustre/pipeline/exopipe/phase3/photometry_gen6",
+    "eval_sb": "/lustre/gh/main/phase3/snapshot_forced/eval_gen6",
+    "eval_wb": "/lustre/gh/main/phase3/snapshot_forced/eval_wb_gen6"
+   },
+   "line": 1,
+   "path": "/lustre/gh/main/exopipe_ops/snapshot_forced_pages_run_Run_SNAPFORCED_V1min_gen6.log"
+  }
+ },
+ "stage1_minute_basis": {
+  "gen5": {
+   "minute_basis": "",
+   "path": "/lustre/gh/main/phase3/snapshot_forced/stage1_gen5/18h_2025-04-11/forced_HWJ_18MHz_I.npz"
+  },
+  "gen6": {
+   "minute_basis": "integration-midpoint-dateobs-v1",
+   "path": "/lustre/gh/main/phase3/snapshot_forced/stage1_gen6/18h_2025-04-11/forced_HWJ_18MHz_I.npz"
+  }
+ },
+ "written_utc": "2026-11-28T01:14:28Z"
+}

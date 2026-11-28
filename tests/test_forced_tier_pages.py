@@ -130,7 +130,7 @@ def test_config():
           'EVAL_NAME of the script\'s samples is production\'s name (review F7)',
           "%s = PP.SF" % t.EVAL_ROOT_GLOBAL in src and "os.path.join(SF, 'eval_%s_%sgen5_hwj10pc'" in src
           and all(os.path.basename(v) == t.SCRIPT_EVAL_NAME.format(tier=ti, wb='wb_' if k == 'wb' else '')
-                  == t.EVAL_NAME.format(tier=ti, wb='wb_' if k == 'wb' else '', samples=TP.eval_tag(t.SCRIPT_SAMPLES))
+                  == TP.eval_name(ti, k, t.SCRIPT_SAMPLES)
                   and os.path.dirname(v) == t.SCRIPT_SF for (ti, k), v in t.EVAL_DIRS.items())
           and TP.eval_tag(t.SAMPLES) == 'hwj10pclpt', TP.eval_tag(t.SAMPLES))
     ppsrc = open(PP_SCRIPT).read()
@@ -711,7 +711,7 @@ def test_cli_lpt():
           and 'gates T-ROOTS, T-SAMPLES, T-G35, T-INPUT, T-WORKERS: pass' in o, o[-600:])
     # T-G35: an evaluation directory of this --out exists
     out = os.path.join(TMP, 'o_lpt_g35')
-    os.makedirs(os.path.join(out, t.EVAL_NAME.format(tier='deep', wb='', samples=TP.eval_tag(SAMPLES))))
+    os.makedirs(os.path.join(out, TP.eval_name('deep', 'sb', SAMPLES)))
     calls = []
     keep = K.call
     K.call = lambda *a, **kw: calls.append(a) or _Call(1, [])

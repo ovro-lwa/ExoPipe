@@ -116,13 +116,109 @@ def gate_tier(tier, stages_arg=None):
 # generation roots and ad-hoc target lists (CUTOVER_READINESS 'PHOTOMETRY CUTOUTS ...', 'DATED DRIVERS TO COVER')
 # ---------------------------------------------------------------------------------------------------------------------
 
-def cutout_root(args):
+_FIXTURE = {}
+
+
+def served_fixture_path():
+    """The served registry's fixture: photometry.SERVED_GENERATIONS_FILE in the config package (exopipe/phase3/config/)."""
+    from exopipe.phase3 import config as _config
+    return os.path.join(os.path.dirname(os.path.abspath(_config.__file__)), cfg().photometry.SERVED_GENERATIONS_FILE)
+
+
+def served_fixture_generations():
+    """{tier: generation, 'planets page': generation} the served registry's fixture records (photometry.SERVED_GENERATIONS_FILE,
+    written by tests/test_served_generation_roots.py --write-fixture from the hub's registered_pages.json): a tier's from its
+    forced pages' runs (forced_wide.RUN_NAME, the run's cadence -> photometry.CADENCE_TIER), the planets page's from its page
+    record's stage 1 (photometry.PLANETS_STAGE1_FMT). Refuses (SERVED-GEN) an unreadable fixture, a run name of no known
+    cadence or generation, a tier served from two generations, or a planets stage 1 that names none."""
+    import json
+    import re
+    c = cfg()
+    ph = c.photometry
+    p = served_fixture_path()
+    try:
+        st = os.stat(p)
+        key = (p, st.st_mtime_ns, st.st_size)
+        if _FIXTURE.get('key') != key:
+            with open(p) as f:
+                fx = json.load(f)
+            _FIXTURE.clear()
+            _FIXTURE.update(key=key, fx=fx)
+        fx = _FIXTURE['fx']
+    except (OSError, ValueError) as e:
+        raise Refusal('SERVED-GEN: the served registry\'s fixture %s (photometry.SERVED_GENERATIONS_FILE) is unreadable: %s'
+                      % (p, e))
+    gre = '(?P<gen>%s)' % c.photometry_campaign.GENERATION_RE.strip('^$')
+    rx = re.escape(c.forced_wide.RUN_NAME).replace(re.escape('{S}'), '[IV]').replace(
+        re.escape('{cadence}'), '(?P<cad>%s)' % '|'.join(map(re.escape, ph.CADENCE_TIER))).replace(re.escape('{generation}'), gre)
+    pre, _, post = ph.PLANETS_STAGE1_FMT.partition('{generation}')
+    gens = {}
+    try:
+        for port, v in sorted(fx['registry']['forced'].items()):
+            m = re.fullmatch(rx, os.path.basename(v['run']))
+            if not m:
+                raise Refusal('SERVED-GEN: the fixture %s: page %s serves %s, not a forced run of a known cadence and generation '
+                              '(forced_wide.RUN_NAME, photometry.CADENCE_TIER)' % (p, port, v['run']))
+            gens.setdefault(ph.CADENCE_TIER[m.group('cad')], set()).add(m.group('gen'))
+        stage1 = fx['page_records']['planets']['fields']['inputs.stage1']
+    except (KeyError, TypeError, AttributeError) as e:
+        raise Refusal('SERVED-GEN: the fixture %s lacks %s' % (p, e))
+    m = re.fullmatch(re.escape(pre) + gre + re.escape(post), os.path.basename(str(stage1).rstrip('/')))
+    if not m:
+        raise Refusal('SERVED-GEN: the fixture %s: the planets page\'s stage 1 %s names no generation (photometry.'
+                      'PLANETS_STAGE1_FMT %s)' % (p, stage1, ph.PLANETS_STAGE1_FMT))
+    two = {t: sorted(g) for t, g in gens.items() if len(g) != 1}
+    if two:
+        raise Refusal('SERVED-GEN: the fixture %s serves a tier from two generations: %s' % (p, two))
+    out = {t: g.pop() for t, g in gens.items()}
+    out['planets page'] = m.group('gen')
+    return out
+
+
+def gate_served_generations():
+    """SERVED-GEN, part of every served-root gate (served_cutout_root, served_roots: C-INPLACE, PHOT-ADHOC; campaign.generation:
+    CP-GEN): photometry.GENERATIONS (each tier) and PLANETS_PAGE_GENERATION equal the generations the served registry's
+    fixture records (served_fixture_generations), so the gates protect what the hub serves. A disagreement refuses, naming
+    both; the one exception is photometry.GENERATIONS replayed by a --parity run (an override recorded with the parity-replay
+    authority: a non-production --out, every write confined to it)."""
+    c = cfg()
+    ph = c.photometry
+    fx = served_fixture_generations()
+    parity = any(o[0].split('[', 1)[0] == 'photometry.GENERATIONS' and str(o[4] or '').startswith('parity replay')
+                 for o in c.overrides)
+    bad = ['photometry.GENERATIONS[%s] = %s, the registry serves %s' % (t, g, fx.get(t))
+           for t, g in sorted(ph.GENERATIONS.items()) if fx.get(t) != g and not parity]
+    if ph.PLANETS_PAGE_GENERATION != fx['planets page']:
+        bad.append('photometry.PLANETS_PAGE_GENERATION = %s, the planets page serves %s' % (ph.PLANETS_PAGE_GENERATION,
+                                                                                          fx['planets page']))
+    if bad:
+        raise Refusal('SERVED-GEN: %s (the served registry\'s fixture %s) - a served generation changes in one commit with '
+                      'the fixture (tests/test_served_generation_roots.py --write-fixture once the hub serves it)'
+                      % ('; '.join(bad), served_fixture_path()))
+
+
+def served_cutout_root(tier):
+    """The served cutout generation of ``tier`` (photometry.CUTOUT_ROOTS: snapshot = the per-night cutouts, deep / sublst =
+    the tier cutouts); a tier without an entry refuses (C-TIER-ROOT), never another tier's root; a config that disagrees
+    with the served registry refuses (SERVED-GEN, gate_served_generations)."""
+    gate_served_generations()
+    roots = cfg().photometry.CUTOUT_ROOTS
+    if tier not in roots:
+        raise Refusal('C-TIER-ROOT: no served cutout root for tier %r (photometry.CUTOUT_ROOTS names %s)'
+                      % (tier, ', '.join(sorted(roots))))
+    return roots[tier]
+
+
+def cutout_root(args, tier=None):
     """The cutout generation a stage reads or writes: a campaign's generation (--campaign: photometry_campaign.GENERATION,
-    lib/photometry/campaign.py), else --cutout-root, else the served generation (photometry.CUTOUT_ROOT)."""
+    lib/photometry/campaign.py), else --cutout-root, else the tier's served generation (photometry.CUTOUT_ROOTS[tier]; tier =
+    ``tier``, else args.tier)."""
     if getattr(args, 'campaign', False):
         from exopipe.phase3.lib.photometry import campaign
         return campaign.cutout_root()
-    return os.path.abspath(args.cutout_root) if getattr(args, 'cutout_root', None) else cfg().photometry.CUTOUT_ROOT
+    if getattr(args, 'cutout_root', None):
+        return os.path.abspath(args.cutout_root)
+    return served_cutout_root(tier or getattr(args, 'tier', None))
 
 
 def gate_write_root(path, what):
@@ -207,12 +303,41 @@ def adhoc_env(targets, planets=False):
     return env
 
 
+def planets_roots(gen=None):
+    """{what: root} of the planets page's (/s/planets/) per-night inputs of generation ``gen`` (default photometry.
+    PLANETS_PAGE_GENERATION, the generation served; both validated by photometry.is_generation): its SolarSystem cutouts
+    <photometry_campaign.CUTOUT_ROOT_FMT>/<PLANET_SAMPLE> and its stage 1 <OUT_ROOT[snapshot]>/<PLANETS_STAGE1_FMT>. Its
+    10-minute and deep inputs are the tier generation's (photometry.TIER_FORCED_ROOTS[PLANET_SAMPLE], Derived from
+    GENERATIONS['deep'], in served_roots as a tier forced root), not this key's: planets_gen6_stage34_20261127.sh:66-67
+    builds the gen6 page on P3_PHOT_ROOT_TIERS=photometry_gen5 and P3_FORCED_TIERS=tiers_gen5_planets_orbit."""
+    from exopipe.phase3.config.steps.photometry import is_generation
+    c = cfg()
+    ph, cc = c.photometry, c.photometry_campaign
+    g = ph.PLANETS_PAGE_GENERATION if gen is None else gen
+    try:
+        is_generation(g)
+    except ValueError as e:
+        raise Refusal('the planets page\'s generation: %s' % e)
+    return {'planets page cutouts': os.path.join(cc.CUTOUT_ROOT_FMT.format(generation=g), ph.PLANET_SAMPLE),
+            'planets page stage 1': os.path.join(ph.OUT_ROOT['snapshot'], ph.PLANETS_STAGE1_FMT.format(generation=g))}
+
+
 def served_roots():
-    """[(what, root)] of the SERVED generation's product roots: photometry.CUTOUT_ROOT, the stage-1 root <OUT_ROOT[snapshot]>/
-    <STAGE1_DIR>, and photometry.TIER_FORCED_ROOTS per sample."""
+    """[(what, root)] of the SERVED generations' product roots: photometry.CUTOUT_ROOTS (one entry per distinct root, naming
+    its tiers: 'cutout root (deep, sublst)'), the stage-1 root <OUT_ROOT[snapshot]>/<STAGE1_DIR>, photometry.
+    TIER_FORCED_ROOTS per sample, and the planets page's per-night cutouts and stage 1 (planets_roots, photometry.
+    PLANETS_PAGE_GENERATION). Refuses (SERVED-GEN, gate_served_generations) a config that disagrees with the served
+    registry."""
+    gate_served_generations()
     ph = cfg().photometry
-    return ([('cutout root', ph.CUTOUT_ROOT), ('stage-1 root', os.path.join(ph.OUT_ROOT['snapshot'], ph.STAGE1_DIR))]
-            + [('tier forced root (%s)' % s, r) for s, r in sorted(ph.TIER_FORCED_ROOTS.items())])
+    tiers = {}
+    for t, r in sorted(ph.CUTOUT_ROOTS.items()):
+        tiers.setdefault(r, []).append(t)
+    pl = planets_roots()
+    return ([('cutout root (%s)' % ', '.join(ts), r) for r, ts in tiers.items()]
+            + [('stage-1 root', os.path.join(ph.OUT_ROOT['snapshot'], ph.STAGE1_DIR))]
+            + [('tier forced root (%s)' % s, r) for s, r in sorted(ph.TIER_FORCED_ROOTS.items())]
+            + [('%s (%s)' % (w, ph.PLANETS_PAGE_GENERATION), pl[w]) for w in ('planets page cutouts', 'planets page stage 1')])
 
 
 def served_root_of(path):

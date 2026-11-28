@@ -81,20 +81,21 @@ def supersede_plan(cell, workdir, ship, phot):
 
 
 def phot_root(args):
-    """The photometry cutout root supersede ships a cell's wideband cutouts into: --phot-root, else photometry.CUTOUT_ROOT -
+    """The photometry cutout root supersede ships a cell's wideband cutouts into: --phot-root, else photometry.CUTOUT_ROOTS
+    ['snapshot'] -
     the served generation, the one root the search writes per hour and the photometry measure and the forced pages read (review
     F1 2026-11-03; production's snapshot_frametime_rerun.sh:69 named generation 4, PHASE3_ARCHIVE_ROOT/photometry, retired since
     generation 5 was served). A root equal to or under a retired generation (photometry.RETIRED_CUTOUT_ROOTS: it held cutouts an
     injected run wrote) refuses: G-PHOTROOT."""
     C = K.cfg()
-    phot = os.path.abspath(args.phot_root or C.photometry.CUTOUT_ROOT)
+    phot = os.path.abspath(args.phot_root or C.photometry.CUTOUT_ROOTS['snapshot'])
     real = os.path.realpath(phot)
     for r in C.photometry.RETIRED_CUTOUT_ROOTS:
         rr = os.path.realpath(r).rstrip('/')
         if real == rr or real.startswith(rr + '/'):
             raise Refusal(f'G-PHOTROOT: the photometry cutout root {phot} is under the retired generation {r} '
                           f'(photometry.RETIRED_CUTOUT_ROOTS: never written by any stage) - the served one is '
-                          f'photometry.CUTOUT_ROOT {C.photometry.CUTOUT_ROOT}')
+                          f'photometry.CUTOUT_ROOTS[snapshot] {C.photometry.CUTOUT_ROOTS["snapshot"]}')
     return phot
 
 

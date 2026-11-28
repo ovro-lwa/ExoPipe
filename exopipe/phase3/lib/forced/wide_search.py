@@ -1,13 +1,15 @@
 """THE WIDE-AREA BURST SEARCH of family W (stage wide_search): every peak of |S/N| >= SNR_MIN, either sign, anywhere in a
-forced target's gen5 cutouts, on EXACTLY the frames the forced photometry used. Port of phase3/refactor_analysis/
+forced target's served snapshot cutouts (photometry.CUTOUT_ROOTS['snapshot'], gen6 since 2026-11-27; --wide-cutout-root
+another generation), on EXACTLY the frames the forced photometry used. Port of phase3/refactor_analysis/
 review_items_20261031/forced_wide/forced_wide_search.py (2026-11-02; Gregg 2026-11-01 "a wide search area that allows the
 burst tapering to be identified", "Go"); its docstring is the method, the values are config (forced_wide_search):
 
 For every (Stokes, target, band) of the jobs, every cutout of that target (one per LST-hour cell: a 300'-wide RESIDUAL cube -
 frame minus hour median - on the cell's fixed grid, every 10-s frame with its admission flag):
   FRAMES   10 s: admitted (TIMES) and the forced evaluation's domain gate at the target (snapshot_forced_eval.gate_mask, in
-           place: elevation >= 30 deg, A-team, the night rule, Sun / Jupiter); 1 min: gen5's blocks (admitted frames of one
-           minute - MINUTE_RULE - >= BLOCK_MIN_FRAMES, averaged), gated the same way at the block time. A band excluded by
+           place: elevation >= 30 deg, A-team, the night rule, Sun / Jupiter); 1 min: stage 1's blocks of the generation
+           searched (admitted frames of one minute - the minute rule of that generation's stage 1, wide_stages.minute_rule -
+           >= BLOCK_MIN_FRAMES, averaged), gated the same way at the block time. A band excluded by
            data_decisions (core.exclusions, scope 'snapshot' as the evaluation reads it) or refused by tier rule 3 for
            (LST, night) (phase3_tier_rules.deep_search_refused, in place) is skipped, as the evaluation drops it. The target's
            a-priori screen (zone / clean, snapshot_forced_eval.zone_flags) is recorded per file and tier: the forced queue lists
@@ -79,8 +81,8 @@ def scfg():
 
 def eval_mod():
     """snapshot_forced_eval (gate_mask, zone_flags, noise_med), imported once per worker, with its per-frame time calls served
-    from caches filled vectorized per cutout (prefill_times) and its per-call Master-catalogue and noise reads cached - the
-    analysis' _eval_mod, installed in the worker process only. Records every noise / catalogue file it reads (inputs)."""
+    from caches filled vectorized per cutout (prefill_times) and its per-call Master-catalog and noise reads cached - the
+    analysis' _eval_mod, installed in the worker process only. Records every noise / catalog file it reads (inputs)."""
     if 'E' not in _E:
         from exopipe.phase3.lib.forced.wide_jobs import inplace
         E = inplace('snapshot_forced_eval')
@@ -90,7 +92,7 @@ def eval_mod():
         _E['LST'] = {}
         _E['GAUL'] = {}
         _E['NOISE'] = {}
-        _E['TASK'] = set()             # the noise / catalogue files the current task read (its unit's inputs)
+        _E['TASK'] = set()             # the noise / catalog files the current task read (its unit's inputs)
         orig_lst = SS.lst_deg_at
 
         def lst_cached(epoch_seconds):
@@ -244,15 +246,18 @@ def gates_10s(E, cell, band, st, tra, tde, ts, adm):
     return idx[g]
 
 
-def blocks_1min(cube, dobs, adm, ts_list, c=None):
-    """gen5's 1-minute blocks (stage 1 as it ran for gen5): admitted frames by minute (MINUTE_RULE), >= BLOCK_MIN_FRAMES,
-    averaged"""
+def blocks_1min(cube, dobs, adm, ts_list, c=None, rule=None):
+    """stage 1's 1-minute blocks (as it ran for the generation searched): admitted frames by minute (``rule``, the stage's
+    wide_stages.minute_rule: 'filename' or 'midpoint'; else MINUTE_RULE), >= BLOCK_MIN_FRAMES, averaged"""
     from collections import OrderedDict
     c = c or scfg()
+    rule = rule or c.MINUTE_RULE
+    if rule not in ('filename', 'midpoint'):
+        raise ValueError('W-MINUTE minute rule %r: filename or midpoint (wide_stages.minute_rule resolves it)' % (rule,))
     mins = OrderedDict()
     for i in range(len(dobs)):
         if adm[i]:
-            key = ts_list[i][:13] if c.MINUTE_RULE == 'filename' else _E['SS'].integration_minute_key(dobs[i])
+            key = ts_list[i][:13] if rule == 'filename' else _E['SS'].integration_minute_key(dobs[i])
             mins.setdefault(key, []).append(i)
     bk = [(k, ix) for k, ix in sorted(mins.items()) if len(ix) >= c.BLOCK_MIN_FRAMES]
     if not bk:
@@ -260,6 +265,39 @@ def blocks_1min(cube, dobs, adm, ts_list, c=None):
     with np.errstate(all='ignore'):
         blk = np.stack([np.nanmean(cube[ix], axis=0) for _, ix in bk]).astype(np.float32)
     return [k + '00' for k, _ in bk], blk
+
+
+class MinuteRefusal(Exception):
+    """W-MINUTE of one cutout file's cell (minute_basis): the whole unit refuses, whatever FILE_ERRORS says."""
+
+
+def minute_basis(stage1, cell, sample, band, st, rule, c=None):
+    """The minute_basis ('' = none) of a cell's stage-1 npz, <stage1>/<cell>/<forced_wide_search.STAGE1_NPZ> - the file stage
+    1 measured this (sample, band, Stokes) of the cell from - checked against the run's ``rule`` (MINUTE_BASIS_RULE); read with
+    allow_pickle=False, no memory map, the member only; cached per worker. MinuteRefusal (W-MINUTE, naming the file) when the
+    file or its member is unreadable (a missing file included: no readable basis is never a default), or its basis is of no
+    known rule or of another rule than ``rule``."""
+    import zipfile
+    c = c or scfg()
+    p = os.path.join(stage1, cell, c.STAGE1_NPZ.format(sample=sample, band=band, S=st))
+    cache = _E.setdefault('BASIS', {})
+    if p not in cache:
+        try:
+            with np.load(p, allow_pickle=False) as z:
+                cache[p] = str(z['minute_basis']) if 'minute_basis' in z.files else ''
+        except (OSError, ValueError, KeyError, EOFError, zipfile.BadZipFile) as e:
+            cache[p] = MinuteRefusal('W-MINUTE the stage-1 file %s of cell %s is unreadable (%s: %s): its minute basis is '
+                                     'unknown' % (p, cell, type(e).__name__, str(e)[:150]))
+    v = cache[p]
+    if isinstance(v, MinuteRefusal):
+        raise v
+    got = c.MINUTE_BASIS_RULE.get(v)
+    if got is None:
+        raise MinuteRefusal('W-MINUTE %s records minute_basis %r: no rule of forced_wide_search.MINUTE_BASIS_RULE' % (p, v))
+    if got != rule:
+        raise MinuteRefusal('W-MINUTE %s records minute_basis %r (rule %r), but this run keys the 1-minute blocks by %r'
+                            % (p, v or None, got, rule))
+    return v
 
 
 def cutout_dir(root, job, band):
@@ -335,9 +373,12 @@ def io_yield(c=None):
 
 def search_band(task):
     """One (Stokes, target, band): every cutout of the target in that band -> a staged npz. ``task`` = (job, band, cutout root,
-    staged npz path). Returns a dict: path, n_files, n_peaks, statuses, errors, nights (searched), inputs (the noise / catalogue
-    files this task read), cutout_dir, listing (name, size, mtime_ns per cutout), seconds, waited."""
-    job, band, root, part = task
+    staged npz path, minute rule, stage-1 root). Every searched file's cell is checked first against its stage 1
+    (minute_basis): a refusal ends the task with 'minute' set and no npz written (the unit refuses W-MINUTE). Returns a dict:
+    path, n_files, n_peaks, statuses, errors, nights (searched), inputs (the noise / catalog files this task read),
+    cutout_dir, listing (name, size, mtime_ns per cutout), minute_bases ({basis: files}), minute (a W-MINUTE refusal),
+    seconds, waited."""
+    job, band, root, part, rule, stage1 = task
     from astropy.io import fits
     from astropy.wcs import WCS
     from exopipe.phase3.core import exclusions as X
@@ -349,7 +390,7 @@ def search_band(task):
     st = job['stokes']
     d, files = cutout_files(root, job, band)
     out = dict(path=part, cutout_dir=d, n_files=len(files), n_peaks=0, errors=[], nights=[], statuses={}, waited=0.0,
-               listing=[])
+               listing=[], minute_bases={})
     if d is None:
         out['missing'] = 'no cutout directory'
         return out
@@ -378,6 +419,8 @@ def search_band(task):
             if deep_search_refused(lst, date, band, st):
                 ftab.append((cell, '-', 0, -1, 'deep-search refused'))
                 continue
+            mb = minute_basis(stage1, cell, job['sample'], band, st, rule, c)    # W-MINUTE: the whole unit refuses
+            out['minute_bases'][mb] = out['minute_bases'].get(mb, 0) + 1
             ts = [t if isinstance(t, str) else t.decode() for t in T['ts']]
             dobs = [t if isinstance(t, str) else t.decode() for t in T['date_obs']]
             adm = np.asarray(T['admitted'], bool)
@@ -390,7 +433,7 @@ def search_band(task):
                     planes = cube[use]
                     keys = [ts[i] for i in use]
                 else:
-                    keys, planes = blocks_1min(cube, dobs, adm, ts, c)
+                    keys, planes = blocks_1min(cube, dobs, adm, ts, c, rule)
                     if keys:
                         prefill_times(keys)
                         g = E.gate_mask(cell, band, st, np.array([tra]), np.array([tde]), keys)[0]
@@ -412,6 +455,10 @@ def search_band(task):
             rows.extend(frows)
             ftab.extend(fft)            # all or nothing per file (module notes)
             nights.add(date[:10])
+        except MinuteRefusal as e:
+            out['minute'] = str(e)
+            out['seconds'] = round(time.time() - t0, 1)
+            return out
         except Exception as e:  # noqa: BLE001 - recorded per file; FILE_ERRORS decides (the stage)
             msg = f'ERROR {type(e).__name__}: {str(e)[:150]}'
             ftab.append((os.path.basename(f), '-', 0, -1, msg))

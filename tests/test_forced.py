@@ -111,14 +111,24 @@ def test_config():
     check('G37: override of a steering key (forced_snapshot.NPROC[fit]) allowed', ok)
     for k in ('forced_snapshot.PHOT_ROOT', 'forced_snapshot.STAGE1_ROOT'):
         CFG.authorize([], out=TMP)
-        CFG.set(k, "'/x'")
         try:
-            K.check_overrides()
-            ok = True
-        except record.Refusal:
-            ok = False
+            CFG.set(k, "'/x'")
+            e = None
+        except ConfigRefusal as x:
+            e = str(x)
         CFG.reset()
-        check('G37: override of %s allowed (the step passes it to the child)' % k, ok)
+        check('%s is derived (config.Derived from forced_snapshot.GENERATION and photometry.*): a --set refuses, naming its '
+              'inputs' % k, e is not None and 'derived' in e and 'forced_snapshot.GENERATION' in e, e)
+    CFG.authorize([], out=TMP)
+    CFG.set('forced_snapshot.GENERATION', 'gen5')
+    try:
+        K.check_overrides()
+        ok = CFG.forced_snapshot.STAGE1_ROOT.endswith('stage1_gen5') and CFG.forced_snapshot.PHOT_ROOT.endswith('photometry_gen5')
+    except record.Refusal:
+        ok = False
+    CFG.reset()
+    check('G37: override of forced_snapshot.GENERATION allowed (the step passes its roots, PHOT_ROOT and STAGE1_ROOT, to the '
+          'child)', ok)
     def _g37(apply, parity=False):
         """(passed, refusal text) of check_overrides after apply(); CFG reset whatever happens."""
         CFG.authorize([], out=TMP)

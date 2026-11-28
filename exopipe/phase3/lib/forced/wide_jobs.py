@@ -129,11 +129,19 @@ def run_label(stokes, cadence):
     return f'{stokes}{cadence}'
 
 
-def run_dirs(root, which=None):
-    """[(label, Stokes, cadence, run dir)] under ``root`` (forced_wide.RUN_NAME) of ``which`` (default forced_wide.RUNS, the
-    tested runs; forced_wide.AMBIGUOUS_RUNS for the runs whose queues give the ambiguous list)."""
+def run_name(stokes, cadence):
+    """The served forced run of (Stokes, cadence): forced_wide.RUN_NAME with the generation of the cadence's tier
+    (photometry.GENERATIONS[photometry.CADENCE_TIER[cadence]])."""
     w = cfg().forced_wide
-    return [(run_label(S, cad), S, cad, os.path.join(root, w.RUN_NAME.format(S=S, cadence=cad))) for S, cad in (which or w.RUNS)]
+    ph = cfg().photometry
+    return w.RUN_NAME.format(S=stokes, cadence=cadence, generation=ph.GENERATIONS[ph.CADENCE_TIER[cadence]])
+
+
+def run_dirs(root, which=None):
+    """[(label, Stokes, cadence, run dir)] under ``root`` (forced_wide.RUN_NAME, run_name) of ``which`` (default forced_wide.
+    RUNS, the tested runs; forced_wide.AMBIGUOUS_RUNS for the runs whose queues give the ambiguous list)."""
+    w = cfg().forced_wide
+    return [(run_label(S, cad), S, cad, os.path.join(root, run_name(S, cad))) for S, cad in (which or w.RUNS)]
 
 
 def queue_ids(run, stokes):

@@ -183,7 +183,7 @@ def test_refused_roots():
     rp = os.path.realpath
     want = {'paths.PRODUCTION_ROOTS': [rp(x) for x in CFG.paths.PRODUCTION_ROOTS],
             'archive tree': [rp(CFG.paths.PHASE3_ARCHIVE_ROOT)],
-            'photometry roots': [rp(CFG.forced_snapshot.PHOT_ROOT), rp(CFG.photometry.CUTOUT_ROOT)]
+            'photometry roots': [rp(CFG.forced_snapshot.PHOT_ROOT)] + [rp(x) for x in CFG.photometry.CUTOUT_ROOTS.values()]
             + [rp(x) for x in CFG.photometry.TIER_FORCED_ROOTS.values()] + [rp(x) for x in CFG.photometry.OUT_ROOT.values()],
             'served-run roots': [rp(CFG.paths.TRANSIENTS_ROOT), rp(CFG.paths.SNAPSHOT_REVIEW_ROOT)],
             'Phase-1 / Phase-2 data': [rp(CFG.paths.PHASE1_ROOT), rp(CFG.paths.PHASE2_ROOT)],
@@ -294,10 +294,11 @@ def test_writer_photometry_root():
     out = os.path.join(T, 'phot_out')
     run = SimpleNamespace(out_root=out)
     sargs = SimpleNamespace(snap_pause_1min=False)
-    prod_root = CFG.photometry.CUTOUT_ROOT           # the served generation: one source of truth (review P F1, 2026-11-03)
+    prod_root = CFG.photometry.CUTOUT_ROOTS['snapshot']   # the served generation: one source of truth (review P F1, 2026-11-03)
     with Clean():
         env0, _ = TS.engine_env(run, sargs)
-        check('ordinary run, PRODUCTION_WRITES True: the cutout root is the production photometry root (photometry.CUTOUT_ROOT), '
+        check('ordinary run, PRODUCTION_WRITES True: the cutout root is the production photometry root (photometry.CUTOUT_ROOTS'
+              '[snapshot]), '
               'cutouts on, no injected switch', TS.cutout_root(run) == prod_root and env0['P3_SNAP_CUTOUTS'] == '1'
               and 'P3_SNAP_INJECTED' not in env0, env0)
     with Clean():
@@ -668,7 +669,7 @@ def test_dest_flags():
         check(f'CLI: `{what} <an existing directory outside scratch> --injected` exits 2, nothing written there',
               r.returncode == 2 and what in r.stderr and injected.LABEL in r.stderr
               and sorted(os.listdir(outside_existing)) == before, (r.returncode, r.stderr[-400:]))
-    # review P F6: a root a photometry stage writes WITHOUT a flag (the served defaults photometry.CUTOUT_ROOT, TIER_FORCED_ROOTS)
+    # review P F6: a root a photometry stage writes WITHOUT a flag (the served defaults photometry.CUTOUT_ROOTS, TIER_FORCED_ROOTS)
     # is checked by the stage itself before its first unit (lib/photometry/steps_cutouts gate_write_roots)
     for argv, what in ((['photometry', '--tier', 'snapshot', '--stages', 'cutouts', '--cells', '18h_2025-04-13_64MHz'],
                         'photometry cutouts (the cutout root'),

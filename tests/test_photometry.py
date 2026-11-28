@@ -34,11 +34,11 @@ products are only READ.
   and on the real snapshot cell 18h_2025-04-11 (widebands).
 - negative: each content test of each product class fails on a corrupted copy (E4_plot is a display product that never
   gates: no negative).
-- real products (read only): the SERVED generation-5 stage-1 npz and manifest of 18h_2025-04-11, the 2026-10-07 wideband
-  evaluation (grid, rows, stage 1 on 3 cells; V1 / Z1 reported), the served eval_gen5 / eval_wb_gen5 (every test, 3 cells)
-  and zone flags, the 2026-10-07 zone-flag file, the 2026-10-07 per-kind refused-cell lists (= the step's), the deep run3 frame
+- real products (read only): the SERVED stage-1 npz and manifest of 18h_2025-04-11 (generation 6 since 2026-11-27), the
+  2026-10-07 wideband evaluation (grid, rows, stage 1 on 3 cells; V1 / Z1 reported), the served evaluations
+  forced_snapshot.EVAL_SB / EVAL_WB (every test, 3 cells) and zone flags, the pinned refused cells on the served stage 1, the 2026-10-07 zone-flag file, the 2026-10-07 per-kind refused-cell lists (= the step's), the deep run3 frame
   list and stage list where readable (pre-PB-step-2: FL3 fails as expected).
-- served generation (read only): every served snapshot forced page was built on photometry.CUTOUT_ROOT and
+- served generation (read only): every served snapshot forced page was built on photometry.CUTOUT_ROOTS['snapshot'] and
   <OUT_ROOT[snapshot]>/STAGE1_DIR (its FT-START record), forced_snapshot names the same, the served stage 1 and tier forced
   manifests measured those cutouts, the tier / planets pages read photometry.TIER_FORCED_ROOTS; falsified with generation 4.
 - cutouts: mirrors of the regeneration engines, the tier tools and the regeneration content test; ports (the writer's
@@ -147,7 +147,8 @@ def records(out):
 
 @contextlib.contextmanager
 def patched(obj, **kw):
-    old = {k: getattr(obj, k) for k in kw}
+    # the raw attribute (a config.Derived key's descriptor, not its value), so the restore puts back what was there
+    old = {k: vars(obj)[k] if k in vars(obj) else getattr(obj, k) for k in kw}
     for k, v in kw.items():
         setattr(obj, k, v)
     try:
@@ -159,10 +160,26 @@ def patched(obj, **kw):
 
 def syn_samples():
     """The configuration the synthetic snapshot cell is measured and evaluated under: photometry.SAMPLES_MEASURED['snapshot']
-    = HWJ and 10 pc, the samples of its cutout templates (the served generation 5 holds no LPT cutout, pick_templates). V2
-    expects the samples of the evaluation's generation (its stage 1 stage1_gen5: HWJ and 10 pc); as gen6 it refuses, naming
-    the four LPT classes (test_snapshot_e2e checks both)."""
+    = HWJ and 10 pc, the samples of its cutout templates (pick_templates: HWJ and 10 pc only). V2 expects the samples of the
+    evaluation's generation (its stage 1 stage1_gen5 in syn_world: HWJ and 10 pc); as gen6 it refuses, naming the four LPT
+    classes (test_snapshot_e2e checks both)."""
     return patched(CFG.photometry, SAMPLES_MEASURED=dict(CFG.photometry.SAMPLES_MEASURED, snapshot=('HWJ', '10pc')))
+
+
+@contextlib.contextmanager
+def syn_world():
+    """The synthetic snapshot cell's world (test_snapshot_e2e, test_negative): a generation without LPT, so generation 5's stage
+    1 name (photometry.STAGE1_DIR and this module's S1 = stage1_gen5) - V2 reads an evaluation's generation from its stage 1's
+    name (tests.eval_generation), and as the served generation 6 (stage1_gen6) it expects the four LPT classes the templates
+    cannot give. Undone after."""
+    global S1
+    old = S1
+    S1 = 'stage1_gen5'
+    try:
+        with patched(CFG.photometry, STAGE1_DIR=S1):
+            yield
+    finally:
+        S1 = old
 
 
 def v2_lpt_only(detail):
@@ -431,7 +448,7 @@ SNAP = os.path.join(TMP, 'snap')
 CUTS = os.path.join(SNAP, 'cutouts')
 SNAP_BANDS = ('64MHz', '73MHz', 'Blue')
 NF = 24                                     # frames per synthetic cutout (4 one-minute blocks)
-CUT_ROOT_REAL = CFG.photometry.CUTOUT_ROOT       # the served generation's cutouts (templates, read only)
+CUT_ROOT_REAL = CFG.photometry.CUTOUT_ROOTS['snapshot']   # the served generation's cutouts (templates, read only)
 ATEAM = [(350.866, 58.815), (299.868, 40.734), (83.633, 22.014), (187.706, 12.391), (139.524, -12.096), (252.784, 4.993)]
 
 
@@ -452,7 +469,7 @@ def pick_templates():
     from astropy.io import fits
     cur = T.current_safe_names('snapshot')
     out = {}
-    for smp in ('HWJ', '10pc'):        # the synthetic cell's templates (the served generation 5 holds no LPT cutout)
+    for smp in ('HWJ', '10pc'):        # the synthetic cell's templates (no LPT: its world is generation 5's, syn_world)
         objs = None
         for b in SNAP_BANDS:
             have = {os.path.basename(os.path.dirname(p)) for p in
@@ -638,7 +655,7 @@ def test_mirrors():
     got = {k: L.get(k) for k in want}
     # ROOT and SAMPLES are environment switches since 2026-10-25 / 10-28 (43eaf17 P3_PHOT_ROOT, c4fa0e3 P3_SNAP_CUTOUT_SAMPLES;
     # the step forbids both in its environment): their DEFAULTS are the mirror - ROOT's default is the RETIRED generation 4,
-    # which is why the step always passes --root (the served generation, photometry.CUTOUT_ROOT)
+    # which is why the step always passes --root (the served generation, photometry.CUTOUT_ROOTS[tier])
     if "ROOT = os.environ.get('P3_PHOT_ROOT', %r)" % want['ROOT'] in sps:
         got['ROOT'] = want['ROOT']
     if "if os.environ.get('P3_SNAP_CUTOUT_SAMPLES') else %r)" % (want['SAMPLES'],) in sps:
@@ -1419,8 +1436,9 @@ def test_negative():
 # ---------------------------------------------------------------------------------------------------------------------
 
 def pin_scope_checks(prod, g4):
-    """The pinned refused-cell list (corrupt generation-4 cutouts) per cell on the real generation-4 and generation-5 stage 1
-    (prod = the snapshot OUT_ROOT, g4 = generation 4's stage 1), plus falsifiers on copies of one manifest."""
+    """The pinned refused-cell list (corrupt generation-4 cutouts) per cell on the real generation-4 and the served stage 1
+    (prod = the snapshot OUT_ROOT, g4 = generation 4's stage 1; served: REAL_STAGE1, generation 6 since 2026-11-27, which
+    measured all 4 pinned cells - generation 5 measured 3), plus falsifiers on copies of one manifest."""
     pin = [r['cell'] for r in T.read_csv(CFG.photometry_evaluate.REFUSED_CELLS['snapshot'])[1]]
     g4root = KS.pin_generation_root()
     g4man = [r['file'] for cl in pin for mp in glob.glob(os.path.join(g4, cl, 'forced_manifest*.csv'))
@@ -1428,29 +1446,30 @@ def pin_scope_checks(prod, g4):
     check('the pinned list\'s generation (photometry.RETIRED_CUTOUT_ROOTS[0] = %s) is the root of every file the pinned '
           'cells\' generation-4 manifests name (%d files)' % (g4root, len(g4man)),
           g4man and all(f.startswith(g4root.rstrip('/') + '/') for f in g4man), g4man[:2])
+    gs = CFG.photometry.GENERATIONS['snapshot']
     have = [cl for cl in pin if os.path.isfile(os.path.join(REAL_STAGE1, cl, 'forced_manifest.csv'))]
-    lifted5 = KS.pin_lifted(REAL_STAGE1, pin)
-    check('generation 5 (the served stage 1, %s): the pinned cells it measured (%s) are lifted, as production\'s '
-          'generation-5 evaluation evaluated them; a pinned cell without a generation-5 stage 1 keeps the pin'
-          % (S1, have), len(have) == 3 and lifted5 == set(have), (have, lifted5))
-    if len(have) != 3:
+    lifted = KS.pin_lifted(REAL_STAGE1, pin)
+    check('%s (the served stage 1, %s): the pinned cells it measured (%d of %d: %s) are lifted, as production\'s '
+          '%s evaluation evaluated them; a pinned cell without a served stage 1 keeps the pin'
+          % (gs, S1, len(have), len(pin), have, gs), have and lifted == set(have), (have, lifted))
+    if not have:
         return
     sel = sorted(have + [REAL_SNAP_CELL])
     dflt = {k: [cl for cl in KS.refused_for(k, {}, REAL_STAGE1, sel)[0] if cl in pin] for k in ('sb', 'wb')}
-    check('generation 5, default lists: only the pinned cells without a generation-5 stage 1 stay listed (%s)' % dflt,
+    check('%s, default lists: only the pinned cells without a served stage 1 stay listed (%s)' % (gs, dflt),
           dflt == {k: [cl for cl, _ in KS.refused_list(k) if cl not in have] for k in ('sb', 'wb')}, dflt)
-    ref_g5 = {k: os.path.join(prod, 'refused_cells_%s_gen5.csv' % k) for k in ('sb', 'wb')}
+    ref_g5 = {k: os.path.join(prod, 'refused_cells_%s_%s.csv' % (k, gs)) for k in ('sb', 'wb')}
     try:
         ok = all(KS.refused_for(k, ref_g5, REAL_STAGE1, sel)[1] == ref_g5[k] for k in ('sb', 'wb'))
     except KS.Refusal as e:
         ok = str(e)
-    check('generation 5: production\'s own per-kind refused lists (which name no pinned cell) are accepted as given',
-          ok is True, ok)
+    check('%s: production\'s own per-kind refused lists (refused_cells_<kind>_%s.csv, which name no pinned cell) are '
+          'accepted as given' % (gs, gs), ok is True, ok)
     check('generation 4 (%s): no pinned cell is lifted' % g4, KS.pin_lifted(g4, pin) == set(), KS.pin_lifted(g4, pin))
     work = os.path.join(TMP, 'pin_lift')
     shutil.rmtree(work, ignore_errors=True)
     rows = open(os.path.join(REAL_STAGE1, have[0], 'forced_manifest.csv')).read().splitlines(True)
-    cut = CFG.photometry.CUTOUT_ROOT
+    cut = CFG.photometry.CUTOUT_ROOTS['snapshot']
 
     def stage(name, manifests):
         d = os.path.join(work, name, have[0])
@@ -1488,16 +1507,15 @@ def test_real():
         print('skip  real products: %s not readable here' % s1)
         return
     for name in ('forced_HWJ_18MHz_I.npz', 'forced_10pc_Red_V.npz'):
-        # the SERVED stage 1 (stage1_gen5, built 2026-10-25/26 before exopipe_ops 40611cc): 1-minute blocks on the FILE-NAME
-        # minute, so N2 must fail on them for that reason until the stage-1 re-run (Gregg's call); every other test passes - N4
-        # re-measures from the served cutouts (photometry.CUTOUT_ROOT), N5 knows the writer's J-tagged names (10 pc Red V holds
-        # Gaia_DR3_WD_Unknown_ID_J1748+7053 and _J2151+5917, which the reader without the 8f2126b naming called non-current)
+        # the SERVED stage 1 (photometry.STAGE1_DIR: stage1_gen6 since 2026-11-27, built after exopipe_ops 40611cc): 1-minute
+        # blocks on the integration-midpoint minute (its minute_basis), so N2 passes like every other test - N4 re-measures
+        # from the served cutouts (photometry.CUTOUT_ROOTS[snapshot]), N5 knows the writer's J-tagged names. (Generation 5's
+        # stage 1, built 2026-10-25/26 on the file-name minute, failed N2 for that reason; the synthetic negative N2 test
+        # keeps that failure covered)
         res = run_tests('photometry_snapshot_npz', os.path.join(s1, name))
-        n2r = res.get('N2_blocks', {})
-        check('real %s/%s passes N1, N3-N5 (N4 re-measured from the archive cutouts); N2 fails as a pre-2026-10-28 product on the '
-              'file-name minute' % (REAL_SNAP_CELL, name),
-              all(r['passed'] for k, r in res.items() if k != 'N2_blocks') and not n2r.get('passed', True)
-              and 'minute_basis' in str(n2r.get('detail', '')),
+        check('real %s/%s (the served stage 1 %s) passes N1-N5 (N4 re-measured from the served cutouts; N2 on the '
+              'integration-midpoint minute)' % (REAL_SNAP_CELL, name, S1),
+              res and all(r['passed'] for r in res.values()),
               {k: (r['passed'], str(r['detail'])[:160]) for k, r in res.items()})
     ok, bad = all_pass('photometry_manifest', os.path.join(s1, 'forced_manifest.csv'))
     check('real %s/forced_manifest.csv passes M1-M3' % REAL_SNAP_CELL, ok, bad)
@@ -1519,15 +1537,16 @@ def test_real():
     zf = os.path.join(prod, 'zones_recomputed_20261007.csv')
     ok, bad = all_pass('photometry_zone_flags', zf)
     check('real zones_recomputed_20261007.csv (the 2026-10-07 zone-flag product) passes ZF1', ok, bad)
-    # the SERVED generation's evaluations (eval_gen5 / eval_wb_gen5 on stage1_gen5 - the S test finds that stage 1 by the
-    # evaluation's tag) and their zone flags: every test passes on 3 cells but V1, which names every (cell, band) that
-    # data_decisions.csv excludes now. Those must all be exclusions added AFTER the evaluation was written (2026-10-26; e.g.
-    # the whole 01h 2025-11-01 night on 2026-11-12): under the file's last commit before the evaluation's targets_ge4.csv
-    # (clv15 git) none of its (cell, band) is excluded. The forced pages drop the later-excluded events at build
+    # the SERVED generation's evaluations (forced_snapshot.EVAL_WB / EVAL_SB: eval_wb_gen6 / eval_gen6 on stage1_gen6 since
+    # 2026-11-27 - the S test finds that stage 1 by the evaluation's tag) and their zone flags: every test passes on 3 cells
+    # but V1, which names every (cell, band) that data_decisions.csv excludes now. Those must all be exclusions added AFTER the
+    # evaluation was written: under the file's last commit before the evaluation's targets_ge4.csv (clv15 git) none of its
+    # (cell, band) is excluded. The forced pages drop the later-excluded events at build
     # (snapshot_forced_panels.cell_band_excluded).
     from exopipe.phase3.core import exclusions as EX
     dd = CFG.paths.DATA_DECISIONS
-    for ev in ('eval_wb_gen5', 'eval_gen5'):
+    gs = CFG.photometry.GENERATIONS['snapshot']
+    for ev in (os.path.basename(CFG.forced_snapshot.EVAL_WB), os.path.basename(CFG.forced_snapshot.EVAL_SB)):
         res = run_tests('photometry_eval', os.path.join(prod, ev), max_cells=3, procs=1)
         tg = os.path.join(prod, ev, 'targets_ge4.csv')
         built = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(os.path.getmtime(tg)))
@@ -1543,17 +1562,18 @@ def test_real():
         late = sorted(k for k in cb if ex_now.is_excluded(k[0].split('_', 1)[0], k[1], k[0].split('_', 1)[1]))
         early = sorted(k for k in cb if ex_then.is_excluded(k[0].split('_', 1)[0], k[1], k[0].split('_', 1)[1]))
         v1, v2 = res['E2_lists_or_V1_kind_exclusions'], res['E3_exceedance_or_V2_rows']
-        check('real %s (served): G1-G6, V2, Z1 and S (stage 1 = %s) pass on 3 cells - V2 as generation 5, whose samples '
-              'are HWJ and 10 pc (serve.FORCED_GENERATIONS; it never measured LPT): 8 rows; V1 names only the %d (cell, band) '
-              'excluded after the evaluation was written (%s; data_decisions.csv at %s excluded none of them)'
-              % (ev, S1, len(late), built, rev[:10]),
+        n_cls = len(T.threshold_classes(gs))
+        check('real %s (served): G1-G6, V2, Z1 and S (stage 1 = %s) pass on 3 cells - V2 as generation %s, whose samples '
+              'are %s (serve.FORCED_GENERATIONS): %d rows; V1 names only the %d (cell, band) excluded after the evaluation '
+              'was written (%s; data_decisions.csv at %s excluded none of them)'
+              % (ev, S1, gs, ', '.join(T.generation_samples(gs) or ()), n_cls, len(late), built, rev[:10]),
               all(r['passed'] for k, r in res.items() if k != 'E2_lists_or_V1_kind_exclusions')
-              and 'generation gen5' in str(v2['detail']) and v2['value'] == 8
+              and 'generation %s' % gs in str(v2['detail']) and v2['value'] == n_cls
               and 'stage-1 files' in str(res['S_stage1']['detail'])
               and rev and not early and (v1['passed'] if not late else v1['value'] == len(late)),
               {'early': early, 'late': late, 'tests': {k: (r['passed'], str(r['detail'])[:300]) for k, r in res.items()}})
-    ok, bad = all_pass('photometry_zone_flags', os.path.join(prod, 'zones_recomputed_gen5.csv'))
-    check('real zones_recomputed_gen5.csv (the served zone flags) passes ZF1', ok, bad)
+    ok, bad = all_pass('photometry_zone_flags', CFG.forced_snapshot.ZONE_FLAGS)
+    check('real %s (the served zone flags) passes ZF1' % os.path.basename(CFG.forced_snapshot.ZONE_FLAGS), ok, bad)
     same = {}
     g4 = os.path.join(prod, 'stage1')         # generation 4's stage 1, from which the 2026-10-07 lists were written
     for kind in ('sb', 'wb'):
@@ -1631,14 +1651,16 @@ def registry_mount():
 def served_generation_mismatches(pages=True):
     """[what differs] between the photometry config's generation and what production serves (empty = the config follows it):
     (1) each served snapshot forced page's own record - the FT-START line of snapshot_forced_pages_run_<run>.log - names
-    P3_PHOT_ROOT = photometry.CUTOUT_ROOT and P3_FORCED_STAGE1 = <OUT_ROOT[snapshot]>/<STAGE1_DIR>; (2) the forced step names
-    the same two roots (forced_snapshot.PHOT_ROOT, STAGE1_ROOT); (3) the served stage 1 measured the configured cutouts (every
-    manifest row of 3 cells names a file under CUTOUT_ROOT); (4) the tier forced roots are the ones the serving pages read
-    (planets_forced_page_20261026.py FT default for HWJ / 10 pc - tier_forced_page_20261027.py reads it -, and
-    planets_page_orbit_build_20261028.sh P3_FORCED_TIERS for the planets), and their manifests name cutouts under CUTOUT_ROOT.
+    P3_PHOT_ROOT = photometry.CUTOUT_ROOTS['snapshot'] and P3_FORCED_STAGE1 = <OUT_ROOT[snapshot]>/<STAGE1_DIR>; (2) the forced
+    step names the same two roots (forced_snapshot.PHOT_ROOT, STAGE1_ROOT); (3) the served stage 1 measured the configured
+    cutouts (every manifest row of 3 cells names a file under CUTOUT_ROOTS['snapshot']); (4) the tier forced roots are the ones
+    the serving pages read (planets_forced_page_20261026.py FT default for HWJ / 10 pc - tier_forced_page_20261027.py reads it -,
+    and planets_page_orbit_build_20261028.sh P3_FORCED_TIERS for the planets), and their manifests name cutouts under the
+    tier's CUTOUT_ROOTS (10min = sublst, deep).
     pages=False leaves out (1), which needs the review hub registry (/data07, lwacalim07 only); every other part reads Lustre."""
     ph, fs = CFG.photometry, CFG.forced_snapshot
     out = []
+    snap = ph.CUTOUT_ROOTS['snapshot']
     stage1 = os.path.join(ph.OUT_ROOT['snapshot'], ph.STAGE1_DIR)
     runs, why = _served_forced_runs() if pages else ({}, None)
     if pages and not runs:
@@ -1649,15 +1671,15 @@ def served_generation_mismatches(pages=True):
         if not start:
             out.append('%s: no FT-START record in %s' % (run, log))
             continue
-        for var, want in (('P3_PHOT_ROOT', ph.CUTOUT_ROOT), ('P3_FORCED_STAGE1', stage1)):
+        for var, want in (('P3_PHOT_ROOT', snap), ('P3_FORCED_STAGE1', stage1)):
             m = re.search(r' %s=(\S+)' % var, start[-1])
             if not m or m.group(1) != want:
                 out.append('%s (Stokes %s %s) was built with %s=%s, the config says %s' % (run, S, cad, var, m and m.group(1),
                                                                                            want))
-    if fs.PHOT_ROOT != ph.CUTOUT_ROOT or fs.STAGE1_ROOT != stage1:
+    if fs.PHOT_ROOT != snap or fs.STAGE1_ROOT != stage1:
         out.append('forced_snapshot.PHOT_ROOT / STAGE1_ROOT %s / %s != photometry %s / %s' % (fs.PHOT_ROOT, fs.STAGE1_ROOT,
-                                                                                            ph.CUTOUT_ROOT, stage1))
-    pre = ph.CUTOUT_ROOT.rstrip('/') + '/'
+                                                                                            snap, stage1))
+    pre = snap.rstrip('/') + '/'
     cells = sorted(d for d in os.listdir(stage1) if os.path.isfile(os.path.join(stage1, d, 'forced_manifest.csv')))[::120][:3] \
         if os.path.isdir(stage1) else []
     if not cells:
@@ -1667,7 +1689,7 @@ def served_generation_mismatches(pages=True):
         bad = [r['file'] for r in rows if not r['file'].startswith(pre)]
         if bad or not rows:
             out.append('served stage 1 %s: %d of %d rows measured cutouts outside %s (e.g. %s)' % (cl, len(bad), len(rows),
-                                                                                                  ph.CUTOUT_ROOT, bad[:1]))
+                                                                                                  snap, bad[:1]))
     src = open(os.path.join(OPS, 'planets_forced_page_20261026.py')).read()
     m = re.search(r"^FT = os\.environ\.get\('P3_FORCED_TIERS', '([^']+)'\)", src, re.M)
     tp = open(os.path.join(OPS, 'tier_forced_page_20261027.py')).read()
@@ -1689,16 +1711,18 @@ def served_generation_mismatches(pages=True):
         if smp not in served and (not ft or root != ft.group(1)):
             out.append('TIER_FORCED_ROOTS[%s] = %s is not the root the tier pages read (%s)' % (smp, root, ft and ft.group(1)))
         for tier in ('10min', 'deep'):
+            troot = ph.CUTOUT_ROOTS[{v: k for k, v in CFG.photometry_cutouts.TIER_TOKEN.items()}[tier]]
+            tpre = troot.rstrip('/') + '/'
             rows, lst = [], None
             for mp in sorted(glob.glob(os.path.join(root, tier, '[0-2][0-9]h', 'forced_manifest.csv'))):
                 rows = [r for r in T.read_csv(mp)[1] if r['file'].split('/')[-4] == smp]
                 if rows:            # the first LST whose manifest holds rows of the sample (planets cross only some hours)
                     lst = os.path.basename(os.path.dirname(mp))
                     break
-            bad = [r['file'] for r in rows if not r['file'].startswith(pre)]
+            bad = [r['file'] for r in rows if not r['file'].startswith(tpre)]
             if bad or (not rows and smp in served):
                 out.append('%s %s %s: %d of %d %s rows measured cutouts outside %s' % (root, tier, lst, len(bad), len(rows),
-                                                                                      smp, ph.CUTOUT_ROOT))
+                                                                                      smp, troot))
     return out
 
 
@@ -1711,15 +1735,23 @@ def test_served_generation():
     bad = served_generation_mismatches(pages)
     check('served generation: the photometry config names the roots production serves - %sforced_snapshot names the same, '
           'the served stage 1 measured those cutouts, the tier forced roots are the ones the tier / planets pages read'
-          % ('every served snapshot forced page was built on photometry.CUTOUT_ROOT and <OUT_ROOT[snapshot]>/STAGE1_DIR '
+          % ('every served snapshot forced page was built on photometry.CUTOUT_ROOTS[snapshot] and <OUT_ROOT[snapshot]>/STAGE1_DIR '
              '(FT-START), ' if pages else ''), not bad, bad)
-    with patched(CFG.photometry, CUTOUT_ROOT=CFG.photometry.RETIRED_CUTOUT_ROOTS[0], STAGE1_DIR='stage1'):
+    with patched(CFG.photometry, CUTOUT_ROOTS={t: CFG.photometry.RETIRED_CUTOUT_ROOTS[0] for t in CFG.photometry.CUTOUT_ROOTS},
+                 STAGE1_DIR='stage1'):
         bad4 = served_generation_mismatches(pages)
     check('served generation falsified: with generation 4\'s roots (PHASE3_ARCHIVE_ROOT/photometry, <out>/stage1 - what the '
           'config named before) the check fails on %sthe forced step and the tier manifests'
           % ('every served page (both roots), ' if pages else ''),
           (not pages or (sum('P3_PHOT_ROOT' in b for b in bad4) == 4 and sum('P3_FORCED_STAGE1' in b for b in bad4) == 4))
           and any('forced_snapshot' in b for b in bad4) and any('rows measured cutouts outside' in b for b in bad4), bad4)
+    snap = CFG.photometry.CUTOUT_ROOTS['snapshot']
+    with patched(CFG.photometry, CUTOUT_ROOTS={t: snap for t in CFG.photometry.CUTOUT_ROOTS}):
+        bad1 = served_generation_mismatches(pages)
+    check('served generation falsified: ONE cutout root for every tier (the snapshot one, %s) fails on the deep and 10-minute '
+          'tier manifests only (their tier cutouts are another generation) - the roots are per tier' % snap,
+          {b.split(' ')[1] for b in bad1 if 'rows measured cutouts outside' in b} == {'10min', 'deep'}
+          and not any('P3_PHOT_ROOT' in b or 'forced_snapshot' in b or b.startswith('served stage 1') for b in bad1), bad1)
     with patched(CFG.status, REGISTRY_FILE=os.path.join(TMP, 'no_registry', 'registry.json')):
         mnt = registry_mount()          # its disk (/tmp) exists on every host: the strict path
         badr = served_generation_mismatches(mnt[2])
@@ -1765,9 +1797,9 @@ def retired_root_keys(sections):
 
 
 def test_cutout_root_one_source():
-    """Review F1 (2026-11-03): the photometry cutout root has ONE source of truth, photometry.CUTOUT_ROOT - the snapshot search
-    writes it per hour, archive supersede ships into it, the measure stage and the forced pages read it - and no config key
-    names a retired root."""
+    """Review F1 (2026-11-03): the photometry cutout root of a tier has ONE source of truth, photometry.CUTOUT_ROOTS[tier] -
+    the snapshot search writes the snapshot one per hour, archive supersede ships into it, the measure stage and the forced
+    pages read it - and no config key names a retired root."""
     from types import SimpleNamespace
     from exopipe.phase3.lib.archive import snapshot as AS
     from exopipe.phase3.lib.search import tier_snapshot as TS
@@ -1782,19 +1814,26 @@ def test_cutout_root_one_source():
           'are found', sorted(h.split(' ')[0] for h in retired_root_keys(fals))
           == ['archive_snapshot.PHOT_ROOT', 'search_snapshot.CUTOUT_ROOT'], retired_root_keys(fals))
     run = SimpleNamespace(out_root=os.path.join(TMP, 'f1_out'))
-    noflag = SimpleNamespace(cutout_root=None, phot_root=None)
+    noflag = SimpleNamespace(cutout_root=None, phot_root=None, tier='snapshot')
+    snap = ph.CUTOUT_ROOTS['snapshot']
     with patched(CFG.paths, PRODUCTION_WRITES=True):            # in memory only: the post-cutover state
         got = dict(search=TS.cutout_root(run), measure=K.cutout_root(noflag), archive=AS.phot_root(noflag),
                    forced=CFG.forced_snapshot.PHOT_ROOT)
     check('one source: with production writes the search\'s per-hour cutout root (P3_SNAP_CUTOUT_ROOT) = the measure stage\'s '
-          'reader = archive supersede\'s default = forced_snapshot.PHOT_ROOT = photometry.CUTOUT_ROOT (%s)' % ph.CUTOUT_ROOT,
-          set(got.values()) == {ph.CUTOUT_ROOT}, got)
+          'reader = archive supersede\'s default = forced_snapshot.PHOT_ROOT = photometry.CUTOUT_ROOTS[snapshot] (%s)' % snap,
+          set(got.values()) == {snap}, got)
     other = os.path.join(TMP, 'f1_generation_x')
-    with patched(CFG.paths, PRODUCTION_WRITES=True), patched(ph, CUTOUT_ROOT=other):
+    with patched(CFG.paths, PRODUCTION_WRITES=True), patched(ph, CUTOUT_ROOTS=dict(ph.CUTOUT_ROOTS, snapshot=other)):
         follow = (TS.cutout_root(run), K.cutout_root(noflag), AS.phot_root(noflag))
-    check('one source: the search and archive follow photometry.CUTOUT_ROOT (no copy of their own)', follow == (other,) * 3,
-          follow)
-    with patched(CFG.paths, PRODUCTION_WRITES=True), patched(ph, CUTOUT_ROOT=ph.RETIRED_CUTOUT_ROOTS[0]):
+        tiers = {t: K.cutout_root(SimpleNamespace(cutout_root=None, tier=t)) for t in ('deep', 'sublst')}
+    check('one source: the search and archive follow photometry.CUTOUT_ROOTS[snapshot] (no copy of their own); the deep and '
+          'sub-LST stages keep their own tier\'s root', follow == (other,) * 3
+          and tiers == {t: ph.CUTOUT_ROOTS[t] for t in ('deep', 'sublst')}, (follow, tiers))
+    e0 = raises(K.cutout_root, SimpleNamespace(cutout_root=None, tier='10s'))
+    check('a tier with no served cutout root refuses (C-TIER-ROOT), never another tier\'s root',
+          e0 is not None and 'C-TIER-ROOT' in str(e0), e0)
+    with patched(CFG.paths, PRODUCTION_WRITES=True), patched(ph, CUTOUT_ROOTS=dict(ph.CUTOUT_ROOTS,
+                                                                                    snapshot=ph.RETIRED_CUTOUT_ROOTS[0])):
         e1, e2 = raises(TS.cutout_root, run), raises(AS.phot_root, noflag)
     e3 = raises(AS.phot_root, SimpleNamespace(phot_root=os.path.join(ph.RETIRED_CUTOUT_ROOTS[0], 'HWJ')))
     e4 = raises(K.gate_write_root, ph.RETIRED_CUTOUT_ROOTS[0], '--cutout-root')
@@ -1806,7 +1845,7 @@ def test_cutout_root_one_source():
           % CFG.search_snapshot.CUTOUT_SUBDIR, TS.cutout_root(run) == os.path.join(run.out_root,
                                                                                  CFG.search_snapshot.CUTOUT_SUBDIR))
     from exopipe.phase3.steps import archive as SA, search as SS
-    check('the search and archive steps declare the photometry section (its CUTOUT_ROOT is in their config hash: a generation '
+    check('the search and archive steps declare the photometry section (its CUTOUT_ROOTS is in their config hash: a generation '
           'switch never resumes a unit written to the old root)', 'photometry' in SS.CONFIG and 'photometry' in SA.CONFIG,
           (SS.CONFIG, SA.CONFIG))
 
@@ -2422,6 +2461,21 @@ def test_cutouts_snapshot():
     rc, txt = step(argv + ['--dry-run'])
     check('cutouts --dry-run: one unit planned, nothing written', rc == 0 and 'unit cutouts.%s.%s' % (CUT_CELL, CUT_SB) in txt
           and not os.path.exists(CUT_OUT), txt)
+    # PR 195 review item 10: the plan names the served generation by real paths - a link to the served snapshot root is it
+    link = os.path.join(TMP, 'served_snapshot_link')
+    os.symlink(CUT_ROOT, link)
+    try:
+        with patched(CFG.photometry, CUTOUT_ROOTS=dict(CFG.photometry.CUTOUT_ROOTS, snapshot=CUT_ROOT)):
+            rc_l, txt_l = step(['photometry'] + CUT_COMMON + ['--cells', '%s_%s' % (CUT_CELL, CUT_SB), '--cutout-root', link,
+                                                              '--out', CUT_OUT, '--dry-run'])
+    finally:
+        os.remove(link)
+    gs = CFG.photometry.GENERATIONS['snapshot']
+    check('cutouts --dry-run, --cutout-root a LINK to the (patched) served snapshot root: the plan says generation %s, not '
+          '"not served" (real paths), and C-INPLACE refuses it without --in-place (exit 2); the unpatched dry run above says '
+          '"not served" for its own root' % gs, rc_l == 2 and '(generation %s)' % gs in txt_l and 'not served' not in txt_l
+          and 'WOULD REFUSE C-INPLACE' in txt_l and '(generation not served)' in txt and not os.path.exists(CUT_OUT),
+          (rc_l, txt_l[-600:]))
     rc, txt = step(argv)
     rec = records(CUT_OUT).get(unit, {})
     man = [o['path'] for o in rec.get('outputs', []) if o['class'] == 'photometry_cutout_manifest']
@@ -2694,7 +2748,7 @@ def test_cutouts_snapshot():
     rc, txt = step(['photometry'] + CUT_COMMON + ['--cutout-root', CUT_ROOT, '--out', CUT_OUT])
     check('C-CELLS: a regeneration without --cells refuses (exit 2)', rc == 2 and 'C-CELLS' in txt, txt)
     for root, what in ((CFG.photometry.RETIRED_CUTOUT_ROOTS[0], 'the retired generation 4'),
-                       (os.path.join(CFG.photometry.CUTOUT_ROOT), 'the served generation (a production root)')):
+                       (os.path.join(CFG.photometry.CUTOUT_ROOTS['snapshot']), 'the served generation (a production root)')):
         rc, txt = step(['photometry'] + CUT_COMMON + ['--cells', '%s_%s' % (CUT_CELL, CUT_SB), '--cutout-root', root,
                                                       '--out', CUT_OUT, '--dry-run'])
         check('C-ROOT: --cutout-root %s refuses (dry run, exit 2, nothing written)' % what,
@@ -2913,7 +2967,8 @@ def test_in_place_whole_cells():
 
     def s1_now():
         return {f: TC.sha256_file(os.path.join(s1, f)) for f in os.listdir(s1)}
-    with patched(CFG.photometry, CUTOUT_ROOT=served_cut, OUT_ROOT=dict(CFG.photometry.OUT_ROOT, snapshot=served_out)):
+    with patched(CFG.photometry, CUTOUT_ROOTS=dict(CFG.photometry.CUTOUT_ROOTS, snapshot=served_cut),
+                 OUT_ROOT=dict(CFG.photometry.OUT_ROOT, snapshot=served_out)):
         rc, txt = step(argv + ['--cells', '%s_%s' % (CUT_CELL, CUT_SB), '--dry-run'])
         check('N1 dry run of the verifier\'s reproduction (--in-place, one band of the cell): the cutouts stage would refuse '
               'C-INPLACE (whole cells), exit 2', rc == 2 and 'WOULD REFUSE C-INPLACE' in txt and 'whole cells' in txt,
@@ -3271,7 +3326,8 @@ def tier_review_fixes(adhoc, root, tout, out):
     # ---- F4: the served roots only with --in-place, the measurement chained (served roots patched to scratch here)
     sc, sf, sp = (os.path.join(TMP, 'served_tier', x) for x in ('photometry_genS', 'forced_tiers_genS', 'planets_genS'))
     base = ['photometry', '--tier', 'deep', '--cells', TIER_CELL, '--out', out, '--cores', 'none']
-    with patched(CFG.photometry, CUTOUT_ROOT=sc, TIER_FORCED_ROOTS={'HWJ': sf, '10pc': sf, 'LPT': sf, 'SolarSystem': sp}):
+    with patched(CFG.photometry, CUTOUT_ROOTS=dict(CFG.photometry.CUTOUT_ROOTS, deep=sc, sublst=sc),
+                 TIER_FORCED_ROOTS={'HWJ': sf, '10pc': sf, 'LPT': sf, 'SolarSystem': sp}):
         for extra, what in ((['--stages', 'cutouts'], 'tier cutouts into the served cutout root without --in-place'),
                             (['--stages', 'cutmeasure'], 'cutmeasure into the served tier forced roots without --in-place'),
                             (['--stages', 'cutouts', '--in-place'], '--in-place tier cutouts without cutmeasure chained'),
@@ -3287,6 +3343,12 @@ def tier_review_fixes(adhoc, root, tout, out):
                              '--in-place without a cutouts / cutmeasure stage')):
             rc, txt = step(base + extra + ['--dry-run'])
             check('C-INPLACE (review F4): %s refuses (dry run, exit 2)' % what, rc == 2 and 'C-INPLACE' in txt, txt[-700:])
+        # PR 195 review item 10: the tier stage resolves its cutout root inside its gates - a tier with no served root
+        # (C-TIER-ROOT) is a refusal the dry run plans (exit 2), never an exception before the plan
+        with patched(CFG.photometry, CUTOUT_ROOTS={k: v for k, v in CFG.photometry.CUTOUT_ROOTS.items() if k != 'deep'}):
+            rc, txt = step(base + ['--stages', 'cutouts', '--dry-run'])
+        check('tier cutouts --dry-run with no served cutout root for deep: WOULD REFUSE C-TIER-ROOT planned, exit 2, no '
+              'traceback', rc == 2 and 'WOULD REFUSE C-TIER-ROOT' in txt and 'Traceback' not in txt, (rc, txt[-600:]))
         rc, txt = step(base + ['--stages', 'cutouts,cutmeasure', '--in-place', '--dry-run'])
         check('C-INPLACE: --in-place --stages cutouts,cutmeasure (into the served roots, cutmeasure chained) is planned (dry run, '
               'exit 0)', rc == 0 and 'WOULD REFUSE' not in txt and '[cutmeasure]' in txt, txt[-700:])
@@ -3498,12 +3560,12 @@ def test_adhoc_and_selection(objs):
         rc, txt = step(base + ['--stages', 'measure', '--targets', spec, '--cutout-root', ah_root, '--dry-run'])
         check('PHOT-ADHOC: --targets %s refuses' % what, rc == 2 and 'PHOT-ADHOC' in txt, txt[-500:])
     served_tmp = os.path.join(TMP, 'served_gen_tmp')
-    with patched(CFG.photometry, CUTOUT_ROOT=served_tmp):
+    with patched(CFG.photometry, CUTOUT_ROOTS=dict(CFG.photometry.CUTOUT_ROOTS, snapshot=served_tmp)):
         rc, txt = step(['photometry'] + CUT_COMMON + ['--cells', '%s_%s' % (CUT_CELL, CUT_SB), '--targets', 'ADHOC=%s' % adhoc,
                                                       '--cutout-root', served_tmp, '--out', CUT_OUT, '--dry-run'])
     check('PHOT-ADHOC: an ad-hoc cutout run into the served generation\'s root refuses (dry run, exit 2)',
           rc == 2 and 'PHOT-ADHOC' in txt and 'served generation' in txt, txt[-500:])
-    with patched(CFG.photometry, CUTOUT_ROOT=served_tmp):
+    with patched(CFG.photometry, CUTOUT_ROOTS=dict(CFG.photometry.CUTOUT_ROOTS, snapshot=served_tmp)):
         rc, txt = step(['photometry'] + CUT_COMMON + ['--cells', '%s_%s' % (CUT_CELL, CUT_SB), '--targets', 'ADHOC=%s' % adhoc,
                                                       '--cutout-root', os.path.join(served_tmp, 'adhoc'), '--out', CUT_OUT,
                                                       '--dry-run'])
@@ -3523,7 +3585,8 @@ def test_adhoc_and_selection(objs):
     snap = ['photometry', '--tier', 'snapshot', '--cores', 'none', '--set', 'paths.SNAPSHOT_CUBES_ROOT=%s' % CUBES, '--set',
             'paths.OPS_ROOT=%s' % CUT_OPS, '--cells',
             CUT_CELL, '--work', WORK, '--dry-run']        # a whole cell: --in-place regenerates whole cells (N1)
-    with patched(CFG.photometry, CUTOUT_ROOT=served_tmp, OUT_ROOT=dict(CFG.photometry.OUT_ROOT, snapshot=served_out)):
+    with patched(CFG.photometry, CUTOUT_ROOTS=dict(CFG.photometry.CUTOUT_ROOTS, snapshot=served_tmp),
+                 OUT_ROOT=dict(CFG.photometry.OUT_ROOT, snapshot=served_out)):
         for extra, what in ((['--stages', 'cutouts', '--out', served_out], 'into the served cutout root without --in-place'),
                             (['--stages', 'cutouts', '--in-place', '--out', served_out],
                              '--in-place without the measure stage chained'),
@@ -3591,8 +3654,9 @@ def main():
     make_snapshot(objs)
     test_gates()
     test_deep_e2e(excluded)
-    test_snapshot_e2e()
-    test_negative()
+    with syn_world():
+        test_snapshot_e2e()
+        test_negative()
     test_served_generation()
     test_cutout_root_one_source()
     test_cutout_mirrors()

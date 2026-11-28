@@ -764,9 +764,13 @@ class catalog_snapshot(_Section):
     INC_PREFIT_TIMEOUT_H = 6                              # h per prefit-list pass; snapshot_cell_prefit.sh:153 PREFIT_TIMEOUT 6h [step]
     INC_FORCED_STATE_DIR = '/lustre/gh/main/exopipe_ops/snapshot_forced_state'   # forced photometry stage 1 markers done/<cell>,
                                                           # failed/<cell>, claims/<cell> (read only; gate SI-G8); prestage.sh:55 FST,
-                                                          # :61, :83; snapshot_cell_prefit.sh:74, :115-121 (Gregg 2026-10-04). The
-                                                          # gen5 state: it must follow gen6 when gen6 becomes the production
-                                                          # generation [step]
+                                                          # :61, :83; snapshot_cell_prefit.sh:74, :115-121 (Gregg 2026-10-04). It is
+                                                          # NOT a generation's state: production's prestage reads this un-suffixed
+                                                          # directory, the per-hour fleet's own (snapshot_forced_fleet.sh, its
+                                                          # stage 1 default snapshot_forced/stage1); generation 5's is
+                                                          # snapshot_forced_state_gen5, generation 6's snapshot_forced_state_gen6
+                                                          # and _gen6_wb (gen6_forced_stages_DRAFT.sh:32). Unchanged at the gen6
+                                                          # switch: production's gate did not change [step]
     INC_PREFIT_MAX_FAILS = 3                              # THE ATTEMPT CAP: a cell with this many lines in <out>/cells/<cell>/
                                                           # PREFIT_FAILS is parked (gate SI-G12); on the production root every failed
                                                           # attempt after the claim appends one line, none under a stop file;

@@ -95,7 +95,7 @@ SELECTORS = ('tier', 'cells', 'lsts', 'nights', 'stokes', 'run_label', 'exclude_
 CONFIG = ('archive', 'archive_quarantine', 'archive_sync', 'archive_retire', 'archive_push', 'archive_snapshot',
           'archive_rollback', 'paths', 'exclusions', 'instrument', 'runner', 'site',
           'masters_admit',                  # ADMITTED_NIGHTS: the quarantine precheck's reading of admitted nights (G7)
-          'photometry')                     # CUTOUT_ROOT / RETIRED_CUTOUT_ROOTS: supersede's default photometry cutout root
+          'photometry')                     # CUTOUT_ROOTS[snapshot] / RETIRED_CUTOUT_ROOTS: supersede's default photometry cutout root
 WRITES = True
 SPACE_GATED_ACTIONS = ('push', 'sync')   # the actions that copy new bytes into the archive (cli's space gate, space_gate below)
 
@@ -207,7 +207,7 @@ def add_arguments(p):
                         'hybrid: the hybrid step\'s --out (its tilefill records)')
     g.add_argument('--workdir', help='supersede: the frame-time work directory W (W/out, W/cutouts; {cell} expanded)')
     g.add_argument('--ship-root', help='supersede: live per-cell tree (default paths.SNAPSHOT_FLEET_OUT)')
-    g.add_argument('--phot-root', help='supersede: photometry cutout root (default photometry.CUTOUT_ROOT, the served '
+    g.add_argument('--phot-root', help='supersede: photometry cutout root (default photometry.CUTOUT_ROOTS[snapshot], the served '
                                        'generation; a retired one refuses)')
     g.add_argument('--quar-root', help='supersede: quarantine root (default archive_snapshot.FRAMETIME_QUARANTINE_ROOT)')
     g.add_argument('--stores', nargs='+', metavar='CSV', help='quarantine-rows: fit store files (default the --cells stores '

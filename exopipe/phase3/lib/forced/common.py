@@ -23,8 +23,8 @@ STEERING = {
     'forced_panels.TESS_OK',
     'forced_catflux.CATALOG_GLOB', 'forced_catflux.SURVIVORS_GLOB', 'forced_catflux.DONE_RE',
     'forced_catflux.RECHECK_ROWS', 'forced_catflux.RECHECK_SEED', 'forced_catflux.RECHECK_TOL_JY',
-    'forced_snapshot.WORK_ROOT', 'forced_snapshot.REVIEW_SUBDIR_UNDER_OUT', 'forced_snapshot.EVAL_SB',
-    'forced_snapshot.EVAL_WB', 'forced_snapshot.ZONE_FLAGS', 'forced_snapshot.PHOT_ROOT', 'forced_snapshot.STAGE1_ROOT',
+    'forced_snapshot.WORK_ROOT', 'forced_snapshot.REVIEW_SUBDIR_UNDER_OUT',
+    'forced_snapshot.GENERATION',               # the five roots of a generation (Derived from it, not settable themselves)
     'forced_snapshot.EPOCH_NAME', 'forced_snapshot.NPROC',
     'forced_snapshot.OK_LINES', 'forced_snapshot.REFASTRO_SCRATCH_PRODUCTION', 'forced_snapshot.LOC_COPY_BACK',
     'forced_snapshot.FLOW_ENV', 'forced_snapshot.EXCLUDED_EVENTS',
@@ -140,11 +140,20 @@ def legacy_code_changed(rec):
     return None
 
 
-def resumed(run, name, inputs, admitted=None, **meta):
+def resumed(run, name, inputs, admitted=None, identity=None, **meta):
     """--resume: True (and a 'skipped-valid' unit in the run summary; the done record stays as it is) when the record of
     ``name`` is done, its inputs, admitted nights, code (the step's modules AND the legacy code its children ran) and config
-    are unchanged, and its outputs pass their content tests now."""
+    are unchanged, its outputs pass their content tests now, and - ``identity`` {meta key: value} - each value equals the
+    record's meta (what the unit was made from that no config key names: a cutout root given by flag, a rule resolved from
+    the inputs). A record without one of them is not resumed."""
     if not run.resume:
+        return False
+    rec = record.load_record(run.out_root, run.step, name) if identity else None
+    rec_meta = (rec or {}).get('meta') or {}
+    diff = ['%s %r, now %r' % (k, rec_meta.get(k), v) for k, v in sorted((identity or {}).items())
+            if rec is not None and rec_meta.get(k) != v]
+    if diff:
+        print('resume %s: not skipped (the unit\'s identity changed: %s)' % (name, '; '.join(diff)), flush=True)
         return False
     ok, why = run.resume_check(name, inputs=inputs, admitted=admitted)
     if ok:

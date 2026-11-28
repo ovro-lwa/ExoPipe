@@ -1,5 +1,5 @@
 """`exopipe3 photometry --tier snapshot`: target photometry of the snapshot samples (photometry.SAMPLES_MEASURED['snapshot']:
-HWJ, 10 pc, LPT) on the photometry cutouts of the served generation (photometry.CUTOUT_ROOT; 10-s frames and 1-minute
+HWJ, 10 pc, LPT) on the photometry cutouts of the served generation (photometry.CUTOUT_ROOTS['snapshot']; 10-s frames and 1-minute
 blocks), then the evaluation of every measured cell.
 
 Stages (photometry.STAGES['snapshot']): cutouts (only when named: the 10-s cutouts regenerated from the consolidated flow
@@ -36,13 +36,13 @@ from exopipe.phase3.lib.photometry import steps_common as K
 
 
 def cutout_root(args):
-    """--cutout-root, else the served generation's cutouts (photometry.CUTOUT_ROOT; generation 4's PHASE3_ARCHIVE_ROOT/
-    photometry is retired)."""
-    return K.cutout_root(args)
+    """--cutout-root, else the served snapshot generation's cutouts (photometry.CUTOUT_ROOTS['snapshot']; generation 4's
+    PHASE3_ARCHIVE_ROOT/photometry is retired)."""
+    return K.cutout_root(args, 'snapshot')
 
 
 def stage1_root(run, args=None):
-    """Stage 1 of this run: <out>/photometry.STAGE1_DIR (production <OUT_ROOT[snapshot]>/stage1_gen5 since generation 5); a
+    """Stage 1 of this run: <out>/photometry.STAGE1_DIR (production <OUT_ROOT[snapshot]>/stage1_gen6 since generation 6); a
     campaign's: <out>/<its generation's directory> (photometry_campaign.STAGE1_DIR_FMT)."""
     if getattr(args, 'campaign', False):
         from exopipe.phase3.lib.photometry import campaign

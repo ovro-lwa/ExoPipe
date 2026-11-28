@@ -46,6 +46,11 @@ How to use
 - Ruled:     a section's ``RULED = {'KEY': 'ledger ID'}`` names the keys a ruling of Gregg's set. Overriding one needs
              ``--ruling-for section.KEY=<ledger ID>`` (the ID must be a row of ``paths.FIX_LEDGER``) or a ``--out``
              outside every production root; the override and its authority go into the run record.
+- Derived:   ``KEY = Derived(('section.INPUT', ...), fn)`` is computed WHEN READ, ``fn(*the inputs' current values)``:
+             nothing is stored, so every override of an input takes effect, in any order, through that input's own gates
+             (protected, ruled, check_out). A derived key itself is not settable (``--set`` refuses, naming its inputs).
+- Validated: a section's ``VALIDATE = {'KEY': fn}`` checks a key's value at config load and on every override (fn raises
+             ValueError; the override is undone and refused).
 
 Conventions
 -----------
@@ -71,9 +76,29 @@ import os
 import re
 
 
-_META = ('RULED', 'PROTECTED_KEYS', 'NULLABLE_KEYS')   # UPPER_CASE section attributes that DESCRIBE tunables; never tunables
-# NULLABLE_KEYS: the keys whose None is a value with a meaning (e.g. 'no cut', production's behavior) - an override may set
-# them to None; every other key refuses an override of another type than its value's
+_META = ('RULED', 'PROTECTED_KEYS', 'NULLABLE_KEYS', 'VALIDATE')   # UPPER_CASE section attributes that DESCRIBE tunables;
+# never tunables. NULLABLE_KEYS: the keys whose None is a value with a meaning (e.g. 'no cut', production's behavior) - an
+# override may set them to None; every other key refuses an override of another type than its value's. VALIDATE: {'KEY':
+# fn(value)} run at config load and after every override of KEY (a ValueError refuses it)
+_CFG = None                     # the one _Config, once built: Derived values read their inputs from it
+
+
+class Derived:
+    """A config value computed when it is read: ``fn(*values)``, the values of ``inputs`` ('section.KEY', every key it
+    depends on) as they are NOW - nothing is stored, so an override of any input takes effect whatever the order, and
+    each input keeps its own gates (protected, ruled, check_out). Not settable: _Config.set refuses it, naming the inputs."""
+
+    def __init__(self, inputs, fn):
+        self.inputs, self.fn, self.name = tuple(inputs), fn, None
+
+    def __set_name__(self, owner, name):
+        self.name = '%s.%s' % (owner.__name__, name)
+
+    def __get__(self, inst, owner):
+        if _CFG is None:
+            raise RuntimeError('config key %s is derived from %s and was read before the config loaded'
+                               % (self.name, ', '.join(self.inputs)))
+        return self.fn(*[_CFG.get(i) for i in self.inputs])
 
 
 
@@ -239,6 +264,30 @@ class _Config:
         self._undo = []              # [(section, key, previous value)] for reset()
         self._auth = {'rulings': {}, 'out': None, 'mode': 'run'}
 
+    def derived_keys(self):
+        """[(section name, section, key, Derived)] of every derived key (its .inputs: every key it is computed from)."""
+        return [(name, sec, key, d) for name, sec in sorted(self._sections.items())
+                for key, d in sorted(vars(sec).items()) if isinstance(d, Derived)]
+
+    def derived(self, dotted):
+        """The Derived of ``section.KEY`` (or of one entry of it), or None."""
+        sec, key, _ = _parse_key(dotted)
+        d = vars(self._section(sec)).get(key)
+        return d if isinstance(d, Derived) else None
+
+    def validate(self, dotted=None):
+        """Run the VALIDATE check of ``section.KEY`` (None: of every key that has one); ConfigRefusal names the failure."""
+        items = [_parse_key(dotted)[:2]] if dotted else [(n, k) for n, s in sorted(self._sections.items())
+                                                        for k in sorted(getattr(s, 'VALIDATE', None) or {})]
+        for sec, key in items:
+            fn = (getattr(self._section(sec), 'VALIDATE', None) or {}).get(key)
+            if fn is None:
+                continue
+            try:
+                fn(getattr(self._section(sec), key))
+            except ValueError as e:
+                raise ConfigRefusal(f'{sec}.{key}: {e}')
+
     def sections(self):
         return dict(self._sections)
 
@@ -349,6 +398,10 @@ class _Config:
         if not key.isupper() or key in _META or not hasattr(s, key):
             raise KeyError(f'unknown config key {dotted!r} (exopipe3 config --section {sec} lists the keys)')
         base = f'{sec}.{key}'
+        d = self.derived(base)
+        if d is not None:
+            raise ConfigRefusal(f'{base} is derived (computed when read from {", ".join(d.inputs)}): it is not settable - '
+                                f'set one of its inputs instead')
         if self.protected(base) and not getattr(self, 'parity_replay', False):
             raise ConfigRefusal(f'{base} is PROTECTED (config.PROTECTED / paths.PINNED_INPUTS): no --set or --config '
                                 f'can change it; it changes only by a commit to the file that holds it (exopipe3 config --section S names it; a --parity run '
@@ -374,6 +427,11 @@ class _Config:
                 _refuse_omitted(old, new, dotted)
             new_top = new
         setattr(s, key, new_top)
+        try:
+            self.validate(base)
+        except ConfigRefusal:
+            setattr(s, key, top)
+            raise
         self._undo.append((s, key, top))
         self.overrides.append((dotted, old, new, source, authority))
 
@@ -438,15 +496,16 @@ class _Config:
         except (OSError, TypeError):
             return '\n'.join(f'{k} = {v!r}' for k, v in sec.items())
         keys = [k for k, _ in sec.items()]
-        locked = {k for k in keys if self.protected(f'{section}.{k}')}
-        ruled = {k for k in keys if self.ruled(f'{section}.{k}')} - locked
+        derived = {k for k in keys if self.derived(f'{section}.{k}')}
+        locked = {k for k in keys if self.protected(f'{section}.{k}')} - derived
+        ruled = {k for k in keys if self.ruled(f'{section}.{k}')} - locked - derived
         out = [f'# {_where(sec)[0]}:{first} - section {section}: {len(keys)} keys; L = locked ({len(locked)}: changes only '
                f'by a commit), R = ruled ({len(ruled)}: an override needs --ruling-for SECTION.KEY=<ledger ID> or a '
-               f'non-production --out)']
+               f'non-production --out), D = derived ({len(derived)}: computed from its inputs, set those)']
         for line in lines:
             m = re.match(r'^ {4}([A-Z][A-Z0-9_]*)\s*=', line)
             k = m.group(1) if m else None
-            out.append(('L ' if k in locked else 'R ' if k in ruled else '  ') + line.rstrip('\n'))
+            out.append(('D ' if k in derived else 'L ' if k in locked else 'R ' if k in ruled else '  ') + line.rstrip('\n'))
         return '\n'.join(out)
 
     def _section(self, name):
@@ -608,6 +667,8 @@ def _collect():
 
 _load_step_configs()
 CFG = _Config(_collect())
+_CFG = CFG
+CFG.validate()                  # every VALIDATE check at load: a bad committed value fails every command loudly
 SITE_FILE = _load_site(CFG)
 # INJECTED RUNS (core/injected.py): a process started by an injected run (EXOPIPE3_INJECTED inherited) never writes production
 # products - paths.PRODUCTION_WRITES is False in it, whatever config/shared.py says (core/injected.begin does the same in the

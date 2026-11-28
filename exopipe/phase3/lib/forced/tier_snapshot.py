@@ -12,7 +12,8 @@ read; lwacalim07 today); the other stages run on any node that can read the inpu
 built it when it is node-local.
 
 Generation (--snap-generation GEN): the two evaluations, the zone flags, stage 1 and the cutouts of one cutout generation,
-named as the photometry step writes them (generation_roots; default the forced_snapshot keys, generation 5). G-GEN: the build
+named as the photometry step writes them (generation_roots; it sets forced_snapshot.GENERATION, a ruled key, and the five
+forced_snapshot roots are derived from it; default photometry.GENERATIONS['snapshot'], generation 6). G-GEN: the build
 refuses evaluations made from another stage 1 than the one the panels read (their evaluate record, else their sibling
 stage1_<tag>), and an evaluation with neither (unknown provenance). Generation 6 measures LPT besides HWJ and 10 pc (photometry.SAMPLES_MEASURED): its events are built and
 rendered like the others, and the served catalogue lists them under the sample 'FORCED TARGET LPT'.
@@ -53,8 +54,9 @@ def add_arguments(p):
                    help='the cutout generation the run is built from (gen5, gen6, ...): its two evaluations, zone flags, '
                         'stage 1 and cutouts (generation_roots: photometry_evaluate.EVAL_DIR and ZONE_FLAGS_FILE with tag GEN '
                         'under photometry.OUT_ROOT[snapshot], photometry_campaign.STAGE1_DIR_FMT and CUTOUT_ROOT_FMT); '
-                        'default the forced_snapshot keys (the served generation). Not with --snap-eval-sb/-wb, '
-                        '--snap-zone-flags or a --set of those keys')
+                        'default the served generation (photometry.GENERATIONS[snapshot]). Sets forced_snapshot.GENERATION, '
+                        'a ruled key: another generation than the served one needs --ruling-for or a non-production --out. '
+                        'Not with --snap-eval-sb/-wb, --snap-zone-flags or a --set of forced_snapshot.GENERATION')
     g.add_argument('--snap-review-root', metavar='DIR',
                    help='review root under a non-production --out (default <out>/review); production: '
                         'paths.SNAPSHOT_REVIEW_ROOT')
@@ -81,40 +83,42 @@ GENERATION_KEYS = ('EVAL_SB', 'EVAL_WB', 'ZONE_FLAGS', 'STAGE1_ROOT', 'PHOT_ROOT
 
 
 def generation_roots(gen):
-    """{forced_snapshot key: path} of cutout generation ``gen``, named as the photometry step writes them: the evaluations
-    <photometry.OUT_ROOT[snapshot]>/<photometry_evaluate.EVAL_DIR[sb|wb] with tag gen>, the zone flags <...>/<ZONE_FLAGS_FILE>,
-    stage 1 <...>/<photometry_campaign.STAGE1_DIR_FMT> and the cutouts photometry_campaign.CUTOUT_ROOT_FMT. Generation 5 gives
-    the forced_snapshot keys as configured (tests/test_forced.py checks it)."""
-    c = K.cfg()
-    ev, cc = c.photometry_evaluate, c.photometry_campaign
-    if not gen or not all(ch.isalnum() or ch in '-.' for ch in gen):
-        raise Refusal('--snap-generation %r: a generation tag (letters, digits, - or .), e.g. gen6' % gen)
-    root = c.photometry.OUT_ROOT['snapshot']
-    return {'EVAL_SB': os.path.join(root, ev.EVAL_DIR['sb'].format(tag=gen)),
-            'EVAL_WB': os.path.join(root, ev.EVAL_DIR['wb'].format(tag=gen)),
-            'ZONE_FLAGS': os.path.join(root, ev.ZONE_FLAGS_FILE.format(tag=gen)),
-            'STAGE1_ROOT': os.path.join(root, cc.STAGE1_DIR_FMT.format(generation=gen)),
-            'PHOT_ROOT': cc.CUTOUT_ROOT_FMT.format(generation=gen)}
+    """{forced_snapshot key: path} of cutout generation ``gen``, named as the photometry step writes them (config forced.
+    snapshot_generation_roots: the evaluations <photometry.OUT_ROOT[snapshot]>/<photometry_evaluate.EVAL_DIR[sb|wb] with tag
+    gen>, the zone flags <...>/<ZONE_FLAGS_FILE>, stage 1 <...>/<photometry_campaign.STAGE1_DIR_FMT> and the cutouts
+    photometry_campaign.CUTOUT_ROOT_FMT). The forced_snapshot keys are this of forced_snapshot.GENERATION, None = photometry.
+    GENERATIONS['snapshot'] (Derived; tests/test_photometry_snapshot_stage2.py, tests/test_served_generation_roots.py)."""
+    from exopipe.phase3.config.steps.forced import snapshot_generation_roots
+    from exopipe.phase3.config.steps.photometry import is_generation
+    try:
+        is_generation(gen)
+    except ValueError as e:
+        raise Refusal('--snap-generation: %s, e.g. gen6' % e)
+    return snapshot_generation_roots(gen)
 
 
 def apply_generation(args):
-    """--snap-generation: set the five forced_snapshot keys of the generation (recorded as overrides with that source, so
-    every record of the run names them). Refuses a mix with the per-path flags or a --set/--config of those keys."""
+    """--snap-generation: forced_snapshot.GENERATION = the tag (an override with that source, so every record of the run names
+    it), unless that generation is in force already; the five forced_snapshot keys follow it (Derived). The key's RULED gate
+    applies (another generation than the served one: --ruling-for or a non-production --out). Refuses a mix with the
+    per-path flags or a --set/--config of forced_snapshot.GENERATION."""
+    from exopipe.phase3.config import ConfigRefusal
     gen = getattr(args, 'snap_generation', None)
     if not gen:
         return None
     c = K.cfg()
     flags = [f for f, v in (('--snap-eval-sb', args.snap_eval_sb), ('--snap-eval-wb', args.snap_eval_wb),
                             ('--snap-zone-flags', args.snap_zone_flags)) if v]
-    sets = sorted({o[0] for o in c.overrides if o[0].split('[', 1)[0] in {'forced_snapshot.' + k for k in GENERATION_KEYS}
-                   and o[3] != '--snap-generation'})
+    sets = sorted({o[0] for o in c.overrides if o[0] == 'forced_snapshot.GENERATION' and o[3] != '--snap-generation'})
     if flags or sets:
         raise Refusal('--snap-generation %s names the evaluations, zone flags, stage 1 and cutouts together; not with %s'
                       % (gen, ', '.join(flags + sets)))
     roots = generation_roots(gen)
-    for k in GENERATION_KEYS:
-        if getattr(c.forced_snapshot, k) != roots[k]:
-            c.set('forced_snapshot.%s' % k, roots[k], source='--snap-generation')
+    if (c.forced_snapshot.GENERATION or c.photometry.GENERATIONS['snapshot']) != gen:
+        try:
+            c.set('forced_snapshot.GENERATION', gen, source='--snap-generation')
+        except ConfigRefusal as e:
+            raise Refusal('--snap-generation %s: %s' % (gen, e))
     return roots
 
 

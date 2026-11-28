@@ -110,10 +110,16 @@ def catdir(path):
         fa.CATDIR = old
 
 
+def rname(s_, c_):
+    """the served forced run of (Stokes, cadence): forced_wide.RUN_NAME with the generation of the cadence's tier"""
+    from exopipe.phase3.lib.forced import wide_jobs as WJ
+    return WJ.run_name(s_, c_)
+
+
 def runs8(root):
     """the eight forced run directories (empty) under root: a host-independent --wide-runs for dry runs"""
     for s_, c_ in CFG.forced_wide.AMBIGUOUS_RUNS:
-        os.makedirs(os.path.join(root, CFG.forced_wide.RUN_NAME.format(S=s_, cadence=c_)), exist_ok=True)
+        os.makedirs(os.path.join(root, rname(s_, c_)), exist_ok=True)
     return root
 
 
@@ -278,8 +284,12 @@ def test_method_truth():
     bad = [(k, se.get(k), v) for k, v in pairs if se.get(k) != v]
     check('forced_wide_search = forced_wide_search.py\'s literals', not bad, bad)
     ssrc = open(os.path.join(fw, 'forced_wide_search.py')).read()
-    check("MINUTE_RULE = the search's default 'filename'", "os.environ.get('FW_MINUTE_RULE', 'filename')" in ssrc
-          and s.MINUTE_RULE == 'filename')
+    check("the minute rules are production's FW_MINUTE_RULE values (its default 'filename' gen5's, 'midpoint' gen6's, whose "
+          "files' minute_basis is integration-midpoint-dateobs-v1); MINUTE_RULE None = the rule of the inputs (W-MINUTE)",
+          "os.environ.get('FW_MINUTE_RULE', 'filename')" in ssrc
+          and "if MINUTE_RULE == 'filename' else SS.integration_minute_key(dobs[i])" in ssrc and s.MINUTE_RULE is None
+          and s.MINUTE_BASIS_RULE == {'': 'filename', 'integration-midpoint-dateobs-v1': 'midpoint'}
+          and s.MINUTE_RULE_OF_GENERATION == {'gen5': 'filename', 'gen6': 'midpoint'}, (s.MINUTE_RULE, s.MINUTE_BASIS_RULE))
     v2 = _assigns(os.path.join(fw, 'forced_wide_analyze.py'))
     pairs = [('CTL_FLUX', t.V2_CTL_FLUX), ('CTL_BRIGHTER', t.V2_CTL_BRIGHTER), ('CTL_MIN_CELLS', t.V2_CTL_MIN_CELLS),
              ('CTL_MIN_N', t.V2_CTL_MIN_N), ('MIN_CELLS_DECIDE', t.V2_MIN_NIGHTS),
@@ -366,7 +376,7 @@ def test_cli_gates():
     check('cli: --stokes refused for W (use --wide-only)', rc == 2 and '--wide-only' in err, err[-300:])
     r8 = runs8(os.path.join(TMP, 'runs8'))
     for s_, c_ in CFG.forced_wide.RUNS:                # the publication's run directories under <out>/review (a clean dry run)
-        os.makedirs(os.path.join(out, 'review', CFG.forced_wide.RUN_NAME.format(S=s_, cadence=c_)), exist_ok=True)
+        os.makedirs(os.path.join(out, 'review', rname(s_, c_)), exist_ok=True)
     rc, err = cli(base + ['--stages', 'wide_jobs,wide_search,wide_test,wide_publish', '--wide-runs', r8, '--dry-run'])
     check('cli: W dry run exit 0, plans every stage', rc == 0 and all(('[%s]' % s) in _LAST_OUT[0] for s in
                                                                       ('wide_jobs', 'wide_search', 'wide_test', 'wide_publish')),
@@ -433,7 +443,7 @@ def test_cli_gates():
     res = os.path.join(out, 'results_v3.csv')
     fake_record(out, 'W_test', [(res, 'forced_wide_results')], meta={'partial': True, 'only': ['I:X']})
     rc, err = cli(base + ['--stages', 'wide_publish'])
-    r = rec(out, 'W_publish_Run_SNAPFORCED_I10s_gen5')
+    r = rec(out, 'W_publish_Run_SNAPFORCED_I10s_gen6')
     check('cli: W-PARTIAL a partial test is never published', rc == 2 and 'W-PARTIAL' in r.get('reason', ''),
           (rc, r.get('reason')))
 
@@ -459,29 +469,29 @@ def test_publish():
     fake_record(out, 'W_test', [(res, 'forced_wide_results')], meta={'partial': False})
     base = ['forced', '--tier', 'snapshot', '--cores', 'none', '--out', out, '--stages', 'wide_publish']
     rc, err = cli(base, env={'P3_RADIO_CATDIR': '/tmp/x'})
-    r = rec(out, 'W_publish_Run_SNAPFORCED_I10s_gen5')
+    r = rec(out, 'W_publish_Run_SNAPFORCED_I10s_gen6')
     check('cli: W-ENV wide_publish refuses a caller P3_RADIO_CATDIR (review F4)', rc == 2 and 'W-ENV' in r.get('reason', ''),
           (rc, r.get('reason')))
     with catdir('/tmp/not_the_radio_catalogues'):
         rc, err = cli(base)
-    r = rec(out, 'W_publish_Run_SNAPFORCED_I10s_gen5')
+    r = rec(out, 'W_publish_Run_SNAPFORCED_I10s_gen6')
     check('cli: W-CATDIR wide_publish refuses catalogues other than forced_assoc.RADIO_CATDIR (review F4)',
           rc == 2 and 'W-CATDIR' in r.get('reason', ''), (rc, r.get('reason')))
     rc, err = cli(base)
-    r = rec(out, 'W_publish_Run_SNAPFORCED_I10s_gen5')
+    r = rec(out, 'W_publish_Run_SNAPFORCED_I10s_gen6')
     check('cli: W-RUNDIR the run directory absent at the review root', rc == 2 and 'W-RUNDIR' in r.get('reason', ''),
           (rc, r.get('reason')))
     for s_, c_ in CFG.forced_wide.RUNS:
-        os.makedirs(os.path.join(out, 'review', CFG.forced_wide.RUN_NAME.format(S=s_, cadence=c_)), exist_ok=True)
+        os.makedirs(os.path.join(out, 'review', rname(s_, c_)), exist_ok=True)
     rc, err = cli(base)
-    p = os.path.join(out, 'review', 'Run_SNAPFORCED_I10s_gen5', 'forced_wide_v3.csv')
+    p = os.path.join(out, 'review', 'Run_SNAPFORCED_I10s_gen6', 'forced_wide_v3.csv')
     got = list(csv.DictReader(open(p))) if os.path.exists(p) else []
     check('cli: publish done (exit 0), the I 10 s file holds the row', rc == 0 and len(got) == 1, (rc, err[-300:]))
     check('named_radec = the served file\'s for KELT-24 (the named sources found by name within 200\')',
           got and got[0]['named_radec'] == KELT24_RADEC, got[0]['named_radec'] if got else None)
-    empty = list(csv.DictReader(open(os.path.join(out, 'review', 'Run_SNAPFORCED_V1min_gen5', 'forced_wide_v3.csv'))))
+    empty = list(csv.DictReader(open(os.path.join(out, 'review', 'Run_SNAPFORCED_V1min_gen6', 'forced_wide_v3.csv'))))
     check('a run without rows gets the header only (as production)', empty == [])
-    r = rec(out, 'W_publish_Run_SNAPFORCED_I10s_gen5')
+    r = rec(out, 'W_publish_Run_SNAPFORCED_I10s_gen6')
     check('publish record done, its output passed its content test', r.get('status') == 'done' and r['tests']
           and all(x['passed'] for x in r['tests']), r.get('reason'))
     # the content test refuses a row whose named source lies elsewhere
@@ -494,7 +504,7 @@ def test_publish():
     # publishing again: the file it replaces is backed up beside it (<file>.bak_<UTC>), its sha1 and the new one's recorded
     before = open(p, 'rb').read()
     rc, err = cli(base + ['--fresh'])
-    r = rec(out, 'W_publish_Run_SNAPFORCED_I10s_gen5')
+    r = rec(out, 'W_publish_Run_SNAPFORCED_I10s_gen6')
     m = r.get('meta') or {}
     bak = m.get('backup') or ''
     import hashlib
@@ -516,7 +526,7 @@ def test_publish():
             rc, err = cli(base + ['--fresh'])
         finally:
             PL.target_attrs = real
-        r = rec(out, 'W_publish_Run_SNAPFORCED_I10s_gen5')
+        r = rec(out, 'W_publish_Run_SNAPFORCED_I10s_gen6')
         m = r.get('meta') or {}
         names = os.listdir(rd)
         gone = m.get('backup_removed') or ''
@@ -538,7 +548,7 @@ def test_publish():
     row2 = dict(row, named="VLSSr J000000.0+000000 9.9 Jy at 31.3'")
     write_csv(res, [row2], list(RESULT_COLUMNS))
     rc, err = cli(base + ['--fresh'])
-    r = rec(out, 'W_publish_Run_SNAPFORCED_I10s_gen5')
+    r = rec(out, 'W_publish_Run_SNAPFORCED_I10s_gen6')
     check('cli: W-NAMED a named source not found around its target refuses', rc == 2 and 'W-NAMED' in r.get('reason', ''),
           (rc, r.get('reason')))
 
@@ -1192,14 +1202,29 @@ def test_search_functions():
         dx, dy = WS.interp2d(b, c)
         err.append(max(abs(dx - x0), abs(dy - y0)))
     check('interp2d exact on a rotated elliptical Gaussian', max(err) < 1e-6, max(err))
-    # gen5's 1-minute blocks: the file-name minute, >= 3 admitted frames, averaged
+    # the 1-minute blocks: >= 3 admitted frames of one minute, averaged
     cube = np.arange(6 * 4, dtype=np.float32).reshape(6, 2, 2)
     ts = ['20250101_010001', '20250101_010011', '20250101_010021', '20250101_010101', '20250101_010111', '20250101_010121']
     adm = np.array([1, 1, 1, 1, 1, 0], bool)
+    import types
     WS._E['SS'] = None
-    keys, blk = WS.blocks_1min(cube, ts, adm, ts, c)
-    check('blocks_1min: one block of the minute holding >= 3 admitted frames, its mean, key + 00',
+    keys, blk = WS.blocks_1min(cube, ts, adm, ts, types.SimpleNamespace(MINUTE_RULE='filename',
+                                                                         BLOCK_MIN_FRAMES=c.BLOCK_MIN_FRAMES))
+    check("blocks_1min, MINUTE_RULE 'filename' (gen5): one block of the minute holding >= 3 admitted frames, its mean, key + 00",
           keys == ['20250101_010000'] and np.array_equal(blk[0], cube[:3].mean(0)), (keys, blk))
+    # gen6's (the served generation; rule 'midpoint', wide_stages.minute_rule of its stage 1): the integration midpoint's
+    # minute (phase3_snapshot_search.integration_minute_key in place, stubbed here)
+    mid = dict(zip(ts, ['20250101_0100'] * 2 + ['20250101_0101'] * 4))
+    WS._E['SS'] = types.SimpleNamespace(integration_minute_key=lambda d: mid[d])
+    keys, blk = WS.blocks_1min(cube, ts, adm, ts, c, 'midpoint')
+    check("blocks_1min, rule 'midpoint' (gen6): keyed by the midpoint minute - frames 2-4, not the file-name minute's 0-2",
+          keys == ['20250101_010100'] and np.array_equal(blk[0], cube[2:5].mean(0)), (keys, blk))
+    try:
+        WS.blocks_1min(cube, ts, adm, ts, c)
+        ok = False
+    except ValueError as e:
+        ok = 'W-MINUTE' in str(e)
+    check('blocks_1min with no rule (MINUTE_RULE None, none passed) refuses W-MINUTE: never a default minute', ok)
     WS._E.pop('SS', None)
     # the product: deterministic bytes, its content test
     out = os.path.join(TMP, 'npz')
@@ -1221,6 +1246,202 @@ def test_search_functions():
     WS.write_npz(b, [('19h_2025-05-05',) + rows[0][1:]], ftab, 2)
     t = validate.run('forced_wide_bursts', b, stokes='I', identity='X', band='27MHz')
     check('bursts content test fails a peak of a file that was not searched', not all(x['passed'] for x in t))
+
+
+def test_minute_rule():
+    """W-MINUTE: the run's 1-minute rule is the generation's of the cutouts searched (wide_stages.minute_rule: the cutout root's
+    real path names it; forced_wide_search.MINUTE_RULE_OF_GENERATION - gen5 'filename', gen6 'midpoint'), with no --set and no
+    file read; a configured value that differs refuses, each direction; a root that names no generation, a link whose name
+    and real path name different generations (W-CUTROOT), and an absent stage 1 refuse. Every unit then checks each cell it
+    searches against that cell's own stage-1 npz (wide_search.minute_basis): unreadable or of another rule refuses the whole
+    unit (search_job: nothing placed). --resume: the cutout root's real path and the rule are the unit's identity. A synthetic
+    world (photometry.OUT_ROOT[snapshot] -> TMP, in memory: the key is PROTECTED, no --set) and, where readable, production's
+    stage 1 (one cell's npz per generation)."""
+    import types
+    from exopipe.phase3.lib.forced import wide_search as WS
+    from exopipe.phase3.lib.forced import wide_stages as WST
+    W = os.path.join(TMP, 'minute_rule')
+    sf = os.path.join(W, 'snapshot_forced')
+    roots = {g: os.path.join(W, 'photometry_%s' % g) for g in ('gen5', 'gen6')}
+    npz = CFG.forced_wide_search.STAGE1_NPZ.format(sample='HWJ', band='18MHz', S='I')
+    for g, mb in (('gen5', None), ('gen6', 'integration-midpoint-dateobs-v1')):
+        os.makedirs(roots[g])
+        for cell in ('04h_2025-01-06', '18h_2025-04-11'):
+            d = os.path.join(sf, 'stage1_%s' % g, cell)
+            os.makedirs(d)
+            kw = {'ts': np.array(['20250101_010001'])}
+            if mb:
+                kw['minute_basis'] = np.array(mb)
+            np.savez(os.path.join(d, npz), **kw)
+
+    @contextlib.contextmanager
+    def synthetic_out_root():
+        old = CFG.photometry.OUT_ROOT
+        CFG.photometry.OUT_ROOT = dict(old, snapshot=sf)
+        try:
+            yield
+        finally:
+            CFG.photometry.OUT_ROOT = old
+
+    def resolve(root, rule=None):
+        CFG.reset()
+        if rule:
+            CFG.set('forced_wide_search.MINUTE_RULE', rule, source='test')
+        try:
+            with synthetic_out_root():
+                return WST.minute_rule(types.SimpleNamespace(ws=CFG.forced_wide_search, cfg=CFG, cutout_root=root))
+        except record.Refusal as e:
+            return 'REFUSED', str(e)
+        finally:
+            CFG.reset()
+    r = resolve(roots['gen5'])
+    check("W-MINUTE: a gen5 replay (--wide-cutout-root photometry_gen5, no --set) gets 'filename', gen5's rule, and its "
+          "stage 1 stage1_gen5 to check each cell against - falsifies a rule fixed at gen6's 'midpoint'",
+          r[0] == 'filename' and r[2] == os.path.join(sf, 'stage1_gen5') and 'MINUTE_RULE_OF_GENERATION' in r[1], r)
+    r = resolve(roots['gen6'])
+    check("W-MINUTE: gen6 cutouts get 'midpoint' and stage1_gen6 - falsifies a rule fixed at gen5's 'filename'",
+          r[0] == 'midpoint' and r[2] == os.path.join(sf, 'stage1_gen6'), r)
+    r = resolve(roots['gen5'], 'midpoint')
+    check("W-MINUTE: gen5 cutouts with MINUTE_RULE 'midpoint' configured refuse (the gen6 rule on gen5's blocks)",
+          r[0] == 'REFUSED' and 'W-MINUTE' in r[1] and "'filename'" in r[1], r)
+    r = resolve(roots['gen6'], 'filename')
+    check("W-MINUTE: gen6 cutouts with MINUTE_RULE 'filename' configured refuse (the gen5 rule on gen6's blocks)",
+          r[0] == 'REFUSED' and 'W-MINUTE' in r[1] and "'midpoint'" in r[1], r)
+    r = resolve(roots['gen6'], 'midpoint')
+    check("W-MINUTE: a configured value equal to the generation's passes", r[0] == 'midpoint' and 'configured' in r[1], r)
+    copy = os.path.join(W, 'cutout_copy')
+    os.makedirs(copy)
+    r, r2 = resolve(copy), resolve(copy, 'filename')
+    check('W-MINUTE: a root that names no generation refuses, with or without a configured rule (no stage 1 to check its '
+          'cells against; never a fallback)', r[0] == 'REFUSED' and 'names no generation' in r[1] and r2[0] == 'REFUSED'
+          and 'names no generation' in r2[1], (r, r2))
+    link = os.path.join(W, 'served')
+    os.symlink(roots['gen5'], link)
+    r = resolve(link)
+    check("W-MINUTE: a link to photometry_gen5 is gen5's ('filename', by its real path)", r[0] == 'filename', r)
+    lies = os.path.join(W, 'links', 'photometry_gen6')
+    os.makedirs(os.path.dirname(lies))
+    os.symlink(roots['gen5'], lies)
+    r = resolve(lies)
+    check('W-CUTROOT: a link named photometry_gen6 whose real path is photometry_gen5 refuses, naming both (cutout_generation '
+          'by the real path first)', r[0] == 'REFUSED' and 'W-CUTROOT' in r[1] and 'names gen6' in r[1] and 'gen5' in r[1], r)
+    os.remove(lies)
+    os.symlink(copy, lies)
+    r = resolve(lies)
+    check('W-CUTROOT: a link named photometry_gen6 to a copy that names no generation refuses', r[0] == 'REFUSED'
+          and 'W-CUTROOT' in r[1] and 'no generation' in r[1], r)
+    os.remove(lies)
+    gone = os.path.join(W, 'photometry_gen7')
+    os.makedirs(gone)
+    r = resolve(gone, 'midpoint')
+    check('W-MINUTE: a stage 1 that is absent refuses (every unit checks its cells there), the run plans it', r[0] == 'REFUSED'
+          and 'stage1_gen7' in r[1] and 'not readable' in r[1], r)
+    # each unit's cells against their own stage-1 npz (wide_search.minute_basis; cached per worker - cleared per check)
+
+    def basis(gen, cell, rule, sample='HWJ'):
+        WS._E.pop('BASIS', None)
+        try:
+            return WS.minute_basis(os.path.join(sf, 'stage1_%s' % gen), cell, sample, '18MHz', 'I', rule)
+        except WS.MinuteRefusal as e:
+            return 'REFUSED', str(e)
+    r5, r6 = basis('gen5', '04h_2025-01-06', 'filename'), basis('gen6', '04h_2025-01-06', 'midpoint')
+    check("minute_basis: a gen5 cell (no minute_basis member) under 'filename' and a gen6 cell "
+          "(integration-midpoint-dateobs-v1) under 'midpoint' pass", r5 == '' and r6 == 'integration-midpoint-dateobs-v1',
+          (r5, r6))
+    r = basis('gen5', '04h_2025-01-06', 'midpoint')
+    check("minute_basis: a gen5 cell under the run's 'midpoint' refuses W-MINUTE, naming the file",
+          r[0] == 'REFUSED' and 'W-MINUTE' in r[1] and os.path.join('stage1_gen5', '04h_2025-01-06', npz) in r[1], r)
+    r = basis('gen6', '04h_2025-01-06', 'midpoint', sample='LPT')
+    check('minute_basis: a cell without its stage-1 npz refuses (unreadable, naming the file) - no readable basis is never a '
+          'default', r[0] == 'REFUSED' and 'unreadable' in r[1] and 'forced_LPT_18MHz_I.npz' in r[1], r)
+    bad = os.path.join(sf, 'stage1_gen6', '18h_2025-04-11', npz)
+    with open(bad, 'wb') as f:
+        f.write(b'not an npz')
+    r = basis('gen6', '18h_2025-04-11', 'midpoint')
+    check('minute_basis: a corrupt stage-1 npz refuses, naming the file and the error', r[0] == 'REFUSED'
+          and 'unreadable' in r[1] and bad in r[1], r)
+    np.savez(bad, ts=np.array(['x']), minute_basis=np.array('some-other-basis'))
+    r = basis('gen6', '18h_2025-04-11', 'midpoint')
+    check('minute_basis: a basis of no known rule refuses', r[0] == 'REFUSED' and 'no rule' in r[1], r)
+    # search_job: one band's W-MINUTE refuses the whole unit before any band is placed
+    out = os.path.join(W, 'job_out')
+    os.makedirs(os.path.join(out, 'staging'))
+    jobs_path = os.path.join(out, 'jobs.json')
+    open(jobs_path, 'w').write('{}')
+    job = {'stokes': 'I', 'identity': 'X', 'target': 'X', 'sample': 'HWJ', 'T': [10.0, 20.0], 'bands': ['18MHz', '23MHz'],
+           'bright': []}
+    parts = {b: os.path.join(out, 'staging', WS.npz_name(job, b)) for b in job['bands']}
+    for p_ in parts.values():
+        np.savez(p_, x=np.zeros(1))
+
+    class Done:
+        def __init__(self, v):
+            self.v = v
+
+        def get(self):
+            return self.v
+    res = {b: dict(path=parts[b], cutout_dir=out, n_files=1, n_peaks=0, errors=[], nights=[], statuses={}, waited=0.0,
+                   listing=[], minute_bases={'': 1}) for b in job['bands']}
+    res['23MHz']['minute'] = 'W-MINUTE %s records minute_basis None (rule filename), but this run keys ... midpoint' % bad
+    run = record.Run('forced', ['test'], out, CFG)
+    c = types.SimpleNamespace(run=run, cfg=CFG, ws=CFG.forced_wide_search, bursts=os.path.join(out, 'bursts'),
+                              cutout_root=roots['gen6'], minute_rule='midpoint', minute_rule_how='test',
+                              minute_stage1=os.path.join(sf, 'stage1_gen6'))
+    WST.search_job(c, job, {(WST.search_unit(job), b): Done(v) for b, v in res.items()}, os.path.join(out, 'staging'),
+                   jobs_path)
+    r = rec(out, WST.search_unit(job))
+    check('search_job: one band\'s W-MINUTE refuses the whole unit - no band placed (18 MHz passed), every staged file removed',
+          r.get('status') == 'refused' and r.get('reason', '').startswith('W-MINUTE 1 of 2 band(s)')
+          and not os.path.exists(os.path.join(c.bursts, WS.npz_name(job, '18MHz')))
+          and not any(os.path.exists(p_) for p_ in parts.values()), (r.get('status'), r.get('reason')))
+    check('... the unit records its identity: the cutout root\'s real path, the rule and the stage 1 checked',
+          {k: (r.get('meta') or {}).get(k) for k in ('cutout_root_real', 'minute_rule', 'minute_stage1')}
+          == WST.search_identity(c), r.get('meta'))
+    # --resume: a unit searched on gen5 is not skipped when the run is on gen6 (same --out, same config)
+    fake_record(out, WST.search_unit(job), [], status='done', meta={
+        'cutout_root_real': os.path.realpath(roots['gen5']), 'minute_rule': 'filename',
+        'minute_stage1': os.path.join(sf, 'stage1_gen5')})
+    run_r = record.Run('forced', ['test'], out, CFG, resume=True)
+    run_r.resume_check = lambda name, inputs=None, admitted=None: (True, 'inputs, code and config unchanged (stubbed)')
+    c5 = types.SimpleNamespace(**dict(vars(c), run=run_r, cutout_root=roots['gen5'], minute_rule='filename',
+                                      minute_stage1=os.path.join(sf, 'stage1_gen5')))
+    c6 = types.SimpleNamespace(**dict(vars(c), run=run_r))
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        s6 = WST.search_resumed(c6, job)
+        s5 = WST.search_resumed(c5, job)
+    check('--resume: a unit of a gen5 search is not skipped by a gen6 run into the same --out (its identity changed: cutout '
+          'root, rule, stage 1), and is skipped by a gen5 one (the rest stubbed equal)', s6 is False and s5 is True
+          and "identity changed" in buf.getvalue() and 'photometry_gen6' in buf.getvalue(), (s6, s5, buf.getvalue()[-400:]))
+    # the stage plans it: a dry run of wide_search on the gen6 copy names the rule
+    out = os.path.join(W, 'w')
+    with synthetic_out_root():
+        rc, err = cli(['forced', '--tier', 'snapshot', '--cores', 'none', '--out', out, '--stages', 'wide_search', '--dry-run',
+                       '--wide-cutout-root', roots['gen6']])
+    check("dry run: wide_search plans the minute rule of the cutouts searched (gen6 copy: 'midpoint')",
+          rc == 0 and '1-minute blocks keyed by minute rule midpoint' in _LAST_OUT[0], (rc, err[-300:], _LAST_OUT[0][-400:]))
+    with synthetic_out_root():
+        rc, err = cli(['forced', '--tier', 'snapshot', '--cores', 'none', '--out', out, '--stages', 'wide_search', '--dry-run',
+                       '--wide-cutout-root', roots['gen6'], '--set', "forced_wide_search.MINUTE_RULE='filename'"])
+    check('dry run: a configured minute rule that differs from the generation\'s is planned as W-MINUTE, exit 2',
+          rc == 2 and 'W-MINUTE' in _LAST_OUT[0], (rc, _LAST_OUT[0][-300:]))
+    with synthetic_out_root():
+        rc, err = cli(['forced', '--tier', 'snapshot', '--cores', 'none', '--out', out, '--stages', 'wide_search', '--dry-run',
+                       '--wide-cutout-root', copy])
+    check('dry run: a cutout root that names no generation is planned as W-MINUTE, exit 2', rc == 2
+          and 'W-MINUTE' in _LAST_OUT[0] and 'names no generation' in _LAST_OUT[0], (rc, _LAST_OUT[0][-300:]))
+    # production: the served generations' own stage 1 (read where this node has them; one cell's npz each)
+    for g, want in (('gen5', 'filename'), ('gen6', 'midpoint')):
+        root = CFG.photometry_campaign.CUTOUT_ROOT_FMT.format(generation=g)
+        s1 = os.path.join(CFG.photometry.OUT_ROOT['snapshot'], CFG.photometry_campaign.STAGE1_DIR_FMT.format(generation=g))
+        if not os.path.isdir(s1):
+            print('NOTE  production %s not readable here: its minute rule not checked' % s1)
+            continue
+        r = WST.minute_rule(types.SimpleNamespace(ws=CFG.forced_wide_search, cfg=CFG, cutout_root=root))
+        WS._E.pop('BASIS', None)
+        mb = WS.minute_basis(r[2], '18h_2025-04-11', 'HWJ', '18MHz', 'I', r[0])
+        check('W-MINUTE production: %s -> %r, and a cell of %s (18h_2025-04-11, HWJ 18 MHz I) records basis %r of that rule'
+              % (root, want, s1, mb), r[0] == want and r[2] == s1, r)
 
 
 def test_io_yield():
@@ -1515,6 +1736,7 @@ def main():
         test_worker_threads()
         test_pool_provenance()
         test_search_functions()
+        test_minute_rule()
         test_io_yield()
         test_jobs_functions()
         test_jobs_content()
